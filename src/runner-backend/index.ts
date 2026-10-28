@@ -57,6 +57,7 @@ import type { RunnerArtifactStore } from "../runner-artifacts";
 import { RUNNER_LEASE_GRACE_MS, type RunnerCommand, type RunnerResult } from "../runner-protocol";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
+import { fastForwardToBranchTip } from "./candidate";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
@@ -811,6 +812,14 @@ export function createRemoteAgentRunner(options: {
            */
           const importCheckpoint = async (networkGit: (args: string[]) => Promise<string>) => {
             const scoped = work.scope(selected.runId, selected.workspaceId);
+            if (scoped.repository && scoped.item.branchName)
+              await fastForwardToBranchTip({
+                worktree: input.worktreePath,
+                branch: scoped.item.branchName,
+                remoteUrl: scoped.repository.remoteUrl,
+                networkGit,
+                signal,
+              });
             const wip = getWorkItem(db, itemId)?.checkpoint?.wipCommit;
             const head = (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
             if (!wip || wip === head || !scoped.repository) return;
@@ -1909,7 +1918,7 @@ export function createRemoteAgentRunner(options: {
 
 export { createRemoteSessionAgentRunner } from "./helpers";
 
-export { fetchRunnerCandidate } from "./candidate";
+export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
 
 export { remoteCommandsGone } from "./released";
 
