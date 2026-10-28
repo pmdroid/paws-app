@@ -256,7 +256,7 @@ describe("run page skills and hooks", () => {
 
   test("lists the skill versions and hooks the run started with", () => {
     const html = runSetupSection(setup);
-    expect(html).toContain('<h2 id="setup-heading">Skills and hooks</h2>');
+    expect(html).toContain('<h3 id="setup-heading">Skills and hooks</h3>');
     expect(html).toContain('<b>impeccable</b><span class="mono" title="2.4.1">2.4.1</span></li>');
     expect(html).toContain(`<b>review-paws</b><span class="mono" title="${commit}">a1b2c3d</span>`);
     expect(html).toContain("The run may have had the earlier version.");
