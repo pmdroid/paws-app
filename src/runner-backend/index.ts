@@ -87,6 +87,7 @@ import {
   type WorkspaceHook,
 } from "../core";
 import {
+  PlacementRaceError,
   quotaSignal,
   RUNNER_ONLINE_MS,
   SESSION_GRACE_MS,
@@ -425,6 +426,20 @@ export function createRemoteAgentRunner(options: {
       await delay(interval * 20, undefined, { signal: placement.signal });
     }
   }
+  /**
+   * A placement that went stale before assignment, usually a runner restarting, is not a run
+   * failure. Nothing was assigned, so the item waits for a runner like an offline one and is
+   * placed again with the runner-wait backoff, on the same runner once it is back or another.
+   */
+  function placementRace(itemId: string, runnerId: string, error: PlacementRaceError) {
+    const name =
+      db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(runnerId)
+        ?.name ?? runnerId;
+    journal(
+      `item ${itemId} placement on runner ${runnerId} raced: ${error.message}; placing again`,
+    );
+    return new RunnerCapacityWait([], undefined, [`${name}: ${error.message}`]);
+  }
   /** Whether any runner has already run work, not just preparation, for the item. */
   function startedWork(itemId: string): boolean {
     return (
@@ -745,27 +760,33 @@ export function createRemoteAgentRunner(options: {
           if (input.prepareOnly) {
             const id = randomUUID();
             const issuedAt = now();
-            immediate(db, () => {
-              work.enqueue({
-                id,
-                runnerId: selected.id,
-                workspaceId: selected.workspaceId,
-                issuedAt,
-                expiresAt: issuedAt + 120_000,
-                type: "probe",
-                profile,
+            try {
+              immediate(db, () => {
+                work.enqueue({
+                  id,
+                  runnerId: selected.id,
+                  workspaceId: selected.workspaceId,
+                  issuedAt,
+                  expiresAt: issuedAt + 120_000,
+                  type: "probe",
+                  profile,
+                });
+                options.placement?.started({
+                  commandId: id,
+                  runnerId: selected.id,
+                  itemId,
+                  runId: selected.runId,
+                  profile,
+                  role: input.role,
+                  purpose: "prepare",
+                  startedAt: issuedAt,
+                });
               });
-              options.placement?.started({
-                commandId: id,
-                runnerId: selected.id,
-                itemId,
-                runId: selected.runId,
-                profile,
-                role: input.role,
-                purpose: "prepare",
-                startedAt: issuedAt,
-              });
-            });
+            } catch (error) {
+              if (error instanceof PlacementRaceError)
+                throw placementRace(itemId, selected.id, error);
+              throw error;
+            }
             while (now() < issuedAt + 120_000) {
               signal.throwIfAborted();
               if (taskScope)
@@ -1065,8 +1086,12 @@ export function createRemoteAgentRunner(options: {
                     runner.id === selected.id && runner.workspaceId === selected.workspaceId,
                 );
                 if (!admitted)
-                  throw new RunnerUnavailableError(
-                    "Selected runner is no longer available after preparation",
+                  throw placementRace(
+                    itemId,
+                    selected.id,
+                    new PlacementRaceError(
+                      "Selected runner is no longer available after preparation",
+                    ),
                   );
               }
               signal.throwIfAborted();
@@ -1209,28 +1234,34 @@ export function createRemoteAgentRunner(options: {
                         : {}),
                     }),
               };
-              immediate(db, () => {
-                if (!runnerHasCapacity(db, selected.id, now(), selected.runId))
-                  throw new RetryableRunnerError(
-                    selected.id,
-                    "Runner became busy before assignment",
-                    undefined,
-                    false,
-                    undefined,
-                    true,
-                  );
-                work.assign(assigned);
-                options.placement?.started({
-                  commandId: assigned.id,
-                  runnerId: selected.id,
-                  itemId,
-                  runId: selected.runId,
-                  profile,
-                  role: input.role,
-                  purpose: "work",
-                  startedAt: issuedAt,
+              try {
+                immediate(db, () => {
+                  if (!runnerHasCapacity(db, selected.id, now(), selected.runId))
+                    throw new RetryableRunnerError(
+                      selected.id,
+                      "Runner became busy before assignment",
+                      undefined,
+                      false,
+                      undefined,
+                      true,
+                    );
+                  work.assign(assigned);
+                  options.placement?.started({
+                    commandId: assigned.id,
+                    runnerId: selected.id,
+                    itemId,
+                    runId: selected.runId,
+                    profile,
+                    role: input.role,
+                    purpose: "work",
+                    startedAt: issuedAt,
+                  });
                 });
-              });
+              } catch (error) {
+                if (error instanceof PlacementRaceError)
+                  throw placementRace(itemId, selected.id, error);
+                throw error;
+              }
               for (const notice of runtimeNotices)
                 await emit({ type: "progress", text: `${notice}\n` });
               const name = (id: string) =>

@@ -125,6 +125,7 @@ export {
   createRunnerPlacement,
   LOAD_HALF_LIFE_MS,
   LOAD_HISTORY_MS,
+  PlacementRaceError,
   SESSION_GRACE_MS,
 } from "./placement";
 
