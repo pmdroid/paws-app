@@ -45,6 +45,7 @@ export function createBrowserOnboarding(options: {
   origin: string;
   clientId: string | null;
   clientSecret: string | null;
+  expectedOrganizationId?: string | null;
   installed: () => void;
   reconnect?: boolean;
   prepare?: () => Promise<void>;
