@@ -30,7 +30,7 @@ import {
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { migratedDatabase, tempDb } from "./helpers";
 
 const MINUTE = 60_000;
 const BUDGET = 30 * MINUTE;
@@ -306,7 +306,7 @@ test("a runner silent past the grace while Paws is up is still fenced", async ()
 }, 30_000);
 
 test("alive marks recover after the wall clock moves backward", () => {
-  const db = migratedDatabase(":memory:");
+  const db = tempDb();
   try {
     markPawsAlive(db, 4 * 60 * MINUTE);
     markPawsAlive(db, 3 * 60 * MINUTE);
@@ -315,3 +315,39 @@ test("alive marks recover after the wall clock moves backward", () => {
     db.close();
   }
 });
+
+test("leases renewed after an obsolete alive mark receive no downtime credit", async () => {
+  const f = await fixture();
+  try {
+    f.admit();
+    markPawsAlive(f.db, f.clock.at - 24 * 60 * MINUTE);
+    const before = f.leaseUntil();
+    // Model an older build renewing work without updating the alive timestamp.
+    f.clock.at += 20 * MINUTE;
+    expect(recoverOnStartup(f.db, f.clock.at, BUDGET)).toEqual([
+      { type: "resume", freshSession: true, checkpoint: null },
+    ]);
+    expect(f.leaseUntil()).toBe(before);
+  } finally {
+    f.close();
+  }
+}, 30_000);
+
+test("revoked runners receive no downtime credit", async () => {
+  const f = await fixture();
+  try {
+    f.admit();
+    f.db.run("UPDATE runner SET status='revoked',revoked_at=? WHERE id=?", [
+      f.clock.at,
+      f.runnerId,
+    ]);
+    const before = f.leaseUntil();
+    f.down(20 * MINUTE);
+    expect(recoverOnStartup(f.db, f.clock.at, BUDGET)).toEqual([
+      { type: "resume", freshSession: true, checkpoint: null },
+    ]);
+    expect(f.leaseUntil()).toBe(before);
+  } finally {
+    f.close();
+  }
+}, 30_000);

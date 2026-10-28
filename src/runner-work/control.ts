@@ -29,6 +29,7 @@ import {
 } from "../db";
 import {
   RUNNER_LEASE_GRACE_MS,
+  RUNNER_LEASE_MS,
   RunnerCommandSchema,
   RunnerEventSchema,
   type RunnerEvent,
@@ -271,7 +272,7 @@ export function createRunnerWork(options: {
     return work;
   }
   function renew(work: Assignment, at: number) {
-    const leaseUntil = Math.min(workCommand(work).expiresAt, at + 60_000);
+    const leaseUntil = Math.min(workCommand(work).expiresAt, at + RUNNER_LEASE_MS);
     db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [leaseUntil, work.runId]);
     return leaseUntil;
   }
@@ -404,7 +405,7 @@ export function createRunnerWork(options: {
             availableIdentity(previous.runnerId)?.fence === previous.runnerFence)
         )
           throw new Error("Run assignment generation conflicts.");
-        const leaseUntil = Math.min(command.expiresAt, at + 60_000);
+        const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
         const envelope = queue(command);
         db.run(
           `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 
+/** Maximum time granted by a work assignment or heartbeat renewal. */
+export const RUNNER_LEASE_MS = 60_000;
 export const RUNNER_LEASE_GRACE_MS = 5 * 60_000;
 /**
  * How much Paws downtime does not count against a runner lease. On start, Paws moves each open
