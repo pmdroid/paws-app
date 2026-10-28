@@ -96,6 +96,8 @@ type Active = {
   abort: AbortController;
   deadline: number;
   grant?: RunnerGrant;
+  /** When `grant` was issued, so it is renewed halfway through its lifetime. */
+  grantedAt?: number;
   task?: Promise<void>;
   delivering?: Promise<void>;
   stopped?: Promise<void>;
@@ -275,7 +277,14 @@ export async function openRunnerRuntime(options: {
     `${command.runId}:${command.generation}`;
   async function grant(entry: Active) {
     check(entry);
-    if (!entry.grant || entry.grant.expiresAt <= now() + 5000) {
+    // Renewed halfway through its lifetime: a busy Paws can take many seconds to answer a
+    // request, and a grant that expires while the request waits refuses it with 403.
+    const at = now();
+    if (
+      !entry.grant ||
+      entry.grant.expiresAt <= at + 5000 ||
+      at >= (entry.grantedAt ?? at) + (entry.grant.expiresAt - (entry.grantedAt ?? at)) / 2
+    ) {
       const value = await remote(() =>
         options.daemon.issueRunGrant(entry.execution.command.runId, {
           commandId: entry.execution.command.id,
@@ -284,6 +293,7 @@ export async function openRunnerRuntime(options: {
       );
       check(entry);
       entry.grant = value;
+      entry.grantedAt = at;
     }
     return entry.grant.token;
   }
