@@ -240,7 +240,7 @@ export async function probeRunnerOrchestration(
       syncWorkspaceMember(db, {
         workspaceId: "ws-1",
         userId,
-        role: "owner",
+        role: "admin",
         active: true,
         teamIds: [],
         now,

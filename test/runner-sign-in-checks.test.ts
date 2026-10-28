@@ -42,7 +42,7 @@ function fixture() {
   syncWorkspaceMember(db, {
     workspaceId: workspace,
     userId,
-    role: "owner",
+    role: "admin",
     active: true,
     teamIds: [],
     now: at,
@@ -50,7 +50,7 @@ function fixture() {
   const owner: WorkspacePrincipal = {
     workspaceId: workspace,
     userId,
-    role: "owner",
+    role: "admin",
     teamIds: [],
     authenticatedAt: at,
   };

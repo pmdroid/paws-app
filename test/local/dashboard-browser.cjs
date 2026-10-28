@@ -149,7 +149,7 @@ async function inspect(page, name) {
       await account.getByRole("status").filter({ hasText: "Repository access saved." }).waitFor();
       await inspect(account, "owner-settings");
       observe(
-        "Owner administration is available in Settings and saves through the production API",
+        "Admin settings are available and save through the production API",
         "Repository access saved.",
       );
       await account.getByRole("button", { name: "Sign out" }).click();
@@ -160,7 +160,7 @@ async function inspect(page, name) {
       await account.locator('#tabbar a[href="#/settings"]').click();
       assert.equal(await account.locator("#workspace-members").count(), 0);
       assert.equal(await account.locator(".workspace-identities").count(), 0);
-      observe("Member sign-in excludes owner and administrator controls", "member");
+      observe("Member sign-in excludes admin controls", "member");
       await workspace.close();
     }
     assert.deepEqual(errors, []);

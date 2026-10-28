@@ -134,7 +134,7 @@ describe("Settings → Merging", () => {
   test("members see why they cannot change it", () => {
     expect(
       renderMergeSettings({ data: null, busy: null, error: null, saved: false, denied: true }),
-    ).toContain("Only workspace owners and admins");
+    ).toContain("Only workspace admins can change merging settings.");
   });
 
   test("saves without the Linear choices and with the CSRF token", async () => {

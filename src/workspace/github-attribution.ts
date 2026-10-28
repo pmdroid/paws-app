@@ -111,8 +111,7 @@ export function createGitHubAttributionLink(options: {
         if (
           !access ||
           access.session.tokenHash !== binding.sessionHash ||
-          access.principal.workspaceId !== binding.workspaceId ||
-          access.principal.role === "observer"
+          access.principal.workspaceId !== binding.workspaceId
         )
           throw new Error("Session changed.");
         requireAttributionSession(options.db, binding, now());
@@ -176,7 +175,6 @@ export function createGitHubAttributionLink(options: {
           access.principal.workspaceId !== binding.workspaceId
         )
           throw new Error("Session changed.");
-        if (access.principal.role === "observer") throw new Error("Membership is required.");
         if (url.pathname === PATH && request.method === "GET")
           return reply({
             configured: options.client !== undefined,

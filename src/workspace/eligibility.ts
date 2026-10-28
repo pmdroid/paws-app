@@ -1,7 +1,10 @@
 import type { WorkspaceMember } from "../db";
 import type { LinearMemberIdentity } from "../linear";
 
-export const isWorkspaceAdmin = (role: string): boolean => role === "owner" || role === "admin";
+export const isWorkspaceAdmin = (role: string): boolean => role === "admin";
+
+/** The whole answer to a Linear guest, at sign-in and on a delegation. */
+export const LINEAR_GUEST_REFUSAL = "Linear guests can't use Paws.";
 
 export type ActionActor = {
   id: string;
@@ -10,7 +13,6 @@ export type ActionActor = {
   /** null means a verified Linear member has never signed in to Paws. */
   member?: Pick<WorkspaceMember, "active" | "role" | "teamIds"> | null;
   teamId?: string;
-  teamName?: string | null;
 };
 export type ActorAction =
   | "prompt"
@@ -26,21 +28,18 @@ export function canAct(actor: ActionActor, action: ActorAction): ActorEligibilit
   if (!actor.id.trim() || actor.id === "unknown" || actor.id === "linear")
     return { allowed: false, reason: "Paws could not tell who is acting in this session." };
   const deny = (reason: string): ActorEligibility => ({ allowed: false, reason });
-  const ask = `Ask a member of ${actor.teamName ?? "this issue's team"} to delegate this issue.`;
   const identity = actor.identity;
   if (identity) {
     if (identity.userId !== actor.id)
       return deny("Linear returned a different person for this session.");
     if (!identity.active) return deny("Your Linear account is not active.");
-    if (identity.guest) return deny(`Linear guests cannot delegate issues to Paws. ${ask}`);
+    if (identity.guest) return deny(LINEAR_GUEST_REFUSAL);
     if (actor.teamId && !identity.teamIds.includes(actor.teamId))
       return deny("You are not a member of this issue's Linear team.");
   }
   const member = actor.member;
   if (member) {
     if (!member.active) return deny("Your Paws workspace membership is not active.");
-    if (member.role === "observer")
-      return deny(`Observers in the Paws workspace cannot delegate issues to Paws. ${ask}`);
     if (actor.teamId && !member.teamIds.includes(actor.teamId))
       return deny("You are not a member of this issue's Linear team.");
   }

@@ -90,7 +90,7 @@ export async function probeRunnerEnrollment(
     tokenHash: workspaceTokenHash(bootstrap),
     now,
   });
-  function person(name: string, role: "member" | "observer") {
+  function person(name: string, active = true) {
     const userId = putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `enroll-${name}`,
@@ -100,22 +100,22 @@ export async function probeRunnerEnrollment(
     syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId,
-      role,
-      active: true,
+      role: "member",
+      active,
       teamIds: [],
       now,
     });
     const principal: WorkspacePrincipal = {
       workspaceId: workspace.id,
       userId,
-      role,
+      role: "member",
       authenticatedAt: now,
       teamIds: [],
     };
     return principal;
   }
-  const member = person("member", "member");
-  const observer = person("observer", "observer");
+  const member = person("member");
+  const inactive = person("inactive", false);
   const control = createRunnerControl({
     db,
     authority,
@@ -140,7 +140,7 @@ export async function probeRunnerEnrollment(
     });
   try {
     assert.throws(
-      () => control.createEnrollment(observer, { name: "observer-host" }),
+      () => control.createEnrollment(inactive, { name: "inactive-host" }),
       /Active workspace membership/,
     );
     const minted = await http.browser(
@@ -160,7 +160,7 @@ export async function probeRunnerEnrollment(
       .all();
     assert.deepEqual(stored, [{ token_hash: workspaceTokenHash(issued.token) }]);
     observe("any active member mints a ten-minute token and only its hash is stored", true, {
-      observerDenied: true,
+      inactiveDenied: true,
       hashesOnly: true,
     });
 
@@ -221,27 +221,6 @@ export async function probeRunnerEnrollment(
       runners: runners(),
     });
 
-    const demoted = control.createEnrollment(member, { name: "demoted" });
-    syncWorkspaceMember(db, {
-      workspaceId: workspace.id,
-      userId: member.userId,
-      role: "observer",
-      active: true,
-      teamIds: [],
-      now: now + 1,
-    });
-    const asObserver = await http.hostEnrollment(
-      post("/api/runner-enrollments", { token: demoted.token, name: "demoted", csr: host.csr }),
-    );
-    assert.equal(asObserver.status, 401);
-    syncWorkspaceMember(db, {
-      workspaceId: workspace.id,
-      userId: member.userId,
-      role: "member",
-      active: true,
-      teamIds: [],
-      now: now + 2,
-    });
     const leaving = control.createEnrollment(member, { name: "leaving" });
     syncWorkspaceMember(db, {
       workspaceId: workspace.id,
@@ -256,8 +235,8 @@ export async function probeRunnerEnrollment(
       RunnerEnrollmentDenied,
     );
     assert.equal(runners(), 1);
-    observe("a token whose member became an observer or inactive before use is refused", true, {
-      observer: asObserver.status,
+    observe("a token whose member became inactive before use is refused", true, {
+      runners: runners(),
     });
 
     const audit = db
@@ -275,7 +254,7 @@ export async function probeRunnerEnrollment(
         .all()
         .concat(db.query("SELECT * FROM runner_enrollment").all()),
     );
-    for (const token of [issued.token, expiring.token, demoted.token, leaving.token])
+    for (const token of [issued.token, expiring.token, leaving.token])
       assert(!everything.includes(token));
     observe("runner.paired names the member and no audit or enrollment row holds a token", true, {
       audited: audit.length,

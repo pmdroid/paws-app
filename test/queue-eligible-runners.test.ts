@@ -26,7 +26,7 @@ function workspace(db: Database) {
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',0)");
   const users: Record<string, string> = {};
   for (const [name, role] of [
-    ["other", "owner"],
+    ["other", "admin"],
     ["me", "member"],
   ] as const) {
     users[name] = putWorkspaceUser(db, {

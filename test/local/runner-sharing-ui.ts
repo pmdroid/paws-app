@@ -88,7 +88,7 @@ const server = Bun.serve({
     const principal: WorkspacePrincipal = {
       workspaceId: workspace.id,
       userId: identity === "member" ? member : owner,
-      role: identity === "member" ? "member" : "owner",
+      role: identity === "member" ? "member" : "admin",
       authenticatedAt: now,
       teamIds: ["team"],
     };

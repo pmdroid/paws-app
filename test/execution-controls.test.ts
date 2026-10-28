@@ -52,8 +52,8 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     ]);
 
     assert.equal((await retry("job:x")).status, 400);
-    assert.equal((await retry(`job:${mine}`, "observer")).status, 403);
-    assert.equal((await retry(`job:${foreign}`, "owner")).status, 403);
+    assert.equal((await retry(`job:${mine}`, "inactive")).status, 401);
+    assert.equal((await retry(`job:${foreign}`, "admin")).status, 403);
     assert.equal(getJob(db, foreign)!.status, "dead");
     assert.equal((await retry(`job:${mine}`)).status, 200);
     assert.equal(getJob(db, mine)!.status, "pending");
@@ -88,7 +88,7 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     db.run("UPDATE linear_session SET stopped_at = ? WHERE session_id = ?", [Date.now(), session]);
     assert.equal((await retry(`job:${late}`)).status, 403);
     assert.equal(getJob(db, late)!.status, "dead");
-    assert.equal((await retry(`outbox:${stop}`, "observer")).status, 403);
+    assert.equal((await retry(`outbox:${stop}`, "inactive")).status, 401);
     assert.equal((await retry(`outbox:${stop}`)).status, 200);
     assert.equal(getOutbox(db, stop)!.status, "pending");
   } finally {
@@ -97,13 +97,13 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
   }
 });
 
-test("Clear stuck agent clears a blocked conversation for an owner, refuses a member and is audited", async () => {
+test("Clear stuck agent clears a blocked conversation for an admin, refuses a member and is audited", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-controls-stuck-"));
   const fixture = createExecutionControlsFixture(root);
   try {
     const { db, call } = fixture;
     blockConversation(db, "controlled", Date.now());
-    const view = (await (await call(undefined, "owner")).json()) as {
+    const view = (await (await call(undefined, "admin")).json()) as {
       actions: string[];
       notice?: string;
     };
@@ -115,7 +115,7 @@ test("Clear stuck agent clears a blocked conversation for an owner, refuses a me
 
     assert.equal((await call("clear_stuck_agent")).status, 403);
     assert.equal(getConversation(db, "controlled").blocked, true);
-    assert.equal((await call("clear_stuck_agent", "owner")).status, 200);
+    assert.equal((await call("clear_stuck_agent", "admin")).status, 200);
     assert.equal(getConversation(db, "controlled").blocked, false);
     const audit = db
       .query<{ userId: string; action: string; subject: string }, []>(
@@ -128,10 +128,10 @@ test("Clear stuck agent clears a blocked conversation for an owner, refuses a me
         action: "access.denied",
         subject: "execution.clear_stuck_agent:controlled",
       },
-      { userId: "owner", action: "execution.clear_stuck_agent", subject: "controlled" },
+      { userId: "admin", action: "execution.clear_stuck_agent", subject: "controlled" },
     ]);
     // Nothing is blocked any more, so the action is gone.
-    assert.equal((await call("clear_stuck_agent", "owner")).status, 409);
+    assert.equal((await call("clear_stuck_agent", "admin")).status, 409);
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });
@@ -157,10 +157,9 @@ test("Asking which controls an item has is not a denial; a refused action still 
     );
     for (const [identity, itemId] of [
       ["outside", "controlled"],
-      ["observer", "controlled"],
-      ["owner", "foreign"],
-      ["owner", "sessionless"],
-      ["owner", "missing"],
+      ["admin", "foreign"],
+      ["admin", "sessionless"],
+      ["admin", "missing"],
     ] as const) {
       const response = await call(undefined, identity, itemId);
       assert.equal(response.status, 200);

@@ -249,7 +249,6 @@ const base: OnboardingPageInput = {
   teamName: "Platform",
   member: { name: "Mia Chen", email: "mia@example.invalid" },
   memberOfTeam: true,
-  observer: false,
   readiness: { runner: { state: "needed" }, agents: WAITING, memberVm: false },
   github: null,
   createVm: true,
@@ -296,9 +295,10 @@ test("with no usable runner the step offers Create VM and Add a host on the page
     '<button type="button" class="action" data-action="create-vm">Create VM</button>',
   );
   expect(html).toContain('<section class="host" id="host" hidden');
-  const observer = onboardingSteps({ ...base, observer: true, memberOfTeam: false });
-  expect(observer[1]?.detail).toContain("You are an observer in Paws.");
-  expect(observer[2]?.actions).toEqual([]);
+  const outside = onboardingSteps({ ...base, memberOfTeam: false });
+  expect(outside[1]?.detail).toBe(
+    "You are not a member of Platform in Linear. Ask a team admin to add you.",
+  );
 });
 
 test("a fully set up member sees no remaining steps and the page stops reloading", async () => {
