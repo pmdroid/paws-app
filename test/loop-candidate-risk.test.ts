@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { classifyCandidateRisk } from "../src/loop";
+import { classifyCandidateRisk, highRiskPathsFileAt } from "../src/loop";
 import { tempHome } from "./helpers";
 
 function repo() {
@@ -39,7 +39,7 @@ describe("classifyCandidateRisk", () => {
     const head = commit();
     expect(
       await classifyCandidateRisk({ git, base, head, settingsGlobs: ["src/auth/**"] }),
-    ).toEqual({ tier: "normal", paths: [] });
+    ).toEqual({ tier: "normal", paths: [], matches: [] });
   });
 
   test("settings globs and the base commit's file both add high-risk paths", async () => {
@@ -52,7 +52,14 @@ describe("classifyCandidateRisk", () => {
     const head = commit();
     expect(
       await classifyCandidateRisk({ git, base, head, settingsGlobs: ["src/auth/**"] }),
-    ).toEqual({ tier: "high", paths: ["infra/main.tf", "src/auth/session.ts"] });
+    ).toEqual({
+      tier: "high",
+      paths: ["infra/main.tf", "src/auth/session.ts"],
+      matches: [
+        { path: "infra/main.tf", lists: ["file"] },
+        { path: "src/auth/session.ts", lists: ["settings"] },
+      ],
+    });
   });
 
   test("a candidate cannot remove its own paths from the file", async () => {
@@ -65,6 +72,7 @@ describe("classifyCandidateRisk", () => {
     expect(await classifyCandidateRisk({ git, base, head, settingsGlobs: [] })).toEqual({
       tier: "high",
       paths: ["infra/main.tf"],
+      matches: [{ path: "infra/main.tf", lists: ["file"] }],
     });
   });
 
@@ -79,6 +87,17 @@ describe("classifyCandidateRisk", () => {
     );
   });
 
+  test("a path both lists match names both", async () => {
+    const { write, commit, git } = repo();
+    write(".paws/high-risk-paths", "src/auth/**\n");
+    const base = commit();
+    write("src/auth/session.ts", "a\n");
+    const head = commit();
+    expect(
+      (await classifyCandidateRisk({ git, base, head, settingsGlobs: ["src/**/*.ts"] })).matches,
+    ).toEqual([{ path: "src/auth/session.ts", lists: ["settings", "file"] }]);
+  });
+
   test("moving a file out of a high-risk directory is high", async () => {
     const { dir, write, commit, git } = repo();
     write("src/auth/session.ts", "export const session = 1;\n");
@@ -89,5 +108,14 @@ describe("classifyCandidateRisk", () => {
     expect(
       (await classifyCandidateRisk({ git, base, head, settingsGlobs: ["src/auth/**"] })).paths,
     ).toEqual(["src/auth/session.ts"]);
+  });
+
+  test("the repository file is read at a commit, and a commit without one has none", async () => {
+    const { write, commit, git } = repo();
+    const without = commit();
+    write(".paws/high-risk-paths", "# owners review these\nsrc/auth/**\n\n!docs/**\n");
+    const withFile = commit();
+    expect(await highRiskPathsFileAt(git, without)).toBeNull();
+    expect(await highRiskPathsFileAt(git, withFile)).toEqual(["src/auth/**"]);
   });
 });

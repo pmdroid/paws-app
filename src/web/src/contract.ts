@@ -695,6 +695,35 @@ export interface StatusItemDetail extends StatusSnapshotBase {
   blocks: string[];
   verdicts: StatusVerdict[];
   agentCloseout?: StatusAgentCloseout[];
+  /** The Risk card. Null while Paws has neither classified a head nor run Closeout on one. */
+  risk?: StatusItemRisk | null;
+}
+
+export const RISK_TIERS = ["high", "normal"] as const;
+export const RISK_LISTS = ["settings", "file"] as const;
+export type RiskTier = (typeof RISK_TIERS)[number];
+/** `settings` is Settings › Merging › High-risk paths, `file` is `.paws/high-risk-paths`. */
+export type RiskList = (typeof RISK_LISTS)[number];
+
+/** A changed path a high-risk glob matched. `lists` is empty for a head classified before Paws recorded it. */
+export interface StatusRiskPath {
+  path: string;
+  lists: RiskList[];
+}
+
+/**
+ * The item's risk tier from the latest classified head, the high-risk paths it changed, and the
+ * `security-review` check of its Closeout. `tier` and `head` are null until Paws classifies a
+ * head, which it does when Closeout accepts one. `securityReview` is null when the item's
+ * Closeout has no `security-review` check.
+ */
+export interface StatusItemRisk {
+  tier: RiskTier | null;
+  head: string | null;
+  base: string | null;
+  classifiedAt: string | null;
+  paths: StatusRiskPath[];
+  securityReview: { state: CheckState; detail: string | null; head: string | null } | null;
 }
 
 export type ItemDetailParseResult =
@@ -777,6 +806,7 @@ export function parseStatusItemDetail(input: unknown): ItemDetailParseResult {
                 readAgentCloseout(entry, `agentCloseout[${index}]`),
               ),
             }),
+        ...(body.risk === undefined ? {} : { risk: readItemRisk(body.risk) }),
       },
     };
   } catch (error) {
@@ -809,6 +839,40 @@ export function agentCloseoutSummary(agent: StatusAgentCloseout): StatusAgentClo
     updatedAt: agent.updatedAt,
     ...(agent.endedAt === undefined ? {} : { endedAt: agent.endedAt }),
     ...(agent.continuesIn === undefined ? {} : { continuesIn: agent.continuesIn }),
+  };
+}
+
+function readItemRisk(input: unknown): StatusItemRisk | null {
+  if (input === null) return null;
+  const path = "detail.risk";
+  const body = object(input, path);
+  const review = body.securityReview;
+  let securityReview: StatusItemRisk["securityReview"] = null;
+  if (review !== null) {
+    const at = `${path}.securityReview`;
+    const entry = object(review, at);
+    securityReview = {
+      state: oneOf(string(entry, "state", at), CHECK_STATES, `${at}.state`),
+      detail: nullableText(entry, "detail", at),
+      head: nullableText(entry, "head", at),
+    };
+  }
+  return {
+    tier: body.tier === null ? null : oneOf(string(body, "tier", path), RISK_TIERS, `${path}.tier`),
+    head: nullableText(body, "head", path),
+    base: nullableText(body, "base", path),
+    classifiedAt: nullableDate(body, "classifiedAt", path),
+    paths: array(body, "paths", path).map((entry, index) => {
+      const at = `${path}.paths[${index}]`;
+      const match = object(entry, at);
+      return {
+        path: text(match, "path", at),
+        lists: array(match, "lists", at).map((list, position) =>
+          oneOf(String(list), RISK_LISTS, `${at}.lists[${position}]`),
+        ),
+      };
+    }),
+    securityReview,
   };
 }
 

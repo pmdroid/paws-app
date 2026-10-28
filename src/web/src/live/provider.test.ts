@@ -1200,6 +1200,92 @@ describe("live status provider", () => {
     expect((await get("ENG-404"))?.status).toBe(404);
   });
 
+  test("the item detail's risk block has the tier, each path's list and the security review", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const base = "d".repeat(40);
+    const head = "c".repeat(40);
+    const item = insertQueuedItem(db, { id: "ENG-11", title: "Risk", sessionKey: "ses_11", now });
+    const docs = insertQueuedItem(db, { id: "ENG-12", sessionKey: "ses_11", now });
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000) });
+    expect(provider.item("ENG-11")?.risk).toBeNull();
+    const identity = (taskId: string) => ({
+      taskId,
+      base,
+      head,
+      policyDigest: "sha256:policy",
+      policyPath: ".agents/closeout.yaml",
+    });
+    const review = (state: CloseoutStepWrite["state"], detail: string | null) => ({
+      id: "security-review",
+      kind: "review" as const,
+      state,
+      command: "security-review",
+      detail,
+      attempt: 1,
+      timeoutSeconds: null,
+      startedAt: now,
+      finishedAt: now,
+      exitCode: null,
+      timedOut: false,
+      timeoutReason: null,
+      truncated: false,
+      logPath: null,
+      evidencePath: null,
+      findings: null,
+      ordinal: 0,
+    });
+    upsertCloseoutStep(db, item.id, identity(item.id), review("passed", null), now);
+    finishCloseoutProgress(db, item.id, identity(item.id), "accepted", now);
+    saveCandidateRisk(db, {
+      itemId: item.id,
+      head,
+      base,
+      tier: "high",
+      paths: ["infra/main.tf", "src/auth/session.ts"],
+      matches: [
+        { path: "infra/main.tf", lists: ["file"] },
+        { path: "src/auth/session.ts", lists: ["settings", "file"] },
+      ],
+      classifiedAt: now,
+    });
+    upsertCloseoutStep(
+      db,
+      docs.id,
+      identity(docs.id),
+      review("skipped", "no changed path matches"),
+      now,
+    );
+    finishCloseoutProgress(db, docs.id, identity(docs.id), "accepted", now);
+    saveCandidateRisk(db, {
+      itemId: docs.id,
+      head,
+      base,
+      tier: "normal",
+      paths: [],
+      matches: [],
+      classifiedAt: now,
+    });
+    const high = parseStatusItemDetail(JSON.parse(JSON.stringify(provider.item("ENG-11"))));
+    if (!high.ok) throw new Error(high.error);
+    expect(high.detail.risk).toEqual({
+      tier: "high",
+      head,
+      base,
+      classifiedAt: new Date(now).toISOString(),
+      paths: [
+        { path: "infra/main.tf", lists: ["file"] },
+        { path: "src/auth/session.ts", lists: ["settings", "file"] },
+      ],
+      securityReview: { state: "passed", detail: null, head },
+    });
+    expect(provider.item("ENG-12")?.risk).toMatchObject({
+      tier: "normal",
+      paths: [],
+      securityReview: { state: "skipped", detail: "no changed path matches", head },
+    });
+  });
+
   test("a check log is read only for a check of that issue's Closeout attempt", async () => {
     const db = database();
     const now = 1_700_000_000_000;
