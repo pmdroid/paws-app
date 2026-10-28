@@ -954,15 +954,19 @@ for (const duplicateFirst of [true, false])
     }
   });
 
-for (const samePatch of [true, false])
-  test(`manual carry-over takes precedence over automatic approval, same patch: ${samePatch}`, async () => {
+for (const patchMatches of [true, false])
+  test(`manual carry-over takes precedence over automatic approval, same patch: ${patchMatches}`, async () => {
     const { db, itemId } = riskApproved();
     try {
-      const head = samePatch ? heads.rebased : heads.ciFix;
+      const head = patchMatches ? heads.rebased : heads.ciFix;
       fixAccepted(db, head, heads.base);
       cleanReviews(db, head);
       expect(
-        await automatic(db, { head, samePatch, fix: { changed: ["test/x.test.ts"], paths: [] } }),
+        await automatic(db, {
+          head,
+          samePatch: patchMatches,
+          fix: { changed: ["test/x.test.ts"], paths: [] },
+        }),
       ).toBe("approved");
       expect(getAutomaticRiskApproval(db, itemId, head)).toBeNull();
       expect(
