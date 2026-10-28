@@ -98,3 +98,21 @@ export async function assertDescendsFromAny(
   }
   throw failure;
 }
+
+export const CHECKPOINT_COMMIT_MESSAGE = "Save work in progress so far";
+
+export async function candidateBases(
+  invoke: (args: string[]) => Promise<string>,
+  base: string,
+): Promise<string[]> {
+  const subject = await invoke(["log", "-1", "--format=%s", base]).then(
+    (out) => out.trim(),
+    () => "",
+  );
+  if (subject !== CHECKPOINT_COMMIT_MESSAGE) return [base];
+  const parent = await invoke(["rev-parse", "--verify", `${base}^`]).then(
+    (out) => out.trim(),
+    () => "",
+  );
+  return /^[a-f0-9]{40}$/.test(parent) ? [base, parent] : [base];
+}

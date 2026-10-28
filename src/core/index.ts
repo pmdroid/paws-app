@@ -104,6 +104,8 @@ export {
 } from "./commit-identity";
 
 export {
+  candidateBases,
+  CHECKPOINT_COMMIT_MESSAGE,
   commitCoauthorTrailers,
   commitPolicyMessage,
   policyCoauthors,

@@ -1,5 +1,10 @@
 import { journalCaught } from "../journal";
-import { assertDescendsFromAny, commitCoauthorTrailers, validateCommitAttribution } from "../core";
+import {
+  assertDescendsFromAny,
+  candidateBases,
+  commitCoauthorTrailers,
+  validateCommitAttribution,
+} from "../core";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -256,7 +261,10 @@ export function createRunnerRepositories(options: {
           ).trim();
           if (sha !== candidate.sha)
             throw new Error("Runner candidate commit does not match its bundle");
-          const bases = [command.repository.baseSha];
+          const bases = await candidateBases(
+            (args) => invoke(["--git-dir", mirror, ...args], signal),
+            command.repository.baseSha,
+          );
           if (command.repository.mainSha) bases.push(command.repository.mainSha);
           const excluded = bases.map((base) => `^${base}`);
           await assertDescendsFromAny(
