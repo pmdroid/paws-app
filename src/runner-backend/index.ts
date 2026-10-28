@@ -300,6 +300,7 @@ export function createRemoteAgentRunner(options: {
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
   const reservations = new Map<string, string>();
+  const readers = new Set<string>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
   function usageLimitReset(agent: string, sessionId: string | null): number | null {
@@ -600,6 +601,8 @@ export function createRemoteAgentRunner(options: {
       return undefined;
     }
     if (command.type !== type) return undefined;
+    if (reservations.has(runId)) throw new RunnerCapacityWait([row.runnerId]);
+    reservations.set(runId, row.runnerId);
     return {
       selected: {
         id: row.runnerId,
@@ -658,6 +661,7 @@ export function createRemoteAgentRunner(options: {
   return {
     cancelItem,
     handOverItem,
+    runInProgress: (runId: string) => readers.has(runId),
     forItem(itemId: string) {
       const attempt = async (
         input: RunAgentOptions,
@@ -2023,16 +2027,23 @@ export function createRemoteAgentRunner(options: {
           reservations.delete(selected.runId);
         }
       };
-      return (input: RunAgentOptions) => {
-        const move: HandoverMove = {};
-        const moving: FailoverAttempt = (next, excluded, limit) =>
-          attempt(next, excluded, limit, move);
-        return runWithFailover(
-          input,
-          moving,
-          async () => cancelItem(itemId, input.signal),
-          usageLimitWait(itemId, input),
-        );
+      return async (input: RunAgentOptions) => {
+        const runId = getWorkItem(db, itemId)?.currentRunId;
+        if (runId && readers.has(runId)) throw new RunnerCapacityWait([]);
+        if (runId) readers.add(runId);
+        try {
+          const move: HandoverMove = {};
+          const moving: FailoverAttempt = (next, excluded, limit) =>
+            attempt(next, excluded, limit, move);
+          return await runWithFailover(
+            input,
+            moving,
+            async () => cancelItem(itemId, input.signal),
+            usageLimitWait(itemId, input),
+          );
+        } finally {
+          if (runId) readers.delete(runId);
+        }
       };
     },
   };
