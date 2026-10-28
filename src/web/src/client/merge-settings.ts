@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import type {
+  HighRiskRepository,
   MainMoved,
   MergeChoice,
   MergeOrder,
@@ -105,6 +106,39 @@ function overrides(value: Partial<MergeChoice>): boolean {
   return value.order !== undefined || value.mainMoved !== undefined;
 }
 
+/** The globs in a High-risk paths box: one per line, blank lines dropped. */
+export function riskGlobs(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+/** The repository's own `.paws/high-risk-paths`, read-only. */
+function riskFile(file: HighRiskRepository["file"]): string {
+  if (file.state === "unavailable") return `<p class="sub">${esc(file.reason)}</p>`;
+  const at = `<span class="mono">${esc(file.commit.slice(0, 7))}</span>`;
+  if (file.state === "missing")
+    return `<p class="sub">No file on <span class="mono">origin/main</span> at ${at}. Add one to the repository to mark paths high-risk there.</p>`;
+  return `${
+    file.paths.length
+      ? `<ul class="risk-file">${file.paths.map((glob) => `<li><code>${esc(glob)}</code></li>`).join("")}</ul>`
+      : '<p class="sub">The file lists no glob.</p>'
+  }<p class="sub">Read-only, from <span class="mono">origin/main</span> at ${at}. Change it in the repository.</p>`;
+}
+
+function riskSection(repositories: readonly HighRiskRepository[]): string {
+  const body = repositories.length
+    ? repositories
+        .map(
+          (entry, index) =>
+            `<section class="settings-project"><h3>${esc(entry.repository)}</h3><div class="risk-lists"><div class="settings-field"><label for="risk-${index}">Paws settings</label><textarea id="risk-${index}" name="risk-${index}" rows="4" spellcheck="false" autocapitalize="none" placeholder="src/auth/**" aria-describedby="risk-${index}-help">${esc(entry.paths.join("\n"))}</textarea><small class="sub" id="risk-${index}-help">One glob per line, relative to the repository root.</small></div><div class="settings-field"><span class="settings-field-title">.paws/high-risk-paths</span>${riskFile(entry.file)}</div></div></section>`,
+        )
+        .join("")
+    : '<p class="sub">No repositories yet. Connect one under Integrations.</p>';
+  return `<section class="settings-section"><div class="settings-label"><h2>High-risk paths</h2><p class="sub">A changed path is high-risk when a glob here or in the repository's <span class="mono">.paws/high-risk-paths</span> matches it. The file can only add paths. The Risk card on each issue names the list that matched.</p></div><div class="col">${body}</div></section>`;
+}
+
 export function renderMergeSettings(view: View): string {
   if (view.denied)
     return '<p class="sub">Only workspace owners and admins can change merging settings.</p>';
@@ -157,11 +191,11 @@ export function renderMergeSettings(view: View): string {
       }
       <div class="settings-add"><label for="merge-rule-project">New rule</label>${ruleProject}${ruleLabel}<div class="row"><button class="btn" type="button" data-merge="add-rule">Add rule</button></div></div></div></section>
       ${riskGateSection(data.riskGate)}
+      ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
 }
 
-/** The saved body: the page's settings without the Linear choices. */
 /** Whether high-risk pull requests wait for an approval in Paws, and why not. */
 function riskGateSection(gate: MergeSettingsView["riskGate"]): string {
   if (!gate) return "";
@@ -171,8 +205,24 @@ function riskGateSection(gate: MergeSettingsView["riskGate"]): string {
   return `<section class="settings-section" id="merge-risk-gate"><div class="settings-label"><h2>High-risk approval</h2><p class="sub">The person who delegated the issue or the project lead approves each high-risk head.</p></div><div class="col">${body}</div></section>`;
 }
 
+/**
+ * The saved body: the page's settings without the Linear choices. High-risk paths go along only
+ * when the page listed them, so an engine that does not list them keeps its own.
+ */
 export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
-  return { default: data.default, projects: data.projects, rules: data.rules };
+  return {
+    default: data.default,
+    projects: data.projects,
+    rules: data.rules,
+    ...(data.highRiskRepositories
+      ? {
+          highRiskPaths: data.highRiskRepositories.map((entry) => ({
+            repository: entry.repository,
+            paths: entry.paths,
+          })),
+        }
+      : {}),
+  };
 }
 
 export async function mergeSettingsRequest(
@@ -247,6 +297,10 @@ export function createMergeSettings(invalidate: () => void): {
       if (form.querySelector<HTMLInputElement>(`[name="${scope}-inherit"]`)?.checked) return base;
       const project = data.projects.find((entry) => entry.id === rule.project);
       return { ...base, ...read(scope, effective(rule, effective(project, data.default))) };
+    });
+    data.highRiskRepositories = data.highRiskRepositories?.map((entry, index) => {
+      const text = form.querySelector<HTMLTextAreaElement>(`[name="risk-${index}"]`)?.value;
+      return text === undefined ? entry : { ...entry, paths: riskGlobs(text) };
     });
     view.projectDraft = value("new-project")?.trim() ?? "";
     view.ruleProjectDraft = value("rule-project") ?? "";
@@ -363,7 +417,10 @@ export function createMergeSettings(invalidate: () => void): {
   const change = (event: Event) => {
     if (view.busy) return;
     const target = event.target as HTMLInputElement | HTMLSelectElement;
+    // A High-risk paths box changes on blur; repainting then would swallow the click that blurred
+    // it, such as Save. Submit and the other buttons read it.
     if (["new-project", "rule-project", "rule-label"].includes(target.name)) return;
+    if (target.name.startsWith("risk-")) return;
     draft();
     paint();
   };

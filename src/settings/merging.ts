@@ -39,6 +39,29 @@ export type MergeSettingsOptions = {
    * a dashboard link a person can open, so a Paws without an https public URL keeps it off.
    */
   riskGate?: { on: boolean; reason?: string };
+  /** Repositories Paws can access, `owner/repo`, listed under High-risk paths. */
+  repos?: string[];
+  /**
+   * The repository's `.paws/high-risk-paths` on the last fetched `origin/main` of its local
+   * mirror, without a network call. Null when Paws has no local copy yet.
+   */
+  highRiskFile?: (repo: string) => Promise<HighRiskFile | null>;
+};
+
+/** `paths` is null when the commit has no `.paws/high-risk-paths`. */
+export type HighRiskFile = { commit: string; paths: string[] | null };
+
+/**
+ * One repository under Settings › Merging › High-risk paths: the globs Paws settings give it and,
+ * read-only, the globs its own file adds.
+ */
+export type HighRiskRepositoryView = {
+  repository: string;
+  paths: string[];
+  file:
+    | { state: "present"; commit: string; paths: string[] }
+    | { state: "missing"; commit: string }
+    | { state: "unavailable"; reason: string };
 };
 
 export const MERGE_SETTINGS_PATH = "/api/settings/merging";
@@ -84,6 +107,10 @@ export async function handleMergeSettingsRequest(
       ...view(policy),
       highRiskPaths: highRiskPathsView(policy),
       ...(options.riskGate ? { riskGate: options.riskGate } : {}),
+      highRiskRepositories: await highRiskRepositoriesView(
+        pathsByRepository(highRiskPathsView(policy)),
+        options,
+      ),
       choices,
       ...(choicesError ? { choicesError } : {}),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
@@ -160,7 +187,67 @@ export async function handleMergeSettingsRequest(
     highRiskPaths: Object.entries(saved)
       .filter(([, paths]) => paths.length > 0)
       .map(([repository, paths]) => ({ repository, paths })),
+    highRiskRepositories: await highRiskRepositoriesView(saved, options),
   });
+}
+
+function pathsByRepository(
+  entries: readonly { repository: string; paths: string[] }[],
+): Record<string, string[]> {
+  return Object.fromEntries(entries.map((entry) => [entry.repository, entry.paths]));
+}
+
+/**
+ * Every repository Paws can access and every repository with settings globs, each with its
+ * `.paws/high-risk-paths` read from the local mirror.
+ */
+async function highRiskRepositoriesView(
+  settings: Record<string, string[]>,
+  options: MergeSettingsOptions,
+): Promise<HighRiskRepositoryView[]> {
+  let configured: string[] = [];
+  try {
+    const config = loadConfigFile(options.configPath);
+    configured = [config.repo, ...config.githubRepos].flatMap((repo) => (repo ? [repo] : []));
+  } catch (caughtError) {
+    journalCaught(caughtError, "merging.highRiskRepositoriesView.loadConfigFile", null);
+  }
+  const names = new Map<string, string>();
+  for (const repository of [...Object.keys(settings), ...configured, ...(options.repos ?? [])])
+    if (!names.has(repository.toLowerCase())) names.set(repository.toLowerCase(), repository);
+  const paths = new Map(
+    Object.entries(settings).map(([repository, globs]) => [repository.toLowerCase(), globs]),
+  );
+  return Promise.all(
+    [...names.values()]
+      .sort((left, right) => left.localeCompare(right))
+      .map(async (repository) => ({
+        repository,
+        paths: paths.get(repository.toLowerCase()) ?? [],
+        file: await highRiskFileView(repository, options.highRiskFile),
+      })),
+  );
+}
+
+async function highRiskFileView(
+  repository: string,
+  read: MergeSettingsOptions["highRiskFile"],
+): Promise<HighRiskRepositoryView["file"]> {
+  if (!read) return { state: "unavailable", reason: "Paws does not read repository files here." };
+  try {
+    const file = await read(repository);
+    if (file === null)
+      return {
+        state: "unavailable",
+        reason: "Paws has no copy of this repository yet. It reads the file once it clones it.",
+      };
+    return file.paths === null
+      ? { state: "missing", commit: file.commit }
+      : { state: "present", commit: file.commit, paths: file.paths };
+  } catch (caughtError) {
+    journalCaught(caughtError, "merging.highRiskFileView.read", null);
+    return { state: "unavailable", reason: "Paws could not read .paws/high-risk-paths." };
+  }
 }
 
 /** Settings › Merging › High-risk paths: each repository with globs. */

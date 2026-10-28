@@ -10,6 +10,8 @@ import {
   type ResolvedReview,
 } from "../src/closeout-spec";
 import { createFakeGitReader, loadPolicy } from "../src/closeout-spec/policy";
+import { anyPathMatches } from "../src/closeout-spec/evaluate/paths";
+import { HIGH_RISK_PATHS_FILE, classifyRisk, parseHighRiskPathsFile } from "../src/core";
 
 const REPOSITORY = join(import.meta.dir, "..");
 const roots: string[] = [];
@@ -20,15 +22,10 @@ afterEach(() => {
 
 describe("security review in this repository's Closeout policy", () => {
   test("is a separate review with its own skill on high-risk paths", () => {
-    const loaded = loadPolicy({
-      repo: REPOSITORY,
-      git: createFakeGitReader(),
-      policyRoot: REPOSITORY,
-    });
-    if (!loaded.ok || loaded.policy.source === "none") throw new Error("expected a policy");
-    const items = loaded.policy.items;
-    const security = items.find((item) => item.id === "security-review") as ResolvedReview;
-    const general = items.find((item) => item.id === "independent-review") as ResolvedReview;
+    const security = securityReview();
+    const general = policyItems().find(
+      (item) => item.id === "independent-review",
+    ) as ResolvedReview;
     expect(security).toMatchObject({
       kind: "review",
       gate: "beforePR",
@@ -41,6 +38,25 @@ describe("security review in this repository's Closeout policy", () => {
     expect(security.paths).toContain("src/auth/**");
     expect(security.paths).not.toContain("docs/**");
     expect(readFileSync(join(REPOSITORY, security.skill), "utf8")).toContain("name: security-paws");
+  });
+
+  test("runs on the same list as .paws/high-risk-paths, so a high-risk candidate gets it", () => {
+    const security = securityReview();
+    const fileGlobs = parseHighRiskPathsFile(
+      readFileSync(join(REPOSITORY, HIGH_RISK_PATHS_FILE), "utf8"),
+    );
+    expect(fileGlobs).toEqual(security.paths!);
+    expect(fileGlobs).toContain(HIGH_RISK_PATHS_FILE);
+    // Closeout and the risk tier match every file in this repository the same way.
+    const files = spawnSync("git", ["ls-files", "-z"], { cwd: REPOSITORY, encoding: "utf8" })
+      .stdout.split("\0")
+      .filter(Boolean);
+    expect(files.length).toBeGreaterThan(100);
+    for (const file of files)
+      expect([file, classifyRisk([file], fileGlobs).tier === "high"]).toEqual([
+        file,
+        anyPathMatches(security.paths!, [file]),
+      ]);
   });
 
   test("a candidate touching src/auth runs it", async () => {
@@ -56,6 +72,20 @@ describe("security review in this repository's Closeout policy", () => {
     expect(await candidate.state()).toBe("skipped");
   });
 });
+
+function policyItems() {
+  const loaded = loadPolicy({
+    repo: REPOSITORY,
+    git: createFakeGitReader(),
+    policyRoot: REPOSITORY,
+  });
+  if (!loaded.ok || loaded.policy.source === "none") throw new Error("expected a policy");
+  return loaded.policy.items;
+}
+
+function securityReview(): ResolvedReview {
+  return policyItems().find((item) => item.id === "security-review") as ResolvedReview;
+}
 
 function fixture(path: string, content: string) {
   const root = mkdtempSync(join(tmpdir(), "paws-security-review-"));

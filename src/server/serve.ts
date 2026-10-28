@@ -39,6 +39,7 @@ import {
   handleSkillSettingsRequest,
   MERGE_SETTINGS_PATH,
   type AgentSettingsOptions,
+  type HighRiskFile,
   type MergeChoices,
   type RepositoryCheckoutFacts,
 } from "../settings";
@@ -111,6 +112,8 @@ export type ServerOptions = {
     riskGate?: { on: boolean; reason?: string };
     /** Files and Closeout check paths of a repository's local mirror, for Repository checkout. */
     checkoutFacts?: (repo: string) => Promise<RepositoryCheckoutFacts | null>;
+    /** A repository's `.paws/high-risk-paths` in its local mirror, for Settings → Merging. */
+    highRiskFile?: (repo: string) => Promise<HighRiskFile | null>;
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: {
@@ -453,8 +456,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }))!;
   }
   if (secrets.agentSettings) {
-    const { mergeChoices, githubQueues, upToDateRules, riskGate, checkoutFacts, ...agentSettings } =
-      secrets.agentSettings;
+    const {
+      mergeChoices,
+      githubQueues,
+      upToDateRules,
+      riskGate,
+      checkoutFacts,
+      highRiskFile,
+      ...agentSettings
+    } = secrets.agentSettings;
     const shared = {
       ...agentSettings,
       csrfToken,
@@ -489,6 +499,16 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       })) ??
       (await handleMergeSettingsRequest(request, {
         ...shared,
+        ...(path === MERGE_SETTINGS_PATH && secrets.db
+          ? {
+              // The stored GitHub connection and team mappings, not a GitHub call.
+              repos: [
+                ...(shared.repos ?? []),
+                ...listWorkspaceRepositoryNames(secrets.db, principal?.workspaceId),
+              ],
+            }
+          : {}),
+        ...(highRiskFile ? { highRiskFile } : {}),
         ...(mergeChoices ? { choices: mergeChoices } : {}),
         ...(githubQueues ? { githubQueues } : {}),
         ...(upToDateRules ? { upToDateRules } : {}),
