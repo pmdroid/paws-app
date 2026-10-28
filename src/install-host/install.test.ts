@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRuntime, parseConfigToml, setConfigKeys } from "../config";
-import { validatePublicTls } from "../deployment";
+import { validatePublicTls, validatePublicTlsFiles } from "../deployment";
 import {
   fakePrompt,
   fakeSystemctl,
@@ -392,6 +392,114 @@ describe("paws install TLS", () => {
     expect(out).toContain('"ip": ["tcp:443", "tcp:8788"]');
   });
 
+  test("DNS certificates work when the runner binds to an IP address", async () => {
+    for (const bind of ["100.101.102.103", "0.0.0.0"]) {
+      const home = tempHome();
+      const run = deps(home, null);
+      expect(
+        await runInstall(
+          parseInstallArgs([
+            "--non-interactive",
+            "--paws-public-url",
+            `https://${HOST}`,
+            "--paws-runner-host",
+            bind,
+          ]),
+          run.deps,
+        ),
+      ).toBe(0);
+      expect(parseEnv(files(home).env).PAWS_RUNNER_HOST).toBe(bind);
+    }
+  });
+
+  test("supplied certificate paths skip tailscale by default for flags and answers files", async () => {
+    for (const viaFile of [false, true]) {
+      const home = tempHome();
+      const args = ["--non-interactive", "--paws-public-url", `https://${HOST}`];
+      if (viaFile) {
+        const file = join(home, "answers.toml");
+        writeFileSync(
+          file,
+          `tls_key_path = "${cert(HOST).key}"\ntls_cert_path = "${cert(HOST).cert}"\n`,
+        );
+        args.push("--answers", file);
+      } else args.push("--tls-key-path", cert(HOST).key, "--tls-cert-path", cert(HOST).cert);
+      expect(await runInstall(parseInstallArgs(args), deps(home, null).deps)).toBe(0);
+      expect(existsSync(join(home, "bin/calls"))).toBe(false);
+      expect(parseEnv(files(home).env).PAWS_TLS_KEY_PATH).toBe(cert(HOST).key);
+      expect(files(home).renewTimer).toBe("");
+    }
+  });
+
+  test("switching to supplied certificates or disabling the dashboard removes renewal", async () => {
+    for (const dashboardOff of [false, true]) {
+      const home = tempHome();
+      await runInstall(parseInstallArgs([]), deps(home, fakePrompt(FIRST)).deps);
+      const run = deps(home, null);
+      const args = dashboardOff
+        ? ["--paws-public-dashboard", "no"]
+        : ["--tls-key-path", cert(HOST).key, "--tls-cert-path", cert(HOST).cert];
+      expect(await runInstall(parseInstallArgs(["--non-interactive", ...args]), run.deps)).toBe(0);
+      expect(run.systemctl.calls).toContainEqual([
+        "--user",
+        "disable",
+        "--now",
+        "paws-tls-renew.timer",
+      ]);
+      expect(files(home).renewTimer).toBe("");
+      expect(files(home).renewService).toBe("");
+    }
+  });
+
+  test("TLS validation ignores unrelated runtime settings", async () => {
+    const home = tempHome();
+    mkdirSync(join(home, ".paws"));
+    writeFileSync(join(home, ".paws/config.toml"), "[agent]\nmax_turns = -1\n");
+    const source = {
+      PAWS_HOME: join(home, ".paws"),
+      PAWS_PUBLIC_DASHBOARD: "1",
+      PAWS_PUBLIC_URL: `https://${HOST}`,
+      PAWS_TLS_KEY_PATH: cert(HOST).key,
+      PAWS_TLS_CERT_PATH: cert(HOST).cert,
+    };
+    expect(() => validatePublicTls(source)).toThrow("configuration is invalid");
+    expect(validatePublicTlsFiles(source)).toBeDefined();
+    const prompt = fakePrompt(FIRST.slice(0, 2));
+    await expect(
+      runInstall(parseInstallArgs(["--non-interactive"]), deps(home, prompt).deps),
+    ).rejects.toThrow("config.toml:");
+    expect(prompt.questions.some((question) => question.startsWith("Run tailscale cert"))).toBe(
+      false,
+    );
+  });
+
+  test("renewal escapes systemd expansion and certificate fetch drains verbose stdout", async () => {
+    const home = tempHome();
+    const run = deps(home, null);
+    const command = run.deps.tailscale!;
+    writeFileSync(
+      command,
+      readFileSync(command, "utf8").replace("shift\n", "shift\nhead -c 1048576 /dev/zero\n"),
+    );
+    const pawsHome = join(home, "paws%1$USER");
+    expect(
+      await runInstall(
+        parseInstallArgs([
+          "--non-interactive",
+          "--paws-public-url",
+          `https://${HOST}`,
+          "--paws-home",
+          pawsHome,
+          "--paws-runner-host",
+          "-",
+        ]),
+        run.deps,
+      ),
+    ).toBe(0);
+    expect(files(home).renewService).toContain("paws%%1$$USER");
+    expect(run.out.join("\n")).not.toContain("tcp:8788");
+  });
+
   test("the timer unit is written once and kept on re-run", async () => {
     const home = tempHome();
     await runInstall(parseInstallArgs([]), deps(home, fakePrompt(FIRST)).deps);
@@ -418,7 +526,7 @@ describe("paws install TLS", () => {
     const run = deps(home, fakePrompt([...FIRST, "", cert(HOST).key, cert(HOST).cert]));
     run.deps.tailscale = tailscale(home, "other.example.ts.net");
     expect(await runInstall(parseInstallArgs([]), run.deps)).toBe(0);
-    expect(run.out).toContain(`  The certificate is for DNS:other.example.ts.net, not ${HOST}.`);
+    expect(run.out).toContain("  Public HTTPS certificate does not match its hostname.");
     const env = parseEnv(files(home).env);
     expect(env.PAWS_TLS_KEY_PATH).toBe(cert(HOST).key);
     expect(files(home).renewTimer).toBe("");
@@ -428,7 +536,7 @@ describe("paws install TLS", () => {
     scriptedRun.deps.tailscale = tailscale(scripted, "other.example.ts.net");
     const args = parseInstallArgs(["--non-interactive", "--paws-public-url", `https://${HOST}`]);
     await expect(runInstall(args, scriptedRun.deps)).rejects.toThrow(
-      `The certificate is for DNS:other.example.ts.net, not ${HOST}.`,
+      "Public HTTPS certificate does not match its hostname.",
     );
     expect(existsSync(join(scripted, ".paws/https.env"))).toBe(false);
   });
@@ -452,9 +560,9 @@ describe("paws install TLS", () => {
     expect(await runInstall(parseInstallArgs([]), run.deps)).toBe(0);
     expect(prompt.questions.some((q) => q.startsWith("Run tailscale cert"))).toBe(false);
     expect(run.out).toContain(
-      `  The key ${open} has mode 0644. Paws only reads an owner-only key: chmod 600 ${open}`,
+      `  Public TLS private key must be an owner-only readable file: chmod 600 ${open}`,
     );
-    expect(run.out).toContain(`  The certificate is for DNS:${HOST}, not paws.example.com.`);
+    expect(run.out).toContain("  Public HTTPS certificate does not match its hostname.");
     expect(parseEnv(files(home).env).PAWS_TLS_KEY_PATH).toBe(cert("paws.example.com").key);
   });
 

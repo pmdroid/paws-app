@@ -1,8 +1,6 @@
-import { X509Certificate } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { isIP } from "node:net";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { validatePublicTls } from "../deployment";
+import { validatePublicTlsFiles } from "../deployment";
 import { UNIT_NAME } from "./files";
 
 export const TLS_DIR = "tls";
@@ -45,7 +43,7 @@ export async function fetchTailnetCert(
     try {
       const child = Bun.spawn(certCommand(tailscale, host, paths), {
         stdin: "ignore",
-        stdout: "pipe",
+        stdout: "ignore",
         stderr: "pipe",
       });
       const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
@@ -70,52 +68,24 @@ export async function fetchTailnetCert(
   ].join("\n");
 }
 
-/**
- * Checks the pair with the same rules Paws applies at startup (`public-tls validate`),
- * plus the runner host. Returns null when valid, else what is wrong in plain words.
- */
-export function checkTls(input: {
-  pawsHome: string;
-  publicUrl: string;
-  runnerHost: string;
-  paths: TlsPaths;
-}): string | null {
-  const { key, cert } = input.paths;
-  if (!existsSync(key)) return `There is no key file at ${key}.`;
-  if (!existsSync(cert)) return `There is no certificate file at ${cert}.`;
-  const mode = statSync(key).mode & 0o777;
-  if (![0o400, 0o600].includes(mode))
-    return `The key ${key} has mode 0${mode.toString(8)}. Paws only reads an owner-only key: chmod 600 ${key}`;
-  let certificate: X509Certificate;
+/** Returns certificate validation errors without loading unrelated runtime settings. */
+export function checkTls(input: { publicUrl: string; paths: TlsPaths }): string | null {
   try {
-    certificate = new X509Certificate(readFileSync(cert));
-  } catch {
-    return `${cert} is not a PEM certificate.`;
-  }
-  const now = Date.now();
-  if (Date.parse(certificate.validTo) <= now)
-    return `The certificate ${cert} expired on ${certificate.validTo}.`;
-  if (Date.parse(certificate.validFrom) > now)
-    return `The certificate ${cert} is not valid until ${certificate.validFrom}.`;
-  const names = certificate.subjectAltName ?? certificate.subject;
-  for (const host of [new URL(input.publicUrl).hostname, input.runnerHost]) {
-    const bare = host.replace(/^\[|\]$/g, "");
-    if (!bare) continue;
-    const matched = isIP(bare) ? certificate.checkIP(bare) : certificate.checkHost(bare);
-    if (matched === undefined) return `The certificate is for ${names}, not ${bare}.`;
-  }
-  try {
-    validatePublicTls({
-      PAWS_HOME: input.pawsHome,
+    validatePublicTlsFiles({
       PAWS_PUBLIC_DASHBOARD: "1",
       PAWS_PUBLIC_URL: input.publicUrl,
-      PAWS_TLS_KEY_PATH: key,
-      PAWS_TLS_CERT_PATH: cert,
+      PAWS_TLS_KEY_PATH: input.paths.key,
+      PAWS_TLS_CERT_PATH: input.paths.cert,
     });
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
   return null;
+}
+
+/** Escape systemd specifiers and environment expansion in ExecStart arguments. */
+function unitArg(value: string): string {
+  return value.replaceAll("%", "%%").replaceAll("$", () => "$$");
 }
 
 /** Mirrors `deploy/linux/renew-public-tls.py`: renew, then reload Paws (SIGHUP, exit 75). */
@@ -130,8 +100,8 @@ export function renderRenewService(input: {
     "",
     "[Service]",
     "Type=oneshot",
-    `ExecStart=${certCommand(input.tailscale, input.host, input.paths).join(" ")}`,
-    `ExecStartPost=/bin/chmod 0600 ${input.paths.key}`,
+    `ExecStart=${certCommand(input.tailscale, input.host, input.paths).map(unitArg).join(" ")}`,
+    `ExecStartPost=/bin/chmod 0600 ${unitArg(input.paths.key)}`,
     `ExecStartPost=${SYSTEMCTL} --user try-reload-or-restart ${UNIT_NAME}`,
     "",
   ].join("\n");
@@ -154,7 +124,9 @@ export function renderRenewTimer(): string {
 }
 
 /** The tailnet policy rule from `docs/create-vm.md` for the dashboard and runner ports. */
-export function aclLines(port: number, runnerPort: number): string[] {
+export function aclLines(port: number, runnerPort: number | null): string[] {
+  if (runnerPort === null)
+    return [`The public dashboard uses port ${port}; the runner listener is disabled.`];
   return [
     `Runner VMs on the tailnet reach Paws on ${port} (enrollment) and ${runnerPort} (runner mTLS).`,
     "In the tailnet policy file, with paws as the Paws machine's host alias (docs/create-vm.md):",
