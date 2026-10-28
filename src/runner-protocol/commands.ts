@@ -2,6 +2,11 @@ import { z } from "zod";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 
 export const RUNNER_LEASE_GRACE_MS = 5 * 60_000;
+/**
+ * How much Paws downtime does not count against a runner lease. On start, Paws moves each open
+ * lease forward by the time it was down, up to this budget and the command's `expiresAt`.
+ */
+export const RUNNER_OFFLINE_BUDGET_MS = 30 * 60_000;
 /** A handover waits this long for a safe point; after that the session keeps running. */
 export const RUNNER_HANDOVER_LIMIT_MS = 120_000;
 /**

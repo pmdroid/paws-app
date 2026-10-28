@@ -12,7 +12,7 @@ import { enqueueJobOnce } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
 import { applyWorkItemEvent, getWorkItem, listInFlightItems, listWorkItemsByStates } from "./items";
 import type { WorkItemRecord } from "./items";
-import { runnerLeaseCutoff } from "./runner-lease";
+import { markPawsAlive, runnerLeaseCutoff, shiftRunnerLeasesForDowntime } from "./runner-lease";
 import { mergeCallInFlight } from "./remote-merges";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { immediate } from "./tx";
@@ -33,9 +33,15 @@ const STARTUP_RESUME_SPACING_MS = 5_000;
 /**
  * On process start, resume a live run once or ask whether to start it again. An item in the merge
  * queue keeps its place; one whose merge call may have been in flight asks GitHub before it moves.
+ * Paws downtime, up to `offlineBudgetMs`, does not count against an open runner lease.
  */
-export function recoverOnStartup(db: Database, now = Date.now()): StartupDecision[] {
+export function recoverOnStartup(
+  db: Database,
+  now = Date.now(),
+  offlineBudgetMs?: number,
+): StartupDecision[] {
   return immediate(db, () => {
+    shiftRunnerLeasesForDowntime(db, now, offlineBudgetMs);
     const items = listWorkItemsByStates(db, STARTUP_STATES);
     const decisions: StartupDecision[] = [];
     let resumes = 0;
@@ -138,6 +144,7 @@ export function prepareShutdown(
     }
   }
   immediate(db, () => {
+    markPawsAlive(db, now);
     const running = listWorkItemsByStates(db, ["running", "verifying"]);
     for (const item of running) {
       if (runnerHoldsWork(db, item, now)) continue;

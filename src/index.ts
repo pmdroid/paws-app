@@ -97,6 +97,8 @@ import {
   migrate,
   openDatabase,
   prepareShutdown,
+  markPawsAlive,
+  PAWS_ALIVE_INTERVAL_MS,
   recoverOnStartup,
   listSkills,
   listRepositoryCatalog,
@@ -365,6 +367,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
   recoverOnStartup(db);
   const abort = new AbortController();
+  // Startup reads the last mark to tell how long Paws was down (runner leases do not count it).
+  const aliveTimer = setInterval(() => markPawsAlive(db, Date.now()), PAWS_ALIVE_INTERVAL_MS);
+  aliveTimer.unref?.();
+  abort.signal.addEventListener("abort", () => clearInterval(aliveTimer));
   let orchestrator: Orchestrator | null = null;
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
