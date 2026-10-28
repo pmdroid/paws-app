@@ -59,10 +59,11 @@ export const PAWS_CLOSEOUT_PRODUCER = {
  */
 export type CloseoutCommandPort = Pick<PawsCommandRunner, "runLogged"> & Partial<ProbeRunner>;
 
+/** `reused` is a check whose latest attempt passed at this base, head and policy digest. */
 export type CommandDisposition = {
   id: string;
   kind: string;
-  state: "ran" | "skipped" | "exhausted";
+  state: "ran" | "reused" | "skipped" | "exhausted";
   message: string;
 };
 
@@ -159,10 +160,14 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     const steps = input.policy.setup.filter((step) => step.gate === gate);
     const commands = input.policy.items.filter(isCommand).filter((item) => item.gate === gate);
     const reviews = input.policy.items.filter(isReview).filter((item) => item.gate === gate);
+    // A check that passed on this commit under this policy is not run again.
+    const passed = new Set(
+      evaluated.items.filter((item) => item.state === "passed").map((item) => item.id),
+    );
     const actions = [
       // Rules first, so the probes see the pristine checkout and not files a setup step left.
-      ...classifyRules(gate, changed, input, base, head, records),
-      ...classifyAll(steps, commands, changed, input, base, head, records),
+      ...classifyRules(gate, changed, input, base, head, records, passed),
+      ...classifyAll(steps, commands, changed, input, base, head, records, passed),
     ];
     const identity = progressIdentity(input, base, head);
     publishPlan(input.progress, identity, actions, reviews);
@@ -333,6 +338,7 @@ function classifyRules(
   base: string,
   head: string,
   records: EvidenceRecord[],
+  passed: ReadonlySet<string>,
 ): Action[] {
   if (gate !== "beforePR" || input.policy.source === "none") return [];
   return (input.policy.rules ?? []).map((rule) => {
@@ -340,6 +346,7 @@ function classifyRules(
     const decision = classify(ruleRequirement(rule), changed, false, input, base, head, records);
     if (decision.kind === "skip")
       return { kind: "skip", item, disposition: { ...decision.disposition, kind: "rule" } };
+    if (passed.has(rule.id)) return reuse(item, "rule");
     return { kind: "rule", item, rule };
   });
 }
@@ -363,6 +370,7 @@ function classifyAll(
   base: string,
   head: string,
   records: EvidenceRecord[],
+  passed: ReadonlySet<string>,
 ): Action[] {
   const actions: Action[] = [];
   let stop = false;
@@ -372,12 +380,34 @@ function classifyAll(
       item.kind === "command" && item.ci !== undefined
         ? input.fromCi?.find((entry) => entry.id === item.id)
         : undefined;
-    if (decision.kind === "run" && ci !== undefined) actions.push({ kind: "ci", item, ci });
+    if (decision.kind === "run" && item.kind === "command" && passed.has(item.id))
+      actions.push(reuse(item, item.kind));
+    else if (decision.kind === "run" && ci !== undefined) actions.push({ kind: "ci", item, ci });
     else if (decision.kind === "run") actions.push({ kind: "run", item });
     else actions.push({ kind: "skip", item, disposition: decision.disposition });
     if (decision.stop) stop = true;
   }
-  return actions;
+  // Setup prepares the worktree for the commands. With none left to run, a passed one is reused.
+  if (actions.some((action) => action.kind === "run" && action.item.kind === "command"))
+    return actions;
+  return actions.map((action) =>
+    action.kind === "run" && passed.has(action.item.id)
+      ? reuse(action.item, action.item.kind)
+      : action,
+  );
+}
+
+function reuse(item: Runnable, kind: string): Action {
+  return {
+    kind: "skip",
+    item,
+    disposition: {
+      id: item.id,
+      kind,
+      state: "reused",
+      message: "passed at this commit under this policy",
+    },
+  };
 }
 
 function skips(actions: readonly Action[]): CommandDisposition[] {
@@ -832,7 +862,12 @@ function stepUpdate(
   ordinal: number,
   attempt: number | null,
 ): CloseoutProgressStep {
-  const state = disposition.state === "exhausted" ? "exhausted" : "skipped";
+  const state =
+    disposition.state === "exhausted"
+      ? "exhausted"
+      : disposition.state === "reused"
+        ? "passed"
+        : "skipped";
   return {
     ...blankStep(item, ordinal),
     state,
