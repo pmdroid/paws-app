@@ -793,6 +793,105 @@ dialog.review-draw {
   gap: 0.75rem;
   overflow-wrap: anywhere;
 }
+/* The issue page's time in each state: a bar sized by time, then the same as a list. */
+.state-times {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.time-bar {
+  display: flex;
+  min-width: 0;
+  height: 2.25rem;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  border-radius: 5px;
+  box-shadow: var(--shadow);
+}
+.time-seg {
+  display: flex;
+  flex-basis: 0;
+  min-width: 2px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 0 0.25rem;
+  color: #101317;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: clip;
+}
+.time-seg + .time-seg {
+  border-left: 2px solid var(--border);
+}
+.time-seg[data-current] {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 6px,
+    rgb(16 19 23 / 14%) 6px 8px
+  );
+}
+.time-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.875rem;
+}
+.time-legend > li {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0;
+}
+.time-swatch {
+  display: inline-block;
+  flex: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  margin-right: 0.375rem;
+  border: 2px solid var(--border);
+  border-radius: 3px;
+  vertical-align: -0.125rem;
+}
+.time-legend .time-swatch {
+  margin-right: 0;
+}
+:is(.time-seg, .time-swatch)[data-state="planning"] {
+  background-color: #ddd6fe;
+}
+:is(.time-seg, .time-swatch)[data-state="queued"] {
+  background-color: #d4d4d8;
+}
+:is(.time-seg, .time-swatch)[data-state="running"] {
+  background-color: var(--main);
+}
+:is(.time-seg, .time-swatch)[data-state="verifying"] {
+  background-color: #93c5fd;
+}
+:is(.time-seg, .time-swatch)[data-state="recovering"] {
+  background-color: #f9a8d4;
+}
+:is(.time-seg, .time-swatch)[data-state="awaiting_input"],
+:is(.time-seg, .time-swatch)[data-state="paused"] {
+  background-color: #fde68a;
+}
+:is(.time-seg, .time-swatch)[data-state="merge_queue"] {
+  background-color: #86efac;
+}
+:is(.time-seg, .time-swatch)[data-state="failed"] {
+  background-color: #fca5a5;
+}
+:is(.time-seg, .time-swatch)[data-state="manual"] {
+  background-color: #a5f3fc;
+}
+.merged-times-table {
+  max-width: 28rem;
+}
 .item-timeline ol {
   display: flex;
   flex-direction: column;
