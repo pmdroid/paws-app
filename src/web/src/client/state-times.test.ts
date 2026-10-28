@@ -49,7 +49,9 @@ describe("time in each state", () => {
     expect(section).toContain("Time in each state");
     expect(section).toContain("9 h 39 min since delegation");
     const segments = [
-      ...section.matchAll(/class="time-seg" data-state="([a-z_]+)" data-ms="(\d+)"[^>]*>([^<]+)</g),
+      ...section.matchAll(
+        /class="time-seg" data-state="([a-z_]+)" data-ms="(\d+)"[^>]*><span class="time-seg-label">([^<]+)</g,
+      ),
     ].map(([, state, ms, label]) => [state, Number(ms) / MIN, label]);
     // In the order of the flow, not the order the provider listed them.
     expect(segments).toEqual([

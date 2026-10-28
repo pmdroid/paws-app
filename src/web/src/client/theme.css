@@ -821,7 +821,13 @@ dialog.review-draw {
   font-size: 0.75rem;
   font-weight: 700;
   white-space: nowrap;
-  text-overflow: clip;
+  container-type: inline-size;
+}
+/* The legend lists every state, so a segment too narrow for its minutes leaves them out. */
+@container (max-width: 3.5rem) {
+  .time-seg-label {
+    visibility: hidden;
+  }
 }
 .time-seg + .time-seg {
   border-left: 2px solid var(--border);
