@@ -1041,7 +1041,7 @@ export async function probeRunnerOrchestration(
           assert.notEqual(reviewRunId, "");
           assert.equal(verified.currentRunId, reviewRunId);
           assert.equal(verified.state, "merge_queue");
-          assert.equal(getRun(db, foreignRunId)?.status, "ended");
+          assert.equal(getRun(db, foreignRunId)?.status, "lost");
           assert.equal(getRun(db, reviewRunId)?.status, "ended");
           assert.equal(getRun(db, reviewRunId)?.kind, "recheck");
           assert.deepEqual(

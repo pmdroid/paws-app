@@ -35,3 +35,30 @@ export function runnerWorkSettled(db: Database, runId: string, now: number): boo
       .get(runId, runnerLeaseCutoff(now)) === null
   );
 }
+
+/** Open work still belongs to its run while leased or while a delivered result awaits import. */
+export function runnerHoldsRunWork(
+  db: Database,
+  runId: string,
+  now: number,
+  cancelled = false,
+): boolean {
+  return (
+    db
+      .query(`SELECT 1 FROM runner_work w WHERE w.run_id=?1 AND w.ended_at IS NULL
+    AND (w.lease_until>?2 OR (?3=0 AND EXISTS(SELECT 1 FROM runner_result r
+      WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)))`)
+      .get(runId, runnerLeaseCutoff(now), cancelled ? 1 : 0) !== null
+  );
+}
+
+/** The current command delivered a result that its owning run has not imported yet. */
+export function runnerWorkHasResult(db: Database, runId: string): boolean {
+  return (
+    db
+      .query(`SELECT 1 FROM runner_work w JOIN runner_result r
+    ON r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id
+    WHERE w.run_id=? AND w.ended_at IS NULL`)
+      .get(runId) !== null
+  );
+}
