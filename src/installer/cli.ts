@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureLayout, loadConfigFile, loadEnv, pawsPaths, type EnvSource } from "../config";
 import { doctorChecks, realProbe } from "../doctor";
+import { ENV_FILE, installedUnit, unitPaths } from "../install-host";
 import { openEnvFile } from "./env-file";
 import { terminalPrompter, type PromptOutput } from "./prompt";
 import { runSecretsStep } from "./secrets";
@@ -46,10 +47,10 @@ export async function runInstallCli(argv: readonly string[], source: EnvSource):
   }
 }
 
-/** The env file next to the user service unit. */
+/** The env file `paws install` wrote: the user unit's `EnvironmentFile`, else `PAWS_HOME/https.env`. */
 export function defaultEnvFile(source: EnvSource): string {
-  const config = source.XDG_CONFIG_HOME || join(source.HOME || homedir(), ".config");
-  return join(config, "paws", "paws.env");
+  const installed = installedUnit(unitPaths(source.HOME || homedir(), source.XDG_CONFIG_HOME));
+  return installed.envFile ?? join(loadEnv(source).home, ENV_FILE);
 }
 
 function openTerminal(): (PromptOutput & { close(): void }) | null {

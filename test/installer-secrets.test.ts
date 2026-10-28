@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -14,7 +14,7 @@ import {
 } from "../src/config";
 import { readSecretFile } from "../src/credentials";
 import type { DoctorCheck } from "../src/doctor";
-import { openEnvFile, runSecretsStep, terminalPrompter } from "../src/installer";
+import { defaultEnvFile, openEnvFile, runSecretsStep, terminalPrompter } from "../src/installer";
 
 const PEM =
   "-----BEGIN RSA PRIVATE KEY-----\nMIIEfakeinstallerkey\n-----END RSA PRIVATE KEY-----\n";
@@ -237,4 +237,13 @@ test("a key file that is not a PEM is refused and asked again", async () => {
   expect(loadGitHubAppCredentials(home, {})?.appId).toBe(SECRETS.appId);
   expect(exeDevTokenPath(home)).toBe(join(home, "secrets", "exe-dev-token"));
   expect(tailscaleAuthKeyPath(home)).toBe(join(home, "secrets", "tailscale-authkey"));
+});
+
+test("the default env file is the one paws install wrote", () => {
+  const user = join(home, "..", "user");
+  expect(defaultEnvFile({ HOME: user, PAWS_HOME: home })).toBe(join(home, "https.env"));
+  const unitDir = join(user, ".config", "systemd", "user");
+  mkdirSync(unitDir, { recursive: true });
+  writeFileSync(join(unitDir, "paws.service"), "[Service]\nEnvironmentFile=/srv/paws/https.env\n");
+  expect(defaultEnvFile({ HOME: user, PAWS_HOME: home })).toBe("/srv/paws/https.env");
 });

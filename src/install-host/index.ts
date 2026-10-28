@@ -15,6 +15,7 @@ export { ANSWER_KEYS, parseAnswersFile } from "./answers";
 export type { AnswerKey, InstallAnswers, RawAnswers } from "./answers";
 export {
   ENV_FILE,
+  installedUnit,
   parseEnvFile,
   renderConfig,
   renderDropIn,
