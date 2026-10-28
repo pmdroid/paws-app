@@ -117,7 +117,9 @@ type Overlap = { blocker: string; files: string[] };
  * running or merge-queue item in the same repository changes that file too, until that one
  * merges. An item without a candidate is never held: Paws cannot know its files. An item that
  * depends on the candidate, directly or through other issues, never holds it: it cannot merge
- * before the candidate does, so both would wait forever.
+ * before the candidate does, so both would wait forever. For the same reason a candidate that
+ * keeps its merge-queue place, such as one sent back for a conflict, is held only by an item
+ * ahead of it in that queue: anything behind it, or not queued yet, merges after it.
  */
 function overlapGate(db: Database, now: number) {
   const hot = new Map<string, Set<string>>();
@@ -134,6 +136,23 @@ function overlapGate(db: Database, now: number) {
       )
       .all())
       blocks.set(edge.blocker, [...(blocks.get(edge.blocker) ?? []), edge.blocked]);
+  const places = new Map(
+    (hot.size
+      ? db
+          .query<{ itemId: string; readyAt: number }, []>(
+            "SELECT item_id AS itemId,ready_at AS readyAt FROM merge_queue_entry",
+          )
+          .all()
+      : []
+    ).map((entry) => [entry.itemId, entry.readyAt]),
+  );
+  /** Whether `other` merges before `item` in the serial lane, by the order the queue uses. */
+  const mergesFirst = (other: Item, item: Item): boolean => {
+    const mine = places.get(item.id);
+    if (mine === undefined) return true;
+    const theirs = places.get(other.id);
+    return theirs !== undefined && (theirs < mine || (theirs === mine && other.id < item.id));
+  };
   /** Every issue that waits for `issueId`, at any depth. */
   const dependents = (issueId: string): Set<string> => {
     const found = new Set<string>();
@@ -155,7 +174,7 @@ function overlapGate(db: Database, now: number) {
     const waiting = dependents(item.issueId);
     for (const other of occupants) {
       if (other.id === item.id || !other.owner || !other.repo) continue;
-      if (waiting.has(other.issueId)) continue;
+      if (waiting.has(other.issueId) || !mergesFirst(other, item)) continue;
       if (repositoryKey(other.owner, other.repo) !== key) continue;
       const theirs = new Set(paths.get(other.id) ?? []);
       const shared = mine.filter((path) => theirs.has(path));
