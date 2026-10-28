@@ -890,11 +890,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     server = startServer({
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
-      onboarding: async (request) =>
+      onboarding: async (request, client) =>
         reconnectLinear &&
         !new URL(request.url).pathname.startsWith("/webhooks/") &&
         linearRevoked()
-          ? reconnectLinear(request)
+          ? reconnectLinear(request, client)
           : null,
       hostname: env.host,
       executionControls: async (...args) =>

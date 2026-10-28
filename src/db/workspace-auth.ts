@@ -15,18 +15,27 @@ export type WorkspaceOAuthRequest = {
   expiresAt: number;
 };
 
-export function saveWorkspaceOAuthRequest(db: Database, input: WorkspaceOAuthRequest): void {
-  db.run("DELETE FROM workspace_oauth_request WHERE expires_at<=?", [input.expiresAt - 600_000]);
-  db.run(
-    "INSERT INTO workspace_oauth_request(state_hash,browser_hash,verifier,bootstrap_hash,expires_at,assignment_hash) VALUES(?,?,'',?,?,?)",
-    [
-      input.stateHash,
-      input.browserHash,
-      input.bootstrapHash,
-      input.expiresAt,
-      input.assignmentHash ?? null,
-    ],
-  );
+export function saveWorkspaceOAuthRequest(db: Database, input: WorkspaceOAuthRequest): boolean {
+  return immediate(db, () => {
+    db.run("DELETE FROM workspace_oauth_request WHERE expires_at<=?", [input.expiresAt - 600_000]);
+    if (
+      db
+        .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_oauth_request")
+        .get()!.count >= 1_000
+    )
+      return false;
+    db.run(
+      "INSERT INTO workspace_oauth_request(state_hash,browser_hash,verifier,bootstrap_hash,expires_at,assignment_hash) VALUES(?,?,'',?,?,?)",
+      [
+        input.stateHash,
+        input.browserHash,
+        input.bootstrapHash,
+        input.expiresAt,
+        input.assignmentHash ?? null,
+      ],
+    );
+    return true;
+  });
 }
 
 export function consumeWorkspaceOAuthRequest(
