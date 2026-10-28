@@ -717,6 +717,68 @@ export interface StatusSnapshotBase {
 export interface StatusSnapshot extends StatusSnapshotBase {
   verdicts: StatusVerdictSummary[];
   agentCloseout?: StatusAgentCloseoutSummary[];
+  slices?: StatusSlice[];
+}
+
+export const STATUS_SLICES = [
+  "items",
+  "questions",
+  "mergeQueue",
+  "mergeHistory",
+  "evidence",
+  "intake",
+  "ciRounds",
+  "dead",
+] as const;
+export type StatusSlice = (typeof STATUS_SLICES)[number];
+
+export const STATUS_SLICE_FIELDS = {
+  items: ["items", "runs", "verdicts", "agentCloseout", "mergedTimes"],
+  questions: ["questions"],
+  mergeQueue: ["mergeQueue", "pushOutages"],
+  mergeHistory: ["mergeHistory"],
+  evidence: ["evidence"],
+  intake: ["intake", "linearBudget", "linearWebhook"],
+  ciRounds: ["ciRounds"],
+  dead: ["dead"],
+} as const satisfies Record<StatusSlice, readonly (keyof StatusSnapshot)[]>;
+
+export const GENERATED_AT_HEADER = "Paws-Generated-At";
+
+export function statusSlicesPath(slices: readonly StatusSlice[]): string {
+  const named = STATUS_SLICES.filter((slice) => slices.includes(slice));
+  return `${STATUS_API_PATH}?slices=${named.join(",")}`;
+}
+
+export function parseStatusSlices(
+  raw: string | null,
+): { ok: true; slices: StatusSlice[] | null } | { ok: false; error: string } {
+  if (raw === null) return { ok: true, slices: null };
+  const named = raw.split(",").map((part) => part.trim());
+  const unknown = named.filter((part) => !(STATUS_SLICES as readonly string[]).includes(part));
+  if (unknown.length) return { ok: false, error: `unknown status slice ${unknown.join(", ")}` };
+  return { ok: true, slices: STATUS_SLICES.filter((slice) => named.includes(slice)) };
+}
+
+export function selectStatusSlices(
+  snapshot: StatusSnapshot,
+  slices: readonly StatusSlice[],
+): StatusSnapshot {
+  const body: Record<string, unknown> = {
+    version: snapshot.version,
+    source: snapshot.source,
+    generatedAt: snapshot.generatedAt,
+    project: snapshot.project,
+    slices: [...slices],
+  };
+  for (const slice of slices)
+    for (const field of STATUS_SLICE_FIELDS[slice])
+      if (snapshot[field] !== undefined) body[field] = snapshot[field];
+  return body as unknown as StatusSnapshot;
+}
+
+export function hasStatusSlice(snapshot: StatusSnapshot | null, slice: StatusSlice): boolean {
+  return snapshot !== null && (snapshot.slices === undefined || snapshot.slices.includes(slice));
 }
 
 /**
@@ -1072,9 +1134,17 @@ function ids(values: string[], label: string, problems: string[]): Set<string> {
 }
 
 function readSnapshot(input: unknown): StatusSnapshot {
-  const body = object(input, "status");
+  const sent = object(input, "status");
+  const slices = readSlices(sent);
+  const body: Record<string, unknown> = { ...sent };
+  if (slices !== undefined) {
+    const carried = new Set<string>(slices.flatMap((slice) => STATUS_SLICE_FIELDS[slice]));
+    for (const field of ["items", "runs", "questions", "mergeQueue", "verdicts"])
+      if (!carried.has(field)) body[field] = [];
+  }
   return {
     ...readBase(body),
+    ...(slices === undefined ? {} : { slices }),
     verdicts: array(body, "verdicts", "status").map((entry, index) =>
       readVerdictSummary(entry, `verdicts[${index}]`),
     ),
@@ -1086,6 +1156,13 @@ function readSnapshot(input: unknown): StatusSnapshot {
           ),
         }),
   };
+}
+
+function readSlices(body: Record<string, unknown>): StatusSlice[] | undefined {
+  if (body.slices === undefined) return undefined;
+  return array(body, "slices", "status").map((entry, index) =>
+    oneOf(typeof entry === "string" ? entry : "", STATUS_SLICES, `status.slices[${index}]`),
+  );
 }
 
 function readBase(body: Record<string, unknown>): StatusSnapshotBase {

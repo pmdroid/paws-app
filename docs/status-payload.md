@@ -15,7 +15,7 @@ Check `stdout` and `stderr` are in neither. They come from `GET /api/status/item
 
 ## The journal line
 
-The status handler measures every `200` body it serves from `/api/status` and its item and log routes. Once per minute in which it served one, it journals the largest:
+The status handler measures every `200` body it serves from `/api/status` and its item and log routes. A page asks for only the slices it renders (`/api/status?slices=…`), and that smaller body is what is measured; a `304` for an unchanged list has no body and is not counted. Once per minute in which it served one, it journals the largest:
 
 ```
 status payload minute=2026-10-27T09:14:00.000Z largest_bytes=144410 path=/api/status responses=12

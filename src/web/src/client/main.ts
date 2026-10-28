@@ -4,9 +4,9 @@ import { mountShell } from "./shell";
 import { mergeQueueCount } from "./merge-queue";
 
 import {
+  hasStatusSlice,
   parseStatusCheckLog,
   parseStatusItemDetail,
-  parseStatusSnapshot,
   statusCheckLogPath,
   statusItemPath,
   type StatusCheckLog,
@@ -35,8 +35,12 @@ import {
   needsSnapshot,
   parseRoute,
   routerBase,
+  routeCovered,
+  routeSlices,
   type Route,
 } from "./route";
+import { livePoll } from "./poll";
+import { createStatusReader, STATUS_POLL_MS } from "./status-reader";
 import type { SettingsPage } from "./settings-pages";
 
 import { createAgentSettings } from "./agent-settings";
@@ -75,7 +79,7 @@ const deadDeliveryRetry = createDeadDeliveryRetry(reload);
 const reviewDraw = createReviewDraw(reload);
 const evidence = createEvidenceMedia(() => paint());
 
-const POLL_MS = 5000;
+const readStatus = createStatusReader();
 
 const regions = ["#top", "#banner", "#page-content"] as const;
 const painted = new Map<string, string>();
@@ -86,12 +90,10 @@ let linkedHash = "";
 let linkedCard = "";
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
-/** The ETag `/api/status` sent with `snapshot`. */
-let snapshotTag: string | null = null;
 /** The open issue page's data. While an issue page is open, only this is polled. */
 let detail: StatusItemDetail | null = null;
 let error: string | null = null;
-let timer = 0;
+let stopPolling: (() => void) | null = null;
 let workspaceReady = false;
 let booted = false;
 let shownPath = router.state.location.pathname;
@@ -158,9 +160,10 @@ async function boot(): Promise<void> {
 }
 
 function routeChanged(): void {
-  const issue = openIssue(currentRoute());
-  // A newly opened issue page waits for its own detail instead of showing list data.
+  const route = currentRoute();
+  const issue = openIssue(route);
   if (issue !== null && detail?.id !== issue) phase = "loading";
+  else if (issue === null && !routeCovered(route, snapshot)) phase = "loading";
   paint();
   if (!booted) return;
   void reload();
@@ -176,22 +179,13 @@ async function reload(): Promise<void> {
     const loaded = await loadDetail(route);
     if (loaded === "signed-out") return;
     if (loaded === "none") {
-      // An unchanged snapshot answers 304 without a body, and the page keeps the one it has.
-      const response = await fetch("/api/status", {
-        headers: {
-          Accept: "application/json",
-          ...(snapshot !== null && snapshotTag !== null ? { "If-None-Match": snapshotTag } : {}),
-        },
-        cache: "no-store",
-      });
-      if (!(await signedIn(response))) return;
-      if (response.status !== 304) {
-        if (!response.ok) throw new Error(await errorText(response));
-        const parsed = parseStatusSnapshot(await response.json());
-        if (!parsed.ok) throw new Error(parsed.error);
-        snapshot = parsed.snapshot;
-        snapshotTag = response.headers.get("ETag");
+      const read = await readStatus(routeSlices(route));
+      if (read.kind === "response") {
+        if (!(await signedIn(read.response))) return;
+        throw new Error(await errorText(read.response));
       }
+      if (!routeCovered(currentRoute(), read.snapshot)) return;
+      snapshot = read.snapshot;
     }
     phase = "ready";
     error = null;
@@ -257,14 +251,13 @@ function followIssueRedirect(): boolean {
 }
 
 function schedule(): void {
-  window.clearInterval(timer);
+  stopPolling?.();
+  stopPolling = null;
   const route = currentRoute();
   if (!needsSnapshot(route)) return;
   // Stored evidence does not change, and a repaint would interrupt the video.
   if (route.view === "evidence") return;
-  timer = window.setInterval(() => {
-    void reload();
-  }, POLL_MS);
+  stopPolling = livePoll(() => void reload(), STATUS_POLL_MS);
 }
 
 function paint(): void {
@@ -285,7 +278,8 @@ function paint(): void {
   const data = pageData();
   const shown =
     route.view === "evidence" ? snapshot?.evidence?.find((entry) => entry.id === route.id) : null;
-  if (snapshot) shell.setCounts({ mergeQueue: mergeQueueCount(snapshot) });
+  if (hasStatusSlice(snapshot, "mergeQueue"))
+    shell.setCounts({ mergeQueue: mergeQueueCount(snapshot) });
   shell.setBreadcrumb(
     shown
       ? { issueId: shown.itemId, entityId: shown.id }
