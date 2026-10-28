@@ -1,3 +1,4 @@
+import { workspaceMemberUsableSql } from "../db";
 import { journalCaught } from "../journal";
 import {
   listSkills,
@@ -89,7 +90,7 @@ export function createRunnerWork(options: {
       .query<{ workspaceId: string; userId: string; fence: number; status: string }, [string]>(
         `SELECT r.workspace_id AS workspaceId,r.owner_user_id AS userId,r.fence,r.status FROM runner r
       JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
-      WHERE r.id=? AND r.revoked_at IS NULL AND r.status<>'revoked' AND m.active=1`,
+      WHERE r.id=? AND r.revoked_at IS NULL AND r.status<>'revoked' AND ${workspaceMemberUsableSql("m")}`,
       )
       .get(id);
   }

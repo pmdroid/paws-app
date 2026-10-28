@@ -1,3 +1,5 @@
+import { workspaceMemberUsableSql } from "./workspace";
+import { workspaceMemberUsable } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
 import {
@@ -56,15 +58,25 @@ export function listUserWorkspaces(db: Database, userId: string) {
   return db
     .query<{ id: string; name: string; role: WorkspaceRole }, [string]>(
       `SELECT w.id,w.name,m.role FROM workspace w JOIN workspace_member m ON m.workspace_id=w.id
-      WHERE m.user_id=? AND m.active=1 ORDER BY w.name,w.id`,
+      WHERE m.user_id=? AND ${workspaceMemberUsableSql("m")} ORDER BY w.name,w.id`,
     )
     .all(userId);
 }
 
 export function listWorkspaceMembers(db: Database, workspaceId: string) {
   return db
-    .query<{ id: string; name: string; role: WorkspaceRole; active: number }, [string]>(
-      `SELECT u.id,u.name,m.role,m.active FROM workspace_member m JOIN workspace_user u ON u.id=m.user_id
+    .query<
+      {
+        id: string;
+        name: string;
+        role: WorkspaceRole;
+        active: number;
+        revokedAt: number | null;
+        revokedBy: string | null;
+      },
+      [string]
+    >(
+      `SELECT u.id,u.name,m.role,m.active,m.revoked_at AS revokedAt,m.revoked_by AS revokedBy FROM workspace_member m JOIN workspace_user u ON u.id=m.user_id
       WHERE m.workspace_id=? ORDER BY u.name,u.id`,
     )
     .all(workspaceId);
@@ -83,7 +95,7 @@ export function changeWorkspaceRole(
 ): void {
   const error = immediate(db, () => {
     const actor = workspaceMember(db, input.workspaceId, input.actorId);
-    if (actor?.role !== "admin" || !actor.active)
+    if (actor?.role !== "admin" || !workspaceMemberUsable(actor))
       throw new Error("Workspace administration is required.");
     if (input.verified !== undefined) {
       if (
@@ -99,12 +111,12 @@ export function changeWorkspaceRole(
       if (!input.verified.active) return "Current Linear membership is required.";
     }
     const member = workspaceMember(db, input.workspaceId, input.userId);
-    if (member === null || !member.active)
+    if (member === null || !workspaceMemberUsable(member))
       throw new Error("An active workspace member is required.");
     if (member.role === "admin" && input.role !== "admin") {
       const admins = db
         .query<{ count: number }, [string]>(
-          "SELECT count(*) AS count FROM workspace_member WHERE workspace_id=? AND role='admin' AND active=1",
+          `SELECT count(*) AS count FROM workspace_member WHERE workspace_id=? AND role='admin' AND ${workspaceMemberUsableSql("workspace_member")}`,
         )
         .get(input.workspaceId)!.count;
       if (admins <= 1) throw new Error("The workspace must keep an active admin.");
@@ -135,7 +147,7 @@ export function replaceWorkspaceRepositories(
 ): void {
   immediate(db, () => {
     const actor = workspaceMember(db, input.workspaceId, input.actorId);
-    if (actor?.role !== "admin" || !actor.active)
+    if (actor?.role !== "admin" || !workspaceMemberUsable(actor))
       throw new Error("Workspace administration is required.");
     db.run("DELETE FROM workspace_repository WHERE workspace_id=?", [input.workspaceId]);
     for (const entry of input.repositories)

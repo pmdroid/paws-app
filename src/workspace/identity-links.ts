@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "../db";
 import { isWorkspaceAdmin } from "./eligibility";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
@@ -34,7 +35,7 @@ export function createWorkspaceIdentityLinks(options: {
     } catch (caughtError1) {
       journalCaught(caughtError1, "identity-links.syncUser.lookup", null);
     }
-    if (!workspaceMember(options.db, workspaceId, userId)?.active) return;
+    if (!workspaceMemberUsable(workspaceMember(options.db, workspaceId, userId))) return;
     const input = {
       workspaceId,
       userId,
@@ -93,7 +94,7 @@ export function createWorkspaceIdentityLinks(options: {
       try {
         const body = await readWorkspaceJson(request);
         const actor = workspaceMember(options.db, principal.workspaceId, principal.userId);
-        if (!actor?.active || !isWorkspaceAdmin(actor.role))
+        if (!workspaceMemberUsable(actor) || !isWorkspaceAdmin(actor.role))
           return deny("Workspace administration is required.");
         if (
           typeof body !== "object" ||
@@ -131,7 +132,7 @@ export function createWorkspaceIdentityLinks(options: {
       } catch (error) {
         journalCaught(error, "identity-links.handle.readWorkspaceJson", null);
         const actor = workspaceMember(options.db, principal.workspaceId, principal.userId);
-        if (!actor?.active || !isWorkspaceAdmin(actor.role))
+        if (!workspaceMemberUsable(actor) || !isWorkspaceAdmin(actor.role))
           return deny("Workspace administration is required.");
         return reply(
           { error: error instanceof Error ? error.message : "Identity link could not be saved." },

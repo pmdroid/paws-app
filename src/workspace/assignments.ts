@@ -1,3 +1,4 @@
+import { WORKSPACE_REVOKED_RESPONSE } from "../db";
 import { canAct, LINEAR_GUEST_REFUSAL } from "./eligibility";
 import { journalCaught, journalRejection } from "../journal";
 import { randomBytes } from "node:crypto";
@@ -439,6 +440,8 @@ export function createWorkspaceAssignments(options: {
     // A guest's delegation is ignored; the one line is the session's answer.
     if (identity.guest) return { ...refused(LINEAR_GUEST_REFUSAL), response: true };
     const member = workspaceLinearMember(db, verified.workspaceId, verified.actorId);
+    if (member?.revokedAt != null)
+      return { ...refused(WORKSPACE_REVOKED_RESPONSE), response: true };
     const eligibility = canAct(
       {
         id: verified.actorId,

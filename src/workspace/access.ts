@@ -1,3 +1,5 @@
+import { WORKSPACE_REVOKED_SIGN_IN } from "../db";
+import { workspaceMemberUsable } from "../db";
 import { journalCaught } from "../journal";
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
@@ -55,6 +57,7 @@ export type WorkspaceAccessOptions = {
   now?: () => number;
   slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
+  interruptItem?: (itemId: string) => Promise<void>;
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
   /** Where over-limit counters are reported. Never receives a URL, code, state or cookie. */
@@ -122,6 +125,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     )
       throw new Error("This workspace is not installed.");
     const observedAt = now();
+    if (permitted && !workspaceMemberUsable(member))
+      throw new Error("Current permitted workspace membership is required for attribution.");
     if (!force && membershipFresh(member, observedAt)) return;
     const key = `${workspaceKey}:${userId}`;
     let operation = pending.get(key);
@@ -148,7 +153,10 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             teamIds: identity.teamIds,
             now: observedAt,
           });
-          if (permitted && (!applied || !identity.active || identity.guest))
+          if (
+            permitted &&
+            (!applied || !workspaceMemberUsable(workspaceMember(options.db, workspaceKey, userId)))
+          )
             throw new Error("Current permitted Linear membership is required for attribution.");
         });
       pending.set(key, operation);
@@ -238,7 +246,9 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           ? workspaceMember(options.db, link.workspaceId, viewer.principal.userId)
           : null;
       const creator =
-        link.state === "done" && member?.active && member.linearUserId === link.actorId
+        link.state === "done" &&
+        workspaceMemberUsable(member) &&
+        member.linearUserId === link.actorId
           ? { link, member, viewer: viewer! }
           : null;
       if (github)
@@ -431,6 +441,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         teamIds: identity.teamIds,
         now: syncAt,
       });
+      if (workspaceMember(options.db, workspace.id, userId)?.revokedAt != null)
+        return json({ error: WORKSPACE_REVOKED_SIGN_IN }, 403);
       let location = "/status/";
       if (result.assignmentHash !== null) {
         if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
@@ -472,6 +484,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       );
       return new Response(null, { status: 303, headers });
     } catch (caughtError4) {
+      if (caughtError4 instanceof Error && caughtError4.message === WORKSPACE_REVOKED_SIGN_IN)
+        return json({ error: WORKSPACE_REVOKED_SIGN_IN }, 403);
       journalCaught(caughtError4, "access.callback.completeWorkspaceOAuth", null);
       return json({ error: "Linear sign-in could not be completed. Start sign-in again." }, 400);
     }
@@ -525,6 +539,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       ...access,
       origin,
       now: now(),
+      interruptItem: options.interruptItem,
       verifyTeam: options.verifyTeam,
       memberships: options.memberships,
     });

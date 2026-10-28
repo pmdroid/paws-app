@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "../db";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
@@ -56,7 +57,7 @@ export function createExecutionControls(input: {
           )
           .get(session.sessionId)
       : null;
-    return member?.active &&
+    return workspaceMemberUsable(member) &&
       item &&
       session &&
       workspace &&

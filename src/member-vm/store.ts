@@ -1,3 +1,4 @@
+import { workspaceMemberUsable, workspaceMember } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
 import { enqueueJob, immediate } from "../db";
@@ -164,12 +165,8 @@ export class MemberVmMissing extends Error {
 
 export function mayDeleteMemberVm(db: Database, row: MemberVm, requester: MemberRef): boolean {
   if (row.workspaceId !== requester.workspaceId) return false;
-  const member = db
-    .query<{ role: string; active: number }, [string, string]>(
-      "SELECT role,active FROM workspace_member WHERE workspace_id=? AND user_id=?",
-    )
-    .get(requester.workspaceId, requester.userId);
-  if (!member?.active) return false;
+  const member = workspaceMember(db, requester.workspaceId, requester.userId);
+  if (!workspaceMemberUsable(member)) return false;
   return row.userId === requester.userId || isWorkspaceAdmin(member.role);
 }
 
@@ -249,12 +246,8 @@ function ensureJob(db: Database, id: string, now: number): void {
 }
 
 function requireOwner(db: Database, member: MemberRef): void {
-  const row = db
-    .query<{ role: string; active: number }, [string, string]>(
-      "SELECT role,active FROM workspace_member WHERE workspace_id=? AND user_id=?",
-    )
-    .get(member.workspaceId, member.userId);
-  if (!row?.active) throw new Error("Active workspace membership is required to own a runner.");
+  if (!workspaceMemberUsable(workspaceMember(db, member.workspaceId, member.userId)))
+    throw new Error("Active workspace membership is required to own a runner.");
 }
 
 function freeVmName(db: Database, member: MemberRef): string {

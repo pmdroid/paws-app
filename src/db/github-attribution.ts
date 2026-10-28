@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess, workspaceMember } from "./workspace";
@@ -26,7 +27,12 @@ export function requireAttributionSession(db: Database, binding: AttributionBind
     )
     .get(binding.sessionHash, binding.workspaceId, binding.userId);
   const member = workspaceMember(db, binding.workspaceId, binding.userId);
-  if (!session || !member?.active || now < session.authenticated_at || now >= session.expires_at)
+  if (
+    !session ||
+    !workspaceMemberUsable(member) ||
+    now < session.authenticated_at ||
+    now >= session.expires_at
+  )
     throw new Error("A current sign-in and permitted workspace membership are required.");
 }
 
@@ -165,7 +171,7 @@ export function githubAttribution(
   userId: string,
 ): VerifiedGitHubAttribution | null {
   const member = workspaceMember(db, workspaceId, userId);
-  if (!member?.active) return null;
+  if (!workspaceMemberUsable(member)) return null;
   const row = db
     .query<Omit<VerifiedGitHubAttribution, "email">, [string, string]>(
       "SELECT github_id AS id,login,name FROM verified_github_attribution WHERE workspace_id=? AND user_id=? AND consented_at IS NOT NULL AND revoked_at IS NULL",

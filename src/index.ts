@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "./db";
 import { shutdownPaws, stopPawsComponents } from "./shutdown";
 import { journalCaught } from "./journal";
 import { startBrowserOnboarding } from "./onboarding-start";
@@ -629,6 +630,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
       }
       workspace = startWorkspaceAccess({
+        interruptItem: async (itemId) => {
+          await orchestrator?.interruptItem(itemId);
+        },
         assignments,
         onboardingReadiness: createOnboardingReadiness(db),
         createVmAvailable,
@@ -1256,7 +1260,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               : null;
             if (!currentWorkspace) return [];
             return listWorkspaceMembers(db, currentWorkspace.id)
-              .filter((member) => member.active && isWorkspaceAdmin(member.role))
+              .filter((member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role))
               .flatMap((member) => {
                 const linked = db
                   .query<{ id: string }, [string]>(

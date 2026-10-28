@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "../../../db";
 import type { Database } from "bun:sqlite";
 import { journalCaught } from "../journal";
 import {
@@ -98,7 +99,7 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
   const { db, principal } = options;
   if (principal === undefined) return Response.json({ error: "Sign in to Paws." }, { status: 401 });
   const member = workspaceMember(db, principal.workspaceId, principal.userId);
-  if (!member?.active)
+  if (!workspaceMemberUsable(member))
     return Response.json({ error: "Your membership can't change findings." }, { status: 403 });
   let body: unknown;
   try {

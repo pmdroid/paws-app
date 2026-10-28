@@ -16,6 +16,8 @@ export type WorkspaceMember = {
   role: WorkspaceRole;
   source: "linear" | "manual";
   active: boolean;
+  revokedAt: number | null;
+  revokedBy: string | null;
   checkedAt: number;
   teamIds: string[];
 };
@@ -76,7 +78,7 @@ export function workspaceMember(
   const row = db
     .query<Omit<WorkspaceMember, "teamIds" | "active"> & { active: number }, [string, string]>(
       `SELECT m.workspace_id AS workspaceId,m.user_id AS userId,u.linear_user_id AS linearUserId,
-      u.name,u.email,m.role,m.source,m.active,m.checked_at AS checkedAt
+      u.name,u.email,m.role,m.source,m.active,m.revoked_at AS revokedAt,m.revoked_by AS revokedBy,m.checked_at AS checkedAt
       FROM workspace_member m JOIN workspace_user u ON u.id=m.user_id
       WHERE m.workspace_id=? AND m.user_id=?`,
     )
@@ -321,3 +323,22 @@ export function listWorkspaceAudit(db: Database, workspaceId: string, before: nu
   const entries = rows.slice(0, 50);
   return { entries, nextBefore: rows.length > 50 ? entries.at(-1)!.id : null };
 }
+
+/** Linear membership and the administrator's access decision are independent. */
+export function workspaceMemberUsable<
+  T extends { active: boolean | number; revokedAt?: number | null },
+>(member: T | null | undefined): member is T {
+  return (
+    member != null && (member.active === true || member.active === 1) && member.revokedAt == null
+  );
+}
+
+/** SQL counterpart for membership checks that do not load a member record. */
+export function workspaceMemberUsableSql(alias: string): string {
+  return `${alias}.active=1 AND ${alias}.revoked_at IS NULL`;
+}
+
+export const WORKSPACE_REVOKED_SIGN_IN =
+  "Your access to this Paws workspace was revoked. Ask an admin.";
+export const WORKSPACE_REVOKED_RESPONSE =
+  "Access to Paws was revoked for the person who delegated this. An admin can delegate it again.";

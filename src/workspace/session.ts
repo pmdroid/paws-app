@@ -1,7 +1,9 @@
+import { workspaceMemberUsable } from "../db";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
+  WORKSPACE_REVOKED_SIGN_IN,
   createWorkspaceBootstrap,
   deleteWorkspaceSession,
   readWorkspaceSession,
@@ -66,7 +68,8 @@ export function issueWorkspaceSession(
   input: { userId: string; workspaceId: string; now: number },
 ): { token: string; session: WorkspaceSession } {
   const member = workspaceMember(db, input.workspaceId, input.userId);
-  if (!member?.active) throw new Error("Workspace membership is required.");
+  if (member?.revokedAt != null) throw new Error(WORKSPACE_REVOKED_SIGN_IN);
+  if (!workspaceMemberUsable(member)) throw new Error("Workspace membership is required.");
   const token = workspaceSecret();
   const session: WorkspaceSession = {
     tokenHash: workspaceTokenHash(token),
@@ -96,7 +99,7 @@ export function requestWorkspaceSession(
   const session = readWorkspaceSession(db, workspaceTokenHash(token), now, WORKSPACE_SESSION_MS);
   if (session === null) return null;
   const member = workspaceMember(db, session.workspaceId, session.userId);
-  if (!member?.active) {
+  if (!workspaceMemberUsable(member)) {
     deleteWorkspaceSession(db, session.tokenHash);
     return null;
   }

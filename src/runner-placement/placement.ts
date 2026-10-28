@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "../db";
 import { teamRepositoryAllowedSql } from "../db";
 import type { Database } from "bun:sqlite";
 import {
@@ -231,7 +232,7 @@ export function createRunnerPlacement(options: {
           .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
           .get(current.ownership)?.id
       : undefined;
-    if (!requester || !workspaceMember(db, current.workspace.id, requester)?.active)
+    if (!requester || !workspaceMemberUsable(workspaceMember(db, current.workspace.id, requester)))
       throw new Error("Runner requester is not an active workspace member");
     return {
       workspaceId: current.workspace.id,

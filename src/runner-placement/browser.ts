@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
@@ -22,7 +23,7 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
     Response.json(value, { status, headers: { "cache-control": "no-store" } });
   function member(principal: WorkspacePrincipal) {
     const current = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (!current?.active) throw new Error("Workspace access is unavailable.");
+    if (!workspaceMemberUsable(current)) throw new Error("Workspace access is unavailable.");
     return current;
   }
   /** The runner's label for a model it ran, such as "Opus 5.5 · 1M context". */

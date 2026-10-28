@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -57,12 +58,12 @@ export function createRunnerLogin(options: {
     const member = workspaceMember(db, workspaceId, userId);
     const runner = getRunner(db, runnerId);
     if (
-      !member?.active ||
+      !workspaceMemberUsable(member) ||
       !runner ||
       runner.workspaceId !== workspaceId ||
       runner.ownerUserId !== userId ||
       (runner.status !== "active" && runner.status !== "paused") ||
-      !workspaceMember(db, workspaceId, runner.ownerUserId)?.active
+      !workspaceMemberUsable(workspaceMember(db, workspaceId, runner.ownerUserId))
     )
       throw new Error("Agent account access denied");
     return runner;

@@ -517,6 +517,10 @@ export {
   applyLinearUserChange,
   MEMBERSHIP_BACKSTOP_MS,
   membershipFresh,
+  workspaceMemberUsable,
+  workspaceMemberUsableSql,
+  WORKSPACE_REVOKED_SIGN_IN,
+  WORKSPACE_REVOKED_RESPONSE,
   workspaceForOrganization,
   workspaceMember,
   workspaceLinearMember,
@@ -703,3 +707,5 @@ export { restart, fixRounds, restartLimit, type RestartHandoff } from "./restart
 export { jobVersionCurrent } from "./jobs";
 
 export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
+
+export { changeWorkspaceRevocation } from "./workspace-revocation";

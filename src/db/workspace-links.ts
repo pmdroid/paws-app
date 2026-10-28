@@ -1,3 +1,5 @@
+import { workspaceMemberUsableSql } from "./workspace";
+import { workspaceMemberUsable } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess, workspaceMember } from "./workspace";
@@ -27,7 +29,7 @@ export function workspaceIdentityCandidates(db: Database, workspaceId: string) {
   return db
     .query<{ userId: string; email: string }, [string]>(
       `SELECT u.id AS userId,u.email FROM workspace_user u
-      JOIN workspace_member m ON m.user_id=u.id WHERE m.workspace_id=? AND m.active=1
+      JOIN workspace_member m ON m.user_id=u.id WHERE m.workspace_id=? AND ${workspaceMemberUsableSql("m")}
       AND NOT EXISTS(SELECT 1 FROM workspace_identity_link l WHERE l.workspace_id=m.workspace_id
       AND l.user_id=u.id AND l.provider='slack' AND l.method='manual') ORDER BY u.id`,
     )
@@ -40,10 +42,10 @@ export function saveWorkspaceIdentityLink(
 ): void {
   immediate(db, () => {
     const member = workspaceMember(db, input.workspaceId, input.userId);
-    if (!member?.active) throw new Error("Choose an active workspace member.");
+    if (!workspaceMemberUsable(member)) throw new Error("Choose an active workspace member.");
     if (input.method === "manual" || input.actorId !== undefined) {
       const actor = workspaceMember(db, input.workspaceId, input.actorId ?? "");
-      if (!actor?.active || actor.role !== "admin")
+      if (!workspaceMemberUsable(actor) || actor.role !== "admin")
         throw new Error("Workspace administration is required.");
     }
     const changed = db.run(

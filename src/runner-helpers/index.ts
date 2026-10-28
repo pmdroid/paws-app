@@ -1,3 +1,4 @@
+import { workspaceMemberUsableSql } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID, type KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -43,7 +44,7 @@ export function createRunnerHelpers(options: {
   function identity(runnerId: string) {
     const row = db
       .query<{ workspaceId: string; userId: string; fence: number; status: string }, [string]>(
-        "SELECT r.workspace_id AS workspaceId,r.owner_user_id AS userId,r.fence,r.status FROM runner r JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id WHERE r.id=? AND r.revoked_at IS NULL AND r.status<>'revoked' AND m.active=1",
+        `SELECT r.workspace_id AS workspaceId,r.owner_user_id AS userId,r.fence,r.status FROM runner r JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id WHERE r.id=? AND r.revoked_at IS NULL AND r.status<>'revoked' AND ${workspaceMemberUsableSql("m")}`,
       )
       .get(runnerId);
     if (!row) throw new HelperFencedError("Runner helper identity is unavailable");

@@ -1,3 +1,4 @@
+import { workspaceMemberUsableSql } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
@@ -344,7 +345,7 @@ export function runnerForCertificate(
       `SELECT r.id FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
     JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
     WHERE c.fingerprint=? AND c.revoked_at IS NULL AND c.not_before<=?
-    AND c.accepted_until>? AND r.revoked_at IS NULL AND r.status<>'revoked' AND m.active=1`,
+    AND c.accepted_until>? AND r.revoked_at IS NULL AND r.status<>'revoked' AND ${workspaceMemberUsableSql("m")}`,
     )
     .get(fingerprint, now, now);
   return row ? getRunner(db, row.id) : null;
@@ -420,7 +421,7 @@ export function findRunnerEnrollment(
       FROM runner_enrollment e JOIN workspace_member m
       ON m.workspace_id=e.workspace_id AND m.user_id=e.user_id
       WHERE e.token_hash=? AND e.used_at IS NULL AND e.runner_id IS NULL AND e.expires_at>?
-      AND m.active=1`,
+      AND ${workspaceMemberUsableSql("m")}`,
     )
     .get(tokenHash, now);
 }

@@ -46,7 +46,7 @@ export function applyLinearCommand(
   /** Replaces the default "Stopped." or "Cancelled from Linear." lead of the response. */
   response?: string,
   /** `keepPullRequest`: the stop leaves the item's pull request open, as Stop on the Risk card does. */
-  options: { keepPullRequest?: boolean } = {},
+  options: { keepPullRequest?: boolean; responseOnly?: boolean } = {},
 ): { applied: boolean } {
   return immediate(db, () => {
     const item = getWorkItem(db, command.itemId);
@@ -96,14 +96,17 @@ export function applyLinearCommand(
         : command.source === "dashboard"
           ? "Stopped from Paws."
           : "Stopped.");
-    const text = withOpenFindings(
-      db,
-      item.id,
-      stoppedResponse(db, item, lead, {
-        reason: response !== undefined,
-        pullClosing: closing,
-      }),
-    );
+    const text =
+      options.responseOnly && response !== undefined
+        ? response
+        : withOpenFindings(
+            db,
+            item.id,
+            stoppedResponse(db, item, lead, {
+              reason: response !== undefined,
+              pullClosing: closing,
+            }),
+          );
     enqueueOutboxOnce(db, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,

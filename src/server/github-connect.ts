@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
 import { discoverGitHubInstallation } from "./github-connect-status";
@@ -70,7 +71,7 @@ export function createHostedGitHubConnect(options: {
       return (
         access &&
         current?.session.tokenHash === access.session.tokenHash &&
-        member?.active &&
+        workspaceMemberUsable(member) &&
         isWorkspaceAdmin(member.role)
       );
     };
@@ -86,7 +87,7 @@ export function createHostedGitHubConnect(options: {
       const member = access
         ? workspaceMember(db, access.principal.workspaceId, access.principal.userId)
         : null;
-      return Boolean(member?.active && isWorkspaceAdmin(member.role));
+      return Boolean(workspaceMemberUsable(member) && isWorkspaceAdmin(member.role));
     };
     const signedIn = () => {
       const current = requestWorkspaceSession(db, request, now());

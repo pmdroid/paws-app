@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "../db";
 import { isWorkspaceAdmin } from "./eligibility";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
@@ -26,7 +27,7 @@ export async function handleWorkspaceGitHubIntegration(
   const principal = options.principal;
   const permitted = () => {
     const member = workspaceMember(options.db, principal.workspaceId, principal.userId);
-    return member?.active && isWorkspaceAdmin(member.role);
+    return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);
   };
   const audit = (action: string) =>
     auditWorkspaceAccess(options.db, {

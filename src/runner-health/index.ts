@@ -1,3 +1,5 @@
+import { workspaceMemberUsableSql } from "../db";
+import { workspaceMemberUsable } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
@@ -55,7 +57,7 @@ export function createRunnerHealth(options: {
   function visible(principal: WorkspacePrincipal, runnerId: string) {
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
     const runner = getRunner(db, runnerId);
-    if (!member?.active || runner?.workspaceId !== principal.workspaceId)
+    if (!workspaceMemberUsable(member) || runner?.workspaceId !== principal.workspaceId)
       throw new Error("Runner access denied");
     return { member, runner };
   }
@@ -180,7 +182,7 @@ export function createRunnerHealth(options: {
         .query<{ id: string; workspaceId: string }, [number]>(
           `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
           JOIN workspace_member o ON o.workspace_id=r.workspace_id AND o.user_id=r.owner_user_id
-          WHERE r.status='active' AND r.revoked_at IS NULL AND o.active=1 AND r.last_seen_at>?
+          WHERE r.status='active' AND r.revoked_at IS NULL AND ${workspaceMemberUsableSql("o")} AND r.last_seen_at>?
           ORDER BY r.id`,
         )
         .all(at - RECENTLY_SEEN_MS);
@@ -219,7 +221,7 @@ export function createRunnerHealth(options: {
         if (
           !runner ||
           runner.status !== "active" ||
-          !workspaceMember(db, runner.workspaceId, runner.ownerUserId)?.active ||
+          !workspaceMemberUsable(workspaceMember(db, runner.workspaceId, runner.ownerUserId)) ||
           history(runnerId, at)(agent)?.inFlight ||
           pendingChecks(runnerId, at) >= 4
         )
@@ -258,7 +260,7 @@ export function createRunnerHealth(options: {
         if (
           !runner ||
           runner.status === "revoked" ||
-          !workspaceMember(db, runner.workspaceId, runner.ownerUserId)?.active
+          !workspaceMemberUsable(workspaceMember(db, runner.workspaceId, runner.ownerUserId))
         )
           throw new Error("Runner identity is unavailable");
         const assigned = command(result.commandId, runnerId);
@@ -320,7 +322,7 @@ export function createRunnerHealth(options: {
       if (
         !runner ||
         runner.status === "revoked" ||
-        !workspaceMember(db, runner.workspaceId, runner.ownerUserId)?.active
+        !workspaceMemberUsable(workspaceMember(db, runner.workspaceId, runner.ownerUserId))
       )
         throw new Error("Runner identity is unavailable");
       if (command(commandId, runnerId).expiresAt <= now())

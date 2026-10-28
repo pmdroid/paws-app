@@ -1,3 +1,5 @@
+import { workspaceMemberUsableSql } from "../db";
+import { workspaceMemberUsable } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
 import { realpathSync } from "node:fs";
@@ -46,12 +48,12 @@ export function createRunnerControl(options: {
     options.serverVersion === undefined ? installedVersion() : options.serverVersion;
   function admin(principal: WorkspacePrincipal) {
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (!member?.active || !isWorkspaceAdmin(member.role))
+    if (!workspaceMemberUsable(member) || !isWorkspaceAdmin(member.role))
       throw new Error("Workspace administrator access is required.");
   }
   function enrollingMember(workspace: string, userId: string) {
     const member = workspaceMember(db, workspace, userId);
-    if (!member?.active)
+    if (!workspaceMemberUsable(member))
       throw new Error("Active workspace membership is required to own a runner.");
   }
   function authorized(peer: RunnerPeer, at = now()): RunnerRecord {
@@ -123,7 +125,7 @@ export function createRunnerControl(options: {
           `SELECT c.fingerprint FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
         JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
         WHERE c.revoked_at IS NOT NULL OR c.accepted_until<=? OR r.revoked_at IS NOT NULL
-        OR r.status='revoked' OR m.active=0`,
+        OR r.status='revoked' OR NOT (${workspaceMemberUsableSql("m")})`,
         )
         .all(now());
       for (const { fingerprint } of fingerprints) options.disconnect(fingerprint);
@@ -132,7 +134,7 @@ export function createRunnerControl(options: {
       return authorized(peer);
     },
     list(principal: WorkspacePrincipal) {
-      if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
+      if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
         throw new Error("Workspace membership is required.");
       return listRunnerOverview(db, principal.workspaceId, now());
     },

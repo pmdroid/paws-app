@@ -1,3 +1,4 @@
+import { workspaceMemberUsable, WORKSPACE_REVOKED_RESPONSE } from "../db";
 import type { WorkspaceMember } from "../db";
 import type { LinearMemberIdentity } from "../linear";
 
@@ -11,7 +12,10 @@ export type ActionActor = {
   /** Omitted for callers that already verified the Linear event at the boundary. */
   identity?: LinearMemberIdentity;
   /** null means a verified Linear member has never signed in to Paws. */
-  member?: Pick<WorkspaceMember, "active" | "role" | "teamIds"> | null;
+  member?:
+    | (Pick<WorkspaceMember, "active" | "role" | "teamIds"> &
+        Partial<Pick<WorkspaceMember, "revokedAt">>)
+    | null;
   teamId?: string;
 };
 export type ActorAction =
@@ -39,7 +43,9 @@ export function canAct(actor: ActionActor, action: ActorAction): ActorEligibilit
   }
   const member = actor.member;
   if (member) {
-    if (!member.active) return deny("Your Paws workspace membership is not active.");
+    if (member.revokedAt != null) return deny(WORKSPACE_REVOKED_RESPONSE);
+    if (!workspaceMemberUsable(member))
+      return deny("Your Paws workspace membership is not active.");
     if (actor.teamId && !member.teamIds.includes(actor.teamId))
       return deny("You are not a member of this issue's Linear team.");
   }

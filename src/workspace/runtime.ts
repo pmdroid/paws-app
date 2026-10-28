@@ -17,6 +17,7 @@ export async function createWorkspaceAccessFromLinear(options: {
   memberships: LinearMembershipReads;
   slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
+  interruptItem?: (itemId: string) => Promise<void>;
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
   signal?: AbortSignal;

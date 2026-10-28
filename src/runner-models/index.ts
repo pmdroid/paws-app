@@ -1,3 +1,5 @@
+import { workspaceMemberUsableSql } from "../db";
+import { workspaceMemberUsable } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -38,7 +40,7 @@ const eligible = `SELECT r.id AS runnerId,r.workspace_id AS workspaceId,r.owner_
  FROM runner r JOIN runner_agent_policy p ON p.runner_id=r.id
  JOIN workspace_member owner ON owner.workspace_id=r.workspace_id AND owner.user_id=r.owner_user_id
  WHERE r.status<>'revoked' AND r.revoked_at IS NULL AND p.ready=1 AND p.auth_expired=0 AND p.cooldown_until<=?
- AND owner.active=1`;
+ AND ${workspaceMemberUsableSql("owner")}`;
 
 export function createRunnerModels(options: {
   db: Database;
@@ -166,7 +168,7 @@ export function createRunnerModels(options: {
     return row?.at ?? 0;
   }
   function read(principal: { workspaceId: string; userId: string }): AgentModelCatalog[] {
-    if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
+    if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
       throw new Error("Workspace access is unavailable.");
     const rows = sources(Number.MAX_SAFE_INTEGER)
       .filter(

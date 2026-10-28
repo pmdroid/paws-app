@@ -1,3 +1,4 @@
+import { workspaceMemberUsable } from "../db";
 import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
@@ -62,7 +63,7 @@ export async function handleVisualReviewChanges(
   if (typeof questionId !== "string" || typeof note !== "string" || note.length > MAX_NOTE)
     return Response.json({ error: "Send a question and a note." }, { status: 400 });
   const member = workspaceMember(db, principal.workspaceId, principal.userId);
-  if (!member?.active || !member.linearUserId)
+  if (!workspaceMemberUsable(member) || !member.linearUserId)
     return Response.json({ error: "Your membership can't answer reviews." }, { status: 403 });
   const review = openVisualReviewFiles(db, questionId);
   const item = review ? getWorkItem(db, review.itemId) : null;
