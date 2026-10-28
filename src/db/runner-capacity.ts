@@ -211,12 +211,17 @@ export function pinnedSlotsReserved(
   ).size;
 }
 
+export const CANCEL_STILL_PENDING = `(c.expires_at>? OR COALESCE(r.live_reported_at,0)<=c.expires_at
+  OR COALESCE((SELECT MAX(confirmed_at) FROM runner_work x WHERE x.run_id=c.run_id AND x.runner_id=c.runner_id),0)>c.expires_at)`;
+
 export function runnerCancelPending(db: Database, runnerId: string, now: number): boolean {
   return (
     db
       .query(
-        `SELECT 1 FROM runner_command c WHERE c.runner_id=? AND c.kind='cancel' AND c.acknowledged_at IS NULL
-         AND c.expires_at>? AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id
+        `SELECT 1 FROM runner_command c JOIN runner r ON r.id=c.runner_id
+         WHERE c.runner_id=? AND c.kind='cancel' AND c.acknowledged_at IS NULL
+         AND ${CANCEL_STILL_PENDING}
+         AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id
          AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal
          AND a.acknowledged_at IS NOT NULL)`,
       )
