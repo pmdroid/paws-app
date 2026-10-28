@@ -88,6 +88,8 @@ export const ROUTE_SLICES: Record<Route["view"], readonly StatusSlice[]> = {
   mergeQueue: ["items", "mergeQueue", "mergeHistory"],
   questions: ["items", "questions"],
   evidence: ["items", "evidence"],
+  // The Findings page loads `/api/findings` itself.
+  findings: [],
   runners: [],
   settings: [],
 };
