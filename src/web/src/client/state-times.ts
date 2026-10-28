@@ -105,7 +105,7 @@ export function stateTimeBar(times: StatusStateTimes | undefined): string {
     <div class="time-bar" aria-hidden="true">${states
       .map(
         (entry) =>
-          `<span class="time-seg" data-state="${esc(entry.state)}" data-ms="${entry.ms}"${entry.state === times.current ? " data-current" : ""} title="${esc(label(entry))}">${esc(minutesLabel(entry.ms))}</span>`,
+          `<span class="time-seg" data-state="${esc(entry.state)}" data-ms="${entry.ms}"${entry.state === times.current ? " data-current" : ""} title="${esc(label(entry))}"><span class="time-seg-label">${esc(minutesLabel(entry.ms))}</span></span>`,
       )
       .join("")}</div>
     <ul class="time-legend" role="list">${states
