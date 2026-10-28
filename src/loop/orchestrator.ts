@@ -3,6 +3,7 @@ import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
+import { restartForPushConflict } from "./push-conflict";
 import {
   saveHumanRetryWindow,
   fixRounds,
@@ -4306,6 +4307,18 @@ export class Orchestrator {
           await this.flush();
           return { answer: ACCEPTED_ON_REMOTE };
         }
+        if (
+          request.pushRejected?.conflicts &&
+          restartForPushConflict(this.db, item.id, {
+            branch: request.pushRejected.branch,
+            files: request.pushRejected.conflicts,
+            now: this.now(),
+          })
+        ) {
+          this.askedRuns.add(runId);
+          await this.flush();
+          return { answer: PUSH_CONFLICT_RESTARTED };
+        }
         immediate(this.db, () => {
           ask(
             this.db,
@@ -7377,6 +7390,8 @@ export class Orchestrator {
 const HANDOVER_FAILED_PROMPT =
   "Paws asked to move this session to another runner, but the move failed after your turn was stopped, so it stays here. Your work so far is committed. Continue where you left off.";
 
+const PUSH_CONFLICT_RESTARTED =
+  "Your commits conflict with the branch on GitHub, so Paws starts a new turn to resolve that. End your turn now without further changes.";
 const ACCEPTED_ON_REMOTE =
   "The branch on GitHub already has the work Closeout accepted, so Paws sent it to the merge queue. End your turn now without further changes.";
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
