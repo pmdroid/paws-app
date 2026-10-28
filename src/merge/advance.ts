@@ -2,18 +2,22 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
+  beginMergeCall,
   carriedAcceptFor,
   closeoutPolicyDigest,
   completeMergedItem,
+  endMergeCall,
   enqueueJobOnce,
   getConfirmedRemoteMerge,
   getWorkItem,
   immediate,
   leaveMergeQueue,
+  mergeCallInFlight,
   recordCarriedAccept,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
   type CiRound,
+  type ConfirmedRemoteMerge,
   type TaskMergeSettings,
   type WorkItemRecord,
 } from "../db";
@@ -26,6 +30,7 @@ import {
   type PullFacts,
   type SerialMergeInput,
 } from "../github";
+import { journal } from "../journal";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import type { MergeFacts, RiskApproval } from "./mergeable";
 import {
@@ -43,6 +48,7 @@ import {
   type OrderCapabilities,
 } from "./orders";
 import type { RebaseConflict } from "./budget";
+import { mainMoved as checkQueueBehind } from "./queue-conflicts";
 import { ciFixes, rebaseBudgetFor } from "./returns";
 import {
   laneTurn,
@@ -76,6 +82,13 @@ export type MergeCapabilities = OrderCapabilities & {
    * in `awaiting_input`. `asked`, or `failed` when Paws could not ask.
    */
   askRiskApproval(item: WorkItemRecord, published: MergePublication): Promise<MergeStep>;
+  /**
+   * The merge GitHub reports for the pull request Paws opened for the item, when it merged by
+   * hand outside the lane. Null when there is none, it is not merged, or GitHub could not say.
+   */
+  mergedOutsideLane(
+    item: WorkItemRecord,
+  ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null>;
   completed(): void;
 };
 
@@ -103,6 +116,13 @@ export async function advanceMerge(
     if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
     return { kind: "obsolete" };
   }
+  // A pull request merged by hand on GitHub merges the item: publishing again would open another.
+  const outside = await mergedOutsideLane(db, item, caps);
+  if (outside) return outside;
+  if (restartedDuringMergeCall(db, item.id, input.payload)) {
+    reverifyAfterRestart(db, item, input.jobId, caps.now());
+    return { kind: "returned" };
+  }
   const held = reviewHold(db, item.id, caps.now());
   if (held) return held;
   const waiting = dependencyWait(item, caps);
@@ -119,7 +139,11 @@ export async function advanceMerge(
   const mergeSettings = await caps.settings(item, published.signal);
   if (mergeSettings.order === "github-queue") {
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
-    if (handed !== "no_queue") return handed;
+    if (handed !== "no_queue") {
+      if (handed.kind === "merged")
+        checkQueueBehind(db, { repository: queueName(repository), main: null, now: caps.now() });
+      return handed;
+    }
   }
   const queued = mergeSettings.order === "queue";
   if (queued) {
@@ -127,6 +151,16 @@ export async function advanceMerge(
       number: pull.number,
       head: published.head,
     });
+    if (wait?.reason === "ahead" && policyChanged(db, item, caps, published.worktree)) {
+      // A policy change spent every waiting acceptance; each re-verifies now, in parallel up to
+      // the free slots, and keeps its place instead of waiting for its turn at the front.
+      reverify(
+        merge,
+        { kind: "reverify", head: published.head, base: "", rebased: false },
+        input.jobId,
+      );
+      return { kind: "returned" };
+    }
     if (wait) return { kind: "wait", ...wait };
     if (caps.stopped()) return { kind: "obsolete" };
   }
@@ -148,8 +182,13 @@ export async function advanceMerge(
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     remoteUrl: repository.remoteUrl,
     isCancelled: () => mergeHeld(merge),
-    ...(mergeSettings.mainMoved === "overlap"
-      ? { overlap: { packages: caps.packages(`${repository.owner}/${repository.repo}`) } }
+    ...(mergeSettings.mainMoved === "overlap" || mergeSettings.mainMoved === "green"
+      ? {
+          overlap: {
+            packages: caps.packages(`${repository.owner}/${repository.repo}`),
+            anyFiles: mergeSettings.mainMoved === "green",
+          },
+        }
       : {}),
   };
   const turn = await laneTurn({
@@ -164,7 +203,13 @@ export async function advanceMerge(
         { head: published.head, approval: riskApproval },
       ),
     rebase: () => rebaseOntoMain(lane),
-    squash: (head, facts) => squashPull(lane, { head, base: facts.base }, published.summary),
+    squash: async (head, facts) => {
+      // A call that throws may still have reached GitHub, so its marker stays for the next start.
+      beginMergeCall(db, item.id, head, caps.now());
+      const squashed = await squashPull(lane, { head, base: facts.base }, published.summary);
+      if (!squashed.merged) endMergeCall(db, item.id);
+      return squashed;
+    },
   });
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
@@ -202,7 +247,12 @@ export async function advanceMerge(
     });
   if (step.kind === "wait" && step.reason === "ci")
     return caps.stopped() ? { kind: "obsolete" } : step;
-  if (turn.kind === "merged")
+  if (turn.kind === "merged") {
+    checkQueueBehind(db, {
+      repository: queueName(repository),
+      main: turn.result.sha ?? null,
+      now: caps.now(),
+    });
     recordConfirmedRemoteMerge(db, {
       itemId: item.id,
       repositoryOwner: repository.owner,
@@ -212,6 +262,8 @@ export async function advanceMerge(
       mergeSha: turn.result.sha ?? null,
       confirmedAt: caps.now(),
     });
+  }
+  if (turn.kind === "merged") endMergeCall(db, item.id);
   if (caps.stopped()) {
     if (turn.kind === "merged") completeMergedItem(db, { itemId: item.id, now: caps.now() });
     return { kind: "obsolete" };
@@ -293,9 +345,74 @@ export async function advanceMerge(
     }
     round("failed");
   }
+  // A person merged the pull request on GitHub during the turn, so the lane found it closed.
+  const late = await mergedOutsideLane(db, item, caps);
+  if (late) return late;
   const message = failure(turn, step);
   voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
   return { kind: "failed", reason: "merge", message };
+}
+
+/** The repository as the merge queue names it. */
+function queueName(repository: { owner: string; repo: string }): string {
+  return `${repository.owner}/${repository.repo}`;
+}
+
+/**
+ * Records the merge of a pull request merged outside the lane, and takes the item out of the
+ * queue. The `merged` step completes it like a lane merge, which cancels its queued merge jobs.
+ */
+async function mergedOutsideLane(
+  db: Database,
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+): Promise<MergeStep | null> {
+  const merge = await caps.mergedOutsideLane(item);
+  if (merge === null || getWorkItem(db, item.id)?.state !== "merge_queue") return null;
+  recordConfirmedRemoteMerge(db, { ...merge, itemId: item.id, confirmedAt: caps.now() });
+  endMergeCall(db, item.id);
+  leaveMergeQueue(db, item.id);
+  wakeMergesBehind(db, caps.now());
+  journal(
+    `item ${item.linearIdentifier} merged outside the merge lane: #${merge.pullNumber} at ${merge.mergeSha ?? "unknown commit"}`,
+  );
+  if (caps.stopped()) {
+    completeMergedItem(db, { itemId: item.id, now: caps.now() });
+    return { kind: "obsolete" };
+  }
+  return { kind: "merged" };
+}
+
+/** Paws stopped while the lane's merge call for the item may have been in flight. */
+function restartedDuringMergeCall(db: Database, itemId: string, payload: unknown): boolean {
+  const flagged =
+    typeof payload === "object" &&
+    payload !== null &&
+    (payload as { mergeCallInFlight?: unknown }).mergeCallInFlight === true;
+  return flagged && mergeCallInFlight(db, itemId);
+}
+
+/**
+ * GitHub does not show the merge that may have been in flight when Paws stopped, so the merge
+ * fails closed: Closeout checks the head again before the lane does, and the item keeps its place.
+ */
+function reverifyAfterRestart(
+  db: Database,
+  item: WorkItemRecord,
+  jobId: number,
+  now: number,
+): void {
+  immediate(db, () => {
+    endMergeCall(db, item.id);
+    applyWorkItemEvent(db, item.id, "reverify_requested");
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.reverify,
+      jobKey: `reverify:restart:${item.id}:${jobId}`,
+      payload: { itemId: item.id },
+      now,
+    });
+  });
+  journal(`item ${item.linearIdentifier} re-verifies: its merge call may have been in flight`);
 }
 
 /**
@@ -310,6 +427,20 @@ function dependencyWait(item: WorkItemRecord, caps: MergeCapabilities): MergeSte
   const message = `${item.linearIdentifier}: waiting for ${what}`;
   caps.voice.status(item, message, `${item.id}:merge-dependencies:${what}`);
   return { kind: "wait", message, queued: true, reason: "dependencies" };
+}
+
+/** Closeout accepted the item under a policy digest that differs from the readable one now. */
+function policyChanged(
+  db: Database,
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+  worktree: string,
+): boolean {
+  const acceptedHead = getWorkItem(db, item.id)?.acceptedHead ?? null;
+  if (acceptedHead === null) return false;
+  const accepted = closeoutPolicyDigest(db, item.id, acceptedHead);
+  const current = caps.policyDigest(item, worktree);
+  return accepted !== null && current !== null && accepted !== current;
 }
 
 /**
@@ -396,6 +527,8 @@ function reverify(
       now: caps.now(),
     });
   });
+  // Busy now, it no longer holds the lane: the ready tasks behind it look again.
+  wakeMergesBehind(db, caps.now());
   if (step.rebased)
     caps.voice.status(
       item,

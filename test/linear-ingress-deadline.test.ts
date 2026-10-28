@@ -41,8 +41,9 @@ function fixture() {
   const db = tempDb();
   const home = tempHome();
   const deadlines: AbortController[] = [];
+  const originalTimeout = AbortSignal.timeout;
   const timeout = spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
-    expect(ms).toBe(10_000);
+    if (ms !== 10_000) return originalTimeout(ms);
     const controller = new AbortController();
     deadlines.push(controller);
     return controller.signal;
@@ -71,7 +72,6 @@ function fixture() {
     db,
     secretsDir: join(home, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
-    publicUrl: null,
     beforeEvent: (event, ...args: unknown[]) =>
       (
         gate.accept as (

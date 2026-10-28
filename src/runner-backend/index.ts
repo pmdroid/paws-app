@@ -22,9 +22,11 @@ import {
   getTaskMode,
   getWorkItem,
   immediate,
+  inMergeQueue,
   listHooks,
   pinnedSlotsReserved,
   releasePinnedSlot,
+  restartedFromMergeQueue,
   runnerHasCapacity,
   runnerSlotsHeldBetweenCommands,
   saveCheckpoint,
@@ -44,6 +46,7 @@ import {
   snapshotImplementationSkills,
   runDir,
   type AcpEvent,
+  type AcpEventOrigin,
   type RunAgentOptions,
   type RunAgentResult,
   encodePolicyFiles,
@@ -52,9 +55,19 @@ import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
-import { RUNNER_LEASE_GRACE_MS, type RunnerCommand, type RunnerResult } from "../runner-protocol";
+import {
+  REBASE_RUNNER_VERSION,
+  REVIEW_COMMAND_RUNNER_VERSION,
+  RUNNER_LEASE_GRACE_MS,
+  RUNTIMES_RUNNER_VERSION,
+  SESSION_RESUME_RUNNER_VERSION,
+  type RunnerCommand,
+  type RunnerResult,
+  type RunnerVersion,
+} from "../runner-protocol";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
+import { fastForwardToBranchTip } from "./candidate";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
@@ -84,6 +97,7 @@ import {
   type WorkspaceHook,
 } from "../core";
 import {
+  PlacementRaceError,
   quotaSignal,
   RUNNER_ONLINE_MS,
   SESSION_GRACE_MS,
@@ -107,19 +121,13 @@ const DEFAULT_POLL_INTERVAL_MS = 250;
 const DEFAULT_SILENT_RUN_MS = 20 * 60_000;
 /** A confirmation older than this no longer counts: runners heartbeat every 15 seconds. */
 const RUN_CONFIRMATION_MS = 60_000;
+/** A run this quiet is hung even when its runner still confirms it: the agent is stopped. */
+const DEFAULT_HUNG_RUN_MS = 45 * 60_000;
 const RUN_LOST_THOUGHT = "The runner lost this run after it restarted; continuing from the branch.";
+const RUN_HUNG_THOUGHT = (minutes: number) =>
+  `The agent sent nothing for ${minutes} minutes, so Paws stopped it; continuing from the branch.`;
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
-const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
-const REBASE_RUNNER_VERSION = [0, 1, 23];
-const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
-/** First runner release whose command schema accepts `runtimes`. Older runners reject the field. */
-export const RUNTIMES_RUNNER_VERSION = [0, 1, 26];
-/** First runner release that runs the agent's own review command for a `review` command. */
-export const REVIEW_COMMAND_RUNNER_VERSION = [0, 1, 47];
-/** First runner release that snapshots a run's Claude session when a turn ends. */
-export const CLAUDE_SESSION_SNAPSHOT_RUNNER_VERSION = [0, 1, 42];
-
 type SessionHolder = { runnerId: string; agent: string; sessionId: string };
 
 function earlierSession(
@@ -175,7 +183,7 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
   return undefined;
 }
 
-function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
+function versionAtLeast(version: string | null | undefined, minimum: RunnerVersion): boolean {
   const parts = version
     ?.match(/^(\d+)\.(\d+)\.(\d+)/)
     ?.slice(1)
@@ -187,6 +195,44 @@ function versionAtLeast(version: string | null | undefined, minimum: number[]): 
 }
 
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
+
+/**
+ * Where a command for the run goes. A turn that continues the agent session is pinned to the
+ * run's runner. Merge-queue work that continues no session, such as a re-verify's checks and
+ * review, is not pinned: it prefers the run's runner and takes any eligible one. So when such
+ * work last ran on another runner, the merge-queue item's next turn is pinned to the runner
+ * holding its session. A run that moved because its runner went away keeps its new runner.
+ */
+function runRunner(
+  db: Database,
+  input: { itemId: string; runId: string; continuesSession: boolean; sessionRunnerId?: string },
+): { pinnedRunnerId?: string; preferRunnerId?: string } {
+  const row = db
+    .query<{ runnerId: string; kind: string | null; envelope: string | null }, [string]>(
+      `SELECT w.runner_id AS runnerId, c.kind, c.envelope FROM runner_work w
+       LEFT JOIN runner_command c ON c.id=w.command_id WHERE w.run_id=?`,
+    )
+    .get(input.runId);
+  if (!row) return {};
+  const merging = inMergeQueue(db, input.itemId);
+  if (!input.continuesSession && merging) return { preferRunnerId: row.runnerId };
+  const backToSession =
+    input.continuesSession &&
+    input.sessionRunnerId !== undefined &&
+    (merging || restartedFromMergeQueue(db, input.itemId)) &&
+    (row.kind === "review" ||
+      (row.kind === "run" &&
+        row.envelope !== null &&
+        (
+          JSON.parse(
+            Buffer.from(
+              (JSON.parse(row.envelope) as { payload: string }).payload,
+              "base64url",
+            ).toString("utf8"),
+          ) as { checkpoint?: boolean }
+        ).checkpoint === false));
+  return { pinnedRunnerId: backToSession ? input.sessionRunnerId : row.runnerId };
+}
 
 function snapshotCommit(workspace: string, repository: { owner: string; repo: string }) {
   const fd = openSync(`${workspace}.repository.json`, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -243,12 +289,15 @@ export function createRemoteAgentRunner(options: {
   pollIntervalMs?: number;
   /** How long a run may go without a runner event before Paws asks whether the runner has it. */
   silentRunMs?: number;
+  /** How long a run may go without a runner event before Paws stops it, confirmed or not. */
+  hungRunMs?: number;
   placement?: RunnerPlacement;
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
+  const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
   const reservations = new Map<string, string>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
@@ -377,6 +426,20 @@ export function createRemoteAgentRunner(options: {
       await delay(interval * 20, undefined, { signal: placement.signal });
     }
   }
+  /**
+   * A placement that went stale before assignment, usually a runner restarting, is not a run
+   * failure. Nothing was assigned, so the item waits for a runner like an offline one and is
+   * placed again with the runner-wait backoff, on the same runner once it is back or another.
+   */
+  function placementRace(itemId: string, runnerId: string, error: PlacementRaceError) {
+    const name =
+      db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(runnerId)
+        ?.name ?? runnerId;
+    journal(
+      `item ${itemId} placement on runner ${runnerId} raced: ${error.message}; placing again`,
+    );
+    return new RunnerCapacityWait([], undefined, [`${name}: ${error.message}`]);
+  }
   /** Whether any runner has already run work, not just preparation, for the item. */
   function startedWork(itemId: string): boolean {
     return (
@@ -434,6 +497,11 @@ export function createRemoteAgentRunner(options: {
     );
     if (pinnedOnline)
       candidates = candidates.filter((runner) => runner.id === placement.pinnedRunnerId);
+    else if (placement.preferRunnerId)
+      candidates = [
+        ...candidates.filter((runner) => runner.id === placement.preferRunnerId),
+        ...candidates.filter((runner) => runner.id !== placement.preferRunnerId),
+      ];
     placement.signal?.throwIfAborted();
     offered.push(...candidates.map((runner) => runner.id));
     const pending = unassigned();
@@ -473,16 +541,27 @@ export function createRemoteAgentRunner(options: {
     }
     return null;
   }
-  function attachedWork(itemId: string, role: RunAgentOptions["role"]) {
+  /**
+   * The open work a runner kept for the item. A Closeout review or check run passes its prompt,
+   * which names the heads it covers: it attaches only to the same command, and cancels other open
+   * work no attempt here is reading so it can be placed again.
+   */
+  function attachedWork(itemId: string, type: WorkCommand["type"], closeoutPrompt?: string) {
     const runId = getWorkItem(db, itemId)?.currentRunId;
     if (!runId) return undefined;
     const row = db
       .query<
-        { runnerId: string; workspaceId: string; envelope: string; cursor: number },
+        {
+          runnerId: string;
+          workspaceId: string;
+          envelope: string;
+          cursor: number;
+          generation: number;
+        },
         [string, number]
       >(
         `SELECT w.runner_id AS runnerId, w.workspace_id AS workspaceId, c.envelope,
-         w.consumed_sequence AS cursor
+         w.consumed_sequence AS cursor, w.generation
          FROM runner_work w JOIN runner_command c ON c.id=w.command_id
          WHERE w.run_id=?1 AND w.ended_at IS NULL AND (w.lease_until>?2 OR EXISTS(
            SELECT 1 FROM runner_result r
@@ -495,7 +574,31 @@ export function createRemoteAgentRunner(options: {
         "utf8",
       ),
     ) as WorkCommand;
-    if (command.type !== (role === "reviewer" ? "review" : "run")) return undefined;
+    if (
+      closeoutPrompt !== undefined &&
+      (command.type !== type || command.prompt !== closeoutPrompt)
+    ) {
+      // The run holds one command at a time, so the stale one would block the new assignment.
+      if (!reservations.has(runId)) {
+        try {
+          const issuedAt = now();
+          work.enqueue({
+            id: randomUUID(),
+            runnerId: row.runnerId,
+            workspaceId: row.workspaceId,
+            issuedAt,
+            expiresAt: issuedAt + 60_000,
+            type: "cancel",
+            runId,
+            generation: row.generation,
+          });
+        } catch (error) {
+          journalCaught(error, "runner-backend.attachedWork.cancelStale", itemId);
+        }
+      }
+      return undefined;
+    }
+    if (command.type !== type) return undefined;
     return {
       selected: {
         id: row.runnerId,
@@ -503,8 +606,9 @@ export function createRemoteAgentRunner(options: {
         runId,
       },
       assigned: command,
-      baseSha: command.repository!.baseSha,
-      mainSha: command.repository!.mainSha,
+      // A response task without a repository has no commit.
+      baseSha: command.repository?.baseSha,
+      mainSha: command.type === "task" ? undefined : command.repository.mainSha,
       deadline: command.expiresAt,
       cursor: row.cursor,
     };
@@ -590,23 +694,23 @@ export function createRemoteAgentRunner(options: {
           );
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
-        const holder =
+        const continuesSession =
           !responseTask &&
           !input.prepareOnly &&
           input.role === "implementer" &&
-          input.checkpoint !== false
-            ? sessionHolder(db, itemId)
-            : undefined;
+          input.checkpoint !== false;
+        const holder = continuesSession ? sessionHolder(db, itemId) : undefined;
         const session = holder?.agent === profile.agent ? { runnerId: holder.runnerId } : undefined;
         const runId = getWorkItem(db, itemId)?.currentRunId;
-        const pinnedRunnerId =
+        const { pinnedRunnerId, preferRunnerId } =
           !input.prepareOnly && runId
-            ? db
-                .query<{ runnerId: string }, [string]>(
-                  "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=?",
-                )
-                .get(runId)?.runnerId
-            : undefined;
+            ? runRunner(db, {
+                itemId,
+                runId,
+                continuesSession,
+                ...(session ? { sessionRunnerId: session.runnerId } : {}),
+              })
+            : {};
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
           profile,
@@ -614,6 +718,7 @@ export function createRemoteAgentRunner(options: {
           purpose: input.prepareOnly ? "prepare" : "work",
           excludeRunnerIds: excluded,
           ...(pinnedRunnerId ? { pinnedRunnerId } : {}),
+          ...(preferRunnerId ? { preferRunnerId } : {}),
           ...(move.from ? { handedOverFrom: move.from } : {}),
           ...(session ? { session } : {}),
           // A moved run prefers a runner that can continue its saved agent session.
@@ -637,8 +742,18 @@ export function createRemoteAgentRunner(options: {
             : {}),
           signal: input.signal,
         };
-        const attached =
-          !input.prepareOnly && !responseTask ? attachedWork(itemId, input.role) : undefined;
+        // A Closeout review or check run: work that continues no session and runs while verifying.
+        const closeoutWork =
+          !responseTask && (input.role === "reviewer" || input.checkpoint === false);
+        // Work a runner kept through a Paws restart is read from where it stopped. A response
+        // task binds its Linear session again below, before any event is read.
+        const attached = input.prepareOnly
+          ? undefined
+          : attachedWork(
+              itemId,
+              responseTask ? "task" : input.role === "reviewer" ? "review" : "run",
+              closeoutWork ? input.prompt : undefined,
+            );
         const chosen = attached
           ? undefined
           : move.from
@@ -669,12 +784,12 @@ export function createRemoteAgentRunner(options: {
         let transcriptBytes = 0;
         let previousTranscript = Buffer.alloc(0);
         const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
-        const emit = async (event: AcpEvent) => {
+        const emit = async (event: AcpEvent, origin?: AcpEventOrigin) => {
           const line = `${JSON.stringify({ t: new Date(now()).toISOString(), event })}\n`;
           transcriptBytes += Buffer.byteLength(line);
           if (transcriptBytes > 16_777_216) throw new Error("Remote transcript exceeds limit");
           appendFileSync(transcript, line, { mode: 0o600 });
-          await input.onEvent?.(event);
+          await input.onEvent?.(event, origin);
         };
         try {
           const taskScope = responseTask
@@ -691,27 +806,33 @@ export function createRemoteAgentRunner(options: {
           if (input.prepareOnly) {
             const id = randomUUID();
             const issuedAt = now();
-            immediate(db, () => {
-              work.enqueue({
-                id,
-                runnerId: selected.id,
-                workspaceId: selected.workspaceId,
-                issuedAt,
-                expiresAt: issuedAt + 120_000,
-                type: "probe",
-                profile,
+            try {
+              immediate(db, () => {
+                work.enqueue({
+                  id,
+                  runnerId: selected.id,
+                  workspaceId: selected.workspaceId,
+                  issuedAt,
+                  expiresAt: issuedAt + 120_000,
+                  type: "probe",
+                  profile,
+                });
+                options.placement?.started({
+                  commandId: id,
+                  runnerId: selected.id,
+                  itemId,
+                  runId: selected.runId,
+                  profile,
+                  role: input.role,
+                  purpose: "prepare",
+                  startedAt: issuedAt,
+                });
               });
-              options.placement?.started({
-                commandId: id,
-                runnerId: selected.id,
-                itemId,
-                runId: selected.runId,
-                profile,
-                role: input.role,
-                purpose: "prepare",
-                startedAt: issuedAt,
-              });
-            });
+            } catch (error) {
+              if (error instanceof PlacementRaceError)
+                throw placementRace(itemId, selected.id, error);
+              throw error;
+            }
             while (now() < issuedAt + 120_000) {
               signal.throwIfAborted();
               if (taskScope)
@@ -759,6 +880,14 @@ export function createRemoteAgentRunner(options: {
            */
           const importCheckpoint = async (networkGit: (args: string[]) => Promise<string>) => {
             const scoped = work.scope(selected.runId, selected.workspaceId);
+            if (scoped.repository && scoped.item.branchName)
+              await fastForwardToBranchTip({
+                worktree: input.worktreePath,
+                branch: scoped.item.branchName,
+                remoteUrl: scoped.repository.remoteUrl,
+                networkGit,
+                signal,
+              });
             const wip = getWorkItem(db, itemId)?.checkpoint?.wipCommit;
             const head = (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
             if (!wip || wip === head || !scoped.repository) return;
@@ -962,14 +1091,6 @@ export function createRemoteAgentRunner(options: {
                   : head;
               if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
                 saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
-              const acceptsMainCommit = versionAtLeast(
-                db
-                  .query<{ version: string | null }, [string]>(
-                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                  )
-                  .get(selected.id)?.version,
-                MAIN_COMMIT_RUNNER_VERSION,
-              );
               const acceptsRebase =
                 !taskScope &&
                 versionAtLeast(
@@ -1018,7 +1139,6 @@ export function createRemoteAgentRunner(options: {
               const mainCandidate = input.mainSha ?? fetchedMain ?? checkpointBase;
               const mainSha =
                 !taskScope &&
-                acceptsMainCommit &&
                 baseSha &&
                 mainCandidate &&
                 mainCandidate !== baseSha &&
@@ -1066,8 +1186,12 @@ export function createRemoteAgentRunner(options: {
                     runner.id === selected.id && runner.workspaceId === selected.workspaceId,
                 );
                 if (!admitted)
-                  throw new RunnerUnavailableError(
-                    "Selected runner is no longer available after preparation",
+                  throw placementRace(
+                    itemId,
+                    selected.id,
+                    new PlacementRaceError(
+                      "Selected runner is no longer available after preparation",
+                    ),
                   );
               }
               signal.throwIfAborted();
@@ -1192,9 +1316,7 @@ export function createRemoteAgentRunner(options: {
                         checkoutExclusions,
                         ...(mainSha ? { mainSha } : {}),
                       },
-                      ...(acceptsMainCommit &&
-                      input.role !== "reviewer" &&
-                      input.checkpoint === false
+                      ...(input.role !== "reviewer" && input.checkpoint === false
                         ? { checkpoint: false as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -1210,34 +1332,40 @@ export function createRemoteAgentRunner(options: {
                         : {}),
                     }),
               };
-              immediate(db, () => {
-                if (!runnerHasCapacity(db, selected.id, now(), selected.runId))
-                  throw new RetryableRunnerError(
-                    selected.id,
-                    "Runner became busy before assignment",
-                    undefined,
-                    false,
-                    undefined,
-                    true,
-                  );
-                work.assign(assigned);
-                // The command now carries the lost-commit handoff, so it is no longer pending.
-                const delivered = lostNote ? getWorkItem(db, itemId)?.checkpoint : undefined;
-                if (delivered?.lostCommits) {
-                  const { lostCommits: _sent, ...rest } = delivered;
-                  saveCheckpoint(db, itemId, rest);
-                }
-                options.placement?.started({
-                  commandId: assigned.id,
-                  runnerId: selected.id,
-                  itemId,
-                  runId: selected.runId,
-                  profile,
-                  role: input.role,
-                  purpose: "work",
-                  startedAt: issuedAt,
+              try {
+                immediate(db, () => {
+                  if (!runnerHasCapacity(db, selected.id, now(), selected.runId))
+                    throw new RetryableRunnerError(
+                      selected.id,
+                      "Runner became busy before assignment",
+                      undefined,
+                      false,
+                      undefined,
+                      true,
+                    );
+                  work.assign(assigned);
+                  // The command now carries the lost-commit handoff, so it is no longer pending.
+                  const delivered = lostNote ? getWorkItem(db, itemId)?.checkpoint : undefined;
+                  if (delivered?.lostCommits) {
+                    const { lostCommits: _sent, ...rest } = delivered;
+                    saveCheckpoint(db, itemId, rest);
+                  }
+                  options.placement?.started({
+                    commandId: assigned.id,
+                    runnerId: selected.id,
+                    itemId,
+                    runId: selected.runId,
+                    profile,
+                    role: input.role,
+                    purpose: "work",
+                    startedAt: issuedAt,
+                  });
                 });
-              });
+              } catch (error) {
+                if (error instanceof PlacementRaceError)
+                  throw placementRace(itemId, selected.id, error);
+                throw error;
+              }
               for (const notice of runtimeNotices)
                 await emit({ type: "progress", text: `${notice}\n` });
               const name = (id: string) =>
@@ -1311,13 +1439,13 @@ export function createRemoteAgentRunner(options: {
                 "SELECT confirmed_at AS confirmedAt,lost_at AS lostAt FROM runner_work WHERE run_id=? AND generation=?",
               )
               .get(assigned.runId, assigned.generation);
-          const lostRun = async (how: string) => {
+          const lostRun = async (how: string, thought = RUN_LOST_THOUGHT) => {
             journal(
               `item ${itemId} run ${assigned.runId} generation ${assigned.generation} lost on runner ${selected.id}: ${how}`,
             );
             if (!toldLost.has(itemId)) {
               toldLost.add(itemId);
-              await emit({ type: "progress", text: `${RUN_LOST_THOUGHT}\n` });
+              await emit({ type: "progress", text: `${thought}\n` });
             }
             return new RetryableRunnerError(
               selected.id,
@@ -1393,55 +1521,72 @@ export function createRemoteAgentRunner(options: {
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
               const event = row.event;
+              const origin = {
+                runId: assigned.runId,
+                generation: assigned.generation,
+                sequence: row.sequence,
+              };
               if (event.type === "activity") {
                 if (event.update.sessionUpdate === "agent_message_chunk" && taskScope)
-                  await emit({
-                    type: "progress",
-                    text: event.update.content.text,
-                    messageChunk: true,
-                  });
-                else if (event.update.sessionUpdate === "agent_message_chunk")
-                  await emit({
-                    type: "session_update",
-                    sessionId: assigned.id,
-                    update: {
-                      ...event.update,
-                      sessionUpdate:
-                        input.role === "reviewer" ? "agent_thought_chunk" : "agent_message_chunk",
+                  await emit(
+                    {
+                      type: "progress",
+                      text: event.update.content.text,
+                      messageChunk: true,
                     },
-                  });
+                    origin,
+                  );
+                else if (event.update.sessionUpdate === "agent_message_chunk")
+                  await emit(
+                    {
+                      type: "session_update",
+                      sessionId: assigned.id,
+                      update: {
+                        ...event.update,
+                        sessionUpdate:
+                          input.role === "reviewer" ? "agent_thought_chunk" : "agent_message_chunk",
+                      },
+                    },
+                    origin,
+                  );
                 else
-                  await emit({
-                    type: "session_update",
-                    sessionId: assigned.id,
-                    update: event.update,
-                  });
+                  await emit(
+                    {
+                      type: "session_update",
+                      sessionId: assigned.id,
+                      update: event.update,
+                    },
+                    origin,
+                  );
               }
               if (event.type === "permission")
-                await emit({ type: "permission", ...event.permission });
+                await emit({ type: "permission", ...event.permission }, origin);
               if (event.type === "session_restore" && restore) {
                 const { notice, plan } = restore;
                 restore = undefined;
-                await emit({
-                  type: "progress",
-                  text: sessionMoveNotice({
-                    db,
-                    ...notice,
-                    outcome: event.restored
-                      ? { restored: true, turn: plan.turn }
-                      : {
-                          restored: false,
-                          failure: event.reason ?? "load",
-                          versions: {
-                            saved: plan.restoreSession.agentVersion,
-                            savedOn: plan.sourceRunnerId,
-                            target: plan.targetVersion,
+                await emit(
+                  {
+                    type: "progress",
+                    text: sessionMoveNotice({
+                      db,
+                      ...notice,
+                      outcome: event.restored
+                        ? { restored: true, turn: plan.turn }
+                        : {
+                            restored: false,
+                            failure: event.reason ?? "load",
+                            versions: {
+                              saved: plan.restoreSession.agentVersion,
+                              savedOn: plan.sourceRunnerId,
+                              target: plan.targetVersion,
+                            },
                           },
-                        },
-                  }),
-                });
+                    }),
+                  },
+                  origin,
+                );
               }
-              if (event.type === "hook_failed") await emit(event);
+              if (event.type === "hook_failed") await emit(event, origin);
               if (event.type === "checkpoint" && assigned.type === "run")
                 recordRunnerCheckpoint(db, {
                   itemId,
@@ -1455,13 +1600,16 @@ export function createRemoteAgentRunner(options: {
                   db
                     .query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?")
                     .get(selected.id)?.name ?? selected.id;
-                await emit({
-                  type: "progress",
-                  text:
-                    event.reason === "timeout"
-                      ? `${runner} found no safe point to hand this session over within 2 minutes, so it keeps running there.\n`
-                      : `${runner} stopped this session for a move but couldn't ${HANDOVER_FAILURE_STEP[event.reason ?? "publication"]}, so it stays there and goes on with its next turn.\n`,
-                });
+                await emit(
+                  {
+                    type: "progress",
+                    text:
+                      event.reason === "timeout"
+                        ? `${runner} found no safe point to hand this session over within 2 minutes, so it keeps running there.\n`
+                        : `${runner} stopped this session for a move but couldn't ${HANDOVER_FAILURE_STEP[event.reason ?? "publication"]}, so it stays there and goes on with its next turn.\n`,
+                  },
+                  origin,
+                );
               }
               // Runners from before the start line named the runtimes still report the install.
               if (
@@ -1469,13 +1617,19 @@ export function createRemoteAgentRunner(options: {
                 !(event.notice && /^Installed runtimes /.test(event.text))
               ) {
                 if (input.postUpdate && !event.notice)
-                  await input.postUpdate.post(event.text).catch((caughtError3) => {
+                  await input.postUpdate.post(event.text, origin).catch((caughtError3) => {
                     journalCaught(caughtError3, "runner-backend.forItem.post", itemId);
                     return undefined;
                   });
-                else await emit({ type: "progress", text: event.text });
+                else await emit({ type: "progress", text: event.text }, origin);
               }
-              if (event.type === "closeout_policy") {
+              // A replay after a restart keeps the stored answer instead of publishing again.
+              const answered =
+                (event.type === "artifact" || event.type === "closeout_policy") &&
+                results.answered(assigned.runId, assigned.generation, row.sequence) !== null;
+              if (answered && event.type === "artifact" && event.dropped === undefined)
+                publishedEffects = true;
+              if (event.type === "closeout_policy" && !answered) {
                 const policy = input.closeoutPolicy
                   ? await input.closeoutPolicy().catch((error: unknown) => {
                       journalCaught(error, "runner-backend.forItem.closeoutPolicy", itemId);
@@ -1496,7 +1650,7 @@ export function createRemoteAgentRunner(options: {
                   answer: encodePolicyFiles(policy),
                 });
               }
-              if (event.type === "artifact" && event.dropped !== undefined) {
+              if (event.type === "artifact" && !answered && event.dropped !== undefined) {
                 journal(
                   `item ${itemId} runner dropped artifact ${JSON.stringify(event.artifact.path)}: ${event.dropped}`,
                 );
@@ -1509,7 +1663,7 @@ export function createRemoteAgentRunner(options: {
                     error: `${event.artifact.path} was not published: ${event.dropped}.`,
                   }),
                 });
-              } else if (event.type === "artifact") {
+              } else if (event.type === "artifact" && !answered) {
                 if (!input.publishArtifact || !options.artifacts)
                   throw new Error("Remote artifact publication is unavailable");
                 const snapshot = options.artifacts.snapshot(
@@ -1542,33 +1696,37 @@ export function createRemoteAgentRunner(options: {
                     throw error;
                   });
                 publishedEffects = true;
-                signal.throwIfAborted();
+                // Store the outcome before a shutdown stops the read, so a replay does not publish again.
                 results.answer({
                   runId: assigned.runId,
                   generation: assigned.generation,
                   sequence: row.sequence,
                   answer: JSON.stringify(publication),
                 });
+                signal.throwIfAborted();
               }
               if (event.type === "pull_request")
                 await input.pullRequest?.update({ title: event.title, body: event.body });
               if (event.type === "closeout") await input.closeoutProgress?.record(event.progress);
               if (event.type === "plan")
-                await emit({
-                  type: "session_update",
-                  sessionId: assigned.id,
-                  update: {
-                    sessionUpdate: "plan",
-                    entries: event.steps.map((step) => ({
-                      content: step.content,
-                      priority: "medium" as const,
-                      status: (step.status === "inProgress" ? "in_progress" : step.status) as
-                        | "pending"
-                        | "in_progress"
-                        | "completed",
-                    })),
+                await emit(
+                  {
+                    type: "session_update",
+                    sessionId: assigned.id,
+                    update: {
+                      sessionUpdate: "plan",
+                      entries: event.steps.map((step) => ({
+                        content: step.content,
+                        priority: "medium" as const,
+                        status: (step.status === "inProgress" ? "in_progress" : step.status) as
+                          | "pending"
+                          | "in_progress"
+                          | "completed",
+                      })),
+                    },
                   },
-                });
+                  origin,
+                );
               if (event.type === "question") {
                 if (question) throw new Error("Remote runner sent overlapping questions");
                 if (!input.askTeam) throw new Error("Remote question channel is unavailable");
@@ -1615,12 +1773,17 @@ export function createRemoteAgentRunner(options: {
             if (pendingEvents.length === 64) continue;
             if (!complete && results.read(assigned.runId, assigned.generation, assigned.id))
               continue;
-            // A long silence is checked against the runner. A question waits on a person, and a
-            // runner that still names the command in its heartbeat keeps a quiet tool call.
-            if (options.placement && !question && now() - heardAt >= silentRunMs) {
+            // A long silence is checked against the runner. A question waits on a person, so its
+            // wait is not silence. A runner that still names the command in its heartbeat keeps a
+            // quiet tool call until the hung bound, where the agent is stopped all the same.
+            if (question) heardAt = now();
+            if (options.placement && now() - heardAt >= silentRunMs) {
               const confirmedAt = liveness()?.confirmedAt ?? null;
-              if (confirmedAt === null || confirmedAt <= now() - RUN_CONFIRMATION_MS) {
+              const unconfirmed =
+                confirmedAt === null || confirmedAt <= now() - RUN_CONFIRMATION_MS;
+              if (unconfirmed || now() - heardAt >= hungRunMs) {
                 const at = now();
+                const minutes = Math.round((at - heardAt) / 60_000);
                 const recovered = immediate(db, () => {
                   db.run(
                     "UPDATE runner_work SET ended_at=?,lost_at=? WHERE run_id=? AND generation=? AND ended_at IS NULL",
@@ -1637,7 +1800,10 @@ export function createRemoteAgentRunner(options: {
                 });
                 if (!recovered?.retryable) throw new Error(RUN_LOST_MESSAGE);
                 throw await lostRun(
-                  `no runner event for ${Math.round((at - heardAt) / 60_000)} minutes and the runner does not confirm the command`,
+                  unconfirmed
+                    ? `no runner event for ${minutes} minutes and the runner does not confirm the command`
+                    : `no runner event for ${minutes} minutes although the runner confirms the command, so the agent is hung`,
+                  unconfirmed ? RUN_LOST_THOUGHT : RUN_HUNG_THOUGHT(minutes),
                 );
               }
             }
@@ -1703,6 +1869,12 @@ export function createRemoteAgentRunner(options: {
             await input.askTeam.ask(
               {
                 question: `Paws could not push the candidate to \`${complete.pushFailure.branch}\` on GitHub:\n\n\`\`\`\n${complete.pushFailure.error}\n\`\`\`\n\nFix the cause if it needs one, then reply to run the task again.`,
+                pushRejected: {
+                  branch: complete.pushFailure.branch,
+                  ...(complete.pushFailure.conflicts
+                    ? { conflicts: complete.pushFailure.conflicts }
+                    : {}),
+                },
               },
               { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
             );
@@ -1861,12 +2033,18 @@ export function createRemoteAgentRunner(options: {
             transcriptPath: transcript,
           };
         } finally {
+          // A Paws restart leaves implementer work and response tasks running on the runner, and
+          // a verifying item's Closeout review or check run; the startup resume or re-verify
+          // reattaches to them.
+          const state = getWorkItem(db, itemId)?.state;
           const detached =
             signal.reason instanceof PawsShutdown &&
-            command?.type === "run" &&
-            command.checkpoint !== false &&
-            !responseTask &&
-            getWorkItem(db, itemId)?.state === "running";
+            command !== undefined &&
+            (closeoutWork
+              ? state === "verifying"
+              : ((command.type === "run" && command.checkpoint !== false) ||
+                  command.type === "task") &&
+                state === "running");
           // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
           // first, and the next turn starts from it.
           const saving =
@@ -1918,16 +2096,14 @@ export function createRemoteAgentRunner(options: {
 
 export { createRemoteSessionAgentRunner } from "./helpers";
 
-export { fetchRunnerCandidate } from "./candidate";
+export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
 export { ensureStartOnRemote, RemoteStartUnverified } from "./start-commit";
 
-export { CHECKPOINT_RUNNER_VERSION, createRemoteCheckpoint } from "./checkpoint";
+export { remoteCommandsGone } from "./released";
 
-export {
-  createRemoteHandover,
-  HANDOVER_RUNNER_VERSION,
-  type RunnerHandoverOutcome,
-} from "./handover";
+export { createRemoteCheckpoint } from "./checkpoint";
+
+export { createRemoteHandover, type RunnerHandoverOutcome } from "./handover";
 
 const HANDOVER_FAILURE_STEP = {
   commit: "commit its work in progress",

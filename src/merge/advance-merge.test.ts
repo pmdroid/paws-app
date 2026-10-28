@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
+  completeMergedItem,
   enqueueJob,
   getConfirmedRemoteMerge,
   getWorkItem,
@@ -186,6 +187,53 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     };
     expect(await h.pass("ENG-1")).toEqual({ kind: "obsolete" });
     expect(h.github.merged).toEqual([]);
+  });
+});
+
+describe("advanceMerge and a pull request merged outside the lane", () => {
+  test("a hand merge on GitHub merges the item without publishing or squashing again", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    await h.addItem("ENG-1");
+    const later = enqueueJob(h.db, {
+      queue: JOB_KIND.merge,
+      jobKey: "merge:ENG-1:later",
+      payload: { itemId: "ENG-1" },
+      now: h.clock.now(),
+    });
+    h.state.handMerged.set(1, "hand-merge-sha");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(h.published).toEqual([]);
+    expect(h.github.merged).toEqual([]);
+    expect(getConfirmedRemoteMerge(h.db, "ENG-1")).toMatchObject({
+      pullNumber: 1,
+      pullUrl: "https://github.com/acme/app/pull/1",
+      mergeSha: "hand-merge-sha",
+    });
+    expect(h.db.query("SELECT item_id FROM merge_queue_entry").all()).toEqual([]);
+    // What the job runner does with a merged step: the item is merged and its merge work stops.
+    completeMergedItem(h.db, { itemId: "ENG-1", now: h.clock.now() });
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merged");
+    expect(listJobs(h.db).find((job) => job.id === later)?.status).toBe("cancelled");
+  });
+
+  test("a hand merge during the turn merges the item instead of failing it", async () => {
+    const h = await start();
+    await h.addItem("ENG-1");
+    h.state.handMerged.set(1, "hand-merge-sha");
+    h.state.handMergeSeenAfter = 1;
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(h.published).toEqual(["ENG-1"]);
+    expect(h.github.merged).toEqual([]);
+    expect(getConfirmedRemoteMerge(h.db, "ENG-1")?.mergeSha).toBe("hand-merge-sha");
+  });
+
+  test("a stop after the hand merge is read completes the item and makes the pass obsolete", async () => {
+    const h = await start();
+    await h.addItem("ENG-1");
+    h.state.handMerged.set(1, "hand-merge-sha");
+    h.state.stopped = true;
+    expect(await h.pass("ENG-1")).toEqual({ kind: "obsolete" });
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merged");
   });
 });
 
@@ -384,6 +432,26 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([head]);
     expect(reverifyJobs(h)).toEqual([]);
+  });
+
+  test("green: main changed the same package, and the accepted head still merges without a rebase", async () => {
+    const h = await start({ settings: { mainMoved: "green" } });
+    h.state.packages = ["apps/*"];
+    const item = await h.addItem("ENG-1", { file: "apps/web/a.txt", content: "a\n" });
+    await h.moveMain("apps/web/b.txt", "b\n");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
+    expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
+    expect(reverifyJobs(h)).toEqual([]);
+  });
+
+  test("green: GitHub's up-to-date rule still updates the branch and waits for CI", async () => {
+    const h = await start({ settings: { mainMoved: "green" } });
+    h.state.upToDateRule = true;
+    const item = await h.addItem("ENG-1");
+    await h.moveMain("side.txt", "side\n");
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(await h.remoteHead("ENG-1")).not.toBe(item.accepted);
   });
 
   test("overlap: GitHub's up-to-date rule updates the branch and waits for CI", async () => {

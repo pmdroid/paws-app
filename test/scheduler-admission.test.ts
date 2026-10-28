@@ -10,6 +10,7 @@ import {
   enqueueJob,
   ensureLinearSession,
   getQueuePosition,
+  getWorkItem,
   insertQueuedItem,
   insertRun,
   listQueuePositions,
@@ -377,6 +378,71 @@ test("work stuck in flight with no job is queued again and doesn't block other s
     assert.equal(
       db.query("SELECT 1 FROM outbox WHERE ordering_key='stuck-session'").get() !== null,
       true,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+function mergeQueueItem(db: ReturnType<typeof tempDb>, id: string): void {
+  insertQueuedItem(db, { id, now: 0, sessionKey: `${id}-session` });
+  bindWorkItemRepository(db, id, repository);
+  applyWorkItemEvent(db, id, "dispatched");
+  applyWorkItemEvent(db, id, "turn_ended");
+  applyWorkItemEvent(db, id, "closeout_accepted");
+}
+
+test("an item in merge_queue whose merge job is gone fails closed into a re-verify", () => {
+  const db = tempDb();
+  try {
+    mergeQueueItem(db, "merging");
+    const finished = enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      payload: { itemId: "merging", head: "h", summary: "s" },
+      now: 0,
+    });
+    db.run("UPDATE job SET status='dead', finished_at=0 WHERE id=?", [finished]);
+    const now = 10 * 60_000;
+    workspaceDispatch(db, { now });
+    assert.equal(getWorkItem(db, "merging")?.state, "verifying");
+    const job = claimNextJob(db, { now });
+    assert.equal(job?.queue, JOB_KIND.reverify);
+    assert.deepEqual(job?.payload, {
+      itemId: "merging",
+      runId: null,
+      recheckHead: true,
+      failClosed: true,
+    });
+    assert.equal(
+      db.query("SELECT 1 FROM outbox WHERE ordering_key='merging-session'").get() !== null,
+      true,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("an item in merge_queue with a parked merge job is left in the queue", () => {
+  const db = tempDb();
+  try {
+    mergeQueueItem(db, "waiting");
+    enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      payload: { itemId: "waiting", head: "h", summary: "s" },
+      now: 0,
+      runAt: 60 * 60_000,
+    });
+    const older = enqueueJob(db, {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: "waiting" },
+      now: 0,
+    });
+    db.run("UPDATE job SET status='done', finished_at=0 WHERE id=?", [older]);
+    workspaceDispatch(db, { now: 10 * 60_000 });
+    assert.equal(getWorkItem(db, "waiting")?.state, "merge_queue");
+    assert.equal(
+      db.query(`SELECT 1 FROM job WHERE queue='${JOB_KIND.reverify}' AND status='pending'`).get(),
+      null,
     );
   } finally {
     db.close();

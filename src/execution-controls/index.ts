@@ -2,9 +2,11 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
 import {
+  CLEANUP_BLOCKED_NOTICE,
   auditWorkspaceAccess,
   deadDeliveryIsFinalStop,
   deadDeliveryItemId,
+  getConversation,
   getLinearSession,
   getWorkItem,
   getWorkspace,
@@ -22,6 +24,12 @@ export type ExecutionControlPort = {
   pauseItem(itemId: string, canAct?: () => boolean, onCommitted?: () => void): Promise<boolean>;
   resumeItem(itemId: string, canAct?: () => boolean, onCommitted?: () => void): Promise<boolean>;
   interruptItem(itemId: string): Promise<void>;
+  /** A person vouches that the item's old agent is gone; clears its conversation block. */
+  clearStuckAgent(
+    itemId: string,
+    canAct?: () => boolean,
+    onCommitted?: () => void,
+  ): Promise<boolean>;
 };
 
 export function createExecutionControls(input: {
@@ -130,6 +138,12 @@ export function createExecutionControls(input: {
         typeof itemId === "string"
           ? authorized(itemId, principal, sessionIds, { stoppedSession })
           : null;
+      // The dashboard asks for every item it shows; "none" is an answer, not a denial.
+      if (!item && request.method === "GET")
+        return Response.json(
+          { available: true, itemId, actions: [] },
+          { headers: { "Cache-Control": "no-store" } },
+        );
       if (!item) {
         auditWorkspaceAccess(input.db, {
           workspaceId: principal.workspaceId,
@@ -162,21 +176,35 @@ export function createExecutionControls(input: {
         return Response.json({ applied: true, itemId: item.id, action: "retry" });
       }
       const port = input.getPort(principal.workspaceId);
-      const actions = (TERMINAL_WORK_ITEM_STATES as readonly string[]).includes(item.state)
-        ? []
-        : [
-            "stop",
-            ...(item.currentRunId && usagePause(input.db, item.currentRunId)
-              ? ["resume_now"]
-              : item.state === "running"
-                ? ["pause"]
-                : item.state === "paused"
-                  ? ["resume"]
-                  : []),
-          ];
+      const blocked = getConversation(input.db, item.id).blocked;
+      // Only an owner or admin may vouch that the old agent is gone: a wrong call runs two.
+      const vouches = () => {
+        const role = workspaceMember(input.db, principal.workspaceId, principal.userId)?.role;
+        return role === "owner" || role === "admin";
+      };
+      const actions = [
+        ...((TERMINAL_WORK_ITEM_STATES as readonly string[]).includes(item.state)
+          ? []
+          : [
+              "stop",
+              ...(item.currentRunId && usagePause(input.db, item.currentRunId)
+                ? ["resume_now"]
+                : item.state === "running"
+                  ? ["pause"]
+                  : item.state === "paused"
+                    ? ["resume"]
+                    : []),
+            ]),
+        ...(blocked && vouches() ? ["clear_stuck_agent"] : []),
+      ];
       if (request.method === "GET")
         return Response.json(
-          { available: port !== null, itemId, actions: port ? actions : [] },
+          {
+            available: port !== null,
+            itemId,
+            actions: port ? actions : [],
+            ...(blocked ? { notice: CLEANUP_BLOCKED_NOTICE } : {}),
+          },
           { headers: { "Cache-Control": "no-store" } },
         );
       const action = body["action"];
@@ -185,6 +213,19 @@ export function createExecutionControls(input: {
           { error: "Execution controls are not ready. Try again." },
           { status: 503 },
         );
+      if (action === "clear_stuck_agent" && !vouches()) {
+        auditWorkspaceAccess(input.db, {
+          workspaceId: principal.workspaceId,
+          userId: principal.userId,
+          action: "access.denied",
+          subject: `execution.clear_stuck_agent:${item.id}`,
+          now: now(),
+        });
+        return Response.json(
+          { error: "Only a workspace owner or admin can clear a stuck agent." },
+          { status: 403 },
+        );
+      }
       if (typeof action !== "string" || !actions.includes(action))
         return Response.json(
           { error: "This action is no longer available. Refresh the run." },
@@ -226,6 +267,8 @@ export function createExecutionControls(input: {
             })
             .immediate();
           if (applied) await port.interruptItem(item.id);
+        } else if (action === "clear_stuck_agent") {
+          applied = await port.clearStuckAgent(item.id, () => vouches() && canAct(), onCommitted);
         } else if (action === "resume_now") {
           applied = canAct() && resumeUsagePauseNow(input.db, item.currentRunId!, now());
           if (applied) onCommitted();

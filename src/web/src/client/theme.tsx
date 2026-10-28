@@ -226,6 +226,13 @@ function replace(node: DOMNode): ReactElement | undefined {
       ),
     );
   if (has("attempts")) return styled("flex items-center gap-2");
+  // A segment of the issue page's time bar, as wide as its share of the item's age.
+  if (has("time-seg"))
+    return createElement(
+      name,
+      { ...props, style: { flexGrow: Number(attribs["data-ms"]) || 0 } },
+      children(),
+    );
   if (
     name === "i" &&
     node.parent instanceof Element &&
@@ -445,7 +452,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   if (has("run-setup"))
     return styled(
-      "grid min-w-0 grid-cols-1 gap-x-6 gap-y-4 [overflow-wrap:anywhere] sm:grid-cols-[10rem_minmax(0,1fr)] [&>h2]:col-span-full [&>h3]:text-sm [&>h3]:font-semibold",
+      "grid min-w-0 grid-cols-1 gap-x-6 gap-y-4 [overflow-wrap:anywhere] sm:grid-cols-[10rem_minmax(0,1fr)] [&>h3]:col-span-full [&>h4]:text-sm [&>h4]:font-semibold",
     );
   if (has("runner-settings")) return styled("flex min-w-0 flex-col gap-5");
   if (has("runner-setting"))
@@ -456,6 +463,9 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2 [&>.st]:mt-0.5 [&>.st]:justify-self-end [&>.issue-facts]:col-span-full",
     );
+  if (has("finding-facts"))
+    return styled("flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm leading-relaxed");
+  if (has("finding-text")) return styled("text-base leading-relaxed [overflow-wrap:anywhere]");
   if (has("issue-facts")) return styled("flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1");
   if (has("page-heading")) return styled("space-y-2");
   if (has("entity-picker")) return styled("flex w-full min-w-0 max-w-lg flex-col gap-2");

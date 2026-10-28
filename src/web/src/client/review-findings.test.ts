@@ -136,7 +136,7 @@ describe("review findings on the issue page", () => {
     expect(fixed).toContain("Fixed since round 1");
     expect(fixed).not.toContain("Blocked");
 
-    expect(html).toContain("No findings.");
+    expect(html).not.toContain(">security-review</h3>");
   });
 
   test("escapes finding text, which is model output", () => {

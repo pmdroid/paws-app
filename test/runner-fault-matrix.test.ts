@@ -46,10 +46,13 @@ type Fault =
   | "linear-503"
   | "restarted"
   | "silent-live"
-  | "silent-unconfirmed";
+  | "silent-unconfirmed"
+  | "silent-hung";
 
 const RUN_LOST = "The runner lost this run after it restarted; continuing from the branch.";
 const SILENT_RUN_MS = 300;
+const HUNG_RUN_MS = 900;
+const RUN_HUNG = "The agent sent nothing for ";
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const fakeAgent = join(import.meta.dir, "../src/acp/testing/fake-agent.ts");
 const gitConfig = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] as const;
@@ -129,6 +132,24 @@ test("a silent run that the runner does not confirm is recovered after the silen
     result.thoughts.filter((body) => body.includes(RUN_LOST)),
     result.detail,
   ).toEqual([RUN_LOST]);
+  expect(result.runs, result.detail).toEqual(["implement:ended"]);
+}, 60_000);
+
+test("a silent run that the runner still confirms is stopped as hung after the hung bound", async () => {
+  const result = await runRemoteFault("silent-hung");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.retries, result.detail).toEqual([]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  expect(result.hungStopped, result.detail).toBe(true);
+  expect(
+    result.thoughts.filter((body) => body.startsWith(RUN_HUNG)),
+    result.detail,
+  ).toHaveLength(1);
+  expect(
+    result.thoughts.some((body) => body.includes(RUN_LOST)),
+    result.detail,
+  ).toBe(false);
   expect(result.runs, result.detail).toEqual(["implement:ended"]);
 }, 60_000);
 
@@ -315,10 +336,14 @@ async function runRemoteFault(fault: Fault) {
     deferredState: null as string | null,
     heldSlots: null as number | null,
     lostBeforeLease: null as boolean | null,
+    hungStopped: null as boolean | null,
   };
   // The work this fake runner names in its heartbeat, for faults where the runner reports it.
-  const reporting = fault === "restarted" || fault === "silent-live";
-  const live = new Map<string, { command: Extract<RunnerCommand, { type: "run" }>; at: number }>();
+  const reporting = fault === "restarted" || fault === "silent-live" || fault === "silent-hung";
+  const live = new Map<
+    string,
+    { command: Extract<RunnerCommand, { type: "run" }>; at: number; hung?: boolean }
+  >();
   const heartbeat = () =>
     work.heartbeat(
       runnerId,
@@ -343,6 +368,7 @@ async function runRemoteFault(fault: Fault) {
     placement: createRunnerPlacement({ db }),
     pollIntervalMs: 5,
     ...(fault.startsWith("silent") ? { silentRunMs: SILENT_RUN_MS } : {}),
+    ...(fault === "silent-hung" ? { hungRunMs: HUNG_RUN_MS } : {}),
     async fetchCandidate(candidate) {
       await git(["-C", candidate.worktree, "fetch", origin, candidate.candidateSha]);
       await git(["-C", candidate.worktree, "reset", "--hard", candidate.candidateSha]);
@@ -391,7 +417,7 @@ async function runRemoteFault(fault: Fault) {
     pawsRoot: root,
     home: root,
     tracker,
-    repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
+    repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
     retryBaseMs: 10,
     placementPollMs: 5,
     launch() {
@@ -494,7 +520,7 @@ async function runRemoteFault(fault: Fault) {
         if (command.type === "run") deliver(command);
       }
       for (const [key, entry] of live)
-        if (Date.now() - entry.at > SILENT_RUN_MS * 2) {
+        if (!entry.hung && Date.now() - entry.at > SILENT_RUN_MS * 2) {
           live.delete(key);
           deliver(entry.command);
         }
@@ -510,6 +536,19 @@ async function runRemoteFault(fault: Fault) {
         const reply = heartbeat();
         if (lostBefore && reply.fenced.length)
           runner.lostBeforeLease = lostBefore.leaseUntil > Date.now();
+        // A hung agent's lease is no longer renewed although the runner still names its work.
+        for (const [key, entry] of live)
+          if (
+            entry.hung &&
+            !reply.leases.some(
+              (lease) =>
+                lease.runId === entry.command.runId &&
+                lease.generation === entry.command.generation,
+            )
+          ) {
+            live.delete(key);
+            runner.hungStopped = Date.now() - entry.at >= HUNG_RUN_MS;
+          }
       }
       for (const envelope of work.commands(runnerId)) {
         const command = JSON.parse(
@@ -568,6 +607,15 @@ async function runRemoteFault(fault: Fault) {
           runner.faultedAttempts++;
           runner.faulty = false;
           live.set(command.id, { command, at: Date.now() });
+          continue;
+        }
+        if (fault === "silent-hung" && runner.faulty) {
+          // The runner stays alive and names the command, but its agent never sends anything.
+          runner.faultedAttempts++;
+          runner.faulty = false;
+          // Paws starts its silence clock when it issues the command, which a busy machine can
+          // leave well before this loop picks it up, so the hung bound is measured from then.
+          live.set(command.id, { command, at: command.issuedAt, hung: true });
           continue;
         }
         if (fault === "silent-unconfirmed" && runner.faulty) {
@@ -657,6 +705,7 @@ async function runRemoteFault(fault: Fault) {
       deferredState: runner.deferredState,
       heldSlots: runner.heldSlots,
       lostBeforeLease: runner.lostBeforeLease,
+      hungStopped: runner.hungStopped,
       detail: JSON.stringify({
         state: getWorkItem(db, item.id)?.state,
         runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),

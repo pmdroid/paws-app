@@ -29,6 +29,7 @@ import {
   type MergeRepositories,
   type MergeRule,
 } from "./merge";
+import { assignMemberVmKey, renderMemberVmSettings, type MemberVmSize } from "./member-vm";
 import { renderQueueSettings } from "./queue";
 import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
 
@@ -103,6 +104,8 @@ export type PawsConfigFile = {
   queueMaxRunningPerOwner?: number;
   projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
+  /** `[member_vm]`: the exe.dev size Create VM asks for. Missing means exe.dev's default. */
+  memberVm?: MemberVmSize;
 };
 
 /**
@@ -164,7 +167,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       if (
-        !/^(linear|github|tracker|closeout|merge|queue|checkout|caps|agents|server)$/.test(
+        !/^(linear|github|tracker|closeout|merge|queue|checkout|caps|agents|server|member_vm)$/.test(
           section,
         ) &&
         !/^(closeout|merge|checkout|agents|skills)\./.test(section) &&
@@ -253,7 +256,8 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
     renderQueueSettings({
       startTimeoutHours: parseConfigToml(current).queueStartTimeoutHours,
       maxRunningPerOwner: parseConfigToml(current).queueMaxRunningPerOwner,
-    });
+    }) +
+    renderMemberVmSettings(parseConfigToml(current).memberVm);
   const next =
     profiles === null
       ? rendered
@@ -268,6 +272,67 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
   renameSync(tmp, path);
   chmodSync(path, 0o600);
   return true;
+}
+
+export type ConfigKeyValue = string | number | readonly string[] | null;
+
+/**
+ * Set keys in one `[section]` of `config.toml` text, keeping every other line,
+ * section and comment. A null value removes the key. A missing section is appended.
+ */
+export function setConfigKeys(
+  current: string,
+  section: string,
+  values: Record<string, ConfigKeyValue>,
+): string {
+  const pending = new Map(Object.entries(values));
+  const render = (key: string, value: string | number | readonly string[]) =>
+    `${key} = ${typeof value === "string" ? tomlString(value) : typeof value === "number" ? tomlNumber(value) : tomlStringArray(value)}`;
+  const out: string[] = [];
+  let state: "before" | "in" | "after" = "before";
+  let insertAt = -1;
+  for (const line of current.length === 0 ? [] : current.split(/\r?\n/)) {
+    const trimmed = stripComment(line).trim();
+    const heading = /^\[\s*([^[\]]+?)\s*\]$/.exec(trimmed);
+    if (heading?.[1] || trimmed.startsWith("[[")) {
+      if (state === "in") state = "after";
+      if (state === "before" && heading?.[1]?.toLowerCase() === section) state = "in";
+      out.push(line);
+      if (state === "in") insertAt = out.length;
+      continue;
+    }
+    if (state === "in") {
+      const eq = trimmed.indexOf("=");
+      const key = eq > 0 ? trimmed.slice(0, eq).trim().toLowerCase() : "";
+      if (pending.has(key)) {
+        const value = pending.get(key)!;
+        pending.delete(key);
+        if (value !== null) {
+          out.push(render(key, value));
+          insertAt = out.length;
+        }
+        continue;
+      }
+      if (trimmed.length > 0) insertAt = out.length + 1;
+    }
+    out.push(line);
+  }
+  const added = [...pending].flatMap(([key, value]) =>
+    value === null ? [] : [render(key, value)],
+  );
+  if (insertAt >= 0) out.splice(insertAt, 0, ...added);
+  else if (added.length > 0) {
+    while (out.length > 0 && out[out.length - 1]!.trim() === "") out.pop();
+    if (out.length > 0) out.push("");
+    out.push(`[${section}]`, ...added);
+  }
+  const text = out.join("\n");
+  return text.endsWith("\n") || text.length === 0 ? text : `${text}\n`;
+}
+
+function tomlNumber(value: number): string {
+  if (!Number.isFinite(value)) throw new Error("config value must be a finite number");
+  return String(value);
 }
 
 function tomlStringArray(values: readonly string[]): string {
@@ -445,6 +510,10 @@ function assignConfig(
   if (section === "queue") {
     if (key === "start_timeout_hours") config.queueStartTimeoutHours = asInt(value, line);
     if (key === "max_running_per_owner") config.queueMaxRunningPerOwner = asInt(value, line);
+    return;
+  }
+  if (section === "member_vm") {
+    assignMemberVmKey((config.memberVm ??= {}), key, value, line);
     return;
   }
   if (section === "checkout") {

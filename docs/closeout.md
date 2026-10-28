@@ -113,7 +113,7 @@ When the turn ends, the item moves to `verifying` and Paws runs the policy again
   - `scope: diff` is accepted, but the review command has no slot for it, so the review reads what the command reads.
   - `parallel: true` starts the review alongside the command checks instead of after them.
   - `minChangedLines: N` skips the review when the change adds and removes fewer than N lines.
-- **Security review.** In this repository, a candidate that changes a high-risk path also gets `security-review`: a second reviewer, in its own session and on a different model, runs `.agents/skills/security-paws/SKILL.md` on the diff. It checks the rules Paws sets for itself: secrets stay in `~/.paws/secrets` and out of logs and the agent environment, webhooks fail closed, routes and answers check authorization, SQL is not built from input, paths stay inside the worktree, and child processes are not started from input. A P1 or P0 finding fails it. Its `paths` list the high-risk globs, among them `src/auth/**`, `src/credentials/**`, the webhook handlers, route modules, and `.agents/**`. A candidate that touches none of them, such as a docs-only change, skips it.
+- **Security review.** In this repository, a candidate that changes a high-risk path also gets `security-review`: a second reviewer, in its own session and on a different model, runs `.agents/skills/security-paws/SKILL.md` on the diff. It checks the rules Paws sets for itself: secrets stay in `~/.paws/secrets` and out of logs and the agent environment, webhooks fail closed, routes and answers check authorization, SQL is not built from input, paths stay inside the worktree, and child processes are not started from input. A P1 or P0 finding fails it. Its `paths` list the high-risk globs, among them `src/auth/**`, `src/credentials/**`, the webhook handlers, route modules, and `.agents/**`. They are the same list as the repository's `.paws/high-risk-paths`, which makes a candidate's risk tier high, and `test/closeout-security-review.test.ts` fails when the two differ. A candidate that touches none of them, such as a docs-only change, skips it. The Risk card on the issue page shows the tier, the paths that matched with the list each came from (Settings › Merging › High-risk paths or `.paws/high-risk-paths`), and whether the security review ran or was skipped.
 
 The run page shows these steps and their output while they run. A review row shows how long the reviewer took and how many tokens it reported.
 
@@ -159,6 +159,17 @@ The question lists every check with its status and attempts. When the candidate 
 
 A reply in Linear is guidance, whatever it says. `/paws bypass check -- reason` in a reply bypasses nothing: Paws sends it to the agent as guidance and answers once with the link to the card. Without a public link the question stays a Linear question, a reply is guidance, and no check can be bypassed.
 
+### Rules set to approve
+
+A rule under `rules:` in the policy may set `onFail: approve`, for a rule you sometimes mean to break, like an API contract change. `onFail: fix`, the default, treats a failed rule like any failed check. A failed `approve` rule does not go back to the agent and uses no fix round or fix attempt; it still holds the pull request until a person decides. When other checks failed too, the fix round hands the agent only those, and the rule is checked again on the next head.
+
+When only `approve` rules failed, Paws asks with `ask()`. With a public link, Linear gets one Markdown message with each broken rule's summary and finding and the link to the "Rule break" card on the item page (`/status/issues/<id>#rule`). The probe output stays out of Linear; the card shows it. The delegator or the project lead decides there, with a reason:
+
+- **Approve** accepts the rules' findings for this task, base, head and policy digest. The reason is saved with the approver's name, Audit history records the decision, the pull request body lists it under Bypassed checks, and Paws verifies the same head again. The next head checks the rule again.
+- **Send back** calls `restart(item, answer)` with the reason and the finding, as if the rule were `onFail: fix`.
+
+A reply in Linear sends the finding back to the agent with the reply and never approves the break; Paws answers once with the link to the card. Without a public link the question is a Linear question, and a reply sends it back.
+
 ### After acceptance
 
 When Closeout accepts head S, it writes an accept row: S, the policy digest it ran under, and any bypass rows for S. The item enters `merge_queue`. The merge lane takes the repository lock, reads the pull request and checks one predicate, `mergeable(S)`:
@@ -187,6 +198,8 @@ When `mergeable(S)` is false, the first failing condition decides:
 
 A rebase that conflicts is a rebase return: `restart(item, conflict)` with the conflicting files, after the lane is released. Returns are limited to three in a row on a known main commit and six in any rolling hour. A conflict on an unknown main counts only toward the hour. A newer main does not refill the budget; only a person's reply does. When either limit is reached, Paws asks with the main commits and files involved.
 
+The lane judges only the front of the queue, but a conflict behind it does not wait for its turn. Whenever main moves (the lane merges, or a `push` to the default branch or a merged `pull_request` webhook arrives), Paws reads GitHub's `mergeable` for every other pull request in that repository's `merge_queue`, retrying briefly while GitHub computes it. One that conflicts goes back at once as the same rebase return, under the same budget, and keeps its place in the queue for when Closeout accepts its rebased head. Each head goes back once. A pull request that is only behind main is left for the lane to update when it reaches the front.
+
 The entry policy sets the two budget integers, both defaulting to 3:
 
 ```yaml
@@ -196,6 +209,28 @@ retry:
 ```
 
 `maxFailedAttemptsPerItem` remains a legacy alias for `attempts_per_check`. The legacy `[merge] ci_fix_attempts` setting in `config.toml` no longer sets a separate CI budget; CI fixes count against `fix_rounds_per_item`. `[merge] main_moved` decides whether a rebased head runs Closeout again; see the [configuration reference](configuration.md#merge).
+
+### Re-checks take green CI
+
+A command check can name the GitHub checks that run the same command in CI with `ci:`, one pattern where `*` matches any text:
+
+```yaml
+- id: test
+  kind: command
+  gate: beforePR
+  exec: ["bun", "run", "test"]
+  timeoutSeconds: 1800
+  ci: "test (*)"
+```
+
+A re-check of an item already in the merge queue (after a CI fix, a conflict fix, or a re-verify) reads CI on the pull request head before it runs Closeout. A first Closeout run, before Closeout ever accepted a head, is unchanged.
+
+- **CI green.** Each mapped check whose pattern matches at least one check, all `SUCCESS`, is recorded as passed from CI: the record keeps the run URL and each check's conclusion, and its line reads "from CI run <link>: `test (0/4)` success, …". The other checks, the rules, the reviews and the evidence checks run on the new head as usual. On a remote runner, the checks run tells the agent to skip the mapped ids.
+- **CI pending.** The re-check waits for it, reading again every 15 seconds for up to 45 minutes, rather than running the suite itself. After that it runs the checks.
+- **CI red.** No check runs: the item goes to a CI fix round, `restart(item, ci)` with the failing checks, while fix rounds are left. With none left, the checks run and Paws asks as usual.
+- **CI unreadable,** or the head is not the pull request's: the checks run as before.
+
+`ci:` is a Paws extension to the policy schema, so a runner older than the change rejects a policy that uses it: ship the deploy and the runner release before the policy.
 
 ## Review escapes
 
@@ -260,3 +295,50 @@ After an incident, or when a candidate holds up:
 2. Check that the bug was in the original diff as merged, and that a reviewer reading that diff could have seen it. A requirement that changed later, a refactor, or a bug in code the original only moved is not an escape.
 3. Point `file` and `line` at the defect, rewrite `bug` as one sentence about the defect rather than the fix, and set `confirmedBy`, `confirmedAt` and `confidence`.
 4. Append the line to `evals/review-escapes.jsonl`. `scripts/review-escapes.test.ts` checks every line's shape.
+5. Rescore the reviewer (see [Reviewer score](#reviewer-score)) and commit the report with the case, so the next change is measured against a baseline that includes it.
+
+## Reviewer score
+
+`scripts/review-score.ts` replays a review item from `.agents/closeout.yaml` on known cases and writes a report to `reports/`:
+
+- **Recall.** Each case in `evals/review-escapes.jsonl` counts as caught when the review has a finding at or above `failOn`, on a line the change touched, within five lines (`--tolerance`) of the case's `file` and `line`. A blocking finding somewhere else is listed as "rejected elsewhere", not as caught. `likely` cases are scored apart from `confirmed` ones. The most severe finding near the bug at any severity is recorded too, so the effect of a lower `failOn` can be read off a report.
+- **False positives.** Each pull request in `evals/review-clean.jsonl` counts as a false positive when the review would have rejected it. The report gives the rate for Paws squashes and for pull requests merged by hand apart, and both together.
+- **Time and cost per review.** Wall time and the tokens Codex reports, including the re-ask. Cost needs a price: `--price input,cached,output` in USD per million tokens. Without one the report says "not priced". The baseline is not priced, because Codex runs on a ChatGPT sign-in here and has no per-token bill.
+
+The replay uses Paws's own reviewer, so the prompt, the finding format, the re-ask and the pre-existing filter are the gate's. It takes the item's `skill` (read from the working tree, so an uncommitted edit is scored), `scope` and `failOn`, and runs the model through `codex exec` in a read-only checkout of the case's head. The model is Codex's default unless `--model` names one; set `--model` and `--effort` to what Settings › Agents uses for the reviewer. A case replays `original.base..original.head` when both commits are in the clone. Otherwise it replays the squash commit on `main`, which is the patch as merged, and the report's Diff column says `squash`.
+
+```sh
+bun scripts/review-score.ts --baseline        # writes reports/review-score-baseline.{md,json}
+bun scripts/review-score.ts                   # writes reports/review-score-<time>.{md,json} and compares
+bun scripts/review-score.ts --model gpt-6.1-sol --effort high --only 707-791,clean-544
+bun scripts/review-score.ts --item security-review
+```
+
+A run without `--baseline` adds a "Compared with the baseline" section: the settings that changed, recall, false positives, time and tokens side by side, and every case whose outcome flipped. The model's answers vary from run to run, so read a single flipped case as a hint and a change in the rates as the result.
+
+**Rescore before merging a change to the review skill, the reviewer's model or effort, `scope` or `failOn`.** Put the report in the pull request and say how recall and false positives moved. When the change is merged, run with `--baseline` and commit the new baseline, so the next change is compared against it. The script calls real models, so it is not part of `bun run test`; `scripts/review-score.test.ts` covers the scoring without them.
+
+### Clean pull requests
+
+A clean pull request is one that no later fix or revert touched for `quietDays` after its merge, found the same way as escape candidates: `git blame` from every later pull request. `author` is `paws` for a Paws squash, which replays the candidate its Closeout trailer names, or `human` for a pull request merged by hand, which replays its merge commit against the first parent. Each line of `evals/review-clean.jsonl` pins one, so every rescore uses the same set as the baseline:
+
+```json
+{
+  "id": "clean-544",
+  "author": "paws",
+  "original": { "pr": 544, "title": "…", "base": "f624…", "head": "a378…", "mergeCommit": "550a…" },
+  "mergedAt": "2026-10-18T02:02:53+00:00",
+  "changedLines": 212,
+  "quietDays": 7,
+  "pickedAt": "2026-10-27"
+}
+```
+
+`--pick-clean` prints candidates and runs no model. It keeps pull requests by `--author` (`paws`, the default, needs a Closeout trailer), merged between `--from` and `--to` when given and at least `--quiet-days` ago (default 7), with at least `--min-lines` changed lines (default 20, without lockfiles and snapshots), and not the original of an escape. It then spreads `--count` of them (default 16) over the range:
+
+```sh
+bun scripts/review-score.ts --pick-clean --quiet-days 7 > /tmp/clean.jsonl
+bun scripts/review-score.ts --pick-clean --author human --from 2026-10-09 --to 2026-10-12 --quiet-days 14 --count 12
+```
+
+Until the re-pin, the set is 4 Paws squashes with 7 quiet days and 12 pull requests merged by hand with 14. The first Paws squash on `main` is from 2026-10-17. On 2026-10-27 only #522 to #582 had 7 days behind them, and a fix touched all but four of those. The 12 hand-merged pull requests are from 2026-10-09 to 2026-10-12 and never went through Closeout, but the reviewer reads only the diff, so they still measure noise. Re-pin to 16 Paws squashes with 14 quiet days once enough qualify, and write a new baseline when the set changes.

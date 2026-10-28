@@ -523,25 +523,22 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     },
     { preconnect: () => undefined },
   );
-  const paws = startPaws(
-    {
-      PAWS_HOME: root,
-      PAWS_HOST: "127.0.0.1",
-      PAWS_PORT: String(port),
-      PAWS_PUBLIC_DASHBOARD: "1",
-      PAWS_PUBLIC_URL: `https://127.0.0.1:${port}`,
-      PAWS_TLS_KEY_PATH: key,
-      PAWS_TLS_CERT_PATH: cert,
-      LINEAR_MODE: "agent-session",
-      LINEAR_CLIENT_ID: "client",
-      LINEAR_ACCESS_TOKEN: "fixture-access",
-      LINEAR_APP_USER_ID: "app",
-      LINEAR_TEAM_ID: "team",
-      LINEAR_WEBHOOKS: "true",
-      LINEAR_WEBHOOK_SECRET: "fixture-signing",
-    },
-    { noTunnel: true },
-  );
+  const paws = startPaws({
+    PAWS_HOME: root,
+    PAWS_HOST: "127.0.0.1",
+    PAWS_PORT: String(port),
+    PAWS_PUBLIC_DASHBOARD: "1",
+    PAWS_PUBLIC_URL: `https://127.0.0.1:${port}`,
+    PAWS_TLS_KEY_PATH: key,
+    PAWS_TLS_CERT_PATH: cert,
+    LINEAR_MODE: "agent-session",
+    LINEAR_CLIENT_ID: "client",
+    LINEAR_ACCESS_TOKEN: "fixture-access",
+    LINEAR_APP_USER_ID: "app",
+    LINEAR_TEAM_ID: "team",
+    LINEAR_WEBHOOKS: "true",
+    LINEAR_WEBHOOK_SECRET: "fixture-signing",
+  });
   const db = paws.db,
     now = Date.now();
   putWorkspaceUser(db, {

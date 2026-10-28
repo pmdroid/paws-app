@@ -1,5 +1,6 @@
 import { journalCaught } from "../journal";
 import { z } from "zod";
+import { acquireOperationToken, type GitHubTokenProvider } from "./auth";
 import { repoApiPath } from "./client";
 import type { CiCheck, CiCheckState, GitHubClient } from "./types";
 
@@ -121,7 +122,12 @@ export type Readiness = {
   checks?: CiCheck[];
   /** Set when CI is green and only unresolved review threads hold the merge. */
   unresolvedThreads?: number;
+  /** Every check on the head with its conclusion, set when CI is green. */
+  passed?: PassedCheck[];
 };
+
+/** A check that reported green on the head. `conclusion` is GitHub's, such as `SUCCESS`. */
+export type PassedCheck = { name: string; conclusion: string; url: string | null };
 
 /** Conclusions and states that fail the pull request. Anything else that is not green waits. */
 const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"]);
@@ -280,13 +286,19 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
     const ci = judgeChecks(checks, baseChecks, required);
     if (ci.outcome === "ci_failed") return await withLogTails(input, token, ci, checks);
     if (ci.outcome !== "ready") return ci;
+    const passed = checks.map((check) => ({
+      name: check.name,
+      conclusion: check.result ?? "",
+      url: check.url,
+    }));
     return unresolved > 0
       ? {
           outcome: "pending",
           message: `Waiting for ${unresolved} unresolved review thread(s).`,
           unresolvedThreads: unresolved,
+          passed,
         }
-      : { outcome: "ready", message: "CI passed and all review threads are resolved" };
+      : { outcome: "ready", message: "CI passed and all review threads are resolved", passed };
   } catch (error) {
     journalCaught(error, "readiness.readMergeReadiness.token", null);
     if (error instanceof Error && LINEAR_WAIT.test(error.message))
@@ -522,4 +534,38 @@ async function readRequiredChecks(
     }
     if (rules.data.length < 100) return required;
   }
+}
+
+/** CI on the pull request's head, read once: review threads do not count. */
+export type PullCi =
+  | { state: "green"; checks: PassedCheck[] }
+  | { state: "pending"; message: string }
+  | { state: "failed"; failedChecks: FailedCheck[] }
+  /** The head is not the pull request's, the pull request is closed, or GitHub was unreadable. */
+  | { state: "unknown"; message: string };
+
+export async function readPullCi(input: {
+  client: GitHubClient;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  head: string;
+  tokenProvider?: GitHubTokenProvider;
+  appId?: string;
+  installationId?: string;
+  privateKeyPem?: string;
+}): Promise<PullCi> {
+  const read = await readMergeReadiness({
+    client: input.client,
+    owner: input.owner,
+    repo: input.repo,
+    prNumber: input.prNumber,
+    head: input.head,
+    token: () => acquireOperationToken(input, "merge"),
+  });
+  if (read.passed !== undefined) return { state: "green", checks: read.passed };
+  if (read.outcome === "ci_failed")
+    return { state: "failed", failedChecks: read.failedChecks ?? [] };
+  if (read.outcome === "pending") return { state: "pending", message: read.message };
+  return { state: "unknown", message: read.message };
 }

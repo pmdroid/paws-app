@@ -5,7 +5,7 @@ import { handleLinkAskAnswer, LINK_ASK_ANSWER_PATH, type LinkAskAnswer } from ".
 
 const NOW = 1_700_000_000_000;
 
-function setup(role: "member" | "observer" = "member", kind: "risk" | "bypass" = "risk") {
+function setup(role: "member" | "observer" = "member", kind: "risk" | "bypass" | "rule" = "risk") {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1" });
@@ -250,4 +250,37 @@ test("Stop on the Risk card goes to the loop without a note; it does not fit oth
   );
   expect(refused?.status).toBe(400);
   expect(bypass.calls).toEqual([]);
+});
+
+test("approving a rule break needs a reason, which goes to the loop as the note", async () => {
+  const { db, questionId, calls } = setup("member", "rule");
+  const options = {
+    db,
+    principal: { workspaceId: "ws", userId: "user-1" },
+    sessionIds: ["ses_1"],
+    submit: (async (input) => (calls.push(input), "answered")) as LinkAskAnswer,
+  };
+  for (const note of [undefined, "", "  "]) {
+    const response = await handleLinkAskAnswer(
+      post({ questionId, decision: "approve", note }),
+      options,
+    );
+    expect(response?.status).toBe(400);
+    expect(await response?.json()).toEqual({ error: "Write why the rule may break." });
+  }
+  expect(calls).toEqual([]);
+  const response = await handleLinkAskAnswer(
+    post({ questionId, decision: "approve", note: " The v2 contract drops Task.title. " }),
+    options,
+  );
+  expect(response?.status).toBe(200);
+  expect(calls).toEqual([
+    {
+      questionId,
+      decision: "approve",
+      note: "The v2 contract drops Task.title.",
+      answeredBy: "linear-1",
+      actor: { workspaceId: "ws", userId: "user-1", name: "Sam" },
+    },
+  ]);
 });

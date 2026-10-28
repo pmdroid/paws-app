@@ -99,6 +99,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
         gate: item.gate,
         exec: item.exec,
         timeoutSeconds: item.timeoutSeconds,
+        ...(item.ci !== undefined ? { ci: item.ci } : {}),
       },
       item.paths,
     );

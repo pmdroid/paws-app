@@ -77,7 +77,8 @@
           "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
         },
         "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
-        "paths": { "$ref": "#/$defs/paths" }
+        "paths": { "$ref": "#/$defs/paths" },
+        "ci": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\r\\n]+$" }
       }
     },
     "review": {

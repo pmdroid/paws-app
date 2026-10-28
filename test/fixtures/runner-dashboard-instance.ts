@@ -59,28 +59,25 @@ const port = await reserve(),
 mkdirSync(join(home, "secrets"), { recursive: true, mode: 0o700 });
 await initializeRunnerCoordinator(join(home, "secrets", "runner-identity"));
 const origin = `https://127.0.0.1:${port}`;
-const paws = startPaws(
-  {
-    ...process.env,
-    PAWS_HOME: home,
-    KYOTOAGENT_ROOT: home,
-    HOME: home,
-    PAWS_HOST: "127.0.0.1",
-    PAWS_PORT: String(port),
-    PAWS_PUBLIC_URL: origin,
-    PAWS_PUBLIC_DASHBOARD: "1",
-    PAWS_TLS_KEY_PATH: keyPath,
-    PAWS_TLS_CERT_PATH: certPath,
-    PAWS_RUNNER_HOST: "127.0.0.1",
-    PAWS_RUNNER_PORT: String(runnerPort),
-    LINEAR_MODE: "agent-session",
-    LINEAR_CLIENT_ID: "client",
-    LINEAR_ACCESS_TOKEN: "fixture-access",
-    LINEAR_APP_USER_ID: "app",
-    LINEAR_WEBHOOKS: "false",
-  },
-  { noTunnel: true },
-);
+const paws = startPaws({
+  ...process.env,
+  PAWS_HOME: home,
+  KYOTOAGENT_ROOT: home,
+  HOME: home,
+  PAWS_HOST: "127.0.0.1",
+  PAWS_PORT: String(port),
+  PAWS_PUBLIC_URL: origin,
+  PAWS_PUBLIC_DASHBOARD: "1",
+  PAWS_TLS_KEY_PATH: keyPath,
+  PAWS_TLS_CERT_PATH: certPath,
+  PAWS_RUNNER_HOST: "127.0.0.1",
+  PAWS_RUNNER_PORT: String(runnerPort),
+  LINEAR_MODE: "agent-session",
+  LINEAR_CLIENT_ID: "client",
+  LINEAR_ACCESS_TOKEN: "fixture-access",
+  LINEAR_APP_USER_ID: "app",
+  LINEAR_WEBHOOKS: "false",
+});
 await paws.ready;
 const now = Date.now();
 const owner = putWorkspaceUser(paws.db, {

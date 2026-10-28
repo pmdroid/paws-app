@@ -6,7 +6,7 @@ import { tempHome } from "./helpers";
 
 for (const requestedCode of [0, 75]) {
   test(`composition logs a rejected server stop and exits ${requestedCode} after database close`, async () => {
-    const paws = startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0", PAWS_NO_TUNNEL: "1" });
+    const paws = startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0" });
     const stopServer = paws.server.stop.bind(paws.server);
     paws.server.stop = async (force) => {
       await stopServer(force);
@@ -120,6 +120,42 @@ test("an unclassified stop rejection logs the thrown value and exits 1", async (
     );
     expect(exits).toEqual([1]);
     expect(lines).toEqual(["Paws shutdown failed at stop: unknown stop failure"]);
+  } finally {
+    restore();
+  }
+});
+
+test("a stop failure whose stack lacks its message still logs the message", async () => {
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  const exits: number[] = [];
+  const error = new Error("fake server stop rejected");
+  error.stack = "Error\n    at <anonymous> (test/shutdown.test.ts:1:1)";
+  try {
+    await shutdownPaws(
+      {
+        stop: () =>
+          stopPawsComponents({
+            groups: [
+              [
+                {
+                  name: "server",
+                  stop: () => {
+                    throw error;
+                  },
+                },
+              ],
+            ],
+            flush: () => {},
+            close: () => {},
+          }),
+      },
+      0,
+      (code) => exits.push(code),
+    );
+    expect(lines).toEqual([
+      "Paws shutdown failed at server: Error: fake server stop rejected\n    at <anonymous> (test/shutdown.test.ts:1:1)",
+    ]);
   } finally {
     restore();
   }

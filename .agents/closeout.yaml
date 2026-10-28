@@ -1,5 +1,5 @@
 specVersion: "0.1"
-description: Lint, format, typecheck, tests, the status dashboard build, Markdown links, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request.
+description: Lint, format, typecheck, the status dashboard build, Markdown links, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request. The test suite runs in GitHub CI, which must be green before a merge. A merge-queue re-check takes the checks with `ci:` from green GitHub CI on the same commit.
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
@@ -14,26 +14,25 @@ items:
     gate: beforePR
     exec: ["bun", "run", "lint"]
     timeoutSeconds: 300
+    ci: "lint, format, types, test, dashboard build"
   - id: format
     kind: command
     gate: beforePR
     exec: ["bun", "run", "fmt:check"]
     timeoutSeconds: 300
+    ci: "lint, format, types, test, dashboard build"
   - id: typecheck
     kind: command
     gate: beforePR
     exec: ["bun", "run", "typecheck"]
     timeoutSeconds: 600
-  - id: test
-    kind: command
-    gate: beforePR
-    exec: ["bun", "run", "test"]
-    timeoutSeconds: 1800
+    ci: "lint, format, types, test, dashboard build"
   - id: build-status
     kind: command
     gate: beforePR
     exec: ["bun", "run", "build:status"]
     timeoutSeconds: 600
+    ci: "lint, format, types, test, dashboard build"
   - id: links
     kind: command
     gate: beforePR
@@ -66,9 +65,12 @@ items:
     failOn: P1
     scope: diff
     parallel: true
+    # The same list as .paws/high-risk-paths, which makes a candidate's risk tier high.
+    # test/closeout-security-review.test.ts fails when the two differ.
     paths:
       - ".agents/**"
       - ".github/workflows/**"
+      - ".paws/high-risk-paths"
       - "deploy/**"
       - "src/acp/env.ts"
       - "src/acp/paths.ts"

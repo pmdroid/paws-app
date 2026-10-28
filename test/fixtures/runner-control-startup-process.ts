@@ -93,7 +93,7 @@ if (mode === "transcripts-later") {
   source.GITHUB_APP_ID = "99";
   source.GITHUB_APP_INSTALLATION_ID = "1";
   source.GITHUB_APP_PRIVATE_KEY_PATH = source.PAWS_TLS_KEY_PATH;
-  const paws = startPaws(source, { noTunnel: true, server: browserServer });
+  const paws = startPaws(source, { server: browserServer });
   try {
     const health = await runtimeNativeFetch(`https://127.0.0.1:${browserPort}/health`, {
       tls: { ca },
@@ -111,7 +111,7 @@ if (mode === "transcripts-later") {
 }
 if (mode === "invalid") {
   source.PAWS_RUNNER_HOST = "https://invalid.example/path";
-  assert.throws(() => startPaws(source, { noTunnel: true }), /hostname or IP/);
+  assert.throws(() => startPaws(source), /hostname or IP/);
   assert(!existsSync(join(root, "paws.db")));
   observe("invalid runner hostname fails before opening production state", {
     databaseOpened: false,
@@ -168,7 +168,6 @@ if (mode === "remote") {
   rmSync(config);
 }
 const paws = startPaws(source, {
-  noTunnel: true,
   server: browserServer,
   ...(enabled
     ? {

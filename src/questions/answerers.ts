@@ -8,12 +8,13 @@ export type AnswerableQuestion =
   | { kind: "repository" }
   | { kind: "runner-wait" }
   | { kind: "time-limit" }
-  | { kind: "closeout-bypass" }
+  | { kind: "closeout-help" }
   | { kind: "ci-help" }
   | { kind: "visual-review"; delegatorId: string | null; leadId: string | null }
   | { kind: "github-auth"; actorId: string }
   | { kind: "plan-approval" }
-  | { kind: "link"; allowedIds: readonly string[] };
+  | { kind: "link"; allowedIds: readonly string[] }
+  | { kind: "push-outage" };
 
 type Policy = {
   [K in AnswerableQuestion["kind"]]: (
@@ -44,10 +45,11 @@ export const ANSWER_POLICY: Policy = {
   repository: canAnswer,
   "runner-wait": canAnswer,
   "time-limit": canAnswer,
-  "closeout-bypass": canAnswer,
+  "closeout-help": canAnswer,
   "ci-help": canAnswer,
   "visual-review": canAnswer,
   "github-auth": canAnswer,
   "plan-approval": canAnswer,
   link: canAnswer,
+  "push-outage": canAnswer,
 };

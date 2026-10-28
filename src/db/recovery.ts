@@ -2,7 +2,6 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   decideStartup,
-  isResponseTaskMode,
   JOB_KIND,
   OUTBOX_ACTIVITY,
   type StartupDecision,
@@ -14,8 +13,8 @@ import { enqueueOutboxOnce } from "./outbox";
 import { applyWorkItemEvent, getWorkItem, listInFlightItems, listWorkItemsByStates } from "./items";
 import type { WorkItemRecord } from "./items";
 import { runnerLeaseCutoff } from "./runner-lease";
-import { markRun, releaseRunCapacity } from "./runs";
-import { getTaskMode } from "./tasks";
+import { mergeCallInFlight } from "./remote-merges";
+import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { immediate } from "./tx";
 
 /** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
@@ -31,7 +30,10 @@ const STARTUP_STATES = [
 
 const STARTUP_RESUME_SPACING_MS = 5_000;
 
-/** On process start, resume a live run once or ask whether to start it again. Merges fail closed. */
+/**
+ * On process start, resume a live run once or ask whether to start it again. An item in the merge
+ * queue keeps its place; one whose merge call may have been in flight asks GitHub before it moves.
+ */
 export function recoverOnStartup(db: Database, now = Date.now()): StartupDecision[] {
   return immediate(db, () => {
     const items = listWorkItemsByStates(db, STARTUP_STATES);
@@ -41,17 +43,24 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     for (const item of items) {
       if (hasPendingAnswerResume(db, item.id)) continue;
       if (hasPendingResume(db, item.id, "transient_failure")) continue;
+      const holds = runnerHoldsWork(db, item, now);
       const decision = decideStartup({
         itemState: item.state,
         recoveryAttempts: item.recoveryAttempts,
         checkpoint: item.checkpoint,
-        runnerHoldsWork: runnerHoldsWork(db, item, now),
+        runnerHoldsWork: holds,
+        mergeCallInFlight: mergeCallInFlight(db, item.id),
+        runActive: runActive(db, item),
         ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
       });
+      // A re-verify the shutdown cut short attaches to the runner's Closeout work itself.
       const followed =
-        decision.type === "resume" &&
-        decision.reattach === true &&
-        hasPendingResume(db, item.id, "process_restart");
+        decision.type === "resume"
+          ? decision.reattach === true && hasPendingResume(db, item.id, "process_restart")
+          : decision.type === "reverify" &&
+            holds &&
+            item.state === "verifying" &&
+            hasOpenReverify(db, item.id);
       if (!followed)
         applyDecision(db, item, decision, now, {
           ...(decision.type === "resume" ? { runAt: nextResumeAt() } : {}),
@@ -83,6 +92,17 @@ function hasPendingAnswerResume(db: Database, itemId: string): boolean {
   );
 }
 
+function hasOpenReverify(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM job WHERE queue = ? AND status IN ('pending', 'running')
+         AND json_extract(payload, '$.itemId') = ?`,
+      )
+      .get(JOB_KIND.reverify, itemId) !== null
+  );
+}
+
 function hasPendingResume(db: Database, itemId: string, reason: string): boolean {
   return (
     db
@@ -96,8 +116,11 @@ function hasPendingResume(db: Database, itemId: string, reason: string): boolean
 
 /**
  * SIGINT / SIGTERM. Commit WIP on each in-flight item branch, then move running
- * work to recovering without using the one resume attempt. A merge in progress
- * is left for a re-verify.
+ * work to recovering without using the one resume attempt. Work a runner still
+ * holds keeps its state: an agent turn, or a verifying item's Closeout review or
+ * check run. An item waiting in
+ * the merge queue keeps its state and its place for the next start to pick up; one
+ * whose run is still active is left for a re-verify.
  */
 export function prepareShutdown(
   db: Database,
@@ -121,19 +144,21 @@ export function prepareShutdown(
       if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
       applyWorkItemEvent(db, item.id, "lease_expired");
     }
-    const merging = listWorkItemsByStates(db, ["merge_queue"]);
-    for (const item of merging) {
-      if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
+    for (const item of listWorkItemsByStates(db, ["merge_queue"])) {
+      if (!runActive(db, item)) continue;
+      markRun(db, item.currentRunId!, "lost", now);
       applyWorkItemEvent(db, item.id, "lease_expired");
     }
   });
 }
 
+function runActive(db: Database, item: WorkItemRecord): boolean {
+  return item.currentRunId !== null && getRun(db, item.currentRunId)?.status === "active";
+}
+
 function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boolean {
-  const mode = getTaskMode(db, item.id);
   return (
-    item.state === "running" &&
-    !isResponseTaskMode(mode) &&
+    (item.state === "running" || item.state === "verifying") &&
     item.currentRunId !== null &&
     db
       .query(
@@ -147,11 +172,16 @@ function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boole
 
 const ORPHAN_GRACE_MS = 5 * 60_000;
 
+/**
+ * Queue work again for an in-flight item nothing is moving: no pending or running job, no live
+ * runner work, and no job finished within the grace period. A merge in progress fails closed into
+ * a re-verify, as on startup, so Closeout checks the head before the merge job is queued again.
+ */
 export function requeueOrphanedWork(db: Database, now: number): string[] {
   const orphans = db
     .query<{ id: string }, [number, number]>(
       `SELECT i.id FROM work_item i
-       WHERE i.state IN ('running','verifying','recovering') AND i.cancel_requested = 0
+       WHERE i.state IN ('running','verifying','recovering','merge_queue') AND i.cancel_requested = 0
        AND NOT EXISTS (SELECT 1 FROM job j WHERE j.status IN ('pending','running')
          AND json_extract(j.payload,'$.itemId') = i.id)
        AND NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.run_id = i.current_run_id
@@ -161,8 +191,10 @@ export function requeueOrphanedWork(db: Database, now: number): string[] {
     .all(runnerLeaseCutoff(now), now - ORPHAN_GRACE_MS);
   const requeued: string[] = [];
   for (const { id } of orphans) {
-    const item = getWorkItem(db, id);
-    if (!item) continue;
+    const found = getWorkItem(db, id);
+    if (!found) continue;
+    if (found.state === "merge_queue") applyWorkItemEvent(db, found.id, "lease_expired");
+    const item = getWorkItem(db, id) ?? found;
     const key = `orphan:${item.id}:${now}`;
     enqueueJobOnce(db, {
       queue: item.state === "verifying" ? JOB_KIND.reverify : JOB_KIND.resume,

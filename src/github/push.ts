@@ -1,5 +1,6 @@
 import { journalCaught } from "../journal";
 import { withCredential } from "./git";
+import { isPushOutage, PushOutageError } from "./transport";
 import { GitCommandError, type GitExec } from "./types";
 
 type PushInput = {
@@ -39,9 +40,42 @@ export async function pushWithLease(input: PushInput): Promise<void> {
         journalCaught(message, "push.pushWithLease", null, "remote lease changed; retrying once");
         continue;
       }
+      if (error instanceof PushOutageError) throw error;
+      if (error instanceof GitCommandError && isPushOutage(error.stderr))
+        throw new PushOutageError(error.args, error.stderr);
       throw error;
     }
   }
+}
+
+/** The token a push used, as a denial names it. Never the token itself. */
+export type PushTokenLabel = {
+  owner: string;
+  repo: string;
+  /** Empty when an injected provider supplied the token. */
+  installationId?: string;
+};
+
+/**
+ * Explain a push GitHub refused with HTTP 403 or a workflow refusal: which token pushed and the
+ * permission it lacked. Null when the push failed for another reason.
+ */
+export function pushDenial(stderr: string, token: PushTokenLabel): string | null {
+  const scope = `${token.owner}/${token.repo}`;
+  const installation = token.installationId ? ` (installation ${token.installationId})` : "";
+  const name = `the GitHub App push token for ${scope}${installation}`;
+  const workflow = /refusing to allow a GitHub App to create or update workflow `([^`]+)`/.exec(
+    stderr,
+  );
+  if (workflow)
+    return `GitHub denied ${name}: it lacks the "workflows" permission needed to push a change to ${workflow[1]}`;
+  const denied = /Permission to (\S+?)(?:\.git)? denied to (\S+?)\.?\s*$/m.exec(stderr);
+  if (!denied && !/returned error: 403\b/.test(stderr)) return null;
+  const target = denied?.[1];
+  const actor = denied?.[2] ? ` acting as ${denied[2]}` : "";
+  if (target && target.toLowerCase() !== scope.toLowerCase())
+    return `GitHub denied ${name}${actor} with HTTP 403: the token is scoped to ${scope}, not ${target}`;
+  return `GitHub denied ${name}${actor} with HTTP 403: it lacks "contents: write" on ${scope}`;
 }
 
 export async function remoteBranchSha(input: PushInput): Promise<string | null> {

@@ -20,15 +20,16 @@ export { halt, type RestartHandoff } from "../db";
  * Open or queue one question and record why this item needs a person.
  * `pending` asks for a pending-human check inside `verifying`: the item keeps
  * its state while the other checks run, and enters `awaiting_input` through
- * {@link awaitQuestion} once they are done.
+ * {@link awaitQuestion} once they are done. `workspace` asks about the workspace,
+ * not the item: the question goes to the item's session and the item keeps its state.
  */
 export function ask(
   db: Database,
-  asker: QuestionAsker & { pending?: boolean },
+  asker: QuestionAsker & { pending?: boolean; workspace?: boolean },
   ...args: Parameters<typeof openQuestion> extends [unknown, unknown, ...infer Rest] ? Rest : never
 ): Asked {
   return immediate(db, () => {
-    const { pending, ...owner } = asker;
+    const { pending, workspace, ...owner } = asker;
     const item = getWorkItem(db, owner.itemId);
     if (
       !item ||
@@ -40,7 +41,8 @@ export function ask(
     )
       throw new Error("Question owner is stale");
     const result = openQuestion(db, owner, ...args);
-    if (!pending) awaitQuestion(db, item, result.question, args[2]?.now ?? Date.now());
+    if (!pending && !workspace)
+      awaitQuestion(db, item, result.question, args[2]?.now ?? Date.now());
     return result;
   });
 }

@@ -1,5 +1,5 @@
-export { intakeDelegatedIssue, cycleMessage, queueMessage } from "./intake";
-export type { IntakeResult } from "./intake";
+export { asksForFreshStart, intakeDelegatedIssue, cycleMessage, queueMessage } from "./intake";
+export type { EarlierBranch, IntakeResult } from "./intake";
 export { orderByBlocks } from "./order";
 export type { OrderNode, OrderResult } from "./order";
 export { listWorkItems, stopAdoptedParent } from "./store";
@@ -7,7 +7,7 @@ export { createParentDelegations, PARENT_REFUSAL } from "./parent-delegation";
 export type { ParentSubIssueProgress } from "./parent-delegation";
 export { parentSummaryMessage } from "./parent-summary";
 export type { SummaryIssue, SummarySubIssue } from "./parent-summary";
-export type { StoredDelegation, StoredWorkItem } from "./store";
+export type { EarlierAttempt, StoredDelegation, StoredWorkItem } from "./store";
 export {
   canAdvanceItem,
   hasPendingDelegationChanges,
@@ -18,9 +18,9 @@ export {
   delegationSnapshotsComplete,
 } from "./dependencies";
 export type { DependencyReadiness, DependencyReads } from "./dependencies";
-export { delegationReadiness, itemReadiness } from "./readiness";
+export { blockingIssues, delegationReadiness, itemReadiness } from "./readiness";
 export type { ReadinessHold, ReadinessPhase } from "./readiness";
-export { createItemReconciler, SWEEP_FULL_REFRESH_MS } from "./reconciliation";
+export { createItemReconciler, RELATIONS_POLL_MS, SWEEP_FULL_REFRESH_MS } from "./reconciliation";
 export type { IntakeReads, ItemChanges } from "./reconciliation";
 export { createPublicationReadiness } from "./publication";
 export type { PublicationCandidate, PublicationPhase } from "./publication";

@@ -11,6 +11,9 @@ export { SPEC_COMMIT, SPEC_VERSION } from "./types";
 export type {
   Artifact,
   CandidateIdentity,
+  CiCheckConclusion,
+  CiProvenance,
+  CiResult,
   CommandExec,
   CommandRecord,
   CommandRunRequest,
@@ -84,6 +87,8 @@ export type {
 export { scrubText } from "./run/scrub";
 export {
   addReview,
+  approvalRules,
+  ciMappings,
   decision,
   digest,
   candidatePolicyDigest,
@@ -155,8 +160,14 @@ export type {
 } from "./review/index";
 
 export type { PawsCommandRunner, LoggedCommandRequest } from "./run/exec";
-export { PROBE_TIMEOUT_SECONDS, probeArgv, probeArtifactPath, writeProbeLog } from "./run/probe";
-export type { ProbeRunner, ProbeRunRequest, ProbeRunResult } from "./run/probe";
+export {
+  PROBE_TIMEOUT_SECONDS,
+  executeProbe,
+  probeArgv,
+  probeArtifactPath,
+  writeProbeLog,
+} from "./run/probe";
+export type { ProbeExecution, ProbeRunner, ProbeRunRequest, ProbeRunResult } from "./run/probe";
 export type { CloseoutCommandPort } from "./run/run";
 export {
   createCloseoutSession,

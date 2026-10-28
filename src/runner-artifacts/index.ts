@@ -23,7 +23,7 @@ import {
   type RunnerArtifact,
   type RunnerArtifactChunk,
 } from "../runner-protocol";
-import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
+import { runnerFailureStatus, type RunnerWork } from "../runner-work";
 
 export const RUNNER_ARTIFACT_CHUNK_BYTES = 524288;
 /** An authorized upload Paws will not keep. The message is safe to show the runner. */
@@ -217,7 +217,7 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
         return Response.json(
           { error: "Runner artifact access is denied" },
           {
-            status: error instanceof RunnerWorkFencedError ? 409 : 403,
+            status: runnerFailureStatus(error),
             headers: { "cache-control": "no-store" },
           },
         );

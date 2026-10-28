@@ -1,16 +1,13 @@
-import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { describe, expect, test } from "bun:test";
 import {
   INSTALLATION_PERMISSIONS,
   createAppTokenProvider,
   fakeMergeReadiness,
   fakeRequiredChecks,
-  inferGitHubRepository,
   openPullRequest,
   parseGitHubRemote,
   pushBranch,
@@ -21,7 +18,6 @@ import {
   type GitHubTokenProvider,
 } from "../index";
 
-const exec = promisify(execFile);
 const { privateKey } = generateKeyPairSync("rsa", {
   modulusLength: 2048,
   publicKeyEncoding: { type: "spki", format: "pem" },
@@ -87,7 +83,7 @@ describe("GitHub operation tokens", () => {
     expect(seen[0]?.path).toBe("/app/installations/7/access_tokens");
     expect(seen[0]?.body).toEqual({
       repositories: ["paws-demo"],
-      permissions: INSTALLATION_PERMISSIONS,
+      permissions: { ...INSTALLATION_PERMISSIONS, workflows: "write" },
     });
     await fake.cleanup();
   });
@@ -215,7 +211,7 @@ describe("GitHub operation tokens", () => {
     await dirty.cleanup();
   });
 
-  test("infers owner and repo from PAWS_GITHUB_REPOSITORY or the git remote", async () => {
+  test("parses owner and repo from a GitHub remote", async () => {
     expect(parseGitHubRemote("https://github.com/pmdroid/paws-demo.git")).toEqual({
       owner: "pmdroid",
       repo: "paws-demo",
@@ -239,46 +235,6 @@ describe("GitHub operation tokens", () => {
       parseGitHubRemote("https://user:gho_secret@example.com/pmdroid/paws-demo.git");
     } catch (error) {
       expect(error instanceof Error ? error.message : "").not.toContain("gho_secret");
-    }
-
-    let gitCalled = false;
-    const fromEnv = await inferGitHubRepository({
-      cwd: "/tmp",
-      env: { PAWS_GITHUB_REPOSITORY: "pmdroid/paws-demo" },
-      gitExec: async () => {
-        gitCalled = true;
-        return { stdout: "git@github.com:other/repo.git\n", stderr: "" };
-      },
-    });
-    expect(fromEnv).toEqual({ owner: "pmdroid", repo: "paws-demo" });
-    expect(gitCalled).toBe(false);
-    await expect(
-      inferGitHubRepository({
-        cwd: "/tmp",
-        env: { PAWS_GITHUB_REPOSITORY: "not a repo" },
-        gitExec: async () => ({ stdout: "", stderr: "" }),
-      }),
-    ).rejects.toThrow(/PAWS_GITHUB_REPOSITORY must be owner\/repo/);
-
-    const root = await mkdtemp(path.join(tmpdir(), "paws-remote-"));
-    try {
-      await exec("git", ["init", "-b", "main", root]);
-      await exec("git", [
-        "-C",
-        root,
-        "remote",
-        "add",
-        "origin",
-        "https://github.com/pmdroid/paws-demo.git",
-      ]);
-      const env = { ...process.env };
-      delete env.PAWS_GITHUB_REPOSITORY;
-      expect(await inferGitHubRepository({ cwd: root, env })).toEqual({
-        owner: "pmdroid",
-        repo: "paws-demo",
-      });
-    } finally {
-      await rm(root, { recursive: true, force: true });
     }
   });
 });

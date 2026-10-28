@@ -2,6 +2,8 @@ import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity
 import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
+import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
+import { restartForPushConflict } from "./push-conflict";
 import {
   saveHumanRetryWindow,
   fixRounds,
@@ -85,7 +87,9 @@ import {
   type CloseoutVerdict,
   type ResolvedEvidence,
   type CandidateIdentity,
+  type CiResult,
   candidatePolicyDigest,
+  ciMappings,
 } from "../closeout";
 import {
   CommandBus,
@@ -134,6 +138,7 @@ import {
   cancelOpenJobs,
   getLinearSessionAccess,
   getConfirmedRemoteMerge,
+  type ConfirmedRemoteMerge,
   getLinearTaskDelegation,
   getTaskModeGeneration,
   getLinearSessionGeneration,
@@ -156,6 +161,7 @@ import {
   enqueueJobOnce,
   recordRebaseReturn,
   enqueueOutboxOnce,
+  lastOutboxSequence,
   attachSessionUpdates,
   getOutbox,
   failWorkItem,
@@ -163,6 +169,10 @@ import {
   clearQueueWait,
   queueWaitSince,
   getRun,
+  CLEANUP_BLOCKED_NOTICE,
+  blockConversation as blockStoredConversation,
+  clearConversationBlock,
+  listBlockedConversations,
   getConversation,
   saveConversation,
   listLinearTurnsForItem,
@@ -195,6 +205,8 @@ import {
   saveCheckpoint,
   recordItemBranchState,
   recordItemPullRequest,
+  saveOpenFindings,
+  getItemPullRequest,
   saveVisualReviewMarks,
   type VisualReviewMark,
   saveRunResult,
@@ -250,13 +262,28 @@ import {
   closeStoppedPull,
   fetchUpstreamMain,
   leaveGitHubMergeQueue,
+  readPullMergeable,
   readReviewThreads,
+  readPullCi,
   mergedPullHeads,
+  readPullMerge,
+  branchContains,
+  readOpenPullHead,
+  readBranchWork,
   UPSTREAM_MAIN_REF,
+  pushOutageCause,
+  type GitExec,
   type GitHubBinding,
   type GitHubTokenProvider,
 } from "../github";
-import { intakeDelegatedIssue, stopAdoptedParent, type IntakeResult } from "../intake";
+import {
+  asksForFreshStart,
+  intakeDelegatedIssue,
+  stopAdoptedParent,
+  type EarlierAttempt,
+  type EarlierBranch,
+  type IntakeResult,
+} from "../intake";
 import {
   createAdmission,
   dispatch,
@@ -346,13 +373,19 @@ import {
   type VerificationOwner,
 } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
+import { ciForRecheck, type CiRecheck } from "./ci-recheck";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
   REBASE_CONFLICT_INSTRUCTION,
   advanceMerge,
+  ciFixHandoff,
+  ciFixRoundLine,
+  type FailedCiCheck,
   ciWaitVerification,
   parkMerge,
+  queueConflictSweep,
   rebaseBudgetFor,
+  returnQueuedConflicts,
   wakeMergesBehind,
   type MergePublication,
   type MergeStep,
@@ -365,12 +398,13 @@ import {
   FIRST_ACTIVITY_MS,
   KEEPALIVE_MS,
   publicToolText,
+  type ActivityOrigin,
 } from "./activity";
 import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress } from "./closeout-progress";
-import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
+import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
   closeoutChecksPrompt,
   createReviewCommandReviewer,
@@ -397,6 +431,14 @@ import { classifyTask } from "./task-classifier";
 import { PLAN_PROMPT, parsePlanResult, planOptions, planProposalBody } from "./plan-proposal";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
+import {
+  askAboutPushOutage,
+  holdPush,
+  installationSettingsUrl,
+  parkForPushOutage,
+  pushRefused,
+  pushWorked,
+} from "./push-outage";
 import { classifyCandidateRisk, classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
@@ -414,6 +456,14 @@ import {
 } from "./runner-wait";
 import { createRepositoryGit } from "./repository-git";
 import { readFixDiff, settleReviewEscapes } from "./review-escapes";
+import { recordAcceptedFindings } from "./review-findings";
+import {
+  openFindings,
+  openFindingsLine,
+  openFindingsSection,
+  pawsIssueUrl,
+  type OpenItems,
+} from "./open-findings";
 import { RUNTIME_FILES, runtimeList, type RuntimeList } from "../runtimes";
 import { questionEffects } from "./question-effects";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
@@ -437,6 +487,8 @@ export type OrchestratorOptions = {
   closeoutGate?: (options: CloseoutGateOptions) => CloseoutGate;
   /** Reads the review requirements from the trusted Closeout policy. Tests pass a fake. */
   reviewRequirements?: typeof reviewRequirements;
+  /** How often a merge-queue re-check reads CI while it waits for it, and for how long. */
+  ciRecheckWait?: { pollMs: number; maxWaitMs: number };
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
@@ -465,7 +517,6 @@ export type OrchestratorOptions = {
   /** The HTTPS dashboard origin (`PAWS_PUBLIC_URL`). Without it Paws cannot ask with a link. */
   publicUrl?: string | null;
   catchUp?: () => Promise<void>;
-  repository?: RepositoryBinding | null;
   repositories?: readonly RepositoryBinding[];
   repositoryAccess?: (
     repository: RepositoryBinding,
@@ -478,7 +529,6 @@ export type OrchestratorOptions = {
     signal: AbortSignal,
     access: "read" | "write",
   ) => Promise<string>;
-  github?: GitHubBinding | null;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy | undefined>;
   launch?: AgentLaunch;
@@ -487,6 +537,11 @@ export type OrchestratorOptions = {
     slotFree?(): boolean;
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
+    /**
+     * Whether the runners the item ran on report all of its commands gone since `since`, so a
+     * conversation blocked on their cleanup can continue. SQLite only.
+     */
+    commandsGone?(itemId: string, since: number): boolean;
   };
   remoteCloseoutRetry?: { attempts: number; delayMs: number };
   /** How often Closeout rechecks an unavailable runner, and when it asks the team. */
@@ -499,7 +554,7 @@ export type OrchestratorOptions = {
   ) => boolean | Promise<boolean>;
   admission?: ItemAdmission;
   journal?: (line: string) => void;
-  scheduling?: () => Pick<SchedulerOptions, "defaultRepository" | "ownerCap">;
+  scheduling?: () => Pick<SchedulerOptions, "ownerCap">;
   /**
    * Whether the item's owner has a runner they may use for this agent. False keeps a queued
    * item out of the slot line and its start timeout. Null when it cannot tell. SQLite only.
@@ -523,6 +578,8 @@ export type OrchestratorOptions = {
   caps?: { maxTurns: number; maxAwakeMs: number };
   retryBaseMs?: number;
   placementPollMs?: number;
+  /** Runs publication Git (push, fetch, rebase) in place of the owned Git. Tests pass a wrapper. */
+  publicationGitExec?: GitExec;
   /**
    * The page where a delegator without a usable runner creates a VM, adds a host or signs an
    * agent in. Missing means the local Runners page.
@@ -544,6 +601,7 @@ class LinearReconciliationPendingError extends Error {}
 
 type MergeRun = {
   payload: unknown;
+  jobId: number;
   publicationCandidate?: { sha: string; baseSha: string };
   signal?: AbortSignal;
 };
@@ -564,6 +622,7 @@ export class Orchestrator {
   /** Temporary errors thrown while the agent was being prepared, before it started. */
   private readonly preparationFailures = new WeakSet<object>();
   private readonly pullRequestReads = new Set<string>();
+  private releasingBlocks: Promise<void> | null = null;
   private readonly live = new Map<
     string,
     {
@@ -591,7 +650,7 @@ export class Orchestrator {
   private readonly verifyingStops = new Map<string, string>();
   private readonly runtimeLists = new Map<string, { runId: string; list: RuntimeList }>();
   private shuttingDown = false;
-  private activitySeq = 0;
+  private readonly activitySeqs = new Map<string, number>();
   private waitFaces = new Map<string, string>();
   private readonly activityRequests = new Map<number, AbortSignal>();
   private readonly updates = createUpdateLimiter(() => this.now());
@@ -780,7 +839,12 @@ export class Orchestrator {
         .filter((item) => item.state !== "merged" && item.state !== "completed")
         .map((item) => this.options.remoteExecution?.cancelItem?.(item.id)),
     ]);
-    if (items.some((item) => getConversation(this.db, item.id).blocked))
+    // A previous session's agent the runner reports gone no longer holds up a new delegation.
+    if (
+      items.some(
+        (item) => getConversation(this.db, item.id).blocked && !this.releaseCleanupBlock(item.id),
+      )
+    )
       throw new Error("ACP process cleanup could not be verified");
     const failure = joined.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
@@ -868,8 +932,11 @@ export class Orchestrator {
       return;
     }
     if (event.action !== "created" || event.issueId === null) return;
+    let startFresh = asksForFreshStart(event.body);
     if (event.sessionId !== null) {
       const context = parseLinearSessionContext(event.payload);
+      const comment = context.comment as { body?: unknown } | null;
+      if (typeof comment?.body === "string" && asksForFreshStart(comment.body)) startFresh = true;
       saveLinearSessionContext(
         this.db,
         event.sessionId,
@@ -886,6 +953,7 @@ export class Orchestrator {
     try {
       result = await this.intakeLinearTask(event.issueId, event.sessionId, taskKey ?? undefined, {
         acknowledged: session !== null,
+        startFresh,
       });
     } catch (error) {
       const current = session ? getLinearSession(this.db, session.sessionId) : null;
@@ -1016,6 +1084,7 @@ export class Orchestrator {
       followupBodies?: readonly string[];
       conversation?: string;
       acknowledged?: boolean;
+      startFresh?: boolean;
     } = {},
   ) {
     const tracker = this.tracker;
@@ -1130,8 +1199,13 @@ export class Orchestrator {
       acknowledged: options.acknowledged,
       isCurrent: intakeCurrent,
       reconcileSessions: sessionId
-        ? (issueIds) => this.reconcilePreviousSessions(issueIds, sessionId, intakeCurrent)
+        ? (issueIds) =>
+            this.reconcilePreviousSessions(issueIds, sessionId, intakeCurrent, {
+              keepPullRequest: options.startFresh !== true,
+            })
         : undefined,
+      startFresh: options.startFresh === true,
+      inspectBranch: (earlier) => this.inspectEarlierBranch(earlier),
       beforeAdmit: retireRedirectedItem,
       onAccepted: (accepted) => {
         immediate(this.db, () => {
@@ -1203,10 +1277,31 @@ export class Orchestrator {
     ].join("\n\n");
   }
 
+  /**
+   * What GitHub holds for an earlier item's branch. Without a repository or GitHub binding the
+   * branch reads as empty, so the new item starts fresh.
+   */
+  private async inspectEarlierBranch(earlier: EarlierAttempt): Promise<EarlierBranch> {
+    const previous = getWorkItem(this.db, earlier.itemId);
+    const repository = previous ? this.repositoryForItem(previous) : null;
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!repository || !github) return { pull: null, commits: 0 };
+    return readBranchWork({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      branch: earlier.branchName,
+      ...this.gitHubCredentials(github),
+      signal: AbortSignal.any([this.authRecoveryController.signal, AbortSignal.timeout(10_000)]),
+    });
+  }
+
   private async reconcilePreviousSessions(
     issueIds: readonly string[],
     incomingSessionId: string,
     isCurrent: () => boolean,
+    /** The new delegation may continue the stopped session's branch, so its pull request stays. */
+    stop: { keepPullRequest: boolean },
   ): Promise<void> {
     if (!this.tracker?.getSession) return;
     const candidates = (issueId: string) =>
@@ -1259,6 +1354,7 @@ export class Orchestrator {
               sessionId,
               `reconcile:${sessionId}:${previous.generation}`,
               this.now(),
+              stop,
             );
           } else {
             await this.interruptLinearSession(sessionId);
@@ -1378,6 +1474,7 @@ export class Orchestrator {
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
       if (this.waitingForRunnerSlot(job)) return;
+      if (await this.mergeInsteadOfTurn(job, context)) return;
       await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
@@ -1415,6 +1512,8 @@ export class Orchestrator {
           waiting = wait;
         });
       } catch (error) {
+        if (!this.shuttingDown && context.isCurrent() && (await this.holdForPushOutage(job, error)))
+          return;
         if (this.shuttingDown || job.attempts >= job.maxAttempts || !context.isCurrent())
           throw error;
 
@@ -1441,10 +1540,46 @@ export class Orchestrator {
           withAcceptedBranch(`merge timed out waiting for GitHub: ${waiting.message}`, item),
         );
     });
+    jobs.register(JOB_KIND.queueConflicts, async (job, context) => {
+      const sweep = queueConflictSweep(job.payload);
+      if (sweep === null || !context.isCurrent()) return;
+      await returnQueuedConflicts(this.db, sweep, {
+        ask,
+        now: () => this.now(),
+        session: (item) => this.activitySession(item),
+        voice: {
+          thought: (item, body, key) => this.post(item, "thought", body, key),
+          flush: () => this.flush(),
+        },
+        readPull: async (item, pullNumber) => {
+          const repository = this.repositoryForItem(item);
+          const github = repository ? this.githubForRepository(repository) : null;
+          if (!repository || !github) return null;
+          return readPullMergeable({
+            client: github.client,
+            owner: repository.owner,
+            repo: repository.repo,
+            prNumber: pullNumber,
+            ...this.gitHubCredentials(github),
+            signal: context.signal,
+          });
+        },
+      });
+    });
     jobs.register(JOB_KIND.closeStoppedPull, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
       const item = itemId ? getWorkItem(this.db, itemId) : null;
       if (!item || item.state !== "cancelled" || getConfirmedRemoteMerge(this.db, item.id)) return;
+      // A re-delegation that took over the branch owns its pull request now.
+      if (
+        this.db
+          .query(
+            `SELECT 1 FROM item_continuation c JOIN work_item i ON i.id = c.item_id
+             WHERE c.previous_item_id = ? AND i.state != 'cancelled'`,
+          )
+          .get(item.id)
+      )
+        return;
       await this.joinChangedItems([item.id]);
       const repository = this.repositoryForItem(item);
       const github = repository ? this.githubForRepository(repository) : null;
@@ -1585,7 +1720,6 @@ export class Orchestrator {
                 getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
                   ? JOB_KIND.reverify
                   : job.queue,
-              lane: job.lane,
               priority: job.priority,
               payload: job.payload,
               jobKey: `merge-reconciliation:${job.id}`,
@@ -1914,6 +2048,49 @@ export class Orchestrator {
     return true;
   }
 
+  /**
+   * Parks a merge job whose push GitHub refused in a push outage, or that the outage held. The
+   * item keeps its state and its work, and the attempt is not spent. False for any other error.
+   */
+  private async holdForPushOutage(job: Job, error: unknown): Promise<boolean> {
+    const refused = pushOutageCause(error);
+    const itemId = readString(job.payload, "itemId");
+    const item = refused && itemId ? getWorkItem(this.db, itemId) : null;
+    const repository = item ? this.repositoryForItem(item) : null;
+    if (!refused || !item || !repository) return false;
+    const github = this.githubForRepository(repository);
+    const repositoryName = `${repository.owner}/${repository.repo}`;
+    const outage = pushRefused(this.db, {
+      repository: repositoryName,
+      error: refused,
+      jobId: job.id,
+      installationUrl: github ? installationSettingsUrl(github.installationId) : null,
+      now: this.now(),
+    });
+    // The outage ended between the hold and now: look again shortly.
+    if (outage === null) {
+      if (waitForMergeTurn(this.db, job, this.now()) === "lost") throw error;
+      return true;
+    }
+    if (!refused.held)
+      journalCaught(
+        error,
+        "orchestrator.holdForPushOutage",
+        item.id,
+        `push outage on ${repositoryName}; the push waits`,
+        this.options.journal,
+      );
+    const asked = askAboutPushOutage(this.db, repositoryName, this.now()) === "asked";
+    if (parkForPushOutage(this.db, job, outage, this.now()) === "lost") throw error;
+    if (asked) await this.flush();
+    return true;
+  }
+
+  private pushWorked(repository: string): void {
+    const ended = pushWorked(this.db, repository, this.now());
+    if (ended) this.options.journal?.(`push outage on ${repository} ended`);
+  }
+
   private async failOnLastAttempt(
     job: Job,
     context: JobContext,
@@ -1928,6 +2105,8 @@ export class Orchestrator {
       if (
         job.attempts >= job.maxAttempts &&
         item &&
+        // A push outage holds the item; it never fails it (PAS-867).
+        !pushOutageCause(error) &&
         !this.shuttingDown &&
         context.isCurrent() &&
         !this.jobContexts.has(item.id) &&
@@ -2075,17 +2254,7 @@ export class Orchestrator {
         signal: controller.signal,
         launch: (input) => this.launchAgent(input),
         agentRunner: this.helperRunner(item.sessionKey, "classify"),
-        onCleanupFailure: () => {
-          const stored = getConversation(this.db, item.id);
-          saveConversation(
-            this.db,
-            item.id,
-            stored.entries,
-            stored.transcript,
-            true,
-            stored.transcriptOffset,
-          );
-        },
+        onCleanupFailure: () => this.blockConversation(item.id),
       });
       controller.signal.throwIfAborted();
       if (
@@ -2176,7 +2345,7 @@ export class Orchestrator {
     const sessionProgress = this.sessionProgress(item, mode);
     sessionProgress?.phase("working");
     const activity = createAcpActivityReporter(
-      (update) => {
+      (update, origin) => {
         if (
           !controller.signal.aborted &&
           this.canReportProgress(item.id) &&
@@ -2186,7 +2355,7 @@ export class Orchestrator {
             item,
             update.kind,
             update.body,
-            `${run.id}:answer:${++this.activitySeq}`,
+            this.activityKey(`${run.id}:answer`, origin),
             update,
           );
       },
@@ -2376,7 +2545,7 @@ export class Orchestrator {
   private async runItem(item: WorkItemRecord, handoff?: string): Promise<void> {
     const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
-      this.fail(item, "no_repository", "PAWS_GITHUB_REPOSITORY is not set.");
+      this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
     if (this.stopped(item.id)) return;
@@ -2420,7 +2589,7 @@ export class Orchestrator {
     keepAlive.unref?.();
     const askTeam = this.askHook(item, run.id);
     const activity = createAcpActivityReporter(
-      (update) => {
+      (update, origin) => {
         if (
           controller.signal.aborted ||
           !this.canReportProgress(item.id) ||
@@ -2428,8 +2597,13 @@ export class Orchestrator {
         )
           return;
         posted = true;
-        this.activitySeq += 1;
-        this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`, update);
+        this.post(
+          item,
+          update.kind,
+          update.body,
+          this.activityKey(`${run.id}:acp`, origin),
+          update,
+        );
       },
       (steps) => {
         if (!controller.signal.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
@@ -2488,6 +2662,7 @@ export class Orchestrator {
         brief: this.workContext(item),
         hiddenPaths: checkout.agent,
         ...(handoff ? { handoff } : {}),
+        ...(item.continuesBranch ? { continuesBranch: item.continuesBranch } : {}),
       });
       await this.flush();
       if (this.stopped(item.id)) return;
@@ -2516,6 +2691,16 @@ export class Orchestrator {
         await this.askCloseoutHelp(item, undefined, summary);
         return;
       }
+      if (returned !== null)
+        await this.fetchUpstreamMain(item).catch((caughtError) =>
+          journalCaught(
+            caughtError,
+            "orchestrator.runItem.fetchUpstreamMain",
+            live.itemId,
+            undefined,
+            this.options.journal,
+          ),
+        );
       const launched = this.launchAgent({
         role: "implementer",
         profile: profiles.implementer,
@@ -2538,6 +2723,7 @@ export class Orchestrator {
         pawsRoot: this.options.pawsRoot,
         home: this.options.home ?? homedir(),
         checkoutExclusions: checkout.agent,
+        ...(worktreeStartRef(item) ? { startRef: worktreeStartRef(item) } : {}),
         signal: controller.signal,
         promptRunner,
         askTeam,
@@ -2717,9 +2903,23 @@ export class Orchestrator {
       await this.flush();
     if (!options.decide && (await this.openVisualReviewCheck(item, worktree, base, head)))
       await this.flush();
+    const ci = options.decide ? null : await this.recheckCi(item, worktree, head);
+    if (ci?.kind === "ci-failed" && this.sendBackForCi(item, head, ci.checks)) {
+      await this.flush();
+      return;
+    }
+    const fromCi = ci?.kind === "check" ? ci.fromCi : [];
     let decide = options.decide ?? false;
     for (let pass = 0; ; pass++) {
-      const verdict = await this.runVerification(item, worktree, base, head, candidate, decide);
+      const verdict = await this.runVerification(
+        item,
+        worktree,
+        base,
+        head,
+        candidate,
+        decide,
+        fromCi,
+      );
       await this.recordReviewRounds(item, verdict.owner.runId);
       if (this.closeoutStopped(item.id) !== null) return;
       const after = getWorkItem(this.db, item.id);
@@ -2751,6 +2951,16 @@ export class Orchestrator {
               this.options.journal,
             ),
           );
+        if (mergeJob !== null)
+          await this.recordFindings(item, worktree, base, acceptedHead).catch((error: unknown) =>
+            journalCaught(
+              error,
+              "orchestrator.evaluateHead.recordFindings",
+              item.id,
+              undefined,
+              this.options.journal,
+            ),
+          );
         return;
       }
       if (pass < 2 && awaitsVisualReview(verdict.result)) {
@@ -2775,6 +2985,31 @@ export class Orchestrator {
     }
   }
 
+  /** Stores the accepted head's non-blocking findings for the Findings page. */
+  private async recordFindings(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+  ): Promise<void> {
+    const changed = await git([
+      "-C",
+      worktree,
+      "diff",
+      "--no-renames",
+      "--name-only",
+      "-z",
+      `${base}...${head}`,
+    ]);
+    await recordAcceptedFindings(this.db, {
+      itemId: item.id,
+      head,
+      pawsRoot: this.options.pawsRoot,
+      now: this.now(),
+      changedPaths: changed.split("\0").filter(Boolean),
+    });
+  }
+
   private async runVerification(
     item: WorkItemRecord,
     worktree: string,
@@ -2782,6 +3017,7 @@ export class Orchestrator {
     head: string,
     candidate: CandidateIdentity,
     decide = false,
+    fromCi: readonly CiResult[] = [],
   ): Promise<CloseoutVerdict & { owner: VerificationOwner }> {
     if (!this.options.remoteExecution) {
       this.assertJobCurrent(item.id);
@@ -2794,6 +3030,7 @@ export class Orchestrator {
         candidate,
         () => this.assertJobCurrent(item.id),
         decide,
+        fromCi,
       );
       this.assertJobCurrent(item.id);
       return { ...verdict, owner: { version: owner.version, runId: owner.currentRunId } };
@@ -2879,6 +3116,7 @@ export class Orchestrator {
         candidate,
         assertCurrent,
         decide,
+        fromCi,
       );
       // A finished verdict still decides an item this run owns, even after an abort (PAS-771).
       assertOwned();
@@ -2896,6 +3134,7 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     assertCurrent: () => void = () => {},
     decide = false,
+    fromCi: readonly CiResult[] = [],
   ): Promise<CloseoutVerdict> {
     const policy = await this.commitPolicy(item);
     if (policy)
@@ -2948,6 +3187,8 @@ export class Orchestrator {
           policy,
           assertCurrent,
           report: (body) => report(body),
+          // CI's results are for the head it ran on; a fixed head runs every check.
+          fromCi: commit === head ? fromCi.map((entry) => entry.id) : [],
         });
         runnerChecks.set(commit, checks);
       }
@@ -2974,17 +3215,17 @@ export class Orchestrator {
     const report = (body: string) => {
       if (deps.signal?.aborted || !this.canReportProgress(item.id)) return;
       if (live) live.progress = body;
-      this.post(item, "thought", body, `${key}:${++this.activitySeq}`);
+      this.post(item, "thought", body, this.activityKey(key));
     };
     const activity = createAcpActivityReporter(
-      (update) => {
+      (update, origin) => {
         if (
           deps.signal?.aborted ||
           !this.canReportProgress(item.id) ||
           update.kind === "elicitation"
         )
           return;
-        this.post(item, update.kind, update.body, `${key}:acp:${++this.activitySeq}`, update);
+        this.post(item, update.kind, update.body, this.activityKey(`${key}:acp`, origin), update);
       },
       (steps) => {
         if (!deps.signal?.aborted && !this.stopped(item.id)) sessionProgress?.plan(steps);
@@ -3002,6 +3243,7 @@ export class Orchestrator {
       candidate,
       published: () => publishedEvidence(this.db, item.id),
       approvals: () => visualReviewApprovals(this.db, item.id, itemPathId(item)),
+      ...(fromCi.length > 0 ? { fromCi } : {}),
       ...(commands ? { commandRunner: commands } : {}),
       reviewer: {
         async review(request) {
@@ -3059,6 +3301,8 @@ export class Orchestrator {
       policy: GitCommitPolicy | undefined;
       assertCurrent: () => void;
       report: (body: string) => void;
+      /** Checks Closeout took from CI, which the runner leaves alone. */
+      fromCi?: readonly string[];
     },
   ): Promise<void> {
     const { worktree, head, assertCurrent } = input;
@@ -3090,7 +3334,7 @@ export class Orchestrator {
           profile: deps.profiles?.implementer,
           itemId: itemPathId(item),
           runId: `checks-${itemPathId(item)}-${short}-${attempt}`,
-          prompt: closeoutChecksPrompt(head),
+          prompt: closeoutChecksPrompt(head, input.fromCi),
           worktreePath: worktree,
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
@@ -3280,6 +3524,83 @@ export class Orchestrator {
     await this.askCloseoutHelp(current, undefined, summary);
   }
 
+  /**
+   * CI on the head of a merge-queue re-check (a CI or conflict fix, or a re-verify). Null for a
+   * first Closeout run, or a policy that maps no check to CI.
+   */
+  private async recheckCi(
+    item: WorkItemRecord,
+    worktree: string,
+    head: string,
+  ): Promise<CiRecheck | null> {
+    // Closeout accepted an earlier head and its pull request is open: the item is in the merge
+    // queue, back from a CI or conflict fix, or re-verified there. A first run has no accepted head.
+    const pull = getItemPullRequest(this.db, item.id);
+    if (pull === null || getWorkItem(this.db, item.id)?.acceptedHead == null) return null;
+    const repository = this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!repository || !github) return null;
+    const { home, policyRoot } = this.closeoutHome(item);
+    const mappings = ciMappings(worktree, home, policyRoot);
+    if (mappings.length === 0) return null;
+    const signal = this.signalForItem(item.id);
+    const short = head.slice(0, 7);
+    return ciForRecheck({
+      mappings,
+      read: () => {
+        this.assertJobCurrent(item.id);
+        return readPullCi({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pull.pullNumber,
+          head,
+          ...this.gitHubCredentials(github),
+        });
+      },
+      sleep: (ms) => delay(ms, undefined, signal ? { signal } : {}),
+      now: () => this.now(),
+      ...(this.options.ciRecheckWait ?? {}),
+      onWait: (message) =>
+        this.options.journal?.(
+          `item ${item.linearIdentifier} re-check at ${short} waits for CI: ${message}`,
+        ),
+    });
+  }
+
+  /**
+   * CI failed on a merge-queue re-check's head: a CI fix round, as the merge lane would send.
+   * False when no fix round is left, so the checks run and the usual way asks.
+   */
+  private sendBackForCi(
+    item: WorkItemRecord,
+    head: string,
+    checks: readonly FailedCiCheck[],
+  ): boolean {
+    this.assertJobCurrent(item.id);
+    const current = getWorkItem(this.db, item.id);
+    if (
+      !current ||
+      current.cancelRequested ||
+      (current.state !== "verifying" && current.state !== "merge_queue")
+    )
+      return false;
+    const rounds = fixRounds(this.db, item.id);
+    const limit = this.fixRoundLimit(current);
+    if (rounds >= limit) return false;
+    this.options.journal?.(
+      `item ${current.linearIdentifier} re-check at ${head.slice(0, 7)}: ${ciFixRoundLine(checks, rounds + 1, limit)}`,
+    );
+    return (
+      restart(this.db, current, {
+        reason: "ci",
+        body: ciFixHandoff(checks),
+        now: this.now(),
+        jobKey: `ci-failed:${item.id}:recheck:${head}`,
+      }) !== null
+    );
+  }
+
   private async askCloseoutHelp(
     item: WorkItemRecord,
     result: GateResult | undefined,
@@ -3290,16 +3611,15 @@ export class Orchestrator {
     const current = getWorkItem(this.db, item.id);
     if (!current) return;
     const checks = result?.decision?.items ?? [];
-    const failed = checks.some((check) => check.state === "failed");
-    const exhausted = checks.some((check) => check.state === "exhausted");
+    // A failed rule set to `onFail: approve` is not the agent's to fix: it waits for a person.
+    const held = result?.ruleApprovals ?? [];
+    const free = checks.filter((check) => !held.some((rule) => rule.id === check.id));
+    const failed = free.some((check) => check.state === "failed");
+    const exhausted = free.some((check) => check.state === "exhausted");
+    const setupFailed = checks.some((check) => check.kind === "setup" && check.state === "failed");
     const rounds = fixRounds(this.db, item.id);
     const limit = this.fixRoundLimit(item);
-    if (
-      failed &&
-      !exhausted &&
-      !checks.some((check) => check.kind === "setup" && check.state === "failed") &&
-      rounds < limit
-    ) {
+    if (failed && !exhausted && !setupFailed && rounds < limit) {
       restart(this.db, current, {
         reason: "findings",
         body: result?.handoff ?? summary,
@@ -3339,6 +3659,10 @@ export class Orchestrator {
       retryBaseline,
       summary,
     };
+    // Only held rules failed: ask about them, whatever fix rounds are left; none is used.
+    const rules =
+      !failed && !exhausted && !setupFailed && result?.outcome === "exhausted" ? held : [];
+    if (rules.length > 0) context.failedChecks = rules.map((rule) => rule.id);
     this.assertJobCurrent(item.id);
     if (
       exhausted &&
@@ -3350,6 +3674,7 @@ export class Orchestrator {
       now: this.now(),
       version: current.version,
       publicUrl: this.options.publicUrl ?? null,
+      ...(rules.length > 0 ? { rules } : {}),
       checks: checks.map((check) => ({
         id: check.id,
         kind: check.kind,
@@ -3358,11 +3683,13 @@ export class Orchestrator {
         message: check.message,
       })),
       reason:
-        exhausted || rounds >= limit
-          ? "budget_spent"
-          : result?.outcome === "blocked"
-            ? "blocked_check"
-            : "setup_fault",
+        rules.length > 0
+          ? "rule_approval"
+          : exhausted || rounds >= limit
+            ? "budget_spent"
+            : result?.outcome === "blocked"
+              ? "blocked_check"
+              : "setup_fault",
     });
     await this.flush();
   }
@@ -3440,7 +3767,7 @@ export class Orchestrator {
     if (item === null) return;
     const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
-      this.fail(item, "no_repository", "PAWS_GITHUB_REPOSITORY is not set.");
+      this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
@@ -3492,7 +3819,7 @@ export class Orchestrator {
   private async merge(payload: unknown, jobId: number): Promise<MergeStep> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return { kind: "obsolete" };
-    const run: MergeRun = { payload };
+    const run: MergeRun = { payload, jobId };
     return advanceMerge(
       this.db,
       { itemId, payload, jobId },
@@ -3528,9 +3855,45 @@ export class Orchestrator {
           await this.flush(published.signal);
           return { kind: "asked" };
         },
+        mergedOutsideLane: (item) => this.mergedOutsideLane(item),
         completed: () => this.dispatch(),
       },
     );
+  }
+
+  /** The merge of the item's pull request when a person merged it on GitHub, outside the lane. */
+  private async mergedOutsideLane(
+    item: WorkItemRecord,
+  ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null> {
+    const pull = getItemPullRequest(this.db, item.id);
+    const repository = pull ? this.repositoryForItem(item) : null;
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!pull || !repository || !github) return null;
+    const read = await readPullMerge({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      number: pull.pullNumber,
+      ...this.gitHubCredentials(github),
+      signal: AbortSignal.timeout(10_000),
+    }).catch((caughtError) => {
+      journalCaught(
+        caughtError,
+        "orchestrator.mergedOutsideLane.readPullMerge",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return null;
+    });
+    if (!read?.merged) return null;
+    return {
+      repositoryOwner: repository.owner,
+      repositoryName: repository.repo,
+      pullNumber: pull.pullNumber,
+      pullUrl: read.url ?? pull.pullUrl,
+      mergeSha: read.sha,
+    };
   }
 
   private async publishForMerge(
@@ -3573,14 +3936,18 @@ export class Orchestrator {
         ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
         : undefined;
     const freshReads = new Set<string>();
+    const repositoryName = `${repository.owner}/${repository.repo}`;
     const github = guardGitHubPublication({
       github: configuredGitHub,
       repository,
       signal: live.controller.signal,
-      onCleanupFailure: () => {
-        const stored = getConversation(this.db, item.id);
-        saveConversation(this.db, item.id, stored.entries, stored.transcript, true);
+      ...(this.options.publicationGitExec ? { gitExec: this.options.publicationGitExec } : {}),
+      // During a push outage only the probe pushes; the first push that works ends it.
+      push: {
+        before: () => holdPush(this.db, repositoryName, run.jobId),
+        after: () => this.pushWorked(repositoryName),
       },
+      onCleanupFailure: () => this.blockConversation(item.id),
       isCurrent: () =>
         !this.stopped(item.id) &&
         (live.sessionId === null ||
@@ -3628,6 +3995,28 @@ export class Orchestrator {
       live.controller.signal,
     );
     if (this.stopped(item.id)) return { kind: "obsolete" };
+    const publicUrl = this.options.evidence?.publicUrl ?? this.options.publicUrl ?? null;
+    const open: OpenItems = {
+      findings: await openFindings(
+        this.db,
+        item,
+        run.publicationCandidate?.sha ?? null,
+        this.options.pawsRoot,
+      ).catch((error: unknown) => {
+        journalCaught(
+          error,
+          "orchestrator.publishForMerge.openFindings",
+          item.id,
+          undefined,
+          this.options.journal,
+        );
+        return [];
+      }),
+      risk,
+      link: pawsIssueUrl(publicUrl, item),
+    };
+    const openLine = openFindingsLine(open);
+    if (this.stopped(item.id)) return { kind: "obsolete" };
     this.sessionProgress(item)?.phase("publishing");
     const draft = getPullRequestDraft(this.db, item.id);
     const published = await publishAccepted({
@@ -3642,6 +4031,7 @@ export class Orchestrator {
           this.now(),
         ),
         policy ? policyPullRequestCredit(policy) : "",
+        openFindingsSection(open),
       ]
         .filter(Boolean)
         .join("\n\n"),
@@ -3673,10 +4063,16 @@ export class Orchestrator {
       pullUrl: published.pull.url ?? null,
       openedAt: this.now(),
     });
+    saveOpenFindings(this.db, {
+      itemId: item.id,
+      head: published.head,
+      line: openLine,
+      now: this.now(),
+    });
     this.post(
       item,
       "response",
-      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.\n\n${riskLine(risk)}`,
+      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.\n\n${riskLine(risk)}${openLine ? `\n\n${openLine}` : ""}`,
       `pull-request-ready:${item.id}:${item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0}`,
       {},
       "ordered",
@@ -3858,8 +4254,7 @@ export class Orchestrator {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
         const admitted = this.admission.canMerge(id);
         if (admitted.ok || admitted.held !== "blocked") return null;
-        const issueId = getWorkItem(this.db, id)?.linearIssueId;
-        return issueId ? openBlockers(this.db, issueId) : [];
+        return openBlockers(this.db, id);
       },
       voice: {
         thought: (item, body, key) => this.post(item, "thought", body, key),
@@ -4004,6 +4399,23 @@ export class Orchestrator {
         }
         if (context.signal.aborted) throw new Error("cancelled");
         this.assertJobCurrent(item.id);
+        if (request.pushRejected && (await this.acceptedOnRemote(item, request.pushRejected))) {
+          this.askedRuns.add(runId);
+          await this.flush();
+          return { answer: ACCEPTED_ON_REMOTE };
+        }
+        if (
+          request.pushRejected?.conflicts &&
+          restartForPushConflict(this.db, item.id, {
+            branch: request.pushRejected.branch,
+            files: request.pushRejected.conflicts,
+            now: this.now(),
+          })
+        ) {
+          this.askedRuns.add(runId);
+          await this.flush();
+          return { answer: PUSH_CONFLICT_RESTARTED };
+        }
         immediate(this.db, () => {
           ask(
             this.db,
@@ -4053,6 +4465,93 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * A rejected candidate push of accepted work: when the branch on GitHub is the accepted head or
+   * contains it, the item goes to the merge queue instead of asking. Anything else, or a failed
+   * read, goes on to the question and the conflict handling.
+   */
+  private async acceptedOnRemote(
+    item: WorkItemRecord,
+    rejected: { branch: string },
+  ): Promise<boolean> {
+    const accepted = getWorkItem(this.db, item.id)?.acceptedHead ?? null;
+    const repository = accepted === null ? null : this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (accepted === null || !repository || !github) return false;
+    const remote = await branchContains({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      branch: rejected.branch,
+      sha: accepted,
+      ...this.gitHubCredentials(github),
+      signal: AbortSignal.timeout(10_000),
+    }).catch((caughtError) => {
+      journalCaught(
+        caughtError,
+        "orchestrator.acceptedOnRemote.branchContains",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return null;
+    });
+    if (remote === null) return false;
+    return settleRejectedPush(this.db, item.id, {
+      remoteHead: remote.head,
+      containsAccepted: remote.contains,
+      now: this.now(),
+    });
+  }
+
+  /**
+   * A resume that brings nothing new for work Closeout accepted, while that head is the pull
+   * request's head on GitHub, goes to the merge queue instead of starting an implement turn.
+   */
+  private async mergeInsteadOfTurn(job: Job, context: JobContext): Promise<boolean> {
+    const itemId = readString(job.payload, "itemId");
+    const item = itemId === null ? null : getWorkItem(this.db, itemId);
+    if (!item?.acceptedHead || !context.isCurrent()) return false;
+    const reason = readString(job.payload, "reason");
+    if (
+      acceptedResumeNeedsTurn({
+        acceptedHead: item.acceptedHead,
+        pullHead: item.acceptedHead,
+        reason,
+      })
+    )
+      return false;
+    const pull = getItemPullRequest(this.db, item.id);
+    const repository = pull ? this.repositoryForItem(item) : null;
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!pull || !repository || !github) return false;
+    const pullHead = await readOpenPullHead({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      number: pull.pullNumber,
+      ...this.gitHubCredentials(github),
+      signal: AbortSignal.timeout(10_000),
+    }).catch((caughtError) => {
+      journalCaught(
+        caughtError,
+        "orchestrator.mergeInsteadOfTurn.readOpenPullHead",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return null;
+    });
+    if (
+      !context.isCurrent() ||
+      acceptedResumeNeedsTurn({ acceptedHead: item.acceptedHead, pullHead, reason }) ||
+      !mergeAcceptedWork(this.db, item.id, { now: this.now(), exceptJobId: job.id })
+    )
+      return false;
+    await this.flush();
+    return true;
+  }
+
   private releaseAskedRun(runId: string): void {
     if (!this.askedRuns.delete(runId)) return;
     releaseRunCapacity(this.db, runId, this.now());
@@ -4094,6 +4593,9 @@ export class Orchestrator {
   private async keepAskedWork(itemId: string, runId: string, worktree: string): Promise<void> {
     let current = getWorkItem(this.db, itemId);
     if (!current || current.state === "cancelled" || current.cancelRequested) return;
+    // Accepted work that went to the merge queue keeps its accepted head, not the rejected turn's.
+    if (current.state === "merge_queue" && current.checkpoint?.wipCommit === current.acceptedHead)
+      return;
     const sessionId = this.activitySession(current);
     if (
       current.state === "running" &&
@@ -4253,8 +4755,16 @@ export class Orchestrator {
     }
     // The installation check answers its own waiting question when the App returns.
     if (open.kind === "github-auth") return "rejected";
-    if (!canAnswer({ kind: open.kind === "closeout-help" ? "closeout-bypass" : open.kind }, user))
-      return "rejected";
+    if (!canAnswer({ kind: open.kind }, user)) return "rejected";
+    if (open.kind === "push-outage") {
+      const outcome = answerAsked(
+        this.db,
+        { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
+        questionEffects(this.db, { now: this.now() }),
+      );
+      await this.flush();
+      return outcome.status === "answered" ? "answered" : "rejected";
+    }
     if (open.kind === "runner-wait" || open.kind === "closeout-help") {
       const recovery = listCloseoutRecoveries(this.db, open.itemId).find(
         (entry) => entry.questionId === open.id,
@@ -4322,7 +4832,12 @@ export class Orchestrator {
     return outcome;
   }
 
-  private async stopSession(sessionId: string | null, eventKey: string, at: number): Promise<void> {
+  private async stopSession(
+    sessionId: string | null,
+    eventKey: string,
+    at: number,
+    options: { keepPullRequest?: boolean } = {},
+  ): Promise<void> {
     if (sessionId === null) return;
     this.taskAccess()?.invalidate({ sessionId });
     this.githubAuth?.invalidate({ sessionId });
@@ -4356,7 +4871,7 @@ export class Orchestrator {
           source: "linear",
           requestedAt,
         };
-        if (!applyLinearCommand(this.db, command).applied)
+        if (!applyLinearCommand(this.db, command, undefined, undefined, options).applied)
           throw new Error(`Could not stop Linear task ${item.id}`);
         commands.push(command);
       }
@@ -4856,27 +5371,30 @@ export class Orchestrator {
       }
     }
     const repository = this.repositoryForItem(item);
+    // A new run, including a retry, uses the profiles saved in Settings now (PAS-831).
+    const profiles = resolveAgentProfiles(
+      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+      repository ? `${repository.owner}/${repository.repo}` : undefined,
+    );
     const run = insertRun(this.db, {
       itemId: item.id,
       now: this.now(),
       status: "active",
       kind: "implement",
-      agent: resolveAgentProfiles(
-        loadConfigFile(join(this.options.pawsRoot, "config.toml")),
-        repository ? `${repository.owner}/${repository.repo}` : undefined,
-      ).implementer.agent,
+      agent: profiles.implementer.agent,
       freshSession: true,
     });
     if (item.currentRunId) {
-      const saved = this.readProfileSnapshot(item.currentRunId);
-      if (saved) {
-        mkdirSync(runDir(this.options.pawsRoot, run.id), { recursive: true, mode: 0o700 });
-        writeFileSync(
-          join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
-          JSON.stringify(saved),
-          { mode: 0o600 },
-        );
-      }
+      // Only an unannounced Settings switch carries over, while it still changes the agent.
+      const pending = this.readProfileSnapshot(item.currentRunId)?.settingsSwitch;
+      const settingsSwitch =
+        pending && pending.previousAgent !== profiles.implementer.agent ? pending : undefined;
+      mkdirSync(runDir(this.options.pawsRoot, run.id), { recursive: true, mode: 0o700 });
+      writeFileSync(
+        join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
+        JSON.stringify({ profiles, settingsSwitch }),
+        { mode: 0o600 },
+      );
     }
     setCurrentRun(this.db, item.id, run.id);
     return run;
@@ -4947,14 +5465,17 @@ export class Orchestrator {
 
   private updateHook(item: WorkItemRecord): PostUpdateHook {
     return {
-      post: async (text) => {
+      post: async (text, origin) => {
         if (!this.canReportProgress(item.id))
           throw new Error("Progress updates are closed for this run");
         const allowed = this.updates.take(item.id);
         if (allowed.posted) {
           const line = publicToolText(text);
           for (const live of this.live.values()) if (live.itemId === item.id) live.progress = line;
-          this.post(item, "thought", line, `update:${item.id}:${this.now()}`);
+          const key = origin
+            ? `update:${item.id}:${origin.runId}:${origin.generation}:${origin.sequence}`
+            : `update:${item.id}:${this.now()}`;
+          this.post(item, "thought", line, key);
           await this.flush();
         }
         return allowed;
@@ -4975,6 +5496,19 @@ export class Orchestrator {
           mode,
           item.id,
         );
+  }
+
+  /**
+   * The outbox key for an agent update. An update read from a runner event is keyed by that event,
+   * so a replay after a restart finds its earlier row. Any other update takes the next number
+   * after the keys already stored, so a key from before a restart is not reused.
+   */
+  private activityKey(prefix: string, origin?: ActivityOrigin): string {
+    if (origin)
+      return `${prefix}:${origin.runId}:${origin.generation}:${origin.sequence}:${origin.part}`;
+    const next = (this.activitySeqs.get(prefix) ?? lastOutboxSequence(this.db, `${prefix}:`)) + 1;
+    this.activitySeqs.set(prefix, next);
+    return `${prefix}:${next}`;
   }
 
   private post(
@@ -5102,7 +5636,7 @@ export class Orchestrator {
       const result = await runner({
         ...options,
         profile,
-        onEvent: async (event) => {
+        onEvent: async (event, origin) => {
           if (
             !options.prepareOnly &&
             options.role === "implementer" &&
@@ -5110,7 +5644,7 @@ export class Orchestrator {
             event.type === "session_started"
           )
             this.reportSettingsSwitch(itemId, profile, event.identity?.model);
-          await options.onEvent?.(event);
+          await options.onEvent?.(event, origin);
         },
       });
       this.assertJobCurrent(itemId);
@@ -5322,10 +5856,11 @@ export class Orchestrator {
       if (item) activateLinearItem(this.db, sessionId, item.id);
     }
     if (!item) throw new Error("Linear user update has no routed task");
-    if (getConversation(this.db, item.id).blocked)
-      throw new Error(
-        "Prior ACP process cleanup could not be verified; user update remains pending",
-      );
+    // The reply waits as a pending turn until the old agent is known to be gone.
+    if (getConversation(this.db, item.id).blocked && !this.releaseCleanupBlock(item.id)) {
+      await this.tellCleanupBlocked(item.id, sessionId);
+      return;
+    }
     // Linear's "Fix merge conflicts" on the open pull request is a rebase-conflict return.
     const upstream =
       item.id === routed?.id &&
@@ -5418,6 +5953,102 @@ export class Orchestrator {
     });
     await this.flush();
     return true;
+  }
+
+  /**
+   * Clears conversation blocks whose old agent is gone, as the runner it ran on reports, and
+   * delivers the replies that waited on them.
+   */
+  releaseCleanupBlocks(): Promise<void> {
+    if (this.releasingBlocks) return this.releasingBlocks;
+    const releasing = (async () => {
+      for (const { itemId } of listBlockedConversations(this.db))
+        if (this.releaseCleanupBlock(itemId)) await this.deliverHeldReplies(itemId);
+    })().finally(() => {
+      if (this.releasingBlocks === releasing) this.releasingBlocks = null;
+    });
+    this.releasingBlocks = releasing;
+    return releasing;
+  }
+
+  /**
+   * A person vouches that the item's old agent is gone. Refused while Paws itself runs the item.
+   * `onCommitted` runs inside the transaction that clears the block.
+   */
+  async clearStuckAgent(
+    itemId: string,
+    canAct: () => boolean = () => true,
+    onCommitted?: () => void,
+  ): Promise<boolean> {
+    if (this.isLive(itemId)) return false;
+    const cleared = immediate(this.db, () => {
+      if (!canAct() || !getConversation(this.db, itemId).blocked) return false;
+      onCommitted?.();
+      return clearConversationBlock(this.db, itemId);
+    });
+    if (!cleared) return false;
+    this.options.journal?.(`item ${itemId} conversation block cleared by a person`);
+    await this.deliverHeldReplies(itemId);
+    return true;
+  }
+
+  private releaseCleanupBlock(itemId: string): boolean {
+    const gone = this.options.remoteExecution?.commandsGone;
+    if (!gone || this.isLive(itemId)) return false;
+    const cleared = immediate(this.db, () => {
+      const { blockedAt } = getConversation(this.db, itemId);
+      return (
+        blockedAt !== null &&
+        gone(itemId, blockedAt) &&
+        clearConversationBlock(this.db, itemId, blockedAt)
+      );
+    });
+    if (cleared)
+      this.options.journal?.(
+        `item ${itemId} conversation block cleared: its runner no longer runs its commands`,
+      );
+    return cleared;
+  }
+
+  private async deliverHeldReplies(itemId: string): Promise<void> {
+    const sessionId = getWorkItem(this.db, itemId)?.sessionKey;
+    if (!sessionId || this.shuttingDown || !listPendingLinearTurns(this.db, sessionId).length)
+      return;
+    // In line with the session's Linear events, so a reply arriving now is delivered once.
+    const done = (this.sessionEvents.get(sessionId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.resumeLinearSession(sessionId));
+    this.sessionEvents.set(sessionId, done);
+    try {
+      await done;
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.deliverHeldReplies.resumeLinearSession",
+        itemId,
+        undefined,
+        this.options.journal,
+      );
+    } finally {
+      if (this.sessionEvents.get(sessionId) === done) this.sessionEvents.delete(sessionId);
+    }
+  }
+
+  private async tellCleanupBlocked(itemId: string, sessionId: string): Promise<void> {
+    const { blockedAt } = getConversation(this.db, itemId);
+    enqueueOutboxOnce(this.db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionId,
+      idempotencyKey: `cleanup-blocked:${itemId}:${blockedAt ?? 0}`,
+      payload: { sessionId, kind: "thought", body: CLEANUP_BLOCKED_NOTICE, id: randomUUID() },
+      now: this.now(),
+    });
+    await this.flush();
+  }
+
+  private isLive(itemId: string): boolean {
+    return [...this.live.values()].some((live) => live.itemId === itemId);
   }
 
   private abortItem(itemId: string): void {
@@ -5910,6 +6541,7 @@ export class Orchestrator {
       { ...input, now: this.now() },
       {
         bypass: (linkAsk, item, now) => reverifyBypassed(this.db, linkAsk, item, now),
+        rule: (linkAsk, item, now) => reverifyBypassed(this.db, linkAsk, item, now),
         ...effects,
       },
     );
@@ -6090,15 +6722,7 @@ export class Orchestrator {
   }
 
   private blockConversation(itemId: string): void {
-    const stored = getConversation(this.db, itemId);
-    saveConversation(
-      this.db,
-      itemId,
-      stored.entries,
-      stored.transcript,
-      true,
-      stored.transcriptOffset,
-    );
+    blockStoredConversation(this.db, itemId, this.now());
   }
 
   private async prepareConversation(item: WorkItemRecord) {
@@ -6170,10 +6794,7 @@ export class Orchestrator {
       onCandidate: (identity) => {
         if (!this.signalForItem(item.id)?.aborted) this.saveCandidate(runId, identity);
       },
-      onCleanupFailure: () => {
-        const stored = getConversation(this.db, item.id);
-        saveConversation(this.db, item.id, stored.entries, stored.transcript, true);
-      },
+      onCleanupFailure: () => this.blockConversation(item.id),
       signal: this.signalForItem(item.id),
       promptRunner: async (input) => {
         const runner =
@@ -6363,11 +6984,13 @@ export class Orchestrator {
       pawsRoot: this.options.pawsRoot,
       networkGit: this.repositoryGit(item, repository, signal, "write"),
     });
+    const startRef = worktreeStartRef(item);
     const worktree = await createWorktree({
       ...repository,
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
       checkoutExclusions: this.runCheckout(item).agent,
+      ...(startRef ? { startRef } : {}),
     });
     const required = (this.options.reviewRequirements ?? reviewRequirements)(
       worktree.path,
@@ -6514,7 +7137,7 @@ export class Orchestrator {
   }
 
   private repositoryForItem(item: WorkItemRecord): RepositoryBinding | null {
-    return getWorkItemRepository(this.db, item.id) ?? this.options.repository ?? null;
+    return getWorkItemRepository(this.db, item.id);
   }
 
   private async selectRepository(
@@ -6555,7 +7178,7 @@ export class Orchestrator {
       const configured = listRepositoryCandidates(
         this.db,
         item.sessionKey,
-        this.options.repositories ?? (this.options.repository ? [this.options.repository] : []),
+        this.options.repositories ?? [],
       );
       const listed = (candidate: RepositoryBinding) =>
         catalog.some((entry) => sameRepository(entry, candidate));
@@ -6833,16 +7456,7 @@ export class Orchestrator {
   }
 
   private githubForRepository(repository: RepositoryBinding): GitHubBinding | null {
-    if (this.options.githubForRepository) return this.options.githubForRepository(repository);
-    const configured = this.options.repository;
-    if (
-      configured?.owner !== repository.owner ||
-      configured.repo !== repository.repo ||
-      configured.remoteUrl !== repository.remoteUrl
-    ) {
-      return null;
-    }
-    return this.options.github ?? null;
+    return this.options.githubForRepository?.(repository) ?? null;
   }
 
   private launchAgent: AgentLaunch = (input) => {
@@ -6880,6 +7494,10 @@ export class Orchestrator {
 const HANDOVER_FAILED_PROMPT =
   "Paws asked to move this session to another runner, but the move failed after your turn was stopped, so it stays here. Your work so far is committed. Continue where you left off.";
 
+const PUSH_CONFLICT_RESTARTED =
+  "Your commits conflict with the branch on GitHub, so Paws starts a new turn to resolve that. End your turn now without further changes.";
+const ACCEPTED_ON_REMOTE =
+  "The branch on GitHub already has the work Closeout accepted, so Paws sent it to the merge queue. End your turn now without further changes.";
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
 const OUTBOX_WAIT_MS = 30_000;

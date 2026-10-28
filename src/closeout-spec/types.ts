@@ -86,6 +86,11 @@ export type PolicyCommand = {
   /** Integer from 1 to 86400. */
   timeoutSeconds: number;
   paths?: PolicyPaths;
+  /**
+   * The GitHub check names that run the same command in CI, as one pattern where `*` matches
+   * any text, such as `test (*)`. A merge-queue re-check takes the result from those checks.
+   */
+  ci?: string;
 };
 
 export type PolicyReview = {
@@ -232,6 +237,8 @@ export type ResolvedCommand = {
   exec: string[];
   timeoutSeconds: number;
   paths?: string[];
+  /** See {@link PolicyCommand.ci}. */
+  ci?: string;
 };
 
 /** Resolved review, in canonical form. `independence` has both flags. */
@@ -503,7 +510,21 @@ export type CommandRecord = {
   producer: ProducerIdentity;
   exec: CommandExec;
   artifacts: Artifact[];
+  /** Set when the result was taken from green GitHub checks at `head` instead of a run. */
+  ci?: CiProvenance;
 };
+
+/** The GitHub checks a command's result was taken from. */
+export type CiProvenance = {
+  /** The Actions workflow run, or the first check's page when it is not an Actions job. */
+  run: string | null;
+  checks: CiCheckConclusion[];
+};
+
+export type CiCheckConclusion = { name: string; conclusion: string; url: string | null };
+
+/** A command check whose result Closeout takes from green CI instead of running it. */
+export type CiResult = CiProvenance & { id: string };
 
 /**
  * Review evidence. The record carries findings, not an outcome.

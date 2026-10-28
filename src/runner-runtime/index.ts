@@ -2,7 +2,7 @@ import { journalCaught, journalRejection } from "../journal";
 import { closeSync, constants, fsyncSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { prepareRepositorySnapshot } from "../acp";
-import { runGitHubGit } from "../github";
+import { isPushOutage, pushOutageProbeDelayMs, runGitHubGit } from "../github";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import { RUNNER_ARTIFACT_CHUNK_BYTES } from "../runner-artifacts";
@@ -30,7 +30,7 @@ import {
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
 } from "../runner-answers";
-import { createRunnerRepositories } from "../runner-repositories";
+import { CandidateRebaseConflict, createRunnerRepositories } from "../runner-repositories";
 import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
 import { openRunnerRuntimeInventory } from "./runtimes";
@@ -96,6 +96,8 @@ type Active = {
   abort: AbortController;
   deadline: number;
   grant?: RunnerGrant;
+  /** When `grant` was issued, so it is renewed halfway through its lifetime. */
+  grantedAt?: number;
   task?: Promise<void>;
   delivering?: Promise<void>;
   stopped?: Promise<void>;
@@ -106,6 +108,8 @@ type Active = {
   restarts?: number;
   pushTries?: number;
   pushAt?: number;
+  /** Candidate pushes GitHub refused in a push outage; they never count toward `pushTries`. */
+  outageTries?: number;
   /** Set once the worker's runtime install report is in the inventory. */
   runtimesRecorded?: boolean;
   sessionTries?: number;
@@ -275,7 +279,14 @@ export async function openRunnerRuntime(options: {
     `${command.runId}:${command.generation}`;
   async function grant(entry: Active) {
     check(entry);
-    if (!entry.grant || entry.grant.expiresAt <= now() + 5000) {
+    // Renewed halfway through its lifetime: a busy Paws can take many seconds to answer a
+    // request, and a grant that expires while the request waits refuses it with 403.
+    const at = now();
+    if (
+      !entry.grant ||
+      entry.grant.expiresAt <= at + 5000 ||
+      at >= (entry.grantedAt ?? at) + (entry.grant.expiresAt - (entry.grantedAt ?? at)) / 2
+    ) {
       const value = await remote(() =>
         options.daemon.issueRunGrant(entry.execution.command.runId, {
           commandId: entry.execution.command.id,
@@ -284,6 +295,7 @@ export async function openRunnerRuntime(options: {
       );
       check(entry);
       entry.grant = value;
+      entry.grantedAt = at;
     }
     return entry.grant.token;
   }
@@ -1111,19 +1123,39 @@ export async function openRunnerRuntime(options: {
       if (!credential.branch) throw new Error("Runner publication branch is missing");
       entry.publicationBranch = credential.branch;
       try {
-        await repositories.publish(
+        // A push refused because the branch moved is rebased onto it here, not sent back (PAS-886).
+        result.candidateSha = await repositories.publish(
           entry.execution.command,
           {
             bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
             sha: result.candidateSha,
             branch: credential.branch,
+            rebase: true,
           },
           entry.abort.signal,
           entry.checkpointSha,
         );
       } catch (error) {
+        if (error instanceof CandidateRebaseConflict) {
+          journalCaught(error, "runner-runtime.complete.rebase", entry.execution.command.itemId);
+          const reason = `${credential.branch} moved on GitHub, and rebasing the candidate onto it conflicted${error.files.length ? ` in ${error.files.join(", ")}` : ""}`;
+          await interrupt(entry, reason, true, {
+            branch: credential.branch,
+            error: reason.slice(0, 4096),
+            conflicts: error.files.slice(0, 100).map((file) => file.slice(0, 4096)),
+          });
+          return;
+        }
         if (!(error instanceof GitHubFailure)) throw error;
         journalCaught(error, "runner-runtime.complete.publish", entry.execution.command.itemId);
+        // A push outage keeps the finished turn's candidate here and retries the push until
+        // GitHub takes it, so Paws never sees a candidate GitHub doesn't have (PAS-867).
+        if (isPushOutage(error.message)) {
+          const waited = entry.outageTries ?? 0;
+          entry.outageTries = waited + 1;
+          entry.pushAt = monotonic() + pushOutageProbeDelayMs(waited);
+          throw error;
+        }
         const tries = (entry.pushTries ?? 0) + 1;
         entry.pushTries = tries;
         const permanent = PERMANENT_PUSH_REJECTION.test(error.message);

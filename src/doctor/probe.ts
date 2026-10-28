@@ -36,9 +36,10 @@ export const GITHUB_APP_EVENTS = [
   "pull_request_review_comment",
   "issue_comment",
   "merge_group",
+  "push",
 ] as const;
 
-/** GitHub App checks against the configured repository. */
+/** GitHub App checks against the first chosen repository. */
 export type GitHubDoctorFacts = {
   /** GitHub App id from the environment or `secrets/github-app.json`. */
   appId: string | null;
@@ -66,7 +67,8 @@ export type ProbeFacts = {
   exeDevToken?: ExeDevTokenStatus;
   tailscaleAuthKey?: TailscaleAuthKeyStatus;
   publicUrl: string | null;
-  repo: string | null;
+  /** `owner/repo` names the workspace chose, plus any named in `config.toml`. */
+  repos: string[];
   team: string | null;
   teamId: string | null;
   claudeAdapter: { ok: boolean; detail: string };
@@ -93,7 +95,8 @@ const LOGIN_TIMEOUT_MS = 2_500;
 
 export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
   const runtime = loadRuntime(env);
-  const repo = splitRepo(runtime.repo);
+  const repos = chosenRepositories(runtime);
+  const repo = splitRepo(repos[0] ?? null);
   const agentProfiles = doctorAgentProfiles(runtime.file);
   const agents = new Set(
     agentProfiles.flatMap((profile) => [profile.implementer.agent, profile.reviewer.agent]),
@@ -126,18 +129,14 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
           .get()?.name ?? null,
     ),
     publicUrl: runtime.publicUrl,
-    repo: runtime.repo,
+    repos,
     team: runtime.linearTeam,
     teamId: runtime.linearTeamId,
     claudeAdapter: agents.has("claude") ? adapterFact("implementer") : unused,
     codexAdapter: agents.has("codex") ? adapterFact("reviewer") : unused,
     claudeLogin,
     codexLogin,
-    closeout: closeoutPolicyFact(
-      runtime.checkout,
-      runtime.env.home,
-      closeoutPolicyRoot(runtime.file, runtime.env.home, runtime.repo),
-    ),
+    closeout: closeoutPolicyFact(runtime, repos),
     linear,
     exeDevToken: exeDevTokenStatus(runtime.env.home),
     tailscaleAuthKey: tailscaleAuthKeyStatus(runtime.env.home),
@@ -193,40 +192,50 @@ function adapterFact(role: "implementer" | "reviewer"): { ok: boolean; detail: s
   }
 }
 
+/**
+ * Repositories are checked out on the runner, so Closeout reads each policy from the repository's
+ * origin/main there. Doctor can only load the local policy roots `config.toml` names.
+ */
 function closeoutPolicyFact(
-  checkout: string | null,
-  home: string,
-  policyRoot?: string,
+  runtime: RuntimeConfig,
+  repos: readonly string[],
 ): ProbeFacts["closeout"] {
-  if (checkout === null || checkout.trim().length === 0) {
-    return {
-      ok: false,
-      detail: "checkout is not configured",
-      fix: "Configure the repository checkout path.",
-    };
-  }
-  const loaded = validate(checkout, home, policyRoot);
-  if (!loaded.ok) {
-    return {
-      ok: false,
-      detail: policyRoot
-        ? "configured local Closeout policy is invalid"
-        : "policy on origin/main is malformed",
-      fix: oneLine(loaded.message),
-    };
-  }
-  if (loaded.absent) {
-    return {
-      ok: false,
-      detail: "origin/main has no closeout policy",
-      fix: "Commit .agents/closeout.yaml on origin/main.",
-    };
+  const home = runtime.env.home;
+  const local = repos.flatMap((repo) => {
+    const root = closeoutPolicyRoot(runtime.file, home, repo);
+    return root === undefined ? [] : [{ repo, root }];
+  });
+  for (const { repo, root } of local) {
+    const loaded = validate(root, home, root);
+    if (!loaded.ok)
+      return {
+        ok: false,
+        detail: `configured local Closeout policy for ${repo} is invalid`,
+        fix: oneLine(loaded.message),
+      };
   }
   return {
     ok: true,
-    detail: policyRoot ? `local policy loads from ${policyRoot}` : "policy loads on origin/main",
+    detail:
+      local.length > 0
+        ? `local policy loads for ${local.map(({ repo }) => repo).join(", ")}`
+        : "policy loads from each repository's origin/main on the runner",
     fix: null,
   };
+}
+
+/** Workspace repository choices from the Paws database, then `config.toml` repositories. */
+function chosenRepositories(runtime: RuntimeConfig): string[] {
+  const chosen =
+    readPawsDb(runtime.env.home, (db) =>
+      db
+        .query<{ repository: string }, []>(
+          "SELECT DISTINCT repository FROM workspace_repository ORDER BY repository",
+        )
+        .all()
+        .map((row) => row.repository),
+    ) ?? [];
+  return [...new Set([...chosen, ...runtime.repos])];
 }
 
 function oneLine(message: string): string {
@@ -319,7 +328,7 @@ async function githubDoctorFact(
   const appId = env.githubAppId;
   if (appId === null || env.githubAppPrivateKeyPath === null) return facts;
   if (repo === null || name === null) {
-    facts.installation = { ok: false, detail: "repository must be owner/name" };
+    facts.installation = { ok: false, detail: "no repository is chosen" };
     return facts;
   }
   let privateKeyPem: string | null = null;

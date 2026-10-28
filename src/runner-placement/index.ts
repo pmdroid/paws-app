@@ -72,6 +72,8 @@ export type PlacementRequest = {
   excludeRunnerIds?: readonly string[];
   /** Runner assigned to this run. Work moves only when unavailable; preparation is unpinned. */
   pinnedRunnerId?: string;
+  /** For unpinned work: the runner tried first when it has a free slot, the run's own. */
+  preferRunnerId?: string;
   /** The runner a handed-over run left: the pin no longer holds there, and the run avoids it. */
   handedOverFrom?: string;
   /** The runner holding the item's last agent session, for implementer work. */
@@ -123,6 +125,7 @@ export {
   createRunnerPlacement,
   LOAD_HALF_LIFE_MS,
   LOAD_HISTORY_MS,
+  PlacementRaceError,
   SESSION_GRACE_MS,
 } from "./placement";
 

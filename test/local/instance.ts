@@ -250,14 +250,14 @@ async function scenario(
     pawsRoot,
     home: process.env.HOME,
     tracker: linear,
-    repository: { owner: "local", repo: "fixture", remoteUrl: bare },
-    github: {
+    repositories: [{ owner: "local", repo: "fixture", remoteUrl: bare }],
+    githubForRepository: () => ({
       appId: "",
       installationId: "",
       privateKeyPem: "",
       client,
       tokenProvider: { mode: "token", tokenFor: async () => token },
-    },
+    }),
     launch,
   });
   let interrupted = false;
@@ -411,7 +411,7 @@ async function scenario(
 }
 
 try {
-  const fresh = startPaws({ PAWS_HOME: process.env.PAWS_HOME, PAWS_PORT: "0" }, { noTunnel: true });
+  const fresh = startPaws({ PAWS_HOME: process.env.PAWS_HOME, PAWS_PORT: "0" });
   try {
     const origin = `http://127.0.0.1:${fresh.server.port}`;
     const rootResponse = await fetch(origin);

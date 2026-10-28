@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { McpServerStdio } from "@agentclientprotocol/sdk";
 import type { AgentRole } from "./adapters";
+import type { AcpEventOrigin } from "./types";
 import {
   artifactMimeType,
   ArtifactRejectedError,
@@ -72,8 +73,11 @@ export const POST_UPDATE_INTERVAL_MS = 60_000;
 export type PostUpdateResult = { posted: true } | { posted: false; waitSeconds: number };
 
 export interface PostUpdateHook {
-  /** Posts the text as a Linear thought, or reports how long until the next update is allowed. */
-  post(text: string): Promise<PostUpdateResult>;
+  /**
+   * Posts the text as a Linear thought, or reports how long until the next update is allowed.
+   * An update read from a runner event carries its origin, so a replay posts nothing new.
+   */
+  post(text: string, origin?: AcpEventOrigin): Promise<PostUpdateResult>;
 }
 
 /** At most one update per key per interval. */
@@ -99,6 +103,11 @@ export interface AskTeamRequest {
   question: string;
   options?: readonly AskTeamOption[];
   context?: string;
+  /**
+   * Set by Paws, not the agent: the run's candidate push to `branch` was rejected. `conflicts`
+   * names the files where rebasing the candidate onto the moved branch conflicted.
+   */
+  pushRejected?: { branch: string; conflicts?: readonly string[] };
 }
 
 export interface AskTeamResponse {

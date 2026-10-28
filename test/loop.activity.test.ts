@@ -255,7 +255,7 @@ describe("streamed activity", () => {
 });
 
 describe("linear outbox dispatch", () => {
-  test("posts linear.activity through the Linear client and runs catch-up", async () => {
+  test("posts activity through the Linear client and runs catch-up", async () => {
     const inputs: unknown[] = [];
     const client: LinearClient = {
       async query(_query, variables) {
@@ -266,7 +266,7 @@ describe("linear outbox dispatch", () => {
     const tracker = createLinearTracker(client);
     let caughtUp = 0;
     await deliverLinearOutbox(
-      row("linear.activity", { sessionId: "ses", kind: "thought", body: "hello" }),
+      row("activity", { sessionId: "ses", kind: "thought", body: "hello" }),
       tracker,
       async () => {
         caughtUp += 1;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -134,27 +134,17 @@ export async function probeRunnerTranscripts(
   let readFault: "throw" | "short" | "long" | "digest" | undefined;
   const faultObjects: RunnerTranscriptObjects = {
     ...objects,
-    read(key) {
+    async read(name) {
       if (readFault === "throw") throw new Error("Injected object read outage");
-      if (readFault) {
-        const source = objects.read(key);
-        return new ReadableStream({
-          async start(controller) {
-            const bytes = Buffer.from(await new Response(source).arrayBuffer());
-            if (readFault === "short") controller.enqueue(bytes.subarray(0, bytes.length - 1));
-            if (readFault === "long") controller.enqueue(Buffer.concat([bytes, Buffer.from("x")]));
-            if (readFault === "digest") {
-              bytes[0] = bytes[0]! ^ 1;
-              controller.enqueue(bytes);
-            }
-            controller.close();
-          },
-        });
-      }
-      return objects.read(key);
+      const bytes = Buffer.from(await objects.read(name));
+      if (readFault === "short") return bytes.subarray(0, bytes.length - 1);
+      if (readFault === "long") return Buffer.concat([bytes, Buffer.from("x")]);
+      if (readFault === "digest") bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1;
+      return bytes;
     },
   };
-  let transcripts = createRunnerTranscripts({ db, work, objects: faultObjects });
+  const key = randomBytes(32);
+  let transcripts = createRunnerTranscripts({ db, work, objects: faultObjects, key });
   const execution = { id: workspaceId(now) };
   const marker = "RAW_TRANSCRIPT_ONLY_1ab8f9";
   const line = Buffer.from(
@@ -190,7 +180,7 @@ export async function probeRunnerTranscripts(
         sha256: createHash("sha256").update("changed").digest("hex"),
       }),
     );
-    transcripts = createRunnerTranscripts({ db, work, objects: faultObjects });
+    transcripts = createRunnerTranscripts({ db, work, objects: faultObjects, key });
     const finish = {
       generation: 1,
       executionId: execution.id,
@@ -231,8 +221,13 @@ export async function probeRunnerTranscripts(
       recoveredStatus: 200,
     });
     const result = await transcripts.finish(access, finish);
-    const objectKey = `paws/transcripts/${workspace.id}/${command.id}/${finish.executionId}/acp.jsonl`;
-    assert.equal(result.uri, objects.uri(objectKey));
+    const prefix = `paws/transcripts/${workspace.id}/${command.id}/${finish.executionId}/chunks`;
+    assert.equal(result.uri, `paws-run-file:transcript/${prefix}`);
+    const firstChunk = `${prefix}/0-${createHash("sha256")
+      .update(bytes.subarray(0, RUNNER_TRANSCRIPT_CHUNK_BYTES))
+      .digest("hex")}`;
+    const stored = Buffer.from(await objects.read(firstChunk));
+    assert(!stored.includes(Buffer.from(marker)));
     assert.equal((await transcripts.finish(access, finish)).uri, result.uri);
     const readBack = await transcripts.download(run.id, 1);
     for (const fault of ["throw", "short", "long", "digest"] as const) {
@@ -252,6 +247,7 @@ export async function probeRunnerTranscripts(
       metadataChunks: Math.ceil(bytes.length / RUNNER_TRANSCRIPT_CHUNK_BYTES),
       sha256,
       rawMarkerAbsentFromDatabaseAndWal: true,
+      rawMarkerAbsentFromStoredChunk: true,
       uri: result.uri,
       storage: providedObjects ? "provided object storage" : "in-memory fake object storage",
     });
@@ -301,7 +297,7 @@ export async function probeRunnerTranscripts(
       true,
       { expiredAfterMs: 60_001 },
     );
-    await objects.write(objectKey, new Blob(["changed object"]));
+    await objects.write(firstChunk, Buffer.from("changed object"));
     await assert.rejects(transcripts.download(run.id, 1));
     observe(
       "retrieving a changed transcript object fails its accepted byte count and digest",
@@ -356,12 +352,13 @@ export async function probeRunnerTranscripts(
     const interrupted = createRunnerTranscripts({
       db,
       work,
+      key,
       objects: {
         ...objects,
-        async write(key, content) {
+        async write(name, content) {
           entered();
           await held;
-          await objects.write(key, content);
+          await objects.write(name, content);
         },
       },
     });

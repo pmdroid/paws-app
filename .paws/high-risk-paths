@@ -1,0 +1,35 @@
+# High-risk paths of this repository, one glob per line.
+# A candidate that changes one is high-risk (see src/core/risk.ts), and Closeout's
+# security-review in .agents/closeout.yaml runs on the same list.
+# test/closeout-security-review.test.ts fails when the two differ.
+.agents/**
+.github/workflows/**
+.paws/high-risk-paths
+deploy/**
+src/acp/env.ts
+src/acp/paths.ts
+src/acp/permissions.ts
+src/acp/worktree.ts
+src/auth/**
+src/closeout-spec/run/**
+src/credentials/**
+src/deployment/**
+src/evidence/route.ts
+src/github/jwt.ts
+src/github/token.ts
+src/github/webhook.ts
+src/linear/authorize.ts
+src/linear/oauth.ts
+src/linear/webhook.ts
+src/onboarding/**
+src/process/**
+src/questions/**
+src/runner-control/**
+src/runner-execution/**
+src/runner-identity/**
+src/runner-repository-access/**
+src/server/**
+src/slack/**
+src/web/src/server/**
+src/workspace/**
+src/worktree-checkout/**

@@ -332,6 +332,72 @@ export function closeoutPolicyDigest(db: Database, itemId: string, head: string)
   );
 }
 
+/** The review steps of an accepted Closeout run, with the marks Closeout gave their findings. */
+export type AcceptedCloseoutReviews = {
+  taskId: string;
+  head: string;
+  reviews: Array<Pick<CloseoutStepRecord, "id" | "attempt" | "failOn" | "preExisting">>;
+};
+
+/**
+ * The latest accepted Closeout run of the item: the one on `head` when there is one, otherwise
+ * the last accepted head, as a head rebased after acceptance carries it.
+ */
+export function acceptedCloseoutReviews(
+  db: Database,
+  itemId: string,
+  head: string | null,
+): AcceptedCloseoutReviews | null {
+  const run = db
+    .query<{ id: string; taskId: string; head: string }, [string, string | null]>(
+      `SELECT id, task_id AS taskId, head FROM closeout_progress
+       WHERE item_id = ?1 AND decision = 'accepted'
+       ORDER BY head = ?2 DESC, updated_at DESC, id DESC LIMIT 1`,
+    )
+    .get(itemId, head);
+  if (run === null) return null;
+  return { taskId: run.taskId, head: run.head, reviews: reviewSteps(db, run.id) };
+}
+
+/** An accepted Closeout run with its review steps and when Closeout finished it. */
+export type AcceptedCloseoutRun = AcceptedCloseoutReviews & { itemId: string; at: number };
+
+/** Every accepted Closeout run, oldest first. */
+export function acceptedCloseoutRuns(db: Database): AcceptedCloseoutRun[] {
+  return db
+    .query<{ id: string; itemId: string; taskId: string; head: string; at: number }, []>(
+      `SELECT id, item_id AS itemId, task_id AS taskId, head,
+         COALESCE(finished_at, updated_at) AS at
+       FROM closeout_progress WHERE decision = 'accepted' ORDER BY at, id`,
+    )
+    .all()
+    .map((run) => ({
+      itemId: run.itemId,
+      taskId: run.taskId,
+      head: run.head,
+      at: run.at,
+      reviews: reviewSteps(db, run.id),
+    }));
+}
+
+function reviewSteps(db: Database, progressId: string): AcceptedCloseoutReviews["reviews"] {
+  return db
+    .query<
+      Pick<StepSql, "step_id" | "attempt" | "review_fail_on" | "review_pre_existing">,
+      [string]
+    >(
+      `SELECT step_id, attempt, review_fail_on, review_pre_existing FROM closeout_step
+       WHERE progress_id = ? AND kind = 'review' ORDER BY ordinal, step_id`,
+    )
+    .all(progressId)
+    .map((step) => ({
+      id: step.step_id,
+      attempt: step.attempt,
+      failOn: step.review_fail_on,
+      preExisting: indexes(step.review_pre_existing),
+    }));
+}
+
 /** When Closeout first evaluated each head of the item, by head. */
 export function closeoutHeadsStarted(db: Database, itemId: string): Map<string, number> {
   const rows = db

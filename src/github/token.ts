@@ -10,7 +10,15 @@ import {
   type GitHubResponse,
 } from "./types";
 
-const ALLOWED_PERMISSIONS = new Set(["contents", "pull_requests", "checks", "issues", "metadata"]);
+const ALLOWED_PERMISSIONS = new Set([
+  "contents",
+  "pull_requests",
+  "checks",
+  "issues",
+  "metadata",
+  "workflows",
+]);
+const withoutWorkflows = new Set<string>();
 
 export type MintedToken = {
   token: string;
@@ -38,16 +46,24 @@ export async function mintInstallationToken(input: {
   assertName(input.repo, "repo");
   const now = input.now ?? new Date();
   const jwt = signAppJwt(input.appId, input.privateKeyPem, now);
-  const response = await input.client.request({
-    method: "POST",
-    path: `/app/installations/${input.installationId}/access_tokens`,
-    token: jwt,
-    body: {
-      repositories: [input.repo],
-      permissions:
-        input.access === "read" ? { contents: "read", metadata: "read" } : INSTALLATION_PERMISSIONS,
-    },
-  });
+  const request = (permissions: Record<string, string>) =>
+    input.client.request({
+      method: "POST",
+      path: `/app/installations/${input.installationId}/access_tokens`,
+      token: jwt,
+      body: { repositories: [input.repo], permissions },
+    });
+  let response: GitHubResponse;
+  if (input.access === "read") response = await request({ contents: "read", metadata: "read" });
+  else if (withoutWorkflows.has(input.installationId))
+    response = await request(INSTALLATION_PERMISSIONS);
+  else {
+    response = await request({ ...INSTALLATION_PERMISSIONS, workflows: "write" });
+    if (response.status === 422 || response.status === 403) {
+      withoutWorkflows.add(input.installationId);
+      response = await request(INSTALLATION_PERMISSIONS);
+    }
+  }
   if (response.status !== 201) throw mintFailure(response);
   return assertScopedToken(response.body, input.owner, input.repo, now, input.access);
 }

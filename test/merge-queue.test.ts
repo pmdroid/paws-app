@@ -1,12 +1,17 @@
 import { expect, test } from "bun:test";
 import { mergeQueueLine } from "../src/core";
 import {
+  applyWorkItemEvent,
+  getWorkItem,
+  inMergeQueue,
   insertQueuedItem,
   joinMergeQueue,
   leaveMergeQueue,
   listMergeQueues,
   markMergeQueueNotified,
   mergeQueuePosition,
+  restart,
+  restartedFromMergeQueue,
 } from "../src/db";
 import { tempDb } from "./helpers";
 
@@ -78,4 +83,36 @@ test("the position reads like the run page", () => {
   expect(mergeQueueLine({ position: 12, repository: "acme/platform" })).toBe(
     "12th in the acme/platform queue",
   );
+});
+
+test("a fix sent back from the merge queue or its re-verify counts as merge-queue work", () => {
+  const db = tempDb();
+  try {
+    const accepted = (id: string) => {
+      insertQueuedItem(db, { id, now: 1 });
+      applyWorkItemEvent(db, id, "dispatched");
+      applyWorkItemEvent(db, id, "turn_ended");
+    };
+    accepted("conflict");
+    applyWorkItemEvent(db, "conflict", "closeout_accepted");
+    joinMergeQueue(db, { itemId: "conflict", repository: "acme/app", now: 2 });
+    expect(inMergeQueue(db, "conflict")).toBe(true);
+    restart(db, getWorkItem(db, "conflict")!, { reason: "conflict", body: "Rebase", now: 3 });
+    expect(inMergeQueue(db, "conflict")).toBe(false);
+    applyWorkItemEvent(db, "conflict", "dispatched");
+    expect(restartedFromMergeQueue(db, "conflict")).toBe(true);
+
+    accepted("reverify");
+    applyWorkItemEvent(db, "reverify", "closeout_accepted");
+    applyWorkItemEvent(db, "reverify", "reverify_requested");
+    applyWorkItemEvent(db, "reverify", "commit_while_verifying");
+    restart(db, getWorkItem(db, "reverify")!, { reason: "findings", body: "Fix", now: 4 });
+    expect(restartedFromMergeQueue(db, "reverify")).toBe(true);
+
+    accepted("first");
+    restart(db, getWorkItem(db, "first")!, { reason: "findings", body: "Fix", now: 5 });
+    expect(restartedFromMergeQueue(db, "first")).toBe(false);
+  } finally {
+    db.close();
+  }
 });

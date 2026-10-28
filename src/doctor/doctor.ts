@@ -1,5 +1,6 @@
 import { journalCaught } from "../journal";
 import { accessSync, constants, statSync } from "node:fs";
+import { join } from "node:path";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import {
   LINEAR_WORKSPACE_REQUIRED,
@@ -53,8 +54,9 @@ const FIX = {
   codex: "Run codex login.",
   closeout: "Fix .agents/closeout.yaml on origin/main.",
   repo: "Connect GitHub and choose repositories in workspace settings.",
-  webhook: "Set LINEAR_WEBHOOK_SECRET to the Linear webhook signing secret.",
-  publicUrl: "Set PAWS_PUBLIC_URL to the https tunnel origin.",
+  webhook:
+    "Set LINEAR_WEBHOOK_SECRET to the Linear webhook signing secret, or save it with paws install secrets.",
+  publicUrl: "Set PAWS_PUBLIC_URL to the public https origin.",
   githubApp:
     "Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH (mode 0600), or save them in ~/.paws/secrets/github-app.json (docs/github-app.md).",
   githubInstallation:
@@ -77,7 +79,8 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
   const env = loadEnv(probe.env);
   const paths = pawsPaths(env.home);
   const facts = probe.facts;
-  const repoOk = facts.repo !== null && /^[^/\s]+\/[^/\s]+$/.test(facts.repo);
+  const repoOk =
+    facts.repos.length > 0 && facts.repos.every((repo) => /^[^/\s]+\/[^/\s]+$/.test(repo));
   const checks: DoctorCheck[] = [
     check("git", probe.which("git") !== null, probe.which("git") ?? "git is not on PATH", FIX.git),
     check(
@@ -103,7 +106,11 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     check(
       "repository",
       repoOk,
-      repoOk ? (facts.repo ?? "") : "repository must be owner/name",
+      repoOk
+        ? facts.repos.join(", ")
+        : facts.repos.length === 0
+          ? "no repository is chosen"
+          : "repository must be owner/name",
       FIX.repo,
     ),
   );
@@ -111,18 +118,21 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
   if (facts.tailscaleAuthKey !== undefined)
     checks.push(tailscaleAuthKeyCheck(facts.tailscaleAuthKey, isTailnetUrl(facts.publicUrl)));
   if (facts.webhooks) {
+    const linearSecret =
+      env.linearWebhookSecret !== null ||
+      probe.stat(join(paths.secretsDir, "linear-webhook")) !== null;
     checks.push(
       check(
         "linear-webhook",
-        env.linearWebhookSecret !== null,
-        env.linearWebhookSecret !== null ? "secret configured" : "LINEAR_WEBHOOK_SECRET is empty",
+        linearSecret,
+        linearSecret ? "secret configured" : "LINEAR_WEBHOOK_SECRET is empty",
         FIX.webhook,
       ),
       ...(facts.linearWebhook === undefined ? [] : [webhookDeliveryCheck(facts.linearWebhook)]),
       check(
         "public-url",
         facts.publicUrl !== null && facts.publicUrl.startsWith("https://"),
-        facts.publicUrl ?? "PAWS_PUBLIC_URL must be the https tunnel origin",
+        facts.publicUrl ?? "PAWS_PUBLIC_URL must be the public https origin",
         FIX.publicUrl,
       ),
     );

@@ -13,6 +13,11 @@ export type RunnerListener = {
   stop(): Promise<void>;
 };
 
+/** The peer is not, or no longer, an authorized runner. Only this is answered with 403. */
+class RunnerAuthorizationError extends Error {
+  override readonly name = "RunnerAuthorizationError";
+}
+
 export async function startRunnerListener(options: {
   tls: RunnerTls;
   hostname?: string;
@@ -63,12 +68,14 @@ export async function startRunnerListener(options: {
     });
     return server;
   }
+  /** A failing authorization check (a busy database) throws as itself, so it answers 503. */
   async function authorize(socket: TLSSocket): Promise<RunnerPeer> {
-    const peer = readPeer(socket, now());
+    const peer = authorizedPeer(socket, now());
     if (revoked.has(peer.fingerprint) || !(await options.authorize(peer)))
-      throw new Error("Runner authorization expired");
-    readPeer(socket, now());
-    if (revoked.has(peer.fingerprint)) throw new Error("Runner authorization expired");
+      throw new RunnerAuthorizationError("Runner authorization expired");
+    authorizedPeer(socket, now());
+    if (revoked.has(peer.fingerprint))
+      throw new RunnerAuthorizationError("Runner authorization expired");
     return peer;
   }
   async function handle(request: Http2ServerRequest, response: Http2ServerResponse) {
@@ -136,7 +143,8 @@ export async function startRunnerListener(options: {
       void cancelBody?.().catch((caughtError4) => {
         journalCaught(caughtError4, "listener.handle.cancelBody", null);
       });
-      if (!response.headersSent && !response.destroyed) reject(response, 403);
+      if (!response.headersSent && !response.destroyed)
+        reject(response, caughtError3 instanceof RunnerAuthorizationError ? 403 : 503);
       else response.destroy();
     } finally {
       const elapsed = now() - started;
@@ -209,6 +217,17 @@ function readPeer(socket: TLSSocket, now: number): RunnerPeer {
   )
     throw new Error("Runner TLS identity is invalid");
   return { fingerprint: certificate.fingerprint256, serial: certificate.serialNumber, notAfter };
+}
+
+function authorizedPeer(socket: TLSSocket, now: number): RunnerPeer {
+  try {
+    return readPeer(socket, now);
+  } catch (error) {
+    throw new RunnerAuthorizationError(
+      error instanceof Error ? error.message : "Runner TLS identity is invalid",
+      { cause: error },
+    );
+  }
 }
 
 function reject(response: Http2ServerResponse, status: number): void {

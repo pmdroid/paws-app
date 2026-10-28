@@ -7,6 +7,8 @@ import {
 } from "../core";
 import { git } from "./git";
 
+const UPSTREAM_MAIN = "refs/paws/upstream-main";
+
 export async function validateCandidateAttribution(
   tree: string,
   base: string | readonly string[],
@@ -26,7 +28,12 @@ export async function validateCandidateAttribution(
   const invoke = (args: string[]) =>
     git(["-C", tree, "--no-replace-objects", ...args], { env, signal });
   await assertDescendsFromAny(invoke, bases, head);
-  const commits = (await invoke(["rev-list", head, ...bases.map((sha) => `^${sha}`)]))
+  const main = await invoke(["rev-parse", "--verify", "--quiet", `${UPSTREAM_MAIN}^{commit}`]).then(
+    (out) => out.trim(),
+    () => "",
+  );
+  const excluded = [...bases, ...(/^[a-f0-9]{40}$/.test(main) ? [main] : [])];
+  const commits = (await invoke(["rev-list", head, ...excluded.map((sha) => `^${sha}`)]))
     .trim()
     .split("\n")
     .filter(Boolean);

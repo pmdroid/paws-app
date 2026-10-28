@@ -4,7 +4,7 @@ import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createOnboardingReadiness } from "./onboarding-readiness";
 import {
   createMemberVmHttp,
@@ -21,13 +21,22 @@ import {
   type ExeDevBootstrap,
 } from "./provisioning";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
+import {
+  collectProbes,
+  keepCandidates,
+  parseProbesArgs,
+  readStoredFindings,
+  type ProbesCommand,
+} from "./probe-collector";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
 import {
   ArtifactRejectedError,
   commitCheckpointSync,
+  git,
   mirrorFiles,
   restartFromFreshMain,
+  runAgent,
   worktreePath,
 } from "./acp";
 import { policyCheckPaths } from "./closeout";
@@ -56,10 +65,10 @@ import {
   type GitCommitPolicy,
   type AppBotIdentity,
   type Clock,
+  isTransient,
   policyCoauthors,
 } from "./core";
 import {
-  assertLinearQueue,
   enqueueCommand,
   enqueueJobOnce,
   getLinearSession,
@@ -100,6 +109,8 @@ import {
   workspaceMember,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
+import { installHostMain } from "./install-host";
+import { runInstallCli } from "./installer";
 import {
   createGitHubTokenProvider,
   createGitHubInstallationCheck,
@@ -145,6 +156,7 @@ import {
   type PullCommentFilter,
   attachOrchestrator,
   createLinearArtifactReader,
+  createRepositoryGit,
   itemPathId,
   repositoryAnswer,
   worktreeBranch,
@@ -163,6 +175,9 @@ import {
   teamRepositoryDenial,
   riskGateOn,
   RISK_GATE_NEEDS_PUBLIC_URL,
+  highRiskPathsFileAt,
+  backfillReviewFindings,
+  REVIEW_FINDINGS_BACKFILL_JOB,
 } from "./loop";
 import {
   formatReviewScore,
@@ -175,6 +190,7 @@ import {
   createItemReconciler,
   createParentDelegations,
   createPublicationReadiness,
+  RELATIONS_POLL_MS,
 } from "./intake";
 import { createExecutionControls } from "./execution-controls";
 import { createAdmission, registerScheduler, saveSchedulingContext } from "./scheduler";
@@ -205,7 +221,13 @@ import {
 } from "./runner-coordinator";
 import { createRunnerSessionMoves } from "./runner-control";
 import { cacheRepositoryCredentials } from "./runner-repository-access";
-import type { RunnerTranscriptObjects } from "./runner-transcripts";
+import {
+  encryptRunnerTranscripts,
+  loadRunnerTranscriptKey,
+  RUNNER_TRANSCRIPT_ENCRYPT_JOB,
+  RUNNER_TRANSCRIPT_KEY_FILE,
+  type RunnerTranscriptObjects,
+} from "./runner-transcripts";
 import {
   AGENT_SESSION_KEY_FILE,
   createLocalAgentSessionObjects,
@@ -214,7 +236,7 @@ import {
   withLocalAgentSessionFallback,
 } from "./agent-sessions";
 import {
-  loadRunnerTranscriptObjects,
+  loadRunnerTranscriptStores,
   loadRunnerTranscriptS3,
   runRunnerTranscriptStorageCli,
 } from "./runner-transcript-config";
@@ -222,6 +244,7 @@ import {
   createRemoteAgentRunner,
   createRemoteSessionAgentRunner,
   fetchRunnerCandidate,
+  remoteCommandsGone,
 } from "./runner-backend";
 
 const ACCEPTED: IntakeDecision = { outcome: "accepted" };
@@ -236,16 +259,12 @@ export type PawsProcess = {
   db: Database;
   server: Bun.Server<undefined>;
   catchUp: () => Promise<void>;
-  tunnelUp: () => boolean;
-  tunnelRequested: boolean;
-  tunnelUrl: string | null;
   ready: Promise<void>;
   stop: () => Promise<void>;
 };
 
 export type StartOptions = {
   server?: Bun.Server<undefined>;
-  noTunnel?: boolean;
   hostClock?: Clock;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy>;
   runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
@@ -291,12 +310,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw new Error("Public dashboard requires an HTTPS origin in PAWS_PUBLIC_URL.");
   }
   const placeOnRunner = remotePlacementReady;
-  const transcriptObjects =
-    options?.runnerTranscriptObjects ??
-    (placeOnRunner ? loadRunnerTranscriptObjects(runtime.env.home) : undefined);
+  const transcriptStorage = options?.runnerTranscriptObjects
+    ? { objects: options.runnerTranscriptObjects, stores: [options.runnerTranscriptObjects] }
+    : placeOnRunner
+      ? loadRunnerTranscriptStores(runtime.env.home)
+      : undefined;
+  const transcriptObjects = transcriptStorage?.objects;
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
-  assertLinearQueue(paths.db);
   ensureLayout(paths);
   const db = openDatabase(paths.db);
   migrate(db);
@@ -333,6 +354,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         origin: runtime.publicUrl!,
         clientId: runtime.linearClientId,
         clientSecret: runtime.linearClientSecret,
+        expectedOrganizationId: runtime.linearOrganizationId,
         reconnect: true,
         installed() {},
       })
@@ -347,12 +369,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
   let executionControls: ReturnType<typeof createExecutionControls> | null = null;
-  const repository = repositoryBinding(runtime.repo);
-  const repositories = [runtime.repo, ...runtime.file.githubRepos]
+  const repositories = runtime.repos
     .map(repositoryBinding)
     .filter((value): value is RepositoryBinding => value !== null);
-  const auth = repository === null ? null : authProvider(runtime, repository, "write", resolveApp);
-  const github = githubBinding(auth);
   const listCatalog = async () => {
     const client = createFetchGitHubClient();
     const lists = await Promise.all(
@@ -562,9 +581,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return linearTaskAccess.accept(event, request);
     },
     env: linearEnv(runtime, envSource),
-    publicUrl: runtime.publicUrl,
-    noTunnel: !webhooks || options?.noTunnel === true,
-    webhooks,
     followUp,
     progressReporter: (event) => {
       if (orchestrator === null) throw new Error("loop is not attached");
@@ -632,6 +648,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         memberships: linear.memberships,
         verifyTeam: (id, signal) => linear.access!.team(id, { signal }),
         readTeams: (signal) => linear.access!.teams!({ signal }),
+        retryable: isTransient,
         onError: () => console.error("Paws workspace access refresh failed."),
       });
     } catch (error) {
@@ -642,7 +659,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   }
   const commitPolicyForItem = async (
     item: WorkItemRecord,
-    selected = getWorkItemRepository(db, item.id) ?? repository,
+    selected = getWorkItemRepository(db, item.id),
   ): Promise<GitCommitPolicy> => {
     if (!selected) throw new Error("Attribution repository is missing");
     const bot = await authProvider(runtime, selected, "read", resolveApp)?.botIdentity?.();
@@ -678,7 +695,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           port: runnerConfig.port,
           tls: tls!,
           repositoryAccess,
-          transcriptObjects,
+          transcripts: transcriptObjects && {
+            objects: transcriptObjects,
+            key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
+          },
           agentSessions: placeOnRunner
             ? {
                 objects: agentSessionObjects(),
@@ -706,9 +726,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const tailscaleAuthKey = tailscaleAuthKeyReader(paths.home);
   const memberVmExeDev = createExeDev({ readToken: exeDevToken });
   const MEMBER_VM_STOP_WAIT_MS = 15_000;
+  const memberVmSize = () => loadConfigFile(paths.configFile).memberVm ?? {};
   const memberVmProvisioning = createMemberVmProvisioning({
     readToken: exeDevToken,
     tailscaleAuthKey,
+    size: memberVmSize,
     ...(options?.memberVm
       ? { exeDev: options.memberVm.exeDev, bootstrap: options.memberVm.bootstrap }
       : {}),
@@ -773,7 +795,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
   const sessionMovesStop = new AbortController();
-  const memberVmHttp = createMemberVmHttp({ db, available: createVmAvailable });
+  const memberVmHttp = createMemberVmHttp({
+    db,
+    available: createVmAvailable,
+    size: memberVmSize,
+    exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
+  });
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
         if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");
@@ -803,6 +830,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           const backend = await remote;
           await backend.agents.cancelItem(itemId);
         },
+        commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
         slotFree: () =>
           db
             .query<{ id: string }, []>(
@@ -863,11 +891,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     server = startServer({
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
-      onboarding: async (request) =>
+      onboarding: async (request, client) =>
         reconnectLinear &&
         !new URL(request.url).pathname.startsWith("/webhooks/") &&
         linearRevoked()
-          ? reconnectLinear(request)
+          ? reconnectLinear(request, client)
           : null,
       hostname: env.host,
       executionControls: async (...args) =>
@@ -941,6 +969,19 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           const policy = policyCheckPaths(mirror.mirror, mirror.commit);
           return { files: mirror.files, checks: policy.ok ? policy.checks : [] };
         },
+        highRiskFile: async (name: string) => {
+          const [owner, repo] = name.split("/");
+          if (!owner || !repo) return null;
+          const mirror = await mirrorFiles({ owner, repo, pawsRoot: paths.home });
+          if (!mirror) return null;
+          return {
+            commit: mirror.commit,
+            paths: await highRiskPathsFileAt(
+              (args) => git(["--git-dir", mirror.mirror, ...args]),
+              mirror.commit,
+            ),
+          };
+        },
         ...(linear?.tracker?.mergeChoices
           ? {
               mergeChoices: (signal: AbortSignal) => linear.tracker!.mergeChoices!({ signal }),
@@ -976,7 +1017,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     throw error;
   }
 
-  let running: LinearRunning = linear ? linear.start(server.port ?? env.port) : down();
+  let running: LinearRunning = linear ? linear.start() : down();
 
   const tracker = linear?.tracker ?? null;
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
@@ -1097,7 +1138,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             : true,
         scheduling: () => {
           enqueueMissingSnapshots();
-          return { defaultRepository: repository, ownerCap: ownerCap(paths.configFile) };
+          return { ownerCap: ownerCap(paths.configFile) };
         },
         publicationReady: (
           ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
@@ -1248,7 +1289,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         catchUp: async () => {
           await running.catchUp();
         },
-        repository,
         repositories,
         repositoryAccess: async (candidate, signal, access) => {
           const provider = authProvider(runtime, candidate, access, resolveApp);
@@ -1269,7 +1309,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           signal.throwIfAborted();
           return token;
         },
-        github,
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
@@ -1333,27 +1372,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           );
           attached.reconcileExecution();
         });
-        created.jobs.register("linear.epic.reconcile", async (job) => {
-          const legacy = job.payload as { epicId: string; workspaceId: string };
-          const item = db
-            .query<{ id: string }, [string]>(
-              `SELECT i.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
-               WHERE i.delegation_id=? AND s.stopped_at IS NULL
-               AND i.state NOT IN ('completed','merged','cancelled') ORDER BY i.position,i.id LIMIT 1`,
-            )
-            .get(legacy.epicId);
-          if (item)
-            await linearCaller("epic-reconcile", () =>
-              forItem(item.id, () =>
-                reconciler?.reconcile({
-                  itemId: item.id,
-                  workspaceId: legacy.workspaceId,
-                  signal: abort.signal,
-                }),
-              ),
-            );
-          attached.reconcileExecution();
-        });
         created.jobs.register("linear.epics.reconcile", async () => {
           await linearCaller("epics-sweep", () => reconciler?.sweep({ signal: abort.signal }));
           attached.reconcileExecution();
@@ -1364,8 +1382,29 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           recurringEveryMs: 1_800_000,
           now: Date.now(),
         });
+        created.jobs.register("linear.relations.poll", async () => {
+          const targets = await linearCaller("relations-poll", () =>
+            reconciler?.pollRelations({ signal: abort.signal }),
+          );
+          if (targets?.length) attached.reconcileExecution();
+        });
+        enqueueJobOnce(db, {
+          queue: "linear.relations.poll",
+          jobKey: "linear.relations.poll",
+          recurringEveryMs: RELATIONS_POLL_MS,
+          now: Date.now(),
+        });
       }
       registerScheduler(created.jobs, () => attached.reconcileExecution());
+      // A conversation blocked on an unverified cleanup continues once its runner reports the
+      // old command gone.
+      created.jobs.register("conversation.block.release", () => attached.releaseCleanupBlocks());
+      enqueueJobOnce(db, {
+        queue: "conversation.block.release",
+        jobKey: "conversation.block.release",
+        recurringEveryMs: 30_000,
+        now: Date.now(),
+      });
       created.jobs.register("worktree.sweep", (_job, context) =>
         attached.sweepWorktrees(context.signal),
       );
@@ -1375,6 +1414,29 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: 3_600_000,
         now: Date.now(),
       });
+      // Enqueued once by a migration; it seals transcript chunks stored before encryption. It is
+      // registered without runner placement too, since an unhandled job is cancelled, not kept.
+      created.jobs.register(RUNNER_TRANSCRIPT_ENCRYPT_JOB, (_job, context) =>
+        encryptRunnerTranscripts({
+          db,
+          stores: (transcriptStorage ?? loadRunnerTranscriptStores(runtime.env.home)).stores,
+          key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
+          signal: AbortSignal.any([context.signal, abort.signal]),
+        }).then(({ converted, skipped }) =>
+          journal(
+            `runner transcripts encrypted: ${converted} chunks sealed, ${skipped} unreadable`,
+          ),
+        ),
+      );
+      // Enqueued once by a migration; it fills the Findings page from the review evidence of runs
+      // Closeout accepted before the page stored findings.
+      created.jobs.register(REVIEW_FINDINGS_BACKFILL_JOB, () =>
+        backfillReviewFindings({ db, pawsRoot: paths.home }).then(({ runs, recorded, gone }) =>
+          journal(
+            `review findings backfilled: ${runs} accepted runs, ${recorded} findings, ${gone} gone`,
+          ),
+        ),
+      );
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
       enqueueJobOnce(db, {
         queue: "github.auth.recover",
@@ -1410,7 +1472,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return "Restart stopped: a valid GitHub App commit policy is missing. WIP is preserved. Restore the run policy before retrying.";
     },
     restartFromMain: (item) => {
-      const selected = getWorkItemRepository(db, item.id) ?? repository;
+      const selected = getWorkItemRepository(db, item.id);
       if (selected === null) return;
       const policy = getItemRunCommitPolicy(db, item.id);
       if (!policy) return;
@@ -1434,13 +1496,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     ready,
     catchUp: async () => {
       await running.catchUp();
-    },
-    tunnelUp: () => running.tunnelUp(),
-    get tunnelRequested() {
-      return running.tunnelRequested;
-    },
-    get tunnelUrl() {
-      return running.tunnelUrl;
     },
     stop() {
       stopping ??= stopPawsComponents({
@@ -1546,9 +1601,6 @@ function ownerCap(configFile: string): number | null {
 function down(): LinearRunning {
   return {
     catchUp: async () => undefined,
-    tunnelUp: () => false,
-    tunnelRequested: false,
-    tunnelUrl: null,
     stop: async () => undefined,
   };
 }
@@ -1748,16 +1800,20 @@ function linearEnv(runtime: RuntimeConfig, source: EnvSource): EnvSource {
   return next;
 }
 
-const CLI_HELP = `usage: paws [--no-tunnel]
+const CLI_HELP = `usage: paws
 
 Commands:
   paws                          start Paws on 127.0.0.1:8787
   paws doctor                   check prerequisites, including the GitHub App
+  paws install                  set up the env file, config.toml and the user service
+  paws install secrets          set the GitHub App, Linear, webhook and other secrets
   paws review-score [--since D] count review escapes, found after merge and after the PR
   paws login slack              connect Slack
   paws runner <command>         enroll and run a remote runner
   paws runner-authority init    create the runner command key
   paws public-tls validate      check the public HTTPS certificate
+  paws probes collect <owner/repo>
+                                draft Closeout probe rules into probes.proposed.yaml
 
 GitHub access uses the GitHub App only. See docs/github-app.md.`;
 
@@ -1794,9 +1850,77 @@ function reviewScoreMain(args: string[]): number {
   }
 }
 
+/** `paws probes collect`: the agent runs here, with the signed-in agent of whoever runs it. */
+async function probesMain(argv: string[]): Promise<number> {
+  let command: ProbesCommand;
+  try {
+    command = parseProbesArgs(argv);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  const controller = new AbortController();
+  process.once("SIGINT", () => controller.abort());
+  try {
+    const runtime = loadRuntime(process.env);
+    const paths = pawsPaths(runtime.env.home);
+    ensureLayout(paths);
+    const repository = {
+      owner: command.owner,
+      repo: command.repo,
+      remoteUrl: githubHttpsUrl(command.owner, command.repo),
+    };
+    // The App the running Paws uses: the workspace's, else the environment's.
+    const db = existsSync(paths.db) ? openDatabase(paths.db) : null;
+    if (db) process.once("exit", () => db.close());
+    const appActivation = db
+      ? createWorkspaceGitHubActivation(db, runtime.env.home, process.env)
+      : null;
+    const provider = authProvider(
+      runtime,
+      repository,
+      "read",
+      appActivation ? (name) => appActivation.resolve(name) : undefined,
+    );
+    if (!provider) throw new Error("The GitHub App is not configured. Run `paws doctor`.");
+    const print = (text: string) => console.log(text);
+    await collectProbes({
+      repository,
+      pawsRoot: paths.home,
+      since: command.since,
+      dryRun: command.dryRun,
+      out: command.out,
+      github: { client: createFetchGitHubClient(), tokenProvider: gitHostToken(provider) },
+      turn: runAgent,
+      networkGit: createRepositoryGit({
+        remoteUrl: repository.remoteUrl,
+        token: () => provider.token(),
+        signal: controller.signal,
+        assert: async () => undefined,
+        onCleanupFailure: () => undefined,
+      }),
+      findings: () =>
+        readStoredFindings({
+          home: paths.home,
+          dbPath: paths.db,
+          owner: command.owner,
+          repo: command.repo,
+        }),
+      keep: keepCandidates(command.keep, print),
+      print,
+      signal: controller.signal,
+    });
+    return 0;
+  } catch (error) {
+    journalCaught(error, "paws probes collect failed.", null);
+    return 1;
+  }
+}
+
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  if (command === "probes") process.exit(await probesMain(argv.slice(1)));
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-storage")
     process.exit(await runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home));
@@ -1833,6 +1957,9 @@ if (import.meta.main) {
   if (command === "doctor") {
     process.exit(await doctorMain());
   }
+  if (command === "install" && argv[1] === "secrets")
+    process.exit(await runInstallCli(argv.slice(1), process.env));
+  if (command === "install") process.exit(await installHostMain(argv.slice(1)));
   if (command === "review-score") process.exit(reviewScoreMain(argv.slice(1)));
   if (command === "login" && argv[1] === "slack") {
     try {
@@ -1865,7 +1992,6 @@ if (import.meta.main) {
   const paws = startPaws(process.env, {
     refreshRepositories: true,
     refreshAgentCatalog: true,
-    noTunnel: argv.includes("--no-tunnel"),
   });
   let exiting = false;
   const shutdown = (exitCode = 0) => {
@@ -1890,15 +2016,16 @@ if (import.meta.main) {
   try {
     await paws.ready;
   } catch (caughtError5) {
+    // A signal during startup stops what `ready` waits on; that shutdown chooses the exit code.
+    if (exiting) await new Promise<never>(() => {});
+    exiting = true;
     journalCaught(caughtError5, "Paws startup failed.", null);
     await shutdownPaws(paws, 1);
     process.exit(1);
   }
   const origin = `${paws.server.protocol}://${paws.server.hostname}:${paws.server.port}`;
-  const tunnel =
-    paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";
   // One write so a piped reader cannot observe the ready line before the dashboard line exists.
-  console.log(`paws ready · ${origin}${tunnel}\ndashboard ${origin}/status`);
+  console.log(`paws ready · ${origin}\ndashboard ${origin}/status`);
 }
 
 /** One signed-in provider, shared by issues, comments, and git. */

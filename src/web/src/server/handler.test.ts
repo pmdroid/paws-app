@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { fakeStatusProvider, handleStatusRequest, startStatusServer, providerFor } from "../engine";
-import type { StatusSnapshot } from "../contract";
+import { parseStatusSnapshot, type StatusSnapshot } from "../contract";
+import { fullStatusFixture, statusList } from "../../test/fixtures";
 
 const servers: Array<{ stop: (close?: boolean) => void }> = [];
 const dirs: string[] = [];
@@ -34,6 +35,112 @@ describe("status HTTP stub", () => {
     const body = (await response.json()) as { source: string; items: unknown[] };
     expect(body.source).toBe("live");
     expect(body.items).toEqual([]);
+  });
+
+  test("?slices= answers only the named slices, with an ETag that a 304 honours", async () => {
+    let generatedAt = "2026-10-27T10:00:00.000Z";
+    let full = fullStatusFixture();
+    const provider = {
+      ...fakeStatusProvider(),
+      snapshot: () => ({ ...statusList(full), generatedAt }),
+    };
+    const get = (path: string, etag?: string) =>
+      handleStatusRequest(
+        new Request(`http://127.0.0.1${path}`, etag ? { headers: { "If-None-Match": etag } } : {}),
+        { provider },
+      ) as Promise<Response>;
+
+    const sliced = await get("/api/status?slices=mergeQueue,items");
+    expect(sliced.status).toBe(200);
+    const body = (await sliced.json()) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(
+      [
+        "version",
+        "source",
+        "generatedAt",
+        "project",
+        "slices",
+        "items",
+        "runs",
+        "verdicts",
+        "agentCloseout",
+        "mergeQueue",
+      ].sort(),
+    );
+    expect(body.slices).toEqual(["items", "mergeQueue"]);
+    expect((body.items as unknown[]).length).toBeGreaterThan(0);
+    const parsed = parseStatusSnapshot(body);
+    expect(parsed.ok && parsed.snapshot.questions).toEqual([]);
+
+    const evidence = (await (await get("/api/status?slices=evidence")).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(evidence)).not.toContain("items");
+    expect(Object.keys(evidence)).not.toContain("questions");
+    expect(evidence.slices).toEqual(["evidence"]);
+
+    const etag = sliced.headers.get("etag")!;
+    expect(etag).toMatch(/^W\/".+"$/);
+    expect(sliced.headers.get("paws-generated-at")).toBe(generatedAt);
+
+    generatedAt = "2026-10-27T10:00:05.000Z";
+    const unchanged = await get("/api/status?slices=items,mergeQueue", etag);
+    expect(unchanged.status).toBe(304);
+    expect(await unchanged.text()).toBe("");
+    expect(unchanged.headers.get("etag")).toBe(etag);
+    expect(unchanged.headers.get("paws-generated-at")).toBe(generatedAt);
+
+    expect((await get("/api/status?slices=items", etag)).status).toBe(200);
+    full = { ...full, mergeQueue: [] };
+    const changed = await get("/api/status?slices=items,mergeQueue", etag);
+    expect(changed.status).toBe(200);
+    expect(changed.headers.get("etag")).not.toBe(etag);
+
+    const whole = (await (await get("/api/status")).json()) as Record<string, unknown>;
+    expect(whole.slices).toBeUndefined();
+    expect(whole.questions).toBeDefined();
+    expect((await get("/api/status?slices=items,everything")).status).toBe(400);
+  });
+
+  test("the merge queue slice carries push outages, which Overview and Merge queue show", async () => {
+    const outage = {
+      repository: "acme/app",
+      since: "2026-10-27T09:00:00.000Z",
+      lastError: "Resource not accessible by integration",
+      nextProbeAt: "2026-10-27T10:05:00.000Z",
+      installationUrl: null,
+    };
+    const provider = {
+      ...fakeStatusProvider(),
+      snapshot: () => ({ ...statusList(fullStatusFixture()), pushOutages: [outage] }),
+    };
+    const get = async (path: string) =>
+      (await (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
+        provider,
+      }))!.json()) as Record<string, unknown>;
+    expect((await get("/api/status?slices=mergeQueue")).pushOutages).toEqual([outage]);
+    expect((await get("/api/status?slices=items")).pushOutages).toBeUndefined();
+  });
+
+  test("the items slice carries the last 24 hours of merge times, which Overview shows", async () => {
+    const mergedTimes = {
+      since: "2026-10-26T10:00:00.000Z",
+      merged: 2,
+      medianMs: 3_600_000,
+      p90Ms: 7_200_000,
+      states: [{ state: "running", ms: 1_800_000 }],
+    };
+    const provider = {
+      ...fakeStatusProvider(),
+      snapshot: () => ({ ...statusList(fullStatusFixture()), mergedTimes }),
+    };
+    const get = async (path: string) =>
+      (await (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
+        provider,
+      }))!.json()) as Record<string, unknown>;
+    expect((await get("/api/status?slices=items")).mergedTimes).toEqual(mergedTimes);
+    expect((await get("/api/status?slices=evidence")).mergedTimes).toBeUndefined();
   });
 
   test("a check log is the last 64 KB of each stream unless the full log is asked for", async () => {

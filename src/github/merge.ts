@@ -7,11 +7,13 @@ import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, gitFailureReason, redact, withCredential } from "./git";
 import { mainOverlap, readUpToDateRule } from "./overlap";
-import { pushWithLease } from "./push";
+import { pushDenial, pushWithLease } from "./push";
+import { pushOutageCause } from "./transport";
 import { waitForMergeReadiness, type Readiness } from "./readiness";
 import { readPullReview, type PullReview } from "./review";
 import { isTransient } from "../core";
 import {
+  GitCommandError,
   UPSTREAM_MAIN_REF,
   type GitExec,
   type GitHubClient,
@@ -45,7 +47,7 @@ export type SerialMergeInput = {
    * `[merge] main_moved = "overlap"`: compare main's new commits with the pull request's files,
    * grouped by these package roots, when S is behind main.
    */
-  overlap?: { packages: readonly string[] };
+  overlap?: { packages: readonly string[]; anyFiles?: boolean };
 };
 
 /** What the merge lane reads about the branch head S under the repository lock. */
@@ -129,7 +131,9 @@ async function readOverlap(
   token: string,
   gitExec: GitExec,
 ): Promise<Pick<PullFacts, "apart" | "shared" | "upToDateRule">> {
-  const { shared } = await mainOverlap(input.worktree, input.overlap?.packages ?? [], gitExec);
+  const { shared } = input.overlap?.anyFiles
+    ? { shared: [] as string[] }
+    : await mainOverlap(input.worktree, input.overlap?.packages ?? [], gitExec);
   if (shared.length > 0) return { apart: false, shared };
   const rule = await readUpToDateRule({
     client: input.client,
@@ -268,6 +272,7 @@ async function pushRebased(
   try {
     await fetchMain(input.worktree, url, minted, gitExec, input.sleep);
     const base = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
+    const before = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
     const commitExec: GitExec = input.commitEnv
       ? (args, options) =>
           gitExec(args, { ...options, env: { ...options.env, ...input.commitEnv } })
@@ -298,12 +303,25 @@ async function pushRebased(
         sleep: input.sleep,
       });
     } catch (error) {
-      throw new Error(`push rejected: ${gitFailureReason(minted, error)}`, { cause: error });
+      // The push waits out the outage: keep the head the lane started from, not one GitHub lacks.
+      if (pushOutageCause(error)) await git(input.worktree, ["reset", "--hard", before], gitExec);
+      const denial =
+        error instanceof GitCommandError
+          ? pushDenial(redact(minted, error.stderr), {
+              owner: input.owner,
+              repo: input.repo,
+              installationId: input.installationId,
+            })
+          : null;
+      throw new Error(`push rejected: ${denial ?? gitFailureReason(minted, error)}`, {
+        cause: error,
+      });
     }
     const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
     return { ok: true, base, head };
   } catch (error) {
-    if (isTransient(error)) throw error;
+    // A push outage holds the push for the lane to retry; it is not a rejection of this head.
+    if (isTransient(error) || pushOutageCause(error)) throw error;
     const message = redact(minted, error instanceof Error ? error.message : String(error));
     journalCaught(message, "merge.pushRebased", input.issue);
     return { ok: false, result: { merged: false, outcome: "push_rejected", branch, message } };

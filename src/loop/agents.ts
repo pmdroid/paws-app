@@ -78,11 +78,16 @@ export function closeoutPrompt(): string {
   ].join(" ");
 }
 
-export function closeoutChecksPrompt(head: string): string {
+export function closeoutChecksPrompt(head: string, fromCi: readonly string[] = []): string {
   return [
     `Run Paws Closeout on commit ${head}. Main moved or the commit is new, so its checks have not run yet.`,
     "Do not edit, create, or delete files, and do not commit. Do not try to fix anything.",
     "Call get_closeout, run each pending id in order with run_closeout, then call get_closeout again.",
+    ...(fromCi.length > 0
+      ? [
+          `Skip these pending ids: ${fromCi.join(", ")}. Paws took their results from green CI on this commit.`,
+        ]
+      : []),
     "Keep going when a check fails, so every pending check has a result.",
     "Reviews stay in required and are not pending. Leave them.",
     "Finish with one line per check: its id and status.",
@@ -104,9 +109,12 @@ export function implementPrompt(input: {
   brief?: string;
   /** Paths this run's checkout leaves out. */
   hiddenPaths?: readonly string[];
+  /** The earlier attempt's branch this run continues. */
+  continuesBranch?: string;
 }): string {
   const brief = [
     `Implement ${input.identifier}: ${input.title}.`,
+    ...(input.continuesBranch ? [continuationPrompt(input.continuesBranch)] : []),
     ...(input.brief ? [input.brief] : []),
     "Work only in this repository.",
     ...(input.hiddenPaths?.length ? [hiddenPathsPrompt(input.hiddenPaths)] : []),
@@ -119,6 +127,10 @@ export function implementPrompt(input: {
   ].join("\n");
   if (input.handoff === undefined || input.handoff.trim() === "") return brief;
   return `${input.handoff.trim()}\n\n${brief}`;
+}
+
+function continuationPrompt(branch: string): string {
+  return `This continues earlier work on this issue. The checkout starts at the tip of \`${branch}\`, which holds the earlier attempt's commits, and its pull request stays the same. Review what is already there with git log and git diff origin/main before changing anything, and build on it rather than starting over.`;
 }
 
 export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
@@ -168,10 +180,10 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
             ...(deps.home ? { home: deps.home } : {}),
             ...(deps.signal ? { signal: deps.signal } : {}),
             ...spawnOf(launch),
-            onEvent(event) {
+            onEvent(event, origin) {
               if (event.type === "permission" && event.decision === "deny") refusals.push(event);
               if (event.type === "progress" && !event.messageChunk)
-                void deps.postUpdate?.post(event.text).catch((caughtError1) => {
+                void deps.postUpdate?.post(event.text, origin).catch((caughtError1) => {
                   journalCaught(caughtError1, "agents.onEvent.post", request.itemId);
                   return undefined;
                 });
@@ -277,9 +289,9 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
-        onEvent(event) {
+        onEvent(event, origin) {
           if (event.type === "progress" && !event.messageChunk)
-            void deps.postUpdate?.post(event.text).catch((caughtError) => {
+            void deps.postUpdate?.post(event.text, origin).catch((caughtError) => {
               journalCaught(caughtError, "agents.reviewCommand.post", request.itemId);
               return undefined;
             });

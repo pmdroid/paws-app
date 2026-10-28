@@ -35,6 +35,7 @@ export function startBrowserOnboarding(
     origin: runtime.publicUrl!,
     clientId: runtime.linearClientId,
     clientSecret: runtime.linearClientSecret,
+    expectedOrganizationId: runtime.linearOrganizationId,
     reconnect,
     async prepare() {
       const runner = loadRunnerControl(source, runtime.env);
@@ -60,14 +61,14 @@ export function startBrowserOnboarding(
     hostname: runtime.env.host,
     port: runtime.env.port,
     tls,
-    onboarding(request) {
+    onboarding(request, client) {
       const path = new URL(request.url).pathname;
       const page = path === "/" || path === "/status" || path.startsWith("/status/");
       if (stopping || ((switching || failed) && !page))
         return Promise.resolve(
           Response.json({ error: "Paws is starting. Retry shortly." }, { status: 503 }),
         );
-      const operation = handle(request);
+      const operation = handle(request, client);
       requests.add(operation);
       return operation.finally(() => requests.delete(operation));
     },
@@ -82,13 +83,6 @@ export function startBrowserOnboarding(
     ready: Promise.resolve(),
     catchUp: async () => {
       await active?.catchUp();
-    },
-    tunnelUp: () => active?.tunnelUp() ?? false,
-    get tunnelRequested() {
-      return active?.tunnelRequested ?? false;
-    },
-    get tunnelUrl() {
-      return active?.tunnelUrl ?? null;
     },
     async stop() {
       stopping = true;

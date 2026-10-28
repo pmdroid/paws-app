@@ -4,13 +4,14 @@ import {
   compareVersions,
   hostEnrollmentCommand,
   listedRunners,
-  livePoll,
   memberVmDeleteDialogMarkup,
   memberVmMarkup,
+  memberVmMoveMarkup,
+  memberVmPoolMarkup,
+  memberVmSizeMarkup,
   memberVmsMarkup,
   runnerVmMarkup,
   type MemberVm,
-  RUNNER_POLL_MS,
   runnerActionsMarkup,
   runnerDetailMarkup,
   runnerHistoryMarkup,
@@ -888,56 +889,6 @@ test("versions compare numerically", () => {
   expect(compareVersions("dev", "1.0.0")).toBeNull();
 });
 
-describe("live polling", () => {
-  function fakes() {
-    const listeners = new Set<() => void>();
-    const doc = {
-      visibilityState: "visible" as DocumentVisibilityState,
-      addEventListener: (_: string, listener: () => void) => listeners.add(listener),
-      removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
-    };
-    let handler: (() => void) | null = null;
-    let every = 0;
-    const timers = {
-      setInterval: (next: () => void, ms: number) => {
-        handler = next;
-        every = ms;
-        return 1;
-      },
-      clearInterval: () => {
-        handler = null;
-      },
-    };
-    return {
-      doc,
-      timers,
-      listeners,
-      fire: () => handler?.(),
-      every: () => every,
-      running: () => handler !== null,
-    };
-  }
-
-  test("refreshes on an interval only while the page is visible", () => {
-    const fake = fakes();
-    let ticks = 0;
-    const stop = livePoll(() => ticks++, fake.doc as never, fake.timers as never);
-    expect(fake.every()).toBe(RUNNER_POLL_MS);
-    fake.fire();
-    expect(ticks).toBe(1);
-    fake.doc.visibilityState = "hidden";
-    fake.fire();
-    for (const listener of fake.listeners) listener();
-    expect(ticks).toBe(1);
-    fake.doc.visibilityState = "visible";
-    for (const listener of fake.listeners) listener();
-    expect(ticks).toBe(2);
-    stop();
-    expect(fake.running()).toBe(false);
-    expect(fake.listeners.size).toBe(0);
-  });
-});
-
 describe("coding agent versions", () => {
   test("shows the offered version and why a version was refused", () => {
     const at = Date.parse("2026-10-24T12:00:00Z");
@@ -999,6 +950,53 @@ describe("hostEnrollmentCommand", () => {
       "printf '%s\\n' 'tok_en-123' | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token",
     ]);
   });
+});
+
+test("Create VM names the size it asks exe.dev for", () => {
+  expect(memberVmSizeMarkup(undefined)).toBe("");
+  expect(memberVmSizeMarkup({})).toContain(
+    "Create VM uses exe.dev&#39;s default size, in the exe.dev team&#39;s default placement.",
+  );
+  expect(
+    memberVmSizeMarkup({ cpu: 8, memoryGb: 16, diskGb: 100, image: "ubuntu:24.04" }),
+  ).toContain("Create VM uses 8 CPUs · 16 GB memory · 100 GB disk · image ubuntu:24.04, in");
+  expect(memberVmSizeMarkup({ cpu: 1 })).toContain(
+    "Create VM uses 1 CPU · default memory · default disk, in the exe.dev team&#39;s default placement.",
+  );
+  expect(memberVmSizeMarkup({ pool: "build" })).toContain(
+    'Create VM uses exe.dev&#39;s default size, in exe.dev pool <b class="mono">build</b>.',
+  );
+});
+
+test("Create VM offers the other exe.dev pools for one VM", () => {
+  const pools = {
+    state: "listed" as const,
+    pools: [
+      { name: "build", region: "lon", status: "active" },
+      { name: "gpu", region: "nyc", status: "pending" },
+    ],
+  };
+  const html = memberVmPoolMarkup("build", pools, { choice: "", busy: false });
+  expect(html).toContain('<option value="" selected>build ([member_vm] pool)</option>');
+  expect(html).toContain('<option value="gpu">gpu · nyc · pending</option>');
+  expect(html).not.toContain('value="build"');
+  expect(memberVmPoolMarkup(undefined, pools, { choice: "gpu", busy: false })).toContain(
+    '<option value="">Team default placement</option>',
+  );
+  expect(
+    memberVmPoolMarkup(
+      "build",
+      { state: "listed", pools: [pools.pools[0]!] },
+      { choice: "", busy: false },
+    ),
+  ).toBe("");
+  expect(
+    memberVmPoolMarkup(
+      undefined,
+      { state: "failed", error: "exe.dev refused the token." },
+      { choice: "", busy: false },
+    ),
+  ).toContain("exe.dev pools could not be listed: exe.dev refused the token.");
 });
 
 describe("member VM", () => {
@@ -1177,6 +1175,33 @@ describe("member VM", () => {
     expect(html).toContain("exe.dev VM");
     expect(html).toContain('data-vm-delete="vm"');
     expect(runnerVmMarkup(deleting(), { busy: false })).toContain("data-vm-delete-step");
+  });
+
+  test("Move to pool offers the other pools with exe.dev's warning, or exe.dev's refusal", () => {
+    const pools = {
+      state: "listed" as const,
+      pools: [
+        { name: "build", region: null, status: null },
+        { name: "gpu", region: null, status: null },
+      ],
+    };
+    const html = runnerVmMarkup(vm({ step: "ready", pool: "build" }), {
+      busy: false,
+      pools,
+      denied: null,
+    });
+    expect(html).toContain('It is in exe.dev pool <b class="mono">build</b>.');
+    expect(html).toContain('data-vm-move="vm"');
+    expect(html).toContain('<option value="gpu">gpu</option>');
+    expect(html).not.toContain('<option value="build">');
+    expect(html).toContain("can take several minutes and needs an exe.dev team admin token");
+    const denied = memberVmMoveMarkup(vm(), pools, {
+      busy: false,
+      denied: "exe.dev refused moving ada-paws to pool gpu: only team admins can adopt VMs.",
+    });
+    expect(denied).not.toContain("data-vm-move=");
+    expect(denied).toContain("only team admins can adopt VMs.");
+    expect(memberVmMoveMarkup(vm(), { state: "loading" }, { busy: false, denied: null })).toBe("");
   });
 
   test("the runner row names its owner", () => {

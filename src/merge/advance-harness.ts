@@ -15,8 +15,10 @@ import {
   getWorkItem,
   insertQueuedItem,
   markCloseoutAccepted,
+  markRun,
   migrate,
   openDatabase,
+  recordItemPullRequest,
   saveCheckpoint,
   type TaskMergeSettings,
 } from "../db";
@@ -25,12 +27,14 @@ import {
   defaultGitExec,
   fakeMergeReadiness,
   fakeRequiredChecks,
+  readPullMergeable,
   type FakeMergeQueue,
   type GitHubClient,
   type GitHubResponse,
 } from "../github";
 import { advanceMerge, type MergeCapabilities } from "./advance";
 import type { RiskApproval } from "./mergeable";
+import { returnQueuedConflicts } from "./queue-conflicts";
 import type { MergeStep } from "./step";
 
 const exec = promisify(execFile);
@@ -135,9 +139,26 @@ export async function mergeHarness(
     riskAsked: [] as string[],
     /** Each task's Linear blockers; a blocker releases it once its merge is confirmed. */
     blockedBy: new Map<string, string[]>(),
+    /** Pull requests a person merged on GitHub, by number, with the merge commit. */
+    handMerged: new Map<number, string>(),
+    /** Lane reads of GitHub's merge state for the task's pull request before it reports one. */
+    handMergeSeenAfter: 0,
+    /** GitHub merges the pull request, but its answer to the merge call never arrives. */
+    dropMergeResponse: false,
+    /** GitHub's `mergeable` before it has computed one: null reads to answer first, per pull. */
+    lazyMergeable: new Map<number, number>(),
+    /** Pull request reads, by number. */
+    pullReads: new Map<number, number>(),
+    /** Runs during each pull request read, as if other work went on while GitHub answered. */
+    onPullRead: (_number: number): void => {},
+    /** Held open while a squash is in flight; the squash goes on when it settles. */
+    squashGate: null as Promise<void> | null,
+    squashing: false,
   };
   /** Tasks the lane published, in order: every lane attempt past the dependency check. */
   const publishedIds: string[] = [];
+  /** Tasks whose lane turn asked GitHub whether their pull request merged by hand. */
+  const handMergeReads: string[] = [];
   let jobId = 0;
 
   const client: GitHubClient = {
@@ -166,6 +187,8 @@ export async function mergeHarness(
           body.data.repository.pullRequest.baseRef.target.statusCheckRollup.contexts.nodes =
             baseNodes;
         body.data.repository.pullRequest.headRefOid = state.pullHead(variables.head);
+        if (state.handMerged.has(variables.number))
+          (body.data.repository.pullRequest as { state: string }).state = "MERGED";
         return { status: 200, body };
       }
       if (state.upToDateRule && req.method === "GET" && req.path.includes("/rules/branches/main"))
@@ -180,7 +203,11 @@ export async function mergeHarness(
         };
       const required = fakeRequiredChecks(req);
       if (required) return required;
+      const pull = /^\/repos\/acme\/app\/pulls\/(\d+)$/.exec(req.path);
+      if (req.method === "GET" && pull) return readPull(Number(pull[1]));
       if (req.method === "PUT" && req.path.endsWith("/merge")) {
+        state.squashing = true;
+        await state.squashGate;
         const body = req.body as { sha: string; commit_title: string };
         const number = Number(req.path.split("/").at(-2));
         const result = await github.merge({
@@ -188,11 +215,52 @@ export async function mergeHarness(
           number,
           expectedHeadSha: body.sha,
         });
+        if (state.dropMergeResponse) {
+          state.handMerged.set(number, result.sha);
+          throw new Error("The connection closed before GitHub answered.");
+        }
         return { status: 200, body: { sha: result.sha, merged: true } };
       }
       return { status: 404, body: {} };
     },
   };
+
+  /** GitHub's pull request read: `mergeable` from whether the branch merges into main. */
+  async function readPull(number: number): Promise<GitHubResponse> {
+    state.pullReads.set(number, (state.pullReads.get(number) ?? 0) + 1);
+    state.onPullRead(number);
+    const id = [...items.values()].find((item) => item.pull === number)?.id;
+    if (id === undefined) return { status: 404, body: {} };
+    const head = await git(bare, "rev-parse", `refs/heads/paws/${id}`);
+    const lazy = state.lazyMergeable.get(number) ?? 0;
+    if (lazy > 0) {
+      state.lazyMergeable.set(number, lazy - 1);
+      return {
+        status: 200,
+        body: { state: "open", mergeable: null, mergeable_state: "unknown", head: { sha: head } },
+      };
+    }
+    const merges = await exec("git", [
+      "-C",
+      bare,
+      "merge-tree",
+      "--write-tree",
+      "refs/heads/main",
+      `refs/heads/paws/${id}`,
+    ]).then(
+      () => true,
+      () => false,
+    );
+    return {
+      status: 200,
+      body: {
+        state: "open",
+        mergeable: merges,
+        mergeable_state: merges ? (state.upToDateRule ? "behind" : "clean") : "dirty",
+        head: { sha: head },
+      },
+    };
+  }
 
   async function addItem(
     id: string,
@@ -211,11 +279,19 @@ export async function mergeHarness(
     const head = await git(worktree, "rev-parse", "HEAD");
     const base = await git(worktree, "rev-parse", "origin/main");
     insertQueuedItem(db, { id, now: clock.now(), sessionKey: `ses-${id}` });
-    beginImplementRun(db, id, clock.now());
+    const { run } = beginImplementRun(db, id, clock.now());
     enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
+    // The implementer run ends once Closeout accepts, as it does in the loop.
+    markRun(db, run.id, "ended", clock.now());
     acceptHead(id, base, head);
     const item = { id, worktree, pull: items.size + 1, accepted: head, base };
     items.set(id, item);
+    recordItemPullRequest(db, {
+      itemId: id,
+      pullNumber: item.pull,
+      pullUrl: `https://github.com/acme/app/pull/${item.pull}`,
+      openedAt: clock.now(),
+    });
     payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
     return item;
   }
@@ -335,6 +411,18 @@ export async function mergeHarness(
         state.riskAsked.push(published.head);
         return { kind: "asked" };
       },
+      mergedOutsideLane: async () => {
+        handMergeReads.push(id);
+        const sha = state.handMerged.get(item.pull);
+        if (sha === undefined || handMergeReads.length <= state.handMergeSeenAfter) return null;
+        return {
+          repositoryOwner: "acme",
+          repositoryName: "app",
+          pullNumber: item.pull,
+          pullUrl: `https://github.com/acme/app/pull/${item.pull}`,
+          mergeSha: sha,
+        };
+      },
       completed: () => completed.push(id),
     };
   }
@@ -345,9 +433,10 @@ export async function mergeHarness(
     lines.push({ kind, body });
   }
 
-  async function pass(id: string): Promise<MergeStep> {
+  /** One lane turn, with the harness's payload for the task or the merge job's own. */
+  async function pass(id: string, jobPayload?: Record<string, unknown>): Promise<MergeStep> {
     jobId += 1;
-    const payload = payloads.get(id)!;
+    const payload = jobPayload ?? payloads.get(id)!;
     const step = await advanceMerge(db, { itemId: id, payload, jobId }, capabilities(id));
     if (step.kind === "wait")
       payloads.set(id, {
@@ -359,6 +448,32 @@ export async function mergeHarness(
         ...(step.githubQueue === undefined ? {} : { githubQueue: step.githubQueue }),
       });
     return step;
+  }
+
+  /** The queue conflict sweep for main's commit `main`, as its job runs it. */
+  function sweep(main: string | null): Promise<string[]> {
+    return returnQueuedConflicts(
+      db,
+      { repository: "acme/app", main },
+      {
+        ask,
+        now: () => clock.now(),
+        session: (current) => current.sessionKey,
+        voice: {
+          thought: (_, body, key) => say("thought", body, key),
+          flush: async () => {},
+        },
+        readPull: (_, prNumber) =>
+          readPullMergeable({
+            client,
+            owner: "acme",
+            repo: "app",
+            prNumber,
+            tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
+            sleep: async () => {},
+          }),
+      },
+    );
   }
 
   return {
@@ -378,6 +493,7 @@ export async function mergeHarness(
     remoteHead,
     moveMain,
     pass,
+    sweep,
     git,
     bodies: (kind?: Line["kind"]) =>
       lines.filter((line) => kind === undefined || line.kind === kind).map((line) => line.body),

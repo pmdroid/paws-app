@@ -15,9 +15,11 @@ import {
   type CandidateIdentity,
   type CloseoutItem,
   type DecisionDocument,
+  type Finding,
   type GateOutcome,
   type GateResult,
   type ReviewFindings,
+  type RuleApproval,
   type StoredReviewFinding,
 } from "./types";
 import { isSha, readHead } from "./worktree";
@@ -41,9 +43,11 @@ import {
   type CloseoutProgressIdentity,
   type CloseoutProgressStep,
   type CloseoutStepState,
+  approvalRules,
   type DecisionDocument as SpecDecision,
   type EvidenceApproval,
   type PublishedEvidence,
+  type CiResult,
 } from "../closeout-spec";
 
 export type EvaluateInput = {
@@ -68,6 +72,8 @@ export type EvaluateInput = {
   published?: () => readonly PublishedEvidence[];
   /** Visual reviews of those files, read again for each evaluation. */
   approvals?: () => readonly EvidenceApproval[];
+  /** Command checks taken from green CI at `head` instead of running. */
+  fromCi?: readonly CiResult[];
 };
 
 export type Evaluation = {
@@ -105,6 +111,8 @@ export type GateInput = {
   reviewRetryDelaysMs?: readonly number[];
   published?: () => readonly PublishedEvidence[];
   approvals?: () => readonly EvidenceApproval[];
+  /** Command checks taken from green CI at the first head. A fixed head runs them again. */
+  fromCi?: readonly CiResult[];
 };
 
 /**
@@ -233,6 +241,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
       ...(progress !== undefined ? { progress } : {}),
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
+      ...(input.fromCi ? { fromCi: input.fromCi } : {}),
     });
   } catch (error) {
     await early?.done.catch((caughtError1) => {
@@ -364,10 +373,15 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
 
   let fixAttempts = 0;
   let evaluations = 0;
+  const firstHead = head;
 
   for (;;) {
     evaluations += 1;
-    const evaluation = await evaluateCandidate({ ...input, head });
+    const evaluation = await evaluateCandidate({
+      ...input,
+      head,
+      ...(head === firstHead ? {} : { fromCi: undefined }),
+    });
     if (input.reportDir) {
       await appendDecisionHistory(input.reportDir, {
         evaluation: evaluations,
@@ -392,11 +406,21 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
     if (fixAttempts >= maxFixAttempts) {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
+    // A rule set to approve waits for a person; it is not the agent's to fix and uses no attempt.
+    const held = heldRules(input, evaluation);
+    if (
+      held.size > 0 &&
+      (evaluation.decision?.items ?? []).every(
+        (item) =>
+          item.state !== "failed" || held.has(item.id) || waivedIds(evaluation).has(item.id),
+      )
+    )
+      return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     // Failed fixes retry without a new evaluation, so every retry answers the same findings.
     const left = await fixesLeft(input, head, evaluation.decision);
     const first = fixAttempts + 1;
 
-    const feedback = await repairFeedback(input, evaluation);
+    const feedback = await repairFeedback(input, evaluation, (id) => !held.has(id));
     const failures: string[] = [];
     let lastThrown: string | undefined;
     let fixed: string | undefined;
@@ -594,19 +618,112 @@ export async function storedReviewFindings(
   });
 }
 
-async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise<string> {
+/**
+ * The findings of each review round stored for `head`, with secrets scrubbed. The marks Closeout
+ * gave them (pre-existing, `failOn`) are on the review steps of its progress record.
+ */
+export async function reviewRecordsAt(
+  taskId: string,
+  head: string,
+  pawsHome?: string,
+): Promise<Array<{ itemId: string; attempt: number; findings: Finding[] }>> {
+  return (await taskReviewRecords(taskId, pawsHome))
+    .filter((record) => record.head === head)
+    .map(({ itemId, attempt, findings }) => ({ itemId, attempt, findings }));
+}
+
+/** Every review round stored for a task, at each head, with secrets scrubbed. Reads its file once. */
+export async function taskReviewRecords(
+  taskId: string,
+  pawsHome?: string,
+): Promise<Array<{ itemId: string; head: string; attempt: number; findings: Finding[] }>> {
+  const records = await reviewRecordsSince(evidencePath(taskId, pawsHome), []);
+  return records.map((record) => ({
+    itemId: record.itemId,
+    head: record.head,
+    attempt: record.attempt,
+    findings: record.findings.map((finding) => ({
+      severity: finding.severity,
+      location: scrub(finding.location),
+      explanation: scrub(finding.explanation),
+      evidence: scrub(finding.evidence),
+    })),
+  }));
+}
+
+/** Checks an approved bypass waived on this evaluation. */
+function waivedIds(evaluation: Evaluation): Set<string> {
+  return new Set(evaluation.bypasses?.flatMap((approval) => [...approval.checkIds]) ?? []);
+}
+
+/**
+ * The failed rules of `evaluation` whose policy says `onFail: approve`, by id with their summary.
+ * One whose attempts ran out still waits for a person: its failures were never the agent's to
+ * fix. A bypass a person approved for this head no longer holds anything.
+ */
+function heldRules(input: GateInput, evaluation: Evaluation): Map<string, string> {
+  const failed = (evaluation.decision?.items ?? []).filter(
+    (item) => item.kind === "rule" && (item.state === "failed" || item.state === "exhausted"),
+  );
+  if (failed.length === 0) return new Map();
+  let rules;
+  try {
+    rules = approvalRules(input.worktree, input.home, input.policyRoot);
+  } catch (error) {
+    journalCaught(error, "run.heldRules.approvalRules", input.taskId);
+    return new Map();
+  }
+  const waived = waivedIds(evaluation);
+  return new Map(
+    rules
+      .filter((rule) => failed.some((item) => item.id === rule.id) && !waived.has(rule.id))
+      .map((rule) => [rule.id, rule.summary]),
+  );
+}
+
+/** Each held rule with the finding a send back hands the agent. */
+async function ruleApprovals(
+  input: GateInput,
+  evaluation: Evaluation,
+  held: ReadonlyMap<string, string>,
+): Promise<RuleApproval[]> {
+  const approvals: RuleApproval[] = [];
+  for (const item of evaluation.decision?.items ?? []) {
+    const summary = held.get(item.id);
+    if (summary === undefined) continue;
+    approvals.push({
+      id: item.id,
+      summary,
+      message: item.message,
+      ...(item.attempt === undefined ? {} : { attempt: item.attempt }),
+      feedback: await repairFeedback(input, evaluation, (id) => id === item.id),
+    });
+  }
+  return approvals;
+}
+
+/** The fix feedback for the failed checks `select` keeps, with the end of each check's log. */
+async function repairFeedback(
+  input: GateInput,
+  evaluation: Evaluation,
+  select: (id: string) => boolean = () => true,
+): Promise<string> {
   const decision = evaluation.decision;
   if (decision === null) return evaluation.error ?? "closeout rejected the candidate";
-  const waived = new Set(evaluation.bypasses?.flatMap((approval) => [...approval.checkIds]) ?? []);
+  const waived = waivedIds(evaluation);
   const parts = [
     formatFixFeedback(
-      { ...decision, items: decision.items.filter((item) => !waived.has(item.id)) },
-      evaluation.reviewFindings,
+      {
+        ...decision,
+        items: decision.items.filter((item) => !waived.has(item.id) && select(item.id)),
+      },
+      evaluation.reviewFindings.filter((review) => select(review.itemId)),
     ),
   ];
   for (const item of decision.items) {
     if (
       waived.has(item.id) ||
+      !select(item.id) ||
       (item.kind !== "command" && item.kind !== "rule") ||
       item.state !== "failed" ||
       item.attempt === undefined
@@ -1086,7 +1203,8 @@ async function fixesLeft(
   }
 }
 
-function evidencePath(taskId: string, pawsHome: string | undefined): string {
+/** Where Closeout stores a task's evidence records. */
+export function evidencePath(taskId: string, pawsHome: string | undefined): string {
   const safe = taskId.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 200);
   return path.join(pawsHome ?? tmpdir(), "closeout", "evidence", safe);
 }
@@ -1141,10 +1259,13 @@ async function finalResult(
   if (evaluation?.bypasses?.length) summaryParts.push(bypassSummary(evaluation.bypasses));
   if (error) summaryParts.push(error);
   if (evaluation?.error && evaluation.error !== error) summaryParts.push(evaluation.error);
+  const held =
+    evaluation && outcome !== "accepted" ? heldRules(input, evaluation) : new Map<string, string>();
   const handoff =
     input.maxFixAttempts === 0 && evaluation?.decision?.decision === "rejected"
-      ? await repairFeedback(input, evaluation)
+      ? await repairFeedback(input, evaluation, (id) => !held.has(id))
       : undefined;
+  const approvals = evaluation && held.size > 0 ? await ruleApprovals(input, evaluation, held) : [];
   const left = handoff === undefined ? null : await fixesLeft(input, head, decision);
   const result: GateResult = {
     ...(handoff ? { handoff } : {}),
@@ -1159,6 +1280,7 @@ async function finalResult(
     decision,
     summary: summaryParts.join("\n"),
     ...(evaluation?.bypasses ? { bypasses: evaluation.bypasses } : {}),
+    ...(approvals.length > 0 ? { ruleApprovals: approvals } : {}),
   };
   if (input.reportDir) {
     result.reportPath = await writeVerdictReport(input.reportDir, result);

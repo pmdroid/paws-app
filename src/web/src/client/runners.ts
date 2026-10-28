@@ -4,6 +4,7 @@ import { durationLabel, esc, skillVersionLabel, statePill } from "./format";
 import { readCsrfToken } from "./csrf";
 import { openAgentAccounts } from "./agent-accounts";
 import { routeHref } from "./route";
+import { livePoll } from "./poll";
 
 /** The runner list refreshes this often while the page is visible. */
 export const RUNNER_POLL_MS = 10_000;
@@ -148,6 +149,8 @@ export type MemberVmDeleteStep = "drain" | "tailnet" | "revoke" | "destroy" | "c
 export type MemberVm = {
   id: string;
   vmName: string;
+  /** The pool chosen in Create VM or moved to. Null: `[member_vm] pool` when it was created. */
+  pool?: string | null;
   userId?: string;
   ownerName?: string | null;
   step: "create" | "install" | "enroll" | "health" | "ready";
@@ -166,9 +169,92 @@ export type MemberVm = {
     steps: { step: MemberVmDeleteStep; state: StepState; elapsedMs: number | null }[];
   } | null;
 };
+/** `[member_vm]` in config.toml. A missing field is exe.dev's default. */
+export type MemberVmSize = {
+  cpu?: number;
+  memoryGb?: number;
+  diskGb?: number;
+  image?: string;
+  pool?: string;
+};
+/** One exe.dev pool from `pool list`, as `GET /api/runners/vm/pools` answers it. */
+export type ExeDevPool = { name: string; region: string | null; status: string | null };
+/** exe.dev's pools: not loaded yet, listed, or exe.dev's reason it could not list them. */
+export type PoolList =
+  | { state: "loading" }
+  | { state: "listed"; pools: ExeDevPool[] }
+  | { state: "failed"; error: string };
 export type MemberVmState =
   | { available: false }
-  | { available: true; vm: MemberVm | null; vms?: MemberVm[] };
+  | { available: true; vm: MemberVm | null; vms?: MemberVm[]; size?: MemberVmSize };
+
+/** The size Create VM asks exe.dev for, next to the button. */
+export function memberVmSizeMarkup(size: MemberVmSize | undefined): string {
+  if (size === undefined) return "";
+  const parts = [
+    size.cpu === undefined ? "default CPUs" : `${size.cpu} ${size.cpu === 1 ? "CPU" : "CPUs"}`,
+    size.memoryGb === undefined ? "default memory" : `${size.memoryGb} GB memory`,
+    size.diskGb === undefined ? "default disk" : `${size.diskGb} GB disk`,
+    ...(size.image === undefined ? [] : [`image ${size.image}`]),
+  ];
+  const { pool, ...flags } = size;
+  const text = Object.values(flags).every((value) => value === undefined)
+    ? "exe.dev's default size"
+    : parts.join(" · ");
+  const placed =
+    pool === undefined
+      ? esc("the exe.dev team's default placement")
+      : `exe.dev pool <b class="mono">${esc(pool)}</b>`;
+  return `<p class="muted" id="vm-create-size">Create VM uses ${esc(text)}, in ${placed}. Change the defaults under <span class="mono">[member_vm]</span> in config.toml.</p>`;
+}
+
+function poolLabel(pool: ExeDevPool): string {
+  return [pool.name, pool.region, pool.status].filter(Boolean).join(" · ");
+}
+
+/** The pool for the next Create VM: `[member_vm] pool` first, then the others from `pool list`. */
+export function memberVmPoolMarkup(
+  configured: string | undefined,
+  pools: PoolList,
+  view: { choice: string; busy: boolean },
+): string {
+  if (pools.state === "loading") return '<p class="muted">Listing exe.dev pools…</p>';
+  if (pools.state === "failed")
+    return `<p class="muted" data-vm-pools-error>exe.dev pools could not be listed: ${esc(pools.error)}</p>`;
+  const others = pools.pools.filter((pool) => pool.name !== configured);
+  if (others.length === 0) return "";
+  const first =
+    configured === undefined ? "Team default placement" : `${configured} ([member_vm] pool)`;
+  const options = others
+    .map(
+      (pool) =>
+        `<option value="${esc(pool.name)}"${pool.name === view.choice ? " selected" : ""}>${esc(poolLabel(pool))}</option>`,
+    )
+    .join("");
+  return `<div class="settings-field"><label for="vm-create-pool">Pool for this VM</label><select id="vm-create-pool" data-vm-pool data-focus="vm-pool"${view.busy ? " disabled" : ""}><option value=""${view.choice ? "" : " selected"}>${esc(first)}</option>${options}</select></div>`;
+}
+
+/**
+ * Move to pool on a VM's runner page: exe.dev's `pool adopt`. Left out once exe.dev refused the
+ * token, with exe.dev's words in its place.
+ */
+export function memberVmMoveMarkup(
+  vm: MemberVm,
+  pools: PoolList,
+  view: { busy: boolean; denied: string | null },
+): string {
+  if (view.denied !== null)
+    return `<p class="muted" data-vm-move-denied>Move to pool is not available: ${esc(view.denied)}</p>`;
+  if (pools.state !== "listed" || vm.deleting) return "";
+  const others = pools.pools.filter((pool) => pool.name !== vm.pool);
+  if (others.length === 0) return "";
+  const id = esc(vm.id);
+  const disabled = view.busy ? " disabled" : "";
+  const options = others
+    .map((pool) => `<option value="${esc(pool.name)}">${esc(poolLabel(pool))}</option>`)
+    .join("");
+  return `<form class="row" data-vm-move="${id}"><label class="sr-only" for="vm-move-${id}">Pool</label><select id="vm-move-${id}" name="pool" data-focus="vm-move:${id}"${disabled}>${options}</select><button class="btn" type="submit" data-focus="vm-move:${id}:save"${disabled}>Move to pool</button></form><p class="muted">exe.dev moves the VM with <span class="mono">pool adopt</span>. The move can take several minutes and needs an exe.dev team admin token.</p>`;
+}
 
 const VM_STEPS: Record<MemberVm["steps"][number]["step"], string> = {
   create: "Create the VM",
@@ -240,9 +326,16 @@ export function memberVmDeleteMarkup(vm: MemberVm, view: { busy: boolean; title:
   return `<section class="runner-section" data-member-vm-delete="${esc(deleting.step)}" aria-labelledby="vm-delete-progress-${id}"><div class="between"><h2 id="vm-delete-progress-${id}" tabindex="-1" data-focus="vm-delete-progress:${id}">${esc(view.title)} <span class="mono">${esc(vm.vmName)}</span></h2>${pill}</div>${status}<ul class="runner-skill-list" role="list" aria-label="VM delete steps">${rows}</ul>${actions}</section>`;
 }
 
-export function runnerVmMarkup(vm: MemberVm, view: { busy: boolean }): string {
+export function runnerVmMarkup(
+  vm: MemberVm,
+  view: { busy: boolean; pools?: PoolList; denied?: string | null },
+): string {
   if (vm.deleting) return memberVmDeleteMarkup(vm, { busy: view.busy, title: "Deleting VM" });
-  return `<section class="runner-section" aria-labelledby="runner-vm-${esc(vm.id)}"><div class="between"><h2 id="runner-vm-${esc(vm.id)}">exe.dev VM <span class="mono">${esc(vm.vmName)}</span></h2>${deleteButton(vm, view.busy)}</div><p class="muted">Created with Create VM. Deleting it destroys the VM on exe.dev and removes this runner from Paws.</p></section>`;
+  const pool = vm.pool ? ` It is in exe.dev pool <b class="mono">${esc(vm.pool)}</b>.` : "";
+  const move = view.pools
+    ? memberVmMoveMarkup(vm, view.pools, { busy: view.busy, denied: view.denied ?? null })
+    : "";
+  return `<section class="runner-section" aria-labelledby="runner-vm-${esc(vm.id)}"><div class="between"><h2 id="runner-vm-${esc(vm.id)}">exe.dev VM <span class="mono">${esc(vm.vmName)}</span></h2>${deleteButton(vm, view.busy)}</div><p class="muted">Created with Create VM. Deleting it destroys the VM on exe.dev and removes this runner from Paws.${pool}</p>${move}</section>`;
 }
 
 export function memberVmsMarkup(vms: readonly MemberVm[], view: { busy: boolean }): string {
@@ -344,12 +437,6 @@ export function hostEnrollmentCommand(enrollment: HostEnrollment & { config: obj
   ].join(" && \\\n  ");
 }
 
-type Timers = {
-  setInterval: (handler: () => void, ms: number) => unknown;
-  clearInterval: (id: never) => void;
-};
-type Visibility = Pick<Document, "visibilityState" | "addEventListener" | "removeEventListener">;
-
 const AGENTS = ["claude", "codex", "grok"] as const;
 const AGENT_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
@@ -359,26 +446,6 @@ const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
   usage_limit: ["warn", "Usage limit"],
   unknown: ["", "Not checked"],
 };
-
-/** Runs `tick` every `every` ms while the document is visible, and at once when it becomes visible. */
-export function livePoll(
-  tick: () => void,
-  visibility: Visibility = document,
-  timers: Timers = globalThis as unknown as Timers,
-  every = RUNNER_POLL_MS,
-): () => void {
-  const interval = timers.setInterval(() => {
-    if (visibility.visibilityState === "visible") tick();
-  }, every);
-  const onVisibility = () => {
-    if (visibility.visibilityState === "visible") tick();
-  };
-  visibility.addEventListener("visibilitychange", onVisibility);
-  return () => {
-    timers.clearInterval(interval as never);
-    visibility.removeEventListener("visibilitychange", onVisibility);
-  };
-}
 
 /** Negative when `a` is older than `b`; null when either is not a dotted version. */
 export function compareVersions(a: string, b: string): number | null {
@@ -1170,6 +1237,9 @@ export function createRunners() {
   let hostName = "";
   let enrollment: HostEnrollment | null = null;
   let memberVm: MemberVmState = { available: false };
+  let pools: PoolList = { state: "loading" };
+  let poolChoice = "";
+  let adoptDenied: string | null = null;
   let confirmingDelete: string | null = null;
   let busy = false;
   let feedback = "";
@@ -1198,6 +1268,9 @@ export function createRunners() {
     addingHost = false;
     enrollment = null;
     memberVm = { available: false };
+    pools = { state: "loading" };
+    poolChoice = "";
+    adoptDenied = null;
     confirmingDelete = null;
   }
   function deletableVms(): MemberVm[] {
@@ -1214,12 +1287,12 @@ export function createRunners() {
   function addsHosts() {
     return session !== null && session.role !== "observer";
   }
-  async function api<T>(path: string, body?: unknown): Promise<T> {
+  async function api<T>(path: string, body?: unknown, timeoutMs = 15_000): Promise<T> {
     if (!available) throw new Error("Connect to your Paws dashboard to see runners.");
     const response = await fetch(path, {
       method: body === undefined ? "GET" : "POST",
       cache: "no-store",
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
       headers:
         body === undefined
           ? {}
@@ -1293,6 +1366,22 @@ export function createRunners() {
             });
       if (current !== generation) return;
       memberVm = vm;
+      // exe.dev's pool list is read once per page, for Create VM and Move to pool.
+      if (vm.available && pools.state === "loading")
+        pools = await api<{ available: boolean; pools?: ExeDevPool[] }>(
+          "/api/runners/vm/pools",
+        ).then(
+          (answer) => ({ state: "listed", pools: answer.pools ?? [] }),
+          (caughtError3) => {
+            journalCaught(caughtError3, "runners.load.pools", null);
+            return {
+              state: "failed",
+              error:
+                caughtError3 instanceof Error ? caughtError3.message : "exe.dev did not answer.",
+            };
+          },
+        );
+      if (current !== generation) return;
       runners = listedRunners(list.runners);
       loaded = true;
       serverVersion = list.serverVersion ?? null;
@@ -1371,9 +1460,17 @@ export function createRunners() {
       ? "<p>No runners are enrolled. Select <b>Add a runner</b> to connect a Linux runner.</p>"
       : "<p>No runners are enrolled. A workspace member adds a Linux runner with <b>Add a runner</b>.</p>";
     const vm = addsHosts() && memberVm.available ? memberVm.vm : null;
+    const createVmSize =
+      addsHosts() && memberVm.available && memberVm.vm === null
+        ? memberVmSizeMarkup(memberVm.size)
+        : "";
+    const createVmPool =
+      createVmSize && memberVm.available
+        ? memberVmPoolMarkup(memberVm.size?.pool, pools, { choice: poolChoice, busy })
+        : "";
     const createVm =
       addsHosts() && memberVm.available && memberVm.vm === null
-        ? `<button class="btn" data-vm-create data-focus="vm-create"${disabled}>Create VM</button>`
+        ? `<button class="btn" data-vm-create data-focus="vm-create"${createVmSize ? ' aria-describedby="vm-create-size"' : ""}${disabled}>Create VM</button>`
         : "";
     const actions = addsHosts()
       ? `<div class="settings-actions">${createVm}<button class="btn primary" data-runner-add aria-haspopup="dialog" data-focus="add">Add a runner</button></div>`
@@ -1393,7 +1490,7 @@ export function createRunners() {
           )
         : ""
     }`;
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux runners that execute work delegated in Linear. Select a runner for its details and execution history.</p>${actions}</div>${adding ? "" : alert}${status}${createVmSize}${createVmPool}${vmSection}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${agentCatalogMarkup(agentCatalog, now, { manages: manages(), busy, behind: codingAgentsBehind(runners, agentCatalog) })}${dialog}${deleteDialog()}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -1413,7 +1510,7 @@ export function createRunners() {
       ...(concurrencyDrafts.has(runner.id)
         ? { concurrencyDraft: concurrencyDrafts.get(runner.id)! }
         : {}),
-    })}${runnerVm ? runnerVmMarkup(runnerVm, { busy }) : ""}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>${deleteDialog()}`;
+    })}${runnerVm ? runnerVmMarkup(runnerVm, { busy, pools, denied: adoptDenied }) : ""}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>${deleteDialog()}`;
   }
   function markup(open: ReadonlySet<string>): string {
     if (setupRequired)
@@ -1489,9 +1586,36 @@ export function createRunners() {
       box.addEventListener("change", () =>
         savePolicy(box.dataset.runnerSharing!, { sharing: box.checked }),
       );
+    root!
+      .querySelector<HTMLSelectElement>("[data-vm-pool]")
+      ?.addEventListener("change", (event) => {
+        poolChoice = (event.target as HTMLSelectElement).value;
+      });
+    for (const form of root!.querySelectorAll<HTMLFormElement>("form[data-vm-move]"))
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const id = form.dataset.vmMove!;
+        const pool = form.querySelector<HTMLSelectElement>("select")!.value;
+        void change(async () => {
+          try {
+            // exe.dev's /exec answers within 30 s, so wait a little longer than that.
+            memberVm = await api<MemberVmState>("/api/runners/vm/pool", { id, pool }, 40_000);
+            feedback = `exe.dev moved the VM to pool ${pool}.`;
+          } catch (caught) {
+            // exe.dev refused the token: leave the action out and say why in exe.dev's words.
+            if (!(caught instanceof Error && "status" in caught && caught.status === 403))
+              throw caught;
+            journalCaught(caught, "runners.move.api", null);
+            adoptDenied = caught.message;
+          }
+        }, false);
+      });
     root!.querySelector("[data-vm-create]")?.addEventListener("click", () => {
       void change(async () => {
-        memberVm = await api<MemberVmState>("/api/runners/vm", {});
+        memberVm = await api<MemberVmState>(
+          "/api/runners/vm",
+          poolChoice ? { pool: poolChoice } : {},
+        );
         // The VM section reports progress itself, so focus moves there instead of a notice.
         refocus("vm-heading");
       }, false);
@@ -1768,7 +1892,7 @@ export function createRunners() {
         );
         return;
       }
-      stopPolling ??= livePoll(poll);
+      stopPolling ??= livePoll(poll, RUNNER_POLL_MS);
       void load();
     },
     refresh() {

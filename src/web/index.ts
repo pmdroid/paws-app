@@ -4,6 +4,7 @@ export {
   fakeStatusProvider,
   providerFor,
   startStatusServer,
+  statusSnapshots,
 } from "./src/server/handler";
 export type { StatusProvider } from "./src/server/handler";
 export { createLiveStatusProvider, emptyLiveSnapshot } from "./src/live/provider";
@@ -12,3 +13,7 @@ export { STATUS_API_PATH, STATUS_PAGE_PATH, parseStatusSnapshot } from "./src/co
 export type { StatusSnapshot } from "./src/contract";
 export type { ReadLinearArtifact } from "./src/server/linear-artifact";
 export type { StartLinearSession } from "./src/server/session-start";
+export { handleFindingsRequest } from "./src/server/findings";
+export type { FindingsOptions } from "./src/server/findings";
+export { FINDINGS_API_PATH } from "./src/findings";
+export type { FindingView, FindingsResponse } from "./src/findings";

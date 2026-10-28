@@ -4,7 +4,7 @@ import { getOutbox, type OutboxRow } from "./outbox";
 export function prepareLinearActivity(db: Database, message: OutboxRow): OutboxRow {
   if (
     message.target !== "linear" ||
-    !["activity", "linear.activity", "elicitation"].includes(message.op) ||
+    !["activity", "elicitation"].includes(message.op) ||
     message.orderingKey?.startsWith("github:") ||
     !message.payload ||
     typeof message.payload !== "object" ||

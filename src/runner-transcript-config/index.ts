@@ -1,20 +1,13 @@
 import { journalCaught } from "../journal";
 import { S3Client } from "bun";
-import {
-  constants,
-  closeSync,
-  existsSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  readSync,
-} from "node:fs";
+import { constants, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { decodeSecretEnvelope, writeSecretFile } from "../credentials";
 import {
   createLocalRunnerTranscriptObjects,
   createS3RunnerTranscriptObjects,
+  withLocalRunnerTranscriptFallback,
 } from "../runner-transcripts";
 
 const FILE = "runner-transcript-storage.json";
@@ -77,17 +70,20 @@ export function loadRunnerTranscriptS3(home: string): { client: S3Client; bucket
   });
 }
 
-export function loadRunnerTranscriptObjects(home: string) {
+/**
+ * Transcript chunks: `objects` reads the local chunk when one exists and the S3 bucket otherwise,
+ * and writes to the bucket when one is configured. `stores` lists each store on its own.
+ */
+export function loadRunnerTranscriptStores(home: string) {
   const local = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
   const s3 = loadRunnerTranscriptS3(home);
-  if (s3 === null) return local;
+  if (s3 === null) return { objects: local, stores: [local] };
   const remote = createS3RunnerTranscriptObjects(s3);
-  return {
-    ...remote,
-    read(key: string) {
-      return existsSync(new URL(local.uri(key))) ? local.read(key) : remote.read(key);
-    },
-  };
+  return { objects: withLocalRunnerTranscriptFallback(local, remote), stores: [local, remote] };
+}
+
+export function loadRunnerTranscriptObjects(home: string) {
+  return loadRunnerTranscriptStores(home).objects;
 }
 
 export function configureRunnerTranscriptStorage(home: string, text: string): void {

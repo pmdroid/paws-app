@@ -3,7 +3,16 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { enqueueJob, enqueueOutbox, getJob, getOutbox, getWorkItem } from "../src/db";
+import {
+  CLEANUP_BLOCKED_NOTICE,
+  blockConversation,
+  enqueueJob,
+  enqueueOutbox,
+  getConversation,
+  getJob,
+  getOutbox,
+  getWorkItem,
+} from "../src/db";
 import { createExecutionControlsFixture, probeExecutionControls } from "./local/execution-controls";
 
 test("Workspace execution controls reach canonical Stop, Pause and Resume with current authorization", async () => {
@@ -82,6 +91,90 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     assert.equal((await retry(`outbox:${stop}`, "observer")).status, 403);
     assert.equal((await retry(`outbox:${stop}`)).status, 200);
     assert.equal(getOutbox(db, stop)!.status, "pending");
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Clear stuck agent clears a blocked conversation for an owner, refuses a member and is audited", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-controls-stuck-"));
+  const fixture = createExecutionControlsFixture(root);
+  try {
+    const { db, call } = fixture;
+    blockConversation(db, "controlled", Date.now());
+    const view = (await (await call(undefined, "owner")).json()) as {
+      actions: string[];
+      notice?: string;
+    };
+    assert(view.actions.includes("clear_stuck_agent"));
+    assert.equal(view.notice, CLEANUP_BLOCKED_NOTICE);
+    const member = (await (await call()).json()) as { actions: string[]; notice?: string };
+    assert(!member.actions.includes("clear_stuck_agent"));
+    assert.equal(member.notice, CLEANUP_BLOCKED_NOTICE);
+
+    assert.equal((await call("clear_stuck_agent")).status, 403);
+    assert.equal(getConversation(db, "controlled").blocked, true);
+    assert.equal((await call("clear_stuck_agent", "owner")).status, 200);
+    assert.equal(getConversation(db, "controlled").blocked, false);
+    const audit = db
+      .query<{ userId: string; action: string; subject: string }, []>(
+        "SELECT user_id AS userId,action,subject FROM workspace_access_audit WHERE action LIKE '%clear_stuck_agent%' OR subject LIKE '%clear_stuck_agent%' ORDER BY id",
+      )
+      .all();
+    assert.deepEqual(audit, [
+      {
+        userId: "member",
+        action: "access.denied",
+        subject: "execution.clear_stuck_agent:controlled",
+      },
+      { userId: "owner", action: "execution.clear_stuck_agent", subject: "controlled" },
+    ]);
+    // Nothing is blocked any more, so the action is gone.
+    assert.equal((await call("clear_stuck_agent", "owner")).status, 409);
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Asking which controls an item has is not a denial; a refused action still is", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-controls-audit-"));
+  const fixture = createExecutionControlsFixture(root);
+  try {
+    const { db, call } = fixture;
+    const denials = () =>
+      db
+        .query<{ userId: string; subject: string }, []>(
+          "SELECT user_id AS userId,subject FROM workspace_access_audit WHERE action='access.denied' ORDER BY id",
+        )
+        .all();
+    // Not their session, another organization, and an item with no session at all.
+    db.run(
+      `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
+      VALUES('sessionless','sessionless','sessionless','sessionless','No session','queued','paws/sessionless',2,?)`,
+      [Date.now()],
+    );
+    for (const [identity, itemId] of [
+      ["outside", "controlled"],
+      ["observer", "controlled"],
+      ["owner", "foreign"],
+      ["owner", "sessionless"],
+      ["owner", "missing"],
+    ] as const) {
+      const response = await call(undefined, identity, itemId);
+      assert.equal(response.status, 200);
+      assert.deepEqual(((await response.json()) as { actions: string[] }).actions, []);
+    }
+    assert.deepEqual(denials(), []);
+
+    for (const action of ["pause", "stop"])
+      assert.equal((await call(action, "outside")).status, 403);
+    assert.equal(getWorkItem(db, "controlled")!.state, "running");
+    assert.deepEqual(denials(), [
+      { userId: "outside", subject: "execution-controls" },
+      { userId: "outside", subject: "execution-controls" },
+    ]);
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });

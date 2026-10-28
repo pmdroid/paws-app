@@ -59,6 +59,7 @@ const SUPERSEDES: Record<QuestionKind, "session" | "item" | null> = {
   "github-auth": null,
   "plan-approval": null,
   link: null,
+  "push-outage": null,
 };
 
 const ENDED_STATES = new Set(["cancelled", "merged", "failed", "completed"]);

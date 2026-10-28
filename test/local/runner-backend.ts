@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createAcpActivityReporter } from "../../src/loop";
-import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
+import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -22,6 +22,8 @@ import {
   usagePause,
   runnerSlotsHeldBetweenCommands,
   runnerOccupancy,
+  enqueueOutbox,
+  listOutbox,
 } from "../../src/db";
 import { createLiveStatusProvider } from "../../src/web/src/live/provider";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
@@ -182,7 +184,9 @@ export async function probeRunnerBackend(
   const backend = createRemoteAgentRunner(backendOptions);
   const seen = new Set<string>();
   async function next(selectedRunnerId = runnerId, acknowledge = true) {
-    for (let i = 0; i < 500; i++) {
+    // Measured in time, not polls: four test files run at once and can starve a 1 ms poll.
+    const until = performance.now() + 10_000;
+    while (performance.now() < until) {
       for (const envelope of work.commands(selectedRunnerId)) {
         const v = verifyRunnerCommand(envelope, {
           trustedKeys: new Map([["fixture", signing.publicKey]]),
@@ -778,6 +782,119 @@ export async function probeRunnerBackend(
       },
     );
     await git(["-C", source, "reset", "--hard", base]);
+    const replayed = item();
+    let replayPublications = 0;
+    const origins: unknown[] = [];
+    const replayInput = (signal?: AbortSignal) =>
+      input(replayed, {
+        ...(signal ? { signal } : {}),
+        onEvent: (event, origin) => {
+          if (event.type === "progress" && !event.text.startsWith("Starting on "))
+            origins.push(origin);
+        },
+        publishArtifact: {
+          async publish() {
+            replayPublications++;
+            enqueueOutbox(db, {
+              target: "linear",
+              op: "activity",
+              orderingKey: `session-${replayed.id}`,
+              idempotencyKey: randomUUID(),
+              payload: { body: "Replayed evidence" },
+              now,
+            });
+            return { url: "https://linear.app/artifact/replayed" };
+          },
+        },
+      });
+    const replayShutdown = new AbortController();
+    const beforeReplay = backend.forItem(replayed.id)(replayInput(replayShutdown.signal));
+    void beforeReplay.catch(() => undefined);
+    const replayCommand = await next();
+    if (replayCommand.type !== "run") throw new Error("Expected an implementation run");
+    const replayGrant = work.issueGrant({
+      runnerId,
+      runId: replayCommand.runId,
+      commandId: replayCommand.id,
+      generation: replayCommand.generation,
+    });
+    const replayBytes = Buffer.from("Replayed evidence");
+    const replayArtifact = {
+      id: randomUUID(),
+      path: "reports/replayed.txt",
+      displayName: "Replayed",
+      mimeType: "text/plain",
+      sizeBytes: replayBytes.length,
+      sha256: createHash("sha256").update(replayBytes).digest("hex"),
+      attachToIssue: false,
+    };
+    artifacts.upload({
+      runnerId,
+      runId: replayCommand.runId,
+      token: replayGrant.token,
+      chunk: {
+        generation: replayCommand.generation,
+        artifact: replayArtifact,
+        index: 0,
+        data: replayBytes.toString("base64"),
+      },
+    });
+    for (const [at, event] of [
+      [1, { type: "artifact", artifact: replayArtifact }],
+      [2, { type: "progress", text: "Published the report" }],
+    ] as const)
+      work.event({
+        runnerId,
+        runId: replayCommand.runId,
+        generation: replayCommand.generation,
+        token: replayGrant.token,
+        sequence: at,
+        event,
+      });
+    for (let attempt = 0; attempt < 500 && origins.length === 0; attempt++) await delay(2);
+    replayShutdown.abort(new PawsShutdown());
+    await beforeReplay.catch(() => undefined);
+    // Paws stopped after the effects and before the cursor moved past them.
+    db.run("UPDATE runner_work SET consumed_sequence=0 WHERE run_id=?", [replayCommand.runId]);
+    const afterReplay = backend.forItem(replayed.id)(replayInput());
+    for (let attempt = 0; attempt < 500 && origins.length < 2; attempt++) await delay(2);
+    results.submit({
+      runnerId,
+      runId: replayCommand.runId,
+      generation: replayCommand.generation,
+      token: replayGrant.token,
+      result: { ...result(replayCommand), candidateSha: head },
+    });
+    const fetchedBeforeReplay = fetched;
+    const replayResult = await afterReplay;
+    fetched = fetchedBeforeReplay;
+    const replayRows = listOutbox(db, `session-${replayed.id}`).length;
+    const replayAnswer = db
+      .query<{ answer: string }, [string]>(
+        "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=1",
+      )
+      .get(replayCommand.runId)?.answer;
+    const sameOrigin = {
+      runId: replayCommand.runId,
+      generation: replayCommand.generation,
+      sequence: 2,
+    };
+    observe(
+      "a runner event replayed after a restart keeps its answer and its origin, so it is published once",
+      replayResult.stopReason === "end_turn" &&
+        replayPublications === 1 &&
+        replayRows === 1 &&
+        JSON.parse(replayAnswer ?? "{}").url === "https://linear.app/artifact/replayed" &&
+        JSON.stringify(origins) === JSON.stringify([sameOrigin, sameOrigin]),
+      {
+        stopReason: replayResult.stopReason,
+        replayPublications,
+        replayRows,
+        replayAnswer,
+        origins,
+      },
+    );
+    await git(["-C", source, "reset", "--hard", base]);
     const accepted = item();
     const acceptedShutdown = new AbortController();
     const beforeExpiry = backend.forItem(accepted.id)(
@@ -967,7 +1084,12 @@ export async function probeRunnerBackend(
       { reviewCommand: commandReview.reviewCommand, commandText, tooOld, refusedReviews },
     );
     const transcriptObjects = createFakeRunnerTranscriptObjects();
-    const transcripts = createRunnerTranscripts({ db, work, objects: transcriptObjects });
+    const transcripts = createRunnerTranscripts({
+      db,
+      work,
+      objects: transcriptObjects,
+      key: randomBytes(32),
+    });
     let cancelDuringDownload = false;
     const sealedBackend = createRemoteAgentRunner({
       ...backendOptions,
@@ -2941,7 +3063,6 @@ export async function probeRunnerBackend(
         return command;
       };
       await git(["-C", source, "reset", "--hard", head]);
-      const legacy = await sent("0.1.18");
       const current = await sent("0.1.19");
       const moved = (
         await git(["-C", source, "commit-tree", `${base}^{tree}`, "-p", base, "-m", "moved main"])
@@ -2967,16 +3088,12 @@ export async function probeRunnerBackend(
           stale: stale.repository.mainSha,
         },
       );
-      if (legacy.type !== "run" || current.type !== "run") throw new Error("Expected run commands");
-      assert.equal(legacy.repository.mainSha, undefined);
-      assert.equal(legacy.checkpoint, undefined);
+      if (current.type !== "run") throw new Error("Expected run commands");
       assert.equal(current.repository.mainSha, base);
       assert.equal(current.checkpoint, false);
-      observe(
-        "only runners on 0.1.19 or later receive the task's main commit and checkpoint opt-out",
-        true,
-        { legacy: legacy.repository.baseSha, current: current.repository.mainSha },
-      );
+      observe("runners receive the task's main commit and checkpoint opt-out", true, {
+        current: current.repository.mainSha,
+      });
       const nextRun = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds)

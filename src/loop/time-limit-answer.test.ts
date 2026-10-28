@@ -107,3 +107,33 @@ test("Continue while the stopped run is still finishing queues one fenced restar
   });
   expect(listJobs(db).some((job) => job.queue === "run.resume")).toBe(true);
 });
+
+test("the time-limit question for accepted work offers Merge, Continue and Stop", () => {
+  const { db } = askedAtTimeLimit();
+  const question = db
+    .query<{ body: string; options: string }, []>(
+      "SELECT body, options FROM question WHERE kind = 'time-limit'",
+    )
+    .get()!;
+  expect(JSON.parse(question.options)).toEqual(["Merge the accepted work", "Continue", "Stop"]);
+  expect(question.body).toContain("Stop ends the task without merging");
+  expect(question.body).toContain("its pull request is not closed");
+});
+
+test("Merge the accepted work at the time limit goes to the merge queue without a turn", () => {
+  const { clock, db, item } = askedAtTimeLimit();
+  expect(reply(db, "Merge the accepted work", clock.now()).status).toBe("answered");
+  expect(getWorkItem(db, item.id)).toMatchObject({ state: "merge_queue" });
+  expect(getWorkItem(db, item.id)?.checkpoint).toMatchObject({
+    phase: "merge_queue",
+    wipCommit: "accepted",
+  });
+  expect(listJobs(db).some((job) => job.queue === "run.resume" && job.status === "pending")).toBe(
+    false,
+  );
+  expect(
+    listJobs(db)
+      .filter((job) => job.queue === "github.merge")
+      .map((job) => job.payload),
+  ).toEqual([{ itemId: item.id, summary: "Closeout accepted.", head: "accepted" }]);
+});

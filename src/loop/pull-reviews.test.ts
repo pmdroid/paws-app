@@ -237,9 +237,11 @@ describe("changes-requested reviews", () => {
     expect(getWorkItem(db, "eng-1")?.state).toBe("merge_queue");
     setBusy(true);
     expect(await handlePullReview(db, 501, caps)).toBe("wait");
-    const step = await advanceMerge(db, { itemId: "eng-1", payload: {}, jobId: 1 }, {
-      now: () => 10,
-    } as MergeCapabilities);
+    const step = await advanceMerge(
+      db,
+      { itemId: "eng-1", payload: {}, jobId: 1 },
+      laneCapabilities(),
+    );
     expect(step).toMatchObject({ kind: "wait", reason: "review", queued: true });
 
     setBusy(false);
@@ -259,9 +261,11 @@ describe("changes-requested reviews", () => {
     expect(queue.isQueued(7)).toBe(false);
 
     // The merge step that finds the pull request gone waits for the review instead.
-    const step = await advanceMerge(db, { itemId: "eng-1", payload: {}, jobId: 1 }, {
-      now: () => 10,
-    } as MergeCapabilities);
+    const step = await advanceMerge(
+      db,
+      { itemId: "eng-1", payload: {}, jobId: 1 },
+      laneCapabilities(),
+    );
     expect(step).toMatchObject({ kind: "wait", reason: "review" });
 
     setBusy(false);
@@ -328,3 +332,9 @@ describe("other reviews", () => {
     expect(getPullReview(db, 7)).toMatchObject({ itemId: "eng-1", pullNumber: 7 });
   });
 });
+
+/** The merge lane reads only these before a review holds it. */
+function laneCapabilities(): MergeCapabilities {
+  const caps: Partial<MergeCapabilities> = { now: () => 10, mergedOutsideLane: async () => null };
+  return caps as MergeCapabilities;
+}

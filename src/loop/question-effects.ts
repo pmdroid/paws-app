@@ -1,6 +1,7 @@
+import { mergeAcceptedWork } from "./accepted-work";
 import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND } from "../core";
+import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
 import {
   applyLinearTurns,
   announceLinearTurn,
@@ -60,7 +61,7 @@ export function questionEffects(
       >(
         `SELECT id,body,options,answer FROM question WHERE item_id=? AND session_id=?
        AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL
-       AND kind NOT IN ('visual-review','runner-wait','github-auth','link') ORDER BY answered_at,rowid`,
+       AND kind NOT IN ('visual-review','runner-wait','github-auth','link','push-outage') ORDER BY answered_at,rowid`,
       )
       .all(item.id, question.sessionId);
     const handoffs = pending.map((entry) =>
@@ -113,8 +114,16 @@ export function questionEffects(
       `closeout-guidance:${question.id}`,
     );
   };
-  /** Continue gives the resumed agent more awake time. Stop ends the task; the accepted work stays. */
+  /**
+   * Merge sends the accepted head to the merge queue without another turn. Continue gives the
+   * resumed agent more awake time. Stop ends the task; the accepted work stays.
+   */
   const timeLimit = (question: StoredQuestion) => {
+    if ((question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_MERGE.toLowerCase()) {
+      consumeTurn(question);
+      mergeAcceptedWork(db, question.itemId, { now: input.now });
+      return;
+    }
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {
       extendAwakeCap(db, question.itemId);
       resume(question);
@@ -241,5 +250,7 @@ export function questionEffects(
     repository: resume,
     "ci-help": resume,
     "closeout-help": closeoutHelp,
+    // The workspace push outage question asks a person to look at GitHub; the item goes on.
+    "push-outage": consumeTurn,
   };
 }

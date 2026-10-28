@@ -2,7 +2,7 @@ import { fullStatusFixture, pageData, statusList, type FullStatus } from "../../
 import { describe, expect, test } from "bun:test";
 import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
-import { checkKey } from "./closeout";
+import { checkKey, emptyCloseoutView } from "./closeout";
 import { esc } from "./format";
 
 /** `snapshot` is the full fixture; the model gets its list and, on an issue page, its detail. */
@@ -276,7 +276,9 @@ describe("status views", () => {
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
     item.linearRequests = 12;
-    const page = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    const closeout = emptyCloseoutView();
+    closeout.open[`section\ndetails:${item.id}`] = true;
+    const page = render(model({ snapshot, route: { view: "runs", id: run.id }, closeout })).content;
     expect(page).toContain("<dt>Linear requests</dt><dd>12</dd>");
   });
 
@@ -297,6 +299,22 @@ describe("status views", () => {
     const issue = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
     expect(issue).toContain("First in the acme/platform queue");
     expect(issue).toContain("This pull request moves now");
+    item.state = "verifying";
+    item.mergeQueue = {
+      repository: "acme/platform",
+      position: 1,
+      total: 3,
+      ahead: null,
+      rechecking: true,
+    };
+    const rechecking = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
+    expect(rechecking).toContain("Re-checking, keeps its place.");
+    expect(rechecking).not.toContain("Not in the merge queue yet.");
+    item.state = "merge_queue";
+    item.mergeQueue = { repository: "acme/platform", position: 2, total: 3, ahead: null };
+    expect(render(model({ snapshot, route: { view: "issues", id: item.id } })).content).toContain(
+      "This pull request moves now",
+    );
     item.state = "running";
     expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
       "acme/platform queue",

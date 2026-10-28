@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import type { AcpEvent } from "../acp";
+import type { AcpEvent, AcpEventOrigin } from "../acp";
 import type { ActivityKind, ProgressUpdate, SessionPlanStep } from "../linear";
 import { scrubText } from "../closeout";
 
@@ -16,6 +16,9 @@ export const LINEAR_STALE_MS = 30 * 60 * 1000;
 
 const ACTIVITY_PART_LENGTH = 3_500;
 type AcpActivity = Omit<ProgressUpdate, "sessionId">;
+
+/** The runner event an activity came from, and which part of it when the body is split. */
+export type ActivityOrigin = AcpEventOrigin & { part: number };
 
 export function shouldPostFirstActivity(alreadyPosted: boolean, elapsedMs: number): boolean {
   return !alreadyPosted && elapsedMs >= FIRST_ACTIVITY_MS;
@@ -42,19 +45,22 @@ export function activityFromAcpEvent(event: AcpEvent): AcpActivity | null {
 }
 
 export function createAcpActivityReporter(
-  emit: (activity: AcpActivity) => void,
+  emit: (activity: AcpActivity, origin?: ActivityOrigin) => void,
   onPlan?: (steps: readonly SessionPlanStep[]) => void,
 ): {
-  onEvent(event: AcpEvent): void;
+  onEvent(event: AcpEvent, origin?: AcpEventOrigin): void;
   flush(): void;
   resultBody(): string;
 } {
   let pending = "";
   let resultBody = "";
 
-  function post(activity: AcpActivity) {
+  function post(activity: AcpActivity, origin?: AcpEventOrigin) {
     for (let start = 0; start === 0 || start < activity.body.length; start += ACTIVITY_PART_LENGTH)
-      emit({ ...activity, body: activity.body.slice(start, start + ACTIVITY_PART_LENGTH) });
+      emit(
+        { ...activity, body: activity.body.slice(start, start + ACTIVITY_PART_LENGTH) },
+        origin && { ...origin, part: start / ACTIVITY_PART_LENGTH },
+      );
   }
 
   function flush() {
@@ -64,7 +70,7 @@ export function createAcpActivityReporter(
   }
 
   return {
-    onEvent(event) {
+    onEvent(event, origin) {
       if (event.type === "progress" && event.messageChunk) return;
       if (event.type === "session_update") {
         const update = event.update;
@@ -91,7 +97,7 @@ export function createAcpActivityReporter(
       const activity = activityFromAcpEvent(event);
       if (activity === null) return;
       flush();
-      post(activity);
+      post(activity, origin);
     },
     flush,
     resultBody: () => resultBody,

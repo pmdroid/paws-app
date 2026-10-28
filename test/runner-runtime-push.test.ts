@@ -23,7 +23,14 @@ function git(args: string[], cwd: string) {
   return child.stdout.toString().trim();
 }
 
-async function fixture(rejection: string) {
+/**
+ * `rejection` is GitHub's refusal of a push, or null once GitHub takes pushes again. `moved` is a
+ * commit someone else pushed to the branch on GitHub while the turn ran.
+ */
+async function fixture(
+  rejection: string | (() => string | null),
+  moved?: { file: string; content: string },
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-push-"));
   const now = Date.now();
   let clock = 0;
@@ -35,6 +42,16 @@ async function fixture(rejection: string) {
   git(["commit", "-q", "-m", "base"], source);
   const baseSha = git(["rev-parse", "HEAD"], source);
   git(["clone", "-q", "--bare", source, join(root, "origin.git")], root);
+  let movedSha: string | null = null;
+  if (moved) {
+    const other = join(root, "other");
+    git(["clone", "-q", join(root, "origin.git"), other], root);
+    writeFileSync(join(other, moved.file), moved.content);
+    git(["add", "."], other);
+    git(["commit", "-q", "-m", "moved"], other);
+    git(["push", "-q", "origin", "HEAD:refs/heads/paws/fixture"], other);
+    movedSha = git(["rev-parse", "HEAD"], other);
+  }
   writeFileSync(join(source, "file.txt"), "candidate\n");
   git(["commit", "-q", "-am", "candidate"], source);
   const candidateSha = git(["rev-parse", "HEAD"], source);
@@ -83,6 +100,7 @@ async function fixture(rejection: string) {
   let execution = "";
   const posted: RunnerResult[] = [];
   const pushes: number[] = [];
+  const fetches: number[] = [];
   const runtime = await openRunnerRuntime({
     root,
     spool,
@@ -95,9 +113,24 @@ async function fixture(rejection: string) {
     async networkGit(input) {
       if (input.operation === "clone")
         git(["clone", "-q", "--bare", join(root, "origin.git"), input.dest!], input.cwd);
-      else if (input.operation === "push") {
+      else if (input.operation === "fetch") {
+        fetches.push(clock);
+        git(["fetch", "-q", join(root, "origin.git"), "+refs/heads/*:refs/heads/*"], input.dest!);
+      } else if (input.operation === "push") {
         pushes.push(clock);
-        throw new Error(rejection);
+        const refused = typeof rejection === "string" ? rejection : rejection();
+        if (refused !== null) throw new Error(refused);
+        const target = input.refspec!.split(":")[1]!;
+        git(
+          [
+            "push",
+            "-q",
+            ...(input.lease ? [`--force-with-lease=${target}:${input.lease}`] : []),
+            join(root, "origin.git"),
+            input.refspec!,
+          ],
+          input.cwd,
+        );
       }
     },
     broker: {
@@ -189,6 +222,12 @@ async function fixture(rejection: string) {
   return {
     posted,
     pushes,
+    fetches,
+    candidateSha,
+    movedSha,
+    remoteBranch: (branch: string) =>
+      git(["rev-parse", `refs/heads/${branch}`], join(root, "origin.git")),
+    remoteGit: (args: string[]) => git(args, join(root, "origin.git")),
     async run(minutes: number) {
       for (let step = 0; step <= minutes * 2; step++) {
         for (let index = 0; index < 5; index++) {
@@ -228,11 +267,38 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
   30_000,
 );
 
+const DENIED_TO_APP =
+  "remote: Permission to fixture/repository.git denied to paws-test[bot].\nfatal: unable to access 'https://github.com/fixture/repository.git/': The requested URL returned error: 403";
+
 test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
-  "a candidate push GitHub rejects for permission stops on the first try",
+  "a turn finished during a push outage keeps its commit and pushes it when the outage ends",
+  async () => {
+    let outage = true;
+    const f = await fixture(() => (outage ? DENIED_TO_APP : null));
+    try {
+      await f.run(20);
+      // One push, then 1, 2, 5 and 10 minutes apart; nothing is posted and nothing is asked.
+      expect(f.pushes).toEqual([0, 60_000, 180_000, 480_000, 1_080_000]);
+      expect(f.posted).toEqual([]);
+      outage = false;
+      await f.run(10);
+      expect(f.pushes.at(-1)).toBe(1_680_000);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]!.pushFailure).toBeUndefined();
+      expect(f.posted[0]!.candidateSha).toBe(f.candidateSha);
+      expect(f.remoteBranch("paws/fixture")).toBe(f.candidateSha);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a candidate push GitHub refuses for the workflows permission stops on the first try",
   async () => {
     const f = await fixture(
-      "remote: Permission to fixture/repository.git denied to paws-test[bot].\nfatal: unable to access 'https://github.com/fixture/repository.git/': The requested URL returned error: 403",
+      "To https://github.com/fixture/repository.git\n ! [remote rejected] abc -> paws/fixture (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)\nerror: failed to push some refs to 'https://github.com/fixture/repository.git'",
     );
     try {
       await f.run(2);
@@ -240,8 +306,101 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       expect(f.posted).toHaveLength(1);
       expect(f.posted[0]!.pushFailure).toEqual({
         branch: "paws/fixture",
-        error: expect.stringContaining("Permission to fixture/repository.git denied"),
+        error: expect.stringContaining("without `workflows` permission"),
       });
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+const STALE_INFO =
+  "To https://github.com/fixture/repository.git\n ! [rejected]        abc -> paws/fixture (stale info)\nerror: failed to push some refs to 'https://github.com/fixture/repository.git'";
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a stale-info rejection rebases the turn's commits onto the moved branch and pushes them without a question",
+  async () => {
+    let refusals = 1;
+    const f = await fixture(() => (refusals-- > 0 ? STALE_INFO : null), {
+      file: "other.txt",
+      content: "moved\n",
+    });
+    try {
+      await f.run(2);
+      expect(f.fetches).toHaveLength(1);
+      expect(f.pushes).toHaveLength(2);
+      expect(f.posted).toHaveLength(1);
+      const [result] = f.posted;
+      expect(result!.pushFailure).toBeUndefined();
+      expect(result!.stopReason).toBe("end_turn");
+      const head = f.remoteBranch("paws/fixture");
+      expect(result!.candidateSha).toBe(head);
+      expect(head).not.toBe(f.candidateSha);
+      // The agent's own commit, unchanged, on top of the commit the branch moved to.
+      expect(f.remoteGit(["rev-parse", `${head}^`])).toBe(f.movedSha!);
+      expect(f.remoteGit(["show", "-s", "--format=%s%n%an <%ae>%n%cn", head])).toBe(
+        "candidate\nFixture <fixture@example.invalid>\nFixture",
+      );
+      expect(f.remoteGit(["show", `${head}:file.txt`])).toBe("candidate");
+      expect(f.remoteGit(["show", `${head}:other.txt`])).toBe("moved");
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a non-fast-forward rejection rebases onto the moved branch and pushes again",
+  async () => {
+    const f = await fixture(() => null, { file: "other.txt", content: "moved\n" });
+    try {
+      await f.run(2);
+      expect(f.pushes).toHaveLength(2);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]!.pushFailure).toBeUndefined();
+      expect(f.posted[0]!.candidateSha).toBe(f.remoteBranch("paws/fixture"));
+      expect(f.remoteGit(["rev-parse", "refs/heads/paws/fixture^"])).toBe(f.movedSha!);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a rebase onto the moved branch that conflicts reports the conflicting files and leaves the branch alone",
+  async () => {
+    const f = await fixture(() => null, { file: "file.txt", content: "moved\n" });
+    try {
+      await f.run(2);
+      expect(f.pushes).toHaveLength(1);
+      expect(f.remoteBranch("paws/fixture")).toBe(f.movedSha!);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]!.stopReason).toBe("error");
+      expect(f.posted[0]!.pushFailure).toEqual({
+        branch: "paws/fixture",
+        error: expect.stringContaining("conflicted in file.txt"),
+        conflicts: ["file.txt"],
+      });
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a 403 is not rebased: the branch is never fetched and the push waits as an outage",
+  async () => {
+    const f = await fixture(DENIED_TO_APP, { file: "other.txt", content: "moved\n" });
+    try {
+      await f.run(10);
+      expect(f.pushes.length).toBeGreaterThan(1);
+      expect(f.fetches).toEqual([]);
+      expect(f.posted).toEqual([]);
+      expect(f.remoteBranch("paws/fixture")).toBe(f.movedSha!);
     } finally {
       await f.cleanup();
     }

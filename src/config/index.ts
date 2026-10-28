@@ -8,12 +8,14 @@ export {
   loadConfigFile,
   parseConfigToml,
   renderConfigToml,
+  setConfigKeys,
   writeConfigFile,
   writeImplementer,
   IMPLEMENTERS,
 } from "./file";
 export type {
   AgentsConfig,
+  ConfigKeyValue,
   GitHubConfigAuth,
   GrokConfig,
   ImplementerName,
@@ -21,6 +23,8 @@ export type {
   PawsSetupConfig,
   TrackerKind,
 } from "./file";
+export { checkMemberVmValue, isMemberVmPool, renderMemberVmSettings } from "./member-vm";
+export type { MemberVmKey, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths } from "./paths";
 export type { PawsPaths } from "./paths";
 export { LINEAR_WORKSPACE_REQUIRED, loadRuntime } from "./runtime";

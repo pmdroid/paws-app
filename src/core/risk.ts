@@ -63,6 +63,34 @@ export function classifyRisk(
   return { tier: paths.length > 0 ? "high" : "normal", paths };
 }
 
+/** Where a high-risk glob came from: Settings › Merging, or the repository's file. */
+export type RiskList = "settings" | "file";
+/** One matched path and every list with a glob that matched it. */
+export type RiskMatch = { path: string; lists: RiskList[] };
+
+/**
+ * `classifyRisk` over both lists, with `matches` naming the list that matched each path. A path
+ * both lists match names both, settings first.
+ */
+export function classifyRiskByList(
+  changed: readonly string[],
+  globs: { settings: readonly string[]; file: readonly string[] },
+): RiskClassification & { matches: RiskMatch[] } {
+  const risk = classifyRisk(changed, [...globs.settings, ...globs.file]);
+  const settings = classifyRisk(risk.paths, globs.settings).paths;
+  const file = classifyRisk(risk.paths, globs.file).paths;
+  return {
+    ...risk,
+    matches: risk.paths.map((path) => ({
+      path,
+      lists: [
+        ...(settings.includes(path) ? (["settings"] as const) : []),
+        ...(file.includes(path) ? (["file"] as const) : []),
+      ],
+    })),
+  };
+}
+
 const LISTED_PATHS = 20;
 
 /**

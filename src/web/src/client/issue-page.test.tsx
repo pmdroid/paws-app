@@ -10,7 +10,7 @@ import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
 import { emptyCloseoutView } from "./closeout";
-import { plainTask, render } from "./render";
+import { plainTask, render, timelineGroups } from "./render";
 import { themedMarkup } from "./theme";
 
 /** ENG-101 delegated twice: the current session shares a Linear session with ENG-102. */
@@ -59,7 +59,7 @@ function page(snapshot: FullStatus, id = "ENG-101"): string {
 describe("issue page", () => {
   test("desktop: state, project, runner and agent, then the timeline, the pull request and earlier attempts", () => {
     const html = page(redelegated());
-    for (const term of ["State", "Project", "Runner", "Agent", "Session"])
+    for (const term of ["Project", "Runner", "Agent", "Session"])
       expect(html).toContain(`<dt>${term}</dt>`);
     const order = [
       'id="activity-heading">Timeline</h2>',
@@ -96,9 +96,10 @@ describe("issue page", () => {
       detail: parsed.detail,
       error: null,
       engineUrl: null,
+      closeout: { ...emptyCloseoutView(), open: { "section\ndetails:ENG-101": true } },
     }).content;
     const section = html.slice(html.indexOf('id="item-timeline-heading"'));
-    expect(section).toContain(">Item timeline</h2>");
+    expect(section).toContain(">State changes</h3>");
     const entries = section.slice(0, section.indexOf("</ol>")).match(/<li /g);
     expect(entries).toHaveLength(6);
     expect(section).toContain("<strong>queued</strong> Back to the agent for Closeout findings.");
@@ -110,6 +111,28 @@ describe("issue page", () => {
 
   test("an item without recorded state changes has no item timeline", () => {
     expect(page(fullStatusFixture(), "ENG-102")).not.toContain("item-timeline");
+  });
+
+  test("state changes that bounce between two states fold into one line with a count", () => {
+    const event = (at: string, from: string, to: string, name: string) => ({
+      at,
+      from,
+      to,
+      event: name,
+      kind: "transition" as const,
+      reason: null,
+      actor: null,
+    });
+    const bounce = [1, 2, 3].flatMap((n) => [
+      event(`2026-10-28T13:0${n}:00.000Z`, "running", "recovering", "lease_expired"),
+      event(`2026-10-28T13:0${n}:30.000Z`, "recovering", "running", "recovered"),
+    ]);
+    const groups = timelineGroups([
+      event("2026-10-28T12:52:00.000Z", "queued", "running", "dispatched"),
+      ...bounce,
+      event("2026-10-28T14:50:00.000Z", "running", "verifying", "turn_ended"),
+    ]);
+    expect(groups.map((group) => group.length)).toEqual([1, 6, 1]);
   });
 
   test("renders from the item detail alone, with no list snapshot", () => {
@@ -130,7 +153,7 @@ describe("issue page", () => {
     expect(html).toContain('id="activity-heading">Timeline</h2>');
     expect(html).toContain("Earlier attempt, ended ");
     expect(html).toContain(
-      '<h2>Blocks</h2><div class="row wrap"><a href="/issues/ENG-105">ENG-105</a>',
+      '<dt>Blocks</dt><dd><div class="row wrap"><a href="/issues/ENG-105">ENG-105</a>',
     );
     expect(html).toContain('aria-label="Closeout"');
     const other = render({

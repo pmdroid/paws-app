@@ -31,16 +31,13 @@ globalThis.fetch = Object.assign(
   },
   { preconnect: () => undefined },
 );
-const paws = startPaws(
-  {
-    PAWS_HOME: home,
-    PAWS_PORT: "0",
-    LINEAR_MODE: "agent-session",
-    LINEAR_CLIENT_ID: "client",
-    LINEAR_CLIENT_SECRET: "fake-secret",
-  },
-  { noTunnel: true },
-);
+const paws = startPaws({
+  PAWS_HOME: home,
+  PAWS_PORT: "0",
+  LINEAR_MODE: "agent-session",
+  LINEAR_CLIENT_ID: "client",
+  LINEAR_CLIENT_SECRET: "fake-secret",
+});
 await paws.catchUp();
 paws.stop();
 console.log(JSON.stringify({ requests }));

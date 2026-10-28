@@ -1,5 +1,10 @@
 import { journalCaught } from "../journal";
-import { assertDescendsFromAny, commitCoauthorTrailers, validateCommitAttribution } from "../core";
+import {
+  assertDescendsFromAny,
+  candidateBases,
+  commitCoauthorTrailers,
+  validateCommitAttribution,
+} from "../core";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -96,6 +101,103 @@ export function createRunnerRepositories(options: {
         },
       )
     ).stdout;
+  /** Runs git where its exit status and output both matter: `merge-tree` exits 1 on a conflict. */
+  async function spawnGit(
+    args: string[],
+    input: { stdin?: string; env?: Record<string, string>; signal?: AbortSignal } = {},
+  ) {
+    const child = Bun.spawn(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", ...args], {
+      cwd: options.root,
+      env: { ...env, ...input.env },
+      stdin: input.stdin === undefined ? "ignore" : new TextEncoder().encode(input.stdin),
+      stdout: "pipe",
+      stderr: "pipe",
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    input.signal?.throwIfAborted();
+    return { code, stdout, stderr };
+  }
+  /**
+   * Replays the first-parent commits of `head` not reachable from `excluded` onto `onto`, keeping
+   * each commit's author, committer and message. A merge commit applies its change against its
+   * first parent. Returns the new head, or throws {@link CandidateRebaseConflict}.
+   */
+  async function replay(
+    mirror: string,
+    head: string,
+    excluded: string[],
+    onto: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const commits = (
+      await invoke(
+        ["--git-dir", mirror, "rev-list", "--reverse", "--first-parent", head, ...excluded],
+        signal,
+      )
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    let current = onto;
+    for (const commit of commits) {
+      const merged = await spawnGit(
+        [
+          "--git-dir",
+          mirror,
+          "merge-tree",
+          "--write-tree",
+          "--name-only",
+          "--no-messages",
+          `--merge-base=${commit}^`,
+          current,
+          commit,
+        ],
+        { signal },
+      );
+      const [tree, ...files] = merged.stdout.split("\n").filter(Boolean);
+      if (merged.code === 1) throw new CandidateRebaseConflict(files);
+      if (merged.code !== 0 || !tree || !/^[a-f0-9]{40}$/.test(tree))
+        throw new Error(`Runner candidate rebase failed: ${merged.stderr.trim()}`);
+      // A change the branch already has leaves nothing to commit, as `git rebase` drops it.
+      if (tree === (await invoke(["--git-dir", mirror, "rev-parse", `${current}^{tree}`])).trim())
+        continue;
+      const raw = await invoke(["--git-dir", mirror, "cat-file", "commit", commit], signal);
+      const split = raw.indexOf("\n\n");
+      const headers = (split === -1 ? raw : raw.slice(0, split)).split("\n");
+      const person = (role: "author" | "committer") => {
+        const line = headers.find((header) => header.startsWith(`${role} `));
+        const match = line && /^\S+ (.*) <([^>]*)> (\d+ [+-]\d{4})$/.exec(line);
+        if (!match) throw new Error(`Runner candidate commit ${commit} has no ${role}`);
+        return { name: match[1]!, email: match[2]!, date: match[3]! };
+      };
+      const author = person("author");
+      const committer = person("committer");
+      const created = await spawnGit(
+        ["--git-dir", mirror, "commit-tree", tree, "-p", current, "-F", "-"],
+        {
+          stdin: split === -1 ? "" : raw.slice(split + 2),
+          env: {
+            GIT_AUTHOR_NAME: author.name,
+            GIT_AUTHOR_EMAIL: author.email,
+            GIT_AUTHOR_DATE: author.date,
+            GIT_COMMITTER_NAME: committer.name,
+            GIT_COMMITTER_EMAIL: committer.email,
+            GIT_COMMITTER_DATE: committer.date,
+          },
+          signal,
+        },
+      );
+      current = created.stdout.trim();
+      if (created.code !== 0 || !/^[a-f0-9]{40}$/.test(current))
+        throw new Error(`Runner candidate rebase failed: ${created.stderr.trim()}`);
+    }
+    return current;
+  }
   return {
     async prepare(
       input: WorkCommand,
@@ -217,13 +319,18 @@ export function createRunnerRepositories(options: {
         }
       });
     },
+    /**
+     * Pushes a candidate to its branch and returns the commit the branch now has. With `rebase`, a
+     * push refused because the branch moved replays the candidate's own commits onto the new tip
+     * and pushes that instead, or throws {@link CandidateRebaseConflict}.
+     */
     async publish(
       input: WorkCommand,
-      candidate: { bundle: Buffer; sha: string; branch: string },
+      candidate: { bundle: Buffer; sha: string; branch: string; rebase?: boolean },
       signal?: AbortSignal,
       /** The WIP commit this run last published there, which the push may replace. */
       lease?: string,
-    ): Promise<void> {
+    ): Promise<string> {
       const command = parse(input);
       if (
         !/^[a-f0-9]{40}$/.test(candidate.sha) ||
@@ -256,7 +363,10 @@ export function createRunnerRepositories(options: {
           ).trim();
           if (sha !== candidate.sha)
             throw new Error("Runner candidate commit does not match its bundle");
-          const bases = [command.repository.baseSha];
+          const bases = await candidateBases(
+            (args) => invoke(["--git-dir", mirror, ...args], signal),
+            command.repository.baseSha,
+          );
           if (command.repository.mainSha) bases.push(command.repository.mainSha);
           const excluded = bases.map((base) => `^${base}`);
           await assertDescendsFromAny(
@@ -349,24 +459,92 @@ export function createRunnerRepositories(options: {
             signal?.throwIfAborted();
             const token = await options.credential(command, "write");
             signal?.throwIfAborted();
-            const push = (expected?: string) =>
+            const push = (target: string, expected?: string) =>
               network({
                 operation: "push",
                 remoteUrl: command.repository.remoteUrl,
                 token,
                 cwd: mirror,
-                refspec: `${sha}:refs/heads/${candidate.branch}`,
+                refspec: `${target}:refs/heads/${candidate.branch}`,
                 ...(expected ? { lease: expected } : {}),
                 env,
                 signal,
               });
-            if (lease && lease !== sha) await push(lease);
-            else if (!rebased) await push();
-            else
-              await push().catch((caughtError4) => {
-                journalCaught(caughtError4, "runner-repositories.publish.push", null);
-                return push(command.repository.baseSha);
-              });
+            try {
+              if (lease && lease !== sha) await push(sha, lease);
+              else if (!rebased) await push(sha);
+              else
+                await push(sha).catch((caughtError4) => {
+                  journalCaught(caughtError4, "runner-repositories.publish.push", null);
+                  return push(sha, command.repository.baseSha);
+                });
+              return sha;
+            } catch (error) {
+              if (!candidate.rebase || !branchMoved(error)) throw error;
+              journalCaught(error, "runner-repositories.publish.branchMoved", null);
+              // The branch moved on GitHub while the turn ran (PAS-886): the turn's own commits go
+              // on top of the branch as it is now, with a lease on that tip, and no new turn.
+              let rejection: unknown = error;
+              for (let attempt = 0; attempt < CANDIDATE_REBASE_TRIES; attempt++) {
+                await network({
+                  operation: "fetch",
+                  remoteUrl: command.repository.remoteUrl,
+                  token,
+                  cwd: options.root,
+                  dest: mirror,
+                  env,
+                  signal,
+                });
+                signal?.throwIfAborted();
+                const tip = (
+                  await invoke(
+                    [
+                      "--git-dir",
+                      mirror,
+                      "rev-parse",
+                      "--verify",
+                      "--quiet",
+                      `refs/heads/${candidate.branch}^{commit}`,
+                    ],
+                    signal,
+                  ).catch((caughtError5) => {
+                    journalCaught(caughtError5, "runner-repositories.publish.tip", null);
+                    return "";
+                  })
+                ).trim();
+                // Paws takes a candidate only on its assigned base or main, so the tip needs one.
+                if (
+                  !tip ||
+                  !(await assertDescendsFromAny(
+                    (args) => invoke(["--git-dir", mirror, ...args], signal),
+                    [
+                      command.repository.baseSha,
+                      ...(command.repository.mainSha ? [command.repository.mainSha] : []),
+                    ],
+                    tip,
+                  ).then(
+                    () => true,
+                    (caughtError6) => {
+                      journalCaught(caughtError6, "runner-repositories.publish.tipBase", null);
+                      return false;
+                    },
+                  ))
+                )
+                  throw rejection;
+                const replayed = await replay(mirror, sha, [...excluded, `^${tip}`], tip, signal);
+                if (replayed === tip) return tip;
+                await invoke(["--git-dir", mirror, "update-ref", ref, replayed]);
+                try {
+                  await push(replayed, tip);
+                  return replayed;
+                } catch (retryError) {
+                  if (!branchMoved(retryError)) throw retryError;
+                  journalCaught(retryError, "runner-repositories.publish.branchMoved", null);
+                  rejection = retryError;
+                }
+              }
+              throw rejection;
+            }
           } finally {
             await invoke(["--git-dir", mirror, "update-ref", "-d", ref]);
           }
@@ -378,3 +556,22 @@ export function createRunnerRepositories(options: {
   };
 }
 export type RunnerRepositories = ReturnType<typeof createRunnerRepositories>;
+
+/** How often a candidate push refused because the branch moved is rebased and tried again. */
+const CANDIDATE_REBASE_TRIES = 3;
+
+/** GitHub refused a push because the branch is not where the push expected it (PAS-886). */
+function branchMoved(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /! \[rejected\][^\n]*\((stale info|non-fast-forward|fetch first)\)/.test(message);
+}
+
+/** The candidate's own commits conflict with the branch as it is on GitHub now. */
+export class CandidateRebaseConflict extends Error {
+  readonly files: string[];
+  constructor(files: string[]) {
+    super("The candidate conflicts with the branch on GitHub");
+    this.name = "CandidateRebaseConflict";
+    this.files = files;
+  }
+}

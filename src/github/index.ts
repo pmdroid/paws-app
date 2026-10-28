@@ -15,7 +15,7 @@ export {
   fakeMergeReadiness,
   fakeRequiredChecks,
 } from "./fake";
-export type { FakeGitHub, FakeMergeQueue, FakeReviewThread } from "./fake";
+export type { FakeCheckContext, FakeGitHub, FakeMergeQueue, FakeReviewThread } from "./fake";
 export {
   classifyRemoval,
   enqueuePullRequest,
@@ -51,10 +51,18 @@ export { createPullRequests, openPullRequest, publishAccepted, pushBranch } from
 export type { PullRequestClientOptions } from "./pulls";
 export { fetchUpstreamMain, readPullFacts, rebaseOntoMain, squashPull } from "./merge";
 export { repositoriesRequiringUpToDate } from "./overlap";
+export {
+  PULL_MERGEABLE_READS,
+  PULL_MERGEABLE_RETRY_MS,
+  readPullMergeable,
+  type PullMergeable,
+} from "./pull-mergeable";
 export { readPullReview } from "./review";
 export type { PullReview } from "./review";
 export { readReviewThreads } from "./review-threads";
 export type { ReviewThread, ReviewThreadComment } from "./review-threads";
+export { listMergedPullsSince, readMergedPull, readPullComments } from "./pull-comments";
+export type { MergedPull, PullComment } from "./pull-comments";
 export type {
   FetchUpstreamMainInput,
   PullFacts,
@@ -62,13 +70,9 @@ export type {
   RebaseResult,
   SerialMergeInput,
 } from "./merge";
-export type { Readiness } from "./readiness";
-export {
-  createAppTokenProvider,
-  inferGitHubRepository,
-  parseGitHubRemote,
-  runGitHubGit,
-} from "./auth";
+export { readPullCi } from "./readiness";
+export type { FailedCheck, PassedCheck, PullCi, Readiness } from "./readiness";
+export { createAppTokenProvider, parseGitHubRemote, runGitHubGit } from "./auth";
 export type {
   AppTokenProviderOptions,
   GitHubAuthMode,
@@ -98,7 +102,15 @@ export type {
 export type { GitHubWebhook } from "./webhook";
 export type { GitHubBinding } from "./binding";
 export { defaultGitExec } from "./git";
+export {
+  PUSH_OUTAGE_PROBE_MS,
+  PushOutageError,
+  isPushOutage,
+  pushOutageCause,
+  pushOutageProbeDelayMs,
+} from "./transport";
 
 export { closeStoppedPull } from "./stopped";
-export { mergedPullHeads } from "./merged-pulls";
+export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";
+export { branchContains, readBranchWork, readOpenPullHead } from "./pull-head";
 export { inspectPullRequestMerge } from "./blocker-merge";

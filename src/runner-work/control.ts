@@ -25,6 +25,7 @@ import {
   type RunnerHostSample,
   taskRequiresRepository,
   workspaceSessionIds,
+  runnerCancelPending,
 } from "../db";
 import {
   RUNNER_LEASE_GRACE_MS,
@@ -210,6 +211,18 @@ export function createRunnerWork(options: {
     )
       throw new RunnerWorkFencedError("Linear response task binding changed");
   }
+  /** Whether the runner's latest heartbeat named this run among the work it still runs. */
+  function stillReported(runnerId: string, runId: string) {
+    return (
+      db
+        .query(
+          `SELECT 1 FROM runner_work w JOIN runner r ON r.id=w.runner_id
+          WHERE w.run_id=? AND r.id=? AND w.confirmed_at IS NOT NULL
+          AND r.live_reported_at IS NOT NULL AND w.confirmed_at>=r.live_reported_at`,
+        )
+        .get(runId, runnerId) !== null
+    );
+  }
   function live(
     runnerId: string,
     runId: string,
@@ -217,10 +230,13 @@ export function createRunnerWork(options: {
     at: number,
     allowPendingQuestion = false,
     settled = false,
+    reported?: boolean,
   ): Assignment {
     const identity = runner(runnerId);
     const work = assignment(runId);
     const lapsed = work !== null && work.leaseUntil <= at && !settled;
+    // A lapsed lease keeps its grace while the runner still reports the run, however full the
+    // runner is: a busy Paws answers the renewing heartbeat late. Capacity decides the rest.
     if (
       !work ||
       work.runnerId !== runnerId ||
@@ -230,7 +246,8 @@ export function createRunnerWork(options: {
       work.endedAt !== null ||
       (lapsed &&
         (work.leaseUntil + RUNNER_LEASE_GRACE_MS <= at ||
-          !runnerHasCapacity(db, runnerId, at, runId)))
+          (!(reported ?? stillReported(runnerId, runId)) &&
+            !runnerHasCapacity(db, runnerId, at, runId))))
     )
       throw new RunnerWorkFencedError("Runner work is fenced or its lease expired.");
     const command = workCommand(work);
@@ -360,13 +377,7 @@ export function createRunnerWork(options: {
           command.expiresAt <= at
         )
           throw new Error("Runner is not accepting this assignment.");
-        if (
-          db
-            .query(
-              "SELECT 1 FROM runner_command c WHERE c.runner_id=? AND c.kind='cancel' AND c.acknowledged_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL)",
-            )
-            .get(command.runnerId)
-        )
+        if (runnerCancelPending(db, command.runnerId, at))
           throw new Error("Runner cancellation teardown is still pending.");
         if (!runnerHasCapacity(db, command.runnerId, at, command.runId))
           throw new Error("Runner is occupied by active work.");
@@ -568,7 +579,15 @@ export function createRunnerWork(options: {
         for (const row of rows) {
           try {
             const settled = accepted(row);
-            live(runnerId, row.runId, row.generation, at, true, settled);
+            live(
+              runnerId,
+              row.runId,
+              row.generation,
+              at,
+              true,
+              settled,
+              running && running.has(`${row.runId}:${row.generation}`),
+            );
             if (running?.has(`${row.runId}:${row.generation}`))
               db.run("UPDATE runner_work SET confirmed_at=? WHERE run_id=?", [at, row.runId]);
             else if (running && !settled && acknowledgedBy(row, at - RUNNER_LIVE_GRACE_MS)) {
@@ -593,6 +612,16 @@ export function createRunnerWork(options: {
             db.run("DELETE FROM runner_work_grant WHERE run_id=?", [row.runId]);
             fenced.push({ runId: row.runId, generation: row.generation });
           }
+        }
+        // A run Paws already ended that the runner still names keeps its process alive there, so
+        // a conversation blocked on its cleanup stays blocked until a report leaves it out.
+        if (reported) {
+          db.run("UPDATE runner SET live_reported_at=? WHERE id=?", [at, runnerId]);
+          for (const { runId, generation } of reported)
+            db.run(
+              "UPDATE runner_work SET confirmed_at=? WHERE runner_id=? AND run_id=? AND generation=?",
+              [at, runnerId, runId, generation],
+            );
         }
         return {
           leases,

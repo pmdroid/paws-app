@@ -46,6 +46,8 @@ export {
   type ReviewEscapeTrigger,
 } from "./review-escapes";
 export {
+  CANCEL_STILL_PENDING,
+  runnerCancelPending,
   recordRunnerCapacity,
   runnerHasCapacity,
   runnerOccupancy,
@@ -178,7 +180,32 @@ export {
   saveCandidateRisk,
   type CandidateRisk,
 } from "./candidate-risk";
+export { getOpenFindingsLine, saveOpenFindings, withOpenFindings } from "./open-findings";
+export {
+  getReviewFinding,
+  getReviewFindingByKey,
+  listReviewFindings,
+  markReviewFindingFiled,
+  recordReviewFindings,
+  reviewFindingItems,
+  setReviewFindingStatus,
+  type ReviewFindingFilter,
+  type ReviewFindingItem,
+  type ReviewFindingRecord,
+  type ReviewFindingReport,
+  type ReviewFindingSeverity,
+  type ReviewFindingWhy,
+} from "./review-findings";
 export { deleteRiskFix, getRiskFix, latestRiskFix, saveRiskFix, type RiskFix } from "./risk-fix";
+export {
+  endPushOutage,
+  getPushOutage,
+  listPushOutages,
+  recordPushOutage,
+  setPushOutageQuestion,
+  takePushOutageProbe,
+  type PushOutage,
+} from "./push-outage";
 export { frozenMigrations } from "./migrations";
 export {
   MIGRATION_DIRECTORY,
@@ -189,7 +216,6 @@ export {
 export type { Migration } from "./migration";
 export { openDatabase } from "./open";
 export { journal, setJournalSink } from "./journal";
-export { assertLinearQueue } from "./legacy-tracker";
 export {
   advanceOutboxSession,
   attachSessionUpdates,
@@ -200,6 +226,7 @@ export {
   dispatchOutbox,
   enqueueOutbox,
   enqueueOutboxOnce,
+  lastOutboxSequence,
   LINEAR_PROGRESS_INTERVAL_MS,
   getOutbox,
   listOutbox,
@@ -298,6 +325,8 @@ export {
 } from "./runners";
 export {
   appendCloseoutOutput,
+  acceptedCloseoutReviews,
+  acceptedCloseoutRuns,
   ensureCloseoutProgress,
   finishCloseoutProgress,
   latestCloseoutIdentity,
@@ -306,6 +335,8 @@ export {
   listCloseoutProgress,
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,
+  type AcceptedCloseoutReviews,
+  type AcceptedCloseoutRun,
   type CloseoutProgressIdentity,
   type CloseoutProgressRecord,
   type CloseoutStepRecord,
@@ -342,6 +373,7 @@ export {
 export {
   countRebaseReturns,
   listRebaseReturns,
+  rebaseReturnedFor,
   recordRebaseReturn,
   type RebaseReturn,
   type RebaseReturnRecord,
@@ -424,9 +456,19 @@ export {
   type VisualReviewRecord,
 } from "./visual-reviews";
 export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";
-export { getConversation, saveConversation } from "./acp-conversations";
 export {
+  CLEANUP_BLOCKED_NOTICE,
+  blockConversation,
+  clearConversationBlock,
+  getConversation,
+  listBlockedConversations,
+  saveConversation,
+} from "./acp-conversations";
+export {
+  beginMergeCall,
+  endMergeCall,
   getConfirmedRemoteMerge,
+  mergeCallInFlight,
   recordConfirmedRemoteMerge,
   type ConfirmedRemoteMerge,
 } from "./remote-merges";
@@ -556,11 +598,16 @@ export {
 } from "./linear-reads";
 export type { TaskMergeSettings } from "./merge-settings";
 export {
+  inMergeQueue,
   joinMergeQueue,
+  keepMergeQueuePlace,
   leaveMergeQueue,
   listMergeQueues,
   markMergeQueueNotified,
   mergeQueuePosition,
+  releaseMergeQueuePlace,
+  returnToMergeQueue,
+  restartedFromMergeQueue,
 } from "./merge-queue";
 export type { MergeQueuePosition } from "./merge-queue";
 export {

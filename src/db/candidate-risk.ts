@@ -1,26 +1,36 @@
 import type { Database } from "bun:sqlite";
-import type { RiskClassification, RiskTier } from "../core";
+import type { RiskClassification, RiskMatch, RiskTier } from "../core";
 
 /**
  * The risk tier of one candidate head, from the paths it changes since its base commit. A head
- * with no row was not classified and must not be read as normal.
+ * with no row was not classified and must not be read as normal. `matches` names the list that
+ * matched each path; a head classified before Paws recorded it has none.
  */
 export type CandidateRisk = RiskClassification & {
   itemId: string;
   head: string;
   base: string;
   classifiedAt: number;
+  matches?: RiskMatch[];
 };
 
 /** Records the tier for a head. A head is classified once against its base; a repeat replaces it. */
 export function saveCandidateRisk(db: Database, risk: CandidateRisk): void {
   db.run(
-    `INSERT INTO candidate_risk (item_id, head_sha, base_sha, tier, paths, classified_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO candidate_risk (item_id, head_sha, base_sha, tier, paths, matches, classified_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (item_id, head_sha) DO UPDATE SET
        base_sha = excluded.base_sha, tier = excluded.tier, paths = excluded.paths,
-       classified_at = excluded.classified_at`,
-    [risk.itemId, risk.head, risk.base, risk.tier, JSON.stringify(risk.paths), risk.classifiedAt],
+       matches = excluded.matches, classified_at = excluded.classified_at`,
+    [
+      risk.itemId,
+      risk.head,
+      risk.base,
+      risk.tier,
+      JSON.stringify(risk.paths),
+      risk.matches === undefined ? null : JSON.stringify(risk.matches),
+      risk.classifiedAt,
+    ],
   );
 }
 
@@ -30,11 +40,12 @@ type Row = {
   base: string;
   tier: RiskTier;
   paths: string;
+  matches: string | null;
   classifiedAt: number;
 };
 
 const SELECT = `SELECT item_id AS itemId, head_sha AS head, base_sha AS base, tier, paths,
-  classified_at AS classifiedAt FROM candidate_risk`;
+  matches, classified_at AS classifiedAt FROM candidate_risk`;
 
 export function getCandidateRisk(db: Database, itemId: string, head: string): CandidateRisk | null {
   const row = db
@@ -53,6 +64,10 @@ export function latestCandidateRisk(db: Database, itemId: string): CandidateRisk
   return row ? fromRow(row) : null;
 }
 
-function fromRow(row: Row): CandidateRisk {
-  return { ...row, paths: JSON.parse(row.paths) as string[] };
+function fromRow({ matches, ...row }: Row): CandidateRisk {
+  return {
+    ...row,
+    paths: JSON.parse(row.paths) as string[],
+    ...(matches === null ? {} : { matches: JSON.parse(matches) as RiskMatch[] }),
+  };
 }

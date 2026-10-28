@@ -1,5 +1,6 @@
 export { candidatePolicyDigest, FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
 export {
+  ciMappings,
   fixAttemptLimit,
   fixesLeft,
   policyFixBudget,
@@ -25,8 +26,11 @@ export type { CodexReviewer, ReviewRequest, ReviewResult } from "./reviewer";
 export {
   evaluateCandidate,
   evidenceOnly,
+  evidencePath,
   PolicyFetchError,
   readReviewRounds,
+  reviewRecordsAt,
+  taskReviewRecords,
   runCloseoutGate,
   snapshotRetryBaseline,
   storedReviewFindings,
@@ -46,6 +50,7 @@ export {
 } from "./session-report";
 export type { EvaluateInput, Evaluation, GateInput } from "./run";
 export type {
+  CiResult,
   CloseoutOutputStream,
   CloseoutProgress,
   CloseoutProgressIdentity,
@@ -64,6 +69,7 @@ export type {
   Finding,
   GateOutcome,
   GateResult,
+  RuleApproval,
   ReviewFindings,
   StoredReviewFinding,
 } from "./types";

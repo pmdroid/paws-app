@@ -16,7 +16,10 @@ import {
 } from "../linear";
 import {
   fakeStatusProvider,
+  FINDINGS_API_PATH,
+  handleFindingsRequest,
   handleStatusRequest,
+  statusSnapshots,
   type ReadLinearArtifact,
   type StartLinearSession,
 } from "../web";
@@ -38,6 +41,7 @@ import {
   handleSkillSettingsRequest,
   MERGE_SETTINGS_PATH,
   type AgentSettingsOptions,
+  type HighRiskFile,
   type MergeChoices,
   type RepositoryCheckoutFacts,
 } from "../settings";
@@ -54,12 +58,13 @@ import {
   requestWorkspaceSession,
   validWorkspaceCsrf,
   type WorkspaceAccess,
+  type WorkspaceClient,
   type WorkspacePrincipal,
 } from "../workspace";
 
 export type ServerOptions = {
   server?: Bun.Server<undefined>;
-  onboarding?: (request: Request) => Promise<Response | null>;
+  onboarding?: (request: Request, client: WorkspaceClient) => Promise<Response | null>;
   tls?: PublicTls;
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
   /** `POST /api/runner-enrollments`, where a host enrolls itself with a member's token. */
@@ -110,6 +115,8 @@ export type ServerOptions = {
     riskGate?: { on: boolean; reason?: string };
     /** Files and Closeout check paths of a repository's local mirror, for Repository checkout. */
     checkoutFacts?: (repo: string) => Promise<RepositoryCheckoutFacts | null>;
+    /** A repository's `.paws/high-risk-paths` in its local mirror, for Settings → Merging. */
+    highRiskFile?: (repo: string) => Promise<HighRiskFile | null>;
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: {
@@ -161,7 +168,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
       if (stopping) return new Response("Paws is stopping.", { status: 503 });
       const ip = current?.requestIP(request)?.address ?? null;
       const operation = (async () =>
-        (await options.onboarding?.(request)) ??
+        (await options.onboarding?.(request, { ip })) ??
         route(request, {
           health,
           slackSigningSecret,
@@ -401,6 +408,14 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       submit: secrets.visualReviewChanges,
     }))!;
   }
+  if (path === FINDINGS_API_PATH) {
+    if (secrets.db === undefined) return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleFindingsRequest(request, {
+      db: secrets.db,
+      ...(principal === undefined ? {} : { principal }),
+      ...(sessionIds === undefined ? {} : { sessionIds }),
+    }))!;
+  }
   if (path.startsWith(EVIDENCE_API_PATH)) {
     if (secrets.db === undefined || secrets.evidenceDir === undefined)
       return Response.json({ error: "Not found." }, { status: 404 });
@@ -452,8 +467,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }))!;
   }
   if (secrets.agentSettings) {
-    const { mergeChoices, githubQueues, upToDateRules, riskGate, checkoutFacts, ...agentSettings } =
-      secrets.agentSettings;
+    const {
+      mergeChoices,
+      githubQueues,
+      upToDateRules,
+      riskGate,
+      checkoutFacts,
+      highRiskFile,
+      ...agentSettings
+    } = secrets.agentSettings;
     const shared = {
       ...agentSettings,
       csrfToken,
@@ -488,6 +510,16 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       })) ??
       (await handleMergeSettingsRequest(request, {
         ...shared,
+        ...(path === MERGE_SETTINGS_PATH && secrets.db
+          ? {
+              // The stored GitHub connection and team mappings, not a GitHub call.
+              repos: [
+                ...(shared.repos ?? []),
+                ...listWorkspaceRepositoryNames(secrets.db, principal?.workspaceId),
+              ],
+            }
+          : {}),
+        ...(highRiskFile ? { highRiskFile } : {}),
         ...(mergeChoices ? { choices: mergeChoices } : {}),
         ...(githubQueues ? { githubQueues } : {}),
         ...(upToDateRules ? { upToDateRules } : {}),
@@ -497,6 +529,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   const status = await handleStatusRequest(request, {
     csrfToken,
+    snapshotCache: statusSnapshots,
     ...(sessionIds === undefined ? {} : { sessionIds }),
     ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     ...(secrets.readLinearArtifact

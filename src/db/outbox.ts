@@ -22,7 +22,7 @@ export const LINEAR_PROGRESS_INTERVAL_MS = 30_000;
 
 const PROGRESS_SQL = (row: string) =>
   `(${row}.target='linear' AND ${row}.delivery_kind='progress'
-    AND ${row}.op IN ('activity','linear.activity')
+    AND ${row}.op = 'activity'
     AND COALESCE(json_extract(${row}.payload,'$.kind'),'') IN ('thought','action'))`;
 
 export type OutboxDelivery = "ordered" | "progress" | "critical" | "terminal" | "stop" | "status";
@@ -115,6 +115,22 @@ export function enqueueOutboxOnce(db: Database, row: NewOutbox): number {
     throw new Error("enqueueOutboxOnce did not store a row");
   }
   return existing.id;
+}
+
+/**
+ * The highest number that follows `prefix` in a stored idempotency key, or 0. A counter that
+ * starts from it after a restart does not reuse a key from before the restart.
+ */
+export function lastOutboxSequence(db: Database, prefix: string): number {
+  return db
+    .query<{ key: string }, [string, string]>(
+      "SELECT idempotency_key AS key FROM outbox WHERE idempotency_key > ? AND idempotency_key < ?",
+    )
+    .all(prefix, `${prefix}\u{10ffff}`)
+    .reduce((last, row) => {
+      const suffix = row.key.slice(prefix.length);
+      return /^\d+$/.test(suffix) ? Math.max(last, Number(suffix)) : last;
+    }, 0);
 }
 
 export function getOutbox(db: Database, id: number): OutboxRow | null {
@@ -493,7 +509,7 @@ function mergeableThought(row: OutboxRow): boolean {
   const payload = row.payload as Record<string, unknown>;
   return (
     row.delivery === "progress" &&
-    (row.op === "activity" || row.op === "linear.activity") &&
+    row.op === "activity" &&
     payload["kind"] === "thought" &&
     payload["ephemeral"] !== true &&
     payload["action"] === undefined &&
@@ -658,7 +674,7 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
       Boolean(row.orderingKey) &&
       row.target === "linear" &&
       delivery === "progress" &&
-      (row.op === "activity" || row.op === "linear.activity");
+      row.op === "activity";
     const verb = ignore ? "INSERT OR IGNORE" : "INSERT";
     const inserted = db
       .query<{ id: number }, (string | number | null)[]>(
@@ -687,14 +703,14 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
       db.run(
         `UPDATE outbox SET not_before = 0 WHERE target = ? AND ordering_key = ? AND id <> ?
           AND status = 'pending' AND attempts = 0 AND delivery_kind = 'critical'
-          AND op IN ('activity', 'linear.activity') AND not_before > ?`,
+          AND op = 'activity' AND not_before > ?`,
         [row.target, row.orderingKey, inserted.id, now],
       );
     if (inserted && !blocked && row.target === "linear" && delivery === "progress") {
       db.run(
         `UPDATE outbox SET status='dropped',error='Superseded by a newer canonical run.'
          WHERE target='linear' AND ordering_key=? AND status='pending' AND locked_by IS NULL
-           AND delivery_kind='progress' AND op IN ('activity','linear.activity')
+           AND delivery_kind='progress' AND op = 'activity'
            AND COALESCE(json_extract(payload,'$.ephemeral'),0)=1
            AND activity_run_id IS NOT NULL AND activity_run_id<>(
              SELECT activity_run_id FROM outbox WHERE id=?
@@ -707,7 +723,7 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
         `UPDATE outbox SET status = 'dropped', error = 'Superseded by newer progress.'
         WHERE target = ? AND ordering_key = ? AND delivery_generation = ? AND id < ?
           AND status = 'pending' AND attempts = 0 AND locked_by IS NULL
-          AND delivery_kind = 'progress' AND op IN ('activity', 'linear.activity')
+          AND delivery_kind = 'progress' AND op = 'activity'
           AND json_extract(payload, '$.ephemeral') = 1
           AND json_extract(payload, '$.kind') IN ('thought', 'action')`,
         [row.target, row.orderingKey!, generation, inserted.id],
@@ -723,7 +739,7 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
     db.run(
       `UPDATE outbox SET status = 'dropped', error = 'Superseded by a critical session update.'
       WHERE target = ? AND ordering_key = ? AND id < ? AND status IN ('pending', 'dead')
-        AND ((delivery_kind = 'progress' AND (op NOT IN ('activity','linear.activity')
+        AND ((delivery_kind = 'progress' AND (op <> 'activity'
           OR COALESCE(json_extract(payload,'$.ephemeral'),0)=1
           OR COALESCE(json_extract(payload,'$.kind'),'') NOT IN ('thought','action')))
           OR (? = 'terminal' AND delivery_kind = 'critical'
@@ -747,7 +763,7 @@ function repeatedThought(db: Database, row: NewOutbox, generation: number): numb
   if (
     row.target !== "linear" ||
     !row.orderingKey ||
-    (row.op !== "activity" && row.op !== "linear.activity") ||
+    row.op !== "activity" ||
     payload?.kind !== "thought" ||
     typeof payload.body !== "string"
   )
@@ -761,7 +777,7 @@ function repeatedThought(db: Database, row: NewOutbox, generation: number): numb
          COALESCE(json_extract(payload, '$.ephemeral'), 0) AS ephemeral
        FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
          AND status IN ('pending', 'sent')
-         AND (op = 'elicitation' OR (op IN ('activity', 'linear.activity')
+         AND (op = 'elicitation' OR (op = 'activity'
            AND json_extract(payload, '$.kind') IN ('thought', 'response', 'error')))
        ORDER BY id DESC LIMIT 1`,
     )
@@ -776,7 +792,7 @@ function deliveryKind(row: NewOutbox): OutboxDelivery {
   const payload = row.payload as { kind?: string; stateType?: string } | undefined;
   if (row.op === "elicitation") return "critical";
   if (row.op === "status") return payload?.stateType === "completed" ? "status" : "progress";
-  if (row.op === "activity" || row.op === "linear.activity") {
+  if (row.op === "activity") {
     return payload?.kind === "response" || payload?.kind === "error" ? "terminal" : "progress";
   }
   return "ordered";

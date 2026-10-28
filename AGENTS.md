@@ -15,7 +15,7 @@ bun run paws          # 127.0.0.1:8787, data in ~/.paws
 bun run check         # lint, fmt:check, typecheck, test
 ```
 
-Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000`). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`); Closeout's `test` check does the same.
+Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`); Closeout's `test` check does the same.
 
 Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported from each module.
 
@@ -42,6 +42,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/github`                                             | GitHub App API, repository access, pull requests and Git operations   |
 | `src/host`                                               | Sleep, wake and process supervision                                   |
 | `src/install`                                            | Agent adapter installation, login and usage probes                    |
+| `src/installer`                                          | `paws install`: prompts, env file and the secrets step                |
 | `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness    |
 | `src/linear`                                             | Tracker adapter, webhooks, polling, sessions and workspace access     |
 | `src/loop`                                               | Agent turns, `restart()` and `ask()`, Closeout, publication, recovery |
@@ -51,6 +52,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/process`                                            | Owned child processes and process anchors                             |
 | `src/provisioning`                                       | Remote VM bootstrap, releases, mise and Tailscale setup               |
 | `src/questions`                                          | Elicitations, answer authorization, lifecycle and visual review       |
+| `src/run-files`                                          | Encrypted, chunked run files: transcripts and session snapshots       |
 | `src/review-score`                                       | Reviewer score report: escapes after merge and after the PR           |
 | `src/runner-answers`                                     | Runner answer storage and delivery                                    |
 | `src/runner-artifacts`                                   | Runner artifact storage                                               |
@@ -97,6 +99,8 @@ Import another module only through its `index.ts`. `test/boundaries.test.ts` fai
 SQLite, when opened, uses WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`, and `temp_store=MEMORY`. The migration list in `src/db/migrations.ts` is frozen at `155_pull_comment`: do not edit its entries or add to it. A new migration is one file under `src/db/migrations/`, named for the current UTC time and what it does (`20261026T0512_pull_comment_author.ts`), exporting `migration` with that id (see `src/db/migrations/README.md`). Paws applies the frozen list, then the files sorted by id. Shipped migration files are never edited.
 
 External adapters are async. Database helpers are sync because `bun:sqlite` is sync. Keep transactions short.
+
+A new runner feature declares its minimum runner version in `src/runner-protocol/versions.ts` as the next release (one patch above the latest `v*` tag). The `runner release` workflow fails when the tag is below any constant there.
 
 Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not return 200 for an unverified body.
 

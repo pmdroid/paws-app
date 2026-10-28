@@ -217,9 +217,10 @@ test("a killed refresh process replays the consumed Linear token after restart a
   let second: ReturnType<typeof spawn> | undefined;
   try {
     const reader = first.stdout.getReader();
+    // The fixture starts Bun and migrates a fresh database first; a loaded CI runner took over 3s.
     const ready = await Promise.race([
       reader.read(),
-      Bun.sleep(3_000).then(() => {
+      Bun.sleep(10_000).then(() => {
         throw new Error("refresh fixture did not reach the provider");
       }),
     ]);

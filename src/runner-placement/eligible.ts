@@ -1,6 +1,6 @@
 import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
-import { delegatedLinearUserId, workspaceMember } from "../db";
+import { CANCEL_STILL_PENDING, delegatedLinearUserId, workspaceMember } from "../db";
 import type {
   EligibleRunner,
   EligibleRunnerReason,
@@ -36,7 +36,7 @@ type Row = Omit<EligibleRunner, "eligible" | "reason"> & {
 export function eligibleRunners(db: Database, input: EligibleRunnersInput): EligibleRunner[] {
   const at = input.now ?? Date.now();
   const rows = db
-    .query<Row, [string, string, number]>(
+    .query<Row, [number, string, string, number]>(
       `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerId,r.status,
        r.last_seen_at AS lastSeenAt,r.revoked_at AS revokedAt,
        COALESCE(p.sharing,0) AS sharing,
@@ -44,14 +44,14 @@ export function eligibleRunners(db: Database, input: EligibleRunnersInput): Elig
        COALESCE(a.quota_state,'ok') AS quotaState,COALESCE(a.cooldown_until,0) AS cooldownUntil,
        COALESCE(a.virtual_finish,0) AS virtualFinish,COALESCE(a.last_used_at,0) AS lastUsedAt,
        a.resolved_model AS resolvedModel,
-       EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id AND c.kind='cancel' AND c.acknowledged_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL)) AS cancelPending
+       EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id AND c.kind='cancel' AND c.acknowledged_at IS NULL AND ${CANCEL_STILL_PENDING} AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL)) AS cancelPending
        FROM runner r
        LEFT JOIN runner_policy p ON p.runner_id=r.id
        LEFT JOIN runner_agent_policy a ON a.runner_id=r.id AND a.agent=?
        WHERE r.workspace_id=? AND (?=1 OR (r.revoked_at IS NULL AND r.status<>'revoked'))
        ORDER BY r.id`,
     )
-    .all(input.agent, input.workspaceId, input.includeRevoked ? 1 : 0);
+    .all(at, input.agent, input.workspaceId, input.includeRevoked ? 1 : 0);
   return rows.map(({ status, revokedAt, lastSeenAt, cancelPending, ...runner }) => {
     const reason = ((): EligibleRunnerReason => {
       if (revokedAt !== null || status === "revoked") return "revoked";

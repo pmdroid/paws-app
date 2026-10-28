@@ -58,7 +58,13 @@ export const CHECK_STATES = [
   "exhausted",
   "stopped",
 ] as const;
-export const CHECK_KINDS = ["setup", "command", "review", "evidence"] as const;
+/** A `rule` is a repository rule's probe from the Closeout policy, shown apart from the checks. */
+export const CHECK_KINDS = ["setup", "command", "review", "evidence", "rule"] as const;
+/**
+ * A failed rule a person decides on: `waiting` for Approve or Send back, `approved` (a rule set
+ * to `onFail: approve` whose break was accepted) or `bypassed` for one commit.
+ */
+export const RULE_APPROVAL_STATES = ["waiting", "approved", "bypassed"] as const;
 export const STEP_STATES = ["done", "run", "wait"] as const;
 export const ACTIVITY_KINDS = [
   "thought",
@@ -80,6 +86,7 @@ export type Urgency = (typeof URGENCIES)[number];
 export type VerdictDecision = (typeof VERDICT_DECISIONS)[number];
 export type CheckState = (typeof CHECK_STATES)[number];
 export type CheckKind = (typeof CHECK_KINDS)[number];
+export type RuleApprovalState = (typeof RULE_APPROVAL_STATES)[number];
 export type StepState = (typeof STEP_STATES)[number];
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 export type ItemEventKind = (typeof ITEM_EVENT_KINDS)[number];
@@ -110,6 +117,10 @@ export interface StatusItem {
   runId: string | null;
   pr: StatusPullRequest | null;
   links: StatusLink[];
+  /** `work_item.version`, which changes with every change of the item. */
+  version?: number;
+  /** Completed, merged, cancelled or failed with no stuck agent: no execution controls to ask for. */
+  noControls?: boolean;
   /** A queued item's place among the items waiting for a runner slot. */
   queue?: StatusQueuePosition;
   held?: StatusHeld;
@@ -127,6 +138,40 @@ export interface StatusItem {
   endedAt?: string;
   /** Every state change of the item, oldest first, from `work_item_event`. */
   timeline?: StatusItemEvent[];
+  /** How long the item spent in each state since it was delegated. */
+  stateTimes?: StatusStateTimes;
+}
+
+/**
+ * The time an item spent in each engine state, from its creation and `work_item_event`.
+ * `states` add up to `until - since`. An open item's `current` state counts up to `until`, the
+ * time the body was built; a finished item stops when it finished and has `current: null`.
+ */
+export interface StatusStateTimes {
+  since: string;
+  until: string;
+  current: string | null;
+  /** Milliseconds in each engine state, in the order the item first entered it. */
+  states: StatusStateTime[];
+}
+
+export interface StatusStateTime {
+  /** An engine work-item state, such as `recovering` or `merge_queue`. */
+  state: string;
+  ms: number;
+}
+
+/**
+ * The items that merged in the last 24 hours: how long each took from delegation to merge, and
+ * how long an item spent in each state on average. `p90Ms` is the nearest-rank 90th percentile.
+ */
+export interface StatusMergedTimes {
+  since: string;
+  merged: number;
+  medianMs: number;
+  p90Ms: number;
+  /** The average milliseconds per merged item in each state, largest first. */
+  states: StatusStateTime[];
 }
 
 /**
@@ -187,11 +232,13 @@ export interface StatusVisualReviewCarry {
 export interface StatusMergeQueue {
   /** `owner/repo`. */
   repository: string;
-  /** 1 is the pull request that moves. */
+  /** 1 is the front of the queue. */
   position: number;
   total: number;
-  /** The issue in front, or null for the first. */
+  /** The issue that merges before this one, or null when this one moves. */
   ahead: string | null;
+  /** Closeout runs again on it: it keeps its place, and the ready ones behind it move meanwhile. */
+  rechecking?: boolean;
 }
 
 export interface StatusGitHubQueue {
@@ -280,7 +327,14 @@ export interface StatusQuestion {
   linkAsk?: StatusLinkAsk;
 }
 
-export const LINK_ASK_KINDS = ["bypass", "screenshots", "risk", "question", "rounds"] as const;
+export const LINK_ASK_KINDS = [
+  "bypass",
+  "screenshots",
+  "risk",
+  "question",
+  "rounds",
+  "rule",
+] as const;
 export type LinkAskKind = (typeof LINK_ASK_KINDS)[number];
 
 /** A decision a signed-in person makes on the item page. Linear carries its `link`. */
@@ -291,7 +345,10 @@ export interface StatusLinkAsk {
   title: string;
   detail: string;
   link: string;
-  /** For a `bypass` ask: the failed checks a person may bypass on this head. */
+  /**
+   * For a `bypass` ask: the failed checks a person may bypass on this head. For a `rule` ask: the
+   * broken rules an approval accepts on this head, each with its finding.
+   */
   bypass?: StatusBypassAsk;
   /** On the `rounds` kind: the failed review rounds and the findings still open. */
   rounds?: StatusReviewRounds;
@@ -375,6 +432,23 @@ export interface StatusCheck {
   evidencePath?: string | null;
   active?: boolean;
   tokens?: number | null;
+  /** On a `rule`: SHA-256 of the probe that ran, from its result. Only in the item detail. */
+  probeSha256?: string | null;
+  /** On a failed `rule`: the decision a person made or is asked to make. */
+  approval?: StatusRuleApproval;
+}
+
+/** Who decided a failed rule, why, and the commit the decision covers. */
+export interface StatusRuleApproval {
+  state: RuleApprovalState;
+  /** For `waiting`: the open question the Approve and Send back buttons answer. */
+  questionId: string | null;
+  /** The head commit the decision is bound to. */
+  head: string;
+  /** Display name of the person who approved or bypassed it. */
+  by: string | null;
+  reason: string | null;
+  at: string | null;
 }
 
 export interface StatusVerdict {
@@ -396,6 +470,8 @@ export interface StatusVerdict {
   attempts?: StatusCloseoutAttempt[];
   /** Each review item's rounds with their findings. Only the item detail endpoint sends them. */
   reviews?: StatusReview[];
+  /** Rules whose paths matched none of the change, by id. */
+  skippedRules?: string[];
 }
 
 export const REVIEW_SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
@@ -448,6 +524,8 @@ export interface StatusCloseoutAttempt {
   headSha: string | null;
   policyDigest: string | null;
   checks: StatusCheck[];
+  /** Rules whose paths matched none of the change, by id. */
+  skippedRules?: string[];
 }
 
 /** The list's Closeout of an item: the latest verdict, with each check's kind and state only. */
@@ -560,7 +638,7 @@ export type MergeWaitReason = (typeof MERGE_WAIT_REASONS)[number];
 /** Settings → Merging. `queue` merges one at a time per repository. */
 export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
 export type MergeOrderSetting = (typeof MERGE_ORDERS)[number];
-export const MAIN_MOVED_CHOICES = ["overlap", "ci", "closeout"] as const;
+export const MAIN_MOVED_CHOICES = ["overlap", "green", "ci", "closeout"] as const;
 export type MainMovedSetting = (typeof MAIN_MOVED_CHOICES)[number];
 
 /** The merge settings a task resolved, and the issue rule's label when a rule chose them. */
@@ -625,6 +703,10 @@ export interface StatusSnapshotBase {
   dead?: StatusDeadDelivery[];
   linearBudget?: StatusLinearBudget;
   linearWebhook?: StatusLinearWebhook;
+  /** Repositories GitHub refuses pushes from the Paws App for, the oldest outage first. */
+  pushOutages?: StatusPushOutage[];
+  /** Only in the list, while an item merged in the last 24 hours. */
+  mergedTimes?: StatusMergedTimes;
 }
 
 /**
@@ -635,6 +717,68 @@ export interface StatusSnapshotBase {
 export interface StatusSnapshot extends StatusSnapshotBase {
   verdicts: StatusVerdictSummary[];
   agentCloseout?: StatusAgentCloseoutSummary[];
+  slices?: StatusSlice[];
+}
+
+export const STATUS_SLICES = [
+  "items",
+  "questions",
+  "mergeQueue",
+  "mergeHistory",
+  "evidence",
+  "intake",
+  "ciRounds",
+  "dead",
+] as const;
+export type StatusSlice = (typeof STATUS_SLICES)[number];
+
+export const STATUS_SLICE_FIELDS = {
+  items: ["items", "runs", "verdicts", "agentCloseout", "mergedTimes"],
+  questions: ["questions"],
+  mergeQueue: ["mergeQueue", "pushOutages"],
+  mergeHistory: ["mergeHistory"],
+  evidence: ["evidence"],
+  intake: ["intake", "linearBudget", "linearWebhook"],
+  ciRounds: ["ciRounds"],
+  dead: ["dead"],
+} as const satisfies Record<StatusSlice, readonly (keyof StatusSnapshot)[]>;
+
+export const GENERATED_AT_HEADER = "Paws-Generated-At";
+
+export function statusSlicesPath(slices: readonly StatusSlice[]): string {
+  const named = STATUS_SLICES.filter((slice) => slices.includes(slice));
+  return `${STATUS_API_PATH}?slices=${named.join(",")}`;
+}
+
+export function parseStatusSlices(
+  raw: string | null,
+): { ok: true; slices: StatusSlice[] | null } | { ok: false; error: string } {
+  if (raw === null) return { ok: true, slices: null };
+  const named = raw.split(",").map((part) => part.trim());
+  const unknown = named.filter((part) => !(STATUS_SLICES as readonly string[]).includes(part));
+  if (unknown.length) return { ok: false, error: `unknown status slice ${unknown.join(", ")}` };
+  return { ok: true, slices: STATUS_SLICES.filter((slice) => named.includes(slice)) };
+}
+
+export function selectStatusSlices(
+  snapshot: StatusSnapshot,
+  slices: readonly StatusSlice[],
+): StatusSnapshot {
+  const body: Record<string, unknown> = {
+    version: snapshot.version,
+    source: snapshot.source,
+    generatedAt: snapshot.generatedAt,
+    project: snapshot.project,
+    slices: [...slices],
+  };
+  for (const slice of slices)
+    for (const field of STATUS_SLICE_FIELDS[slice])
+      if (snapshot[field] !== undefined) body[field] = snapshot[field];
+  return body as unknown as StatusSnapshot;
+}
+
+export function hasStatusSlice(snapshot: StatusSnapshot | null, slice: StatusSlice): boolean {
+  return snapshot !== null && (snapshot.slices === undefined || snapshot.slices.includes(slice));
 }
 
 /**
@@ -649,6 +793,35 @@ export interface StatusItemDetail extends StatusSnapshotBase {
   blocks: string[];
   verdicts: StatusVerdict[];
   agentCloseout?: StatusAgentCloseout[];
+  /** The Risk card. Null while Paws has neither classified a head nor run Closeout on one. */
+  risk?: StatusItemRisk | null;
+}
+
+export const RISK_TIERS = ["high", "normal"] as const;
+export const RISK_LISTS = ["settings", "file"] as const;
+export type RiskTier = (typeof RISK_TIERS)[number];
+/** `settings` is Settings › Merging › High-risk paths, `file` is `.paws/high-risk-paths`. */
+export type RiskList = (typeof RISK_LISTS)[number];
+
+/** A changed path a high-risk glob matched. `lists` is empty for a head classified before Paws recorded it. */
+export interface StatusRiskPath {
+  path: string;
+  lists: RiskList[];
+}
+
+/**
+ * The item's risk tier from the latest classified head, the high-risk paths it changed, and the
+ * `security-review` check of its Closeout. `tier` and `head` are null until Paws classifies a
+ * head, which it does when Closeout accepts one. `securityReview` is null when the item's
+ * Closeout has no `security-review` check.
+ */
+export interface StatusItemRisk {
+  tier: RiskTier | null;
+  head: string | null;
+  base: string | null;
+  classifiedAt: string | null;
+  paths: StatusRiskPath[];
+  securityReview: { state: CheckState; detail: string | null; head: string | null } | null;
 }
 
 export type ItemDetailParseResult =
@@ -731,6 +904,7 @@ export function parseStatusItemDetail(input: unknown): ItemDetailParseResult {
                 readAgentCloseout(entry, `agentCloseout[${index}]`),
               ),
             }),
+        ...(body.risk === undefined ? {} : { risk: readItemRisk(body.risk) }),
       },
     };
   } catch (error) {
@@ -766,6 +940,40 @@ export function agentCloseoutSummary(agent: StatusAgentCloseout): StatusAgentClo
   };
 }
 
+function readItemRisk(input: unknown): StatusItemRisk | null {
+  if (input === null) return null;
+  const path = "detail.risk";
+  const body = object(input, path);
+  const review = body.securityReview;
+  let securityReview: StatusItemRisk["securityReview"] = null;
+  if (review !== null) {
+    const at = `${path}.securityReview`;
+    const entry = object(review, at);
+    securityReview = {
+      state: oneOf(string(entry, "state", at), CHECK_STATES, `${at}.state`),
+      detail: nullableText(entry, "detail", at),
+      head: nullableText(entry, "head", at),
+    };
+  }
+  return {
+    tier: body.tier === null ? null : oneOf(string(body, "tier", path), RISK_TIERS, `${path}.tier`),
+    head: nullableText(body, "head", path),
+    base: nullableText(body, "base", path),
+    classifiedAt: nullableDate(body, "classifiedAt", path),
+    paths: array(body, "paths", path).map((entry, index) => {
+      const at = `${path}.paths[${index}]`;
+      const match = object(entry, at);
+      return {
+        path: text(match, "path", at),
+        lists: array(match, "lists", at).map((list, position) =>
+          oneOf(String(list), RISK_LISTS, `${at}.lists[${position}]`),
+        ),
+      };
+    }),
+    securityReview,
+  };
+}
+
 export interface StatusIntakeEntry {
   issue: string;
   title: string | null;
@@ -791,6 +999,17 @@ export interface StatusDeadDelivery {
   at: string;
   /** False for a job from an earlier state of the item; retrying it would revive obsolete work. */
   retryable?: boolean;
+}
+
+/** GitHub refuses pushes from the Paws App to `repository`; its pushes wait and retry. */
+export interface StatusPushOutage {
+  repository: string;
+  since: string;
+  /** GitHub's last refusal. */
+  lastError: string;
+  nextProbeAt: string;
+  /** The App installation's settings on GitHub, to check permissions and repository access. */
+  installationUrl: string | null;
 }
 
 export interface StatusLinearWebhook {
@@ -915,9 +1134,17 @@ function ids(values: string[], label: string, problems: string[]): Set<string> {
 }
 
 function readSnapshot(input: unknown): StatusSnapshot {
-  const body = object(input, "status");
+  const sent = object(input, "status");
+  const slices = readSlices(sent);
+  const body: Record<string, unknown> = { ...sent };
+  if (slices !== undefined) {
+    const carried = new Set<string>(slices.flatMap((slice) => STATUS_SLICE_FIELDS[slice]));
+    for (const field of ["items", "runs", "questions", "mergeQueue", "verdicts"])
+      if (!carried.has(field)) body[field] = [];
+  }
   return {
     ...readBase(body),
+    ...(slices === undefined ? {} : { slices }),
     verdicts: array(body, "verdicts", "status").map((entry, index) =>
       readVerdictSummary(entry, `verdicts[${index}]`),
     ),
@@ -929,6 +1156,13 @@ function readSnapshot(input: unknown): StatusSnapshot {
           ),
         }),
   };
+}
+
+function readSlices(body: Record<string, unknown>): StatusSlice[] | undefined {
+  if (body.slices === undefined) return undefined;
+  return array(body, "slices", "status").map((entry, index) =>
+    oneOf(typeof entry === "string" ? entry : "", STATUS_SLICES, `status.slices[${index}]`),
+  );
 }
 
 function readBase(body: Record<string, unknown>): StatusSnapshotBase {
@@ -989,6 +1223,58 @@ function readBase(body: Record<string, unknown>): StatusSnapshotBase {
     ...(body.linearWebhook === undefined || body.linearWebhook === null
       ? {}
       : { linearWebhook: readLinearWebhook(body.linearWebhook, "linearWebhook") }),
+    ...(body.pushOutages === undefined
+      ? {}
+      : {
+          pushOutages: array(body, "pushOutages", "status").map((entry, index) =>
+            readPushOutage(entry, `pushOutages[${index}]`),
+          ),
+        }),
+    ...(body.mergedTimes === undefined
+      ? {}
+      : { mergedTimes: readMergedTimes(body.mergedTimes, "mergedTimes") }),
+  };
+}
+
+function readMergedTimes(input: unknown, path: string): StatusMergedTimes {
+  const body = object(input, path);
+  return {
+    since: dateString(body, "since", path),
+    merged: count(body, "merged", path),
+    medianMs: count(body, "medianMs", path),
+    p90Ms: count(body, "p90Ms", path),
+    states: readStateTimeList(body, path),
+  };
+}
+
+function readStateTimes(input: unknown, path: string): StatusStateTimes {
+  const body = object(input, path);
+  return {
+    since: dateString(body, "since", path),
+    until: dateString(body, "until", path),
+    current: nullableText(body, "current", path),
+    states: readStateTimeList(body, path),
+  };
+}
+
+function readStateTimeList(body: Record<string, unknown>, path: string): StatusStateTime[] {
+  return array(body, "states", path).map((entry, at) => {
+    const state = object(entry, `${path}.states[${at}]`);
+    return {
+      state: text(state, "state", `${path}.states[${at}]`),
+      ms: count(state, "ms", `${path}.states[${at}]`),
+    };
+  });
+}
+
+function readPushOutage(input: unknown, path: string): StatusPushOutage {
+  const body = object(input, path);
+  return {
+    repository: text(body, "repository", path),
+    since: dateString(body, "since", path),
+    lastError: text(body, "lastError", path),
+    nextProbeAt: dateString(body, "nextProbeAt", path),
+    installationUrl: nullableText(body, "installationUrl", path),
   };
 }
 
@@ -1177,6 +1463,8 @@ function readItem(input: unknown, index: number): StatusItem {
     runId,
     pr: readPr(body.pr, `${path}.pr`),
     links: readLinks(body.links, `${path}.links`),
+    ...(body.version === undefined ? {} : { version: count(body, "version", path) }),
+    ...(body.noControls === undefined ? {} : { noControls: boolean(body, "noControls", path) }),
     ...(body.queue === undefined ? {} : { queue: readQueue(body.queue, `${path}.queue`) }),
     ...(body.held === undefined ? {} : { held: readHeld(body.held, `${path}.held`) }),
     ...(body.mergeQueue === undefined
@@ -1209,6 +1497,9 @@ function readItem(input: unknown, index: number): StatusItem {
             readItemEvent(entry, `${path}.timeline[${at}]`),
           ),
         }),
+    ...(body.stateTimes === undefined
+      ? {}
+      : { stateTimes: readStateTimes(body.stateTimes, `${path}.stateTimes`) }),
   };
 }
 
@@ -1286,6 +1577,7 @@ function readMergeQueue(input: unknown, path: string): StatusMergeQueue {
     position: positiveInteger(body, "position", path),
     total: positiveInteger(body, "total", path),
     ahead: nullableText(body, "ahead", path),
+    ...(body.rechecking === true ? { rechecking: true } : {}),
   };
 }
 
@@ -1541,6 +1833,9 @@ function readVerdict(input: unknown, index: number): StatusVerdict {
             readReview(entry, `${path}.reviews[${review}]`),
           ),
         }),
+    ...(body.skippedRules === undefined
+      ? {}
+      : { skippedRules: stringArray(body, "skippedRules", path) }),
   };
 }
 
@@ -1627,6 +1922,9 @@ function readAttempt(input: unknown, path: string): StatusCloseoutAttempt {
     checks: array(body, "checks", path).map((entry, check) =>
       readCheck(entry, `${path}.checks[${check}]`),
     ),
+    ...(body.skippedRules === undefined
+      ? {}
+      : { skippedRules: stringArray(body, "skippedRules", path) }),
   };
 }
 
@@ -1656,6 +1954,22 @@ function readCheck(input: unknown, path: string): StatusCheck {
     evidencePath: optionalText(body, "evidencePath"),
     active: optionalBoolean(body, "active"),
     tokens: optionalCount(body, "tokens", path),
+    ...(body.probeSha256 === undefined ? {} : { probeSha256: optionalText(body, "probeSha256") }),
+    ...(body.approval === undefined
+      ? {}
+      : { approval: readRuleApproval(body.approval, `${path}.approval`) }),
+  };
+}
+
+function readRuleApproval(input: unknown, path: string): StatusRuleApproval {
+  const body = object(input, path);
+  return {
+    state: oneOf(string(body, "state", path), RULE_APPROVAL_STATES, `${path}.state`),
+    questionId: nullableText(body, "questionId", path),
+    head: text(body, "head", path),
+    by: nullableText(body, "by", path),
+    reason: nullableText(body, "reason", path),
+    at: nullableDate(body, "at", path),
   };
 }
 

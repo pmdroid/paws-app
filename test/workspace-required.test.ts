@@ -16,7 +16,6 @@ test("startup without a Linear workspace says why and admits nothing", async () 
     PAWS_HOME: home,
     PAWS_PORT: "0",
     PAWS_HOST: "127.0.0.1",
-    PAWS_NO_TUNNEL: "1",
   });
   try {
     const ticked = () =>
