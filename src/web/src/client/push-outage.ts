@@ -12,7 +12,7 @@ function banner(outage: StatusPushOutage): string {
   return `<section class="settings-message push-outage" role="alert" aria-label="${esc(`Push outage on ${outage.repository}`)}">
     <p><b>${esc(outage.repository)}</b>: GitHub refuses pushes from the Paws app since ${esc(since)}. Pushes wait and retry.</p>
     <p class="muted">Next try at ${esc(utcClock(outage.nextProbeAt))} UTC. Last error from GitHub:</p>
-    <pre>${esc(outage.lastError)}</pre>
-    ${href ? `<p><a class="btn" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Check the App's permissions and repository access</a></p>` : ""}
+    <pre class="whitespace-pre-wrap [overflow-wrap:anywhere]">${esc(outage.lastError)}</pre>
+    ${href ? `<p class="mt-3"><a class="btn" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Check the App's permissions and repository access</a></p>` : ""}
   </section>`;
 }
