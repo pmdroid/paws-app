@@ -68,6 +68,7 @@ import {
   samePatch,
   PolicyFetchError,
   reviewRequirements,
+  reviewRecordsAt,
   trustedPolicyFiles,
   trustedRootFiles,
   visualReviewRequirements,
@@ -3777,6 +3778,28 @@ export class Orchestrator {
             itemId: item.id,
             head: published.head,
             publicUrl: this.options.publicUrl,
+            automatic: {
+              enabled: readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
+                .autoApproveHighRisk,
+              changedPaths: async (base) =>
+                (
+                  await git([
+                    "-C",
+                    published.worktree,
+                    "diff",
+                    "--name-only",
+                    "--no-renames",
+                    "-z",
+                    base,
+                    published.head,
+                    "--",
+                  ])
+                )
+                  .split("\0")
+                  .filter(Boolean),
+              reviews: (taskId, head, scope) =>
+                reviewRecordsAt(taskId, head, this.options.pawsRoot, scope),
+            },
             samePatch: (approved, base) =>
               samePatch(published.worktree, approved, published.head, base),
             fixRisk: (approved, base) => this.fixRisk(item, published, approved, base),

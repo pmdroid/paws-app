@@ -111,6 +111,7 @@ export {
 } from "./review-findings";
 export {
   askRiskApproval,
+  type AutomaticRiskChecks,
   riskApprovalFor,
   riskGateOn,
   RISK_ANSWERERS,

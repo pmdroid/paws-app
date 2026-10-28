@@ -7,6 +7,10 @@ import { fixChangedPaths, samePatch } from "../closeout";
 import { JOB_KIND, riskCarryOverReason } from "../core";
 import {
   applyWorkItemEvent,
+  ensureCloseoutProgress,
+  finishCloseoutProgress,
+  upsertCloseoutStep,
+  getAutomaticRiskApproval,
   beginImplementRun,
   enqueueJob,
   enqueueOutboxOnce,
@@ -623,4 +627,159 @@ test("a rebase that changed the patch asks again, even when the change is only a
   expect(await fixChangedPaths(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBeNull();
   expect(await approvalWithFixes(db, heads.absorbed)).toBe("missing");
   expect(getRiskFix(db, itemId, heads.absorbed)).toBeNull();
+});
+
+function cleanReviews(
+  db: ReturnType<typeof openDatabase>,
+  head = heads.s,
+  options: { missing?: string; failedProbe?: boolean } = {},
+) {
+  const identity = {
+    taskId: "risk-task",
+    base: heads.base,
+    head,
+    policyDigest: "digest",
+    policyPath: null,
+  };
+  ensureCloseoutProgress(db, "ENG-106", identity, NOW, false);
+  for (const id of ["security-review", "independent-review", "rule-probe"]) {
+    if (id === options.missing) continue;
+    upsertCloseoutStep(
+      db,
+      "ENG-106",
+      identity,
+      {
+        id,
+        kind: id === "rule-probe" ? "command" : "review",
+        state: id === "rule-probe" && options.failedProbe ? "failed" : "passed",
+        command: "",
+        detail: null,
+        attempt: 1,
+        timeoutSeconds: null,
+        startedAt: NOW,
+        finishedAt: NOW,
+        exitCode: 0,
+        timedOut: false,
+        timeoutReason: null,
+        truncated: false,
+        logPath: null,
+        evidencePath: `${head}/${id}/1.json`,
+        findings: null,
+        ordinal: 0,
+      },
+      NOW,
+    );
+  }
+  finishCloseoutProgress(db, "ENG-106", identity, "accepted", NOW);
+}
+
+function automatic(
+  db: ReturnType<typeof openDatabase>,
+  options: {
+    head?: string;
+    paths?: string[];
+    severity?: string;
+    missingRecord?: string;
+    enabled?: boolean;
+  } = {},
+) {
+  return riskApprovalFor(db, {
+    itemId: "ENG-106",
+    head: options.head ?? heads.s,
+    publicUrl: PUBLIC_URL,
+    now: NOW,
+    samePatch: async () => true,
+    automatic: {
+      enabled: options.enabled ?? true,
+      changedPaths: async () => options.paths ?? ["session.ts"],
+      reviews: async () =>
+        ["security-review", "independent-review"]
+          .filter((id) => id !== options.missingRecord)
+          .map((itemId) => ({
+            itemId,
+            attempt: 1,
+            findings: options.severity ? [{ severity: options.severity }] : [],
+          })),
+    },
+  });
+}
+
+test("clean reviews approve the head with evidence, no question and one Linear activity", async () => {
+  const { db, itemId } = held();
+  try {
+    cleanReviews(db);
+    expect(await automatic(db)).toBe("approved");
+    expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
+    expect(findOpenQuestion(db, "ses_1")).toBeNull();
+    expect(getAutomaticRiskApproval(db, itemId, heads.s)).toEqual({
+      itemId,
+      head: heads.s,
+      approvedBy: "paws:clean-reviews",
+      evidenceIds: [`${heads.s}/security-review/1.json`, `${heads.s}/independent-review/1.json`],
+      approvedAt: NOW,
+    });
+    expect(await automatic(db)).toBe("approved");
+    const tracker = createFakeTracker();
+    for (const row of listOutbox(db))
+      if (row.op === "activity")
+        await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
+    expect(
+      tracker.progress.filter((activity) =>
+        activity.body.includes("Approved automatically: both reviews clean"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      activities(db).filter((activity) =>
+        activity.body.includes("Approved automatically: both reviews clean"),
+      ),
+    ).toHaveLength(1);
+  } finally {
+    db.close();
+  }
+});
+
+for (const scenario of [
+  { name: "P2 finding", severity: "P2" },
+  { name: "P1 finding", severity: "P1" },
+  { name: "P0 finding", severity: "P0" },
+  { name: "missing security result", missing: "security-review" },
+  { name: "missing independent evidence", missingRecord: "independent-review" },
+  { name: "failed probe", failedProbe: true },
+  { name: "risk list changed", paths: ["session.ts", ".paws/high-risk-paths"] },
+  { name: "rules changed", paths: ["session.ts", ".agents/closeout.yaml"] },
+  { name: "setting off", enabled: false },
+])
+  test(`${scenario.name} opens the risk question`, async () => {
+    const { db, itemId } = held();
+    try {
+      cleanReviews(db, heads.s, scenario);
+      expect(await automatic(db, scenario)).toBe("missing");
+      expect(
+        askRiskApproval(db, {
+          item: getWorkItem(db, itemId)!,
+          head: heads.s,
+          publicUrl: PUBLIC_URL,
+          now: NOW,
+        }),
+      ).toBe("asked");
+      expect(findOpenQuestion(db, "ses_1")).not.toBeNull();
+      expect(getAutomaticRiskApproval(db, itemId, heads.s)).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+test("automatic approval never carries to a new head, even with the same patch", async () => {
+  const { db, itemId } = held();
+  try {
+    cleanReviews(db);
+    expect(await automatic(db)).toBe("approved");
+    classify(db, heads.rebased, heads.base);
+    expect(await automatic(db, { head: heads.rebased })).toBe("missing");
+    cleanReviews(db, heads.rebased);
+    expect(await automatic(db, { head: heads.rebased })).toBe("approved");
+    expect(getAutomaticRiskApproval(db, itemId, heads.rebased)).not.toBeNull();
+  } finally {
+    db.close();
+  }
 });

@@ -32,6 +32,7 @@ import {
   type CloseoutStepWrite,
   saveCandidateRisk,
   saveRiskFix,
+  saveAutomaticRiskApproval,
 } from "../../../db";
 import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
@@ -1267,6 +1268,7 @@ describe("live status provider", () => {
     const high = parseStatusItemDetail(JSON.parse(JSON.stringify(provider.item("ENG-11"))));
     if (!high.ok) throw new Error(high.error);
     expect(high.detail.risk).toEqual({
+      automaticApproval: null,
       tier: "high",
       head,
       base,
@@ -1277,6 +1279,29 @@ describe("live status provider", () => {
       ],
       securityReview: { state: "passed", detail: null, head },
     });
+    saveAutomaticRiskApproval(db, {
+      itemId: item.id,
+      head,
+      approvedBy: "paws:clean-reviews",
+      evidenceIds: ["security/1.json", "independent/1.json"],
+      approvedAt: now,
+    });
+    const approved = parseStatusItemDetail(JSON.parse(JSON.stringify(provider.item(item.id))));
+    if (!approved.ok) throw new Error(approved.error);
+    expect(approved.detail.risk?.automaticApproval).toEqual({
+      approvedBy: "paws:clean-reviews",
+      evidenceIds: ["security/1.json", "independent/1.json"],
+      approvedAt: new Date(now).toISOString(),
+    });
+    saveCandidateRisk(db, {
+      itemId: item.id,
+      head: "e".repeat(40),
+      base,
+      tier: "high",
+      paths: ["src/auth/session.ts"],
+      classifiedAt: now + 1,
+    });
+    expect(provider.item(item.id)?.risk?.automaticApproval).toBeNull();
     expect(provider.item("ENG-12")?.risk).toMatchObject({
       tier: "normal",
       paths: [],

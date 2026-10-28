@@ -6,6 +6,7 @@ export type MergeProject = Partial<MergeChoice> & { id: string };
 export type MergeRule = Partial<MergeChoice> & { project?: string; label: string };
 export type MergeSettings = {
   default: MergeChoice;
+  autoApproveHighRisk?: boolean;
   projects: MergeProject[];
   rules: MergeRule[];
   /** Replaces every repository's high-risk globs; a repository left out has none. */

@@ -125,10 +125,10 @@ describe("Settings → Merging", () => {
       error: null,
       saved: false,
     });
-    expect(on).toContain("waits for an approval on its issue page in Paws");
-    expect(
-      renderMergeSettings({ data: data(), busy: null, error: null, saved: false }),
-    ).not.toContain("High-risk approval");
+    expect(on).toContain("otherwise approve on the issue page in Paws");
+    expect(renderMergeSettings({ data: data(), busy: null, error: null, saved: false })).toContain(
+      "High-risk approval",
+    );
   });
 
   test("members see why they cannot change it", () => {
@@ -230,4 +230,15 @@ describe("Settings → Merging", () => {
     expect(html).toMatch(/name="risk-0"[^>]*>src\/auth\/\*\*<\/textarea>/);
     expect(html).toContain("Merging settings saved.");
   });
+});
+
+test("automatic approval is checked by default and its off value is submitted", () => {
+  const view = { ...data(), autoApproveHighRisk: false };
+  expect(mergeSettingsBody(view).autoApproveHighRisk).toBe(false);
+  expect(renderMergeSettings({ data: data(), busy: null, error: null, saved: false })).toContain(
+    'name="auto-approve-high-risk" checked',
+  );
+  expect(renderMergeSettings({ data: view, busy: null, error: null, saved: false })).not.toContain(
+    'name="auto-approve-high-risk" checked',
+  );
 });

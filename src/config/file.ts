@@ -98,6 +98,7 @@ export type PawsConfigFile = {
   mergeRepositories?: MergeRepositories;
   /** `[merge] ci_fix_attempts`. Missing means the default of 3. */
   ciFixAttempts?: number;
+  autoApproveHighRisk?: boolean;
   /** `[queue] start_timeout_hours`. Missing means the default of 24. */
   queueStartTimeoutHours?: number;
   /** `[queue] max_running_per_owner`. Missing means no cap. */
@@ -500,7 +501,8 @@ function assignConfig(
     return;
   }
   if (section === "merge") {
-    if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
+    if (key === "auto_approve_high_risk") config.autoApproveHighRisk = asBoolean(value, line);
+    else if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
     else if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, line, "merge.order");
     else if (key === "main_moved")
       config.mainMoved = oneOf(MAIN_MOVED, value, line, "merge.main_moved");

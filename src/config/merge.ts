@@ -40,11 +40,13 @@ export type MergeRepositories = Record<
 >;
 export type MergeSettings = MergePolicy & {
   ciFixAttempts: number;
+  autoApproveHighRisk: boolean;
   repositories: MergeRepositories;
 };
 /** The `[merge]` tables as written. Missing keys are not rendered. */
 export type StoredMerge = Partial<MergeChoice> & {
   ciFixAttempts?: number;
+  autoApproveHighRisk?: boolean;
   projects: Record<string, MergeOverride>;
   rules: MergeRule[];
   repositories?: MergeRepositories;
@@ -166,6 +168,9 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
   return {
     ...(config.mergeOrder === undefined ? {} : { order: config.mergeOrder }),
     ...(mainMoved === undefined ? {} : { mainMoved }),
+    ...(config.autoApproveHighRisk === undefined
+      ? {}
+      : { autoApproveHighRisk: config.autoApproveHighRisk }),
     ...(config.ciFixAttempts === undefined ? {} : { ciFixAttempts: config.ciFixAttempts }),
     projects: config.mergeProjects ?? {},
     rules: config.mergeRules ?? [],
@@ -183,6 +188,7 @@ export function readMergeSettings(config: PawsConfigFile): MergeSettings {
     projects: stored.projects,
     rules: stored.rules,
     repositories: stored.repositories ?? {},
+    autoApproveHighRisk: stored.autoApproveHighRisk ?? true,
     ciFixAttempts: Math.min(stored.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS),
   };
 }
@@ -403,6 +409,9 @@ function choiceLines(value: MergeOverride): string[] {
 export function renderMergeSettings(settings: StoredMerge): string {
   const lines = [
     ...choiceLines(settings),
+    ...(settings.autoApproveHighRisk === undefined
+      ? []
+      : [`auto_approve_high_risk = ${settings.autoApproveHighRisk}`]),
     ...(settings.ciFixAttempts === undefined
       ? []
       : [`ci_fix_attempts = ${settings.ciFixAttempts}`]),
@@ -475,6 +484,9 @@ export function writeMergePolicy(
     path,
     setMergeSettingsText(text, {
       ...policy.default,
+      ...(current.autoApproveHighRisk === undefined
+        ? {}
+        : { autoApproveHighRisk: current.autoApproveHighRisk }),
       ...(current.ciFixAttempts === undefined ? {} : { ciFixAttempts: current.ciFixAttempts }),
       projects: policy.projects,
       rules: policy.rules,

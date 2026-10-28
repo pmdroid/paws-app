@@ -621,13 +621,15 @@ export async function storedReviewFindings(
 /**
  * The findings of each review round stored for `head`, with secrets scrubbed. The marks Closeout
  * gave them (pre-existing, `failOn`) are on the review steps of its progress record.
+ * `scope` selects the accepted run's exact policy and base when authorizing automatic approval.
  */
 export async function reviewRecordsAt(
   taskId: string,
   head: string,
   pawsHome?: string,
+  scope?: { policyDigest: string; base: string },
 ): Promise<Array<{ itemId: string; attempt: number; findings: Finding[] }>> {
-  return (await taskReviewRecords(taskId, pawsHome))
+  return (await taskReviewRecords(taskId, pawsHome, scope))
     .filter((record) => record.head === head)
     .map(({ itemId, attempt, findings }) => ({ itemId, attempt, findings }));
 }
@@ -636,19 +638,26 @@ export async function reviewRecordsAt(
 export async function taskReviewRecords(
   taskId: string,
   pawsHome?: string,
+  scope?: { policyDigest: string; base: string },
 ): Promise<Array<{ itemId: string; head: string; attempt: number; findings: Finding[] }>> {
   const records = await reviewRecordsSince(evidencePath(taskId, pawsHome), []);
-  return records.map((record) => ({
-    itemId: record.itemId,
-    head: record.head,
-    attempt: record.attempt,
-    findings: record.findings.map((finding) => ({
-      severity: finding.severity,
-      location: scrub(finding.location),
-      explanation: scrub(finding.explanation),
-      evidence: scrub(finding.evidence),
-    })),
-  }));
+  return records
+    .filter(
+      (record) =>
+        scope === undefined ||
+        (record.policyDigest === scope.policyDigest && record.base === scope.base),
+    )
+    .map((record) => ({
+      itemId: record.itemId,
+      head: record.head,
+      attempt: record.attempt,
+      findings: record.findings.map((finding) => ({
+        severity: finding.severity,
+        location: scrub(finding.location),
+        explanation: scrub(finding.explanation),
+        evidence: scrub(finding.evidence),
+      })),
+    }));
 }
 
 /** Checks an approved bypass waived on this evaluation. */

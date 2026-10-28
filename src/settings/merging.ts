@@ -105,6 +105,7 @@ export async function handleMergeSettingsRequest(
     }
     return json({
       ...view(policy),
+      autoApproveHighRisk: policy.autoApproveHighRisk,
       highRiskPaths: highRiskPathsView(policy),
       ...(options.riskGate ? { riskGate: options.riskGate } : {}),
       highRiskRepositories: await highRiskRepositoriesView(
@@ -128,9 +129,16 @@ export async function handleMergeSettingsRequest(
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
   let policy: MergePolicy;
+  let autoApproveHighRisk: boolean | undefined;
   // Optional, so a page that does not show High-risk paths keeps them.
   let highRiskPaths: Record<string, string[]> | undefined;
   try {
+    if (isRecord(body) && "autoApproveHighRisk" in body) {
+      const { autoApproveHighRisk: enabled, ...rest } = body;
+      if (typeof enabled !== "boolean") throw new Error("autoApproveHighRisk must be a boolean");
+      autoApproveHighRisk = enabled;
+      body = rest;
+    }
     if (isRecord(body) && "highRiskPaths" in body) {
       const { highRiskPaths: paths, ...rest } = body;
       highRiskPaths = parseHighRiskPathSettings(paths);
@@ -171,11 +179,24 @@ export async function handleMergeSettingsRequest(
       );
   }
   try {
-    writeMergePolicy(options.configPath, policy, current, highRiskPaths);
+    writeMergePolicy(
+      options.configPath,
+      policy,
+      {
+        ...current,
+        ...(autoApproveHighRisk === undefined ? {} : { autoApproveHighRisk }),
+      },
+      highRiskPaths,
+    );
   } catch (caughtError6) {
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
     return json({ error: "Merging settings could not be saved" }, 503);
   }
+  if (autoApproveHighRisk !== undefined && autoApproveHighRisk !== before?.autoApproveHighRisk)
+    options.audit?.(
+      "settings.merging",
+      `Automatic high-risk approval: ${autoApproveHighRisk ? "on" : "off"}`,
+    );
   for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
   const saved =
     highRiskPaths ??
@@ -184,6 +205,7 @@ export async function handleMergeSettingsRequest(
     options.audit?.("settings.merging", change);
   return json({
     ...view(policy),
+    autoApproveHighRisk: autoApproveHighRisk ?? before?.autoApproveHighRisk ?? true,
     highRiskPaths: Object.entries(saved)
       .filter(([, paths]) => paths.length > 0)
       .map(([repository, paths]) => ({ repository, paths })),

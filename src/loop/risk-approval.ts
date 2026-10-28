@@ -7,7 +7,11 @@ import {
   deleteRiskFix,
   enqueueJobOnce,
   enqueueOutboxOnce,
+  immediate,
   getCandidateRisk,
+  getAutomaticRiskApproval,
+  saveAutomaticRiskApproval,
+  listCloseoutProgress,
   getRiskFix,
   getWorkItem,
   listLinkAsks,
@@ -19,6 +23,7 @@ import {
   type RiskFix,
   type WorkItemRecord,
 } from "../db";
+import { journalCaught } from "../journal";
 import type { RiskApproval } from "../merge";
 import { shortCommit } from "../questions";
 import { askWithLink, closeLinkAsksOnHead, linkAskAvailable } from "./link-ask";
@@ -44,6 +49,7 @@ export function riskGateOn(publicUrl: string | null | undefined): boolean {
 export type FixRisk = { changed: string[]; paths: string[] };
 
 /**
+ * Automatic approval requires clean evidence on this exact head and never carries to a fix or rebase.
  * Whether head S may merge as far as its risk goes. A normal-tier head, or any head on a Paws
  * whose risk gate is off, needs nothing. A high-risk or unclassified head needs a person's
  * approval of S in Paws, or of an earlier head with the same patch against main (`samePatch`),
@@ -65,6 +71,7 @@ export async function riskApprovalFor(
     samePatch: (approved: string, base: string) => Promise<boolean>;
     /** What the fix from `approved` to S changed, against main's `base`. Null when unreadable. */
     fixRisk?: (approved: string, base: string) => Promise<FixRisk | null>;
+    automatic?: AutomaticRiskChecks;
     now?: number;
   },
 ): Promise<RiskApproval> {
@@ -73,6 +80,33 @@ export async function riskApprovalFor(
   if (risk?.tier === "normal") return "not_required";
   const approvals = riskApprovals(db, input.itemId);
   if (approvals.some((ask) => ask.headCommit === input.head)) return "approved";
+  if (getAutomaticRiskApproval(db, input.itemId, input.head) !== null) return "approved";
+  if (risk?.tier === "high" && input.automatic?.enabled) {
+    const evidenceIds = await cleanReviewEvidence(db, risk, input.automatic);
+    if (evidenceIds !== null) {
+      const now = input.now ?? Date.now();
+      immediate(db, () => {
+        saveAutomaticRiskApproval(db, {
+          itemId: input.itemId,
+          head: input.head,
+          approvedBy: "paws:clean-reviews",
+          evidenceIds,
+          approvedAt: now,
+        });
+        const item = getWorkItem(db, input.itemId);
+        if (item?.sessionKey)
+          postRiskActivity(db, {
+            sessionId: item.sessionKey,
+            item,
+            kind: "response",
+            body: `Approved automatically: both reviews clean. Commit ${shortCommit(input.head)} joins the merge queue.`,
+            key: `automatic:${input.itemId}:${input.head}`,
+            now,
+          });
+      });
+      return "approved";
+    }
+  }
   if (risk === null) return "missing";
   for (const ask of approvals.toReversed())
     if (await input.samePatch(ask.headCommit, risk.base)) return "approved";
@@ -87,6 +121,66 @@ export async function riskApprovalFor(
     now: input.now ?? Date.now(),
   });
   return fix !== null && fix.paths.length === 0 ? "approved" : "missing";
+}
+
+/** Inputs read from the candidate checkout and Closeout's structured evidence store. */
+export type AutomaticRiskChecks = {
+  enabled: boolean;
+  changedPaths: (base: string) => Promise<string[]>;
+  reviews: (
+    taskId: string,
+    head: string,
+    scope: { policyDigest: string; base: string },
+  ) => Promise<
+    Array<{
+      itemId: string;
+      attempt: number;
+      findings: Array<{ severity: string }>;
+    }>
+  >;
+};
+
+/** A bypass, skipped review, missing record or unreadable checkout always leaves the person gate. */
+async function cleanReviewEvidence(
+  db: Database,
+  risk: CandidateRisk,
+  checks: AutomaticRiskChecks,
+): Promise<string[] | null> {
+  const run = listCloseoutProgress(db, risk.itemId, risk.head).at(-1);
+  if (
+    run?.decision !== "accepted" ||
+    run.steps.some((step) => step.state !== "passed" && step.state !== "skipped")
+  )
+    return null;
+  const reviews = ["security-review", "independent-review"].map((id) =>
+    run.steps.find((step) => step.id === id && step.kind === "review"),
+  );
+  if (!reviews.every((step) => step?.state === "passed" && step.evidencePath && step.attempt > 0))
+    return null;
+  try {
+    const records = await checks.reviews(run.taskId, risk.head, {
+      policyDigest: run.policyDigest,
+      base: run.base,
+    });
+    for (const step of reviews) {
+      const record = records.find(
+        (entry) => entry.itemId === step!.id && entry.attempt === step!.attempt,
+      );
+      if (!record || record.findings.some((finding) => finding.severity !== "P3")) return null;
+    }
+    const changed = await checks.changedPaths(risk.base);
+    if (
+      changed.some(
+        (path) =>
+          path === ".paws/high-risk-paths" || path === ".agents" || path.startsWith(".agents/"),
+      )
+    )
+      return null;
+    return reviews.map((step) => step!.evidencePath!);
+  } catch (error) {
+    journalCaught(error, "risk-approval.cleanReviewEvidence", risk.itemId);
+    return null;
+  }
 }
 
 /**

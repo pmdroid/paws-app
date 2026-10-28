@@ -409,13 +409,24 @@ export function closeoutHeadsStarted(db: Database, itemId: string): Map<string, 
   return new Map(rows.map((row) => [row.head, row.startedAt]));
 }
 
-export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
+export function listCloseoutProgress(
+  db: Database,
+  itemId?: string,
+  head?: string,
+): CloseoutProgressRecord[] {
   const runs = db
-    .query<ProgressSql, []>("SELECT * FROM closeout_progress ORDER BY updated_at, id")
-    .all();
+    .query<ProgressSql, [string | null, string | null]>(
+      "SELECT * FROM closeout_progress WHERE (?1 IS NULL OR item_id = ?1) AND (?2 IS NULL OR head = ?2) ORDER BY updated_at, id",
+    )
+    .all(itemId ?? null, head ?? null);
   const steps = db
-    .query<StepSql, []>("SELECT * FROM closeout_step ORDER BY ordinal, step_id")
-    .all();
+    .query<
+      StepSql,
+      [string | null, string | null]
+    >(`SELECT * FROM closeout_step WHERE progress_id IN (
+      SELECT id FROM closeout_progress WHERE (?1 IS NULL OR item_id = ?1) AND (?2 IS NULL OR head = ?2)
+    ) ORDER BY ordinal, step_id`)
+    .all(itemId ?? null, head ?? null);
   return runs.map((run) => ({
     id: run.id,
     itemId: run.item_id,

@@ -190,19 +190,21 @@ export function renderMergeSettings(view: View): string {
           : '<p class="sub">No issue rules.</p>'
       }
       <div class="settings-add"><label for="merge-rule-project">New rule</label>${ruleProject}${ruleLabel}<div class="row"><button class="btn" type="button" data-merge="add-rule">Add rule</button></div></div></div></section>
-      ${riskGateSection(data.riskGate)}
+      ${riskGateSection(data)}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
 }
 
 /** Whether high-risk pull requests wait for an approval in Paws, and why not. */
-function riskGateSection(gate: MergeSettingsView["riskGate"]): string {
-  if (!gate) return "";
-  const body = gate.on
-    ? '<p class="sub">A pull request that changes a high-risk path waits for an approval on its issue page in Paws before it joins the merge queue.</p>'
-    : `<p class="settings-message" role="status">${esc(gate.reason ?? "The risk gate is off.")}</p>`;
-  return `<section class="settings-section" id="merge-risk-gate"><div class="settings-label"><h2>High-risk approval</h2><p class="sub">The person who delegated the issue or the project lead approves each high-risk head.</p></div><div class="col">${body}</div></section>`;
+function riskGateSection(data: MergeSettingsView): string {
+  const gate = data.riskGate;
+  const body = !gate
+    ? ""
+    : gate.on
+      ? '<p class="sub">A pull request that changes a high-risk path needs approval before it joins the merge queue. Clean reviews can grant it automatically; otherwise approve on the issue page in Paws.</p>'
+      : `<p class="settings-message" role="status">${esc(gate.reason ?? "The risk gate is off.")}</p>`;
+  return `<section class="settings-section" id="merge-risk-gate"><div class="settings-label"><h2>High-risk approval</h2><p class="sub">Clean reviews can approve a head automatically. Other high-risk heads need the person who delegated the issue or the project lead.</p></div><div class="col">${body}<label class="settings-inherit"><input type="checkbox" name="auto-approve-high-risk" ${data.autoApproveHighRisk === false ? "" : "checked"}> Approve high-risk changes automatically when both reviews are clean</label><p class="sub">Requires both reviews on the same commit, no findings at P2 or worse, and no failed rule probe. Changes to .paws/high-risk-paths or .agents always need a person.</p></div></section>`;
 }
 
 /**
@@ -212,6 +214,9 @@ function riskGateSection(gate: MergeSettingsView["riskGate"]): string {
 export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
   return {
     default: data.default,
+    ...(data.autoApproveHighRisk === undefined
+      ? {}
+      : { autoApproveHighRisk: data.autoApproveHighRisk }),
     projects: data.projects,
     rules: data.rules,
     ...(data.highRiskRepositories
@@ -281,6 +286,8 @@ export function createMergeSettings(invalidate: () => void): {
       mainMoved: (value(`${scope}-main`) as MainMoved | undefined) ?? fallback.mainMoved,
     });
     const data = view.data;
+    const automatic = form.querySelector<HTMLInputElement>('[name="auto-approve-high-risk"]');
+    if (automatic) data.autoApproveHighRisk = automatic.checked;
     data.default = read("default", data.default);
     data.projects = data.projects.map((project, index) => {
       const scope = `project-${index}`;

@@ -816,6 +816,11 @@ export interface StatusRiskPath {
  * Closeout has no `security-review` check.
  */
 export interface StatusItemRisk {
+  automaticApproval?: {
+    approvedBy: "paws:clean-reviews";
+    evidenceIds: string[];
+    approvedAt: string;
+  } | null;
   tier: RiskTier | null;
   head: string | null;
   base: string | null;
@@ -955,7 +960,23 @@ function readItemRisk(input: unknown): StatusItemRisk | null {
       head: nullableText(entry, "head", at),
     };
   }
+  let automaticApproval: StatusItemRisk["automaticApproval"];
+  if (body.automaticApproval === null) automaticApproval = null;
+  else if (body.automaticApproval !== undefined) {
+    const at = `${path}.automaticApproval`;
+    const approval = object(body.automaticApproval, at);
+    automaticApproval = {
+      approvedBy: oneOf(
+        string(approval, "approvedBy", at),
+        ["paws:clean-reviews"] as const,
+        `${at}.approvedBy`,
+      ),
+      evidenceIds: array(approval, "evidenceIds", at).map(String),
+      approvedAt: dateString(approval, "approvedAt", at),
+    };
+  }
   return {
+    ...(automaticApproval === undefined ? {} : { automaticApproval }),
     tier: body.tier === null ? null : oneOf(string(body, "tier", path), RISK_TIERS, `${path}.tier`),
     head: nullableText(body, "head", path),
     base: nullableText(body, "base", path),

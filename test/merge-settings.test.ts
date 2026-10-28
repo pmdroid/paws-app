@@ -112,6 +112,7 @@ packages = ["apps/*", "packages/*"]
       ],
       repositories: { "acme/platform": { packages: ["apps/*", "packages/*"] } },
       ciFixAttempts: 2,
+      autoApproveHighRisk: true,
     });
     expect(repositoryPackages(readMergeSettings(config), "Acme/Platform")).toEqual([
       "apps/*",
@@ -227,6 +228,7 @@ describe("Merging settings API", () => {
       default: { order: "queue", mainMoved: "ci" },
       projects: [],
       rules: [],
+      autoApproveHighRisk: true,
       highRiskPaths: [],
       highRiskRepositories: [],
       choices: {
@@ -303,7 +305,12 @@ describe("Merging settings API", () => {
     };
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
     expect(saved?.status).toBe(200);
-    expect(await saved!.json()).toEqual({ ...body, highRiskPaths: [], highRiskRepositories: [] });
+    expect(await saved!.json()).toEqual({
+      ...body,
+      autoApproveHighRisk: true,
+      highRiskPaths: [],
+      highRiskRepositories: [],
+    });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
     expect(text).toContain('[agents.defaults.implementer]\nagent = "claude"');
@@ -316,6 +323,7 @@ describe("Merging settings API", () => {
       rules: [{ label: "Bug", mainMoved: "closeout" }],
       repositories: { "acme/platform": { packages: ["apps/*"] } },
       ciFixAttempts: 5,
+      autoApproveHighRisk: true,
     });
     expect(
       ((await (await handleMergeSettingsRequest(request(), options))!.json()) as { rules: unknown })
@@ -561,4 +569,24 @@ describe("Merging settings API", () => {
     const body = await (await handleMergeSettingsRequest(request(), options))!.json();
     expect(body).toMatchObject({ choices: null, choicesError: expect.any(String) });
   });
+});
+
+test("automatic high-risk approval defaults on, persists off and survives other merge writes", async () => {
+  const { options } = fixture();
+  expect(readMergeSettings(parseConfigToml("")).autoApproveHighRisk).toBe(true);
+  const merging = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] };
+  const off = await handleMergeSettingsRequest(
+    request("PUT", { ...merging, autoApproveHighRisk: false }),
+    options,
+  );
+  expect(off?.status).toBe(200);
+  expect(((await off!.json()) as { autoApproveHighRisk: boolean }).autoApproveHighRisk).toBe(false);
+  expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(false);
+  await handleMergeSettingsRequest(request("PUT", merging), options);
+  expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(false);
+  const invalid = await handleMergeSettingsRequest(
+    request("PUT", { ...merging, autoApproveHighRisk: "false" }),
+    options,
+  );
+  expect(invalid?.status).toBe(400);
 });

@@ -1,3 +1,4 @@
+import { getAutomaticRiskApproval } from "../../../db";
 import { journalCaught } from "../journal";
 /**
  * Live status snapshot.
@@ -346,8 +347,16 @@ function itemRisk(db: Database, current: CurrentItem): StatusItemRisk | null {
       ? { state: check.state, detail: check.detail?.trim() || null, head: current.verdict!.headSha }
       : null;
   if (stored === null && securityReview === null) return null;
+  const automatic = stored ? getAutomaticRiskApproval(db, current.record.id, stored.head) : null;
   const lists = new Map((stored?.matches ?? []).map((match) => [match.path, match.lists]));
   return {
+    automaticApproval: automatic
+      ? {
+          approvedBy: automatic.approvedBy,
+          evidenceIds: automatic.evidenceIds,
+          approvedAt: new Date(automatic.approvedAt).toISOString(),
+        }
+      : null,
     tier: stored?.tier ?? null,
     head: stored?.head ?? null,
     base: stored?.base ?? null,
