@@ -17,6 +17,10 @@ export const PAGES = {
     title: "Merge queue",
     description: "Every issue Closeout accepted that is waiting to merge, per repository.",
   },
+  findings: {
+    title: "Findings",
+    description: "Review findings that did not block a merge and are still open, across issues.",
+  },
   evidence: {
     title: "Evidence",
     description: "A Closeout video or screenshot the agent published for an issue.",
@@ -38,7 +42,7 @@ export const PAGES = {
 export const NAVIGATION = [
   {
     label: "Work",
-    views: ["overview", "issues", "questions", "mergeQueue"],
+    views: ["overview", "issues", "questions", "mergeQueue", "findings"],
   },
   { label: "Manage", views: ["runners"] },
 ] as const;

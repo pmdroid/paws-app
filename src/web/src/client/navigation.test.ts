@@ -128,6 +128,7 @@ test("every route names the status slices it renders", () => {
     mergeQueue: ["items", "mergeQueue", "mergeHistory"],
     questions: ["items", "questions"],
     evidence: ["items", "evidence"],
+    findings: [],
     runners: [],
     settings: [],
   });

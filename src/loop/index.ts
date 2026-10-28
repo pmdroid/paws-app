@@ -104,6 +104,12 @@ export {
   type OpenItems,
 } from "./open-findings";
 export {
+  backfillReviewFindings,
+  recordAcceptedFindings,
+  REVIEW_FINDINGS_BACKFILL_JOB,
+  type TaskReviewReader,
+} from "./review-findings";
+export {
   askRiskApproval,
   riskApprovalFor,
   riskGateOn,
