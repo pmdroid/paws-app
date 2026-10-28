@@ -826,6 +826,37 @@ describe("live status provider", () => {
     ]);
   });
 
+  test("a re-checking task keeps its place in the merge queue, and the ready one behind it moves", () => {
+    const db = database();
+    const head = "c".repeat(40);
+    for (const [index, id] of ["ENG-21", "ENG-22", "ENG-23"].entries()) {
+      const item = insertQueuedItem(db, { id, title: id, sessionKey: "ses_r", now: index + 1 });
+      beginImplementRun(db, item.id, index + 1);
+      enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
+      joinMergeQueue(db, { itemId: item.id, repository: "acme/platform", now: 10 * (index + 1) });
+    }
+    applyWorkItemEvent(db, "ENG-21", "reverify_requested");
+
+    const parsed = parseStatusSnapshot(createLiveStatusProvider(db).snapshot());
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(
+      parsed.snapshot.mergeQueue.map((entry) => [
+        entry.position,
+        entry.itemId,
+        entry.waitingFor,
+        entry.detail,
+      ]),
+    ).toEqual([
+      [1, "ENG-21", "closeout", "Re-checking, keeps its place."],
+      [2, "ENG-22", "ci", null],
+      [3, "ENG-23", "ahead", "Starts when ENG-22 merges"],
+    ]);
+    const items = new Map(parsed.snapshot.items.map((item) => [item.id, item.mergeQueue]));
+    expect(items.get("ENG-21")).toMatchObject({ position: 1, ahead: null, rechecking: true });
+    expect(items.get("ENG-22")).toMatchObject({ position: 2, ahead: null });
+    expect(items.get("ENG-23")).toMatchObject({ position: 3, ahead: "ENG-22" });
+  });
+
   test("the merge queue names each task's bound repository without a configured repo", () => {
     const db = database();
     const now = 1_700_000_000_000;
