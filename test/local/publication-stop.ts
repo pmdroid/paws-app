@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { FakeClock, JOB_KIND } from "../../src/core";
 import {
   bindLinearSessionTask,
+  bindWorkItemRepository,
   enqueueJob,
   ensureLinearSession,
   getWorkItem,
@@ -106,8 +107,8 @@ export async function probePublicationStop(
       clock,
       pawsRoot: root,
       tracker: createFakeTracker(),
-      repository,
-      github,
+      repositories: [repository],
+      githubForRepository: () => github,
       admission: workspaceAdmission(db, {
         authority: (delegationId) => !pendingEpics.has(delegationId),
       }),
@@ -141,6 +142,7 @@ export async function probePublicationStop(
     );
     ensureLinearSession(db, { sessionId: "session", issueId: "issue", now: clock.now() });
     bindLinearSessionTask(db, "session", "epic");
+    bindWorkItemRepository(db, "item", repository);
     branch = getWorkItem(db, "item")!.branchName;
     enqueueJob(db, {
       queue: JOB_KIND.merge,
@@ -302,6 +304,7 @@ export async function probePublicationStop(
     );
     ensureLinearSession(db, { sessionId: "pending-session", issueId: "pending" });
     bindLinearSessionTask(db, "pending-session", "pending");
+    bindWorkItemRepository(db, "pending-item", repository);
     pendingEpics.add("pending");
     const pendingJob = enqueueJob(db, {
       queue: JOB_KIND.merge,
@@ -523,6 +526,7 @@ export async function probePublicationStop(
     );
     ensureLinearSession(db, { sessionId: "owned-refresh-session", issueId: "owned-refresh" });
     bindLinearSessionTask(db, "owned-refresh-session", "owned-refresh");
+    bindWorkItemRepository(db, "owned-refresh-item", repository);
     const ownedRun = insertRun(db, {
       itemId: "owned-refresh-item",
       kind: "implement",

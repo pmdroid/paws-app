@@ -237,13 +237,13 @@ test("a delegated task spends at most five Linear requests before the agent's fi
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: privateKey as string,
       client: githubClient(layout.bare, github),
-    },
+    }),
     launch,
     linearTaskModes: true,
     linearAccess: gate,

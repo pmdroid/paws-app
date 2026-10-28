@@ -72,12 +72,7 @@ export type {
 } from "./merge";
 export { readPullCi } from "./readiness";
 export type { FailedCheck, PassedCheck, PullCi, Readiness } from "./readiness";
-export {
-  createAppTokenProvider,
-  inferGitHubRepository,
-  parseGitHubRemote,
-  runGitHubGit,
-} from "./auth";
+export { createAppTokenProvider, parseGitHubRemote, runGitHubGit } from "./auth";
 export type {
   AppTokenProviderOptions,
   GitHubAuthMode,

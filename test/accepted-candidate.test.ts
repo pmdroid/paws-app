@@ -109,9 +109,9 @@ async function runAccepted(options: {
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     retryBaseMs: 10,
-    github: {
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
@@ -127,7 +127,7 @@ async function runAccepted(options: {
           return client.request(req);
         },
       },
-    },
+    }),
     launch(input) {
       sequence += 1;
       if (input.purpose === "implement") implementRuns += 1;

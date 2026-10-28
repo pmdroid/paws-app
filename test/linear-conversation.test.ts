@@ -201,7 +201,7 @@ function fixture(
     tracker,
     pawsRoot,
     home: root,
-    repository: { owner: "acme", repo: "widgets", remoteUrl: source },
+    repositories: [{ owner: "acme", repo: "widgets", remoteUrl: source }],
     launch,
     linearTaskModes: taskModes,
   });

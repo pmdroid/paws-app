@@ -36,9 +36,9 @@ export type RuntimeConfig = {
   linearClientSecret: string | null;
   githubAuth: GitHubConfigAuth;
   trackerKind: "linear";
-  repo: string | null;
+  /** Repositories named in `config.toml`. Workspaces choose theirs in the dashboard. */
+  repos: string[];
   publicUrl: string | null;
-  checkout: string | null;
   maxTurns: number;
   maxAwakeMs: number;
   webhooks: boolean;
@@ -92,9 +92,8 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
     githubAuth,
     trackerKind: "linear",
-    repo: optional(source, "PAWS_GITHUB_REPOSITORY") ?? file.repo ?? env.githubRepository,
+    repos: [...new Set([file.repo, ...file.githubRepos].filter((repo) => repo !== null))],
     publicUrl: optional(source, "PAWS_PUBLIC_URL") ?? file.publicUrl,
-    checkout: optional(source, "PAWS_CHECKOUT") ?? file.checkout,
     maxTurns: positiveInt(optional(source, "PAWS_MAX_TURNS")) ?? file.maxTurns ?? DEFAULT_MAX_TURNS,
     maxAwakeMs:
       positiveInt(optional(source, "PAWS_MAX_AWAKE_MS")) ?? file.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS,

@@ -129,7 +129,7 @@ test.each([false, true, "cap"] as const)(
       home: layout.home,
       tracker,
       caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
       launch(input) {
         const fixing =
           input.purpose === "fix" || (input.purpose === "implement" && ++implementationTurns > 1);
@@ -315,7 +315,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
     home: layout.home,
     tracker,
     caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     launch(input) {
       const launch = input.purpose === "implement" ? ++launches : 0;
       const scriptPath = path.join(layout.root, `retry-${input.purpose}-${launch}.json`);
@@ -410,7 +410,7 @@ test("a frontend change without visual proof gets a fix round, publishes a scree
     home: layout.home,
     tracker,
     caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     evidence: {
       publicUrl: "https://paws.example",
       store: createEvidenceStore({ db, root: path.join(layout.pawsRoot, "evidence") }),
@@ -581,7 +581,6 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     linearTaskModes: true,
     files: artifactFiles,
     secretsDir: path.join(layout.pawsRoot, "secrets"),
-    repository: { owner: "other", repo: "wrong", remoteUrl: path.join(layout.root, "wrong.git") },
     githubForRepository(selected) {
       selectedRepositories.push(selected);
       expect(selected).toEqual(repository);
@@ -804,14 +803,14 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "",
       installationId: "",
       privateKeyPem: "",
       client,
       tokenProvider,
-    },
+    }),
     launch,
   });
 
@@ -930,7 +929,7 @@ test.each(["claude", "codex", "grok"])(
       pawsRoot: layout.pawsRoot,
       home: layout.home,
       tracker,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
       launch,
     });
     const running = (async () => {
@@ -1062,13 +1061,13 @@ test.each([false, true])(
       launch,
       files,
       secretsDir: path.join(layout.pawsRoot, "secrets"),
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-      github: {
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
         appId: "1",
         installationId: "2",
         privateKeyPem: PRIVATE_KEY,
         client: githubClient(layout.bare, github),
-      },
+      }),
     });
     try {
       await orchestrator.onLinearEvent(linearEvent("created", null, null, "artifact-gap"));
@@ -1184,7 +1183,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     launch,
   });
   try {
@@ -1246,7 +1245,7 @@ test("a failed implementer preparation names the implementer in its question", a
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     launch,
   });
   try {
@@ -1363,8 +1362,13 @@ for (const recovery of [
         publicUrl,
         tracker,
         launch,
-        repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-        github: { appId: "1", installationId: "2", privateKeyPem: PRIVATE_KEY, client },
+        repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+        githubForRepository: () => ({
+          appId: "1",
+          installationId: "2",
+          privateKeyPem: PRIVATE_KEY,
+          client,
+        }),
       });
       return { jobs, orchestrator };
     };
@@ -1573,13 +1577,13 @@ test("grok implementer runs the demo delegation with ask_team and one Closeout f
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
       client,
-    },
+    }),
     launch,
   });
 
@@ -1734,13 +1738,13 @@ for (const review of invalidReviews) {
       pawsRoot: layout.pawsRoot,
       home: layout.home,
       tracker,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-      github: {
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
         appId: "1",
         installationId: "2",
         privateKeyPem: PRIVATE_KEY,
         client: githubClient(layout.bare, github),
-      },
+      }),
       launch(input) {
         launches += 1;
         const scriptPath = path.join(layout.root, `review-script-${launches}.json`);
@@ -1988,13 +1992,13 @@ for (const sameModel of [true, false]) {
       pawsRoot: layout.pawsRoot,
       home: layout.home,
       tracker,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-      github: {
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
         appId: "1",
         installationId: "2",
         privateKeyPem: PRIVATE_KEY,
         client: githubClient(layout.bare, github),
-      },
+      }),
       launch(input) {
         launches.push({ purpose: input.purpose, profile: input.profile });
         const scriptPath = path.join(layout.root, `profile-${++sequence}.json`);
@@ -2073,13 +2077,13 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
       pawsRoot: layout.pawsRoot,
       home: layout.home,
       tracker,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-      github: {
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
         appId: "1",
         installationId: "2",
         privateKeyPem: PRIVATE_KEY,
         client: githubClient(layout.bare, github),
-      },
+      }),
       launch(input) {
         launched.push(input.purpose);
         if (input.purpose === "implement") implementerProfiles.push(input.profile);
@@ -2179,8 +2183,8 @@ for (const movedHead of [false, true]) {
         pawsRoot: layout.pawsRoot,
         home: layout.home,
         tracker,
-        repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-        github: {
+        repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+        githubForRepository: () => ({
           appId: "1",
           installationId: "2",
           privateKeyPem: PRIVATE_KEY,
@@ -2193,7 +2197,7 @@ for (const movedHead of [false, true]) {
               return originalClient.request(request);
             },
           },
-        },
+        }),
         launch(input) {
           if (input.purpose === "review") reviews++;
           const script = path.join(layout.root, `merge-restart-${++sequence}.json`);
@@ -2362,8 +2366,8 @@ test("the active task merges while a later task in its session also waits to mer
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
@@ -2380,7 +2384,7 @@ test("the active task merges while a later task in its session also waits to mer
           return { status: 200, body };
         },
       },
-    },
+    }),
     launch(input) {
       sequence += 1;
       const scriptPath = path.join(layout.root, `pair-${sequence}.json`);
@@ -2459,8 +2463,8 @@ test.each(["pending", "merged"] as const)(
         pawsRoot: layout.pawsRoot,
         home: layout.home,
         tracker,
-        repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-        github: {
+        repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+        githubForRepository: () => ({
           appId: "1",
           installationId: "2",
           privateKeyPem: PRIVATE_KEY,
@@ -2502,7 +2506,7 @@ test.each(["pending", "merged"] as const)(
               return client.request(req);
             },
           },
-        },
+        }),
         launch(input) {
           sequence += 1;
           if (input.purpose === "implement") prompts.push(input.prompt);
@@ -2647,13 +2651,13 @@ test("post_update posts one Linear thought and refuses a second update within a 
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
       client: githubClient(layout.bare, github),
-    },
+    }),
     launch(input) {
       sequence += 1;
       const scriptPath = path.join(layout.root, `update-tool-${sequence}.json`);
@@ -2738,8 +2742,8 @@ test.each([false, true])(
       pawsRoot: layout.pawsRoot,
       home: layout.home,
       tracker,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-      github: {
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
         appId: "1",
         installationId: "2",
         privateKeyPem: PRIVATE_KEY,
@@ -2756,7 +2760,7 @@ test.each([false, true])(
             return { status: 200, body };
           },
         },
-      },
+      }),
       launch(input) {
         sequence += 1;
         const scriptPath = path.join(layout.root, `ci-${sequence}.json`);
@@ -2991,8 +2995,8 @@ async function runGitHubQueue(
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
@@ -3020,7 +3024,7 @@ async function runGitHubQueue(
           return base.request(req);
         },
       },
-    },
+    }),
     launch(input) {
       sequence += 1;
       const scriptPath = path.join(layout.root, `gh-queue-${sequence}.json`);
@@ -3228,8 +3232,8 @@ async function runCiFix(options: {
     tracker,
     linearTaskModes: options.linearTaskModes,
     ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
@@ -3260,7 +3264,7 @@ async function runCiFix(options: {
           return { status: 200, body };
         },
       },
-    },
+    }),
     launch(input) {
       if (input.role === "reviewer") reviewerLaunches += 1;
       if (input.purpose === "implement" && ++launches === 1 && options.rateLimitFirstLaunch)
@@ -3381,8 +3385,8 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
@@ -3399,7 +3403,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
           return { status: 200, body };
         },
       },
-    },
+    }),
     launch(input) {
       sequence += 1;
       const scriptPath = path.join(layout.root, `base-${sequence}.json`);
@@ -3492,9 +3496,9 @@ test("an unreadable CI read retries the merge job and fails the task with the re
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     retryBaseMs: 10,
-    github: {
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
@@ -3505,7 +3509,7 @@ test("an unreadable CI read retries the merge job and fails the task with the re
           return { status: 502, body: {} };
         },
       },
-    },
+    }),
     launch(input) {
       sequence += 1;
       const scriptPath = path.join(layout.root, `unreadable-${sequence}.json`);
@@ -3597,8 +3601,13 @@ test.each([
       pawsRoot: layout.pawsRoot,
       home: layout.home,
       tracker,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-      github: { appId: "1", installationId: "2", privateKeyPem: PRIVATE_KEY, client },
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        client,
+      }),
       launch(input) {
         sequence += 1;
         const scriptPath = path.join(layout.root, `reverify-${sequence}.json`);
@@ -3719,13 +3728,13 @@ async function runRebaseConflict(
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
       client: githubClient(layout.bare, github),
-    },
+    }),
     ...(githubInstallation ? { githubInstallation } : {}),
     launch(input) {
       sequence += 1;
@@ -4198,8 +4207,8 @@ for (const race of ["token", "merge", "followup"] as const) {
       pawsRoot: layout.pawsRoot,
       home: layout.home,
       tracker,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-      github: {
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
         appId: "1",
         installationId: "2",
         privateKeyPem: PRIVATE_KEY,
@@ -4223,7 +4232,7 @@ for (const race of ["token", "merge", "followup"] as const) {
             return response;
           },
         },
-      },
+      }),
       launch(input) {
         const script = path.join(layout.root, `publication-${++sequence}.json`);
         writeFileSync(
@@ -4461,13 +4470,13 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       secretsDir: path.join(layout.pawsRoot, "secrets"),
       pawsRoot: layout.pawsRoot,
       home: layout.home,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-      github: {
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
         appId: "1",
         installationId: "2",
         privateKeyPem: PRIVATE_KEY,
         client: githubClient(layout.bare, github),
-      },
+      }),
       launch,
       linearTaskModes: true,
       linearAccess: gate,

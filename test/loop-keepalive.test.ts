@@ -81,7 +81,7 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     launch(input) {
       const scriptPath = path.join(layout.root, `keep-${input.purpose}-${input.role}.json`);
       const model = input.role === "reviewer" ? "test-codex-model" : "test-claude-model";

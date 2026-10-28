@@ -76,8 +76,8 @@ for (const delivered of [true, false, "completed"] as const)
       pawsRoot,
       home,
       tracker,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: bare },
-      github: {
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: bare }],
+      githubForRepository: () => ({
         appId: "1",
         installationId: "2",
         privateKeyPem: "unused",
@@ -86,7 +86,7 @@ for (const delivered of [true, false, "completed"] as const)
             return { status: 404, body: {} };
           },
         },
-      },
+      }),
       launch,
       remoteFollowUp(itemId, body) {
         forwarded.push({ itemId, body });

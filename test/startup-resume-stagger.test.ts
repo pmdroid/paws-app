@@ -84,7 +84,7 @@ test("a restart with four recovering tasks resumes them one at a time, oldest fi
       tracker,
       pawsRoot: layout.pawsRoot,
       home: layout.home,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
       linearTaskModes: true,
       linearAccess: gate,
       scheduling: () => ({}),

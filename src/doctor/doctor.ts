@@ -79,7 +79,8 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
   const env = loadEnv(probe.env);
   const paths = pawsPaths(env.home);
   const facts = probe.facts;
-  const repoOk = facts.repo !== null && /^[^/\s]+\/[^/\s]+$/.test(facts.repo);
+  const repoOk =
+    facts.repos.length > 0 && facts.repos.every((repo) => /^[^/\s]+\/[^/\s]+$/.test(repo));
   const checks: DoctorCheck[] = [
     check("git", probe.which("git") !== null, probe.which("git") ?? "git is not on PATH", FIX.git),
     check(
@@ -105,7 +106,11 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     check(
       "repository",
       repoOk,
-      repoOk ? (facts.repo ?? "") : "repository must be owner/name",
+      repoOk
+        ? facts.repos.join(", ")
+        : facts.repos.length === 0
+          ? "no repository is chosen"
+          : "repository must be owner/name",
       FIX.repo,
     ),
   );

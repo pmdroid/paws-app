@@ -507,7 +507,6 @@ export type OrchestratorOptions = {
   /** The HTTPS dashboard origin (`PAWS_PUBLIC_URL`). Without it Paws cannot ask with a link. */
   publicUrl?: string | null;
   catchUp?: () => Promise<void>;
-  repository?: RepositoryBinding | null;
   repositories?: readonly RepositoryBinding[];
   repositoryAccess?: (
     repository: RepositoryBinding,
@@ -520,7 +519,6 @@ export type OrchestratorOptions = {
     signal: AbortSignal,
     access: "read" | "write",
   ) => Promise<string>;
-  github?: GitHubBinding | null;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy | undefined>;
   launch?: AgentLaunch;
@@ -546,7 +544,7 @@ export type OrchestratorOptions = {
   ) => boolean | Promise<boolean>;
   admission?: ItemAdmission;
   journal?: (line: string) => void;
-  scheduling?: () => Pick<SchedulerOptions, "defaultRepository" | "ownerCap">;
+  scheduling?: () => Pick<SchedulerOptions, "ownerCap">;
   /**
    * Whether the item's owner has a runner they may use for this agent. False keeps a queued
    * item out of the slot line and its start timeout. Null when it cannot tell. SQLite only.
@@ -2496,7 +2494,7 @@ export class Orchestrator {
   private async runItem(item: WorkItemRecord, handoff?: string): Promise<void> {
     const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
-      this.fail(item, "no_repository", "PAWS_GITHUB_REPOSITORY is not set.");
+      this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
     if (this.stopped(item.id)) return;
@@ -3671,7 +3669,7 @@ export class Orchestrator {
     if (item === null) return;
     const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
-      this.fail(item, "no_repository", "PAWS_GITHUB_REPOSITORY is not set.");
+      this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
@@ -7022,7 +7020,7 @@ export class Orchestrator {
   }
 
   private repositoryForItem(item: WorkItemRecord): RepositoryBinding | null {
-    return getWorkItemRepository(this.db, item.id) ?? this.options.repository ?? null;
+    return getWorkItemRepository(this.db, item.id);
   }
 
   private async selectRepository(
@@ -7063,7 +7061,7 @@ export class Orchestrator {
       const configured = listRepositoryCandidates(
         this.db,
         item.sessionKey,
-        this.options.repositories ?? (this.options.repository ? [this.options.repository] : []),
+        this.options.repositories ?? [],
       );
       const listed = (candidate: RepositoryBinding) =>
         catalog.some((entry) => sameRepository(entry, candidate));
@@ -7341,16 +7339,7 @@ export class Orchestrator {
   }
 
   private githubForRepository(repository: RepositoryBinding): GitHubBinding | null {
-    if (this.options.githubForRepository) return this.options.githubForRepository(repository);
-    const configured = this.options.repository;
-    if (
-      configured?.owner !== repository.owner ||
-      configured.repo !== repository.repo ||
-      configured.remoteUrl !== repository.remoteUrl
-    ) {
-      return null;
-    }
-    return this.options.github ?? null;
+    return this.options.githubForRepository?.(repository) ?? null;
   }
 
   private launchAgent: AgentLaunch = (input) => {
