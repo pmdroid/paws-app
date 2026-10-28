@@ -2,7 +2,7 @@ import { fullStatusFixture, pageData, statusList, type FullStatus } from "../../
 import { describe, expect, test } from "bun:test";
 import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
-import { checkKey } from "./closeout";
+import { checkKey, emptyCloseoutView } from "./closeout";
 import { esc } from "./format";
 
 /** `snapshot` is the full fixture; the model gets its list and, on an issue page, its detail. */
@@ -276,7 +276,9 @@ describe("status views", () => {
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
     item.linearRequests = 12;
-    const page = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    const closeout = emptyCloseoutView();
+    closeout.open[`section\ndetails:${item.id}`] = true;
+    const page = render(model({ snapshot, route: { view: "runs", id: run.id }, closeout })).content;
     expect(page).toContain("<dt>Linear requests</dt><dd>12</dd>");
   });
 

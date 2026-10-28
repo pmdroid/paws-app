@@ -508,7 +508,7 @@ a.evidence-thumb:focus-visible {
   border: 2px solid #e44545;
   background: transparent;
 }
-.agent-closeout-toggle {
+.section-toggle {
   display: flex;
   width: 100%;
   align-items: center;
@@ -519,11 +519,21 @@ a.evidence-thumb:focus-visible {
   background: var(--secondary-background);
   text-align: left;
 }
-.agent-closeout-toggle h2 {
+.section-toggle h2 {
   font-size: 1rem;
 }
-.agent-closeout-toggle .check-chevron {
+.section-toggle .check-chevron {
   margin-left: auto;
+}
+.section-toggle > :first-child {
+  flex: none;
+  white-space: nowrap;
+}
+.run-details {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 .check-row {
   min-width: 0;
