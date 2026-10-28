@@ -156,6 +156,12 @@ export async function probeRunnerBackend(
   const artifacts = createRunnerArtifactStore({ root: join(root, "artifact-store"), work });
   let published = false;
   const bot = { appId: "99", login: "paws-test[bot]", id: 88 };
+  // The fixture remote is not reachable: a fetch from it fails at once instead of asking GitHub.
+  const networkGit = async (args: string[]) => {
+    if (args.includes("https://github.com/fixture/repository.git"))
+      throw new Error("The fixture remote is not reachable.");
+    return git(args);
+  };
   const backendOptions: Parameters<typeof createRemoteAgentRunner>[0] = {
     async checkpointBot(repository) {
       assert.equal(repository, "fixture/repository");
@@ -170,7 +176,7 @@ export async function probeRunnerBackend(
     pollIntervalMs: 1,
     async fetchCandidate(candidate) {
       assert.equal(candidate.remoteUrl, "https://github.com/fixture/repository.git");
-      assert.equal(candidate.networkGit, git);
+      assert.equal(candidate.networkGit, networkGit);
       assert.equal(candidate.branch, getWorkItem(db, candidate.itemId)?.branchName);
       assert.equal(candidate.baseSha, base);
       assert.equal(candidate.candidateSha, head);
@@ -244,7 +250,7 @@ export async function probeRunnerBackend(
       prompt: "Implement fixture",
       worktreePath: source,
       pawsRoot: root,
-      networkGit: git,
+      networkGit,
       ...overrides,
     };
   }

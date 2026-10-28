@@ -7,11 +7,12 @@ import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, gitFailureReason, redact, withCredential } from "./git";
 import { mainOverlap, readUpToDateRule } from "./overlap";
-import { pushWithLease } from "./push";
+import { pushDenial, pushWithLease } from "./push";
 import { waitForMergeReadiness, type Readiness } from "./readiness";
 import { readPullReview, type PullReview } from "./review";
 import { isTransient } from "../core";
 import {
+  GitCommandError,
   UPSTREAM_MAIN_REF,
   type GitExec,
   type GitHubClient,
@@ -298,7 +299,17 @@ async function pushRebased(
         sleep: input.sleep,
       });
     } catch (error) {
-      throw new Error(`push rejected: ${gitFailureReason(minted, error)}`, { cause: error });
+      const denial =
+        error instanceof GitCommandError
+          ? pushDenial(redact(minted, error.stderr), {
+              owner: input.owner,
+              repo: input.repo,
+              installationId: input.installationId,
+            })
+          : null;
+      throw new Error(`push rejected: ${denial ?? gitFailureReason(minted, error)}`, {
+        cause: error,
+      });
     }
     const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
     return { ok: true, base, head };
