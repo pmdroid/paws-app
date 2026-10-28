@@ -110,6 +110,9 @@ test("show_preview on the runner becomes ready, waits for Accept, then opens the
     expect(f.github.opened).toHaveLength(0);
     expect(f.previewRuntime.stopped).toBe(false);
     expect(await f.approve("someone-else")).toBe("forbidden");
+    await f.orchestrator.onLinearEvent(prompted("Change the app", "someone-else"));
+    expect(getLinkAsk(f.db, question.id)?.closedAt).toBeNull();
+    expect(f.previewRuntime.stopped).toBe(false);
     expect(f.github.opened).toHaveLength(0);
     expect(await f.approve()).toBe("answered");
     await f.turn;
@@ -121,6 +124,40 @@ test("show_preview on the runner becomes ready, waits for Accept, then opens the
     expect(f.tracker.questions[0]!.body).toContain(
       "[Open preview](https://paws-preview-1.test-tail.ts.net/)",
     );
+  } finally {
+    await f.close();
+  }
+}, 90000);
+
+test("a runner without show_preview asks for an upgrade without spending a fix round", async () => {
+  const f = await pausedForReview({ preview: true, previewUnavailable: true });
+  try {
+    await f.turn;
+    await f.until(() => f.tracker.questions.length > 0);
+    expect(f.github.opened).toHaveLength(0);
+    expect(f.tracker.questions[0]!.body).toContain("Upgrade the runner");
+    expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(0);
+    expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
+  } finally {
+    await f.close();
+  }
+}, 90000);
+
+test("a local execution asks for a preview-capable runner without a fix round", async () => {
+  const f = await pausedForReview({
+    preview: true,
+    previewLocal: true,
+    implement: (worktree) => {
+      writeFileSync(path.join(worktree, "README.md"), "Local candidate\n");
+      return [];
+    },
+  });
+  try {
+    await f.turn;
+    await f.until(() => f.tracker.questions.length > 0);
+    expect(f.github.opened).toHaveLength(0);
+    expect(f.tracker.questions[0]!.body).toContain("Upgrade the runner");
+    expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -1132,6 +1169,8 @@ async function pausedForReview(
   options: {
     paths?: string[];
     preview?: boolean;
+    previewUnavailable?: boolean;
+    previewLocal?: boolean;
     implement?: (worktree: string, n: number, prompt: string) => Step[];
     /** The Closeout fake in place of the real gate. A held run returns before the turn ends. */
     gate?: FakeCloseoutGate;
@@ -1271,7 +1310,7 @@ items:
     }),
     launch,
     publicUrl: options.publicUrl ?? "https://paws.example",
-    ...(options.preview
+    ...(options.preview && !options.previewLocal
       ? {
           remoteExecution: {
             agentForSession: () => runAgent,
@@ -1311,6 +1350,14 @@ items:
                 port: 3123,
                 checklist: ["Try the new screen"],
               });
+              if (options.previewUnavailable) {
+                db.run(
+                  "INSERT OR REPLACE INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner-1','0.1.48',?)",
+                  [Date.now()],
+                );
+                await input.pullRequest?.update({ title: "Fixture", body: "Pending preview" });
+                return result;
+              }
               await runPreview({
                 request,
                 worktree: input.worktreePath,
@@ -1323,8 +1370,14 @@ items:
                 ready: async (preview, signal) => {
                   // A ready event replay after reconnect must reuse the same question.
                   const replies = await Promise.all([
-                    input.reviewPreview!.review(preview, { signal }),
-                    input.reviewPreview!.review(preview, { signal }),
+                    input.reviewPreview!.review(
+                      { ...preview, expiresAt: 1, remainingMs: 3600000 },
+                      { signal },
+                    ),
+                    input.reviewPreview!.review(
+                      { ...preview, expiresAt: 1, remainingMs: 3600000 },
+                      { signal },
+                    ),
                   ]);
                   return replies[0]!;
                 },

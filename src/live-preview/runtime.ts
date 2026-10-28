@@ -72,7 +72,8 @@ export function previewEnvironment(
 async function staleLock(folder: string): Promise<boolean> {
   try {
     const owner = Number(await readFile(join(folder, "owner"), "utf8"));
-    if (!Number.isSafeInteger(owner) || owner <= 0) return false;
+    if (owner === 0) return true;
+    if (!Number.isSafeInteger(owner) || owner < 0) return false;
     try {
       process.kill(owner, 0);
       return false;
@@ -105,9 +106,17 @@ async function claimService(root: string, name: string, io: PreviewRuntime): Pro
   try {
     await mkdir(recovery, { mode: 0o700 });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (!(await staleLock(recovery))) return false;
+    await rm(recovery, { recursive: true, force: true });
+    try {
+      await mkdir(recovery, { mode: 0o700 });
+    } catch (retryError) {
+      if ((retryError as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw retryError;
+    }
   }
+  await writeFile(join(recovery, "owner"), String(process.pid), { mode: 0o600 });
   try {
     if (!(await staleLock(folder))) return false;
     // A worker may have died before clearing Serve. Clear before recycling its name.
@@ -255,16 +264,19 @@ export async function runPreview(input: {
       response = await io.fetch(frameUrl, AbortSignal.any([startup, AbortSignal.timeout(5000)]));
     }
     const xfo = response.headers.get("x-frame-options");
-    const ancestors = response.headers
-      .get("content-security-policy")
-      ?.match(/(?:^|;)\s*frame-ancestors\s+([^;]+)/i)?.[1];
-    const frameable = !redirectedOutside && !xfo && (!ancestors || ancestors.trim() === "*");
+    const ancestors = [
+      ...(response.headers.get("content-security-policy") ?? "").matchAll(
+        /(?:^|[;,])\s*frame-ancestors\s+([^;,]+)/gi,
+      ),
+    ].map((match) => match[1]!.trim());
+    const frameable = !redirectedOutside && !xfo && ancestors.every((value) => value === "*");
     const preview = PreviewReadySchema.parse({
       ...request,
       id: randomUUID(),
       head: input.head,
       url,
       expiresAt,
+      remainingMs: Math.max(1, expiresAt - Date.now()),
       frameable,
     });
     published = preview;
@@ -283,9 +295,19 @@ export async function runPreview(input: {
       if (serving) await io.command(["tailscale", "serve", "clear", `svc:${service}`]);
       cleared = true;
     } finally {
-      await child?.stop();
-      if (home) await rm(home, { recursive: true, force: true });
-      if (cleared) await rm(join(input.lockRoot, service), { recursive: true, force: true });
+      let stopped = false;
+      try {
+        await child?.stop();
+        stopped = true;
+      } finally {
+        if (cleared && stopped) {
+          if (home) await rm(home, { recursive: true, force: true });
+          await rm(join(input.lockRoot, service), { recursive: true, force: true });
+        } else {
+          // Retry cleanup on the next claim even if this worker remains alive.
+          await writeFile(join(input.lockRoot, service, "owner"), "0", { mode: 0o600 });
+        }
+      }
     }
   }
 }

@@ -26,6 +26,7 @@ export const PreviewReadySchema = z.strictObject({
     .url()
     .refine((value) => /^https:\/\/paws-preview-[1-9][0-9]*\.[a-z0-9-]+\.ts\.net\//.test(value)),
   expiresAt: z.number().int().positive(),
+  remainingMs: z.number().int().positive().max(3600000).optional(),
   frameable: z.boolean(),
 });
 export type PreviewReady = z.infer<typeof PreviewReadySchema>;

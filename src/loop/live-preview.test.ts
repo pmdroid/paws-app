@@ -135,3 +135,19 @@ test("a Linear reply saying Accept restarts with feedback and cannot approve", (
       .handoff,
   ).toContain("Accept");
 });
+
+test("an unauthorized Linear reply cannot close or restart a preview", () => {
+  const f = waiting();
+  expect(
+    guideLinkAsk(f.db, {
+      questionId: f.questionId,
+      eventKey: "outsider-reply",
+      body: "change it",
+      answeredBy: "outsider",
+      now: NOW + 10,
+    }),
+  ).toBe(false);
+  expect(getLinkAsk(f.db, f.questionId)?.closedAt).toBeNull();
+  expect(getWorkItem(f.db, f.itemId)?.state).toBe("awaiting_input");
+  expect(listJobs(f.db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+});

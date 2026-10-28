@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, expect, test } from "bun:test";
-import { createCloseoutSession, workspacePolicyFiles } from "../src/closeout-spec";
+import {
+  createCloseoutSession,
+  workspacePolicyFiles,
+  encodePolicyFiles,
+  decodePolicyFiles,
+} from "../src/closeout-spec";
 import { closeoutPrompt, fixPrompt, implementPrompt } from "../src/loop/agents";
 
 const roots: string[] = [];
@@ -45,13 +50,47 @@ test("a preview check is pending human acceptance and is never run as a command"
     "    approval: human",
   ]);
   writeFileSync(join(root, "src", "ui.ts"), "export const title = 'Fixture';\n");
-  const session = createCloseoutSession(root, local(root));
+  const session = createCloseoutSession(root, { ...local(root), previewAvailable: true });
   const report = JSON.parse(await session.report());
   expect(report.required).toMatchObject([
     { id: "live-preview", kind: "preview", status: "pending" },
   ]);
   expect(report.pending).not.toContain("live-preview");
   expect(await session.run("live-preview")).toContain("Call show_preview");
+});
+
+test("preview reports use trusted acceptance at the current commit and diagnose unavailable tools", async () => {
+  const root = initRepo();
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "items:",
+    "  - id: live-preview",
+    "    type: preview",
+    "    approval: human",
+  ]);
+  writeFileSync(join(root, "src", "ui.ts"), "fixture");
+  const head = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  }).stdout.trim();
+  let acceptedPreviews: { checkId: string; commit: string }[] = [];
+  const session = createCloseoutSession(root, {
+    policy: async () => {
+      const load = workspacePolicyFiles(root);
+      return decodePolicyFiles(
+        encodePolicyFiles(load.ok && !load.absent ? { ...load, acceptedPreviews } : load),
+      );
+    },
+  });
+  expect(JSON.parse(await session.report()).blocked).toContain("Upgrade the runner");
+  expect(await session.run("live-preview")).toContain("unavailable");
+  acceptedPreviews = [{ checkId: "live-preview", commit: head }];
+  expect(JSON.parse(await session.report()).required[0].status).toBe("passed");
+  expect(JSON.parse(await session.report()).blocked).toBeNull();
+  expect(await session.run("live-preview")).toContain("passed");
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "new candidate"]);
+  expect(JSON.parse(await session.report()).required[0].status).toBe("pending");
 });
 
 test("get_closeout reports path matches and run_closeout runs the pending id", async () => {

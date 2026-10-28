@@ -979,7 +979,10 @@ export async function executeRunnerCommand(
             else if (event.update.sessionUpdate === "tool_call" || status) {
               const named = `${event.update.title ?? ""} ${JSON.stringify(event.update["_meta"] ?? {})}`;
               toolCalls.set(toolCallId, {
-                askTeam: toolCalls.get(toolCallId)?.askTeam || named.includes("ask_team"),
+                askTeam:
+                  toolCalls.get(toolCallId)?.askTeam ||
+                  named.includes("ask_team") ||
+                  named.includes("show_preview"),
               });
             }
           }
@@ -1146,9 +1149,26 @@ export async function executeRunnerCommand(
                   );
                 const head = (await invokeGit(["-C", worktree, "rev-parse", "HEAD"])).trim();
                 // Services are assigned once per host, outside the agent's writable home.
-                const services = JSON.parse(
-                  readFileSync("/etc/paws/preview-services.json", "utf8"),
-                ) as string[];
+                let services: string[];
+                try {
+                  const configured: unknown = JSON.parse(
+                    readFileSync("/etc/paws/preview-services.json", "utf8"),
+                  );
+                  if (
+                    !Array.isArray(configured) ||
+                    configured.length === 0 ||
+                    new Set(configured).size !== configured.length ||
+                    !configured.every(
+                      (name) => typeof name === "string" && /^paws-preview-[1-9][0-9]*$/.test(name),
+                    )
+                  )
+                    throw new Error("Invalid service list");
+                  services = configured;
+                } catch {
+                  throw new Error(
+                    "Configure /etc/paws/preview-services.json as a nonempty JSON array of distinct paws-preview-N service names, one per runner slot.",
+                  );
+                }
                 waitingForAnswer++;
                 try {
                   return await runPreview({

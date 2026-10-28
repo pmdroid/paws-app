@@ -90,6 +90,7 @@ export type PolicyFilesLoad =
       digest: string;
       files: ReadonlyMap<string, Uint8Array>;
       published?: readonly PublishedEvidence[];
+      acceptedPreviews?: readonly { checkId: string; commit: string }[];
     }
   | { ok: false; message: string };
 

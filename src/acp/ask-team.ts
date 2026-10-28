@@ -209,6 +209,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     ? createCloseoutSession(worktreePath, {
         policy: options.closeoutPolicy ?? (async () => workspacePolicyFiles(worktreePath)),
         signal: options.signal,
+        previewAvailable: Boolean(options.showPreview),
         ...(options.runtimeBinPaths?.length ? { runtimeBinPaths: options.runtimeBinPaths } : {}),
         ...(options.closeoutBasePath !== undefined ? { basePath: options.closeoutBasePath } : {}),
         allowCommand(argv) {

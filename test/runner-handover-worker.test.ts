@@ -326,9 +326,9 @@ test.skipIf(!linux)(
   },
 );
 
-test.skipIf(!linux)(
-  "a session waiting on ask_team hands over without waiting for the answer, and its question is published",
-  async () => {
+test.skipIf(!linux).each(["ask_team", "show_preview"])(
+  "a session waiting on %s hands over without waiting for the answer, and its question is published",
+  async (toolName) => {
     const context = await fixture();
     const result = await context.execute(
       [
@@ -339,7 +339,7 @@ test.skipIf(!linux)(
           update: {
             sessionUpdate: "tool_call",
             toolCallId: "ask-1",
-            title: "ask_team",
+            title: toolName,
             kind: "other",
             status: "in_progress",
           },

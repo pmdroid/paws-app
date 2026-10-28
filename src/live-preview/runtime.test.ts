@@ -2,7 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PreviewRequestSchema, createFakePreviewRuntime, runPreview } from "./index";
+import {
+  PreviewRequestSchema,
+  createFakePreviewRuntime,
+  runPreview,
+  previewRunnerSupported,
+} from "./index";
 import { previewEnvironment } from "./runtime";
 
 const roots: string[] = [];
@@ -62,6 +67,8 @@ test("isolates the app environment, warms HTTPS before ready, and clears its ser
 });
 
 test.each<Record<string, string>>([
+  { "content-security-policy": "default-src 'self', frame-ancestors 'none'" },
+  { "content-security-policy": "frame-ancestors *, frame-ancestors 'none'" },
   { "x-frame-options": "DENY" },
   { "content-security-policy": "default-src 'self'; frame-ancestors 'self'" },
 ])("reports frame refusal with %j", async (headers) => {
@@ -146,21 +153,28 @@ test("a slot cannot be shared by concurrent previews and is reusable after stop"
   });
 });
 
-test("reclaims a dead worker's slot only after clearing its old service", async () => {
-  const config = await input();
-  const folder = join(config.lockRoot, "paws-preview-1");
-  await mkdir(folder);
-  await writeFile(join(folder, "owner"), "2147483647");
-  const fake = createFakePreviewRuntime();
-  await runPreview({
-    ...config,
-    runtime: fake.io,
-    async ready() {
-      return "accepted";
-    },
-  });
-  expect(fake.calls[0]).toEqual(["tailscale", "serve", "clear", "svc:paws-preview-1"]);
-});
+test.each([false, true])(
+  "reclaims a dead worker slot with abandoned recovery=%s",
+  async (abandonedRecovery) => {
+    const config = await input();
+    const folder = join(config.lockRoot, "paws-preview-1");
+    await mkdir(folder);
+    await writeFile(join(folder, "owner"), "2147483647");
+    if (abandonedRecovery) {
+      await mkdir(`${folder}.recovery`);
+      await writeFile(join(`${folder}.recovery`, "owner"), "2147483647");
+    }
+    const fake = createFakePreviewRuntime();
+    await runPreview({
+      ...config,
+      runtime: fake.io,
+      async ready() {
+        return "accepted";
+      },
+    });
+    expect(fake.calls[0]).toEqual(["tailscale", "serve", "clear", "svc:paws-preview-1"]);
+  },
+);
 
 test("cancellation stops the app even if the review callback does not observe its signal", async () => {
   const config = await input();
@@ -180,7 +194,7 @@ test("cancellation stops the app even if the review callback does not observe it
   expect(fake.stopped).toBe(true);
 });
 
-test("a failed Serve clear stops the product and keeps the slot reserved", async () => {
+test("a failed Serve clear stops the product and retries cleanup before reusing the slot", async () => {
   const config = await input();
   const fake = createFakePreviewRuntime();
   const command = fake.io.command;
@@ -198,13 +212,23 @@ test("a failed Serve clear stops the product and keeps the slot reserved", async
     }),
   ).rejects.toThrow("Serve clear failed");
   expect(fake.stopped).toBe(true);
-  await expect(
-    runPreview({
-      ...config,
-      runtime: createFakePreviewRuntime().io,
-      async ready() {
-        return "accepted";
-      },
-    }),
-  ).rejects.toThrow("No preview service is free");
+  const retry = createFakePreviewRuntime();
+  await runPreview({
+    ...config,
+    runtime: retry.io,
+    async ready() {
+      return "accepted";
+    },
+  });
+  expect(retry.calls[0]).toEqual(["tailscale", "serve", "clear", "svc:paws-preview-1"]);
+});
+
+test.each([
+  ["0.1.48", false],
+  ["0.1.49", true],
+  ["0.2.0", true],
+  [null, false],
+  ["invalid", false],
+] as const)("preview runner capability for %s is %s", (version, expected) => {
+  expect(previewRunnerSupported(version)).toBe(expected);
 });

@@ -1028,16 +1028,13 @@ export function createRemoteAgentRunner(options: {
                   : head;
               if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
                 saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
+              const selectedVersion = db
+                .query<{ version: string | null }, [string]>(
+                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                )
+                .get(selected.id)?.version;
               const acceptsRebase =
-                !taskScope &&
-                versionAtLeast(
-                  db
-                    .query<{ version: string | null }, [string]>(
-                      "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                    )
-                    .get(selected.id)?.version,
-                  REBASE_RUNNER_VERSION,
-                );
+                !taskScope && versionAtLeast(selectedVersion, REBASE_RUNNER_VERSION);
               const checkpointBase = getWorkItem(db, itemId)?.checkpoint?.baseSha;
               const upstreamMain = acceptsRebase
                 ? await git([
@@ -1150,14 +1147,7 @@ export function createRemoteAgentRunner(options: {
                 !taskScope &&
                 input.role === "implementer" &&
                 input.checkpoint !== false &&
-                versionAtLeast(
-                  db
-                    .query<{ version: string | null }, [string]>(
-                      "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                    )
-                    .get(selected.id)?.version,
-                  SESSION_RESUME_RUNNER_VERSION,
-                )
+                versionAtLeast(selectedVersion, SESSION_RESUME_RUNNER_VERSION)
                   ? earlierSession(db, itemId, selected.id, profile.agent)
                   : restorePlan?.eligible
                     ? restorePlan.restoreSession.sessionId
@@ -1175,26 +1165,12 @@ export function createRemoteAgentRunner(options: {
                     })
                   : undefined;
               signal.throwIfAborted();
-              const acceptsRuntimes = versionAtLeast(
-                db
-                  .query<{ version: string | null }, [string]>(
-                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                  )
-                  .get(selected.id)?.version,
-                RUNTIMES_RUNNER_VERSION,
-              );
+              const acceptsRuntimes = versionAtLeast(selectedVersion, RUNTIMES_RUNNER_VERSION);
               const runtimes =
                 runtimeList?.runtimes.length && acceptsRuntimes ? runtimeList.runtimes : undefined;
               if (
                 input.reviewCommand &&
-                !versionAtLeast(
-                  db
-                    .query<{ version: string | null }, [string]>(
-                      "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                    )
-                    .get(selected.id)?.version,
-                  REVIEW_COMMAND_RUNNER_VERSION,
-                )
+                !versionAtLeast(selectedVersion, REVIEW_COMMAND_RUNNER_VERSION)
               )
                 throw new Error(
                   `Runner ${selected.id} needs runner ${REVIEW_COMMAND_RUNNER_VERSION.join(".")} or later to run the agent's review command. Upgrade the runner, then review again.`,
@@ -1258,14 +1234,7 @@ export function createRemoteAgentRunner(options: {
                         : {}),
                       ...(input.role !== "reviewer" &&
                       input.reviewPreview &&
-                      versionAtLeast(
-                        db
-                          .query<{ version: string | null }, [string]>(
-                            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                          )
-                          .get(selected.id)?.version,
-                        LIVE_PREVIEW_RUNNER_VERSION,
-                      )
+                      versionAtLeast(selectedVersion, LIVE_PREVIEW_RUNNER_VERSION)
                         ? { livePreview: true as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),

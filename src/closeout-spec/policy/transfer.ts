@@ -16,6 +16,15 @@ const Transfer = z.union([
       .array(z.strictObject({ path: z.string().min(1).max(1024), data: z.string().max(65536) }))
       .min(1)
       .max(MAX_FILES),
+    acceptedPreviews: z
+      .array(
+        z.strictObject({
+          checkId: z.string().min(1).max(256),
+          commit: z.string().regex(/^[a-f0-9]{40}$/),
+        }),
+      )
+      .max(MAX_PUBLISHED)
+      .optional(),
     published: z
       .array(
         z.strictObject({
@@ -38,6 +47,9 @@ export function encodePolicyFiles(load: PolicyFilesLoad): string {
     return JSON.stringify({ error: "The Closeout policy is too large to send to the runner" });
   return JSON.stringify({
     digest: load.digest,
+    ...(load.acceptedPreviews
+      ? { acceptedPreviews: load.acceptedPreviews.slice(-MAX_PUBLISHED) }
+      : {}),
     files: [...load.files].map(([path, bytes]) => ({
       path,
       data: Buffer.from(bytes).toString("base64"),
@@ -73,6 +85,7 @@ export function decodePolicyFiles(text: string): PolicyFilesLoad {
     absent: false,
     digest: parsed.digest,
     files,
+    ...(parsed.acceptedPreviews ? { acceptedPreviews: parsed.acceptedPreviews } : {}),
     ...(published ? { published } : {}),
   };
 }

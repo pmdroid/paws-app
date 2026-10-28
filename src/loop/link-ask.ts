@@ -164,7 +164,13 @@ export function remindLinkAsk(db: Database, questionId: string, now: number): bo
         id: crypto.randomUUID(),
         sessionId: question.sessionId,
         questionId,
-        body: linkAskReminderBody(linkAsk),
+        body:
+          linkAsk.kind === "preview" &&
+          (!livePreviewForQuestion(db, questionId) ||
+            livePreviewForQuestion(db, questionId)!.expiresAt <= now)
+            ? "The live preview has stopped. Reply with your feedback or ask the agent to restart it. Review in Paws: " +
+              linkAsk.link
+            : linkAskReminderBody(linkAsk),
         options: [],
       },
       now,
@@ -487,6 +493,11 @@ export function guideLinkAsk(
     const item = getWorkItem(db, linkAsk.itemId);
     if (item === null || item.cancelRequested || ENDED.has(item.state)) return false;
     // On a rounds ask the reply is Rethink the approach, with the reply as the note.
+    if (
+      ["preview", "risk", "screenshots"].includes(linkAsk.kind) &&
+      !canAnswer({ kind: "link", allowedIds: linkAsk.answerers }, { id: input.answeredBy })
+    )
+      return false;
     const rethink = linkAsk.kind === "rounds";
     const answered = answerQuestion(db, question.id, {
       answer: `${rethink ? "rethink" : "guidance"}: ${input.body}`,

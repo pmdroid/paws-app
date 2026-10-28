@@ -66,6 +66,7 @@ export type CloseoutSession = {
 
 export type CloseoutSessionOptions = {
   policy: () => Promise<PolicyFilesLoad>;
+  previewAvailable?: boolean;
   signal?: AbortSignal;
   /**
    * Bin dirs of the task's installed runtimes. A check's `PATH` starts with them, so it finds
@@ -156,6 +157,7 @@ type Prepared =
       required: Listed[];
       rules: ListedRule[];
       published: PublishedEvidence[];
+      acceptedPreviews: Set<string>;
     };
 
 /** A rule the change must keep. Listing it does not run its probe. */
@@ -231,6 +233,11 @@ export function createCloseoutSession(
       required: select(policy, changes.paths),
       rules: selectRules(policy.rules, changes.paths),
       published,
+      acceptedPreviews: new Set(
+        source.acceptedPreviews
+          ?.filter((entry) => entry.commit === head)
+          .map((entry) => entry.checkId),
+      ),
     };
   };
 
@@ -241,6 +248,16 @@ export function createCloseoutSession(
         if (request?.probes && prepared.kind === "ready")
           await runProbes(workspace, prepared, options);
         const report = reportOf(prepared, memory);
+        if (
+          !options.previewAvailable &&
+          prepared.kind === "ready" &&
+          prepared.required.some(
+            (item) => item.kind === "preview" && !prepared.acceptedPreviews.has(item.id),
+          )
+        ) {
+          report.blocked =
+            "Live previews require a remote runner with preview support (0.1.49 or later). Upgrade the runner and retry; show_preview is unavailable in this session.";
+        }
         if (request?.progress && checkedHead !== undefined)
           notifyReport(options, checkedHead, prepared, report);
         return boundedReport(report);
@@ -317,7 +334,9 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
   const scope = prepared.policy.retry?.scope ?? null;
   const status = (item: Listed) =>
     item.kind === "preview"
-      ? "pending"
+      ? prepared.acceptedPreviews.has(item.id)
+        ? "passed"
+        : "pending"
       : item.evidence
         ? evidenceStatus(item.evidence, prepared.published)
         : statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max);
@@ -487,6 +506,10 @@ async function runId(
   if (known === undefined) return `No closeout check ${id}. Call get_closeout.`;
   const item = required.find((entry) => entry.id === id);
   if (item === undefined) return `Check ${id} is not required for the current changes.`;
+  if (item.kind === "preview" && prepared.acceptedPreviews.has(id))
+    return `${id} passed. The preview was accepted for the current commit.`;
+  if (item.kind === "preview" && !options.previewAvailable)
+    return "show_preview is unavailable. Use a remote runner at 0.1.49 or later.";
   if (item.kind === "preview")
     return `Call show_preview with checkId "${id}". A person accepts the running product in Paws.`;
   if (item.kind === "review") {

@@ -1,5 +1,9 @@
 import { setTimeout as previewDelay } from "node:timers/promises";
-import { PreviewReadySchema, type ReviewPreviewHook } from "../live-preview";
+import {
+  PreviewReadySchema,
+  previewRunnerSupported,
+  type ReviewPreviewHook,
+} from "../live-preview";
 import { askWithLink } from "./link-ask";
 import {
   livePreviewForQuestion,
@@ -646,6 +650,10 @@ export class Orchestrator {
       finish(): void;
     }
   >();
+  private readonly previewWaiters = new Map<string, Set<() => void>>();
+  private wakePreview(questionId: string): void {
+    for (const wake of this.previewWaiters.get(questionId) ?? []) wake();
+  }
   private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void | boolean>>();
   private readonly intakeReads = new Map<
@@ -2945,11 +2953,21 @@ export class Orchestrator {
         ) ?? [];
       const needsPreview =
         outstanding.length > 0 && outstanding.every((check) => check.kind === "preview");
+      const previewRequired =
+        needsPreview ||
+        (verdict.decision === "accepted" && unacceptedLivePreview(this.db, item.id, head));
+      if (previewRequired && !this.previewCapable(item)) {
+        await this.askCloseoutHelp(
+          after,
+          verdict.result,
+          "Live previews require a remote runner at 0.1.49 or later. Upgrade the runner, then reply to retry. show_preview is unavailable on the current execution backend.",
+        );
+        return;
+      }
       if (
         !verdict.exhausted &&
         fixRounds(this.db, item.id) < this.fixRoundLimit(item) &&
-        (needsPreview ||
-          (verdict.decision === "accepted" && unacceptedLivePreview(this.db, item.id, head)))
+        previewRequired
       ) {
         restart(this.db, after, {
           reason: "review",
@@ -4437,14 +4455,31 @@ export class Orchestrator {
     return settings;
   }
 
+  private previewCapable(item: WorkItemRecord): boolean {
+    if (!this.options.remoteExecution || !item.currentRunId) return false;
+    const version = this.db
+      .query<{ version: string | null }, [string]>(
+        "SELECT h.runner_version AS version FROM runner_work w JOIN runner_host_status h ON h.runner_id=w.runner_id WHERE w.run_id=?",
+      )
+      .get(item.currentRunId)?.version;
+    return previewRunnerSupported(version);
+  }
+
   private previewHook(item: WorkItemRecord, runId: string): ReviewPreviewHook {
     return {
       stopped: (id) => {
         const record = getLivePreview(this.db, id);
-        if (record?.itemId === item.id) endLivePreview(this.db, id, this.now());
+        if (record?.itemId === item.id) {
+          endLivePreview(this.db, id, this.now());
+          this.wakePreview(record.questionId);
+        }
       },
       review: async (ready, context) => {
-        const preview = PreviewReadySchema.parse(ready);
+        const parsedPreview = PreviewReadySchema.parse(ready);
+        const preview = {
+          ...parsedPreview,
+          expiresAt: this.now() + (parsedPreview.remainingMs ?? 3600000),
+        };
         this.assertJobCurrent(item.id);
         context.signal.throwIfAborted();
         const current = getWorkItem(this.db, item.id);
@@ -4479,8 +4514,15 @@ export class Orchestrator {
               return asked;
             });
         await this.flush();
+        let notify: (() => void) | undefined;
+        const wakes = this.previewWaiters.get(opened.question.id) ?? new Set<() => void>();
+        this.previewWaiters.set(opened.question.id, wakes);
         try {
           while (true) {
+            const changed = new Promise<void>((resolve) => {
+              notify = resolve;
+              wakes.add(resolve);
+            });
             context.signal.throwIfAborted();
             const previewAsk = getLinkAsk(this.db, opened.question.id);
             if (previewAsk?.decision === "approve")
@@ -4500,9 +4542,23 @@ export class Orchestrator {
               latest.state !== "awaiting_input"
             )
               return "Preview review ended. End your turn now; Paws resumes you with any requested changes.";
-            await previewDelay(250, undefined, { signal: context.signal });
+            // Wake immediately for decisions and stops; recover external database changes on a slow poll.
+            const wait = new AbortController();
+            try {
+              await Promise.race([
+                changed,
+                previewDelay(5000, undefined, {
+                  signal: AbortSignal.any([context.signal, wait.signal]),
+                }),
+              ]);
+            } finally {
+              wait.abort();
+              if (notify) wakes.delete(notify);
+            }
           }
         } finally {
+          if (notify) wakes.delete(notify);
+          if (wakes.size === 0) this.previewWaiters.delete(opened.question.id);
           endLivePreview(this.db, preview.id, this.now());
         }
       },
@@ -4833,7 +4889,9 @@ export class Orchestrator {
       const linkAsk = getLinkAsk(this.db, open.id);
       const item = getWorkItem(this.db, open.itemId);
       if (
-        (linkAsk?.kind === "screenshots" || linkAsk?.kind === "risk") &&
+        (linkAsk?.kind === "screenshots" ||
+          linkAsk?.kind === "risk" ||
+          linkAsk?.kind === "preview") &&
         item !== null &&
         !canAnswer({ kind: "link", allowedIds: linkAsk.answerers }, { id: answeredBy })
       ) {
@@ -4866,6 +4924,7 @@ export class Orchestrator {
         now: this.now(),
       });
       if (guided) {
+        this.wakePreview(open.id);
         this.abortItem(open.itemId);
         this.dispatch();
       }
@@ -6663,6 +6722,7 @@ export class Orchestrator {
         ...effects,
       },
     );
+    if (outcome === "answered") this.wakePreview(input.questionId);
     if (outcome === "answered" && itemId && getWorkItem(this.db, itemId)?.state === "queued") {
       this.abortItem(itemId);
       this.dispatch();
@@ -7201,7 +7261,13 @@ export class Orchestrator {
       closeoutPolicy: async () => {
         const load = trustedPolicyFiles(input.worktreePath, home, policyRoot);
         return load.ok && !load.absent
-          ? { ...load, published: publishedEvidence(this.db, item.id) }
+          ? {
+              ...load,
+              published: publishedEvidence(this.db, item.id),
+              acceptedPreviews: livePreviewApprovals(this.db, item.id, item.id).map(
+                ({ checkId, commit }) => ({ checkId, commit }),
+              ),
+            }
           : load;
       },
     };
