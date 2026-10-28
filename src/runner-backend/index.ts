@@ -541,16 +541,27 @@ export function createRemoteAgentRunner(options: {
     }
     return null;
   }
-  function attachedWork(itemId: string, type: WorkCommand["type"]) {
+  /**
+   * The open work a runner kept for the item. A Closeout review or check run passes its prompt,
+   * which names the heads it covers: it attaches only to the same command, and cancels other open
+   * work no attempt here is reading so it can be placed again.
+   */
+  function attachedWork(itemId: string, type: WorkCommand["type"], closeoutPrompt?: string) {
     const runId = getWorkItem(db, itemId)?.currentRunId;
     if (!runId) return undefined;
     const row = db
       .query<
-        { runnerId: string; workspaceId: string; envelope: string; cursor: number },
+        {
+          runnerId: string;
+          workspaceId: string;
+          envelope: string;
+          cursor: number;
+          generation: number;
+        },
         [string, number]
       >(
         `SELECT w.runner_id AS runnerId, w.workspace_id AS workspaceId, c.envelope,
-         w.consumed_sequence AS cursor
+         w.consumed_sequence AS cursor, w.generation
          FROM runner_work w JOIN runner_command c ON c.id=w.command_id
          WHERE w.run_id=?1 AND w.ended_at IS NULL AND (w.lease_until>?2 OR EXISTS(
            SELECT 1 FROM runner_result r
@@ -563,6 +574,30 @@ export function createRemoteAgentRunner(options: {
         "utf8",
       ),
     ) as WorkCommand;
+    if (
+      closeoutPrompt !== undefined &&
+      (command.type !== type || command.prompt !== closeoutPrompt)
+    ) {
+      // The run holds one command at a time, so the stale one would block the new assignment.
+      if (!reservations.has(runId)) {
+        try {
+          const issuedAt = now();
+          work.enqueue({
+            id: randomUUID(),
+            runnerId: row.runnerId,
+            workspaceId: row.workspaceId,
+            issuedAt,
+            expiresAt: issuedAt + 60_000,
+            type: "cancel",
+            runId,
+            generation: row.generation,
+          });
+        } catch (error) {
+          journalCaught(error, "runner-backend.attachedWork.cancelStale", itemId);
+        }
+      }
+      return undefined;
+    }
     if (command.type !== type) return undefined;
     return {
       selected: {
@@ -707,6 +742,9 @@ export function createRemoteAgentRunner(options: {
             : {}),
           signal: input.signal,
         };
+        // A Closeout review or check run: work that continues no session and runs while verifying.
+        const closeoutWork =
+          !responseTask && (input.role === "reviewer" || input.checkpoint === false);
         // Work a runner kept through a Paws restart is read from where it stopped. A response
         // task binds its Linear session again below, before any event is read.
         const attached = input.prepareOnly
@@ -714,6 +752,7 @@ export function createRemoteAgentRunner(options: {
           : attachedWork(
               itemId,
               responseTask ? "task" : input.role === "reviewer" ? "review" : "run",
+              closeoutWork ? input.prompt : undefined,
             );
         const chosen = attached
           ? undefined
@@ -1931,13 +1970,18 @@ export function createRemoteAgentRunner(options: {
             transcriptPath: transcript,
           };
         } finally {
-          // A Paws restart leaves implementer work and response tasks running on the runner; the
-          // startup resume reattaches to them.
+          // A Paws restart leaves implementer work and response tasks running on the runner, and
+          // a verifying item's Closeout review or check run; the startup resume or re-verify
+          // reattaches to them.
+          const state = getWorkItem(db, itemId)?.state;
           const detached =
             signal.reason instanceof PawsShutdown &&
-            ((command?.type === "run" && command.checkpoint !== false) ||
-              command?.type === "task") &&
-            getWorkItem(db, itemId)?.state === "running";
+            command !== undefined &&
+            (closeoutWork
+              ? state === "verifying"
+              : ((command.type === "run" && command.checkpoint !== false) ||
+                  command.type === "task") &&
+                state === "running");
           // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
           // first, and the next turn starts from it.
           const saving =
