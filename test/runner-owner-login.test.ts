@@ -348,27 +348,96 @@ test("migration 091 drops member accounts and asks their runners to sign in agai
   expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
 });
 
-test("a sign-in refused while the runner works says why", async () => {
+function busy(f: ReturnType<typeof fixture>, agent: string) {
+  insertQueuedItem(f.db, { id: `busy-item-${agent}`, now: 0 });
+  f.db.run(
+    "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES(?,?,'implement',?,'active',0,0)",
+    [`busy-run-${agent}`, `busy-item-${agent}`, agent],
+  );
+  f.db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
+    [
+      `busy-run-${agent}`,
+      f.runnerId,
+      f.owner.workspaceId,
+      `busy-command-${agent}`,
+      Date.now() + 60_000,
+    ],
+  );
+  return () => f.db.query("SELECT * FROM runner_work WHERE run_id=?").get(`busy-run-${agent}`);
+}
+
+for (const agent of ["claude", "grok"] as const) {
+  test(`a sign-in to ${agent} starts while the runner runs a Claude task`, async () => {
+    const f = fixture();
+    busy(f, "claude");
+    const response = (await f.login.browser(
+      new Request(
+        `https://paws.example.invalid/api/runners/${f.runnerId}/accounts/${agent}/login`,
+        {
+          method: "POST",
+        },
+      ),
+      f.owner,
+    ))!;
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { state: string }).state).toBe("starting");
+    expect(f.db.query("SELECT agent,state FROM runner_login").all()).toEqual([
+      { agent, state: "starting" },
+    ]);
+    const accounts = f.login.list(f.owner, f.runnerId).accounts;
+    expect(accounts.map((account) => [account.agent, account.running])).toEqual([
+      ["claude", 1],
+      ["codex", 0],
+      ["grok", 0],
+    ]);
+  });
+}
+
+test("a runner with four sign-ins waiting refuses another, even while it works", async () => {
   const f = fixture();
-  insertQueuedItem(f.db, { id: "busy-item", now: 0 });
-  f.db.run(
-    "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES('busy-run','busy-item','implement','claude','active',0,0)",
-  );
-  f.db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES('busy-run',?,?,1,0,'busy-command',?)",
-    [f.runnerId, f.owner.workspaceId, Date.now() + 60_000],
-  );
+  busy(f, "codex");
+  for (const agent of ["claude", "codex", "grok"] as const)
+    f.login.start(f.owner, f.runnerId, agent);
+  // Sign-ins left waiting by the runner's earlier owners still count.
+  for (const earlier of [f.admin, f.member]) {
+    f.db.run("UPDATE runner_login SET user_id=? WHERE user_id=? AND agent='grok'", [
+      earlier.userId,
+      f.owner.userId,
+    ]);
+    if (earlier === f.admin)
+      expect(f.login.start(f.owner, f.runnerId, "grok").state).toBe("starting");
+  }
   const response = (await f.login.browser(
     new Request(`https://paws.example.invalid/api/runners/${f.runnerId}/accounts/grok/login`, {
       method: "POST",
     }),
     f.owner,
   ))!;
-  expect(response.status).toBe(409);
+  expect(response.status).toBe(429);
   expect(await response.json()).toEqual({
-    error: "This runner is working on a task. Sign in once its work has finished.",
+    error: "This runner already has four sign-ins waiting. Finish one first.",
   });
-  expect(f.db.query("SELECT 1 FROM runner_login").get()).toBeNull();
+});
+
+test("a sign-in that succeeds during a live turn of its agent clears auth_expired and leaves the turn", () => {
+  const f = fixture();
+  f.db.run(
+    "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',0,1)",
+    [f.runnerId],
+  );
+  const turn = busy(f, "claude");
+  const before = turn();
+  const session = f.login.start(f.owner, f.runnerId, "claude");
+  expect(session.state).toBe("starting");
+  f.login.exchange(f.runnerId, session.id, f.connected);
+  expect(f.policy("claude")).toEqual({ ready: 1, authExpired: 0 });
+  expect(turn()).toEqual(before);
+  expect(f.login.list(f.owner, f.runnerId).accounts[0]).toMatchObject({
+    agent: "claude",
+    connected: true,
+    running: 1,
+  });
 });
 
 test("the owner can sign in agents on a paused runner, not on a draining or revoked one", () => {
