@@ -1,5 +1,6 @@
 import { journalCaught } from "../journal";
 import { withCredential } from "./git";
+import { isPushOutage, PushOutageError } from "./transport";
 import { GitCommandError, type GitExec } from "./types";
 
 type PushInput = {
@@ -39,6 +40,9 @@ export async function pushWithLease(input: PushInput): Promise<void> {
         journalCaught(message, "push.pushWithLease", null, "remote lease changed; retrying once");
         continue;
       }
+      if (error instanceof PushOutageError) throw error;
+      if (error instanceof GitCommandError && isPushOutage(error.stderr))
+        throw new PushOutageError(error.args, error.stderr);
       throw error;
     }
   }
