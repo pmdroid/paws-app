@@ -46,6 +46,7 @@ export {
   type ReviewEscapeTrigger,
 } from "./review-escapes";
 export {
+  runnerCancelPending,
   recordRunnerCapacity,
   runnerHasCapacity,
   runnerOccupancy,

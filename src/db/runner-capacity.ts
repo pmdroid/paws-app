@@ -210,3 +210,16 @@ export function pinnedSlotsReserved(
       .map((row) => row.itemId),
   ).size;
 }
+
+export function runnerCancelPending(db: Database, runnerId: string, now: number): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM runner_command c WHERE c.runner_id=? AND c.kind='cancel' AND c.acknowledged_at IS NULL
+         AND c.expires_at>? AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id
+         AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal
+         AND a.acknowledged_at IS NOT NULL)`,
+      )
+      .get(runnerId, now) !== null
+  );
+}
