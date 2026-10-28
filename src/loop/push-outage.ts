@@ -48,7 +48,10 @@ export function holdPush(db: Database, repository: string, jobId: number | null)
   });
 }
 
-/** Records GitHub's refusal of a push from `jobId`. A held push records nothing. */
+/**
+ * Records GitHub's refusal of a push from `jobId`. A held push records nothing; it returns the
+ * outage that held it, or null when that outage has ended since.
+ */
 export function pushRefused(
   db: Database,
   input: {
@@ -58,10 +61,10 @@ export function pushRefused(
     installationUrl: string | null;
     now: number;
   },
-): PushOutage {
+): PushOutage | null {
   return immediate(db, () => {
     const current = getPushOutage(db, input.repository);
-    if (input.error.held && current) return current;
+    if (input.error.held) return current;
     const outage = recordPushOutage(db, {
       repository: input.repository,
       error: scrubTokens(input.error.stderr.trim()).slice(0, 4096),

@@ -130,7 +130,6 @@ import {
   transientRetryDelayMs,
 } from "../core";
 import {
-  getPushOutage,
   saveCandidateRisk,
   listWaitingProfileRuns,
   getTaskMode,
@@ -1473,7 +1472,8 @@ export class Orchestrator {
           waiting = wait;
         });
       } catch (error) {
-        if (!this.shuttingDown && context.isCurrent() && this.holdForPushOutage(job, error)) return;
+        if (!this.shuttingDown && context.isCurrent() && (await this.holdForPushOutage(job, error)))
+          return;
         if (this.shuttingDown || job.attempts >= job.maxAttempts || !context.isCurrent())
           throw error;
 
@@ -2003,7 +2003,7 @@ export class Orchestrator {
    * Parks a merge job whose push GitHub refused in a push outage, or that the outage held. The
    * item keeps its state and its work, and the attempt is not spent. False for any other error.
    */
-  private holdForPushOutage(job: Job, error: unknown): boolean {
+  private async holdForPushOutage(job: Job, error: unknown): Promise<boolean> {
     const refused = pushOutageCause(error);
     const itemId = readString(job.payload, "itemId");
     const item = refused && itemId ? getWorkItem(this.db, itemId) : null;
@@ -2018,6 +2018,11 @@ export class Orchestrator {
       installationUrl: github ? installationSettingsUrl(github.installationId) : null,
       now: this.now(),
     });
+    // The outage ended between the hold and now: look again shortly.
+    if (outage === null) {
+      if (waitForMergeTurn(this.db, job, this.now()) === "lost") throw error;
+      return true;
+    }
     if (!refused.held)
       journalCaught(
         error,
@@ -2026,16 +2031,9 @@ export class Orchestrator {
         `push outage on ${repositoryName}; the push waits`,
         this.options.journal,
       );
-    if (askAboutPushOutage(this.db, repositoryName, this.now()) === "asked") void this.flush();
-    if (
-      parkForPushOutage(
-        this.db,
-        job,
-        getPushOutage(this.db, repositoryName) ?? outage,
-        this.now(),
-      ) === "lost"
-    )
-      throw error;
+    const asked = askAboutPushOutage(this.db, repositoryName, this.now()) === "asked";
+    if (parkForPushOutage(this.db, job, outage, this.now()) === "lost") throw error;
+    if (asked) await this.flush();
     return true;
   }
 
