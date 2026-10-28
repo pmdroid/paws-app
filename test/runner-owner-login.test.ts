@@ -31,17 +31,24 @@ function fixture() {
     "Login",
     at,
   ]);
-  const members = ["owner", "admin", "member", "observer"].map((role, index) => {
+  // The runner's owner is an admin too, so the other admin is refused only for not owning it.
+  const members = (
+    [
+      ["owner", "admin"],
+      ["admin", "admin"],
+      ["member", "member"],
+    ] as const
+  ).map(([name, role], index) => {
     const userId = putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `login-user-${index}`,
-      name: role,
-      email: `${role}@example.invalid`,
+      name,
+      email: `${name}@example.invalid`,
     });
     syncWorkspaceMember(db, {
       workspaceId: workspace,
       userId,
-      role: role as WorkspacePrincipal["role"],
+      role,
       active: true,
       teamIds: [],
       now: at,
@@ -54,7 +61,7 @@ function fixture() {
       authenticatedAt: at,
     };
   });
-  const [owner, admin, member, observer] = [members[0]!, members[1]!, members[2]!, members[3]!];
+  const [owner, admin, member] = [members[0]!, members[1]!, members[2]!];
   const runnerId = workspaceId();
   db.run(
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'active',?)",
@@ -94,7 +101,6 @@ function fixture() {
     owner,
     admin,
     member,
-    observer,
     runnerId,
     work,
     login,
@@ -127,7 +133,7 @@ test("the owner's sign-in carries no member and readies the runner's own agent",
 
 test("only the runner owner can start, read, answer or list a sign-in", async () => {
   const f = fixture();
-  for (const principal of [f.admin, f.member, f.observer]) {
+  for (const principal of [f.admin, f.member]) {
     expect(() => f.login.start(principal, f.runnerId, "claude")).toThrow();
     expect(() => f.login.list(principal, f.runnerId)).toThrow();
   }

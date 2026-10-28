@@ -72,7 +72,7 @@ describe("hook settings", () => {
       ["settings.hook.add", "Added hook after a file edit: bun run fmt for Claude, Codex"],
     ]);
     const removed = await read(
-      await handleHookSettingsRequest(post({ action: "remove", id: hook!.id }), options("owner")),
+      await handleHookSettingsRequest(post({ action: "remove", id: hook!.id }), options("admin")),
     );
     expect(removed.status).toBe(200);
     expect(listHooks(db)).toEqual([]);
@@ -83,7 +83,7 @@ describe("hook settings", () => {
     const added = await read(
       await handleHookSettingsRequest(
         post({ action: "add", event: "session_start", command: "setup-tools" }),
-        options("owner"),
+        options("admin"),
       ),
     );
     expect(added.status).toBe(200);
@@ -112,7 +112,7 @@ describe("hook settings", () => {
   test("a change needs the CSRF token", async () => {
     const response = await handleHookSettingsRequest(
       post({ action: "add", event: "stop", command: "true" }, { "x-paws-csrf": "" }),
-      options("owner"),
+      options("admin"),
     );
     expect(response!.status).toBe(403);
   });
@@ -135,7 +135,7 @@ describe("hook settings", () => {
       [{ action: "add", event: "stop", command: "x", skill: "missing" }, "No registered skill"],
     ];
     for (const [body, error] of cases) {
-      const response = await read(await handleHookSettingsRequest(post(body), options("owner")));
+      const response = await read(await handleHookSettingsRequest(post(body), options("admin")));
       expect(response.status).toBe(400);
       expect(String(response.body.error)).toContain(error);
     }
@@ -160,7 +160,7 @@ describe("hook settings", () => {
           command: '"$PAWS_SKILL_DIR/guard.sh"',
           skill: "guard",
         }),
-        options("owner"),
+        options("admin"),
       ),
     );
     expect(both.status).toBe(400);
@@ -174,7 +174,7 @@ describe("hook settings", () => {
           skill: "guard",
           agents: ["claude"],
         }),
-        options("owner"),
+        options("admin"),
       ),
     );
     expect(claude.status).toBe(200);

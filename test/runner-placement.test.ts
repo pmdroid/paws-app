@@ -631,7 +631,7 @@ test("a moved run goes to the idle runner that can continue its agent session", 
       {
         workspaceId: placed.workspaceId,
         userId: placed.owner,
-        role: "owner",
+        role: "admin",
         authenticatedAt: placed.now(),
         teamIds: [],
       },

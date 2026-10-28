@@ -107,7 +107,9 @@ export async function probeWorkspaceBrowser(
         ? "owner"
         : token.endsWith("outsider")
           ? "outsider"
-          : "member";
+          : token.endsWith("guest")
+            ? "guest"
+            : "member";
       return Response.json({
         data: {
           viewer: {
@@ -185,7 +187,7 @@ export async function probeWorkspaceBrowser(
         member.response.status === 303 &&
         ownerSession.userId !== memberSession.userId &&
         ownerSession.workspaceId === memberSession.workspaceId &&
-        ownerSession.role === "owner" &&
+        ownerSession.role === "admin" &&
         memberSession.role === "member",
       {
         owner: { ...ownerSession, csrfToken: "redacted" },
@@ -288,41 +290,52 @@ export async function probeWorkspaceBrowser(
       { logout: loggedOut.status, oldCookie: oldCookie.status },
     );
     membershipFailure = false;
+    now += 1;
+    const heldLogin = await login("owner");
     guest = true;
     now += 1;
-    const guestLogin = await login("owner");
-    const guestMember = workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
-    const preservedRole = db
-      .query<{ manual_role: string }, [string, string]>(
-        "SELECT manual_role FROM workspace_member WHERE workspace_id=? AND user_id=?",
+    const guestLogin = await login("guest");
+    const guestError = ((await guestLogin.response.json()) as { error: string }).error;
+    const guestRows = db
+      .query<{ count: number }, []>(
+        "SELECT count(*) AS count FROM workspace_user WHERE linear_user_id='guest'",
       )
-      .get(ownerSession.workspaceId, ownerSession.userId)?.manual_role;
-    syncWorkspaceMember(db, {
-      workspaceId: ownerSession.workspaceId,
-      userId: ownerSession.userId,
-      role: "member",
-      active: true,
-      teamIds: ["team-a", "team-b"],
-      now,
-    });
-    const tiedGuest = workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
+      .get()!.count;
     observe(
-      "equal-time non-guest observation cannot lift an existing observer cap",
-      tiedGuest?.role === "observer",
-      { role: tiedGuest?.role },
+      "a Linear guest's sign-in is refused and creates no row",
+      guestLogin.response.status === 403 &&
+        guestError === "Linear guests can't use Paws." &&
+        guestLogin.cookie === undefined &&
+        guestRows === 0,
+      { status: guestLogin.response.status, error: guestError, rows: guestRows },
+    );
+    const guestAdminLogin = await login("owner");
+    const guestAdmin = workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
+    const heldSession = await fetch(`${origin}/api/auth/session`, {
+      headers: { cookie: heldLogin.cookie! },
+    });
+    observe(
+      "an admin who became a Linear guest is refused at sign-in and loses the sessions they hold",
+      heldLogin.response.status === 303 &&
+        guestAdminLogin.response.status === 403 &&
+        guestAdminLogin.cookie === undefined &&
+        guestAdmin?.active === false &&
+        heldSession.status === 401,
+      {
+        held: heldLogin.response.status,
+        status: guestAdminLogin.response.status,
+        active: guestAdmin?.active,
+        heldSession: heldSession.status,
+      },
     );
     guest = false;
     now += 1;
     const restoredLogin = await login("owner");
     const restoredMember = workspaceMember(db, ownerSession.workspaceId, ownerSession.userId);
     observe(
-      "Linear guest access caps a manual owner to observer and preserves the override for verified restoration",
-      guestLogin.response.status === 303 &&
-        guestMember?.role === "observer" &&
-        preservedRole === "owner" &&
-        restoredLogin.response.status === 303 &&
-        restoredMember?.role === "owner",
-      { guestRole: guestMember?.role, preservedRole, restoredRole: restoredMember?.role },
+      "an admin who is no longer a Linear guest signs in again as admin",
+      restoredLogin.response.status === 303 && restoredMember?.role === "admin",
+      { restoredRole: restoredMember?.role },
     );
     active = false;
     now += MEMBERSHIP_BACKSTOP_MS;

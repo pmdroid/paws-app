@@ -1,6 +1,6 @@
 // Create VM on the Runners page against a real Paws with the fake exe.dev client and bootstrap.
-// Drives create, an install failure, Retry and ready, then the owner row and agent sign-in, an
-// observer's refusal, a Paws without an exe.dev token, and phone width.
+// Drives create, an install failure, Retry and ready, then the owner row and agent sign-in, a
+// Paws without an exe.dev token, and phone width.
 // Usage: bun run build:status && bun --no-env-file test/local/member-vm-browser.ts [evidence-directory]
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -18,7 +18,7 @@ const STEP_WAIT_MS = 45_000;
 type Manifest = {
   origin: string;
   cookie: string;
-  sessions: Record<"member" | "observer", string>;
+  sessions: Record<"member", string>;
   member: string;
 };
 
@@ -100,7 +100,7 @@ const errors: string[] = [];
 const observations: { name: string; observed: unknown }[] = [];
 const observe = (name: string, observed: unknown = true) => observations.push({ name, observed });
 
-async function pageFor(browser: Browser, manifest: Manifest, identity: "member" | "observer") {
+async function pageFor(browser: Browser, manifest: Manifest, identity: "member") {
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
     viewport: { width: 1440, height: 1000 },
@@ -122,10 +122,7 @@ async function pageFor(browser: Browser, manifest: Manifest, identity: "member" 
   page.setDefaultTimeout(15_000);
   page.on("pageerror", (error) => errors.push(`${identity}: ${error.message}`));
   await page.goto(`${manifest.origin}/status/runners`);
-  // Observers get the list without the member controls.
-  if (identity === "member")
-    await page.getByRole("button", { name: "Add a runner", exact: true }).waitFor();
-  else await page.locator("[data-runner-row]").first().waitFor();
+  await page.getByRole("button", { name: "Add a runner", exact: true }).waitFor();
   return page;
 }
 
@@ -264,18 +261,7 @@ try {
   assert.equal(await member.getByRole("button", { name: "Create VM", exact: true }).count(), 0);
   observe("a member who already has a VM sees its state instead of the button");
 
-  const observer = await pageFor(browser, manifest, "observer");
-  await observer.locator("[data-runner-row]").first().waitFor();
-  assert.equal(await observer.getByRole("button", { name: "Create VM", exact: true }).count(), 0);
-  assert.equal(await observer.locator("[data-member-vm]").count(), 0);
-  const refused = {
-    get: await call(observer, "GET", "/api/runners/vm"),
-    start: await call(observer, "POST", "/api/runners/vm"),
-    retry: await call(observer, "POST", "/api/runners/vm/retry"),
-  };
-  assert.deepEqual(refused, { get: 403, start: 403, retry: 403 });
   assert.equal(await call(member, "POST", "/api/runners/vm/retry"), 200);
-  observe("an observer sees no button and every route refuses them", refused);
 
   const bareManifest = await bare.manifest;
   const noToken = await pageFor(browser, bareManifest, "member");

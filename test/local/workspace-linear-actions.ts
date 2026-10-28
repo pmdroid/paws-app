@@ -59,7 +59,6 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     now,
   });
   for (const [id, role, active, teams] of [
-    ["observer", "observer", true, []],
     ["inactive", "member", false, ["team"]],
     ["member", "member", true, ["team"]],
     ["owner", "member", true, ["team"]],
@@ -85,7 +84,6 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   });
   for (const id of [
     "owner",
-    "observer",
     "inactive",
     "member",
     "new-member",
@@ -185,15 +183,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       )
       .get()!.count;
   try {
-    for (const actor of [
-      "observer",
-      "inactive",
-      "guest",
-      "outside",
-      "wrong-org",
-      "wrong-user",
-      null,
-    ]) {
+    for (const actor of ["inactive", "guest", "outside", "wrong-org", "wrong-user", null]) {
       const t = task(actor),
         before = audits();
       await loop.onLinearEvent(t.event);
@@ -228,11 +218,11 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
         workspaceMember(db, "workspace", "new-member") === null,
       { answer: getQuestion(db, positive.question.id)?.answeredBy, resumes: resumes() },
     );
-    const stop = task("observer", "stop"),
+    const stop = task("inactive", "stop"),
       beforeStop = audits();
     await loop.onLinearEvent(stop.event);
     observe(
-      "an observer stop signal cannot cancel canonical work",
+      "an inactive member's stop signal cannot cancel canonical work",
       getQuestion(db, stop.question.id)?.status === "open" && audits() === beforeStop + 1,
       { question: getQuestion(db, stop.question.id)?.status },
     );
@@ -246,8 +236,8 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: "member",
-      active: true,
-      role: "observer",
+      active: false,
+      role: "member",
       teamIds: ["team"],
       now,
     });
@@ -556,16 +546,16 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     now,
   });
   putWorkspaceUser(db, {
-    id: "observer",
-    linearUserId: "observer",
-    name: "Observer",
-    email: "observer@example.invalid",
+    id: "inactive",
+    linearUserId: "inactive",
+    name: "Inactive",
+    email: "inactive@example.invalid",
   });
   syncWorkspaceMember(db, {
     workspaceId: "workspace",
-    userId: "observer",
-    active: true,
-    role: "observer",
+    userId: "inactive",
+    active: false,
+    role: "member",
     teamIds: [],
     now,
   });
@@ -662,7 +652,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   try {
-    const invalid = task("observer");
+    const invalid = task("inactive");
     const invalidStatus = await send(invalid.payload, false);
     observe(
       "normal protected HTTPS rejects an unsigned human action",
@@ -670,7 +660,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       { status: invalidStatus },
     );
     for (const [actor, signal] of [
-      ["observer", null],
+      ["inactive", null],
       ["outside", "stop"],
     ] as const) {
       const t = task(actor, signal),
@@ -689,7 +679,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
         },
       );
     }
-    const stopped = task("observer", "stop"),
+    const stopped = task("inactive", "stop"),
       before = denied();
     polled = [stopped.activity];
     await paws.catchUp();

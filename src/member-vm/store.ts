@@ -150,7 +150,7 @@ export function retryMemberVm(db: Database, input: MemberRef & { now?: number })
 
 export class MemberVmDeleteDenied extends Error {
   constructor() {
-    super("Only the VM's owner or a workspace owner or admin can delete this VM.");
+    super("Only the VM's owner or a workspace admin can delete this VM.");
     this.name = "MemberVmDeleteDenied";
   }
 }
@@ -169,7 +169,7 @@ export function mayDeleteMemberVm(db: Database, row: MemberVm, requester: Member
       "SELECT role,active FROM workspace_member WHERE workspace_id=? AND user_id=?",
     )
     .get(requester.workspaceId, requester.userId);
-  if (!member?.active || member.role === "observer") return false;
+  if (!member?.active) return false;
   return row.userId === requester.userId || isWorkspaceAdmin(member.role);
 }
 
@@ -254,8 +254,7 @@ function requireOwner(db: Database, member: MemberRef): void {
       "SELECT role,active FROM workspace_member WHERE workspace_id=? AND user_id=?",
     )
     .get(member.workspaceId, member.userId);
-  if (!row?.active || row.role === "observer")
-    throw new Error("Active workspace membership is required to own a runner.");
+  if (!row?.active) throw new Error("Active workspace membership is required to own a runner.");
 }
 
 function freeVmName(db: Database, member: MemberRef): string {

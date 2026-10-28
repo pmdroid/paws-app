@@ -102,8 +102,8 @@ async function remoteFixture(
     const enrollmentGrant = coordinator.control.createEnrollment(
       {
         workspaceId: "workspace",
-        userId: "owner",
-        role: "owner",
+        userId: "admin",
+        role: "admin",
         teamIds: [],
         authenticatedAt: Date.now(),
       },

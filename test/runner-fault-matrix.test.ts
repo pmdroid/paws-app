@@ -298,7 +298,7 @@ async function runRemoteFault(fault: Fault) {
   const owner = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };

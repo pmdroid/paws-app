@@ -206,7 +206,7 @@ function hooksMarkup(skill: FoundSkill, named: boolean): string {
 
 export function renderSkillSettings(view: SkillView): string {
   if (view.denied)
-    return `<section class="settings-section">${intro}<p class="sub">Only workspace owners and admins can change skills.</p></section>`;
+    return `<section class="settings-section">${intro}<p class="sub">Only workspace admins can change skills.</p></section>`;
   if (!view.data)
     return `<section class="settings-section">${intro}<div class="col"><div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading skills…")}</div>${view.error ? '<div class="row"><button class="btn" type="button" data-skill="reload">Try again</button></div>' : ""}</div></section>`;
   const draft = view.draft ?? { source: "", ref: "", subfolder: "", agents: view.data.agents };

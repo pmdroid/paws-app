@@ -10,23 +10,35 @@ const identity = {
   admin: false,
   teamIds: ["team"],
 };
-const actor = (role: "owner" | "admin" | "member" | "observer"): ActionActor => ({
+const actor = (role: "admin" | "member", active = true): ActionActor => ({
   id: "human",
   identity,
   teamId: "team",
-  member: { active: true, role, teamIds: ["team"] },
+  member: { active, role, teamIds: ["team"] },
 });
 
-for (const role of ["owner", "admin", "member", "observer"] as const) {
+for (const role of ["admin", "member"] as const) {
   test(`${role} has the same eligibility for prompts, delegation, GitHub and answers`, () => {
-    const expected = role !== "observer";
     for (const action of ["prompt", "delegate", "github", { kind: "answer" }] as const)
-      expect(canAct(actor(role), action).allowed).toBe(expected);
-    expect(canAnswer({ kind: "agent" }, actor(role))).toBe(expected);
-    expect(canAnswer({ kind: "closeout-help" }, actor(role))).toBe(expected);
-    expect(isWorkspaceAdmin(role)).toBe(role === "owner" || role === "admin");
+      expect(canAct(actor(role), action).allowed).toBe(true);
+    expect(canAnswer({ kind: "agent" }, actor(role))).toBe(true);
+    expect(canAnswer({ kind: "closeout-help" }, actor(role))).toBe(true);
+    expect(isWorkspaceAdmin(role)).toBe(role === "admin");
   });
 }
+
+test("only admin is a workspace admin; the retired roles are not", () => {
+  expect(["admin", "member", "owner", "observer"].filter(isWorkspaceAdmin)).toEqual(["admin"]);
+});
+
+test("a Linear guest is told they can't use Paws", () => {
+  expect(
+    canAct({ ...actor("member"), identity: { ...identity, guest: true } }, "delegate"),
+  ).toEqual({
+    allowed: false,
+    reason: "Linear guests can't use Paws.",
+  });
+});
 
 for (const [kind, change, allowed] of [
   ["active member", {}, true],
@@ -64,7 +76,7 @@ test("a verified member without Paws sign-in can reply but must sign in before d
 test("restricted answers also honor actor eligibility", () => {
   const question = { kind: "visual-review", delegatorId: "human", leadId: null } as const;
   expect(canAnswer(question, actor("member"))).toBe(true);
-  expect(canAnswer(question, actor("observer"))).toBe(false);
+  expect(canAnswer(question, actor("member", false))).toBe(false);
   expect(canAnswer({ ...question, delegatorId: "other" }, actor("member"))).toBe(false);
-  expect(canAnswer({ kind: "github-auth", actorId: "human" }, actor("observer"))).toBe(false);
+  expect(canAnswer({ kind: "github-auth", actorId: "human" }, actor("member", false))).toBe(false);
 });
