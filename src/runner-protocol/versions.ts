@@ -5,8 +5,6 @@
  */
 export type RunnerVersion = readonly [major: number, minor: number, patch: number];
 
-/** First runner release that accepts a repository's `mainSha` and a `checkpoint: false` run. */
-export const MAIN_COMMIT_RUNNER_VERSION: RunnerVersion = [0, 1, 19];
 /** First runner release that rebases a checkpoint onto a main that is not its ancestor. */
 export const REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 23];
 /** First runner release that resumes the item's earlier agent session on the same runner. */
@@ -27,3 +25,5 @@ export const GROK_SESSION_RUNNER_VERSION: RunnerVersion = [0, 1, 46];
 export const CHECKPOINT_RUNNER_VERSION: RunnerVersion = [0, 1, 46];
 /** First runner release that runs the agent's own review command for a `review` command. */
 export const REVIEW_COMMAND_RUNNER_VERSION: RunnerVersion = [0, 1, 47];
+/** First runner release that rebases a candidate onto its moved branch and pushes it again. */
+export const CANDIDATE_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 48];

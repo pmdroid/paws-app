@@ -491,6 +491,8 @@ describe("closeout command runner", () => {
         catch (error) { fs.writeFileSync(gate + "-overlap", "1"); process.exit(0); }
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
         fs.rmSync(gate, { recursive: true, force: true });
+        // A pass would be reused by the second attempt; a failure runs it again.
+        process.exit(1);
       `,
     );
     const retry: RetryPolicy = { maxFailedAttemptsPerItem: 5, scope: "candidate" };
@@ -511,6 +513,81 @@ describe("closeout command runner", () => {
       await fx.cleanup();
     }
   }, 15_000);
+
+  test("a check that passed on the same commit and policy digest is reused, not run again", async () => {
+    const fx = await fixture();
+    const marker = join(fx.side, "runs");
+    const script = await writeScript(
+      fx.side,
+      "count.js",
+      `require("node:fs").appendFileSync(process.argv[2], "ran\\n");`,
+    );
+    const spec = {
+      setup: [setupStep("js", [process.execPath, script, marker])],
+      items: [command("typecheck", [process.execPath, script, marker])],
+    };
+    try {
+      const first = await run(fx, spec);
+      expect(first.dispositions.map((entry) => entry.state)).toEqual(["ran", "ran"]);
+      expect(readFileSync(marker, "utf8")).toBe("ran\nran\n");
+
+      const second = await run(fx, spec);
+      expect(second.dispositions).toEqual([
+        {
+          id: "js",
+          kind: "setup",
+          state: "reused",
+          message: "passed at this commit under this policy",
+        },
+        {
+          id: "typecheck",
+          kind: "command",
+          state: "reused",
+          message: "passed at this commit under this policy",
+        },
+      ]);
+      expect(readFileSync(marker, "utf8")).toBe("ran\nran\n");
+      expect(commandRecords(fx.store)).toHaveLength(2);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  test("a passed check runs again on another commit, and setup runs for a command that must", async () => {
+    const fx = await fixture();
+    const marker = join(fx.side, "runs");
+    const script = await writeScript(
+      fx.side,
+      "count.js",
+      `require("node:fs").appendFileSync(process.argv[2], process.argv[3] + "\\n");`,
+    );
+    const setupArgv = [process.execPath, script, marker, "setup"];
+    const typecheckArgv = [process.execPath, script, marker, "typecheck"];
+    try {
+      await run(fx, {
+        setup: [setupStep("js", setupArgv)],
+        items: [command("typecheck", typecheckArgv)],
+      });
+      const lintArgv = [process.execPath, script, marker, "lint"];
+      const more = await run(fx, {
+        setup: [setupStep("js", setupArgv)],
+        items: [command("typecheck", typecheckArgv), command("lint", lintArgv)],
+      });
+      expect(more.dispositions.map((entry) => `${entry.id}:${entry.state}`)).toEqual([
+        "js:ran",
+        "typecheck:reused",
+        "lint:ran",
+      ]);
+      expect(readFileSync(marker, "utf8")).toBe("setup\ntypecheck\nsetup\nlint\n");
+
+      fx.head = await commit(fx.repo, "next.txt", "next\n");
+      const moved = await run(fx, { items: [command("typecheck", typecheckArgv)] });
+      expect(moved.dispositions.map((entry) => entry.state)).toEqual(["ran"]);
+      expect(readFileSync(marker, "utf8")).toBe("setup\ntypecheck\nsetup\nlint\ntypecheck\n");
+    } finally {
+      await fx.cleanup();
+    }
+  });
 
   test("an exhausted requirement is not executed", async () => {
     const fx = await fixture();

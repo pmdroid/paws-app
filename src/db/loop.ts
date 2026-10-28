@@ -23,7 +23,7 @@ export type JobHandler = (job: Job, context: JobContext) => Promise<void> | void
 const EXECUTION_QUEUES: readonly string[] = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify];
 
 function isControlQueue(queue: string): boolean {
-  return !EXECUTION_QUEUES.includes(queue) && !isMergeWork(queue, "");
+  return !EXECUTION_QUEUES.includes(queue) && !isMergeWork(queue);
 }
 
 export class JobLoop {

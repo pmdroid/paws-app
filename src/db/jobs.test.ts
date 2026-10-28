@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FakeClock, JOB_KIND, MERGE_LANE } from "../core";
+import { FakeClock, JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   beginImplementRun,
@@ -40,7 +40,6 @@ function bindRepo(db: ReturnType<typeof queue>["db"], itemId: string, owner: str
 function enqueueMerge(db: ReturnType<typeof queue>["db"], clock: FakeClock, itemId: string) {
   return enqueueJob(db, {
     queue: JOB_KIND.merge,
-    lane: MERGE_LANE,
     payload: { itemId },
     now: clock.now(),
   });

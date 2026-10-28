@@ -22,7 +22,7 @@ for (const role of ["admin", "member"] as const) {
     for (const action of ["prompt", "delegate", "github", { kind: "answer" }] as const)
       expect(canAct(actor(role), action).allowed).toBe(true);
     expect(canAnswer({ kind: "agent" }, actor(role))).toBe(true);
-    expect(canAnswer({ kind: "closeout-bypass" }, actor(role))).toBe(true);
+    expect(canAnswer({ kind: "closeout-help" }, actor(role))).toBe(true);
     expect(isWorkspaceAdmin(role)).toBe(role === "admin");
   });
 }
@@ -63,7 +63,7 @@ test("a verified member without Paws sign-in can reply but must sign in before d
   const user = { ...actor("member"), member: null };
   expect(canAct(user, "prompt")).toEqual({ allowed: true });
   expect(canAnswer({ kind: "agent" }, user)).toBe(true);
-  expect(canAnswer({ kind: "closeout-bypass" }, user)).toBe(true);
+  expect(canAnswer({ kind: "closeout-help" }, user)).toBe(true);
   const intake = canAct(user, "delegate");
   expect(intake).toEqual({
     allowed: false,

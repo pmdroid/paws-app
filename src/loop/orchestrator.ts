@@ -3,6 +3,7 @@ import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
+import { restartForPushConflict } from "./push-conflict";
 import {
   saveHumanRetryWindow,
   fixRounds,
@@ -358,6 +359,7 @@ import {
 } from "./link-ask";
 import {
   acceptCloseout,
+  payloadRecord,
   retryMergeLater,
   waitForMergeTurn,
   waitForRunnerSlot,
@@ -1430,6 +1432,7 @@ export class Orchestrator {
       if (owner !== null) this.checkRunnerSetup(owner);
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
+      if (this.waitingForRunnerSlot(job)) return;
       await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
@@ -1671,7 +1674,6 @@ export class Orchestrator {
                 getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
                   ? JOB_KIND.reverify
                   : job.queue,
-              lane: job.lane,
               priority: job.priority,
               payload: job.payload,
               jobKey: `merge-reconciliation:${job.id}`,
@@ -1759,14 +1761,7 @@ export class Orchestrator {
       }
       const wait = this.nextRunnerWait(job, error);
       if (wait) {
-        deferWorkItem(this.db, item, {
-          retry: retryCount(job.payload),
-          delayMs: this.runnerWaitMs(wait),
-          handoff: readString(job.payload, "handoff"),
-          message: null,
-          capacityWait: wait,
-          now: this.now(),
-        });
+        this.waitForSlot(job, item, wait);
 
         journalCaught(
           error,
@@ -1976,6 +1971,63 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * A wait for a runner slot is not a lease expiry: the item keeps its state and its run, and no
+   * new turn starts when the slot frees. Work Closeout accepted at the current head goes to the
+   * merge queue instead of waiting, a verifying item waits in a re-verify, and a running one
+   * parks its own job until the slot frees.
+   */
+  private waitForSlot(job: Job, item: WorkItemRecord, wait: RunnerCapacityWaitState): void {
+    const now = this.now();
+    // A verifying item re-checks its head, which may be the accepted one under a newer policy.
+    if (
+      item.state !== "verifying" &&
+      !acceptedResumeNeedsTurn({
+        acceptedHead: item.acceptedHead,
+        pullHead: item.checkpoint?.wipCommit ?? null,
+        reason: readString(job.payload, "reason"),
+      }) &&
+      mergeAcceptedWork(this.db, item.id, { now, exceptJobId: job.id })
+    )
+      return;
+    const delayMs = this.runnerWaitMs(wait);
+    if (item.state === "verifying") {
+      enqueueJobOnce(this.db, {
+        queue: JOB_KIND.reverify,
+        jobKey: `reverify:slot:${item.id}:${item.version}`,
+        runAt: now + delayMs,
+        payload: {
+          itemId: item.id,
+          runId: item.currentRunId,
+          reason: "runner_slot",
+          capacityWait: wait,
+        },
+        now,
+      });
+      return;
+    }
+    if (item.state === "running") {
+      // A start needs the scheduler's reservation for a queued item, so the wait goes on as a
+      // resume that keeps the job's reason and handoff.
+      enqueueJobOnce(this.db, {
+        queue: JOB_KIND.resume,
+        jobKey: `resume:slot:${item.id}:${job.id}`,
+        runAt: now + delayMs,
+        payload: { ...payloadRecord(job.payload), capacityWait: wait },
+        now,
+      });
+      return;
+    }
+    deferWorkItem(this.db, item, {
+      retry: retryCount(job.payload),
+      delayMs,
+      handoff: readString(job.payload, "handoff"),
+      message: null,
+      capacityWait: wait,
+      now,
+    });
+  }
+
   private runnerWaitMs(wait: RunnerCapacityWaitState): number {
     return placementWaitMs(wait.attempt, this.options.placementPollMs);
   }
@@ -1988,7 +2040,7 @@ export class Orchestrator {
       !waited ||
       !item ||
       item.cancelRequested ||
-      !["recovering", "verifying", "merge_queue"].includes(item.state) ||
+      !["running", "recovering", "verifying", "merge_queue"].includes(item.state) ||
       this.shuttingDown ||
       (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
@@ -2767,7 +2819,8 @@ export class Orchestrator {
             error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
           );
         else if (isTransient(error)) {
-          deferred = true;
+          // A slot wait keeps the run: the attempt after the wait continues it.
+          deferred = capacityWaitIn(error) === null;
           throw error;
         } else this.fail(current, "run_error", message, error);
       }
@@ -4309,6 +4362,18 @@ export class Orchestrator {
           await this.flush();
           return { answer: ACCEPTED_ON_REMOTE };
         }
+        if (
+          request.pushRejected?.conflicts &&
+          restartForPushConflict(this.db, item.id, {
+            branch: request.pushRejected.branch,
+            files: request.pushRejected.conflicts,
+            now: this.now(),
+          })
+        ) {
+          this.askedRuns.add(runId);
+          await this.flush();
+          return { answer: PUSH_CONFLICT_RESTARTED };
+        }
         immediate(this.db, () => {
           ask(
             this.db,
@@ -4648,8 +4713,7 @@ export class Orchestrator {
     }
     // The installation check answers its own waiting question when the App returns.
     if (open.kind === "github-auth") return "rejected";
-    if (!canAnswer({ kind: open.kind === "closeout-help" ? "closeout-bypass" : open.kind }, user))
-      return "rejected";
+    if (!canAnswer({ kind: open.kind }, user)) return "rejected";
     if (open.kind === "push-outage") {
       const outcome = answerAsked(
         this.db,
@@ -7380,6 +7444,8 @@ export class Orchestrator {
 const HANDOVER_FAILED_PROMPT =
   "Paws asked to move this session to another runner, but the move failed after your turn was stopped, so it stays here. Your work so far is committed. Continue where you left off.";
 
+const PUSH_CONFLICT_RESTARTED =
+  "Your commits conflict with the branch on GitHub, so Paws starts a new turn to resolve that. End your turn now without further changes.";
 const ACCEPTED_ON_REMOTE =
   "The branch on GitHub already has the work Closeout accepted, so Paws sent it to the merge queue. End your turn now without further changes.";
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;

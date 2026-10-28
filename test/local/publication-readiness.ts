@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FakeClock, JOB_KIND, MERGE_LANE } from "../../src/core";
+import { FakeClock, JOB_KIND } from "../../src/core";
 import {
   JobLoop,
   applyLinearCommand,
@@ -132,7 +132,6 @@ export async function probePublicationReadiness(root: string) {
     function queue() {
       return enqueueJob(db, {
         queue: JOB_KIND.merge,
-        lane: MERGE_LANE,
         payload: { itemId },
         now: clock.now(),
       });

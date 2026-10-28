@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, MERGE_LANE } from "../core";
+import { JOB_KIND } from "../core";
 import {
   beginImplementRun,
   claimNextJob,
@@ -44,7 +44,6 @@ function lane() {
     beginImplementRun(db, `item-${name}`, 1);
     return enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       jobKey: `merge:item-${name}`,
       payload: { itemId: `item-${name}` },
       now: 10 + index,

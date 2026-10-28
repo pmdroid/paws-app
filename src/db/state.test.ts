@@ -242,7 +242,7 @@ describe("restart recovery", () => {
     });
   });
 
-  test("a verifying task whose runner holds Closeout work resumes instead of reattaching", () => {
+  test("a verifying task whose runner holds Closeout work stays verifying and re-verifies", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
     const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
@@ -253,8 +253,11 @@ describe("restart recovery", () => {
       [run.id, "runner", "workspace", 1, 0, "command", clock.now() + 60_000],
     );
     prepareShutdown(db, clock.now());
-    recoverOnStartup(db, clock.now());
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
+    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "reverify" }]);
+    expect(getWorkItem(db, item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 0 });
+    expect(
+      listJobs(db).filter((job) => job.queue === JOB_KIND.reverify && job.status === "pending"),
+    ).toHaveLength(1);
   });
 
   test("shutdown leaves the run recoverable and the next start can resume it once", () => {
@@ -289,7 +292,6 @@ describe("restart recovery", () => {
     markRun(db, run.id, "ended", clock.now());
     const merge = enqueueJob(db, {
       queue: "github.merge",
-      lane: "merge",
       payload: { itemId: item.id },
       now: clock.now(),
     });
@@ -328,7 +330,6 @@ describe("restart recovery", () => {
     markRun(db, run.id, "ended", clock.now());
     enqueueJob(db, {
       queue: "github.merge",
-      lane: "merge",
       payload: { itemId: item.id, head: "abc", summary: "Closeout accepted." },
       now: clock.now(),
     });
@@ -563,7 +564,6 @@ describe("linear commands", () => {
     recordItemPullRequest(db, { itemId: "eng-2", pullNumber: 7, pullUrl: null, openedAt: 1 });
     enqueueJob(db, {
       queue: "github.merge",
-      lane: "merge",
       payload: { itemId: "eng-2" },
       now: clock.now(),
     });

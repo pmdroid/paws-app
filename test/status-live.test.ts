@@ -146,7 +146,6 @@ test("fake e2e rows show up on /api/status as live work", async () => {
     });
     enqueueJob(db, {
       queue: "github.merge",
-      lane: "merge",
       jobKey: `merge:${merging.id}:${HEAD}`,
       payload: { itemId: merging.id, summary: `${summary}\nCaller attempt: 2`, head: HEAD },
       now: NOW,

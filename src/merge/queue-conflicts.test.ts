@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { JOB_KIND, MERGE_LANE } from "../core";
+import { JOB_KIND } from "../core";
 import {
   enqueueJob,
   getWorkItem,
@@ -169,7 +169,6 @@ describe("queued pull requests that conflict with main", () => {
       const itemId = `ENG-${number}`;
       const id = enqueueJob(h.db, {
         queue: JOB_KIND.merge,
-        lane: MERGE_LANE,
         payload: { itemId },
         now: h.clock.now(),
       });
