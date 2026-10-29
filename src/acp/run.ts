@@ -210,6 +210,9 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           socketPath,
           sourceEnv,
           ...(options.workspaceHooks ? { workspaceHooks: options.workspaceHooks } : {}),
+          ...(options.agentSkills && profile.agent !== "grok"
+            ? { skillRoot: options.agentSkills[profile.agent] }
+            : {}),
           ...(options.agentSkills ? { codexSkills: options.agentSkills.codex } : {}),
         })
       : undefined;
