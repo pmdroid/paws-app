@@ -140,12 +140,7 @@ test("background sign-in checks run once per agent per interval and never while 
   const f = fixture();
   const runnerId = f.runner();
   f.health.refresh();
-  expect(f.checks().map((check) => check.agent)).toEqual([
-    "claude",
-    "codex",
-    "grok",
-    "opencode",
-  ]);
+  expect(f.checks().map((check) => check.agent)).toEqual(["claude", "codex", "grok", "opencode"]);
   expect(f.checks().every((check) => check.memberId === undefined)).toBe(true);
   f.health.refresh();
   expect(f.checks()).toHaveLength(4);
