@@ -2833,7 +2833,12 @@ export class Orchestrator {
       const base = (
         await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
       ).trim();
-      saveCheckpoint(this.db, item.id, { phase: "running", baseSha: base, wipCommit: head });
+      saveCheckpoint(this.db, item.id, {
+        ...getWorkItem(this.db, item.id)?.checkpoint,
+        phase: "running",
+        baseSha: base,
+        wipCommit: head,
+      });
       const commits = Number(
         (
           await git(["-C", executed.worktreePath, "rev-list", "--count", `${base}..${head}`])
@@ -4660,6 +4665,7 @@ export class Orchestrator {
           const current = getWorkItem(this.db, item.id);
           if (current?.state === "running") {
             saveCheckpoint(this.db, item.id, {
+              ...current.checkpoint,
               phase: "awaiting_input",
               ...(current.checkpoint?.wipCommit ? { wipCommit: current.checkpoint.wipCommit } : {}),
               ...(current.checkpoint?.baseSha ? { baseSha: current.checkpoint.baseSha } : {}),
@@ -4854,6 +4860,7 @@ export class Orchestrator {
         },
       );
     saveCheckpoint(this.db, itemId, {
+      ...getWorkItem(this.db, itemId)?.checkpoint,
       phase,
       ...(head === "" ? {} : { wipCommit: head }),
       ...(base === "" ? {} : { baseSha: base }),
@@ -5962,6 +5969,7 @@ export class Orchestrator {
     return createRepositoryGit({
       remoteUrl: repository.remoteUrl,
       signal,
+      ...(access === "write" ? { pushBranch: item.branchName } : {}),
       token: (ownedSignal) => this.options.repositoryToken!(item, repository, ownedSignal, access),
       onCleanupFailure: () => this.blockConversation(item.id),
       assert: async () => {

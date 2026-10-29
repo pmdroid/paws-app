@@ -12,6 +12,7 @@ const TRANSIENT_ERROR_NAMES = new Set([
   "TimeoutError",
   "GitTransportError",
   "PolicyFetchError",
+  "RemoteStartUnverified",
 ]);
 
 const TRANSIENT_CODES = new Set([
