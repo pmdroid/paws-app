@@ -147,9 +147,9 @@ async function runWithFault(
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     retryBaseMs: 10,
-    github: {
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
@@ -173,7 +173,7 @@ async function runWithFault(
           return client.request(req);
         },
       },
-    },
+    }),
     launch(input) {
       if (input.purpose === "review" && inject(phase === "reviewer launch")) throw thrown[fault]();
       sequence += 1;

@@ -134,7 +134,7 @@ const workspace = consumeWorkspaceBootstrap(paws.db, {
   tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(paws.db, "org", now)),
   now,
 });
-const person = (name: string, role: "member" | "observer" | "admin") => {
+const person = (name: string, role: "member" | "admin") => {
   const userId = putWorkspaceUser(paws.db, {
     id: workspaceId(),
     linearUserId: name.toLowerCase(),
@@ -152,13 +152,11 @@ const person = (name: string, role: "member" | "observer" | "admin") => {
   return userId;
 };
 const member = person("Ada Lovelace", "member");
-const observer = person("Watcher", "observer");
 const admin = person("Alan Turing", "admin");
 const sessions = Object.fromEntries(
   (
     [
       ["member", member],
-      ["observer", observer],
       ["admin", admin],
     ] as const
   ).map(([name, userId]) => [

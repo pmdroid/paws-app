@@ -116,9 +116,9 @@ function load(html: string, fetch: (input: string, init?: RequestInit) => Promis
 }
 
 async function fixture({
-  role = "member",
+  active = true,
   available = true,
-}: { role?: "member" | "observer"; available?: boolean } = {}) {
+}: { active?: boolean; available?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-onboarding-runner-"));
   roots.push(root);
   const clock = new FakeClock(Date.UTC(2026, 9, 25));
@@ -149,15 +149,15 @@ async function fixture({
   syncWorkspaceMember(db, {
     workspaceId: workspace.id,
     userId,
-    role,
-    active: true,
+    role: "member",
+    active,
     teamIds: ["team"],
     now: clock.now(),
   });
   const member: WorkspacePrincipal = {
     workspaceId: workspace.id,
     userId,
-    role,
+    role: "member",
     authenticatedAt: clock.now(),
     teamIds: ["team"],
   };
@@ -191,8 +191,7 @@ async function fixture({
       issueUrl: null,
       teamName: "Platform",
       member: { name: "Ada Lovelace", email: "ada@example.invalid" },
-      memberOfTeam: role !== "observer",
-      observer: role === "observer",
+      memberOfTeam: true,
       readiness: read({
         workspaceId: workspace.id,
         userId,
@@ -264,7 +263,6 @@ const base: OnboardingPageInput = {
   teamName: "Platform",
   member: { name: "Mia Chen", email: "mia@example.invalid" },
   memberOfTeam: true,
-  observer: false,
   readiness: { runner: { state: "needed" }, agents: WAITING, memberVm: false },
   github: null,
   createVm: true,
@@ -527,14 +525,8 @@ test("Add a host shows the one command with a single-use token that a reload nev
   expect(host.hasAttribute("hidden")).toBe(true);
 });
 
-test("observers see no Create VM or Add a host, and the routes refuse them", async () => {
-  const f = await fixture({ role: "observer" });
-  const page = await f.open();
-  expect(page.buttons()).toEqual([]);
-  expect(page.document.querySelector("#host")).toBeNull();
-  expect(page.detail()).toBe(
-    "You have no runner Paws can use for this task. Observers cannot own a runner. Ask a workspace member to delegate this issue.",
-  );
+test("an inactive member's Create VM and Add a host requests are refused", async () => {
+  const f = await fixture({ active: false });
   for (const [path, body] of [
     ["/api/runners/vm", "{}"],
     ["/api/runners/enrollments", JSON.stringify({ name: "watcher-host" })],
@@ -618,15 +610,6 @@ test("only active owners and workspace admins can turn on a member's runner", as
   expect(response.status).toBe(200);
   expect(status()).toBe("active");
   f.control.setStatus(f.member, runnerId, "paused");
-  syncWorkspaceMember(f.db, {
-    workspaceId: f.member.workspaceId,
-    userId: f.member.userId,
-    role: "observer",
-    active: true,
-    teamIds: ["team"],
-    now: f.clock.now(),
-  });
-  expect(() => f.control.setStatus(f.member, runnerId, "active")).toThrow();
   syncWorkspaceMember(f.db, {
     workspaceId: f.member.workspaceId,
     userId: f.member.userId,

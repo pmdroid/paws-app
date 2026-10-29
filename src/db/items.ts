@@ -42,6 +42,10 @@ export type WorkItemRecord = {
   title: string;
   state: WorkItemState;
   branchName: string;
+  /** The earlier item of the same issue whose branch and pull request this one continues. */
+  continuesItemId?: string | null;
+  /** The pushed branch this item took over, `paws/<key>`. */
+  continuesBranch?: string | null;
   position: number;
   version: number;
   checkpoint: Checkpoint | null;
@@ -73,6 +77,8 @@ type ItemSql = {
   title: string;
   state: WorkItemState;
   branch_name: string;
+  continues_item_id?: string | null;
+  continues_branch?: string | null;
   position: number;
   version: number;
   checkpoint: string | null;
@@ -94,6 +100,23 @@ type ItemSql = {
   brief: string | null;
 };
 
+/** Work item columns with the branch an item continues, from `item_continuation`. */
+const CONTINUED_ITEM_COLUMNS = `work_item.*, continuation.previous_item_id AS continues_item_id,
+  continuation.branch AS continues_branch
+  FROM work_item LEFT JOIN item_continuation continuation ON continuation.item_id = work_item.id`;
+const migratedContinuation = new WeakSet<Database>();
+
+/** A database migrated only partway, as migration tests build, has no `item_continuation` yet. */
+function itemColumns(db: Database): string {
+  if (migratedContinuation.has(db)) return CONTINUED_ITEM_COLUMNS;
+  const table = db
+    .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_continuation'")
+    .get();
+  if (table === null) return "* FROM work_item";
+  migratedContinuation.add(db);
+  return CONTINUED_ITEM_COLUMNS;
+}
+
 export class TransitionRejectedError extends Error {
   readonly reason: "illegal_transition" | "terminal";
 
@@ -105,13 +128,13 @@ export class TransitionRejectedError extends Error {
 }
 
 export function getWorkItem(db: Database, id: string): WorkItemRecord | null {
-  const row = db.query<ItemSql, [string]>("SELECT * FROM work_item WHERE id = ?").get(id);
+  const row = db.query<ItemSql, [string]>(`SELECT ${itemColumns(db)} WHERE id = ?`).get(id);
   return row === null ? null : mapItem(row);
 }
 
 export function listWorkItems(db: Database): WorkItemRecord[] {
   return db
-    .query<ItemSql, []>("SELECT * FROM work_item ORDER BY created_at, id")
+    .query<ItemSql, []>(`SELECT ${itemColumns(db)} ORDER BY created_at, id`)
     .all()
     .map(mapItem);
 }
@@ -124,7 +147,7 @@ export function listWorkItemsByStates(
   const placeholders = states.map(() => "?").join(", ");
   return db
     .query<ItemSql, string[]>(
-      `SELECT * FROM work_item WHERE state IN (${placeholders}) ORDER BY created_at, id`,
+      `SELECT ${itemColumns(db)} WHERE state IN (${placeholders}) ORDER BY created_at, id`,
     )
     .all(...states)
     .map(mapItem);
@@ -842,6 +865,8 @@ function mapItem(row: ItemSql): WorkItemRecord {
     title: row.title,
     state: row.state,
     branchName: row.branch_name,
+    continuesItemId: row.continues_item_id ?? null,
+    continuesBranch: row.continues_branch ?? null,
     position: row.position,
     version: row.version,
     checkpoint: parseCheckpoint(row.checkpoint),

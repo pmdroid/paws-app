@@ -228,6 +228,7 @@ describe("Merging settings API", () => {
       projects: [],
       rules: [],
       highRiskPaths: [],
+      highRiskRepositories: [],
       choices: {
         projects: [
           { id: PAWS, name: "Paws" },
@@ -302,7 +303,7 @@ describe("Merging settings API", () => {
     };
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
     expect(saved?.status).toBe(200);
-    expect(await saved!.json()).toEqual({ ...body, highRiskPaths: [] });
+    expect(await saved!.json()).toEqual({ ...body, highRiskPaths: [], highRiskRepositories: [] });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
     expect(text).toContain('[agents.defaults.implementer]\nagent = "claude"');
@@ -419,6 +420,60 @@ describe("Merging settings API", () => {
           )
         )?.status,
       ).toBe(400);
+  });
+
+  test("High-risk paths list each repository with its settings and its file read-only", async () => {
+    const { options } = fixture();
+    writeFileSync(options.configPath, 'repo = "acme/platform"\n');
+    const reads: string[] = [];
+    const withFile: MergeSettingsOptions = {
+      ...options,
+      repos: ["acme/web", "ACME/Platform", "acme/docs"],
+      highRiskFile: async (repo) => {
+        reads.push(repo);
+        if (repo === "acme/platform") return { commit: "a".repeat(40), paths: ["infra/**"] };
+        if (repo === "acme/web") return { commit: "b".repeat(40), paths: null };
+        if (repo === "acme/docs") throw new Error("git failed");
+        return null;
+      },
+    };
+    const valid = { default: { order: "queue", mainMoved: "closeout" }, projects: [], rules: [] };
+    const saved = await handleMergeSettingsRequest(
+      request("PUT", {
+        ...valid,
+        highRiskPaths: [
+          { repository: "acme/platform", paths: ["src/auth/**"] },
+          { repository: "acme/api", paths: ["src/**"] },
+        ],
+      }),
+      withFile,
+    );
+    const expected = [
+      {
+        repository: "acme/api",
+        paths: ["src/**"],
+        file: { state: "unavailable", reason: expect.stringContaining("no copy") },
+      },
+      {
+        repository: "acme/docs",
+        paths: [],
+        file: { state: "unavailable", reason: "Paws could not read .paws/high-risk-paths." },
+      },
+      {
+        repository: "acme/platform",
+        paths: ["src/auth/**"],
+        file: { state: "present", commit: "a".repeat(40), paths: ["infra/**"] },
+      },
+      { repository: "acme/web", paths: [], file: { state: "missing", commit: "b".repeat(40) } },
+    ];
+    expect(
+      ((await saved!.json()) as { highRiskRepositories: unknown }).highRiskRepositories,
+    ).toEqual(expected);
+    const reloaded = (await (await handleMergeSettingsRequest(request(), withFile))!.json()) as {
+      highRiskRepositories: unknown;
+    };
+    expect(reloaded.highRiskRepositories).toEqual(expected);
+    expect(reads.filter((repo) => repo === "acme/platform")).toHaveLength(2);
   });
 
   test("PUT rejects invalid settings and a missing CSRF token", async () => {

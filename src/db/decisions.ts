@@ -2,7 +2,6 @@ import type { Database } from "bun:sqlite";
 import {
   formatPauseNote,
   JOB_KIND,
-  MERGE_LANE,
   OUTBOX_ACTIVITY,
   type Checkpoint,
   type StartupDecision,
@@ -276,7 +275,6 @@ function applyKeepPlace(
   const payload = last === null ? { itemId: item.id } : (JSON.parse(last.payload) as object);
   enqueueJobOnce(db, {
     queue: JOB_KIND.merge,
-    lane: MERGE_LANE,
     jobKey: `merge:startup:${item.id}:${now}`,
     payload: mergeCallInFlight ? { ...payload, mergeCallInFlight: true } : payload,
     now,

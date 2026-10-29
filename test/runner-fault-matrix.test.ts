@@ -298,7 +298,7 @@ async function runRemoteFault(fault: Fault) {
   const owner = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };
@@ -417,7 +417,7 @@ async function runRemoteFault(fault: Fault) {
     pawsRoot: root,
     home: root,
     tracker,
-    repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
+    repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
     retryBaseMs: 10,
     placementPollMs: 5,
     launch() {

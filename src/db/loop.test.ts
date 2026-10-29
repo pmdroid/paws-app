@@ -1,6 +1,6 @@
 import { cancelOpenJobs } from "./jobs";
 import { describe, expect, test } from "bun:test";
-import { FakeClock } from "../core";
+import { FakeClock, systemClock } from "../core";
 import {
   enqueueJob,
   JobLoop,
@@ -204,5 +204,67 @@ test("a renewal after a pause keeps the job when nobody claimed it in the meanti
   finish();
   await running;
   expect(getJob(db, id)).toMatchObject({ status: "done", attempts: 1 });
+  db.close();
+});
+
+test("an idle loop claims once per ceiling and sleeps until the earliest run_at", async () => {
+  const clock = new FakeClock(0);
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const seen: number[] = [];
+  const claims: number[] = [];
+  const observed = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "query") {
+        return (sql: string) => {
+          if (sql.startsWith("UPDATE job SET status = 'running'")) claims.push(clock.now());
+          return target.query(sql);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const loop = new JobLoop(observed as typeof db, clock, { pollMs: 1_000 });
+  loop.register("work", () => {
+    seen.push(clock.now());
+  });
+  enqueueJob(db, { queue: "work", runAt: 2_500, now: 0 });
+  const requested: number[] = [];
+  const controller = new AbortController();
+  await loop.run(controller.signal, async (ms) => {
+    requested.push(ms);
+    clock.advance(ms);
+    if (seen.length > 0 || requested.length > 4) controller.abort();
+  });
+  expect(seen).toEqual([2_500]);
+  // One claim at the start of each idle second, then a claim when the job is due.
+  expect(claims.filter((at) => at < 2_500)).toEqual([0, 1_000, 2_000]);
+  expect(requested.slice(0, 3)).toEqual([1_000, 1_000, 500]);
+  expect(claims).toContain(2_500);
+  db.close();
+});
+
+test("a job enqueued while the loop sleeps starts within 50ms", async () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const loop = new JobLoop(db, systemClock, { pollMs: 60_000 });
+  let startedAt = 0;
+  loop.register("work", () => {
+    startedAt = Date.now();
+  });
+  const controller = new AbortController();
+  const running = loop.run(controller.signal);
+  await Bun.sleep(20);
+  const enqueuedAt = Date.now();
+  enqueueJob(db, { queue: "work", now: enqueuedAt });
+  for (let attempt = 0; attempt < 40; attempt++) {
+    if (startedAt !== 0) break;
+    await Bun.sleep(1);
+  }
+  expect(startedAt).toBeGreaterThan(0);
+  expect(startedAt - enqueuedAt).toBeLessThan(50);
+  controller.abort();
+  await running;
   db.close();
 });

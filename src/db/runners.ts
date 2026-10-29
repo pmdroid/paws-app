@@ -407,8 +407,7 @@ export type RunnerEnrollment = {
 };
 
 /**
- * The unused, unexpired enrollment for `tokenHash` whose member is still active and not an
- * observer, or null.
+ * The unused, unexpired enrollment for `tokenHash` whose member is still active, or null.
  */
 export function findRunnerEnrollment(
   db: Database,
@@ -421,7 +420,7 @@ export function findRunnerEnrollment(
       FROM runner_enrollment e JOIN workspace_member m
       ON m.workspace_id=e.workspace_id AND m.user_id=e.user_id
       WHERE e.token_hash=? AND e.used_at IS NULL AND e.runner_id IS NULL AND e.expires_at>?
-      AND m.active=1 AND m.role<>'observer'`,
+      AND m.active=1`,
     )
     .get(tokenHash, now);
 }

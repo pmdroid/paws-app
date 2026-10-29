@@ -10,7 +10,7 @@ export const RUN_FILE_KINDS = {
     keyContext: "paws-runner-transcript-key\0",
     table: "runner_transcript",
     chunkTable: "runner_transcript_chunk",
-    /** Chunks written before encryption keep their `.jsonl` name until they are converted. */
+    /** Chunks keep the `.jsonl` name they had before encryption; converting one keeps its name. */
     suffix: ".jsonl",
   },
   agent_session: {

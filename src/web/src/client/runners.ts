@@ -4,6 +4,7 @@ import { durationLabel, esc, skillVersionLabel, statePill } from "./format";
 import { readCsrfToken } from "./csrf";
 import { openAgentAccounts } from "./agent-accounts";
 import { routeHref } from "./route";
+import { livePoll } from "./poll";
 
 /** The runner list refreshes this often while the page is visible. */
 export const RUNNER_POLL_MS = 10_000;
@@ -353,7 +354,7 @@ export function memberVmsMarkup(vms: readonly MemberVm[], view: { busy: boolean 
     })
     .join("");
   const list = rows
-    ? `<section class="runner-section" aria-labelledby="member-vms-heading"><h2 id="member-vms-heading">Members' VMs</h2><p class="muted">VMs other members created with Create VM. As a workspace owner or admin you can delete them.</p><ul class="runner-skill-list" role="list" aria-label="Members' VMs">${rows}</ul></section>`
+    ? `<section class="runner-section" aria-labelledby="member-vms-heading"><h2 id="member-vms-heading">Members' VMs</h2><p class="muted">VMs other members created with Create VM. As a workspace admin you can delete them.</p><ul class="runner-skill-list" role="list" aria-label="Members' VMs">${rows}</ul></section>`
     : "";
   const deleting = vms
     .filter((vm) => vm.deleting)
@@ -436,12 +437,6 @@ export function hostEnrollmentCommand(enrollment: HostEnrollment & { config: obj
   ].join(" && \\\n  ");
 }
 
-type Timers = {
-  setInterval: (handler: () => void, ms: number) => unknown;
-  clearInterval: (id: never) => void;
-};
-type Visibility = Pick<Document, "visibilityState" | "addEventListener" | "removeEventListener">;
-
 const AGENTS = ["claude", "codex", "grok"] as const;
 const AGENT_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
 const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
@@ -451,26 +446,6 @@ const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
   usage_limit: ["warn", "Usage limit"],
   unknown: ["", "Not checked"],
 };
-
-/** Runs `tick` every `every` ms while the document is visible, and at once when it becomes visible. */
-export function livePoll(
-  tick: () => void,
-  visibility: Visibility = document,
-  timers: Timers = globalThis as unknown as Timers,
-  every = RUNNER_POLL_MS,
-): () => void {
-  const interval = timers.setInterval(() => {
-    if (visibility.visibilityState === "visible") tick();
-  }, every);
-  const onVisibility = () => {
-    if (visibility.visibilityState === "visible") tick();
-  };
-  visibility.addEventListener("visibilitychange", onVisibility);
-  return () => {
-    timers.clearInterval(interval as never);
-    visibility.removeEventListener("visibilitychange", onVisibility);
-  };
-}
 
 /** Negative when `a` is older than `b`; null when either is not a dotted version. */
 export function compareVersions(a: string, b: string): number | null {
@@ -798,7 +773,7 @@ function elapsedLabel(ms: number): string {
   return `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
 }
 
-/** How a session's move stands, and Move to another runner for owners and admins. */
+/** How a session's move stands, and Move to another runner for admins. */
 function sessionMoveMarkup(
   session: RunningSession,
   move: { runnerId: string; busy: boolean } | undefined,
@@ -867,7 +842,7 @@ function sessionCount(count: number): string {
 
 /**
  * How a draining runner's work is moving off it: Drained once nothing runs there, otherwise
- * how many sessions move and wait, with Move running work for owners and admins.
+ * how many sessions move and wait, with Move running work for admins.
  */
 export function runnerDrainMarkup(
   runner: Pick<Runner, "id" | "status" | "running" | "slots" | "idle">,
@@ -945,7 +920,7 @@ function pauseMarkup(runner: Runner, state: { manages: boolean; busy: boolean })
   return `<button class="btn" data-runner-status="${next}" data-runner="${id}" data-focus="status:${id}:toggle"${state.busy ? " disabled" : ""}>${label}</button>`;
 }
 
-/** The concurrency field for owners and admins, or the values for everyone else. */
+/** The concurrency field for admins, or the values for everyone else. */
 export function runnerConcurrencyMarkup(
   runner: Runner,
   state: { manages: boolean; busy: boolean; draft?: string },
@@ -1133,7 +1108,7 @@ export function runnerDetailMarkup(
   const id = esc(runner.id);
   const metrics = runner.metrics;
   const revoked = runner.status === "revoked";
-  const manages = view.role === "owner" || view.role === "admin";
+  const manages = view.role === "admin";
   const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ");
   const meta = [
     runner.version ? `Runner ${runner.version}` : "Version not reported",
@@ -1146,7 +1121,6 @@ export function runnerDetailMarkup(
     view.policy !== null &&
     view.userId === view.policy.ownerUserId &&
     view.role !== null &&
-    view.role !== "observer" &&
     !revoked;
   const editable = owns && !view.busy ? "" : " disabled";
   const signIns = runner.agents?.length
@@ -1279,7 +1253,7 @@ export function createRunners() {
   let stopPolling: (() => void) | null = null;
 
   function manages() {
-    return session !== null && ["owner", "admin"].includes(session.role);
+    return session !== null && session.role === "admin";
   }
   function reset() {
     session = null;
@@ -1308,9 +1282,9 @@ export function createRunners() {
     const vm = deletableVms().find((entry) => entry.id === confirmingDelete);
     return vm && !vm.deleting ? memberVmDeleteDialogMarkup(vm, { busy }) : "";
   }
-  /** Any active member who is not an observer may add a host, and owns it. */
+  /** Any active member may add a host, and owns it. */
   function addsHosts() {
-    return session !== null && session.role !== "observer";
+    return session !== null;
   }
   async function api<T>(path: string, body?: unknown, timeoutMs = 15_000): Promise<T> {
     if (!available) throw new Error("Connect to your Paws dashboard to see runners.");
@@ -1381,14 +1355,13 @@ export function createRunners() {
         ),
       ]);
       if (current !== generation) return;
-      // Observers cannot create a VM, so they never ask; a failed refresh keeps the last state.
-      const vm: MemberVmState =
-        identity.role === "observer"
-          ? { available: false }
-          : await api<MemberVmState>("/api/runners/vm").catch((caughtError2) => {
-              journalCaught(caughtError2, "runners.load.api", null);
-              return memberVm;
-            });
+      // A failed refresh keeps the last state.
+      const vm: MemberVmState = await api<MemberVmState>("/api/runners/vm").catch(
+        (caughtError2) => {
+          journalCaught(caughtError2, "runners.load.api", null);
+          return memberVm;
+        },
+      );
       if (current !== generation) return;
       memberVm = vm;
       // exe.dev's pool list is read once per page, for Create VM and Move to pool.
@@ -1445,7 +1418,7 @@ export function createRunners() {
   }
   async function change(action: () => Promise<void>, administrator = true) {
     if (busy) return;
-    if (administrator ? !manages() : session === null || session.role === "observer") {
+    if (administrator ? !manages() : session === null) {
       error = "You do not have permission to update these runner settings.";
       paint();
       return;
@@ -1917,7 +1890,7 @@ export function createRunners() {
         );
         return;
       }
-      stopPolling ??= livePoll(poll);
+      stopPolling ??= livePoll(poll, RUNNER_POLL_MS);
       void load();
     },
     refresh() {

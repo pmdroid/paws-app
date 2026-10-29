@@ -64,6 +64,8 @@ export const RunnerResultSchema = z.strictObject({
     .strictObject({
       branch: z.string().min(1).max(256),
       error: z.string().min(1).max(4096),
+      /** The branch moved and rebasing the candidate onto it conflicted in these files. */
+      conflicts: z.array(z.string().min(1).max(4096)).max(100).optional(),
     })
     .optional(),
 });

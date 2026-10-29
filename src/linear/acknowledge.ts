@@ -13,9 +13,12 @@ export class LinearIntakePendingError extends Error {}
 export class LinearIntakeRefusedError extends Error {
   /** True when Paws already told the session what happens next, so no error activity follows. */
   readonly quiet: boolean;
-  constructor(message: string, options: { quiet?: boolean } = {}) {
+  /** True when the message is the session's whole answer, posted as its response. */
+  readonly response: boolean;
+  constructor(message: string, options: { quiet?: boolean; response?: boolean } = {}) {
     super(message);
     this.quiet = options.quiet === true;
+    this.response = options.response === true;
   }
 }
 
@@ -26,6 +29,8 @@ export type IntakeDecision =
       reason: string;
       /** The session already has its next step (a sign-in action), so post no error. */
       quiet?: boolean;
+      /** The reason is the session's whole answer: post it as the response, not an error. */
+      response?: boolean;
     };
 
 export function linearReadRetry(error: unknown): { outcome: "retry"; reason: string } {
@@ -101,11 +106,13 @@ export async function acknowledgeNewSession(
         (first || options.acknowledgedOnArrival === true || options.reportFailure === false)
       )
         await tracker.postProgress(
-          {
-            sessionId: event.sessionId,
-            kind: "error",
-            body: `Paws did not start this work. ${error.message}`,
-          },
+          error.response
+            ? { sessionId: event.sessionId, kind: "response", body: error.message }
+            : {
+                sessionId: event.sessionId,
+                kind: "error",
+                body: `Paws did not start this work. ${error.message}`,
+              },
           { signal: options.signal },
         );
 

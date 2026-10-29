@@ -41,7 +41,7 @@ export function unmappedRepositoryDenial(repository: string, team: string): GitH
   return { denied: true, reason: `${repository} isn't mapped to ${team} in Paws.` };
 }
 
-/** The delegator is not in the issue's team in Paws, or is an observer. */
+/** The delegator is not in the issue's team in Paws. */
 export function notTeamMemberDenial(team: string): GitHubDenial {
   return { denied: true, reason: `You're not a member of ${team} in Paws.` };
 }
@@ -505,5 +505,5 @@ function denial(result: boolean | GitHubDenial): true | Denied {
 function waitingMessage(result: "unavailable" | "installation"): string {
   return result === "unavailable"
     ? "Workspace authorization could not be checked. Paws will retry automatically before continuing; no personal GitHub sign-in is required."
-    : "Waiting for a workspace owner or administrator to restore the GitHub App installation and repository access. Your personal GitHub sign-in is not required.";
+    : "Waiting for a workspace admin to restore the GitHub App installation and repository access. Your personal GitHub sign-in is not required.";
 }

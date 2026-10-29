@@ -2,7 +2,6 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   decideStartup,
-  isResponseTaskMode,
   JOB_KIND,
   OUTBOX_ACTIVITY,
   type StartupDecision,
@@ -13,10 +12,9 @@ import { enqueueJobOnce } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
 import { applyWorkItemEvent, getWorkItem, listInFlightItems, listWorkItemsByStates } from "./items";
 import type { WorkItemRecord } from "./items";
-import { runnerLeaseCutoff } from "./runner-lease";
+import { runnerHoldsRunWork, runnerLeaseCutoff } from "./runner-lease";
 import { mergeCallInFlight } from "./remote-merges";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
-import { getTaskMode } from "./tasks";
 import { immediate } from "./tx";
 
 /** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
@@ -45,19 +43,24 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     for (const item of items) {
       if (hasPendingAnswerResume(db, item.id)) continue;
       if (hasPendingResume(db, item.id, "transient_failure")) continue;
+      const holds = runnerHoldsWork(db, item, now);
       const decision = decideStartup({
         itemState: item.state,
         recoveryAttempts: item.recoveryAttempts,
         checkpoint: item.checkpoint,
-        runnerHoldsWork: runnerHoldsWork(db, item, now),
+        runnerHoldsWork: holds,
         mergeCallInFlight: mergeCallInFlight(db, item.id),
         runActive: runActive(db, item),
         ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
       });
+      // A re-verify the shutdown cut short attaches to the runner's Closeout work itself.
       const followed =
-        decision.type === "resume" &&
-        decision.reattach === true &&
-        hasPendingResume(db, item.id, "process_restart");
+        decision.type === "resume"
+          ? decision.reattach === true && hasPendingResume(db, item.id, "process_restart")
+          : decision.type === "reverify" &&
+            holds &&
+            item.state === "verifying" &&
+            hasOpenReverify(db, item.id);
       if (!followed)
         applyDecision(db, item, decision, now, {
           ...(decision.type === "resume" ? { runAt: nextResumeAt() } : {}),
@@ -89,6 +92,17 @@ function hasPendingAnswerResume(db: Database, itemId: string): boolean {
   );
 }
 
+function hasOpenReverify(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM job WHERE queue = ? AND status IN ('pending', 'running')
+         AND json_extract(payload, '$.itemId') = ?`,
+      )
+      .get(JOB_KIND.reverify, itemId) !== null
+  );
+}
+
 function hasPendingResume(db: Database, itemId: string, reason: string): boolean {
   return (
     db
@@ -102,7 +116,9 @@ function hasPendingResume(db: Database, itemId: string, reason: string): boolean
 
 /**
  * SIGINT / SIGTERM. Commit WIP on each in-flight item branch, then move running
- * work to recovering without using the one resume attempt. An item waiting in
+ * work to recovering without using the one resume attempt. Work a runner still
+ * holds keeps its state: an agent turn, or a verifying item's Closeout review or
+ * check run. An item waiting in
  * the merge queue keeps its state and its place for the next start to pick up; one
  * whose run is still active is left for a re-verify.
  */
@@ -141,18 +157,10 @@ function runActive(db: Database, item: WorkItemRecord): boolean {
 }
 
 function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boolean {
-  const mode = getTaskMode(db, item.id);
   return (
-    item.state === "running" &&
-    !isResponseTaskMode(mode) &&
+    (item.state === "running" || item.state === "verifying") &&
     item.currentRunId !== null &&
-    db
-      .query(
-        `SELECT 1 FROM runner_work w WHERE w.run_id=?1 AND w.ended_at IS NULL AND (w.lease_until>?2 OR
-         (?3=0 AND EXISTS(SELECT 1 FROM runner_result r
-           WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)))`,
-      )
-      .get(item.currentRunId, runnerLeaseCutoff(now), item.cancelRequested ? 1 : 0) !== null
+    runnerHoldsRunWork(db, item.currentRunId, now, item.cancelRequested)
   );
 }
 

@@ -86,6 +86,18 @@ describe("config", () => {
     );
   });
 
+  test("loads the operator's Linear organization binding from the environment", () => {
+    const home = tempHome();
+    expect(loadRuntime({ PAWS_HOME: home }).linearOrganizationId).toBeNull();
+    expect(
+      loadRuntime({ PAWS_HOME: home, LINEAR_ORGANIZATION_ID: "  org-operator  " })
+        .linearOrganizationId,
+    ).toBe("org-operator");
+    expect(
+      loadRuntime({ PAWS_HOME: home, LINEAR_ORGANIZATION_ID: "  " }).linearOrganizationId,
+    ).toBeNull();
+  });
+
   test("reads overrides and rejects a bad port", () => {
     const env = loadEnv({
       PAWS_HOME: "/tmp/paws-home",
@@ -163,10 +175,11 @@ describe("config", () => {
     const runtime = loadRuntime({
       PAWS_HOME: home,
       PAWS_GITHUB_REPOSITORY: "other/repo",
+      PAWS_CHECKOUT: "/elsewhere",
     });
     expect(runtime.configured).toBe(true);
     expect(runtime.linearAccessToken).toBe("lin_oauth_from_file");
-    expect(runtime.repo).toBe("other/repo");
+    expect(runtime.repos).toEqual(["pmdroid/paws-demo"]);
     expect(runtime.githubAuth).toBe("app");
     expect(runtime.maxTurns).toBe(40);
     expect(runtime.webhooks).toBe(false);

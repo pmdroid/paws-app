@@ -63,7 +63,7 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
       tracker,
       pawsRoot: layout.pawsRoot,
       home: layout.home,
-      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
       retryBaseMs: 10,
       remoteExecution: {
         agentForSession() {

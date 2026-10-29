@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -30,23 +31,47 @@ import { tempDb } from "./helpers";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0 && process.getgid!() !== 0;
 
-function git(args: string[], cwd: string) {
-  const child = Bun.spawnSync(["git", ...args], {
+const GIT_ENV = (cwd: string) => ({
+  PATH: "/usr/bin:/bin",
+  HOME: cwd,
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_AUTHOR_NAME: "Fixture",
+  GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+  GIT_COMMITTER_NAME: "Fixture",
+  GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+});
+
+async function git(args: string[], cwd: string) {
+  const child = Bun.spawn(["git", ...args], {
     cwd,
-    env: {
-      PATH: "/usr/bin:/bin",
-      HOME: cwd,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_AUTHOR_NAME: "Fixture",
-      GIT_AUTHOR_EMAIL: "fixture@example.invalid",
-      GIT_COMMITTER_NAME: "Fixture",
-      GIT_COMMITTER_EMAIL: "fixture@example.invalid",
-    },
+    env: GIT_ENV(cwd),
+    stdout: "pipe",
+    stderr: "pipe",
   });
-  if (child.exitCode !== 0) throw new Error(child.stderr.toString());
-  return child.stdout.toString().trim();
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (code !== 0) throw new Error(stderr);
+  return stdout.trim();
 }
+
+let repository: { dir: string; baseSha: string };
+beforeAll(async () => {
+  const dir = mkdtempSync(join(tmpdir(), "paws-runtime-session-template-"));
+  const source = join(dir, "source");
+  mkdirSync(source);
+  await git(["init", "-q", "-b", "main"], source);
+  writeFileSync(join(source, "file.txt"), "base\n");
+  await git(["add", "."], source);
+  await git(["commit", "-q", "-m", "base"], source);
+  const baseSha = await git(["rev-parse", "HEAD"], source);
+  await git(["clone", "-q", "--bare", source, join(dir, "origin.git")], dir);
+  repository = { dir, baseSha };
+});
+afterAll(() => rmSync(repository.dir, { recursive: true, force: true }));
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
@@ -56,13 +81,9 @@ function fixture(
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-session-"));
   const now = Date.now();
   const source = join(root, "source");
-  mkdirSync(source);
-  git(["init", "-q", "-b", "main"], source);
-  writeFileSync(join(source, "file.txt"), "base\n");
-  git(["add", "."], source);
-  git(["commit", "-q", "-m", "base"], source);
-  const baseSha = git(["rev-parse", "HEAD"], source);
-  git(["clone", "-q", "--bare", source, join(root, "origin.git")], root);
+  cpSync(join(repository.dir, "source"), source, { recursive: true });
+  cpSync(join(repository.dir, "origin.git"), join(root, "origin.git"), { recursive: true });
+  const { baseSha } = repository;
   const spool = {
     root: join(root, "spool"),
     runnerUid: process.getuid!(),
@@ -150,7 +171,7 @@ function fixture(
       onError: (error) => errors.push(error.message),
       async networkGit(input) {
         if (input.operation === "clone")
-          git(["clone", "-q", "--bare", join(root, "origin.git"), input.dest!], input.cwd);
+          await git(["clone", "-q", "--bare", join(root, "origin.git"), input.dest!], input.cwd);
       },
       broker: {
         async start(id) {

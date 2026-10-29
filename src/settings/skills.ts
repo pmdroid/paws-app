@@ -54,7 +54,7 @@ export async function handleSkillSettingsRequest(
   if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Skill settings are only available on the local Paws origin" }, 403);
   if (options.role !== undefined && !isWorkspaceAdmin(options.role))
-    return json({ error: "Only workspace owners and admins can change skills." }, 403);
+    return json({ error: "Only workspace admins can change skills." }, 403);
   const listing = (notice?: string, found?: FoundSkill[]) => {
     const skills = listSkills(options.db);
     return json({

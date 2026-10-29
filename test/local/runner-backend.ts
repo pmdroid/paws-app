@@ -89,7 +89,7 @@ export async function probeRunnerBackend(
   const principal = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };
@@ -3066,7 +3066,6 @@ export async function probeRunnerBackend(
         return command;
       };
       await git(["-C", source, "reset", "--hard", head]);
-      const legacy = await sent("0.1.18");
       const current = await sent("0.1.19");
       const moved = (
         await git(["-C", source, "commit-tree", `${base}^{tree}`, "-p", base, "-m", "moved main"])
@@ -3092,16 +3091,12 @@ export async function probeRunnerBackend(
           stale: stale.repository.mainSha,
         },
       );
-      if (legacy.type !== "run" || current.type !== "run") throw new Error("Expected run commands");
-      assert.equal(legacy.repository.mainSha, undefined);
-      assert.equal(legacy.checkpoint, undefined);
+      if (current.type !== "run") throw new Error("Expected run commands");
       assert.equal(current.repository.mainSha, base);
       assert.equal(current.checkpoint, false);
-      observe(
-        "only runners on 0.1.19 or later receive the task's main commit and checkpoint opt-out",
-        true,
-        { legacy: legacy.repository.baseSha, current: current.repository.mainSha },
-      );
+      observe("runners receive the task's main commit and checkpoint opt-out", true, {
+        current: current.repository.mainSha,
+      });
       const nextRun = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds)

@@ -48,7 +48,9 @@ function fixture(launch?: AgentLaunch) {
     githubInstallation: host,
     linearTaskModes: true,
     launch,
-    repository: { owner: "acme", repo: "app", remoteUrl: "https://github.example/acme/app.git" },
+    repositories: [
+      { owner: "acme", repo: "app", remoteUrl: "https://github.example/acme/app.git" },
+    ],
   });
   workspaceDispatch(db, { now: clock.now() });
   return { db, home, clock, item, jobs, outbox, host, tracker, orchestrator };
@@ -59,6 +61,20 @@ async function until(check: () => boolean): Promise<void> {
   while (!check()) {
     if (Date.now() >= deadline) throw new Error("Expected owned process event did not arrive");
     await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      // A killed agent can remain a zombie until the container init reaps it.
+      if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")) return false;
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -87,7 +103,7 @@ test("a missing installation holds the item before Git and a reply cannot releas
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
     expect(question.kind).toBe("github-auth");
-    expect(question.body).toContain("Waiting for a workspace owner or administrator");
+    expect(question.body).toContain("Waiting for a workspace admin");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
     expect(existsSync(join(f.home, "worktrees"))).toBe(false);
     expect(f.tracker.statuses).toEqual([]);
@@ -202,7 +218,7 @@ test.each(["pending", "rejected"] as const)(
       await shutting;
       await running;
       const pid = Number(readFileSync(pidFile, "utf8"));
-      expect(() => process.kill(pid, 0)).toThrow();
+      expect(alive(pid)).toBe(false);
       expect(getWorkItem(f.db, writer.id)?.state).toBe("running");
     } finally {
       if (!released) linked.resolve(true);

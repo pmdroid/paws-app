@@ -12,9 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { createServer } from "node:net";
 import {
-  createRunnerBrokerClient,
   publishRunnerJob,
   readRunnerJob,
   runnerRepositoryBundlePath,
@@ -174,38 +172,6 @@ describe("Linux execution spool", () => {
       expect(() => publishRunnerJob(files, work, { repositoryBundle: source })).toThrow();
     },
   );
-
-  test("fixed broker client validates IDs and waits for its stop response", async () => {
-    const socketPath = join(root, "broker.sock");
-    const requests: unknown[] = [];
-    let stopped = false;
-    const server = createServer((socket) => {
-      socket.on("data", (chunk) => {
-        const request = JSON.parse(chunk.toString());
-        requests.push(request);
-        if (request.operation === "start") socket.write('{"ok":true,"alreadyAdmitted":false}\n');
-        else
-          setTimeout(() => {
-            stopped = true;
-            socket.end('{"ok":true}\n');
-          }, 20);
-      });
-    });
-    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
-    try {
-      const client = createRunnerBrokerClient({ socketPath });
-      expect(await client.start(id)).toEqual({ alreadyAdmitted: false });
-      await client.stop(id);
-      expect(stopped).toBe(true);
-      expect(requests).toEqual([
-        { operation: "start", executionId: id },
-        { operation: "stop", executionId: id },
-      ]);
-      expect(() => client.start("../../other.service")).toThrow();
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  });
 });
 
 function setgidAllowed(): boolean {

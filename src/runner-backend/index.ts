@@ -56,11 +56,12 @@ import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import {
-  MAIN_COMMIT_RUNNER_VERSION,
   REBASE_RUNNER_VERSION,
   REVIEW_COMMAND_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
   RUNTIMES_RUNNER_VERSION,
+  ANY_MISE_BACKEND_RUNNER_VERSION,
+  legacyRuntimeTool,
   SESSION_RESUME_RUNNER_VERSION,
   type RunnerCommand,
   type RunnerResult,
@@ -299,6 +300,7 @@ export function createRemoteAgentRunner(options: {
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
   const reservations = new Map<string, string>();
+  const readers = new Set<string>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
   function usageLimitReset(agent: string, sessionId: string | null): number | null {
@@ -541,16 +543,27 @@ export function createRemoteAgentRunner(options: {
     }
     return null;
   }
-  function attachedWork(itemId: string, role: RunAgentOptions["role"]) {
+  /**
+   * The open work a runner kept for the item. A Closeout review or check run passes its prompt,
+   * which names the heads it covers: it attaches only to the same command, and cancels other open
+   * work no attempt here is reading so it can be placed again.
+   */
+  function attachedWork(itemId: string, type: WorkCommand["type"], closeoutPrompt?: string) {
     const runId = getWorkItem(db, itemId)?.currentRunId;
     if (!runId) return undefined;
     const row = db
       .query<
-        { runnerId: string; workspaceId: string; envelope: string; cursor: number },
+        {
+          runnerId: string;
+          workspaceId: string;
+          envelope: string;
+          cursor: number;
+          generation: number;
+        },
         [string, number]
       >(
         `SELECT w.runner_id AS runnerId, w.workspace_id AS workspaceId, c.envelope,
-         w.consumed_sequence AS cursor
+         w.consumed_sequence AS cursor, w.generation
          FROM runner_work w JOIN runner_command c ON c.id=w.command_id
          WHERE w.run_id=?1 AND w.ended_at IS NULL AND (w.lease_until>?2 OR EXISTS(
            SELECT 1 FROM runner_result r
@@ -563,7 +576,33 @@ export function createRemoteAgentRunner(options: {
         "utf8",
       ),
     ) as WorkCommand;
-    if (command.type !== (role === "reviewer" ? "review" : "run")) return undefined;
+    if (
+      closeoutPrompt !== undefined &&
+      (command.type !== type || command.prompt !== closeoutPrompt)
+    ) {
+      // The run holds one command at a time, so the stale one would block the new assignment.
+      if (!reservations.has(runId)) {
+        try {
+          const issuedAt = now();
+          work.enqueue({
+            id: randomUUID(),
+            runnerId: row.runnerId,
+            workspaceId: row.workspaceId,
+            issuedAt,
+            expiresAt: issuedAt + 60_000,
+            type: "cancel",
+            runId,
+            generation: row.generation,
+          });
+        } catch (error) {
+          journalCaught(error, "runner-backend.attachedWork.cancelStale", itemId);
+        }
+      }
+      return undefined;
+    }
+    if (command.type !== type) return undefined;
+    if (reservations.has(runId)) throw new RunnerCapacityWait([row.runnerId]);
+    reservations.set(runId, row.runnerId);
     return {
       selected: {
         id: row.runnerId,
@@ -571,8 +610,9 @@ export function createRemoteAgentRunner(options: {
         runId,
       },
       assigned: command,
-      baseSha: command.repository!.baseSha,
-      mainSha: command.repository!.mainSha,
+      // A response task without a repository has no commit.
+      baseSha: command.repository?.baseSha,
+      mainSha: command.type === "task" ? undefined : command.repository.mainSha,
       deadline: command.expiresAt,
       cursor: row.cursor,
     };
@@ -621,6 +661,7 @@ export function createRemoteAgentRunner(options: {
   return {
     cancelItem,
     handOverItem,
+    runInProgress: (runId: string) => readers.has(runId),
     forItem(itemId: string) {
       const attempt = async (
         input: RunAgentOptions,
@@ -706,8 +747,18 @@ export function createRemoteAgentRunner(options: {
             : {}),
           signal: input.signal,
         };
-        const attached =
-          !input.prepareOnly && !responseTask ? attachedWork(itemId, input.role) : undefined;
+        // A Closeout review or check run: work that continues no session and runs while verifying.
+        const closeoutWork =
+          !responseTask && (input.role === "reviewer" || input.checkpoint === false);
+        // Work a runner kept through a Paws restart is read from where it stopped. A response
+        // task binds its Linear session again below, before any event is read.
+        const attached = input.prepareOnly
+          ? undefined
+          : attachedWork(
+              itemId,
+              responseTask ? "task" : input.role === "reviewer" ? "review" : "run",
+              closeoutWork ? input.prompt : undefined,
+            );
         const chosen = attached
           ? undefined
           : move.from
@@ -982,14 +1033,6 @@ export function createRemoteAgentRunner(options: {
                   : head;
               if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
                 saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
-              const acceptsMainCommit = versionAtLeast(
-                db
-                  .query<{ version: string | null }, [string]>(
-                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                  )
-                  .get(selected.id)?.version,
-                MAIN_COMMIT_RUNNER_VERSION,
-              );
               const acceptsRebase =
                 !taskScope &&
                 versionAtLeast(
@@ -1038,7 +1081,6 @@ export function createRemoteAgentRunner(options: {
               const mainCandidate = input.mainSha ?? fetchedMain ?? checkpointBase;
               const mainSha =
                 !taskScope &&
-                acceptsMainCommit &&
                 baseSha &&
                 mainCandidate &&
                 mainCandidate !== baseSha &&
@@ -1138,16 +1180,23 @@ export function createRemoteAgentRunner(options: {
                     })
                   : undefined;
               signal.throwIfAborted();
-              const acceptsRuntimes = versionAtLeast(
-                db
-                  .query<{ version: string | null }, [string]>(
-                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                  )
-                  .get(selected.id)?.version,
-                RUNTIMES_RUNNER_VERSION,
+              const runnerVersion = db
+                .query<{ version: string | null }, [string]>(
+                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                )
+                .get(selected.id)?.version;
+              const acceptsRuntimes = versionAtLeast(runnerVersion, RUNTIMES_RUNNER_VERSION);
+              // An older runner rejects the whole command over one tool it does not know.
+              const anyBackend = versionAtLeast(runnerVersion, ANY_MISE_BACKEND_RUNNER_VERSION);
+              const held = anyBackend
+                ? []
+                : (runtimeList?.runtimes ?? []).filter(
+                    (runtime) => !legacyRuntimeTool(runtime.tool),
+                  );
+              const sendable = (runtimeList?.runtimes ?? []).filter(
+                (runtime) => !held.includes(runtime),
               );
-              const runtimes =
-                runtimeList?.runtimes.length && acceptsRuntimes ? runtimeList.runtimes : undefined;
+              const runtimes = sendable.length && acceptsRuntimes ? sendable : undefined;
               if (
                 input.reviewCommand &&
                 !versionAtLeast(
@@ -1167,6 +1216,11 @@ export function createRemoteAgentRunner(options: {
                 ...(runtimeList?.runtimes.length && !acceptsRuntimes
                   ? [
                       `Paws did not send the repository's runtimes to this runner because it needs runner ${RUNTIMES_RUNNER_VERSION.join(".")} or later.`,
+                    ]
+                  : []),
+                ...(acceptsRuntimes && held.length
+                  ? [
+                      `Paws did not send ${held.map((runtime) => `\`${runtime.tool}\``).join(", ")} to this runner because tools other than core and aqua: need runner ${ANY_MISE_BACKEND_RUNNER_VERSION.join(".")} or later.`,
                     ]
                   : []),
               ];
@@ -1216,9 +1270,7 @@ export function createRemoteAgentRunner(options: {
                         checkoutExclusions,
                         ...(mainSha ? { mainSha } : {}),
                       },
-                      ...(acceptsMainCommit &&
-                      input.role !== "reviewer" &&
-                      input.checkpoint === false
+                      ...(input.role !== "reviewer" && input.checkpoint === false
                         ? { checkpoint: false as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -1765,7 +1817,12 @@ export function createRemoteAgentRunner(options: {
             await input.askTeam.ask(
               {
                 question: `Paws could not push the candidate to \`${complete.pushFailure.branch}\` on GitHub:\n\n\`\`\`\n${complete.pushFailure.error}\n\`\`\`\n\nFix the cause if it needs one, then reply to run the task again.`,
-                pushRejected: { branch: complete.pushFailure.branch },
+                pushRejected: {
+                  branch: complete.pushFailure.branch,
+                  ...(complete.pushFailure.conflicts
+                    ? { conflicts: complete.pushFailure.conflicts }
+                    : {}),
+                },
               },
               { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
             );
@@ -1924,12 +1981,18 @@ export function createRemoteAgentRunner(options: {
             transcriptPath: transcript,
           };
         } finally {
+          // A Paws restart leaves implementer work and response tasks running on the runner, and
+          // a verifying item's Closeout review or check run; the startup resume or re-verify
+          // reattaches to them.
+          const state = getWorkItem(db, itemId)?.state;
           const detached =
             signal.reason instanceof PawsShutdown &&
-            command?.type === "run" &&
-            command.checkpoint !== false &&
-            !responseTask &&
-            getWorkItem(db, itemId)?.state === "running";
+            command !== undefined &&
+            (closeoutWork
+              ? state === "verifying"
+              : ((command.type === "run" && command.checkpoint !== false) ||
+                  command.type === "task") &&
+                state === "running");
           // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
           // first, and the next turn starts from it.
           const saving =
@@ -1964,16 +2027,23 @@ export function createRemoteAgentRunner(options: {
           reservations.delete(selected.runId);
         }
       };
-      return (input: RunAgentOptions) => {
-        const move: HandoverMove = {};
-        const moving: FailoverAttempt = (next, excluded, limit) =>
-          attempt(next, excluded, limit, move);
-        return runWithFailover(
-          input,
-          moving,
-          async () => cancelItem(itemId, input.signal),
-          usageLimitWait(itemId, input),
-        );
+      return async (input: RunAgentOptions) => {
+        const runId = getWorkItem(db, itemId)?.currentRunId;
+        if (runId && readers.has(runId)) throw new RunnerCapacityWait([]);
+        if (runId) readers.add(runId);
+        try {
+          const move: HandoverMove = {};
+          const moving: FailoverAttempt = (next, excluded, limit) =>
+            attempt(next, excluded, limit, move);
+          return await runWithFailover(
+            input,
+            moving,
+            async () => cancelItem(itemId, input.signal),
+            usageLimitWait(itemId, input),
+          );
+        } finally {
+          if (runId) readers.delete(runId);
+        }
       };
     },
   };

@@ -4,13 +4,15 @@ Create VM on the Runners page makes a VM on [exe.dev](https://exe.dev), installs
 
 ## Give Paws an exe.dev token
 
-Generate an exe.dev API token that may run `new`, `ls`, `ssh` and `rm`, and save it on the Paws machine:
+Generate an exe.dev API token that may run `new`, `ls`, `ssh`, `rm`, `pool list` and `pool adopt`, and save it on the Paws machine. exe.dev lists each subcommand on its own: `"pool"` does not allow `pool list`. Without `pool list` the Runners page cannot list pools and shows HTTP 403, and only team admins may `pool adopt`:
 
 ```sh
 printf '%s' '<exe.dev token>' | install -m 0600 /dev/stdin ~/.paws/secrets/exe-dev-token
 ```
 
 Create VM appears on the Runners page once the token is there. `bun run paws doctor` reports it as `exe-dev`.
+
+exe.dev VM names are global, so another account may already hold `<name>-paws`. When exe.dev answers that a name is not available, Create VM tries `<name>-paws-2`, `<name>-paws-3` and so on.
 
 ## Paws reachable only on Tailscale
 

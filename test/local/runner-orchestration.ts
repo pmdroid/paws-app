@@ -240,7 +240,7 @@ export async function probeRunnerOrchestration(
       syncWorkspaceMember(db, {
         workspaceId: "ws-1",
         userId,
-        role: "owner",
+        role: "admin",
         active: true,
         teamIds: [],
         now,
@@ -341,7 +341,7 @@ export async function probeRunnerOrchestration(
       pawsRoot: home,
       home,
       tracker,
-      repository: { owner: "acme", repo: "fixture", remoteUrl: origin },
+      repositories: [{ owner: "acme", repo: "fixture", remoteUrl: origin }],
       ...(scenario === "success"
         ? {
             githubInstallation: {
@@ -374,7 +374,7 @@ export async function probeRunnerOrchestration(
       ...(runnerWait ? { runnerWait: { pollMs: 20, askAfterMs: 300 } } : {}),
       ...(merging
         ? {
-            github: {
+            githubForRepository: () => ({
               appId: "",
               installationId: "",
               privateKeyPem: "",
@@ -417,7 +417,7 @@ export async function probeRunnerOrchestration(
                   );
                 },
               },
-            },
+            }),
           }
         : {}),
       launch() {
@@ -1037,16 +1037,22 @@ export async function probeRunnerOrchestration(
             },
           );
         } else if (crashed) {
-          assert.equal(laterDispatches, 0);
-          assert.equal(reviewRunId, "");
-          assert.equal(verified.currentRunId, foreignRunId);
-          assert.equal(verified.state, "verifying");
-          assert.equal(getRun(db, foreignRunId)?.status, "active");
+          assert(laterDispatches > 0);
+          assert.notEqual(reviewRunId, "");
+          assert.equal(verified.currentRunId, reviewRunId);
+          assert.equal(verified.state, "merge_queue");
+          assert.equal(getRun(db, foreignRunId)?.status, "lost");
+          assert.equal(getRun(db, reviewRunId)?.status, "ended");
+          assert.equal(getRun(db, reviewRunId)?.kind, "recheck");
+          assert.deepEqual(
+            readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
+            originalProfile,
+          );
           assert.equal(witnessCalls, 0);
-          assert.equal(listRuns(db, item.id).length, scenario === "crashed-review" ? 2 : 1);
-          assert.equal(listJobs(db).find((job) => job.id === reverifyId)?.status, "pending");
+          assert.equal(listRuns(db, item.id).length, scenario === "crashed-review" ? 3 : 2);
+          assert.equal(listJobs(db).find((job) => job.id === reverifyId)?.status, "done");
           observe(
-            "persisted foreign active lifetime is refused after startup recovery: " + scenario,
+            "orphaned active lifetime is closed and reverified after startup recovery: " + scenario,
             true,
             {
               foreignRunId,

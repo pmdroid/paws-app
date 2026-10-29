@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { MergeSettingsView } from "../merge-settings";
-import { mergeSettingsBody, mergeSettingsRequest, renderMergeSettings } from "./merge-settings";
+import {
+  mergeSettingsBody,
+  mergeSettingsRequest,
+  renderMergeSettings,
+  riskGlobs,
+} from "./merge-settings";
 import { parseRoute } from "./route";
 import { SETTINGS_PAGES } from "./settings-pages";
 
@@ -129,7 +134,7 @@ describe("Settings → Merging", () => {
   test("members see why they cannot change it", () => {
     expect(
       renderMergeSettings({ data: null, busy: null, error: null, saved: false, denied: true }),
-    ).toContain("Only workspace owners and admins");
+    ).toContain("Only workspace admins can change merging settings.");
   });
 
   test("saves without the Linear choices and with the CSRF token", async () => {
@@ -145,5 +150,84 @@ describe("Settings → Merging", () => {
     expect(sent!.url).toBe("http://127.0.0.1:8787/api/settings/merging");
     expect(JSON.parse(String(sent!.init.body))).not.toHaveProperty("choices");
     expect((sent!.init.headers as Record<string, string>)["x-paws-csrf"]).toBe("csrf");
+  });
+
+  test("High-risk paths: each repository's settings are editable and its file is read-only", () => {
+    const html = renderMergeSettings({
+      data: {
+        ...data(),
+        highRiskRepositories: [
+          {
+            repository: "acme/platform",
+            paths: ["src/auth/**", ".github/workflows/**"],
+            file: { state: "present", commit: "a1b2c3d4e5", paths: ["infra/**"] },
+          },
+          { repository: "acme/web", paths: [], file: { state: "missing", commit: "b".repeat(40) } },
+          {
+            repository: "acme/docs",
+            paths: [],
+            file: { state: "unavailable", reason: "Paws has no copy of this repository yet." },
+          },
+        ],
+      },
+      busy: null,
+      error: null,
+      saved: false,
+    });
+    expect(html).toContain("<h2>High-risk paths</h2>");
+    expect(html).toContain("<h3>acme/platform</h3>");
+    expect(html).toMatch(
+      /<textarea id="risk-0" name="risk-0"[^>]*>src\/auth\/\*\*\n\.github\/workflows\/\*\*<\/textarea>/,
+    );
+    const file = html.slice(
+      html.indexOf("<h3>acme/platform</h3>"),
+      html.indexOf("<h3>acme/web</h3>"),
+    );
+    expect(file).toContain('<ul class="risk-file"><li><code>infra/**</code></li></ul>');
+    expect(file).toContain('at <span class="mono">a1b2c3d</span>. Change it in the repository.');
+    // The file's globs are not in an editable field.
+    expect(file).not.toMatch(/<(?:textarea|input)[^>]*>[^<]*infra/);
+    expect(html).toContain(
+      'No file on <span class="mono">origin/main</span> at <span class="mono">bbbbbbb</span>.',
+    );
+    expect(html).toContain("Paws has no copy of this repository yet.");
+  });
+
+  test("High-risk paths: an engine that does not list them leaves the section and body out", () => {
+    const html = renderMergeSettings({ data: data(), busy: null, error: null, saved: false });
+    expect(html).not.toContain("High-risk paths");
+    expect(mergeSettingsBody(data())).not.toHaveProperty("highRiskPaths");
+  });
+
+  test("High-risk paths save every listed repository, one glob per line, and reload", async () => {
+    expect(riskGlobs(" src/auth/**\r\n\n  infra/** \n")).toEqual(["src/auth/**", "infra/**"]);
+    const view: MergeSettingsView = {
+      ...data(),
+      highRiskRepositories: [
+        {
+          repository: "acme/platform",
+          paths: ["src/auth/**"],
+          file: { state: "present", commit: "a".repeat(40), paths: ["infra/**"] },
+        },
+        { repository: "acme/web", paths: [], file: { state: "missing", commit: "b".repeat(40) } },
+      ],
+    };
+    const body = mergeSettingsBody(view);
+    expect(body.highRiskPaths).toEqual([
+      { repository: "acme/platform", paths: ["src/auth/**"] },
+      { repository: "acme/web", paths: [] },
+    ]);
+    // The engine answers with what it saved and the files it read; the page renders that.
+    const fake = (async () =>
+      Response.json({
+        ...body,
+        highRiskPaths: [{ repository: "acme/platform", paths: ["src/auth/**"] }],
+        highRiskRepositories: view.highRiskRepositories,
+      })) as unknown as typeof fetch;
+    const saved = await mergeSettingsRequest("http://127.0.0.1:8787", "PUT", body, "csrf", fake);
+    expect(saved.highRiskRepositories).toEqual(view.highRiskRepositories);
+    const html = renderMergeSettings({ data: saved, busy: null, error: null, saved: true });
+    expect(html).toMatch(/name="risk-0"[^>]*>src\/auth\/\*\*<\/textarea>/);
+    expect(html).toContain("Merging settings saved.");
   });
 });

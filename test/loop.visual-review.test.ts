@@ -1224,13 +1224,13 @@ async function pausedForReview(
       publicUrl: options.publicUrl ?? "https://paws.example",
       root: evidenceRoot,
     },
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: privateKey as string,
       client: githubClient(layout.bare, github),
-    },
+    }),
     launch,
     ...(options.gate ? { closeoutGate: () => options.gate! } : {}),
   });
@@ -1372,7 +1372,7 @@ function attachLease(db: Database, runId: string): string {
   syncWorkspaceMember(db, {
     workspaceId: "ws-1",
     userId,
-    role: "owner",
+    role: "admin",
     active: true,
     teamIds: [],
     now,

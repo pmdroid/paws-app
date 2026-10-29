@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { FakeClock, JOB_KIND, MERGE_LANE } from "../core";
+import { FakeClock, JOB_KIND } from "../core";
 import {
   JobLoop,
   bindWorkItemRepository,
@@ -39,7 +39,6 @@ describe("merge CI wait", () => {
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
@@ -80,13 +79,11 @@ describe("merge CI wait", () => {
     });
     enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
     enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "eng-2" },
       now: clock.now(),
     });
@@ -138,7 +135,6 @@ describe("merge CI wait", () => {
     });
     enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
@@ -163,7 +159,6 @@ describe("merge CI wait", () => {
     });
     enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
@@ -193,7 +188,6 @@ describe("merge job retries", () => {
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     const id = enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "eng-1", head: "head-sha" },
       maxAttempts: 2,
       now: clock.now(),
@@ -218,7 +212,6 @@ describe("merge job retries", () => {
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     const id = enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
@@ -246,7 +239,6 @@ describe("GitHub deliveries", () => {
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     const id = enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "eng-1", head },
       now: clock.now(),
     });
@@ -465,7 +457,6 @@ describe("merge poll backstop", () => {
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     const id = enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
@@ -510,7 +501,6 @@ describe("merge poll backstop", () => {
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     const id = enqueueJob(db, {
       queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });

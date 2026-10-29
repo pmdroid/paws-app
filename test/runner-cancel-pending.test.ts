@@ -28,6 +28,17 @@ test("an expired cancel holds a runner back until it reports its live runs witho
     expect(runnerCancelPending(db, "box", now)).toBe(true);
     db.run("UPDATE runner SET live_reported_at=? WHERE id='box'", [now]);
     expect(runnerCancelPending(db, "box", now)).toBe(false);
+
+    const work = (generation: number, endedAt: number | null) =>
+      db.run(
+        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,confirmed_at,ended_at) VALUES('run','box','ws',?,0,?,?,?,?)",
+        [generation, `work-${generation}`, now, now - 1_000, endedAt],
+      );
+    work(2, now - 500);
+    expect(runnerCancelPending(db, "box", now)).toBe(false);
+    db.run("DELETE FROM runner_work");
+    work(1, null);
+    expect(runnerCancelPending(db, "box", now)).toBe(true);
   } finally {
     db.close();
     rmSync(root, { recursive: true, force: true });

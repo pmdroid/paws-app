@@ -13,6 +13,7 @@ export {
   RunnerHookSchema,
   RunnerRuntimeSchema,
   RunnerRuntimesSchema,
+  legacyRuntimeTool,
   RunnerInstalledRuntimeSchema,
   RunnerInstalledRuntimesSchema,
   SignedRunnerCommandSchema,
@@ -115,10 +116,10 @@ export {
 
 export {
   type RunnerVersion,
-  MAIN_COMMIT_RUNNER_VERSION,
   REBASE_RUNNER_VERSION,
   SESSION_RESUME_RUNNER_VERSION,
   RUNTIMES_RUNNER_VERSION,
+  ANY_MISE_BACKEND_RUNNER_VERSION,
   CLAUDE_SESSION_SNAPSHOT_RUNNER_VERSION,
   CLAUDE_SESSION_RESTORE_RUNNER_VERSION,
   HANDOVER_RUNNER_VERSION,
@@ -126,4 +127,5 @@ export {
   GROK_SESSION_RUNNER_VERSION,
   CHECKPOINT_RUNNER_VERSION,
   REVIEW_COMMAND_RUNNER_VERSION,
+  CANDIDATE_REBASE_RUNNER_VERSION,
 } from "./versions";

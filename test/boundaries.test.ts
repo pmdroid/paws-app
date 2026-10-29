@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
+  "webhook-body",
   "journal",
   "onboarding",
   "runner-login",
@@ -82,22 +83,23 @@ type ModuleName = (typeof MODULES)[number];
 /** Who may import whose public index. Enforced so parallel issues stay in their directory. */
 const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   root: MODULES,
+  "webhook-body": [],
   journal: ["core"],
   onboarding: ["journal", "config", "credentials", "db", "linear", "workspace", "web"],
   "worktree-checkout": ["journal"],
   config: ["journal", "core", "credentials", "worktree-checkout"],
   credentials: ["journal", "db"],
-  slack: ["journal", "config", "credentials"],
+  slack: ["journal", "config", "credentials", "webhook-body"],
   core: [],
   db: ["journal", "core", "runner-protocol"],
-  linear: ["journal", "core", "credentials"],
+  linear: ["journal", "core", "credentials", "webhook-body"],
   intake: ["journal", "core", "db", "linear"],
   "execution-controls": ["journal", "core", "db", "workspace"],
   scheduler: ["journal", "core", "db", "intake"],
   acp: ["journal", "core", "config", "process", "worktree-checkout", "closeout-spec"],
   closeout: ["journal", "core", "closeout-spec"],
   "closeout-spec": ["journal", "core", "worktree-checkout"],
-  github: ["journal", "core", "process"],
+  github: ["journal", "core", "process", "webhook-body"],
   merge: ["journal", "core", "db", "github", "questions"],
   questions: ["core", "db", "workspace"],
   decisions: ["db", "scheduler"],

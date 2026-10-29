@@ -37,6 +37,7 @@ import type {
   OutboxRow,
   MergeQueuePosition,
   QueuePosition,
+  WorkItemEventRow,
   WorkItemFact,
   WorkItemRecord,
 } from "../../../db";
@@ -95,6 +96,7 @@ import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
 import { itemReviews } from "./reviews";
 import { isRuleStep, skippedRules, withRuleDetail } from "./rules";
+import { mergedTimes, stateTotals, toStateTimes, type StateTotals } from "./state-times";
 import {
   STATUS_API_VERSION,
   agentCloseoutSummary,
@@ -116,7 +118,10 @@ import {
   type StatusHeld,
   type StatusItem,
   type StatusItemDetail,
+  type StatusItemRisk,
   type StatusItemEvent,
+  type StatusMergedTimes,
+  type StatusStateTimes,
   type StatusMergeQueue,
   type StatusMergeEntry,
   type StatusMergeOutcome,
@@ -293,12 +298,13 @@ function readItemDetail(
   id: string,
   options: LiveStatusOptions,
 ): StatusItemDetail | null {
-  const { snapshot, blocks, records } = readScopedSnapshot(db, options, id);
-  if (snapshot.items.length === 0) return null;
+  const { snapshot, blocks, records, current } = readScopedSnapshot(db, options, id);
+  if (snapshot.items.length === 0 || current === null) return null;
+  const risk = itemRisk(db, current);
   const detail = withoutOutputs(snapshot);
   const env = options.env ?? process.env;
   const pawsHome = options.pawsHome ?? env.PAWS_HOME;
-  if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks };
+  if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks, risk };
   const progress = listCloseoutProgress(db);
   return {
     ...detail,
@@ -310,6 +316,40 @@ function readItemDetail(
     }),
     id,
     blocks,
+    risk,
+  };
+}
+
+/** Closeout's check id for the security review of high-risk paths. */
+const SECURITY_REVIEW_CHECK = "security-review";
+
+/**
+ * The Risk card of the newest session: the tier of its latest classified head with the paths
+ * and lists that matched, and the `security-review` step of its latest Closeout run. The step
+ * comes from Closeout's progress because the verdict leaves out skipped checks.
+ */
+function itemRisk(db: Database, current: CurrentItem): StatusItemRisk | null {
+  const stored = latestCandidateRisk(db, current.record.id);
+  const step = current.progress?.steps.find((entry) => entry.id === SECURITY_REVIEW_CHECK);
+  const check = current.verdict?.checks.find((entry) => entry.id === SECURITY_REVIEW_CHECK);
+  const securityReview: StatusItemRisk["securityReview"] = step
+    ? {
+        state: checkState(step.state),
+        detail: step.detail?.trim() || null,
+        head: blank(current.progress!.head),
+      }
+    : check
+      ? { state: check.state, detail: check.detail?.trim() || null, head: current.verdict!.headSha }
+      : null;
+  if (stored === null && securityReview === null) return null;
+  const lists = new Map((stored?.matches ?? []).map((match) => [match.path, match.lists]));
+  return {
+    tier: stored?.tier ?? null,
+    head: stored?.head ?? null,
+    base: stored?.base ?? null,
+    classifiedAt: stored === null ? null : new Date(stored.classifiedAt).toISOString(),
+    paths: (stored?.paths ?? []).map((path) => ({ path, lists: lists.get(path) ?? [] })),
+    securityReview,
   };
 }
 
@@ -450,6 +490,20 @@ function readIntake(
   };
 }
 
+type ScopedSnapshot = {
+  snapshot: FullSnapshot;
+  blocks: string[];
+  records: WorkItemRecord[];
+  /** The newest of the scoped items, with its Closeout verdict and its latest Closeout run. */
+  current: CurrentItem | null;
+};
+
+type CurrentItem = {
+  record: WorkItemRecord;
+  verdict: StatusVerdict | undefined;
+  progress: CloseoutProgressRecord | null;
+};
+
 function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnapshot {
   return toList(readScopedSnapshot(db, options).snapshot);
 }
@@ -463,7 +517,7 @@ function readScopedSnapshot(
   db: Database,
   options: LiveStatusOptions,
   only?: string,
-): { snapshot: FullSnapshot; blocks: string[]; records: WorkItemRecord[] } {
+): ScopedSnapshot {
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
   const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
@@ -483,6 +537,7 @@ function readScopedSnapshot(
       snapshot: { ...emptyBase(now, options.project), verdicts: [] },
       blocks: [],
       records: [],
+      current: null,
     };
   const rows = listOutbox(db).filter(
     (row) =>
@@ -499,7 +554,7 @@ function readScopedSnapshot(
   const queues = listMergeQueues(db);
   const merging = new Map<string, StatusMergeQueue>(
     queues.map((entry) => {
-      const ahead = entry.aheadItemId ? recordsById.get(entry.aheadItemId) : undefined;
+      const ahead = entry.nextItemId ? recordsById.get(entry.nextItemId) : undefined;
       return [
         entry.itemId,
         {
@@ -507,6 +562,7 @@ function readScopedSnapshot(
           position: entry.position,
           total: entry.total,
           ahead: ahead ? publicId(ahead) : null,
+          ...(entry.busy ? { rechecking: true } : {}),
         },
       ];
     }),
@@ -532,7 +588,7 @@ function readScopedSnapshot(
     linearRequests: linearRequests.get(record.id) ?? 0,
     ...heldOf(record, holds),
     ...sessionAttempt(db, record, visible, itemsByIssue, storedRuns, facts),
-    ...timelineOf(db, record),
+    ...historyOf(db, record, facts, now.getTime()),
   }));
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
@@ -546,6 +602,21 @@ function readScopedSnapshot(
     repo: options.project?.repo,
   });
   const listed = new Set(items.map((item) => item.id));
+  const recordVerdicts = new Map(
+    records.map((record) => {
+      const runId = storedRuns.get(record.id)?.[0]?.id;
+      return [
+        record.id,
+        verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env).map((found) => {
+          const verdict = runId === undefined ? found : { ...found, runId };
+          // Only the item detail reads each rule's evidence record and bypass decisions.
+          return only === undefined
+            ? verdict
+            : withRuleDetail(db, record.id, verdict, progress, evidenceRoot(options, env));
+        }),
+      ];
+    }),
+  );
   const snapshot: FullSnapshot = {
     version: STATUS_API_VERSION,
     source: "live",
@@ -554,16 +625,7 @@ function readScopedSnapshot(
     items,
     runs,
     questions: [],
-    verdicts: records.flatMap((record) => {
-      const runId = storedRuns.get(record.id)?.[0]?.id;
-      return verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env).map((found) => {
-        const verdict = runId === undefined ? found : { ...found, runId };
-        // Only the item detail reads each rule's evidence record and bypass decisions.
-        return only === undefined
-          ? verdict
-          : withRuleDetail(db, record.id, verdict, progress, evidenceRoot(options, env));
-      });
-    }),
+    verdicts: records.flatMap((record) => recordVerdicts.get(record.id) ?? []),
     mergeQueue: merge.mergeQueue.filter((entry) => listed.has(entry.itemId)),
     ...(merge.mergeHistory === undefined
       ? {}
@@ -572,6 +634,7 @@ function readScopedSnapshot(
     agentCloseout: agentCloseoutFor(db, records, now.getTime(), env),
     ciRounds: ciRoundsFor(db, records, env),
     dead: deadFor(db, records),
+    ...(only === undefined ? mergedTimesFor(db, visible, facts, now.getTime()) : {}),
   };
   snapshot.questions = questionsFor(db, records, rows, runs, openQuestions).map((question) =>
     withRiskDetail(db, withBypassChecks(db, question, snapshot.verdicts, env), snapshot.verdicts),
@@ -589,7 +652,17 @@ function readScopedSnapshot(
               .map(publicId),
           ),
         ];
-  return { snapshot, blocks, records };
+  const current = records[0]!;
+  return {
+    snapshot,
+    blocks,
+    records,
+    current: {
+      record: current,
+      verdict: recordVerdicts.get(current.id)?.[0],
+      progress: progressFor(current, progress),
+    },
+  };
 }
 
 /** Dead outbox rows and dead jobs of the visible items, so none blocks a session unseen. */
@@ -768,7 +841,10 @@ function toItem(
   const pr = pullRequest(record, rows, repo);
   const fact = facts.get(record.id);
   const waiting = record.state === "queued" ? queue.get(record.id) : undefined;
-  const mergeQueue = record.state === "merge_queue" ? merging.get(record.id) : undefined;
+  const mergeQueue =
+    record.state === "merge_queue" || record.state === "verifying"
+      ? merging.get(record.id)
+      : undefined;
   const githubQueue =
     record.state === "merge_queue" ? githubQueueOf(mergeJob(record.id, jobs)) : undefined;
   return {
@@ -827,12 +903,28 @@ function riskCarryOverOf(
   };
 }
 
-/** The item's state changes from `work_item_event`, oldest first. Omitted while it has none. */
-function timelineOf(db: Database, record: WorkItemRecord): { timeline?: StatusItemEvent[] } {
-  const rows = listWorkItemEventRows(db, record.id);
-  if (rows.length === 0) return {};
+/** The newest state changes the timeline shows. `stateTimes` reads every one. */
+const TIMELINE_LIMIT = 200;
+/** Enough rows for any item's whole history, so its state times start at its creation. */
+const HISTORY_LIMIT = 100_000;
+
+/**
+ * The item's state changes from `work_item_event`, oldest first, omitted while it has none,
+ * and the time it spent in each state since it was created, up to `now` while it is open.
+ */
+function historyOf(
+  db: Database,
+  record: WorkItemRecord,
+  facts: ReadonlyMap<string, WorkItemFact>,
+  now: number,
+): { timeline?: StatusItemEvent[]; stateTimes?: StatusStateTimes } {
+  const rows = listWorkItemEventRows(db, record.id, HISTORY_LIMIT);
+  const created = facts.get(record.id)?.createdAt;
+  const stateTimes =
+    created === undefined ? {} : { stateTimes: toStateTimes(totalsOf(record, created, rows, now)) };
+  if (rows.length === 0) return stateTimes;
   return {
-    timeline: rows.map((row) => ({
+    timeline: rows.slice(-TIMELINE_LIMIT).map((row) => ({
       at: iso(row.at),
       kind: row.kind,
       from: row.fromState,
@@ -841,7 +933,40 @@ function timelineOf(db: Database, record: WorkItemRecord): { timeline?: StatusIt
       reason: row.reason,
       actor: row.actor,
     })),
+    ...stateTimes,
   };
+}
+
+function totalsOf(
+  record: WorkItemRecord,
+  created: number,
+  rows: readonly WorkItemEventRow[],
+  now: number,
+): StateTotals {
+  return stateTotals(Math.min(created, rows[0]?.at ?? created), rows, record.state, now);
+}
+
+/**
+ * The visible items that merged in the last `STATUS_RECENT_MS`: their median and p90 time from
+ * creation to merge and their average time in each state. Omitted when none merged.
+ */
+function mergedTimesFor(
+  db: Database,
+  visible: readonly WorkItemRecord[],
+  facts: ReadonlyMap<string, WorkItemFact>,
+  now: number,
+): { mergedTimes?: StatusMergedTimes } {
+  const since = now - STATUS_RECENT_MS;
+  const changed = listLastWorkItemEventTimes(db);
+  const merged = visible.flatMap((record) => {
+    const created = facts.get(record.id)?.createdAt;
+    const last = changed.get(record.id);
+    if (record.state !== "merged" || created === undefined || last === undefined || last < since)
+      return [];
+    return [totalsOf(record, created, listWorkItemEventRows(db, record.id, HISTORY_LIMIT), now)];
+  });
+  const times = mergedTimes(merged, since);
+  return times === null ? {} : { mergedTimes: times };
 }
 
 function heldOf(
@@ -849,7 +974,15 @@ function heldOf(
   holds: ReadonlyMap<string, ItemHold>,
 ): { held?: StatusHeld } {
   const hold = record.state === "queued" ? holds.get(record.id) : undefined;
-  return hold ? { held: { reason: hold.reason, blockers: hold.blockers } } : {};
+  return hold
+    ? {
+        held: {
+          reason: hold.reason,
+          blockers: hold.blockers,
+          ...(hold.files ? { files: hold.files } : {}),
+        },
+      }
+    : {};
 }
 
 function visualReviewsOf(
@@ -1615,11 +1748,11 @@ function mergeQueueFor(
       const reason =
         record.state === "verifying"
           ? "closeout"
-          : place && place.position > 1
+          : place?.nextItemId
             ? "ahead"
             : (wait?.reason ?? "ci");
-      const ahead = place?.aheadItemId
-        ? records.find((candidate) => candidate.id === place.aheadItemId)
+      const ahead = place?.nextItemId
+        ? records.find((candidate) => candidate.id === place.nextItemId)
         : undefined;
       return {
         position: place?.position ?? null,
@@ -1637,7 +1770,7 @@ function mergeQueueFor(
               ? `Starts when ${aheadLabel(ahead, items)} merges`
               : null
             : reason === "closeout"
-              ? "Branch updated. Closeout runs again."
+              ? "Re-checking, keeps its place."
               : (wait?.message ?? null),
         settings: mergeSettings(db, record.id),
         steps: mergeSteps(job),

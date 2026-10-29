@@ -4,7 +4,7 @@ import { immediate } from "../db";
 import { journalCaught } from "../journal";
 import { openRunFileChunk, runFileKeyId, sealRunFileChunk } from "./key";
 import { RUN_FILE_CHUNK_BYTES, RUN_FILE_KINDS, type RunFileKind } from "./kinds";
-import type { RunFileObjects } from "./objects";
+import { missingRunFileObject, type RunFileObjects } from "./objects";
 
 export class RunFileStorageError extends Error {}
 
@@ -31,6 +31,8 @@ export function createRunFileChunks(options: {
   /** The kind's 32-byte key from `loadRunFileKey`. */
   key: Buffer;
   refused: () => never;
+  /** Whether a chunk stored before encryption (no key ID) still reads. Defaults to never. */
+  plaintext?: () => boolean;
 }) {
   const { db, kind, objects, key, refused } = options;
   const { title, chunkTable } = RUN_FILE_KINDS[kind];
@@ -52,6 +54,22 @@ export function createRunFileChunks(options: {
       .get(runId, generation, offset);
   }
 
+  function matches(bytes: Uint8Array, chunk: Chunk) {
+    return bytes.length === chunk.sizeBytes && hash(bytes) === chunk.sha256;
+  }
+  function binding(file: RunFile, chunk: Chunk) {
+    return { runId: file.runId, generation: file.generation, ...chunk };
+  }
+  /** The chunk's plaintext from a sealed object, or null when it does not open under this key. */
+  function opened(file: RunFile, chunk: Chunk, stored: Uint8Array) {
+    try {
+      const bytes = openRunFileChunk(key, binding(file, chunk), stored);
+      return matches(bytes, chunk) ? bytes : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Plaintext chunks in order, each checked against its recorded offset, size and sha256. */
   async function* chunks(file: RunFile, before?: () => void) {
     const rows = db
@@ -61,25 +79,25 @@ export function createRunFileChunks(options: {
       )
       .all(file.runId, file.generation);
     let total = 0;
+    let plaintext: boolean | undefined;
     for (const chunk of rows) {
       before?.();
-      // A transcript chunk without a key ID was stored before encryption and is read as is.
-      const plaintext = chunk.keyId === null && kind === "transcript";
-      if (chunk.offset !== total || (!plaintext && chunk.keyId !== keyId)) unavailable();
-      let bytes: Buffer;
+      // A chunk without a key ID was stored before encryption and is read as is until it is
+      // converted. It may be sealed between the row read and the object read, so it opens too.
+      if (chunk.keyId === null) plaintext ??= options.plaintext?.() ?? false;
+      if (chunk.offset !== total || (!(chunk.keyId === null && plaintext) && chunk.keyId !== keyId))
+        unavailable();
+      let bytes: Buffer | null;
       try {
         const stored = await objects.read(objectKey(file.prefix, chunk));
-        bytes = plaintext
-          ? Buffer.from(stored)
-          : openRunFileChunk(
-              key,
-              { runId: file.runId, generation: file.generation, ...chunk },
-              stored,
-            );
+        bytes =
+          chunk.keyId === null && matches(stored, chunk)
+            ? Buffer.from(stored)
+            : opened(file, chunk, stored);
       } catch {
         unavailable();
       }
-      if (bytes.length !== chunk.sizeBytes || hash(bytes) !== chunk.sha256) unavailable();
+      if (!bytes) unavailable();
       total += bytes.length;
       yield bytes;
     }
@@ -151,6 +169,39 @@ export function createRunFileChunks(options: {
             .catch((caught: unknown) => journalCaught(caught, "run-files.upload.delete", null));
         throw error;
       }
+    },
+    /**
+     * Seals one chunk stored before encryption in every store that holds it, then records its key
+     * ID. The sealed object replaces the plaintext one under the same name (a local store renames
+     * a temp file over it), so no plaintext copy is left behind. A copy already sealed by an
+     * interrupted conversion is kept. False when no store holds a readable copy.
+     */
+    async encrypt(file: RunFile, chunk: Omit<Chunk, "keyId">, stores: readonly RunFileObjects[]) {
+      const row = { ...chunk, keyId: null };
+      const name = objectKey(file.prefix, chunk);
+      let found = false;
+      for (const store of stores) {
+        let stored: Uint8Array;
+        try {
+          stored = await store.read(name);
+        } catch (error) {
+          if (missingRunFileObject(error)) continue;
+          throw error;
+        }
+        if (matches(stored, row)) {
+          await store.write(name, sealRunFileChunk(key, binding(file, row), stored));
+          found = true;
+        } else if (opened(file, row, stored)) found = true;
+      }
+      if (!found) return false;
+      immediate(db, () =>
+        db.run(
+          `UPDATE ${chunkTable} SET key_id=?
+          WHERE run_id=? AND generation=? AND offset=? AND sha256=? AND key_id IS NULL`,
+          [keyId, file.runId, file.generation, chunk.offset, chunk.sha256],
+        ),
+      );
+      return true;
     },
     /** Reads every chunk and refuses the seal unless they add up to `sizeBytes` and `sha256`. */
     async verify(file: RunFile, sizeBytes: number, sha256: string) {

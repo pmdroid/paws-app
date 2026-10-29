@@ -72,12 +72,7 @@ export type {
 } from "./merge";
 export { readPullCi } from "./readiness";
 export type { FailedCheck, PassedCheck, PullCi, Readiness } from "./readiness";
-export {
-  createAppTokenProvider,
-  inferGitHubRepository,
-  parseGitHubRemote,
-  runGitHubGit,
-} from "./auth";
+export { createAppTokenProvider, parseGitHubRemote, runGitHubGit } from "./auth";
 export type {
   AppTokenProviderOptions,
   GitHubAuthMode,
@@ -117,5 +112,5 @@ export {
 
 export { closeStoppedPull } from "./stopped";
 export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";
-export { branchContains, readOpenPullHead } from "./pull-head";
+export { branchContains, readBranchWork, readOpenPullHead } from "./pull-head";
 export { inspectPullRequestMerge } from "./blocker-merge";

@@ -33,6 +33,7 @@ import type { Database } from "bun:sqlite";
 import {
   ArtifactRejectedError,
   commitCheckpointSync,
+  git,
   mirrorFiles,
   restartFromFreshMain,
   runAgent,
@@ -68,7 +69,6 @@ import {
   policyCoauthors,
 } from "./core";
 import {
-  assertLinearQueue,
   enqueueCommand,
   enqueueJobOnce,
   getLinearSession,
@@ -175,6 +175,9 @@ import {
   teamRepositoryDenial,
   riskGateOn,
   RISK_GATE_NEEDS_PUBLIC_URL,
+  highRiskPathsFileAt,
+  backfillReviewFindings,
+  REVIEW_FINDINGS_BACKFILL_JOB,
 } from "./loop";
 import {
   formatReviewScore,
@@ -221,7 +224,9 @@ import {
 import { createRunnerSessionMoves } from "./runner-control";
 import { cacheRepositoryCredentials } from "./runner-repository-access";
 import {
+  encryptRunnerTranscripts,
   loadRunnerTranscriptKey,
+  RUNNER_TRANSCRIPT_ENCRYPT_JOB,
   RUNNER_TRANSCRIPT_KEY_FILE,
   type RunnerTranscriptObjects,
 } from "./runner-transcripts";
@@ -233,7 +238,7 @@ import {
   withLocalAgentSessionFallback,
 } from "./agent-sessions";
 import {
-  loadRunnerTranscriptObjects,
+  loadRunnerTranscriptStores,
   loadRunnerTranscriptS3,
   runRunnerTranscriptStorageCli,
 } from "./runner-transcript-config";
@@ -307,12 +312,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw new Error("Public dashboard requires an HTTPS origin in PAWS_PUBLIC_URL.");
   }
   const placeOnRunner = remotePlacementReady;
-  const transcriptObjects =
-    options?.runnerTranscriptObjects ??
-    (placeOnRunner ? loadRunnerTranscriptObjects(runtime.env.home) : undefined);
+  const transcriptStorage = options?.runnerTranscriptObjects
+    ? { objects: options.runnerTranscriptObjects, stores: [options.runnerTranscriptObjects] }
+    : placeOnRunner
+      ? loadRunnerTranscriptStores(runtime.env.home)
+      : undefined;
+  const transcriptObjects = transcriptStorage?.objects;
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
-  assertLinearQueue(paths.db);
   ensureLayout(paths);
   const db = openDatabase(paths.db);
   migrate(db);
@@ -349,6 +356,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         origin: runtime.publicUrl!,
         clientId: runtime.linearClientId,
         clientSecret: runtime.linearClientSecret,
+        expectedOrganizationId: runtime.linearOrganizationId,
         reconnect: true,
         installed() {},
       })
@@ -363,12 +371,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
   let executionControls: ReturnType<typeof createExecutionControls> | null = null;
-  const repository = repositoryBinding(runtime.repo);
-  const repositories = [runtime.repo, ...runtime.file.githubRepos]
+  const repositories = runtime.repos
     .map(repositoryBinding)
     .filter((value): value is RepositoryBinding => value !== null);
-  const auth = repository === null ? null : authProvider(runtime, repository, "write", resolveApp);
-  const github = githubBinding(auth);
   const listCatalog = async () => {
     const client = createFetchGitHubClient();
     const lists = await Promise.all(
@@ -656,7 +661,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   }
   const commitPolicyForItem = async (
     item: WorkItemRecord,
-    selected = getWorkItemRepository(db, item.id) ?? repository,
+    selected = getWorkItemRepository(db, item.id),
   ): Promise<GitCommitPolicy> => {
     if (!selected) throw new Error("Attribution repository is missing");
     const bot = await authProvider(runtime, selected, "read", resolveApp)?.botIdentity?.();
@@ -828,6 +833,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           await backend.agents.cancelItem(itemId);
         },
         commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
+        runInProgress: async (runId) => (await remote).agents.runInProgress(runId),
         slotFree: () =>
           db
             .query<{ id: string }, []>(
@@ -888,11 +894,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     server = startServer({
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
-      onboarding: async (request) =>
+      onboarding: async (request, client) =>
         reconnectLinear &&
         !new URL(request.url).pathname.startsWith("/webhooks/") &&
         linearRevoked()
-          ? reconnectLinear(request)
+          ? reconnectLinear(request, client)
           : null,
       hostname: env.host,
       executionControls: async (...args) =>
@@ -973,6 +979,19 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           if (!mirror) return null;
           const policy = policyCheckPaths(mirror.mirror, mirror.commit);
           return { files: mirror.files, checks: policy.ok ? policy.checks : [] };
+        },
+        highRiskFile: async (name: string) => {
+          const [owner, repo] = name.split("/");
+          if (!owner || !repo) return null;
+          const mirror = await mirrorFiles({ owner, repo, pawsRoot: paths.home });
+          if (!mirror) return null;
+          return {
+            commit: mirror.commit,
+            paths: await highRiskPathsFileAt(
+              (args) => git(["--git-dir", mirror.mirror, ...args]),
+              mirror.commit,
+            ),
+          };
         },
         ...(linear?.tracker?.mergeChoices
           ? {
@@ -1130,7 +1149,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             : true,
         scheduling: () => {
           enqueueMissingSnapshots();
-          return { defaultRepository: repository, ownerCap: ownerCap(paths.configFile) };
+          return { ownerCap: ownerCap(paths.configFile) };
         },
         publicationReady: (
           ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
@@ -1281,7 +1300,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         catchUp: async () => {
           await running.catchUp();
         },
-        repository,
         repositories,
         repositoryAccess: async (candidate, signal, access) => {
           const provider = authProvider(runtime, candidate, access, resolveApp);
@@ -1302,7 +1320,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           signal.throwIfAborted();
           return token;
         },
-        github,
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
@@ -1366,27 +1383,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           );
           attached.reconcileExecution();
         });
-        created.jobs.register("linear.epic.reconcile", async (job) => {
-          const legacy = job.payload as { epicId: string; workspaceId: string };
-          const item = db
-            .query<{ id: string }, [string]>(
-              `SELECT i.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
-               WHERE i.delegation_id=? AND s.stopped_at IS NULL
-               AND i.state NOT IN ('completed','merged','cancelled') ORDER BY i.position,i.id LIMIT 1`,
-            )
-            .get(legacy.epicId);
-          if (item)
-            await linearCaller("epic-reconcile", () =>
-              forItem(item.id, () =>
-                reconciler?.reconcile({
-                  itemId: item.id,
-                  workspaceId: legacy.workspaceId,
-                  signal: abort.signal,
-                }),
-              ),
-            );
-          attached.reconcileExecution();
-        });
         created.jobs.register("linear.epics.reconcile", async () => {
           await linearCaller("epics-sweep", () => reconciler?.sweep({ signal: abort.signal }));
           attached.reconcileExecution();
@@ -1429,6 +1425,29 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: 3_600_000,
         now: Date.now(),
       });
+      // Enqueued once by a migration; it seals transcript chunks stored before encryption. It is
+      // registered without runner placement too, since an unhandled job is cancelled, not kept.
+      created.jobs.register(RUNNER_TRANSCRIPT_ENCRYPT_JOB, (_job, context) =>
+        encryptRunnerTranscripts({
+          db,
+          stores: (transcriptStorage ?? loadRunnerTranscriptStores(runtime.env.home)).stores,
+          key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
+          signal: AbortSignal.any([context.signal, abort.signal]),
+        }).then(({ converted, skipped }) =>
+          journal(
+            `runner transcripts encrypted: ${converted} chunks sealed, ${skipped} unreadable`,
+          ),
+        ),
+      );
+      // Enqueued once by a migration; it fills the Findings page from the review evidence of runs
+      // Closeout accepted before the page stored findings.
+      created.jobs.register(REVIEW_FINDINGS_BACKFILL_JOB, () =>
+        backfillReviewFindings({ db, pawsRoot: paths.home }).then(({ runs, recorded, gone }) =>
+          journal(
+            `review findings backfilled: ${runs} accepted runs, ${recorded} findings, ${gone} gone`,
+          ),
+        ),
+      );
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
       enqueueJobOnce(db, {
         queue: "github.auth.recover",
@@ -1464,7 +1483,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return "Restart stopped: a valid GitHub App commit policy is missing. WIP is preserved. Restore the run policy before retrying.";
     },
     restartFromMain: (item) => {
-      const selected = getWorkItemRepository(db, item.id) ?? repository;
+      const selected = getWorkItemRepository(db, item.id);
       if (selected === null) return;
       const policy = getItemRunCommitPolicy(db, item.id);
       if (!policy) return;

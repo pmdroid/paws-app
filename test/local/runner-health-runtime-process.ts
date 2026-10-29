@@ -11,7 +11,7 @@ import {
 } from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon } from "../../src/runner-daemon";
-import { createRunnerBrokerClient, readRunnerJob } from "../../src/runner-execution";
+import { readRunnerJob } from "../../src/runner-execution";
 import { openRunnerHealthRuntime } from "../../src/runner-health-runtime";
 import { executeRunnerCommand } from "../../src/runner-worker";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
@@ -92,7 +92,7 @@ if (mode === "prepare") {
   const principal = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };
@@ -338,7 +338,10 @@ if (mode === "prepare") {
         : daemon,
     spool: { root: join(root, "spool"), runnerUid: 1001, agentGid: 1002 },
     results: { root: join(root, "results"), agentUid: 1002, resultsGid: 1003 },
-    broker: createRunnerBrokerClient({ socketPath: join(root, "broker.sock") }),
+    broker: {
+      start: () => Promise.reject(new Error("Runner broker is unavailable")),
+      stop: () => Promise.reject(new Error("Runner broker is unavailable")),
+    },
     onError: (error) => errors.push(error.message),
   });
   if (mode === "first" || mode === "fence") {

@@ -60,26 +60,22 @@ async function fixture() {
     authenticatedAt: now,
     teamIds: [],
   });
-  const owner = principal(userId, "owner");
-  const others = Object.fromEntries(
-    (["member", "observer"] as const).map((role) => {
-      const id = putWorkspaceUser(db, {
-        id: workspaceId(),
-        linearUserId: role,
-        name: role,
-        email: `${role}@example.invalid`,
-      });
-      syncWorkspaceMember(db, {
-        workspaceId: workspace.id,
-        userId: id,
-        role,
-        active: true,
-        teamIds: [],
-        now,
-      });
-      return [role, principal(id, role)];
-    }),
-  ) as Record<"member" | "observer", WorkspacePrincipal>;
+  const admin = principal(userId, "admin");
+  const memberId = putWorkspaceUser(db, {
+    id: workspaceId(),
+    linearUserId: "member",
+    name: "member",
+    email: "member@example.invalid",
+  });
+  syncWorkspaceMember(db, {
+    workspaceId: workspace.id,
+    userId: memberId,
+    role: "member",
+    active: true,
+    teamIds: [],
+    now,
+  });
+  const member = principal(memberId, "member");
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
     db,
@@ -93,7 +89,7 @@ async function fixture() {
   const pending = { name: "Host VM", csr: client.csr };
   const { runnerId } = await control.enroll({
     ...pending,
-    token: control.createEnrollment(owner, pending).token,
+    token: control.createEnrollment(admin, pending).token,
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const work = createRunnerWorkHttp(
@@ -109,8 +105,8 @@ async function fixture() {
     db,
     runnerId,
     workspaceId: workspace.id,
-    owner,
-    ...others,
+    admin,
+    member,
     now,
     async heartbeat(body: unknown) {
       const response = (await work(
@@ -124,11 +120,11 @@ async function fixture() {
       expect(response.status).toBe(200);
       return (await response.json()) as Record<string, unknown>;
     },
-    async list(as = owner) {
+    async list(as = admin) {
       const response = await browser.browser(new Request("https://paws.invalid/api/runners"), as);
       return ((await response!.json()) as { runners: Listed[] }).runners[0]!;
     },
-    async set(concurrency: unknown, as = owner) {
+    async set(concurrency: unknown, as = admin) {
       const response = (await browser.browser(
         new Request(`https://paws.invalid/api/runners/${runnerId}/concurrency`, {
           method: "POST",
@@ -161,7 +157,7 @@ test("the heartbeat reply carries the chosen concurrency only to runners that re
   });
 });
 
-test("owners and admins change concurrency within one heartbeat and cannot exceed the ceiling", async () => {
+test("admins change concurrency within one heartbeat and cannot exceed the ceiling", async () => {
   const runner = await fixture();
   await runner.heartbeat({ capacity: 4, ceiling: 4 });
 
@@ -191,17 +187,15 @@ test("owners and admins change concurrency within one heartbeat and cannot excee
   ).toHaveLength(2);
 });
 
-test("members and observers see concurrency but cannot change it", async () => {
+test("members see concurrency but cannot change it", async () => {
   const runner = await fixture();
   await runner.heartbeat({ capacity: 3, ceiling: 3 });
-  for (const as of [runner.member, runner.observer]) {
-    expect((await runner.set(1, as)).status).toBe(403);
-    expect((await runner.list(as)).concurrency).toEqual({
-      desired: null,
-      applied: 3,
-      ceiling: 3,
-    });
-  }
+  expect((await runner.set(1, runner.member)).status).toBe(403);
+  expect((await runner.list(runner.member)).concurrency).toEqual({
+    desired: null,
+    applied: 3,
+    ceiling: 3,
+  });
 });
 
 test("lowering concurrency below running work holds back new placement", async () => {

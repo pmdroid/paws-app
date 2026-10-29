@@ -28,7 +28,7 @@ function fixture(path = ":memory:") {
     async check() {
       return ready && allowed;
     },
-    administrators: () => ["owner", "admin", "admin"],
+    administrators: () => ["lead", "admin", "admin"],
     recoveryUrl: "https://paws.example/status/settings/integrations",
     identity: () => authority,
   };
@@ -87,7 +87,7 @@ test("missing installation: the waiting message shows once and the item resumes 
     const waiting = listOutbox(f.db).filter(
       (entry) =>
         entry.op === "activity" &&
-        JSON.stringify(entry.payload).includes("Waiting for a workspace owner or administrator"),
+        JSON.stringify(entry.payload).includes("Waiting for a workspace admin"),
     );
     expect(waiting).toHaveLength(1);
     expect(f.db.query("SELECT * FROM question").all()).toHaveLength(1);
@@ -117,7 +117,7 @@ test("an App hold is asked as the github-auth kind and posts no question of its 
         .sort(),
     ).toEqual([
       `github-integration:admin:${hold.question_id}:admin`,
-      `github-integration:admin:${hold.question_id}:owner`,
+      `github-integration:admin:${hold.question_id}:lead`,
       `github-integration:waiting:${hold.question_id}`,
     ]);
   } finally {
@@ -137,7 +137,7 @@ test("App hold survives restart, notifies only administrators and revalidates ex
   expect(prompts).toHaveLength(2);
   expect(
     prompts.map((entry) => (entry.payload as { auth: { userId: string } }).auth.userId).sort(),
-  ).toEqual(["admin", "owner"]);
+  ).toEqual(["admin", "lead"]);
   const hold = f.db
     .query<{ question_id: string }, []>("SELECT question_id FROM github_integration_hold")
     .get()!;

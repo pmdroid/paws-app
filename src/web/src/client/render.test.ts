@@ -253,6 +253,10 @@ describe("status views", () => {
       [{ reason: "cap", blockers: [] }, "Waiting: its owner already runs the most items at once"],
       [{ reason: "slot", blockers: [] }, "Waiting: no free slot on any runner"],
       [{ reason: "workspace", blockers: [] }, "Waiting: no Linear workspace is configured"],
+      [
+        { reason: "overlap", blockers: ["PAS-785"], files: ["src/web/src/live/provider.ts"] },
+        "Held: waiting for PAS-785 to merge (both change provider.ts)",
+      ],
     ];
     for (const [held, line] of lines) {
       item.held = held;
@@ -299,6 +303,22 @@ describe("status views", () => {
     const issue = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
     expect(issue).toContain("First in the acme/platform queue");
     expect(issue).toContain("This pull request moves now");
+    item.state = "verifying";
+    item.mergeQueue = {
+      repository: "acme/platform",
+      position: 1,
+      total: 3,
+      ahead: null,
+      rechecking: true,
+    };
+    const rechecking = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
+    expect(rechecking).toContain("Re-checking, keeps its place.");
+    expect(rechecking).not.toContain("Not in the merge queue yet.");
+    item.state = "merge_queue";
+    item.mergeQueue = { repository: "acme/platform", position: 2, total: 3, ahead: null };
+    expect(render(model({ snapshot, route: { view: "issues", id: item.id } })).content).toContain(
+      "This pull request moves now",
+    );
     item.state = "running";
     expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
       "acme/platform queue",

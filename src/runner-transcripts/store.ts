@@ -21,7 +21,30 @@ type Transcript = {
   uri: string | null;
 };
 
-function denied(): never {
+/** The one-time job, enqueued by a migration, that seals chunks stored before encryption. */
+export const RUNNER_TRANSCRIPT_ENCRYPT_JOB = "runner-transcripts.encrypt";
+
+/**
+ * True once the job is done, or when the migration found nothing to convert. From then on a chunk
+ * without a key ID is refused instead of read as plaintext.
+ */
+export function runnerTranscriptsEncrypted(db: Database) {
+  const job = db
+    .query<{ status: string }, [string]>("SELECT status FROM job WHERE job_key=?")
+    .get(RUNNER_TRANSCRIPT_ENCRYPT_JOB);
+  return !job || job.status === "done";
+}
+
+/** Where a transcript's chunk objects live. Chunks stored before encryption keep this key. */
+export function transcriptPrefix(row: {
+  workspaceId: string;
+  commandId: string;
+  executionId: string;
+}) {
+  return `paws/transcripts/${row.workspaceId}/${row.commandId}/${row.executionId}/chunks`;
+}
+
+export function denied(): never {
   throw new RunnerWorkFencedError("Runner transcript access is denied");
 }
 
@@ -39,6 +62,7 @@ export function createRunnerTranscripts(options: {
     objects: options.objects,
     key: options.key,
     refused: denied,
+    plaintext: () => !runnerTranscriptsEncrypted(db),
   });
   function authorize(access: Access, generation: number) {
     const { command } = work.authorize({ ...access, generation });
@@ -54,13 +78,8 @@ export function createRunnerTranscripts(options: {
       )
       .get(runId, generation);
   }
-  /** Chunk objects keep the key they had before encryption, so plaintext chunks still read. */
   function file(runId: string, generation: number, row: Transcript) {
-    return {
-      runId,
-      generation,
-      prefix: `paws/transcripts/${row.workspaceId}/${row.commandId}/${row.executionId}/chunks`,
-    };
+    return { runId, generation, prefix: transcriptPrefix(row) };
   }
   function rowFor(access: Access, generation: number, executionId: string) {
     const command = authorize(access, generation);

@@ -114,11 +114,11 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix and takes green
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     retryBaseMs: 10,
     journal: (line) => journal.push(line),
     ciRecheckWait: { pollMs: 10, maxWaitMs: 60_000 },
-    github: {
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: privateKey as string,
@@ -129,7 +129,7 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix and takes green
           return client.request(req);
         },
       },
-    },
+    }),
     launch(input) {
       sequence += 1;
       let steps: FakeScript["steps"] = emptyReview().steps;

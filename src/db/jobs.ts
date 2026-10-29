@@ -24,7 +24,6 @@ export type NewJob = {
   runAt?: number;
   maxAttempts?: number;
   recurringEveryMs?: number;
-  lane?: string;
   /** Clock injection for tests. Defaults to Date.now(). */
   now?: number;
 };
@@ -46,7 +45,6 @@ export type Job = {
   finishedAt: number | null;
   recurringEveryMs: number | null;
   fireCount: number;
-  lane: string;
 };
 
 type JobRow = {
@@ -66,7 +64,6 @@ type JobRow = {
   finished_at: number | null;
   recurring_every_ms: number | null;
   fire_count: number;
-  lane: string;
 };
 
 export type ClaimOptions = {
@@ -79,13 +76,33 @@ export type ClaimOptions = {
 
 const EXCLUSIVE_QUEUES = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify] as const;
 
+const jobReadyListeners = new Set<(db: Database) => void>();
+
+/** Fires after a job row is inserted. The job loop wakes its claimer from this. */
+export function onJobReady(listener: (db: Database) => void): () => void {
+  jobReadyListeners.add(listener);
+  return () => {
+    jobReadyListeners.delete(listener);
+  };
+}
+
+function emitJobReady(db: Database): void {
+  for (const listener of jobReadyListeners) {
+    try {
+      listener(db);
+    } catch (error) {
+      journalCaught(error, "jobs.enqueueJob.emitJobReady", null);
+    }
+  }
+}
+
 function sqlLiteral(value: string): string {
   if (!/^[A-Za-z0-9._%:-]+$/.test(value)) throw new Error(`unsafe SQL literal: ${value}`);
   return `'${value}'`;
 }
 
 export function mergeLaneSql(alias: string): string {
-  return `(${alias}.queue = ${sqlLiteral(MERGE_WORK.queue)} OR ${alias}.queue LIKE ${sqlLiteral(`${MERGE_WORK.queuePrefix}%`)} OR ${alias}.lane = ${sqlLiteral(MERGE_WORK.lane)} OR ${alias}.lane LIKE ${sqlLiteral(`${MERGE_WORK.lanePrefix}%`)})`;
+  return `(${alias}.queue = ${sqlLiteral(MERGE_WORK.queue)} OR ${alias}.queue LIKE ${sqlLiteral(`${MERGE_WORK.queuePrefix}%`)})`;
 }
 
 const EXECUTION_SQL = `(candidate.queue IN (${EXCLUSIVE_QUEUES.map(sqlLiteral).join(", ")}))`;
@@ -140,11 +157,11 @@ export function enqueueJob(db: Database, job: NewJob): number {
   const row = db
     .query<
       { id: number },
-      [string, string | null, string, number, number, number, number, number | null, string]
+      [string, string | null, string, number, number, number, number, number | null]
     >(
       `INSERT INTO job (
-         queue, job_key, payload, priority, run_at, max_attempts, created_at, recurring_every_ms, lane, item_version
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, (SELECT version FROM work_item WHERE id=json_extract(?3,'$.itemId')))
+         queue, job_key, payload, priority, run_at, max_attempts, created_at, recurring_every_ms, item_version
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, (SELECT version FROM work_item WHERE id=json_extract(?3,'$.itemId')))
        RETURNING id`,
     )
     .get(
@@ -156,11 +173,11 @@ export function enqueueJob(db: Database, job: NewJob): number {
       job.maxAttempts ?? 10,
       now,
       job.recurringEveryMs ?? null,
-      job.lane ?? "default",
     );
   if (row === null) {
     throw new Error("enqueueJob did not return an id");
   }
+  emitJobReady(db);
   return row.id;
 }
 
@@ -200,6 +217,30 @@ export function getJob(db: Database, id: number): Job | null {
 
 export function listJobs(db: Database): Job[] {
   return db.query<JobRow, []>("SELECT * FROM job ORDER BY id").all().map(mapJob);
+}
+
+/**
+ * Earliest `run_at` among rows a claim could take, or null when none exist.
+ * This does not claim. The job loop sleeps until this time.
+ */
+export function nextClaimableRunAt(
+  db: Database,
+  options: { now?: number; queues?: readonly string[] } = {},
+): number | null {
+  const queues = options.queues;
+  if (queues !== undefined && queues.length === 0) return null;
+  const now = options.now ?? Date.now();
+  const row = db
+    .query<{ run_at: number | null }, Array<number | string>>(
+      `SELECT MIN(run_at) AS run_at FROM job
+       WHERE (
+         status = 'pending'
+         OR (status = 'running' AND (locked_until IS NULL OR locked_until <= ?))
+       )
+       ${queues === undefined ? "" : `AND queue IN (${queues.map(() => "?").join(", ")})`}`,
+    )
+    .get(now, ...(queues ?? []));
+  return row?.run_at ?? null;
 }
 
 export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | null {
@@ -415,7 +456,7 @@ function journalOutcome(job: Job): void {
   if (
     job.status !== "dead" &&
     !(EXCLUSIVE_QUEUES as readonly string[]).includes(job.queue) &&
-    !isMergeWork(job.queue, job.lane)
+    !isMergeWork(job.queue)
   )
     return;
   const payload = job.payload as { itemId?: unknown } | null;
@@ -448,7 +489,6 @@ function mapJob(row: JobRow): Job {
     finishedAt: row.finished_at,
     recurringEveryMs: row.recurring_every_ms,
     fireCount: row.fire_count,
-    lane: row.lane,
   };
 }
 

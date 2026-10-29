@@ -61,7 +61,7 @@ async function setup() {
   const principal = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };
@@ -589,7 +589,7 @@ function sessionMoves() {
   };
 }
 
-test("an owner moves a session from its runner card, and it continues on the second runner", async () => {
+test("an admin moves a session from its runner card, and it continues on the second runner", async () => {
   const { runners } = context;
   const moves = sessionMoves();
   const { record, running, onA } = await runningOnA();
@@ -643,22 +643,26 @@ test("with no eligible runner the card row says why, as Linear hears it", async 
   ]);
 });
 
-test("a member's or observer's move request is refused and the runner is not asked", async () => {
+test("a member's or inactive admin's move request is refused and the runner is not asked", async () => {
   const { db, runners } = context;
   const moves = sessionMoves();
   const { record, running, onA } = await runningOnA();
-  for (const role of ["member", "observer"] as const) {
+  // An inactive admin is refused like a member: only an active admin may move work.
+  for (const [name, role, active] of [
+    ["member", "member", true],
+    ["inactive", "admin", false],
+  ] as const) {
     const userId = putWorkspaceUser(db, {
       id: workspaceId(),
-      linearUserId: `${role}-${record.id}`,
-      name: role,
-      email: `${role}-${record.id}@example.invalid`,
+      linearUserId: `${name}-${record.id}`,
+      name,
+      email: `${name}-${record.id}@example.invalid`,
     });
     syncWorkspaceMember(db, {
       workspaceId: context.workspaceId,
       userId,
       role,
-      active: true,
+      active,
       teamIds: [],
       now: context.now,
     });
@@ -669,7 +673,7 @@ test("a member's or observer's move request is refused and the runner is not ask
     });
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({
-      error: "Only workspace owners and admins can move running work.",
+      error: "Only workspace admins can move running work.",
     });
   }
   await moves.settled();
@@ -816,7 +820,7 @@ test("with no eligible runner both sessions stay on the draining card with the r
   expect(await context.next(runners.b, 10)).toBeNull();
 });
 
-test("Move running work needs a draining runner and an owner or admin", async () => {
+test("Move running work needs a draining runner and an admin", async () => {
   const { db, runners } = context;
   const moves = sessionMoves();
   const { record, running, onA } = await runningOnA();
@@ -828,24 +832,24 @@ test("Move running work needs a draining runner and an owner or admin", async ()
   db.run("UPDATE runner SET status='draining' WHERE id=?", [runners.a]);
   const userId = putWorkspaceUser(db, {
     id: workspaceId(),
-    linearUserId: `observer-all-${record.id}`,
-    name: "observer",
-    email: `observer-all-${record.id}@example.invalid`,
+    linearUserId: `inactive-all-${record.id}`,
+    name: "inactive",
+    email: `inactive-all-${record.id}@example.invalid`,
   });
   syncWorkspaceMember(db, {
     workspaceId: context.workspaceId,
     userId,
-    role: "observer",
-    active: true,
+    role: "admin",
+    active: false,
     teamIds: [],
     now: context.now,
   });
-  const observer = await moves.fetch(moveAllRequest(runners.a), {
+  const inactive = await moves.fetch(moveAllRequest(runners.a), {
     ...context.principal,
     userId,
-    role: "observer",
+    role: "admin",
   });
-  expect(observer.status).toBe(403);
+  expect(inactive.status).toBe(403);
   await moves.settled();
   expect(card(runners.a)).toMatchObject([{ runId: record.runId, move: null }]);
   expect(await context.next(runners.a, 50)).toBeNull();
