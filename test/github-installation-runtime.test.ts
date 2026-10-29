@@ -64,6 +64,20 @@ async function until(check: () => boolean): Promise<void> {
   }
 }
 
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      // A killed agent can remain a zombie until the container init reaps it.
+      if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function prompt(userId: string, id: string, body = "I signed in") {
   return parseAgentEvent(
     JSON.stringify({
@@ -204,7 +218,7 @@ test.each(["pending", "rejected"] as const)(
       await shutting;
       await running;
       const pid = Number(readFileSync(pidFile, "utf8"));
-      expect(() => process.kill(pid, 0)).toThrow();
+      expect(alive(pid)).toBe(false);
       expect(getWorkItem(f.db, writer.id)?.state).toBe("running");
     } finally {
       if (!released) linked.resolve(true);

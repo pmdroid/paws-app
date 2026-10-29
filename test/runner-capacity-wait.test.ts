@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
-import { JOB_KIND, systemClock } from "../src/core";
+import { FakeClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -82,6 +82,8 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
 
   const db = migratedDatabase(join(root, "paws.db"));
   const now = Date.now();
+  // Keep capacity retries in the future while Git and runner setup use real time.
+  const clock = new FakeClock(now);
   const userId = putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
@@ -179,12 +181,13 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
       subIssues: [],
     })),
   );
-  const jobs = new JobLoop(db, systemClock, { concurrency: 4, pollMs: 5 });
-  const outbox = new OutboxDispatcher(db, systemClock);
+  const jobs = new JobLoop(db, clock, { concurrency: 4, pollMs: 5 });
+  const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
     db,
     jobs,
     outbox,
+    clock,
     pawsRoot: root,
     home: root,
     tracker,
@@ -280,7 +283,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         }),
       });
     }
-    dispatch(db, { now: Date.now() });
+    dispatch(db, { now: clock.now() });
     expect(db.query("SELECT item_id FROM scheduler_admission").all()).toHaveLength(5);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
