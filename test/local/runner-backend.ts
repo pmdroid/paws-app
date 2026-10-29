@@ -17,6 +17,8 @@ import {
   getWorkItem,
   saveCheckpoint,
   saveTaskMode,
+  saveHook,
+  deleteHook,
   recordAgentCloseout,
   resumeUsagePauseNow,
   usagePause,
@@ -695,6 +697,44 @@ export async function probeRunnerBackend(
         ),
       { runtimeCommands, runtimeLines },
     );
+    saveHook(
+      db,
+      {
+        id: "uploaded-guard",
+        event: "after_edit",
+        matcher: null,
+        command: '"$PAWS_SKILL_DIR/hooks/check.sh"',
+        timeoutSeconds: 60,
+        agents: ["codex"],
+        skill: "guard",
+      },
+      Date.now(),
+    );
+    db.run(
+      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+      [runnerId, "0.1.52", Date.now()],
+    );
+    const oldHookRun = item();
+    await assert.rejects(
+      backend.forItem(oldHookRun.id)(input(oldHookRun)),
+      /needs runner 0.1.53 or later to run skill hooks/,
+    );
+    db.run("UPDATE runner_host_status SET runner_version='0.1.53' WHERE runner_id=?", [runnerId]);
+    const hookRun = item();
+    const hookStop = new AbortController();
+    const hooked = backend.forItem(hookRun.id)(
+      input(hookRun, { signal: hookStop.signal, checkpoint: false }),
+    );
+    void hooked.catch(() => undefined);
+    let hookCommand = await next();
+    while (hookCommand.type !== "run" || hookCommand.itemId !== hookRun.id)
+      hookCommand = await next();
+    assert.equal(hookCommand.hooks?.[0]?.skill, "guard");
+    hookStop.abort();
+    await hooked.catch(() => undefined);
+    while (work.commands(runnerId).length) await next();
+    deleteHook(db, "uploaded-guard");
+    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
     await git(["-C", source, "reset", "--hard", base]);
     const detached = item();
     const shutdown = new AbortController();

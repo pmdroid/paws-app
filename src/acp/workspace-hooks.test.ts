@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
@@ -39,7 +39,7 @@ type Handler = { type: string; command: string; args?: string[]; timeout: number
 type Group = { matcher?: string; hooks: Handler[] };
 type Hooks = Record<string, Group[]>;
 
-async function install(agent: "claude" | "codex", hooks: WorkspaceHook[]) {
+async function install(agent: "claude" | "codex", hooks: WorkspaceHook[], skillRoot?: string) {
   const root = temp();
   const runDirectory = join(root, "run");
   const installed = await installCloseoutStopHook({
@@ -48,6 +48,7 @@ async function install(agent: "claude" | "codex", hooks: WorkspaceHook[]) {
     socketPath: join(runDirectory, "ask-team.sock"),
     sourceEnv: { HOME: join(root, "home") },
     workspaceHooks: hooks,
+    skillRoot,
   });
   return { installed: installed!, runDirectory };
 }
@@ -239,6 +240,32 @@ test("a skill hook finds its script in the agent's installed skill folder", asyn
     HOME: "/home/agent",
   });
   expect(ran.stdout).toBe("/home/agent/.claude/skills/guard\n".trimEnd());
+});
+
+test("a skill hook executes from the supplied per-run skill root", async () => {
+  for (const agent of ["claude", "codex"] as const) {
+    const root = temp();
+    const versioned = join(root, "skill-set");
+    const skillRoot = agent === "claude" ? versioned : join(versioned, ".codex", "skills");
+    const skillDirectory =
+      agent === "claude" ? join(skillRoot, ".claude", "skills", "guard") : join(skillRoot, "guard");
+    mkdirSync(skillDirectory, { recursive: true });
+    const script = join(skillDirectory, "check");
+    writeFileSync(script, "#!/bin/sh\nprintf 'executed:%s' \"$0\"\n", { mode: 0o700 });
+
+    const { runDirectory } = await install(
+      agent,
+      [hook({ command: '"$PAWS_SKILL_DIR/check"', skill: "guard" })],
+      skillRoot,
+    );
+    const ran = await runWrapper(join(runDirectory, "workspace-hook-0"), "{}", {
+      PATH: process.env.PATH!,
+      HOME: join(root, "legacy-home"),
+    });
+    expect(ran.status).toBe(0);
+    expect(ran.stderr).toBe("");
+    expect(ran.stdout).toBe(`executed:${script}`);
+  }
 });
 
 test("a failing or slow hook is recorded for the run page and does not block the agent", async () => {
