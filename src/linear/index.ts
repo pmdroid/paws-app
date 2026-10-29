@@ -50,7 +50,12 @@ export type {
   PreparedLinearUpload,
   UploadedLinearFile,
 } from "./files";
-export { createLinearClient, LinearEntityNotFoundError, LinearHttpError } from "./graphql";
+export {
+  createLinearClient,
+  LinearEntityNotFoundError,
+  LinearHttpError,
+  LinearGraphQLError,
+} from "./graphql";
 export type { LinearClient } from "./graphql";
 export { createLinearRepositoryMethods } from "./repositories";
 export { createLinearMergeReads } from "./merge-context";
@@ -193,3 +198,5 @@ export { cacheLinearMemberships, createLinearMembershipReads } from "./membershi
 export type { LinearMemberIdentity, LinearMembershipReads } from "./membership";
 
 export { isPawsStop } from "./event-dispatch";
+export { createFindingIssueAdapter, createFakeFindingIssueAdapter } from "./finding-group-issues";
+export type { FindingIssueAdapter, FindingIssueTitle } from "./finding-group-issues";

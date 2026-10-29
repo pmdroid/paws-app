@@ -23,3 +23,8 @@ export { handleFindingsRequest } from "./src/server/findings";
 export type { FindingsOptions } from "./src/server/findings";
 export { FINDINGS_API_PATH } from "./src/findings";
 export type { FindingView, FindingsResponse } from "./src/findings";
+
+export { handleFindingGroupsRequest } from "./src/server/finding-groups";
+export type { FindingGroupServices } from "./src/server/finding-groups";
+export { FINDING_GROUPS_API_PATH } from "./src/finding-groups";
+export type { FindingGroupsResponse, FindingGroupView } from "./src/finding-groups";

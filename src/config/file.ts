@@ -38,7 +38,7 @@ export type GitHubConfigAuth = "app";
 
 export type TrackerKind = "linear";
 
-export const IMPLEMENTERS = ["claude", "grok", "codex"] as const;
+export const IMPLEMENTERS = ["claude", "grok", "codex", "opencode"] as const;
 
 export type ImplementerName = (typeof IMPLEMENTERS)[number];
 
@@ -48,9 +48,15 @@ export type GrokConfig = {
   allowApiKey: boolean;
 };
 
+export type OpencodeConfig = {
+  path: string | null;
+};
+
 export type AgentsConfig = {
   implementer: ImplementerName;
   grok: GrokConfig;
+
+  opencode?: OpencodeConfig;
 };
 
 export function defaultAgents(): AgentsConfig {
@@ -106,6 +112,8 @@ export type PawsConfigFile = {
   queueStartTimeoutHours?: number;
   /** `[queue] max_running_per_owner`. Missing means no cap. */
   queueMaxRunningPerOwner?: number;
+  /** `[findings] grouping_time`, HH:MM UTC; default 06:00. */
+  findingsGroupingTime?: string;
   projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
   /** `[member_vm]`: the exe.dev size Create VM asks for. Missing means exe.dev's default. */
@@ -171,7 +179,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       if (
-        !/^(linear|github|tracker|closeout|merge|queue|checkout|caps|agents|server|member_vm)$/.test(
+        !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm)$/.test(
           section,
         ) &&
         !/^(closeout|merge|checkout|agents|skills)\./.test(section) &&
@@ -247,21 +255,25 @@ export function renderConfigToml(config: PawsSetupConfig): string {
  */
 export function writeConfigFile(path: string, config: PawsSetupConfig): boolean {
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const stored = parseConfigToml(current);
   const profiles = parseAgentSettingsToml(current, config.implementer);
   const rendered =
     renderConfigToml({
       ...config,
-      githubRepos: config.githubRepos ?? parseConfigToml(current).githubRepos,
-      closeoutProjects: config.closeoutProjects ?? parseConfigToml(current).closeoutProjects,
+      githubRepos: config.githubRepos ?? stored.githubRepos,
+      closeoutProjects: config.closeoutProjects ?? stored.closeoutProjects,
     }) +
     renderCheckoutProjects(parseCheckoutProjects(current)) +
     renderProjectSkills(parseProjectSkills(current)) +
-    renderMergeSettings(storedMerge(parseConfigToml(current))) +
+    renderMergeSettings(storedMerge(stored)) +
     renderQueueSettings({
-      startTimeoutHours: parseConfigToml(current).queueStartTimeoutHours,
-      maxRunningPerOwner: parseConfigToml(current).queueMaxRunningPerOwner,
+      startTimeoutHours: stored.queueStartTimeoutHours,
+      maxRunningPerOwner: stored.queueMaxRunningPerOwner,
     }) +
-    renderMemberVmSettings(parseConfigToml(current).memberVm);
+    renderMemberVmSettings(stored.memberVm) +
+    (stored.findingsGroupingTime
+      ? `\n[findings]\ngrouping_time = ${tomlString(stored.findingsGroupingTime!)}\n`
+      : "");
   const next =
     profiles === null
       ? rendered
@@ -463,6 +475,16 @@ function assignConfig(
   value: string | number | boolean | string[],
   line: number,
 ): void {
+  if (section === "findings") {
+    if (
+      key !== "grouping_time" ||
+      typeof value !== "string" ||
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)
+    )
+      throw new Error(`config.toml line ${line}: findings.grouping_time must be HH:MM UTC`);
+    config.findingsGroupingTime = value;
+    return;
+  }
   if (section === "linear") {
     if (key === "team") config.linearTeam = asString(value, line);
     else if (key === "team_id") config.linearTeamId = asString(value, line);
@@ -540,6 +562,10 @@ function assignConfig(
     else if (key === "allow_api_key") config.agents.grok.allowApiKey = asBoolean(value, line);
     return;
   }
+  if (section === "agents.opencode") {
+    if (key === "path") (config.agents.opencode ??= { path: null }).path = asString(value, line);
+    return;
+  }
   if (section === "" || section === "server") {
     if (key === "public_url") config.publicUrl = asString(value, line);
     else if (key === "repo") config.repo = asString(value, line);
@@ -550,7 +576,7 @@ function assignConfig(
 /** Write `agents.implementer`, keeping every other line. Mode is always 0600. */
 export function writeImplementer(path: string, implementer: ImplementerName): void {
   if (!isImplementer(implementer)) {
-    throw new Error("agents.implementer must be claude, grok, or codex");
+    throw new Error("agents.implementer must be claude, grok, codex, or opencode");
   }
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   const profiles = parseAgentSettingsToml(current, implementer);
@@ -582,7 +608,9 @@ function implementerName(
 ): ImplementerName {
   const name = asString(value, line);
   if (!isImplementer(name)) {
-    throw new Error(`config.toml line ${line} agents.implementer must be claude, grok, or codex`);
+    throw new Error(
+      `config.toml line ${line} agents.implementer must be claude, grok, codex, or opencode`,
+    );
   }
   return name;
 }

@@ -159,12 +159,17 @@ describe("rules in the Closeout policy", () => {
     });
   });
 
-  test("unknown fields, missing fields and bad values are rejected", () => {
+  test("an unknown field is left out; missing fields and bad values are rejected", () => {
+    const unknown = origin({
+      [PUBLIC_POLICY_PATH]: policy(
+        rule("api-contract", PROBE, ["failOn: P1", "timeoutSeconds: 30"]),
+      ),
+      [PROBE]: "probe\n",
+    });
+    expect(unknown.ok).toBe(true);
+    if (unknown.ok)
+      expect(unknown.warnings.map((warning) => warning.code)).toEqual(["unknown-policy-keys"]);
     const cases: [string[], string][] = [
-      [
-        ["failOn: P1", "timeoutSeconds: 30"],
-        "must NOT have additional properties ('timeoutSeconds' was unexpected)",
-      ],
       [
         ["failOn: P1", "onFail: ignore"],
         "/rules/0/onFail must be equal to one of the allowed values",

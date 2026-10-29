@@ -13,6 +13,7 @@ import {
   pathsMatch,
   policyCanonicalJson,
   PUBLIC_POLICY_PATH,
+  UNKNOWN_POLICY_KEYS_CODE,
   type FakeGitReader,
   type PolicyLoadOutcome,
 } from "../src/closeout-spec/policy";
@@ -140,13 +141,26 @@ describe("policy errors", () => {
     expectBlocked(result, "repo", ".agents/closeout.yaml: invalid YAML");
   });
 
-  test("unknown field", () => {
-    const { result } = origin({ [PUBLIC_POLICY_PATH]: 'specVersion: "0.1"\nnope: true\n' });
-    expectBlocked(
-      result,
-      "repo",
-      ".agents/closeout.yaml: / must NOT have additional properties ('nope' was unexpected)",
-    );
+  test("an unknown field is left out with a warning; the fields it knows stay strict", () => {
+    const { result } = origin({
+      [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nnope: true\nitems:\n${commandItem("lint", "    later: 1")}\n`,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(present(result).items).toEqual([
+      { id: "lint", kind: "command", gate: "beforePR", exec: ["true"], timeoutSeconds: 30 },
+    ]);
+    expect(result.warnings).toEqual([
+      {
+        code: UNKNOWN_POLICY_KEYS_CODE,
+        message:
+          "Ignored policy keys this Closeout does not know: .agents/closeout.yaml:/nope, .agents/closeout.yaml:/items/0/later. A newer runner applies them.",
+      },
+    ]);
+    const strict = origin({
+      [PUBLIC_POLICY_PATH]: `specVersion: "0.1"\nnope: true\nitems:\n${commandItem("lint", '    recheck: "yes"')}\n`,
+    });
+    expectBlocked(strict.result, "repo", ".agents/closeout.yaml: /items/0/recheck must be boolean");
   });
 
   test("specVersion must be the string 0.1", () => {

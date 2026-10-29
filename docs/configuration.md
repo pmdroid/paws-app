@@ -17,6 +17,8 @@ Run it again to change a value: each prompt shows the current value as its defau
 
 For a scripted install, pass `--non-interactive` with flags such as `--paws-port 443`, or `--answers answers.toml` with the same keys in snake case (`paws_port = 443`, `github_repos = ["owner/repo"]`). Flags override the file, and a value left out keeps its current or default value.
 
+A public dashboard also needs `PAWS_TLS_KEY_PATH` and `PAWS_TLS_CERT_PATH`. When `PAWS_PUBLIC_URL` is a tailnet name (`*.ts.net`), the installer offers to run `tailscale cert <host>` into `PAWS_HOME/tls/` (key 0600). That needs the tailscale CLI, HTTPS certificates turned on for the tailnet, and `sudo tailscale set --operator=$USER`; if it fails, the installer prints the commands to run and asks for paths instead. For any other URL it asks for existing key and certificate paths. The pair uses the certificate checks from `paws public-tls validate` against the public URL hostname. The runner listener on `PAWS_RUNNER_PORT` uses the same certificate; `PAWS_RUNNER_HOST` is only its bind address. A wrong host, an expired certificate or a key readable by others is explained and asked again. A certificate from `tailscale cert` is renewed weekly by `~/.config/systemd/user/paws-tls-renew.timer`, which then reloads Paws (SIGHUP, exit 75 and restart). The installer finishes with the tailnet policy rule for the dashboard and runner ports ([Create VM](create-vm.md)). Scripted installs take `tailscale_cert`, `tls_key_path` and `tls_cert_path`. Supplied certificate paths default to skipping `tailscale cert`. Switching to existing certificates or disabling the public dashboard disables and removes the renewal timer.
+
 ## `config.toml`
 
 | Section                            | Keys                                                                                          | Notes                                                                                              |
@@ -63,6 +65,12 @@ order = "ci-green"
 
 The merge lane squashes head S only when `mergeable(S)` holds: the pull request head is S, S contains the current `main`, Closeout accepted S under the current policy digest, CI is green for S, no review thread is unresolved and branch protection is satisfied. [After acceptance](closeout.md#after-acceptance) has the details.
 
+### `[findings]`
+
+`grouping_time = "06:00"` schedules daily review-finding grouping at that UTC time. It accepts `HH:MM` and defaults to `06:00`. Unchanged findings skip the helper and the Linear title read. Each workspace can spend at most one helper turn per UTC day, including **Run now** from the Findings page. Failed or interrupted attempts consume that day's allowance. An admin can turn grouping off for a workspace in **Settings → Findings**; while it is off, the daily job skips that workspace and **Run now** is refused.
+
+Grouping uses a paired runner owned by an active workspace owner or admin who can authorize the reporting session, signed in to the configured implementer, on runner 0.1.53 or later. When an earlier admin has no runner, the job uses an admin who does. A runner whose owner cannot see that session is not selected. It runs read-only without a repository checkout. The job only reads open issue titles. A member must choose **File as one issue**, **Add to** the suggested issue, or **Dismiss group** with a reason. Filing creates an undelegated Triage issue with the `review finding` label. Open groups are replaced on the next changed snapshot; groups already acted on remain in history.
+
 ### `[queue]`
 
 - **`start_timeout_hours`**: how long an item may wait for a runner slot before Paws fails it. Default 24, from 1 to 720.
@@ -80,3 +88,7 @@ retry:
 - **`fix_rounds_per_item`**: fix rounds per item, counted since the latest reply from a person in the item's session. Default 3. Closeout findings, red CI and changes-requested reviews all count. When they are spent, Paws asks the team.
 
 Rebase returns are not configurable: three in a row on a known main commit and six in any rolling hour, then Paws asks. Only a person's reply in the session refills a budget. [Fix rounds](closeout.md#fix-rounds) and [When Paws asks the team](closeout.md#when-paws-asks-the-team) describe both.
+
+Grouping bounds each helper prompt to 65,000 characters. Linear title reads stop at each team’s share of a 65,000-character total, with at most 1,000 titles per team. Large snapshots rotate a batch of findings and the sampled issue titles daily; finding text is capped at 4,000 characters and titles at 500. Partial snapshots are revisited without requiring another finding change. Grouping helpers have a ten-minute command lifetime.
+
+Grouping is maintenance work. An interactive classification or repository-selection helper fences an unfinished grouping helper only when dispatch commits to that runner. Ranking prefers an idle helper slot and never interrupts grouping. The runner has one helper slot independently of its work capacity; the interrupted grouping turn still counts against its daily allowance. This is the issue’s explicit cost cap, confirmed by the team: report preemption as a failed attempt and pick the findings up on the next UTC day. Overflow processing saves the last processed finding ID and resumes after it, including when earlier findings close. A batch wraps from the tail to the head to fill its prompt budget. Legacy list-position cursors start a fresh pass. It preserves groups outside the processed batch, finishes a pass through the snapshot, then records an explicit skip reason while the findings stay unchanged.

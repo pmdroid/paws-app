@@ -16,7 +16,7 @@ export const RUNNER_CHECKPOINT_LIMIT_MS = 90_000;
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const time = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const generation = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const agent = z.enum(["claude", "codex", "grok"]);
+const agent = z.enum(["claude", "codex", "grok", "opencode"]);
 const owner = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/);
 const repo = z
   .string()
@@ -188,7 +188,7 @@ export const RunnerCommandSchema = z
       restoreSession: z
         .strictObject({
           generation: generation.min(1),
-          agent: z.enum(["claude", "codex", "grok"]),
+          agent: z.enum(["claude", "codex", "grok", "opencode"]),
           agentVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$/),
           sessionId: id,
           sha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -228,7 +228,7 @@ export const RunnerCommandSchema = z
       type: z.literal("helper"),
       sessionId: id,
       sessionGeneration: generation,
-      purpose: z.enum(["classify", "select_repository"]),
+      purpose: z.enum(["classify", "select_repository", "finding_groups"]),
       profile: RunnerProfileSchema,
       prompt: z.string().min(1).max(65_536),
     }),
@@ -283,12 +283,18 @@ export const RunnerCommandSchema = z
       command.type !== "review" ||
       !command.reviewCommand ||
       (command.profile.agent !== "grok" &&
+        command.profile.agent !== "opencode" &&
         command.profile.model !== null &&
         command.reviewCommand.base !== command.repository.baseSha),
   )
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine((command) => command.type !== "login" || command.expiresAt - command.issuedAt <= 600_000)
-  .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000);
+  .refine(
+    (command) =>
+      command.type !== "helper" ||
+      command.expiresAt - command.issuedAt <=
+        (command.purpose === "finding_groups" ? 600_000 : 60_000),
+  );
 
 export const SignedRunnerCommandSchema = z.strictObject({
   keyId: id,

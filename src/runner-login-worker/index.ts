@@ -5,12 +5,12 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
-import { resolveAdapter, minimalAgentEnv } from "../acp";
+import { resolveAdapter, resolveOpencodeCommand, minimalAgentEnv } from "../acp";
 import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
 import { RunnerLoginInputSchema, type RunnerLoginUpdate } from "../runner-protocol";
 
 export async function runProviderLogin(options: {
-  agent: "claude" | "codex" | "grok";
+  agent: "claude" | "codex" | "grok" | "opencode";
   home: string;
   signal: AbortSignal;
   emit(update: RunnerLoginUpdate): void;
@@ -22,10 +22,15 @@ export async function runProviderLogin(options: {
   // Turns on this runner read the live home while the provider signs in to a staged one.
   let home: string | undefined;
   try {
-    home = stageLoginHome(options.home);
-    await signIn({ ...options, home });
+    if (options.agent === "opencode") {
+      await signIn(options);
+    } else {
+      home = stageLoginHome(options.home);
+      await signIn({ ...options, home });
+      options.signal.throwIfAborted();
+      publishCredentials(options.agent, home, options.home);
+    }
     options.signal.throwIfAborted();
-    publishCredentials(options.agent, home, options.home);
     options.emit({ state: "connected", terminal: "", authorization: null, inputId: null });
   } catch (caughtError4) {
     journalCaught(caughtError4, "runner-login-worker.runProviderLogin", null);
@@ -52,7 +57,11 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
   };
   if (options.agent === "grok") {
     await runGrokLogin({ ...options, env });
-  } else if (options.agent === "claude") {
+  } else if (options.agent === "claude" || options.agent === "opencode") {
+    const fallback =
+      options.agent === "claude"
+        ? ["/opt/paws-runner/bin/claude", "auth", "login"]
+        : [resolveOpencodeCommand().command, "auth", "login"];
     state.state = "waiting";
     state.inputId = randomUUID();
     const decoder = new TextDecoder();
@@ -76,7 +85,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
     const kill = () => child?.kill("SIGKILL");
     signal.addEventListener("abort", kill, { once: true });
     try {
-      child = Bun.spawn(options.command ?? ["/opt/paws-runner/bin/claude", "auth", "login"], {
+      child = Bun.spawn(options.command ?? fallback, {
         cwd: options.home,
         env: { ...env, NO_BROWSER: "1" },
         terminal,
@@ -200,7 +209,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
       await exited;
     }
   }
-  if (options.agent !== "grok") {
+  if (options.agent !== "grok" && options.agent !== "opencode") {
     const checked = await checkDeveloperLogin({
       cli: options.agent,
       env,

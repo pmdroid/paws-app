@@ -10,7 +10,7 @@ export type SessionModelChoice = { id: string; name: string; description?: strin
 type ModelSelection = { model: string | null; models: SessionModelChoice[] };
 
 function concreteModel(model: string): boolean {
-  return !["default", "auto", "claude", "codex", "grok"].includes(model.toLowerCase());
+  return !["default", "auto", "claude", "codex", "grok", "opencode"].includes(model.toLowerCase());
 }
 
 function modelOption(options: SessionConfigOption[] | null | undefined) {
@@ -137,5 +137,7 @@ export function standardWindowNotice(name: string): string {
 }
 
 export function providerFor(agent: ImplementerName): string {
-  return { claude: "anthropic", codex: "openai", grok: "xai" }[agent];
+  return { claude: "anthropic", codex: "openai", grok: "xai", opencode: "opencode" }[
+    agent
+  ] as string;
 }

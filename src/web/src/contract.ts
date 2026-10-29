@@ -720,6 +720,8 @@ export interface StatusSnapshotBase {
   linearWebhook?: StatusLinearWebhook;
   /** Repositories GitHub refuses pushes from the Paws App for, the oldest outage first. */
   pushOutages?: StatusPushOutage[];
+  /** Repositories whose Closeout policy uses keys the lowest online runner does not know. */
+  policyRunnerWarnings?: StatusPolicyRunnerWarning[];
   /** Only in the list, while an item merged in the last 24 hours. */
   mergedTimes?: StatusMergedTimes;
 }
@@ -750,7 +752,7 @@ export type StatusSlice = (typeof STATUS_SLICES)[number];
 export const STATUS_SLICE_FIELDS = {
   items: ["items", "runs", "verdicts", "agentCloseout", "mergedTimes"],
   questions: ["questions"],
-  mergeQueue: ["mergeQueue", "pushOutages"],
+  mergeQueue: ["mergeQueue", "pushOutages", "policyRunnerWarnings"],
   mergeHistory: ["mergeHistory"],
   evidence: ["evidence"],
   intake: ["intake", "linearBudget", "linearWebhook"],
@@ -1027,6 +1029,20 @@ export interface StatusPushOutage {
   installationUrl: string | null;
 }
 
+/**
+ * `repository`'s Closeout policy uses keys the lowest online runner release does not know. That
+ * runner leaves them out and runs the rest of the policy.
+ */
+export interface StatusPolicyRunnerWarning {
+  repository: string;
+  policyDigest: string;
+  /** The lowest runner release online when Paws checked. */
+  runnerVersion: string;
+  /** Each key that runner does not know, with the first release that does. */
+  keys: Array<{ key: string; needs: string }>;
+  checkedAt: string;
+}
+
 export interface StatusLinearWebhook {
   warning: string;
   fix: string;
@@ -1245,9 +1261,33 @@ function readBase(body: Record<string, unknown>): StatusSnapshotBase {
             readPushOutage(entry, `pushOutages[${index}]`),
           ),
         }),
+    ...(body.policyRunnerWarnings === undefined
+      ? {}
+      : {
+          policyRunnerWarnings: array(body, "policyRunnerWarnings", "status").map((entry, index) =>
+            readPolicyRunnerWarning(entry, `policyRunnerWarnings[${index}]`),
+          ),
+        }),
     ...(body.mergedTimes === undefined
       ? {}
       : { mergedTimes: readMergedTimes(body.mergedTimes, "mergedTimes") }),
+  };
+}
+
+function readPolicyRunnerWarning(input: unknown, path: string): StatusPolicyRunnerWarning {
+  const body = object(input, path);
+  return {
+    repository: text(body, "repository", path),
+    policyDigest: text(body, "policyDigest", path),
+    runnerVersion: text(body, "runnerVersion", path),
+    keys: array(body, "keys", path).map((entry, index) => {
+      const key = object(entry, `${path}.keys[${index}]`);
+      return {
+        key: text(key, "key", `${path}.keys[${index}]`),
+        needs: text(key, "needs", `${path}.keys[${index}]`),
+      };
+    }),
+    checkedAt: dateString(body, "checkedAt", path),
   };
 }
 

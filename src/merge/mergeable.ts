@@ -1,8 +1,13 @@
 /**
- * Closeout's record that it accepted head S, with the policy digest of its run (null if none).
+ * Closeout's record that it accepted head S, with the policy digest of its run (null if none) and
+ * the digest of that policy's checks marked `recheck: true` (null if the run did not record it).
  * Under `[merge] main_moved` `ci` or `overlap`, the record for the head the lane rebased into S.
  */
-export type AcceptRow = { head: string; policyDigest: string | null };
+export type AcceptRow = {
+  head: string;
+  policyDigest: string | null;
+  recheckDigest?: string | null;
+};
 
 /** What the merge lane read about head S while it held the repository lock. */
 export type MergeFacts = {
@@ -13,6 +18,8 @@ export type MergeFacts = {
   accept: AcceptRow | null;
   /** The Closeout policy digest for S now: `""` without a policy, null when it cannot be read. */
   policyDigest: string | null;
+  /** The digest of the current policy's checks marked `recheck: true`: `""` when none is. */
+  recheckDigest?: string | null;
   /** S has the current main as an ancestor. */
   containsMain: boolean;
   /**
@@ -47,10 +54,10 @@ export type MergeBlock =
 export type Mergeable = { ok: true } | { ok: false; block: MergeBlock };
 
 /**
- * `mergeable(S)`: Closeout accepted S under the current policy digest, a person approved S when
- * its risk tier is high, CI is green for S, S contains the current main (or is apart from it
- * under `overlap`), no review thread is unresolved and branch protection is satisfied. The only
- * thing that lets the lane squash S.
+ * `mergeable(S)`: Closeout accepted S and no check marked `recheck: true` changed since, a person
+ * approved S when its risk tier is high, CI is green for S, S contains the current main (or is
+ * apart from it under `overlap`), no review thread is unresolved and branch protection is
+ * satisfied. The only thing that lets the lane squash S.
  */
 export function mergeable(facts: MergeFacts): Mergeable {
   if (facts.headMoved) return { ok: false, block: "head_moved" };
@@ -66,11 +73,23 @@ export function mergeable(facts: MergeFacts): Mergeable {
 }
 
 /**
- * The accept row binds S and the policy digest. Both digests must be known and equal: an
- * acceptance with no recorded Closeout run, or a policy that cannot be read now, sends S back
- * through Closeout rather than merging it under a policy Closeout never applied.
+ * The accept row binds S and the policy it ran under. An acceptance with no recorded Closeout
+ * run, or a policy that cannot be read now, sends S back through Closeout. A policy change alone
+ * leaves S accepted; a change to a check marked `recheck: true` (or a run that did not record
+ * those checks) sends it back.
  */
-export function closeoutAccepted({ accept, head, policyDigest }: MergeFacts): boolean {
+export function closeoutAccepted({
+  accept,
+  head,
+  policyDigest,
+  recheckDigest,
+}: MergeFacts): boolean {
   if (accept === null || accept.head !== head) return false;
-  return accept.policyDigest !== null && accept.policyDigest === policyDigest;
+  if (accept.policyDigest === null || policyDigest === null) return false;
+  if (accept.policyDigest === policyDigest) return true;
+  return (
+    accept.recheckDigest !== undefined &&
+    accept.recheckDigest !== null &&
+    accept.recheckDigest === recheckDigest
+  );
 }

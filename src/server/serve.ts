@@ -7,7 +7,7 @@ import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
-import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime } from "../config";
+import { DEFAULT_HOST, DEFAULT_PORT, loadConfigFile, loadRuntime } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import {
   handleLinearWebhook,
@@ -20,6 +20,9 @@ import {
   fakeStatusProvider,
   FINDINGS_API_PATH,
   handleFindingsRequest,
+  handleFindingGroupsRequest,
+  FINDING_GROUPS_API_PATH,
+  type FindingGroupServices,
   handleStatusRequest,
   statusSnapshots,
   type ReadLinearArtifact,
@@ -34,11 +37,13 @@ import {
 } from "../evidence";
 import {
   CHECKOUT_SETTINGS_PATH,
+  FINDING_SETTINGS_PATH,
   HOOK_SETTINGS_PATH,
   SKILL_SETTINGS_PATH,
   handleAgentSettingsRequest,
   handleCheckoutSettingsRequest,
   handleMergeSettingsRequest,
+  handleFindingSettingsRequest,
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
   MERGE_SETTINGS_PATH,
@@ -68,6 +73,7 @@ import {
 import type { WorkspaceSession } from "../db";
 
 export type ServerOptions = {
+  findingGroups?: FindingGroupServices;
   server?: Bun.Server<undefined>;
   onboarding?: (request: Request, client: WorkspaceClient) => Promise<Response | null>;
   tls?: PublicTls;
@@ -209,6 +215,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             : {}),
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
+          ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
           ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
           ...(options.findingIssues ? { findingIssues: options.findingIssues } : {}),
           ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
@@ -242,6 +249,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
 }
 
 type Secrets = {
+  findingGroups?: FindingGroupServices;
   health: ReturnType<typeof createHealthReport>;
   /** The socket peer address, for the sign-in rate limits. */
   ip?: string | null;
@@ -438,6 +446,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       submit: secrets.visualReviewChanges,
     }))!;
   }
+  if (path === FINDING_GROUPS_API_PATH) {
+    if (!secrets.db) return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleFindingGroupsRequest(request, {
+      db: secrets.db,
+      ...(principal ? { principal } : {}),
+      ...(sessionIds ? { sessionIds } : {}),
+      ...(secrets.findingGroups ? { services: secrets.findingGroups } : {}),
+    }))!;
+  }
   if (path === FINDINGS_API_PATH) {
     if (secrets.db === undefined) return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleFindingsRequest(request, {
@@ -479,9 +496,34 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
+  if (path === FINDING_SETTINGS_PATH && secrets.db) {
+    const db = secrets.db;
+    const workspaceId =
+      principal?.workspaceId ??
+      db.query<{ id: string }, []>("SELECT id FROM workspace ORDER BY id LIMIT 1").get()?.id;
+    if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
+    const configPath = secrets.agentSettings?.configPath;
+    return (await handleFindingSettingsRequest(request, {
+      db,
+      csrfToken,
+      workspaceId,
+      groupingTime: (configPath && loadConfigFile(configPath).findingsGroupingTime) || "06:00",
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(db, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
   if (path === HOOK_SETTINGS_PATH && secrets.db) {
     const db = secrets.db;
     return (await handleHookSettingsRequest(request, {
+      ...secrets.skillSettings,
       db,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),

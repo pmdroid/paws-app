@@ -115,6 +115,7 @@ export {
   pushOutageCause,
   pushOutageProbeDelayMs,
 } from "./transport";
+export { PUBLICATION_STAGING_FAILURE } from "./publication";
 
 export { closeStoppedPull } from "./stopped";
 export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";

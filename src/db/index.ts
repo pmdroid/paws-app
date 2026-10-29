@@ -227,6 +227,13 @@ export {
   takePushOutageProbe,
   type PushOutage,
 } from "./push-outage";
+export {
+  clearPolicyRunnerWarning,
+  listPolicyRunnerWarnings,
+  policyKeysLowestRunnerLacks,
+  savePolicyRunnerWarning,
+  type PolicyRunnerWarning,
+} from "./policy-runner-warning";
 export { frozenMigrations } from "./migrations";
 export {
   MIGRATION_DIRECTORY,
@@ -359,6 +366,7 @@ export {
   latestCloseoutIdentity,
   closeoutHeadsStarted,
   closeoutPolicyDigest,
+  closeoutPolicyDigests,
   listCloseoutProgress,
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,
@@ -738,6 +746,17 @@ export { restart, fixRounds, restartLimit, type RestartHandoff } from "./restart
 export { jobVersionCurrent } from "./jobs";
 
 export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
+
+export { listFindingGroups, lastFindingGroupRun, findingGroupSources } from "./finding-groups";
+export type { FindingGroup, FindingGroupRun } from "./finding-groups";
+
+export { findingGroupingAdmins, recoverFindingGroupRuns } from "./finding-groups";
+
+export { getFindingGroup, removeFindingFromOpenGroups } from "./finding-groups";
+export { findingGroupingEnabled, setFindingGrouping } from "./finding-groups";
+export { reviewFindingsByIds } from "./review-findings";
+
+export { yieldFindingGroupHelpers, runnerHelperAvailability } from "./runner-capacity";
 
 export {
   getReviewFindingIssue,

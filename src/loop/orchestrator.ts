@@ -93,7 +93,7 @@ import {
   type ResolvedEvidence,
   type CandidateIdentity,
   type CiResult,
-  candidatePolicyDigest,
+  candidatePolicyDigests,
   ciMappings,
 } from "../closeout";
 import {
@@ -409,9 +409,11 @@ import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress } from "./closeout-progress";
+import { checkPolicyRunners } from "./policy-runners";
 import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
   closeoutChecksPrompt,
+  createAcpCodexReviewer,
   createReviewCommandReviewer,
   hiddenPathsPrompt,
   implementPrompt,
@@ -3344,7 +3346,12 @@ export class Orchestrator {
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
-    const reviewer = createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
+
+    const reviewerAgent = deps.profiles?.reviewer?.agent;
+    const reviewer =
+      reviewerAgent === "grok" || reviewerAgent === "opencode"
+        ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
+        : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,
@@ -4046,9 +4053,9 @@ export class Orchestrator {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
         settings: (item, signal) => this.mergeSettingsFor(item, signal),
-        policyDigest: (item, worktree) => {
+        policyDigests: (item, worktree) => {
           const { home, policyRoot } = this.closeoutHome(item);
-          return candidatePolicyDigest(worktree, home, policyRoot, this.runCheckout(item).checks);
+          return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
         },
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
@@ -4261,6 +4268,7 @@ export class Orchestrator {
       repo: repository.repo,
       title: draft?.title ?? item.title,
       ...(draft ? { description: draft.body } : {}),
+      reviewer: getItemRunCommitPolicy(this.db, item.id)?.credit?.login,
       client: github.client,
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
@@ -7345,7 +7353,8 @@ export class Orchestrator {
     item: WorkItemRecord,
     input: RunAgentOptions,
   ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes"> {
-    if (input.prepareOnly || !this.repositoryForItem(item)) return {};
+    const repository = this.repositoryForItem(item);
+    if (input.prepareOnly || !repository) return {};
     const runtimes = { runtimes: () => this.runtimeList(item, input.worktreePath) };
     if (input.role !== "implementer") return runtimes;
     const { home, policyRoot } = this.closeoutHome(item);
@@ -7353,6 +7362,14 @@ export class Orchestrator {
       ...runtimes,
       closeoutPolicy: async () => {
         const load = trustedPolicyFiles(input.worktreePath, home, policyRoot);
+        // The runner parses the policy with its own release: say which keys it would leave out.
+        if (load.ok && !load.absent)
+          checkPolicyRunners(this.db, {
+            repository: `${repository.owner}/${repository.repo}`,
+            digest: load.digest,
+            files: load.files,
+            now: this.now(),
+          });
         return load.ok && !load.absent
           ? { ...load, published: publishedEvidence(this.db, item.id) }
           : load;

@@ -20,6 +20,7 @@ const MODULES = [
   "intake",
   "execution-controls",
   "scheduler",
+  "finding-groups",
   "acp",
   "closeout",
   "closeout-spec",
@@ -96,6 +97,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   intake: ["journal", "core", "db", "linear"],
   "execution-controls": ["journal", "core", "db", "workspace"],
   scheduler: ["journal", "core", "db", "intake"],
+  "finding-groups": ["db", "linear"],
   acp: ["journal", "core", "config", "process", "worktree-checkout", "closeout-spec"],
   closeout: ["journal", "core", "closeout-spec"],
   "closeout-spec": ["journal", "core", "worktree-checkout"],
@@ -159,7 +161,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "closeout-spec",
   ],
   install: ["journal", "acp", "config"],
-  "install-host": ["config"],
+  "install-host": ["config", "deployment"],
   installer: ["config", "credentials", "doctor", "install-host"],
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
@@ -222,6 +224,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-work": ["journal", "db", "workspace", "runner-protocol", "questions"],
   "runner-placement": ["journal", "db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
+    "finding-groups",
     "journal",
     "core",
     "config",
