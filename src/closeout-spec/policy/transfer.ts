@@ -5,6 +5,8 @@ import { POLICY_MAX_BYTES } from "./resolve";
 import type { PublishedEvidence } from "../types";
 
 const MAX_FILES = 128;
+/** Base64 bytes of one policy file. A whole SKILL.md can pass a few hundred KB. */
+const MAX_FILE_BASE64 = 4 * 1024 * 1024;
 const MAX_PUBLISHED = 200;
 
 const Transfer = z.union([
@@ -13,7 +15,7 @@ const Transfer = z.union([
   z.strictObject({
     digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     files: z
-      .array(z.strictObject({ path: z.string().min(1).max(1024), data: z.string().max(65536) }))
+      .array(z.strictObject({ path: z.string().min(1).max(1024), data: z.string().max(MAX_FILE_BASE64) }))
       .min(1)
       .max(MAX_FILES),
     published: z
