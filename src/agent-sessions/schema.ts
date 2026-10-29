@@ -18,7 +18,7 @@ export const AgentSessionFinishSchema = z.strictObject({
   generation,
   sizeBytes: z.number().int().nonnegative().max(AGENT_SESSION_MAX_BYTES),
   sha256,
-  agent: z.enum(["claude", "codex", "grok", "opencode"]),
+  agent: z.enum(["claude", "codex", "grok"]),
   agentVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$/),
   sessionId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/),
   workspacePath: z

@@ -24,10 +24,13 @@ import {
 
 const requestSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("probe"), profile: RunnerProfileSchema }),
-  z.strictObject({ type: z.literal("login_check"), agent: z.enum(["claude", "codex", "grok", "opencode"]) }),
+  z.strictObject({
+    type: z.literal("login_check"),
+    agent: z.enum(["claude", "codex", "grok", "opencode"]),
+  }),
 ]);
 type HealthRequest = z.infer<typeof requestSchema>;
-type Agent = "claude" | "codex" | "grok";
+type Agent = "claude" | "codex" | "grok" | "opencode";
 export type AgentSignIn = {
   agent: Agent;
   status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "unknown";

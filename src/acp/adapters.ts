@@ -17,6 +17,8 @@ export const CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp";
 export const CLAUDE_AGENT_ACP_BIN = "claude-agent-acp";
 export const CODEX_ACP_BIN = "codex-acp";
 
+/** Package `@opencode/cli` ships the `opencode` bin. It is installed globally, not in the checkout. */
+export const OPENCODE_PACKAGE = "@opencode/cli";
 export const OPENCODE_ACP_BIN = "opencode";
 
 /**
@@ -121,31 +123,12 @@ export function providerCliPath(
 
 /** Versions installed by `bun install`, for doctor. */
 export function adapterVersions(root: string = pawsPackageRoot()): AdapterVersions {
-  let opencode: string | undefined;
-  try {
-    // Try to find opencode version if installed globally or via package.json
-    const pkg = join(root, "node_modules", "opencode-ai", "package.json");
-    if (existsSync(pkg)) {
-      const parsed: unknown = JSON.parse(readFileSync(pkg, "utf8"));
-      if (isRecord(parsed) && typeof parsed.version === "string") opencode = parsed.version;
-    }
-  } catch {
-    // ignore
-  }
-  try {
-    return {
-      claudeAgentAcp: installedVersion(root, CLAUDE_AGENT_ACP_PACKAGE, CLAUDE_AGENT_ACP_BIN),
-      codexAcp: installedVersion(root, CODEX_ACP_PACKAGE, CODEX_ACP_BIN),
-      ...(opencode ? { opencode } : {}),
-    };
-  } catch (err) {
-    // Still return partial if possible
-    return {
-      claudeAgentAcp: installedVersion(root, CLAUDE_AGENT_ACP_PACKAGE, CLAUDE_AGENT_ACP_BIN),
-      codexAcp: installedVersion(root, CODEX_ACP_PACKAGE, CODEX_ACP_BIN),
-      ...(opencode ? { opencode } : {}),
-    };
-  }
+  const opencode = installedVersionOrNull(root, OPENCODE_PACKAGE);
+  return {
+    claudeAgentAcp: installedVersion(root, CLAUDE_AGENT_ACP_PACKAGE, CLAUDE_AGENT_ACP_BIN),
+    codexAcp: installedVersion(root, CODEX_ACP_PACKAGE, CODEX_ACP_BIN),
+    ...(opencode === null ? {} : { opencode }),
+  };
 }
 
 export function pinnedAdapters(root: string = pawsPackageRoot()): Record<AgentRole, AdapterPin> {
@@ -255,7 +238,11 @@ export function selectGrokAuthMethod(
   return null;
 }
 
-/** True when the variable is a non-empty string. The value is not returned. */
+/**
+ * `opencode acp`. `agents.opencode.path` uses that executable; otherwise the
+ * `opencode` binary comes from the runner launcher or PATH, because
+ * `@opencode/cli` is installed globally rather than in the paws checkout.
+ */
 export function resolveOpencodeCommand(
   agents?: AgentsConfig,
   packageRoot: string = pawsPackageRoot(),
@@ -276,9 +263,6 @@ export function resolveOpencodeCommand(
   }
   const launcher = installedLauncher(packageRoot, OPENCODE_ACP_BIN, runnerBase);
   if (launcher) return { command: launcher, args, error: null };
-  const command = join(packageRoot, "node_modules", ".bin", OPENCODE_ACP_BIN);
-  if (existsSync(command)) return { command, args, error: null };
-  // Also try 'opencode' in PATH if not in node_modules
   return { command: OPENCODE_ACP_BIN, args, error: null };
 }
 
@@ -337,6 +321,16 @@ function installedVersion(root: string, packageName: string, bin: string): strin
     throw new Error(`${packageName} package.json has no version`);
   }
   return parsed.version;
+}
+
+/** The installed version, or null when the package is absent. */
+function installedVersionOrNull(root: string, packageName: string): string | null {
+  const manifestPath = join(root, "node_modules", packageName, "package.json");
+  if (!existsSync(manifestPath)) return null;
+  const parsed: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+  return isRecord(parsed) && typeof parsed.version === "string" && parsed.version.length > 0
+    ? parsed.version
+    : null;
 }
 
 function isPawsPackage(value: unknown): boolean {

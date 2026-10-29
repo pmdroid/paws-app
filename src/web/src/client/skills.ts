@@ -4,7 +4,7 @@ import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
 import { waitingLabel } from "./runners";
 
-export type SkillAgent = "claude" | "codex" | "grok" | "opencode";
+export type SkillAgent = "claude" | "codex" | "grok";
 
 export type SkillPin = {
   name: string;
@@ -76,7 +76,7 @@ export function discoversSkills(draft: SkillDraft): boolean {
 }
 
 const AGENT_NAMES: Record<SkillAgent, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
-const ALL_AGENTS: SkillAgent[] = ["claude", "codex", "grok", "opencode"];
+const ALL_AGENTS: SkillAgent[] = ["claude", "codex", "grok"];
 const PATH = "/api/settings/skills";
 
 const intro =

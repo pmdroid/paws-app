@@ -696,9 +696,9 @@ export function createRemoteAgentRunner(options: {
           throw new Error("A review command runs only as read-only reviewer work");
         if (
           input.reviewCommand &&
-          !input.profile.model &&
-          input.profile.agent !== "grok" &&
-          input.profile.agent !== "opencode"
+          (input.profile.agent === "grok" ||
+            input.profile.agent === "opencode" ||
+            !input.profile.model)
         )
           throw new Error(
             "The reviewer profile needs a Claude or Codex model to run the agent's review command",

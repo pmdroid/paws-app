@@ -137,5 +137,7 @@ export function standardWindowNotice(name: string): string {
 }
 
 export function providerFor(agent: ImplementerName): string {
-  return { claude: "anthropic", codex: "openai", grok: "xai", opencode: "opencode" }[agent] as string;
+  return { claude: "anthropic", codex: "openai", grok: "xai", opencode: "opencode" }[
+    agent
+  ] as string;
 }

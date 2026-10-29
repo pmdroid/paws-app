@@ -1160,7 +1160,7 @@ CREATE TABLE runner_policy (
 ) STRICT;
 CREATE TABLE runner_agent_policy (
  runner_id TEXT NOT NULL REFERENCES runner(id),
- agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok','opencode')),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok')),
  seat TEXT NOT NULL DEFAULT 'unknown' CHECK(seat IN ('unknown','personal','organization','api')),
  ready INTEGER NOT NULL DEFAULT 0 CHECK(ready IN (0,1)),
  auth_expired INTEGER NOT NULL DEFAULT 0 CHECK(auth_expired IN (0,1)),
@@ -1178,7 +1178,7 @@ CREATE TABLE runner_execution_usage (
  owner_user_id TEXT NOT NULL REFERENCES workspace_user(id),
  item_id TEXT REFERENCES work_item(id),
  run_id TEXT REFERENCES run(id),
- agent TEXT CHECK(agent IN ('claude','codex','grok','opencode')),
+ agent TEXT CHECK(agent IN ('claude','codex','grok')),
  model TEXT,
  seat TEXT NOT NULL,
  role TEXT NOT NULL CHECK(role IN ('implementer','reviewer')),
@@ -1464,7 +1464,7 @@ CREATE TABLE runner_capacity (
 CREATE TABLE agent_model_catalog (
  runner_id TEXT NOT NULL REFERENCES runner(id),
  user_id TEXT NOT NULL REFERENCES workspace_user(id),
- agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok','opencode')),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok')),
  model TEXT NOT NULL,
  result_json TEXT NOT NULL CHECK(json_valid(result_json)),
  updated_at INTEGER NOT NULL,
@@ -1474,7 +1474,7 @@ CREATE TABLE agent_model_probe (
  command_id TEXT PRIMARY KEY REFERENCES runner_command(id),
  runner_id TEXT NOT NULL REFERENCES runner(id),
  user_id TEXT NOT NULL REFERENCES workspace_user(id),
- agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok','opencode')),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok')),
  model TEXT NOT NULL,
  requested_at INTEGER NOT NULL,
  finished_at INTEGER
@@ -1819,7 +1819,7 @@ CREATE TABLE runner_follow_up (
 CREATE TABLE runner_member_account_grok (
  runner_id TEXT NOT NULL REFERENCES runner(id),
  user_id TEXT NOT NULL REFERENCES workspace_user(id),
- agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok','opencode')),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok')),
  connected INTEGER NOT NULL DEFAULT 0 CHECK(connected IN (0,1)),
  cooldown_until INTEGER NOT NULL DEFAULT 0,
  resolved_model TEXT,
@@ -1834,7 +1834,7 @@ CREATE TABLE runner_login_grok (
  runner_id TEXT NOT NULL REFERENCES runner(id),
  workspace_id TEXT NOT NULL REFERENCES workspace(id),
  user_id TEXT NOT NULL REFERENCES workspace_user(id),
- agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok','opencode')),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok')),
  state TEXT NOT NULL CHECK(state IN ('starting','waiting','connected','failed','cancelled','expired')),
  expires_at INTEGER NOT NULL,
  terminal TEXT NOT NULL DEFAULT '',

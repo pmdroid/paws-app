@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
-import { resolveAdapter, minimalAgentEnv } from "../acp";
+import { resolveAdapter, resolveOpencodeCommand, minimalAgentEnv } from "../acp";
 import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
 import { RunnerLoginInputSchema, type RunnerLoginUpdate } from "../runner-protocol";
 
@@ -50,9 +50,13 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
     authorization: null,
     inputId: null,
   };
-  if (options.agent === "grok" || options.agent === "opencode") {
+  if (options.agent === "grok") {
     await runGrokLogin({ ...options, env });
-  } else if (options.agent === "claude") {
+  } else if (options.agent === "claude" || options.agent === "opencode") {
+    const fallback =
+      options.agent === "claude"
+        ? ["/opt/paws-runner/bin/claude", "auth", "login"]
+        : [resolveOpencodeCommand().command, "auth", "login"];
     state.state = "waiting";
     state.inputId = randomUUID();
     const decoder = new TextDecoder();
@@ -76,7 +80,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
     const kill = () => child?.kill("SIGKILL");
     signal.addEventListener("abort", kill, { once: true });
     try {
-      child = Bun.spawn(options.command ?? ["/opt/paws-runner/bin/claude", "auth", "login"], {
+      child = Bun.spawn(options.command ?? fallback, {
         cwd: options.home,
         env: { ...env, NO_BROWSER: "1" },
         terminal,

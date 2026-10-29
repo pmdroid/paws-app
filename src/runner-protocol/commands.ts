@@ -282,7 +282,8 @@ export const RunnerCommandSchema = z
     (command) =>
       command.type !== "review" ||
       !command.reviewCommand ||
-      (command.profile.agent !== "grok" && command.profile.agent !== "opencode" &&
+      (command.profile.agent !== "grok" &&
+        command.profile.agent !== "opencode" &&
         command.profile.model !== null &&
         command.reviewCommand.base !== command.repository.baseSha),
   )
