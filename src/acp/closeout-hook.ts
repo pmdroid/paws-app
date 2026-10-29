@@ -20,7 +20,7 @@ export const CLOSEOUT_FINISH_UNAVAILABLE = JSON.stringify({
   reason: FINISH_UNAVAILABLE_REASON,
 });
 
-export type CloseoutStopAgent = "claude" | "codex" | "grok";
+export type CloseoutStopAgent = "claude" | "codex" | "grok" | "opencode";
 
 export type InstalledCloseoutStopHook = {
   scriptPath: string;
@@ -221,7 +221,7 @@ export async function installCloseoutStopHook(input: {
   workspaceHooks?: readonly WorkspaceHook[];
   codexSkills?: string;
 }): Promise<InstalledCloseoutStopHook | undefined> {
-  if (input.agent === "grok") return undefined;
+  if (input.agent === "grok" || input.agent === "opencode") return undefined;
   const pythonPath = Bun.which("python3");
   if (!pythonPath) throw new Error("python3 is required for the closeout stop hook");
   await mkdir(input.runDirectory, { recursive: true, mode: 0o700 });

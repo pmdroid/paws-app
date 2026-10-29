@@ -38,7 +38,7 @@ export type GitHubConfigAuth = "app";
 
 export type TrackerKind = "linear";
 
-export const IMPLEMENTERS = ["claude", "grok", "codex"] as const;
+export const IMPLEMENTERS = ["claude", "grok", "codex", "opencode"] as const;
 
 export type ImplementerName = (typeof IMPLEMENTERS)[number];
 
@@ -48,15 +48,22 @@ export type GrokConfig = {
   allowApiKey: boolean;
 };
 
+export type OpencodeConfig = {
+  /** Set only to use a PATH or absolute `opencode`. Otherwise Paws uses the pinned package. */
+  path: string | null;
+};
+
 export type AgentsConfig = {
   implementer: ImplementerName;
   grok: GrokConfig;
+  opencode?: OpencodeConfig;
 };
 
 export function defaultAgents(): AgentsConfig {
   return {
     implementer: "claude",
     grok: { path: null, allowApiKey: false },
+    opencode: { path: null },
   };
 }
 
@@ -229,6 +236,9 @@ export function renderConfigToml(config: PawsSetupConfig): string {
     "",
     "[agents.grok]",
     "allow_api_key = false",
+    "",
+    "[agents.opencode]",
+    "path = \"\"",
     "",
   );
   for (const [repo, root] of Object.entries(config.closeoutProjects ?? {})) {
@@ -544,7 +554,7 @@ function assignConfig(
 /** Write `agents.implementer`, keeping every other line. Mode is always 0600. */
 export function writeImplementer(path: string, implementer: ImplementerName): void {
   if (!isImplementer(implementer)) {
-    throw new Error("agents.implementer must be claude, grok, or codex");
+    throw new Error("agents.implementer must be claude, grok, codex, or opencode");
   }
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   const profiles = parseAgentSettingsToml(current, implementer);
@@ -576,7 +586,7 @@ function implementerName(
 ): ImplementerName {
   const name = asString(value, line);
   if (!isImplementer(name)) {
-    throw new Error(`config.toml line ${line} agents.implementer must be claude, grok, or codex`);
+    throw new Error(`config.toml line ${line} agents.implementer must be claude, grok, codex, or opencode`);
   }
   return name;
 }

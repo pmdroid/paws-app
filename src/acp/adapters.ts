@@ -17,6 +17,8 @@ export const CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp";
 export const CLAUDE_AGENT_ACP_BIN = "claude-agent-acp";
 export const CODEX_ACP_BIN = "codex-acp";
 
+export const OPENCODE_ACP_BIN = "opencode";
+
 /**
  * Grok Build ACP entry. Flags stay in this order.
  * `--always-approve` / `--yolo` are never included: tool permission goes
@@ -25,6 +27,10 @@ export const CODEX_ACP_BIN = "codex-acp";
 export const GROK_AGENT_ARGS = ["--no-auto-update", "agent", "stdio"] as const;
 
 export const GROK_LOGIN_MESSAGE = "Run `grok login`";
+
+export const OPENCODE_AGENT_ARGS = ["acp"] as const;
+
+export const OPENCODE_LOGIN_MESSAGE = "Run `opencode auth login`";
 
 const AUTO_APPROVE = new Set(["--always-approve", "--yolo"]);
 
@@ -36,6 +42,7 @@ const PINS: Record<AgentRole, { bin: string; packageName: string }> = {
 export type AdapterVersions = {
   claudeAgentAcp: string;
   codexAcp: string;
+  opencode?: string;
 };
 
 export type AdapterPin = {
@@ -47,6 +54,12 @@ export type AdapterPin = {
 };
 
 export type GrokCommand = {
+  command: string;
+  args: string[];
+  error: string | null;
+};
+
+export type OpencodeCommand = {
   command: string;
   args: string[];
   error: string | null;
@@ -108,10 +121,31 @@ export function providerCliPath(
 
 /** Versions installed by `bun install`, for doctor. */
 export function adapterVersions(root: string = pawsPackageRoot()): AdapterVersions {
-  return {
-    claudeAgentAcp: installedVersion(root, CLAUDE_AGENT_ACP_PACKAGE, CLAUDE_AGENT_ACP_BIN),
-    codexAcp: installedVersion(root, CODEX_ACP_PACKAGE, CODEX_ACP_BIN),
-  };
+  let opencode: string | undefined;
+  try {
+    // Try to find opencode version if installed globally or via package.json
+    const pkg = join(root, "node_modules", "opencode-ai", "package.json");
+    if (existsSync(pkg)) {
+      const parsed: unknown = JSON.parse(readFileSync(pkg, "utf8"));
+      if (isRecord(parsed) && typeof parsed.version === "string") opencode = parsed.version;
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    return {
+      claudeAgentAcp: installedVersion(root, CLAUDE_AGENT_ACP_PACKAGE, CLAUDE_AGENT_ACP_BIN),
+      codexAcp: installedVersion(root, CODEX_ACP_PACKAGE, CODEX_ACP_BIN),
+      ...(opencode ? { opencode } : {}),
+    };
+  } catch (err) {
+    // Still return partial if possible
+    return {
+      claudeAgentAcp: installedVersion(root, CLAUDE_AGENT_ACP_PACKAGE, CLAUDE_AGENT_ACP_BIN),
+      codexAcp: installedVersion(root, CODEX_ACP_PACKAGE, CODEX_ACP_BIN),
+      ...(opencode ? { opencode } : {}),
+    };
+  }
 }
 
 export function pinnedAdapters(root: string = pawsPackageRoot()): Record<AgentRole, AdapterPin> {
@@ -141,6 +175,11 @@ export function resolveAdapter(
     selected ?? (role === "reviewer" ? "codex" : (agents?.implementer ?? "claude"));
   if (implementer === "grok") {
     const resolved = resolveGrokCommand(agents, root);
+    if (resolved.error) throw new Error(resolved.error);
+    return { command: resolved.command, args: resolved.args };
+  }
+  if (implementer === "opencode") {
+    const resolved = resolveOpencodeCommand(agents, root);
     if (resolved.error) throw new Error(resolved.error);
     return { command: resolved.command, args: resolved.args };
   }
@@ -217,6 +256,32 @@ export function selectGrokAuthMethod(
 }
 
 /** True when the variable is a non-empty string. The value is not returned. */
+export function resolveOpencodeCommand(
+  agents?: AgentsConfig,
+  packageRoot: string = pawsPackageRoot(),
+  runnerBase: string = RUNNER_BASE,
+): OpencodeCommand {
+  const args = [...OPENCODE_AGENT_ARGS];
+  rejectAutoApprove(args);
+  const configured = agents?.opencode?.path?.trim() ?? "";
+  if (configured.length > 0) {
+    if (configured.includes("/") && !existsSync(configured)) {
+      return {
+        command: configured,
+        args,
+        error: `agents.opencode.path does not exist: ${configured}`,
+      };
+    }
+    return { command: configured, args, error: null };
+  }
+  const launcher = installedLauncher(packageRoot, OPENCODE_ACP_BIN, runnerBase);
+  if (launcher) return { command: launcher, args, error: null };
+  const command = join(packageRoot, "node_modules", ".bin", OPENCODE_ACP_BIN);
+  if (existsSync(command)) return { command, args, error: null };
+  // Also try 'opencode' in PATH if not in node_modules
+  return { command: OPENCODE_ACP_BIN, args, error: null };
+}
+
 export function xaiApiKeyPresent(env: NodeJS.ProcessEnv): boolean {
   const value = env.XAI_API_KEY;
   return typeof value === "string" && value.length > 0;

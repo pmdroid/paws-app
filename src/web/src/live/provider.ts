@@ -1123,7 +1123,7 @@ function runReviewer(pawsHome: string | undefined, runId: string): string {
       readFileSync(join(pawsHome, "runs", runId, "agent-profile.json"), "utf8"),
     );
     const reviewer = snapshot?.profiles?.reviewer?.agent;
-    return ["claude", "codex", "grok"].includes(reviewer) ? agentName(reviewer) : "Unknown";
+    return ["claude", "codex", "grok", "opencode"].includes(reviewer) ? agentName(reviewer) : "Unknown";
   } catch (caughtError1) {
     journalCaught(caughtError1, "provider.runReviewer.parse", null);
     return "Unknown";

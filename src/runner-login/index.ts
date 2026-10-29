@@ -17,7 +17,7 @@ import {
   type RunnerLoginUpdate,
 } from "../runner-protocol";
 
-type Agent = "claude" | "codex" | "grok";
+type Agent = "claude" | "codex" | "grok" | "opencode";
 type Row = {
   id: string;
   runnerId: string;
@@ -120,7 +120,7 @@ export function createRunnerLogin(options: {
     list(principal: WorkspacePrincipal, runnerId: string) {
       access(principal.workspaceId, principal.userId, runnerId);
       return {
-        accounts: (["claude", "codex", "grok"] as const).map((agent) => {
+        accounts: (["claude", "codex", "grok", "opencode"] as const).map((agent) => {
           const account = db
             .query<{ connected: number }, [string, string]>(
               "SELECT ready=1 AND auth_expired=0 AS connected FROM runner_agent_policy WHERE runner_id=? AND agent=?",

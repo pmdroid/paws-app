@@ -1,5 +1,5 @@
 export type AgentProfile = {
-  agent: "claude" | "codex" | "grok";
+  agent: "claude" | "codex" | "grok" | "opencode";
   model: string | null;
   effort?: string;
 };

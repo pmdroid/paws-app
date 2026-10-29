@@ -10,7 +10,7 @@ import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
 import { RunnerLoginInputSchema, type RunnerLoginUpdate } from "../runner-protocol";
 
 export async function runProviderLogin(options: {
-  agent: "claude" | "codex" | "grok";
+  agent: "claude" | "codex" | "grok" | "opencode";
   home: string;
   signal: AbortSignal;
   emit(update: RunnerLoginUpdate): void;
@@ -50,7 +50,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
     authorization: null,
     inputId: null,
   };
-  if (options.agent === "grok") {
+  if (options.agent === "grok" || options.agent === "opencode") {
     await runGrokLogin({ ...options, env });
   } else if (options.agent === "claude") {
     state.state = "waiting";
@@ -200,7 +200,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
       await exited;
     }
   }
-  if (options.agent !== "grok") {
+  if (options.agent !== "grok" && options.agent !== "opencode") {
     const checked = await checkDeveloperLogin({
       cli: options.agent,
       env,

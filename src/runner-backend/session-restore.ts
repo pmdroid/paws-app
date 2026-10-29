@@ -11,7 +11,8 @@ import {
 const RESTORE_RUNNER_VERSION = new Map<string, RunnerVersion>([
   ["claude", CLAUDE_SESSION_RESTORE_RUNNER_VERSION],
   ["codex", CODEX_SESSION_RUNNER_VERSION],
-  ["grok", GROK_SESSION_RUNNER_VERSION],
+  ["grok", GROK_SESSION_RESTORE_RUNNER_VERSION],
+  ["opencode", CODEX_SESSION_RUNNER_VERSION],
 ]);
 
 type RestoreSession = NonNullable<Extract<RunnerCommand, { type: "run" }>["restoreSession"]>;
@@ -40,7 +41,7 @@ export type SessionRestorePlan =
     }
   | { eligible: false; failure: SessionRestoreFailure };
 
-const AGENT_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
+const AGENT_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok", opencode: "OpenCode" };
 
 export function versionAtLeast(
   version: string | null | undefined,

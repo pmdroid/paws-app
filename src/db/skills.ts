@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { HookEvent } from "../core";
 
 /** Agents that load skills from their home directory. Every one of them supports skills today. */
-export const SKILL_AGENTS = ["claude", "codex", "grok"] as const;
+export const SKILL_AGENTS = ["claude", "codex", "grok", "opencode"] as const;
 export type SkillAgent = (typeof SKILL_AGENTS)[number];
 
 /** Where a skill came from. The resolved version lives on the pin, not here. */

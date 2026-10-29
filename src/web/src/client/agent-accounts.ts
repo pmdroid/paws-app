@@ -4,7 +4,7 @@ import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { ansiToHtml } from "./ansi";
 
-type Agent = "claude" | "codex" | "grok";
+type Agent = "claude" | "codex" | "grok" | "opencode";
 type Login = {
   id: string;
   agent: Agent;
@@ -92,7 +92,7 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
 
   function paint() {
     if (!dialog.isConnected) return;
-    for (const agent of ["claude", "codex", "grok"] as const) {
+    for (const agent of ["claude", "codex", "grok", "opencode"] as const) {
       const account = accounts.find((entry) => entry.agent === agent);
       if (!account) continue;
       const name = { claude: "Claude", codex: "Codex", grok: "Grok" }[agent];

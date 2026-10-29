@@ -23,6 +23,8 @@ export const HANDOVER_RUNNER_VERSION: RunnerVersion = [0, 1, 44];
 export const CODEX_SESSION_RUNNER_VERSION: RunnerVersion = [0, 1, 45];
 /** First runner release that snapshots a Grok session folder at turn end and restores it. */
 export const GROK_SESSION_RUNNER_VERSION: RunnerVersion = [0, 1, 46];
+/** First runner release that snapshots and restores an OpenCode session. */
+export const OPENCODE_SESSION_RUNNER_VERSION: RunnerVersion = [0, 1, 46];
 /** First runner release that checkpoints a running turn on its interval and before a stop. */
 export const CHECKPOINT_RUNNER_VERSION: RunnerVersion = [0, 1, 46];
 /** First runner release that runs the agent's own review command for a `review` command. */

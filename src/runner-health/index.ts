@@ -24,7 +24,7 @@ import {
 
 const requestSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("probe"), profile: RunnerProfileSchema }),
-  z.strictObject({ type: z.literal("login_check"), agent: z.enum(["claude", "codex", "grok"]) }),
+  z.strictObject({ type: z.literal("login_check"), agent: z.enum(["claude", "codex", "grok", "opencode"]) }),
 ]);
 type HealthRequest = z.infer<typeof requestSchema>;
 type Agent = "claude" | "codex" | "grok";
@@ -43,7 +43,7 @@ type History = {
 };
 const SIGN_IN_INTERVAL_MS = 5 * 60_000;
 const RECENTLY_SEEN_MS = 60_000;
-const runnerAgents = ["claude", "codex", "grok"] as const;
+const runnerAgents = ["claude", "codex", "grok", "opencode"] as const;
 
 export function createRunnerHealth(options: {
   db: Database;

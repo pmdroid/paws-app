@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
-type Agent = "claude" | "codex" | "grok";
+type Agent = "claude" | "codex" | "grok" | "opencode";
 
 /**
  * Files a sign-in writes, relative to the home. `merge` files hold the agent's own state too,
