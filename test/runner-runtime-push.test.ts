@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { PUBLICATION_STAGING_FAILURE } from "../src/github";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
 
@@ -308,6 +309,27 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
         branch: "paws/fixture",
         error: expect.stringContaining("without `workflows` permission"),
       });
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a candidate that cannot be staged for the push stops on the first try without blaming GitHub",
+  async () => {
+    const f = await fixture(`${PUBLICATION_STAGING_FAILURE}: fatal: couldn't find remote ref HEAD`);
+    try {
+      await f.run(2);
+      expect(f.pushes).toEqual([0]);
+      expect(f.posted).toHaveLength(1);
+      expect(f.posted[0]!.pushFailure).toEqual({
+        branch: "paws/fixture",
+        error: `${PUBLICATION_STAGING_FAILURE}: fatal: couldn't find remote ref HEAD`,
+      });
+      expect(f.posted[0]!.errorMessage).toContain("could not be staged for the push");
+      expect(f.posted[0]!.errorMessage).not.toContain("GitHub rejected");
     } finally {
       await f.cleanup();
     }
