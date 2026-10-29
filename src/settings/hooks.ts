@@ -14,7 +14,15 @@ import {
   type WorkspaceHook,
 } from "../core";
 import { deleteHook, listHooks, listSkills, saveHook } from "../db";
+import {
+  addUploadedSkill,
+  SKILL_BUNDLE_LIMIT,
+  SkillError,
+  skillFile,
+  type SkillResolver,
+} from "../skills";
 import { isRecord, json, localRequest, readJson, sameToken } from "./handler";
+import { readSkillUpload } from "./upload";
 
 export const HOOK_SETTINGS_PATH = "/api/settings/hooks";
 
@@ -26,10 +34,15 @@ export type HookSettingsOptions = {
   role?: string;
   /** Records every hook change in the audit history. */
   audit: (action: string, subject: string) => void;
+  root?: string;
+  resolver?: SkillResolver;
+  limit?: number;
   now?: () => number;
 };
 
 const AGENT_NAMES: Record<HookAgent, string> = { claude: "Claude", codex: "Codex" };
+
+type UploadedHook = { skill: string; path: string; command: string };
 
 /** `GET` lists the hooks; `POST` adds or removes one. */
 export async function handleHookSettingsRequest(
@@ -45,19 +58,39 @@ export async function handleHookSettingsRequest(
     listSkills(options.db)
       .filter((skill) => skill.removedAt === null)
       .map((skill) => ({ name: skill.name, agents: skill.agents }));
-  const listing = (notice?: string) =>
+  const listing = (notice?: string, uploaded?: UploadedHook) =>
     json({
       hooks: listHooks(options.db),
       events: HOOK_EVENTS.map((id) => ({ id, label: HOOK_EVENT_LABELS[id] })),
       agents: HOOK_AGENTS,
       skills: skills(),
       limit: WORKSPACE_HOOK_LIMIT,
+      limitBytes: options.limit ?? SKILL_BUNDLE_LIMIT,
       ...(notice ? { notice } : {}),
+      ...(uploaded ? { uploaded } : {}),
     });
   if (request.method === "GET") return listing();
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
+  const type = request.headers.get("content-type")?.split(";")[0]?.trim();
+  if (type === "multipart/form-data") {
+    try {
+      const uploaded = await uploadHook(request, options);
+      options.audit(
+        "settings.skill.add",
+        `Uploaded hook ${uploaded.path} as skill ${uploaded.skill}`,
+      );
+      return listing(
+        `Uploaded ${uploaded.skill}. Review the prefilled script path and command, then add the hook.`,
+        uploaded,
+      );
+    } catch (error) {
+      journalCaught(error, "hooks.handleHookSettingsRequest.upload", null);
+      if (error instanceof SkillError) return json({ error: error.message }, error.status);
+      return json({ error: "The hook could not be uploaded" }, 503);
+    }
+  }
   let body: unknown;
   try {
     body = await readJson(request);
@@ -108,6 +141,44 @@ export async function handleHookSettingsRequest(
   saveHook(options.db, hook, (options.now ?? Date.now)());
   options.audit("settings.hook.add", `Added hook ${describeHook(hook)}`);
   return listing(`Added the hook. Runs that start from now on get it.`);
+}
+
+async function uploadHook(request: Request, options: HookSettingsOptions): Promise<UploadedHook> {
+  if (!options.root || !options.resolver)
+    throw new SkillError("Hook uploads are not configured on this Paws server.", 503);
+  const upload = await readSkillUpload(request, options.limit ?? SKILL_BUNDLE_LIMIT);
+  if (upload.files.size !== 1) throw new SkillError("Choose one hook script to upload.");
+  const [sourcePath, bytes] = upload.files.entries().next().value!;
+  const path = `hooks/${sourcePath}`;
+  if (/[\r\n]/.test(path)) throw new SkillError("The hook file name must stay on one line.");
+  const command = `"$PAWS_SKILL_DIR/${path.replace(/[\\"$`]/g, (character) => `\\${character}`)}"`;
+  if (command.length > 4096) throw new SkillError("The hook file name is too long.");
+  const agents = upload.agents ?? [...HOOK_AGENTS];
+  if (agents.some((agent) => !(HOOK_AGENTS as readonly string[]).includes(agent)))
+    throw new SkillError("Hook scripts run only for Claude and Codex.");
+  const manifest = new TextEncoder().encode(
+    "---\ndescription: Workspace hook uploaded in Paws settings.\n---\n",
+  );
+  const skill = await addUploadedSkill(
+    {
+      db: options.db,
+      root: options.root,
+      resolver: options.resolver,
+      now: (options.now ?? Date.now)(),
+      signal: request.signal,
+      ...(options.limit === undefined ? {} : { limit: options.limit }),
+    },
+    upload.folder,
+    new Map([
+      ["SKILL.md", manifest as Uint8Array & { executable?: true }],
+      [path, skillFile(bytes, 0o700)],
+    ]),
+    {
+      ...(upload.name ? { name: upload.name } : {}),
+      agents,
+    },
+  );
+  return { skill: skill.name, path, command };
 }
 
 export function describeHook(hook: WorkspaceHook): string {

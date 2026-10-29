@@ -56,6 +56,7 @@ import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import {
+  SKILL_HOOK_RUNNER_VERSION,
   REBASE_RUNNER_VERSION,
   REVIEW_COMMAND_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
@@ -318,10 +319,21 @@ export function createRemoteAgentRunner(options: {
     );
   }
   /** Workspace hooks for the run's agent, signed into the command with everything else. */
-  function runHooks(agent: string): { hooks?: WorkspaceHook[] } {
+  function runHooks(agent: string, runnerId: string): { hooks?: WorkspaceHook[] } {
     const hooks = listHooks(db).filter((hook) =>
       (hook.agents as readonly string[]).includes(agent),
     );
+    if (hooks.some((hook) => hook.skill !== null)) {
+      const version = db
+        .query<{ version: string | null }, [string]>(
+          "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+        )
+        .get(runnerId)?.version;
+      if (!versionAtLeast(version, SKILL_HOOK_RUNNER_VERSION))
+        throw new Error(
+          `Runner ${runnerId} needs runner ${SKILL_HOOK_RUNNER_VERSION.join(".")} or later to run skill hooks. Upgrade the runner, then run again.`,
+        );
+    }
     return hooks.length ? { hooks: hooks.slice(0, WORKSPACE_HOOK_LIMIT) } : {};
   }
   async function select(
@@ -694,7 +706,12 @@ export function createRemoteAgentRunner(options: {
           (responseTask || input.prepareOnly || input.role !== "reviewer" || !input.readOnly)
         )
           throw new Error("A review command runs only as read-only reviewer work");
-        if (input.reviewCommand && (input.profile.agent === "grok" || !input.profile.model))
+        if (
+          input.reviewCommand &&
+          (input.profile.agent === "grok" ||
+            input.profile.agent === "opencode" ||
+            !input.profile.model)
+        )
           throw new Error(
             "The reviewer profile needs a Claude or Codex model to run the agent's review command",
           );
@@ -1327,7 +1344,7 @@ export function createRemoteAgentRunner(options: {
                         ? { reviewCommand: { base: input.reviewCommand.base } }
                         : {}),
                       ...(skillsInputId !== undefined ? { skillsInputId } : {}),
-                      ...(input.role === "reviewer" ? {} : runHooks(profile.agent)),
+                      ...(input.role === "reviewer" ? {} : runHooks(profile.agent, selected.id)),
                       repository: {
                         ...scoped.repository!,
                         baseSha: baseSha!,

@@ -5,7 +5,7 @@ import { immediate, runnerLeaseCutoff, workspaceMember } from "../db";
 import type { RunnerWork } from "../runner-work";
 import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 
-type Agent = "claude" | "codex" | "grok";
+type Agent = "claude" | "codex" | "grok" | "opencode";
 type Choice = { id: string; name: string };
 type Source = {
   runnerId: string;
@@ -33,7 +33,7 @@ export type AgentModelCatalog = {
 const refreshMs = 6 * 60 * 60_000;
 const retryMs = 10 * 60_000;
 const concrete = (id: string) =>
-  !["default", "auto", "claude", "codex", "grok"].includes(id.toLowerCase());
+  !["default", "auto", "claude", "codex", "grok", "opencode"].includes(id.toLowerCase());
 const eligible = `SELECT r.id AS runnerId,r.workspace_id AS workspaceId,r.owner_user_id AS userId,p.agent
  FROM runner r JOIN runner_agent_policy p ON p.runner_id=r.id
  JOIN workspace_member owner ON owner.workspace_id=r.workspace_id AND owner.user_id=r.owner_user_id
@@ -47,7 +47,11 @@ export function createRunnerModels(options: {
 }) {
   const { db, work } = options;
   const now = options.now ?? Date.now;
-  const sources = (at = now()) => db.query<Source, [number]>(eligible).all(at);
+  const sources = (at = now()) =>
+    db
+      .query<Source, [number]>(eligible)
+      .all(at)
+      .filter((source) => work.supportsAgent(source.runnerId, source.agent));
   function cached(source: Source) {
     return db
       .query<Pick<Cached, "model" | "resultJson" | "updatedAt">, [string, string, string]>(
@@ -176,7 +180,7 @@ export function createRunnerModels(options: {
       .flatMap((source) => cached(source))
       .sort((a, b) => b.updatedAt - a.updatedAt);
     const catalogs: AgentModelCatalog[] = [];
-    for (const agent of ["claude", "codex", "grok"] as const) {
+    for (const agent of ["claude", "codex", "grok", "opencode"] as const) {
       const header = rows.find((row) => row.agent === agent && row.model === "");
       if (!header) continue;
       const result = RunnerHealthResultSchema.parse(JSON.parse(header.resultJson));

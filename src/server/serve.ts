@@ -497,6 +497,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === HOOK_SETTINGS_PATH && secrets.db) {
     const db = secrets.db;
     return (await handleHookSettingsRequest(request, {
+      ...secrets.skillSettings,
       db,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),

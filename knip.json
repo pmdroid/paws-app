@@ -15,6 +15,7 @@
     "@agentclientprotocol/claude-agent-acp",
     "@agentclientprotocol/codex-acp",
     "@xai-official/grok",
+    "@opencode/cli",
     "@tailwindcss/cli"
   ],
   "ignoreExportsUsedInFile": true

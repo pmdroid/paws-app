@@ -34,3 +34,5 @@ export const POLICY_TRANSFER_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
 
 /** First runner release accepting the read-only daily finding grouping helper purpose. */
 export const FINDING_GROUPS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+export const OPENCODE_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+export const SKILL_HOOK_RUNNER_VERSION: RunnerVersion = [0, 1, 53];

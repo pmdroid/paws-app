@@ -24,7 +24,7 @@ export type ProjectAgentProfiles = {
 export type AgentSettings = { defaults: AgentProfiles; projects: ProjectAgentProfiles[] };
 
 const profileSchema = z.strictObject({
-  agent: z.enum(["claude", "grok", "codex"]),
+  agent: z.enum(["claude", "grok", "codex", "opencode"]),
   model: z
     .string()
     .trim()
