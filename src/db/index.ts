@@ -120,7 +120,9 @@ export {
   configureWorkItem,
   deferWorkItem,
   extendAwakeCap,
+  heldHandoffs,
   markCloseoutAccepted,
+  markHandoffsCarried,
   resetAwakeTime,
   runnerCapacityWait,
   type CapOutcome,
@@ -140,6 +142,7 @@ export {
   setCurrentRun,
   setRecoveryAttempts,
   syncClock,
+  type HeldHandoff,
   type WorkItemRecord,
 } from "./items";
 export {

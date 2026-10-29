@@ -11,6 +11,7 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
+  listOutbox,
   listReviewEscapes,
   markCloseoutAccepted,
   migrate,
@@ -222,6 +223,10 @@ const resumeJobs = (db: ReturnType<typeof setup>["db"]) =>
   listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
 const handoff = (db: ReturnType<typeof setup>["db"]) =>
   (resumeJobs(db)[0]?.payload as { handoff: string; reason: string } | undefined) ?? null;
+const feedbackThoughts = (db: ReturnType<typeof setup>["db"]) =>
+  listOutbox(db)
+    .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("pull-feedback:"))
+    .map((row) => (row.payload as { kind: string; body: string }).body);
 
 describe("pull request comments restart the item", () => {
   test("an inline comment from a person restarts once with the comment and its thread", async () => {
@@ -250,12 +255,17 @@ describe("pull request comments restart the item", () => {
     expect(text).toContain(`${COMMENT_FIX_INSTRUCTION}\n\nReply list.`);
     expect(getPullComment(db, "inline", 9001)?.outcome).toBe("restarted");
     expect(getPullComment(db, "review", 601)?.outcome).toBe("restarted");
+    // The Linear session wakes and says why the agent is back.
+    expect(feedbackThoughts(db)).toEqual([
+      "@pascal commented on pull request #7. The agent is working on the comments.",
+    ]);
 
     // Redelivered after the restart: nothing.
     inline({ id: 9001, review: 601, author: "pascal", body: "This sorts the wrong way round." });
     expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(resumeJobs(db)).toHaveLength(1);
+    expect(feedbackThoughts(db)).toHaveLength(1);
   });
 
   test("a Bugbot inline finding restarts once with the finding", async () => {

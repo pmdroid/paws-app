@@ -15,6 +15,7 @@ import {
   pendingPullComments,
   recordItemPullRequest,
   listJobs,
+  listOutbox,
   migrate,
   openDatabase,
 } from "../db";
@@ -148,6 +149,13 @@ const reviewJobs = (db: ReturnType<typeof setup>["db"]) =>
   listJobs(db).filter((job) => job.queue === JOB_KIND.pullReview);
 const resumeJobs = (db: ReturnType<typeof setup>["db"]) =>
   listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+const feedbackActivities = (db: ReturnType<typeof setup>["db"]) =>
+  listOutbox(db)
+    .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("pull-feedback:"))
+    .map((row) => {
+      const payload = row.payload as { kind: string; body: string };
+      return { key: row.idempotencyKey, kind: payload.kind, body: payload.body };
+    });
 
 describe("changes-requested reviews", () => {
   test("restart the item once per review id with the review and its unresolved threads", async () => {
@@ -174,12 +182,21 @@ describe("changes-requested reviews", () => {
     expect(payload.handoff).not.toContain("Done already.");
     expect(payload.handoff).toContain(`${REVIEW_FIX_INSTRUCTION}\n\nReply list.`);
     expect(getPullReview(db, 501)?.outcome).toBe("restarted");
+    // The Linear session wakes with a thought the post-PR activity gate lets through.
+    expect(feedbackActivities(db)).toEqual([
+      {
+        key: "pull-feedback:review:eng-1:501",
+        kind: "thought",
+        body: "@rev requested changes on pull request #7. The agent is working on them.",
+      },
+    ]);
 
     // A redelivered webhook after the restart does nothing.
     expect(deliver({ id: 501, state: "changes_requested" })).toBe(true);
     expect(await handlePullReview(db, 501, caps)).toBe("done");
     expect(reviewJobs(db)).toHaveLength(1);
     expect(resumeJobs(db)).toHaveLength(1);
+    expect(feedbackActivities(db)).toHaveLength(1);
     expect(github.reads).toBe(1);
   });
 
@@ -286,6 +303,7 @@ describe("changes-requested reviews", () => {
     setLimit(0);
     deliver({ id: 501, state: "changes_requested", body: "Rename it." });
     expect(await handlePullReview(db, 501, caps)).toBe("asked");
+    expect(feedbackActivities(db)).toEqual([]);
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
     expect(resumeJobs(db)).toHaveLength(0);
     const question = findOpenQuestion(db, "s-1");
