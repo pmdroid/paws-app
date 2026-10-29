@@ -1,6 +1,5 @@
 > Keep the PR small and focused. Explain why it matters, what changes, the important choice, the evidence, and how hard a merge is to undo. Write in increasing detail for a customer or PM, a new engineer, then a specialist. Three to five sentences per section is a ceiling; one is fine. The author must explain and defend every line, including AI-assisted work.
 >
-> Delete all guidance blockquotes before publishing. Omit Additional notes when empty. Link existing specs, BDDs, and decisions instead of copying them. Guidance: [What a good PR looks like](https://company.arcade.dev/engineering/process/what-a-good-pr-looks-like).
 
 Closes
 
