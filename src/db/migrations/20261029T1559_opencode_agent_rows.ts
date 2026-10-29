@@ -25,6 +25,30 @@ CREATE TABLE runner_agent_policy_opencode (
 INSERT INTO runner_agent_policy_opencode SELECT * FROM runner_agent_policy;
 DROP TABLE runner_agent_policy;
 ALTER TABLE runner_agent_policy_opencode RENAME TO runner_agent_policy;
+-- Rebuilding the table drops its triggers, so both are recreated exactly as migration 133 made them.
+CREATE TRIGGER runner_setup_check_agent_added AFTER INSERT ON runner_agent_policy
+WHEN NEW.ready=1 AND NEW.auth_expired=0 AND EXISTS(SELECT 1 FROM runner_setup_hold)
+BEGIN
+INSERT INTO job(queue,payload,run_at,max_attempts,created_at)
+  SELECT 'runner_setup.check',json_object('ownerUserId',owners.id),0,3,
+    CAST(strftime('%s','now') AS INTEGER)*1000
+  FROM (SELECT DISTINCT h.owner_user_id AS id FROM runner_setup_hold h
+    WHERE h.owner_user_id IS NOT NULL AND (h.owner_user_id=(SELECT r.owner_user_id FROM runner r WHERE r.id=NEW.runner_id) OR EXISTS(SELECT 1 FROM runner_policy p WHERE p.runner_id=NEW.runner_id AND p.sharing=1))) owners
+  WHERE NOT EXISTS(SELECT 1 FROM job j WHERE j.queue='runner_setup.check' AND j.status='pending'
+    AND json_extract(j.payload,'$.ownerUserId')=owners.id);
+END;
+CREATE TRIGGER runner_setup_check_agent_ready AFTER UPDATE OF ready,auth_expired ON runner_agent_policy
+WHEN NEW.ready=1 AND NEW.auth_expired=0 AND (OLD.ready<>1 OR OLD.auth_expired<>0)
+  AND EXISTS(SELECT 1 FROM runner_setup_hold)
+BEGIN
+INSERT INTO job(queue,payload,run_at,max_attempts,created_at)
+  SELECT 'runner_setup.check',json_object('ownerUserId',owners.id),0,3,
+    CAST(strftime('%s','now') AS INTEGER)*1000
+  FROM (SELECT DISTINCT h.owner_user_id AS id FROM runner_setup_hold h
+    WHERE h.owner_user_id IS NOT NULL AND (h.owner_user_id=(SELECT r.owner_user_id FROM runner r WHERE r.id=NEW.runner_id) OR EXISTS(SELECT 1 FROM runner_policy p WHERE p.runner_id=NEW.runner_id AND p.sharing=1))) owners
+  WHERE NOT EXISTS(SELECT 1 FROM job j WHERE j.queue='runner_setup.check' AND j.status='pending'
+    AND json_extract(j.payload,'$.ownerUserId')=owners.id);
+END;
 
 CREATE TABLE runner_execution_usage_opencode (
  command_id TEXT PRIMARY KEY,

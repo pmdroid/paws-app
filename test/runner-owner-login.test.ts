@@ -396,6 +396,7 @@ for (const agent of ["claude", "grok"] as const) {
       ["claude", 1],
       ["codex", 0],
       ["grok", 0],
+      ["opencode", 0],
     ]);
   });
 }

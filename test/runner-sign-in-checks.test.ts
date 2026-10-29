@@ -140,10 +140,15 @@ test("background sign-in checks run once per agent per interval and never while 
   const f = fixture();
   const runnerId = f.runner();
   f.health.refresh();
-  expect(f.checks().map((check) => check.agent)).toEqual(["claude", "codex", "grok"]);
+  expect(f.checks().map((check) => check.agent)).toEqual([
+    "claude",
+    "codex",
+    "grok",
+    "opencode",
+  ]);
   expect(f.checks().every((check) => check.memberId === undefined)).toBe(true);
   f.health.refresh();
-  expect(f.checks()).toHaveLength(3);
+  expect(f.checks()).toHaveLength(4);
   const [claude, codex] = f.checks();
   f.advance(10_000);
   f.answer(claude!);
@@ -152,7 +157,7 @@ test("background sign-in checks run once per agent per interval and never while 
   f.advance(3 * 60_000);
   f.seen(runnerId);
   f.health.refresh();
-  expect(f.checks()).toHaveLength(3);
+  expect(f.checks()).toHaveLength(4);
 
   f.advance(2 * 60_000 - 5_000);
   f.seen(runnerId);
@@ -160,9 +165,9 @@ test("background sign-in checks run once per agent per interval and never while 
   expect(
     f
       .checks()
-      .slice(3)
+      .slice(4)
       .map((check) => check.agent),
-  ).toEqual(["grok"]);
+  ).toEqual(["grok", "opencode"]);
 
   f.advance(10_000);
   f.seen(runnerId);
@@ -170,7 +175,7 @@ test("background sign-in checks run once per agent per interval and never while 
   expect(
     f
       .checks()
-      .slice(4)
+      .slice(6)
       .map((check) => check.agent),
   ).toEqual(["claude", "codex"]);
   expect(f.db.query("SELECT 1 FROM runner_command WHERE kind='probe'").get()).toBeNull();
@@ -193,7 +198,7 @@ test("background sign-in checks run once per agent per interval and never while 
       .checks()
       .slice(inFlight + 1)
       .map((check) => check.agent),
-  ).toEqual(["codex", "grok"]);
+  ).toEqual(["codex", "grok", "opencode"]);
 });
 
 test("paused, draining, revoked and unseen runners are skipped", () => {
@@ -217,6 +222,7 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
     claude: { status: "unknown", checkedAt: null },
     codex: { status: "unknown", checkedAt: null },
     grok: { status: "unknown", checkedAt: null },
+    opencode: { status: "unknown", checkedAt: null },
   });
   f.health.refresh();
   expect(statuses().claude!.status).toBe("checking");
@@ -227,6 +233,7 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
     claude: { status: "signed_in", checkedAt: f.now() },
     codex: { status: "signed_out", checkedAt: f.now() },
     grok: { status: "checking", checkedAt: null },
+    opencode: { status: "checking", checkedAt: null },
   });
   const resetsAt = f.now() + 3_600_000;
   f.db.run(
@@ -256,6 +263,7 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
     ["claude", "signed_in"],
     ["codex", "signed_out"],
     ["grok", "unknown"],
+    ["opencode", "unknown"],
   ]);
 });
 
@@ -349,6 +357,7 @@ test("a completed sign-in queues one login check for that agent", () => {
     ["claude", "checking"],
     ["codex", "unknown"],
     ["grok", "unknown"],
+    ["opencode", "unknown"],
   ]);
 });
 
