@@ -76,6 +76,26 @@ export type ClaimOptions = {
 
 const EXCLUSIVE_QUEUES = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify] as const;
 
+const jobReadyListeners = new Set<(db: Database) => void>();
+
+/** Fires after a job row is inserted. The job loop wakes its claimer from this. */
+export function onJobReady(listener: (db: Database) => void): () => void {
+  jobReadyListeners.add(listener);
+  return () => {
+    jobReadyListeners.delete(listener);
+  };
+}
+
+function emitJobReady(db: Database): void {
+  for (const listener of jobReadyListeners) {
+    try {
+      listener(db);
+    } catch (error) {
+      journalCaught(error, "jobs.enqueueJob.emitJobReady", null);
+    }
+  }
+}
+
 function sqlLiteral(value: string): string {
   if (!/^[A-Za-z0-9._%:-]+$/.test(value)) throw new Error(`unsafe SQL literal: ${value}`);
   return `'${value}'`;
@@ -157,6 +177,7 @@ export function enqueueJob(db: Database, job: NewJob): number {
   if (row === null) {
     throw new Error("enqueueJob did not return an id");
   }
+  emitJobReady(db);
   return row.id;
 }
 
@@ -196,6 +217,30 @@ export function getJob(db: Database, id: number): Job | null {
 
 export function listJobs(db: Database): Job[] {
   return db.query<JobRow, []>("SELECT * FROM job ORDER BY id").all().map(mapJob);
+}
+
+/**
+ * Earliest `run_at` among rows a claim could take, or null when none exist.
+ * This does not claim. The job loop sleeps until this time.
+ */
+export function nextClaimableRunAt(
+  db: Database,
+  options: { now?: number; queues?: readonly string[] } = {},
+): number | null {
+  const queues = options.queues;
+  if (queues !== undefined && queues.length === 0) return null;
+  const now = options.now ?? Date.now();
+  const row = db
+    .query<{ run_at: number | null }, Array<number | string>>(
+      `SELECT MIN(run_at) AS run_at FROM job
+       WHERE (
+         status = 'pending'
+         OR (status = 'running' AND (locked_until IS NULL OR locked_until <= ?))
+       )
+       ${queues === undefined ? "" : `AND queue IN (${queues.map(() => "?").join(", ")})`}`,
+    )
+    .get(now, ...(queues ?? []));
+  return row?.run_at ?? null;
 }
 
 export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | null {
