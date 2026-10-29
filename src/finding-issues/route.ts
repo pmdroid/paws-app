@@ -80,8 +80,8 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
     )
       return refuse(FINDING_ISSUE_PATH, "A valid CSRF token is required.");
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (!member?.active || member.role === "observer")
-      return refuse(FINDING_ISSUE_PATH, FINDING_ISSUE_FILERS);
+    // A Linear guest never becomes an active member, so this covers "not a guest" too.
+    if (!member?.active) return refuse(FINDING_ISSUE_PATH, FINDING_ISSUE_FILERS);
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
     const { itemId, reviewId, location, explanation } = body ?? {};
     if (
