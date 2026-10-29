@@ -19,8 +19,8 @@ snapshot.policyRunnerWarnings = [
     policyDigest: `sha256:${"4f".repeat(32)}`,
     runnerVersion: "0.1.48",
     keys: [
-      { key: "items[].ci", needs: "0.1.49" },
-      { key: "items[].recheck", needs: "0.1.49" },
+      { key: "items[].ci", needs: "0.1.52" },
+      { key: "items[].recheck", needs: "0.1.52" },
     ],
     checkedAt: snapshot.generatedAt,
   },
@@ -64,8 +64,8 @@ try {
       });
       await expect(banner).toBeVisible();
       await expect(banner).toContainText("uses keys runner 0.1.48 does not know");
-      await expect(banner).toContainText("items[].ci needs runner 0.1.49");
-      await expect(banner).toContainText("items[].recheck needs runner 0.1.49");
+      await expect(banner).toContainText("items[].ci needs runner 0.1.52");
+      await expect(banner).toContainText("items[].recheck needs runner 0.1.52");
       const overflow = await page.evaluate(
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
       );
