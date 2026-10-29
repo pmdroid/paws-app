@@ -17,6 +17,23 @@ import {
 /** Idle backstop. Enqueue and a due `run_at` wake the claimer sooner. */
 export const JOB_IDLE_CLAIM_MS = 1_000;
 
+/**
+ * A due job older than this, with a worker free and no recent claim, is the stall signal.
+ * Busy timeout is 5s and the idle claim is 1s, so a live loop claims well inside the minute.
+ */
+export const JOB_PROGRESS_STALE_MS = 60_000;
+
+export type JobLoopLiveness = {
+  /** Workers have entered `run`. False until then, including while Paws is still starting. */
+  polling: boolean;
+  lastTickAt: number | null;
+  lastClaimAt: number | null;
+  /** General handlers executing now. A claim that has not reached a handler does not count. */
+  inFlight: number;
+  /** General slots. The control slot is extra and is not part of this capacity. */
+  workerCount: number;
+};
+
 type Sleeper = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 export type JobContext = {
@@ -40,6 +57,11 @@ export class JobLoop {
   private anyInFlight = 0;
   private controlInFlight = 0;
   private readyGeneration = 0;
+  private polling = false;
+  private lastTickAt: number | null = null;
+  private lastClaimAt: number | null = null;
+  /** Set when a claim throws, so the claimer waits out the lock instead of spinning or dying. */
+  private claimFailed = false;
 
   constructor(
     readonly db: Database,
@@ -57,13 +79,31 @@ export class JobLoop {
     return this.options.pollMs ?? JOB_IDLE_CLAIM_MS;
   }
 
+  /** What `/health` reads. Independent of the HTTP listener still accepting connections. */
+  liveness(): JobLoopLiveness {
+    const concurrency = this.options.concurrency ?? 1;
+    return {
+      polling: this.polling,
+      lastTickAt: this.lastTickAt,
+      lastClaimAt: this.lastClaimAt,
+      inFlight: this.anyInFlight,
+      workerCount: Math.max(1, concurrency),
+    };
+  }
+
   register(queue: string, handler: JobHandler): void {
     this.handlers.set(queue, handler);
   }
 
-  async tick(queues: readonly string[] = [...this.handlers.keys()]): Promise<Job | null> {
+  async tick(
+    queues: readonly string[] = [...this.handlers.keys()],
+    countsCapacity = true,
+  ): Promise<Job | null> {
+    this.noteTick();
     const launched = this.launch(queues);
     if (launched === null) return null;
+    if (countsCapacity) this.lastClaimAt = this.clock.now();
+    this.track(launched.done, countsCapacity ? "any" : "control");
     await launched.done;
     return launched.job;
   }
@@ -86,17 +126,24 @@ export class JobLoop {
       throw new Error("Invalid job concurrency");
     // run() starts after prepare has registered the complete handler set.
     const registeredQueues = [...this.handlers.keys()];
-    const removed = this.db
-      .query<{ id: number; queue: string }, string[]>(
-        `DELETE FROM job WHERE recurring_every_ms IS NOT NULL
-         ${registeredQueues.length ? `AND queue NOT IN (${registeredQueues.map(() => "?").join(",")})` : ""}
-         RETURNING id, queue`,
-      )
-      .all(...registeredQueues);
+    let removed: { id: number; queue: string }[] = [];
+    try {
+      removed = this.db
+        .query<{ id: number; queue: string }, string[]>(
+          `DELETE FROM job WHERE recurring_every_ms IS NOT NULL
+           ${registeredQueues.length ? `AND queue NOT IN (${registeredQueues.map(() => "?").join(",")})` : ""}
+           RETURNING id, queue`,
+        )
+        .all(...registeredQueues);
+    } catch (error) {
+      // The same lock that used to reject tick also rejected run() before workers existed.
+      journalCaught(error, "loop.run.removeUnknownRecurring", null);
+    }
     for (const job of removed)
       journal(
         `job ${job.id} ${job.queue} recurring definition removed: No handler for ${job.queue}`,
       );
+    this.polling = true;
     // One claimer fills free slots. The control slot still runs when every general slot is busy.
     const stopWake = onJobReady((db) => {
       if (db === this.db) this.wake();
@@ -116,10 +163,13 @@ export class JobLoop {
 
   /** Claim until every free slot has a job or nothing due is claimable. */
   private fill(signal: AbortSignal, concurrency: number): void {
+    this.noteTick();
     const queues = () => [...this.handlers.keys()];
     while (this.anyInFlight < concurrency && !signal.aborted) {
       const launched = this.launch(queues());
       if (launched === null) break;
+      // The control slot claims other queues and must not look like progress on this one.
+      this.lastClaimAt = this.clock.now();
       this.track(launched.done, "any");
     }
     if (this.anyInFlight < concurrency || this.controlInFlight > 0 || signal.aborted) return;
@@ -128,10 +178,17 @@ export class JobLoop {
   }
 
   private nextWaitMs(concurrency: number): number {
+    if (this.claimFailed) return this.pollMs;
     if (this.anyInFlight >= concurrency && this.controlInFlight > 0) return this.pollMs;
     const queues = [...this.handlers.keys()];
     const eligible = this.anyInFlight < concurrency ? queues : queues.filter(isControlQueue);
-    const next = nextClaimableRunAt(this.db, { now: this.clock.now(), queues: eligible });
+    let next: number | null;
+    try {
+      next = nextClaimableRunAt(this.db, { now: this.clock.now(), queues: eligible });
+    } catch (error) {
+      journalCaught(error, "loop.nextWaitMs", null);
+      return this.pollMs;
+    }
     if (next === null) return this.pollMs;
     const delta = next - this.clock.now();
     if (delta <= 0) return 0;
@@ -140,12 +197,23 @@ export class JobLoop {
 
   private launch(queues: readonly string[]): { job: Job; done: Promise<void> } | null {
     const now = this.clock.now();
-    const job = claimNextJob(this.db, {
-      workerId: this.options.workerId ?? "job-loop",
-      leaseMs: this.options.leaseMs ?? DEFAULT_LEASE_MS,
-      now,
-      queues,
-    });
+    // claimNextJob used to sit outside the handler try. A locked or closed database rejected
+    // the claimer permanently; the process kept serving HTTP and renewed nothing. The job
+    // already claimed by another slot keeps its lease and its handler.
+    let job: Job | null;
+    try {
+      job = claimNextJob(this.db, {
+        workerId: this.options.workerId ?? "job-loop",
+        leaseMs: this.options.leaseMs ?? DEFAULT_LEASE_MS,
+        now,
+        queues,
+      });
+    } catch (error) {
+      journalCaught(error, "loop.tick.claimNextJob", null);
+      this.claimFailed = true;
+      return null;
+    }
+    this.claimFailed = false;
     if (job === null) return null;
     const handler = this.handlers.get(job.queue);
     if (handler === undefined) {
@@ -182,7 +250,10 @@ export class JobLoop {
       },
     };
     const renewal = setInterval(
-      () => context.extendLease(),
+      () => {
+        this.noteTick();
+        context.extendLease();
+      },
       Math.max(1, Math.min(10_000, leaseMs / 3)),
     );
     renewal.unref?.();
@@ -217,6 +288,10 @@ export class JobLoop {
       else this.controlInFlight -= 1;
       this.wake();
     });
+  }
+
+  private noteTick(): void {
+    this.lastTickAt = this.clock.now();
   }
 
   private wake(): void {

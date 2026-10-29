@@ -1,6 +1,14 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { migrate, openDatabase, setJournalSink } from "../src/db";
+import { JOB_KIND } from "../src/core";
+import {
+  enqueueJob,
+  JOB_PROGRESS_STALE_MS,
+  migrate,
+  openDatabase,
+  setJournalSink,
+  type JobLoopLiveness,
+} from "../src/db";
 import { RUNNER_ONLINE_MS } from "../src/runner-placement";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { startServer, type HealthReport } from "../src/server";
@@ -62,13 +70,18 @@ describe("server health", () => {
       expect(Object.keys(body.checks)).toEqual([
         "database",
         "jobLeases",
+        "jobProgress",
         "deadJobs",
         "deadOutbox",
         "runnerHeartbeats",
         "linearWebhook",
         "githubWebhook",
       ]);
-      for (const check of Object.values(body.checks)) expect(check).toMatchObject({ status: "ok" });
+      expect(body.checks.jobProgress).toEqual({ status: "skipped", reason: "not_observed" });
+      for (const [name, check] of Object.entries(body.checks)) {
+        if (name === "jobProgress") continue;
+        expect(check).toMatchObject({ status: "ok" });
+      }
     } finally {
       db.close();
     }
@@ -232,4 +245,108 @@ describe("server health", () => {
       db.close();
     }
   });
+
+  test("due work with a quiet loop fails health while a busy or recent loop stays up", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const dueAt = NOW - JOB_PROGRESS_STALE_MS;
+    enqueueJob(db, { queue: "work", runAt: dueAt, now: dueAt });
+    const live = {
+      polling: true,
+      lastTickAt: NOW,
+      lastClaimAt: NOW,
+      inFlight: 0,
+      workerCount: 1,
+    };
+    const probeLoop = (jobLoop: JobLoopLiveness) => probeWith(db, () => jobLoop);
+    try {
+      const idle = await probeLoop({ ...live, lastTickAt: dueAt, lastClaimAt: null });
+      expect(idle.status).toBe(503);
+      expect(idle.body.failedChecks).toEqual(["jobProgress"]);
+      expect(idle.body.checks.jobProgress).toMatchObject({
+        status: "failed",
+        reason: "loop_idle",
+        count: 1,
+        ageMs: JOB_PROGRESS_STALE_MS,
+        maxAgeMs: JOB_PROGRESS_STALE_MS,
+      });
+
+      const unclaimed = await probeLoop({ ...live, lastClaimAt: dueAt });
+      expect(unclaimed.status).toBe(503);
+      expect(unclaimed.body.checks.jobProgress).toMatchObject({
+        status: "failed",
+        reason: "due_unclaimed",
+      });
+
+      const recent = await probeLoop(live);
+      expect(recent.status).toBe(200);
+      expect(recent.body.checks.jobProgress).toMatchObject({ status: "ok", count: 1 });
+
+      db.run("UPDATE job SET run_at = ? WHERE queue = 'work'", [NOW - JOB_PROGRESS_STALE_MS + 1]);
+      const notYet = await probeLoop({ ...live, lastTickAt: null, lastClaimAt: null });
+      expect(notYet.status).toBe(200);
+      expect(notYet.body.checks.jobProgress).toMatchObject({
+        status: "ok",
+        ageMs: JOB_PROGRESS_STALE_MS - 1,
+      });
+
+      db.run("UPDATE job SET run_at = ? WHERE queue = 'work'", [dueAt]);
+      const saturated = await probeLoop({
+        ...live,
+        lastTickAt: null,
+        lastClaimAt: null,
+        inFlight: 1,
+      });
+      expect(saturated.status).toBe(200);
+      expect(saturated.body.checks.jobProgress).toMatchObject({ status: "ok", count: 1 });
+
+      const starting = await probeWith(db, () => null);
+      expect(starting.status).toBe(200);
+      expect(starting.body.checks.jobProgress).toEqual({ status: "skipped", reason: "starting" });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a start without a reservation is not treated as stalled work", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const dueAt = NOW - JOB_PROGRESS_STALE_MS;
+    enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: { itemId: "unreserved" },
+      runAt: dueAt,
+      now: dueAt,
+    });
+    try {
+      const { status, body } = await probeWith(db, () => ({
+        polling: true,
+        lastTickAt: null,
+        lastClaimAt: null,
+        inFlight: 0,
+        workerCount: 1,
+      }));
+      expect(status).toBe(200);
+      expect(body.checks.jobProgress).toEqual({ status: "ok", count: 0 });
+    } finally {
+      db.close();
+    }
+  });
 });
+
+async function probeWith(db: Database, jobLoop: () => JobLoopLiveness | null) {
+  const server = startServer({
+    db,
+    port: 0,
+    hostname: "127.0.0.1",
+    webhooks: false,
+    healthNow: () => NOW,
+    jobLoop,
+  });
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/health`);
+    return { status: response.status, body: (await response.json()) as HealthReport };
+  } finally {
+    await server.stop(true);
+  }
+}
