@@ -7,6 +7,8 @@ Each candidate goes through Closeout twice:
 1. **Agent Closeout.** The agent runs the command checks itself while it works.
 2. **Paws Closeout.** After the agent's turn ends, Paws verifies the result, runs the independent review, and decides whether the candidate can be published.
 
+Before the pull request, the policy in this repository also runs two hygiene checks. `bun run links` fails on a broken local link, a doc under `docs/` that no other document links to, or an inline `src/...` path that no longer exists. `bun run knip` fails on an unused file, an unused or unlisted dependency, or a duplicate export. Delete an outdated page instead of keeping it; an orphaned page is a failed check.
+
 ```mermaid
 flowchart TD
   A[Agent changes code and commits] --> B[get_closeout lists the required checks]
