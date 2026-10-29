@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { runnerLeaseCutoff } from "./runner-lease";
+import { markRun } from "./runs";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 
@@ -37,12 +38,41 @@ export function runnerOccupancy(
     .get(runnerId, runnerId, runnerLeaseCutoff(now), excludeRunId, runnerId, now)!;
 }
 
+/**
+ * Closes a run whose runner lease is past the grace and whose work never ended. That row is
+ * abandoned, not a slot held between commands, so it stops counting as occupied (PAS-898).
+ * A command that finished (`ended_at` set) while the run stays active still holds its slot.
+ */
+export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
+  return immediate(db, () => {
+    const cutoff = runnerLeaseCutoff(now);
+    const rows = db
+      .query<{ runId: string }, [number]>(
+        `SELECT w.run_id AS runId FROM runner_work w
+         JOIN run r ON r.id = w.run_id
+         WHERE w.ended_at IS NULL AND w.lease_until <= ?
+           AND r.status IN ('active', 'provisioning')`,
+      )
+      .all(cutoff);
+    for (const row of rows) {
+      markRun(db, row.runId, "lost", now);
+      db.run("UPDATE runner_work SET ended_at = ? WHERE run_id = ? AND ended_at IS NULL", [
+        now,
+        row.runId,
+      ]);
+      db.run("DELETE FROM runner_work_grant WHERE run_id = ?", [row.runId]);
+    }
+    return rows.map((row) => row.runId);
+  });
+}
+
 export function runnerSlotsHeldBetweenCommands(
   db: Database,
   runnerId: string,
   now: number,
   excludeRunId = "",
 ): number {
+  closeExpiredRunnerLeases(db, now);
   return db
     .query<{ held: number }, [string, string, number]>(
       `SELECT count(*) AS held FROM runner_work w JOIN run r ON r.id=w.run_id

@@ -421,7 +421,11 @@ test("a delegator whose runner is only busy still waits for capacity", async () 
     expect(
       fixture
         .itemJobs()
-        .filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
+        .filter(
+          (job) =>
+            job.status === "pending" &&
+            (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
+        )
         .map((job) => (job.payload as { capacityWait?: unknown }).capacityWait),
     ).toEqual([{ since: expect.any(Number), attempt: 0, runnerIds: [fixture.memberRunner] }]);
     expect(fixture.thoughts().join("\n")).not.toContain("runner Paws can use");
@@ -438,7 +442,11 @@ test("a delegator whose own runner is offline waits for it instead of hearing th
     expect(
       fixture
         .itemJobs()
-        .filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
+        .filter(
+          (job) =>
+            job.status === "pending" &&
+            (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
+        )
         .map((job) => (job.payload as { capacityWait?: unknown }).capacityWait),
     ).toEqual([{ since: expect.any(Number), attempt: 0, runnerIds: [] }]);
     expect(fixture.thoughts().join("\n")).not.toContain("runner Paws can use");

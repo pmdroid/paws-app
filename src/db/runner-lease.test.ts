@@ -85,11 +85,27 @@ describe("the runner lease grace", () => {
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
   });
 
-  test("capacity frees the lease past the grace and holds the slot for the active run", () => {
-    const { clock, db } = leased();
+  test("capacity frees the lease past the grace and closes the run that never ended", () => {
+    const { clock, db, run } = leased();
     clock.advance(PAST);
     expect(runnerOccupancy(db, "runner", clock.now())).toEqual({ capacity: 1, occupied: 0 });
+    expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(0);
+    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect(
+      db
+        .query<{ endedAt: number | null }, [string]>(
+          "SELECT ended_at AS endedAt FROM runner_work WHERE run_id=?",
+        )
+        .get(run.id)?.endedAt,
+    ).toBe(clock.now());
+  });
+
+  test("a finished command still holds its slot after the lease grace", () => {
+    const { clock, db, run } = leased();
+    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [clock.now(), run.id]);
+    clock.advance(PAST);
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(1);
+    expect(getRun(db, run.id)?.status).toBe("active");
   });
 
   test("halt keeps an unsettled runner occupied through the grace", () => {

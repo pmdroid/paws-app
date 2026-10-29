@@ -156,6 +156,7 @@ import {
   listArtifacts,
   getTaskClassification,
   resolveTaskClassification,
+  accrueAwake,
   applyWorkItemEvent,
   configureWorkItem,
   enqueueJobOnce,
@@ -201,6 +202,7 @@ import {
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   startCloseoutRound,
+  markCloseoutCiWait,
   markRun,
   releaseRunCapacity,
   saveCheckpoint,
@@ -1474,6 +1476,7 @@ export class Orchestrator {
       if (owner !== null) this.checkRunnerSetup(owner);
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
+      if (this.waitingForRunnerSlot(job)) return;
       await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
@@ -1501,6 +1504,8 @@ export class Orchestrator {
             undefined,
             this.options.journal,
           );
+          const waitingId = readString(job.payload, "itemId");
+          if (waitingId) this.settleItemAwake(waitingId);
           waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
@@ -1535,6 +1540,8 @@ export class Orchestrator {
         return;
       }
       if (waiting === undefined) return;
+      const waitingId = readString(job.payload, "itemId");
+      if (waitingId) this.settleItemAwake(waitingId);
       if (parkMerge(this.db, job, this.now(), waiting) !== "expired") return;
       const itemId = readString(job.payload, "itemId");
       const item = itemId ? getWorkItem(this.db, itemId) : null;
@@ -1812,15 +1819,11 @@ export class Orchestrator {
       }
       const wait = this.nextRunnerWait(job, error);
       if (wait) {
-        deferWorkItem(this.db, item, {
-          retry: retryCount(job.payload),
-          delayMs: this.runnerWaitMs(wait),
-          handoff: readString(job.payload, "handoff"),
-          message: null,
-          capacityWait: wait,
-          now: this.now(),
-        });
-
+        // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
+        // and the item keeps this run (PAS-898).
+        this.settleItemAwake(item.id);
+        if (waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait) === "lost")
+          throw error;
         journalCaught(
           error,
           "orchestrator.executeRetried.executeQueued",
@@ -2041,7 +2044,7 @@ export class Orchestrator {
       !waited ||
       !item ||
       item.cancelRequested ||
-      !["recovering", "verifying", "merge_queue"].includes(item.state) ||
+      !["running", "recovering", "verifying", "merge_queue"].includes(item.state) ||
       this.shuttingDown ||
       (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
@@ -3563,7 +3566,15 @@ export class Orchestrator {
           ...this.gitHubCredentials(github),
         });
       },
-      sleep: (ms) => delay(ms, undefined, signal ? { signal } : {}),
+      sleep: async (ms) => {
+        const clock = this.options.clock ?? systemClock;
+        markCloseoutCiWait(this.db, item.id, true, clock.mono(), clock.now());
+        try {
+          await delay(ms, undefined, signal ? { signal } : {});
+        } finally {
+          markCloseoutCiWait(this.db, item.id, false, clock.mono(), clock.now());
+        }
+      },
       now: () => this.now(),
       ...(this.options.ciRecheckWait ?? {}),
       onWait: (message) =>
@@ -7499,6 +7510,12 @@ export class Orchestrator {
 
   private now(): number {
     return (this.options.clock ?? systemClock).now();
+  }
+
+  /** Records awake time up to this instant, under the item's category before the next wait. */
+  private settleItemAwake(itemId: string): void {
+    const clock = this.options.clock ?? systemClock;
+    accrueAwake(this.db, itemId, clock.mono(), clock.now());
   }
 }
 

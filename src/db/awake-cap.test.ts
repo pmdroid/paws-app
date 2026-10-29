@@ -15,6 +15,7 @@ import {
   listJobs,
   listOutbox,
   markCloseoutAccepted,
+  markCloseoutCiWait,
   migrate,
   openDatabase,
   recoverOnStartup,
@@ -210,6 +211,29 @@ describe("awake-time cap after Closeout accepted the work", () => {
     });
     finish();
     await running;
+  });
+
+  test("a Closeout run waiting on CI does not accrue closeout time", () => {
+    const clock = new FakeClock(20_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 60 * MINUTE, now: 0 });
+    beginImplementRun(db, item.id, clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    clock.advance(6 * MINUTE);
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    verifyingJob(db, item.id, clock.now());
+    markCloseoutCiWait(db, item.id, true, clock.mono(), clock.now());
+    clock.advance(30 * MINUTE);
+    const result = accrueAwake(db, item.id, clock.mono(), clock.now());
+    expect(result.capped).toBe(false);
+    expect(result.item).toMatchObject({
+      awakeMs: 6 * MINUTE,
+      agentMs: 6 * MINUTE,
+      closeoutMs: 0,
+      waitingMs: 30 * MINUTE,
+    });
   });
 
   test("a task Closeout accepted before the upgrade is still protected after a restart", () => {

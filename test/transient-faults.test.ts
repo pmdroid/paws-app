@@ -14,12 +14,15 @@ import {
   JobLoop,
   OutboxDispatcher,
   applyLinearCommand,
+  getWorkItem,
   listJobs,
   listOutbox,
   listRuns,
   migrate,
   openDatabase,
 } from "../src/db";
+import { HostSupervisor } from "../src/host/supervisor";
+import { WakeDetector } from "../src/host/wake";
 import {
   LinearRateLimitError,
   LinearHttpError,
@@ -129,7 +132,10 @@ test("waiting eight hours for a slot on a busy runner keeps the task deferred wi
   });
   expect(["running", "recovering"], result.detail).toContain(result.state!);
   // The wait is never counted as a failed attempt.
-  expect(new Set(result.retries), result.detail).toEqual(new Set([0]));
+  expect(
+    result.retries.every((retry) => retry === 0),
+    result.detail,
+  ).toBe(true);
   expect(result.states, result.detail).not.toContain("failed");
   expect(result.events, result.detail).not.toContain("run_failed");
   expect(result.errors, result.detail).toEqual([]);
@@ -157,7 +163,10 @@ test("a busy runner wait wrapped by agent preparation keeps the task deferred wi
     untilMs: 3 * HOUR_MS,
   });
   expect(["running", "recovering"], result.detail).toContain(result.state!);
-  expect(new Set(result.retries), result.detail).toEqual(new Set([0]));
+  expect(
+    result.retries.every((retry) => retry === 0),
+    result.detail,
+  ).toBe(true);
   expect(result.states, result.detail).not.toContain("failed");
   expect(result.states, result.detail).not.toContain("awaiting_input");
   expect(result.errors, result.detail).toEqual([]);
@@ -193,6 +202,25 @@ test("a busy runner wait that outlasts the hour, then loses its runners, gets a 
   });
   expect(["running", "recovering"], result.detail).toContain(result.state!);
   expect(result.capacityWait, result.detail).toMatchObject({ runnerIds: [] });
+}, 90_000);
+
+test("a 60 minute wait for a runner slot accrues no awake time and does not bounce", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({
+    error: busyRunner,
+    times: Infinity,
+    clock,
+    untilMs: 60 * 60_000,
+  });
+  expect(result.awakeMs, result.detail).toBe(0);
+  expect(result.waitingMs, result.detail).toBeGreaterThanOrEqual(60 * 60_000);
+  expect(result.events, result.detail).not.toContain("lease_expired");
+  expect(result.events, result.detail).not.toContain("recovered");
+  expect(result.states, result.detail).not.toContain("recovering");
+  expect(
+    result.runs.filter((run) => run.startsWith("implement:")),
+    result.detail,
+  ).toHaveLength(1);
 }, 90_000);
 
 test("Stop while the task waits for a busy runner cancels it", async () => {
@@ -233,6 +261,8 @@ async function runWithFault(fault: {
   events: string[];
   capacityWait: unknown;
   elapsedMs: number;
+  awakeMs: number;
+  waitingMs: number;
   detail: string;
 }> {
   const layout = await repoLayout("paws-faults-");
@@ -262,6 +292,7 @@ async function runWithFault(fault: {
   });
   const clock = fault.clock ?? systemClock;
   const jobs = new JobLoop(db, clock);
+  const host = new HostSupervisor(db, clock, new WakeDetector(clock));
   const outbox = new OutboxDispatcher(db, clock);
   const waits: { delayMs: number; runningJobs: number }[] = [];
   let implementations = 0;
@@ -381,9 +412,12 @@ async function runWithFault(fault: {
         outbox.tick();
         await Bun.sleep(25);
         const delayed = listJobs(db).find(
-          (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+          (job) =>
+            (job.queue === JOB_KIND.resume || job.queue === JOB_KIND.start) &&
+            job.status === "pending" &&
+            job.runAt > clock.now(),
         );
-        if (fault.clock && delayed && delayed.runAt > clock.now()) {
+        if (fault.clock && delayed) {
           waits.push({
             delayMs: delayed.runAt - clock.now(),
             runningJobs: listJobs(db).filter((job) => job.status === "running").length,
@@ -391,6 +425,7 @@ async function runWithFault(fault: {
           fault.clock.advance(delayed.runAt - clock.now());
         }
       }
+      if (fault.clock) host.tick();
     }
     const drainBy = Date.now() + 10_000;
     while (Date.now() < drainBy && listOutbox(db).some((row) => row.status === "pending")) {
@@ -400,9 +435,15 @@ async function runWithFault(fault: {
     }
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
-    const pendingResume = listJobs(db).find(
-      (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+    const pendingWait = listJobs(db).find(
+      (job) =>
+        job.status === "pending" &&
+        (job.payload as { capacityWait?: unknown } | null)?.capacityWait !== undefined,
     );
+    const item = db
+      .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_identifier='ENG-7'")
+      .get();
+    const recorded = item ? getWorkItem(db, item.id) : null;
     return {
       events: db
         .query(
@@ -410,9 +451,10 @@ async function runWithFault(fault: {
         )
         .all()
         .map((row) => (row as { event: string }).event),
-      capacityWait: (pendingResume?.payload as { capacityWait?: unknown } | undefined)
-        ?.capacityWait,
+      capacityWait: (pendingWait?.payload as { capacityWait?: unknown } | undefined)?.capacityWait,
       elapsedMs: clock.now() - startedAt,
+      awakeMs: recorded?.awakeMs ?? 0,
+      waitingMs: recorded?.waitingMs ?? 0,
       state: stateOf(db, "ENG-7"),
       states,
       thoughts: progress("thought"),

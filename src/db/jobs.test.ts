@@ -219,6 +219,21 @@ describe("job queue", () => {
     expect(claim(db, clock, [JOB_KIND.start])?.id).toBe(id);
   });
 
+  test("a start parked for a runner slot is claimed again after the item is running", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    beginImplementRun(db, "eng-1", clock.now());
+    const parked = enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: {
+        itemId: "eng-1",
+        capacityWait: { since: clock.now(), attempt: 0, runnerIds: ["runner-1"] },
+      },
+      now: clock.now(),
+    });
+    expect(claim(db, clock, [JOB_KIND.start])?.id).toBe(parked);
+  });
+
   test("the in-flight item can resume while another start waits", () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
