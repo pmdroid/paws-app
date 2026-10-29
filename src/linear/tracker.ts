@@ -1,3 +1,4 @@
+import { readLinearBriefIssue } from "./brief-issue";
 import { createIssuePullRequestReads } from "./issue-pulls";
 import { createLinearProjectScopeReads } from "./project-scope";
 import { createLinearAttachmentMethods } from "./attachments";
@@ -98,6 +99,7 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   createSubIssues: "sub-issues",
   listIssuePullRequests: "issue-pull-requests",
   loadEpic: "issue-snapshot",
+  readBriefIssue: "brief-preview",
   listDeps: "issue-relations",
   postProgress: "activity-post",
   postProgressWithSession: "activity-post",
@@ -121,6 +123,7 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
     ...createLinearMergeReads(client, starts),
     ...createLinearAttachmentMethods(client),
     listIssuePullRequests: createIssuePullRequestReads(client),
+    readBriefIssue: (identifier, options) => readLinearBriefIssue(client, identifier, options),
     async loadEpic(linearIssueId) {
       const children = new Map<string, LinearSubIssue & { sort: number | null }>();
       const cursors = new Set<string>();

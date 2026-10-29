@@ -1,3 +1,4 @@
+import type { BriefIssueRead } from "./brief-issue";
 import type { LinearMergeContext } from "./merge-context";
 import type { TrackerRequestOptions } from "./adapter";
 import type { IssuePullRequest } from "./issue-pulls";
@@ -21,6 +22,7 @@ import type {
   IssueAttachment,
   SessionElicitation,
   EpicSnapshot,
+  LinearSubIssue,
   ProgressUpdate,
   SessionOnComment,
   SessionOnIssue,
@@ -54,6 +56,14 @@ export type FakeTracker = LinearSessionAdapter &
     mergeContexts: Map<string, LinearMergeContext>;
     issueMergeContext(id: string, options?: TrackerRequestOptions): Promise<LinearMergeContext>;
     epics: Map<string, EpicSnapshot>;
+    /** Child issue id to parent issue id, for one brief preview read. */
+    briefParents: Map<string, string>;
+    /** Identifiers passed to `readBriefIssue`, in order. */
+    briefReads: string[];
+    readBriefIssue(
+      identifier: string,
+      options?: TrackerRequestOptions,
+    ): Promise<BriefIssueRead | null>;
     deps: Map<string, readonly DependencyEdge[]>;
     progress: ProgressUpdate[];
     questions: SessionElicitation[];
@@ -68,6 +78,8 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const issuePullRequests = new Map<string, IssuePullRequest[]>();
   const issueContexts = new Map<string, LinearIssueContext>();
   const byId = new Map(epics.map((epic) => [epic.linearIssueId, epic]));
+  const briefParents = new Map<string, string>();
+  const briefReads: string[] = [];
   const deps = new Map<string, readonly DependencyEdge[]>();
   const progress: ProgressUpdate[] = [];
   const questions: SessionElicitation[] = [];
@@ -127,6 +139,22 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
       else attachments[existing] = input;
     },
     epics: byId,
+    briefParents,
+    briefReads,
+    async readBriefIssue(identifier, options) {
+      options?.signal?.throwIfAborted();
+      briefReads.push(identifier);
+      const found = findBriefIssue(byId, identifier);
+      if (found === undefined) return null;
+      const parentId = briefParents.get(found.linearIssueId);
+      const parent = parentId === undefined ? undefined : findBriefIssue(byId, parentId);
+      const overview = projectOverviews.get(found.linearIssueId);
+      return {
+        issue: briefIssueFromSnapshot(found),
+        parent: parent === undefined ? null : briefIssueFromSnapshot(parent),
+        projectOverview: overview ? `Project overview: ${overview.name}\n\n${overview.content}` : "",
+      };
+    },
     deps,
     progress,
     questions,
@@ -239,5 +267,30 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
       options?.signal?.throwIfAborted();
       statuses.push(update);
     },
+  };
+}
+
+function findBriefIssue(
+  epics: Map<string, EpicSnapshot>,
+  idOrIdentifier: string,
+): EpicSnapshot | LinearSubIssue | undefined {
+  for (const epic of epics.values()) {
+    if (epic.linearIssueId === idOrIdentifier || epic.identifier === idOrIdentifier) return epic;
+    const child = epic.subIssues.find(
+      (issue) => issue.linearIssueId === idOrIdentifier || issue.identifier === idOrIdentifier,
+    );
+    if (child) return child;
+  }
+  return undefined;
+}
+
+function briefIssueFromSnapshot(issue: EpicSnapshot | LinearSubIssue): BriefIssueRead["issue"] {
+  return {
+    source: "linear",
+    issueId: issue.linearIssueId,
+    identifier: issue.identifier,
+    title: issue.title,
+    description: issue.description ?? null,
+    acceptanceCriteria: issue.acceptanceCriteria ?? null,
   };
 }
