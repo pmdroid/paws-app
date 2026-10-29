@@ -1645,7 +1645,8 @@ function pullCommentFilter(
       let wait = DEFAULT_COMMENT_WAIT;
       try {
         wait = readMergeSettings(loadConfigFile(configFile)).commentWait;
-      } catch {
+      } catch (error) {
+        journalCaught(error, "index.commentFilter.commentWait", null);
         // A config.toml that does not parse keeps the defaults.
       }
       return { quietMs: wait.quietSeconds * 1000, maxMs: wait.maxWaitSeconds * 1000 };
