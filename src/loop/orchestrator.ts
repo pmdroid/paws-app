@@ -271,6 +271,9 @@ import {
   readPullMergeable,
   readReviewThreads,
   readPullCi,
+  commentOnPullRequest,
+  replyToReviewComment,
+  resolveReviewThread,
   mergedPullHeads,
   readPullMerge,
   branchContains,
@@ -374,6 +377,7 @@ import {
 } from "./link-ask";
 import { acceptCloseout, retryMergeLater, waitForMergeTurn, waitForRunnerSlot } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
+import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
 import { ciForRecheck, type CiRecheck } from "./ci-recheck";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
@@ -2828,6 +2832,8 @@ export class Orchestrator {
       if (!artifactPublicationReady(this.db, item.id))
         throw new Error("A requested artifact has not been uploaded successfully");
       saveRunResult(this.db, run.id, activity.resultBody(), this.now());
+      // A fix turn for pull request comments reports a reply for each one it was handed.
+      recordAgentReviewReplies(this.db, item.id, activity.resultBody(), this.now());
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
       this.saveCandidate(run.id, executed.run.identity);
@@ -4290,6 +4296,7 @@ export class Orchestrator {
       line: openLine,
       now: this.now(),
     });
+    await this.postReviewReplies(item, github, repository, published.pull.number, published.head);
     this.post(
       item,
       "response",
@@ -7043,6 +7050,45 @@ export class Orchestrator {
       launch: this.launchAgent.bind(this),
       brief: this.workContext(item),
     };
+  }
+
+  /**
+   * Reply on the pull request to each comment the last fix turn was handed, and resolve the threads
+   * it addressed. The head is on GitHub by now. A failure leaves the rest for the next publication
+   * and does not hold the merge.
+   */
+  private async postReviewReplies(
+    item: WorkItemRecord,
+    github: GitHubBinding,
+    repository: { owner: string; repo: string },
+    pullNumber: number,
+    head: string,
+  ): Promise<void> {
+    const access = {
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      ...this.gitHubCredentials(github),
+    };
+    await postReviewReplies(
+      this.db,
+      { itemId: item.id, pullNumber, head, now: () => this.now() },
+      {
+        replyToReviewComment: (prNumber, commentId, body) =>
+          replyToReviewComment({ ...access, prNumber, commentId, body }),
+        commentOnPullRequest: (prNumber, body) =>
+          commentOnPullRequest({ ...access, prNumber, body }),
+        resolveReviewThread: (threadId) => resolveReviewThread({ ...access, threadId }),
+      },
+    ).catch((error: unknown) =>
+      journalCaught(
+        error,
+        "orchestrator.postReviewReplies",
+        item.id,
+        undefined,
+        this.options.journal,
+      ),
+    );
   }
 
   private gitHubCredentials(

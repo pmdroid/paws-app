@@ -59,6 +59,13 @@ export {
 export { readPullReview } from "./review";
 export type { PullReview } from "./review";
 export { readReviewThreads } from "./review-threads";
+export {
+  commentOnPullRequest,
+  createFakeReviewReplies,
+  replyToReviewComment,
+  resolveReviewThread,
+  type FakeReviewReplies,
+} from "./review-replies";
 export type { ReviewThread, ReviewThreadComment } from "./review-threads";
 export { listMergedPullsSince, readMergedPull, readPullComments } from "./pull-comments";
 export type { MergedPull, PullComment } from "./pull-comments";

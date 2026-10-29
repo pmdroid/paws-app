@@ -48,6 +48,7 @@ import { policyCheckPaths } from "./closeout";
 import { createEvidenceStore, EvidenceRejectedError } from "./evidence";
 import {
   closeoutPolicyRoot,
+  DEFAULT_COMMENT_WAIT,
   DEFAULT_IGNORED_COMMENT_BOTS,
   ensureLayout,
   ignoredCommentBots,
@@ -1653,6 +1654,17 @@ function pullCommentFilter(
       } catch {
         return DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase());
       }
+    },
+    // Read on every delivery, so a change under Settings › Merging applies to the next comment.
+    commentWait() {
+      let wait = DEFAULT_COMMENT_WAIT;
+      try {
+        wait = readMergeSettings(loadConfigFile(configFile)).commentWait;
+      } catch (error) {
+        journalCaught(error, "index.commentFilter.commentWait", null);
+        // A config.toml that does not parse keeps the defaults.
+      }
+      return { quietMs: wait.quietSeconds * 1000, maxMs: wait.maxWaitSeconds * 1000 };
     },
   };
 }

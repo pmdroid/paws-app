@@ -172,7 +172,7 @@ describe("changes-requested reviews", () => {
     expect(payload.handoff).toContain("@pascal: Agreed.");
     expect(payload.handoff).toContain("Typo here.");
     expect(payload.handoff).not.toContain("Done already.");
-    expect(payload.handoff).toEndWith(REVIEW_FIX_INSTRUCTION);
+    expect(payload.handoff).toContain(`${REVIEW_FIX_INSTRUCTION}\n\nReply list.`);
     expect(getPullReview(db, 501)?.outcome).toBe("restarted");
 
     // A redelivered webhook after the restart does nothing.
@@ -204,7 +204,7 @@ describe("changes-requested reviews", () => {
     );
     expect(handoff).not.toContain('Typo here."');
     expect(handoff).toContain(CONTRADICTION_INSTRUCTION);
-    expect(handoff).toEndWith(REVIEW_FIX_INSTRUCTION);
+    expect(handoff).toContain(`${REVIEW_FIX_INSTRUCTION}\n\nReply list.`);
   });
 
   test("a review fix on an accepted head is one candidate review escape, even redelivered", async () => {
