@@ -1,5 +1,5 @@
-import type { IssueBrief, WorkBrief } from "../core";
-import { acceptanceCriteriaSection, renderParentBrief, renderWorkBrief } from "./brief";
+import type { IssueBrief, WorkBrief } from "./brief";
+import { acceptanceCriteriaSection, renderParentBrief, renderWorkBrief } from "./render-brief";
 
 /**
  * Placeholders a brief template may use. `issue.id` and `issue.source` are part of today's
@@ -165,7 +165,7 @@ export function briefSectionSizes(
     const name = match[1]!.trim();
     if (seen.has(name) || !PLACEHOLDER_SET.has(name)) continue;
     seen.add(name);
-    sections.push({ name, characters: (values[name] ?? "").length });
+    sections.push({ name, characters: (values[name as BriefPlaceholder] ?? "").length });
   }
   return sections;
 }

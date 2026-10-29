@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { briefTemplateProblem, defaultBriefTemplate } from "../loop/brief-template";
+import { briefTemplateProblem, defaultBriefTemplate } from "../core";
 import { replaceConfigText } from "./agents";
 import type { PawsConfigFile } from "./file";
 

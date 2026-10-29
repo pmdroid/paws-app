@@ -16,7 +16,7 @@ import {
   previewBriefValues,
   renderBriefTemplate,
   type BriefValues,
-} from "../loop/brief-template";
+} from "../core";
 import type { AgentSettingsOptions } from "./handler";
 import { isRecord, json, localRequest, readJson, sameToken } from "./handler";
 

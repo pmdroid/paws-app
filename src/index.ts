@@ -960,6 +960,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       },
       agentSettings: {
         applyToWaiting: () => orchestrator?.applyAgentSettingsToWaiting() ?? 0,
+        ...(linear?.tracker?.readBriefIssue ? { readIssue: (identifier: string, signal: AbortSignal) => linear.tracker!.readBriefIssue!(identifier, { signal }) } : {}),
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
         checkoutFacts: async (name: string) => {

@@ -1,4 +1,4 @@
-import type { IssueBrief, WorkBrief } from "../core";
+import type { IssueBrief, WorkBrief } from "./brief";
 
 export function renderWorkBrief(brief: WorkBrief | null): string {
   if (brief === null) return "";

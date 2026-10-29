@@ -1,4 +1,6 @@
 export { handleAgentSettingsRequest } from "./handler";
+export { BRIEF_SETTINGS_PATH, handleBriefSettingsRequest } from "./brief";
+export type { BriefSettingsOptions } from "./brief";
 export type { AgentSettingsOptions } from "./handler";
 export { SKILL_SETTINGS_PATH, handleSkillSettingsRequest } from "./skills";
 export type { SkillSettingsOptions } from "./skills";

@@ -16,6 +16,7 @@ import type { ProjectOverview } from "./project-scope";
 import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearMergeChoices, LinearMergeContext } from "./merge-context";
 import type { SubIssueRequest } from "./sub-issues";
+import type { BriefIssueRead } from "./brief-issue";
 
 export type TrackerRequestOptions = {
   signal?: AbortSignal;
@@ -28,6 +29,7 @@ export type TrackerRequestOptions = {
  * `onAnswer` is inbound (the webhook), not a call on this interface.
  */
 export interface TrackerAdapter {
+  readBriefIssue?(identifier: string, options?: TrackerRequestOptions): Promise<BriefIssueRead | null>;
   listIssuePullRequests?(id: string, options?: TrackerRequestOptions): Promise<IssuePullRequest[]>;
   getIssueContext?(id: string, options?: TrackerRequestOptions): Promise<LinearIssueContext>;
   deleteIssueAttachment?(id: string, options?: TrackerRequestOptions): Promise<void>;

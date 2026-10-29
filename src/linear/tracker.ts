@@ -68,6 +68,7 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
 };
 
 type LinearTracker = LinearSessionAdapter &
+  Required<Pick<import("./adapter").TrackerAdapter, "readBriefIssue">> &
   ReturnType<typeof createLinearSessionReads> &
   LinearRepositoryAdapter &
   ReturnType<typeof createLinearSubIssueMethods> &
