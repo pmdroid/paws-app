@@ -33,6 +33,7 @@ import {
   createUpdateLimiter,
   validateCandidateAttribution,
   git,
+  minimalAgentEnv,
   removeWorktree,
   resolveAdapter,
   worktreePath,
@@ -3779,10 +3780,15 @@ export class Orchestrator {
         );
         return policy?.digest === digest ? policy.paths : null;
       },
-      changedPaths: async (base) =>
-        (await git(["-C", worktree, "diff", "--name-only", "--no-renames", "-z", base, head, "--"]))
-          .split("\0")
-          .filter(Boolean),
+      changedPaths: async (base) => {
+        // Status reads this. Commit ids only, after `--`, with the agent environment.
+        if (!gitRevision(base) || !gitRevision(head)) throw new Error("risk diff needs commit ids");
+        const names = await git(
+          ["-C", worktree, "diff", "--name-only", "--no-renames", "-z", "--", base, head],
+          { env: minimalAgentEnv() },
+        );
+        return names.split("\0").filter(Boolean);
+      },
       reviews: (taskId, reviewedHead, scope) =>
         reviewRecordsAt(taskId, reviewedHead, this.options.pawsRoot, scope),
     };
@@ -7541,6 +7547,11 @@ function withAcceptedBranch(text: string, item: WorkItemRecord): string {
 function retryCount(payload: unknown): number {
   const retry = (payload as { retry?: unknown } | null)?.retry;
   return typeof retry === "number" ? retry : 0;
+}
+
+/** A stored commit id. Anything else must not reach `git` as a revision. */
+function gitRevision(value: string): boolean {
+  return /^[0-9a-f]{7,64}$/i.test(value);
 }
 
 function readString(payload: unknown, key: string): string | null {

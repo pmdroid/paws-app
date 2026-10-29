@@ -22,6 +22,7 @@ import {
   type WorkItemRecord,
 } from "../db";
 import {
+  leaveGitHubMergeQueue,
   readPullFacts,
   rebaseOntoMain,
   squashPull,
@@ -57,7 +58,7 @@ import {
   type MergeStep,
   type SerialMergeStep,
 } from "./step";
-import { wakeMergesBehind } from "./wait";
+import { githubQueueWatch, wakeMergesBehind } from "./wait";
 
 export type MergePublication = MergePull & {
   github: GitHubBinding & { gitExec: GitExec };
@@ -133,11 +134,16 @@ export async function advanceMerge(
   // A high-risk head waits for a person in Paws before it joins any merge queue.
   const riskApproval = await caps.riskApproval(item, published);
   if (caps.stopped()) return { kind: "obsolete" };
-  if (riskApproval === "missing") return holdForRisk(db, item, caps, published);
+  if (riskApproval === "missing") return releaseMissingRisk(merge, caps, input.payload, published);
   const { repository, github, pull } = published;
   const { voice } = caps;
   const mergeSettings = await caps.settings(item, published.signal);
   if (mergeSettings.order === "github-queue") {
+    // The serial lane rechecks inside its facts callback. This order returns before that, so
+    // read eligibility again here. A revoked automatic pass must leave GitHub's queue first.
+    const again = await caps.riskApproval(item, published);
+    if (caps.stopped()) return { kind: "obsolete" };
+    if (again === "missing") return releaseMissingRisk(merge, caps, input.payload, published);
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
     if (handed !== "no_queue") {
       if (handed.kind === "merged")
@@ -501,6 +507,45 @@ function mergeFacts(
         ? risk.approval
         : "missing",
   };
+}
+
+/**
+ * A missing risk approval never leaves a pull request in GitHub's merge queue. Automatic
+ * eligibility is not stored, so a later pass can find it gone after an earlier pass queued the
+ * pull request. GitHub would still merge that entry. Take it out first. A merge that already
+ * landed is recorded; a GitHub read that fails throws so this job retries instead of asking
+ * while the entry is still queued.
+ */
+async function releaseMissingRisk(
+  merge: MergeContext,
+  caps: MergeCapabilities,
+  payload: unknown,
+  published: MergePublication,
+): Promise<MergeStep> {
+  const { db, item } = merge;
+  if (githubQueueWatch(payload)?.queued) {
+    const { github, repository, pull } = published;
+    const left = await leaveGitHubMergeQueue({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      prNumber: pull.number,
+      ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
+      appId: github.appId,
+      installationId: github.installationId,
+      privateKeyPem: github.privateKeyPem,
+      signal: published.signal,
+    });
+    if (left === "merged") {
+      const handed = await mergeThroughGitHubQueue(merge, payload, published);
+      if (handed !== "no_queue") {
+        if (handed.kind === "merged")
+          checkQueueBehind(db, { repository: queueName(repository), main: null, now: caps.now() });
+        return handed;
+      }
+    }
+  }
+  return holdForRisk(db, item, caps, published);
 }
 
 /** Takes the item out of the merge queue and asks for the risk approval of S. */

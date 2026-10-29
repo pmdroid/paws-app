@@ -172,6 +172,19 @@ const BACK_WITH_AGENT_STATES = new Set<string>([
 ]);
 const MAX_CLOSEOUT_ATTEMPTS = 3;
 
+/** Closeout evidence ids are relative paths. A `..` segment or an absolute path stays off the status API. */
+function safeEvidenceId(id: string): boolean {
+  if (
+    id.length === 0 ||
+    id.length > 512 ||
+    id.startsWith("/") ||
+    id.includes("\\") ||
+    id.includes("\0")
+  )
+    return false;
+  return id.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+
 const MERGE_STEPS = ["Rebase onto main", "Re-run Closeout", "Squash merge"] as const;
 
 export type LiveStatusOptions = {
@@ -235,15 +248,19 @@ export function createLiveStatusProvider(
       if (!detail?.risk?.head || !options.automaticRisk) return detail;
       const itemId = readScopedSnapshot(db, options, id).current?.record.id;
       if (!itemId) return detail;
-      return options.automaticRisk(itemId, detail.risk.head).then((evidenceIds) => ({
-        ...detail,
-        risk: {
-          ...detail.risk!,
-          automaticApproval: evidenceIds
-            ? { approvedBy: "paws:clean-reviews" as const, evidenceIds }
-            : null,
-        },
-      }));
+      return options.automaticRisk(itemId, detail.risk.head).then((evidenceIds) => {
+        const ids = evidenceIds?.every(safeEvidenceId) ? evidenceIds : null;
+        return {
+          ...detail,
+          risk: {
+            ...detail.risk!,
+            automaticApproval:
+              ids && ids.length > 0
+                ? { approvedBy: "paws:clean-reviews" as const, evidenceIds: ids }
+                : null,
+          },
+        };
+      });
     },
     checkLog(request) {
       return readCheckLog(db, request, options);
