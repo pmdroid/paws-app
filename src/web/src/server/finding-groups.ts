@@ -133,7 +133,7 @@ export async function handleFindingGroupsRequest(
   if (request.method !== "POST")
     return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
   if (!principal) return Response.json({ error: "Sign in to Paws." }, { status: 401 });
-  if (!member?.active)
+  if (!member?.active || !["admin", "member"].includes(member.role))
     return Response.json({ error: "You cannot change finding groups." }, { status: 403 });
   let body: unknown;
   try {
