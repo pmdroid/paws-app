@@ -24,7 +24,15 @@ export interface CloseoutView {
   stream?: Record<string, "stdout" | "stderr">;
   /** Logs loaded for opened rows, by `checkKey`. A row without one shows the check's own output. */
   logs?: Record<string, CheckLogView>;
+  /** Issues being filed from pre-existing findings, by `findingIssueKey`. */
+  filing?: Record<string, FindingFiling>;
 }
+
+/** A click on File an issue: sending, the issue Linear filed, or Linear's error. */
+export type FindingFiling =
+  | { state: "sending" }
+  | { state: "filed"; identifier: string; url: string | null }
+  | { state: "failed"; error: string };
 
 /** A check log the issue page fetched when its row opened. `checkState` is the state it was read in. */
 export type CheckLogView =
