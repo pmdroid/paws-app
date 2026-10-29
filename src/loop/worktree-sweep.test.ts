@@ -16,6 +16,29 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+test("removes orphaned worktrees and preserves live worktrees", async () => {
+  const fixture = await setup();
+  await createWorktree({ ...repository, itemId: "ENG-orphan", pawsRoot: fixture.pawsRoot });
+  await fixture.item("ENG-live", "running", old);
+  await sweepWorktrees(fixture.sweep());
+  expect(existsSync(worktreePath(fixture.pawsRoot, "ENG-orphan"))).toBe(false);
+  expect(existsSync(worktreePath(fixture.pawsRoot, "ENG-live"))).toBe(true);
+}, 30_000);
+
+test("retains a terminal worktree for seven days even if its merged head cannot be resolved", async () => {
+  const fixture = await setup();
+  await fixture.item("ENG-1", "cancelled", old);
+  fixture.db.run(
+    "INSERT INTO work_item_event (item_id, version, at, from_state, to_state, event) VALUES (?, 1, ?, 'running', 'cancelled', 'cancel')",
+    ["ENG-1", now - 60_000],
+  );
+  const sweep = fixture.sweep({ mergedHeads: async () => ["missing-commit"] });
+  await sweepWorktrees(sweep);
+  expect(fixture.present()["ENG-1"]).toBe(true);
+  await sweepWorktrees({ ...sweep, now: now + RETIRED_WORKTREE_MS });
+  expect(fixture.present()["ENG-1"]).toBe(false);
+}, 30_000);
+
 test("removes finished worktrees after seven idle days and keeps recent or waiting ones", async () => {
   const fixture = await setup();
   await fixture.item("ENG-1", "cancelled", old);
