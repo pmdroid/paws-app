@@ -160,6 +160,7 @@ import {
   configureWorkItem,
   enqueueJobOnce,
   recordRebaseReturn,
+  saveCandidatePaths,
   enqueueOutboxOnce,
   lastOutboxSequence,
   attachSessionUpdates,
@@ -290,6 +291,7 @@ import {
   projectLeadId,
   type ItemAdmission,
   type ItemWait,
+  overlapLine,
   openBlockers,
   type SchedulerOptions,
 } from "../scheduler";
@@ -439,7 +441,7 @@ import {
   pushRefused,
   pushWorked,
 } from "./push-outage";
-import { classifyCandidateRisk, classifyPathsRisk } from "./candidate-risk";
+import { changedPaths, classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
   postRiskActivity,
@@ -4141,10 +4143,13 @@ export class Orchestrator {
       candidate?.sha === head
         ? candidate.baseSha
         : (await run(["merge-base", "HEAD", await this.upstreamMainRef(worktree, item.id)])).trim();
-    const risk = await classifyCandidateRisk({
+    const changed = await changedPaths(run, base, head);
+    // Every changed path, so the scheduler can hold work that changes the same hot files.
+    saveCandidatePaths(this.db, { itemId: item.id, head, paths: changed, recordedAt: this.now() });
+    const risk = await classifyPathsRisk({
       git: run,
       base,
-      head,
+      changed,
       settingsGlobs: highRiskPaths(
         readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
         `${repository.owner}/${repository.repo}`,
@@ -5285,6 +5290,11 @@ export class Orchestrator {
       if (wait.kind === "blocked") {
         const blockers = wait.blockers.length ? wait.blockers.join(", ") : "a blocking issue";
         progress.wait(`Wait for ${blockers}`, `${name}: waiting for ${blockers}`);
+      } else if (wait.kind === "overlap") {
+        progress.wait(
+          `Wait for ${wait.blocker} to merge`,
+          `${name} held: ${overlapLine(wait.blocker, wait.files)}`,
+        );
       } else if (wait.kind === "runner" && wait.restart) {
         const limit = this.fixAttemptLimit(item, wait.restart);
         const restarted = this.db

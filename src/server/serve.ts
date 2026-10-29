@@ -50,6 +50,7 @@ import {
   auditWorkspaceAccess,
   getArtifact,
   getWorkItem,
+  hotFiles,
   listWorkspaceRepositoryNames,
   workspaceSessionIds,
 } from "../db";
@@ -517,6 +518,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
             }
           : {}),
         ...(highRiskFile ? { highRiskFile } : {}),
+        ...(secrets.db ? { hotFiles: () => hotFiles(secrets.db!, Date.now()) } : {}),
         ...(mergeChoices ? { choices: mergeChoices } : {}),
         ...(githubQueues ? { githubQueues } : {}),
         ...(upToDateRules ? { upToDateRules } : {}),
