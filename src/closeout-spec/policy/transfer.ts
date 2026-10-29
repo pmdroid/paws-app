@@ -15,7 +15,12 @@ const Transfer = z.union([
   z.strictObject({
     digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     files: z
-      .array(z.strictObject({ path: z.string().min(1).max(1024), data: z.string().max(MAX_FILE_BASE64) }))
+      .array(
+        z.strictObject({
+          path: z.string().min(1).max(1024),
+          data: z.string().max(MAX_FILE_BASE64),
+        }),
+      )
       .min(1)
       .max(MAX_FILES),
     published: z
