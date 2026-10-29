@@ -84,6 +84,10 @@ async function fixture() {
     ).token,
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
+  db.run(
+    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.52',?)",
+    [runnerId, now()],
+  );
   const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now());
   recordLinearInstallation(db, {
@@ -324,6 +328,24 @@ test("leases renewed after an obsolete alive mark receive no downtime credit", a
     const before = f.leaseUntil();
     // Model an older build renewing work without updating the alive timestamp.
     f.clock.at += 20 * MINUTE;
+    expect(recoverOnStartup(f.db, f.clock.at, BUDGET)).toEqual([
+      { type: "resume", freshSession: true, checkpoint: null },
+    ]);
+    expect(f.leaseUntil()).toBe(before);
+  } finally {
+    f.close();
+  }
+}, 30_000);
+
+test("a runner older than the offline lease release is not extended", async () => {
+  const f = await fixture();
+  try {
+    f.admit();
+    f.db.run("UPDATE runner_host_status SET runner_version='0.1.51' WHERE runner_id=?", [
+      f.runnerId,
+    ]);
+    const before = f.leaseUntil();
+    f.down(20 * MINUTE);
     expect(recoverOnStartup(f.db, f.clock.at, BUDGET)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);

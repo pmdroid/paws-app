@@ -1,9 +1,25 @@
 import type { Database } from "bun:sqlite";
 import {
+  OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
   RUNNER_LEASE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
 } from "../runner-protocol";
+
+/** Whether a reported runner release is at least `minimum`. A missing version is not. */
+function runnerReleaseAtLeast(
+  version: string | null | undefined,
+  minimum: readonly [number, number, number],
+): boolean {
+  const parts = version
+    ?.match(/^(\d+)\.(\d+)\.(\d+)/)
+    ?.slice(1)
+    .map(Number);
+  if (!parts || parts.length < 3 || parts.some((part) => !Number.isInteger(part))) return false;
+  for (const [index, part] of parts.entries())
+    if (part !== minimum[index]) return part > minimum[index]!;
+  return true;
+}
 
 /**
  * The runner keeps working until `lease_until + RUNNER_LEASE_GRACE_MS`, so Paws treats a lease as
@@ -63,8 +79,10 @@ export function pawsAliveAt(db: Database): number | null {
  * On start, move the lease of open runner work forward by the time Paws was down, so downtime
  * does not count against it. The shift is capped by `budgetMs` and by each command's
  * `expiresAt`. Work the runner gave up on stays given up: a row with a result, an acknowledged
- * cancel, or a lease already past the grace when Paws was last alive is not extended. Returns the
- * shift applied. Run inside the startup transaction; it records Paws alive at `now`.
+ * cancel, or a lease already past the grace when Paws was last alive is not extended. A runner
+ * older than `OFFLINE_LEASE_RUNNER_VERSION` still stops at its own grace, so its lease is not
+ * moved. Returns the shift applied. Run inside the startup transaction; it records Paws alive
+ * at `now`.
  */
 export function shiftRunnerLeasesForDowntime(
   db: Database,
@@ -76,17 +94,32 @@ export function shiftRunnerLeasesForDowntime(
   if (aliveAt === null) return 0;
   const shift = Math.min(Math.max(0, now - aliveAt), Math.max(0, budgetMs));
   if (shift === 0) return 0;
+  const runners = db
+    .query<{ id: string; version: string | null }, []>(
+      `SELECT r.id AS id, h.runner_version AS version FROM runner r
+       LEFT JOIN runner_host_status h ON h.runner_id=r.id
+       WHERE r.revoked_at IS NULL AND r.status<>'revoked'`,
+    )
+    .all()
+    .filter((runner) => runnerReleaseAtLeast(runner.version, OFFLINE_LEASE_RUNNER_VERSION))
+    .map((runner) => runner.id);
+  if (runners.length === 0) return 0;
+  const runnerParams = runners.map((_, index) => `?${index + 4}`).join(",");
   // A lease renewed beyond the next expected alive mark proves this mark is stale,
   // for example after a downgrade to a build without the alive timer. Fail closed.
   db.run(
     `UPDATE runner_work AS w SET lease_until=MAX(w.lease_until,
        MIN(w.lease_until+?1, (SELECT c.expires_at FROM runner_command c WHERE c.id=w.command_id)))
      WHERE w.ended_at IS NULL AND w.lease_until>?2 AND w.lease_until<=?3
-     AND EXISTS(SELECT 1 FROM runner r WHERE r.id=w.runner_id
-       AND r.revoked_at IS NULL AND r.status<>'revoked')
+     AND w.runner_id IN (${runnerParams})
      AND EXISTS(SELECT 1 FROM runner_command c WHERE c.id=w.command_id)
      ${UNSETTLED_RUNNER_WORK_SQL}`,
-    [shift, runnerLeaseCutoff(aliveAt), aliveAt + PAWS_ALIVE_INTERVAL_MS + RUNNER_LEASE_MS],
+    [
+      shift,
+      runnerLeaseCutoff(aliveAt),
+      aliveAt + PAWS_ALIVE_INTERVAL_MS + RUNNER_LEASE_MS,
+      ...runners,
+    ],
   );
   return shift;
 }
