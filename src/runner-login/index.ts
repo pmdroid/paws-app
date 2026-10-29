@@ -120,30 +120,32 @@ export function createRunnerLogin(options: {
     list(principal: WorkspacePrincipal, runnerId: string) {
       access(principal.workspaceId, principal.userId, runnerId);
       return {
-        accounts: (["claude", "codex", "grok", "opencode"] as const).map((agent) => {
-          const account = db
-            .query<{ connected: number }, [string, string]>(
-              "SELECT ready=1 AND auth_expired=0 AS connected FROM runner_agent_policy WHERE runner_id=? AND agent=?",
-            )
-            .get(runnerId, agent);
-          const session = db
-            .query<{ id: string }, [string, string, string]>(
-              "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? ORDER BY rowid DESC LIMIT 1",
-            )
-            .get(runnerId, principal.userId, agent);
-          // Sign-in replaces the credentials these tasks read from their next request on.
-          const running = db
-            .query<{ count: number }, [string, string, number]>(
-              "SELECT COUNT(*) AS count FROM runner_work JOIN run ON run.id=runner_work.run_id WHERE runner_work.runner_id=? AND run.agent=? AND runner_work.ended_at IS NULL AND runner_work.lease_until>?",
-            )
-            .get(runnerId, agent, runnerLeaseCutoff(now()))!.count;
-          return {
-            agent,
-            connected: account?.connected === 1,
-            running,
-            session: session ? snapshot(read(session.id)) : null,
-          };
-        }),
+        accounts: (["claude", "codex", "grok", "opencode"] as const)
+          .filter((agent) => work.supportsAgent(runnerId, agent))
+          .map((agent) => {
+            const account = db
+              .query<{ connected: number }, [string, string]>(
+                "SELECT ready=1 AND auth_expired=0 AS connected FROM runner_agent_policy WHERE runner_id=? AND agent=?",
+              )
+              .get(runnerId, agent);
+            const session = db
+              .query<{ id: string }, [string, string, string]>(
+                "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? ORDER BY rowid DESC LIMIT 1",
+              )
+              .get(runnerId, principal.userId, agent);
+            // Sign-in replaces the credentials these tasks read from their next request on.
+            const running = db
+              .query<{ count: number }, [string, string, number]>(
+                "SELECT COUNT(*) AS count FROM runner_work JOIN run ON run.id=runner_work.run_id WHERE runner_work.runner_id=? AND run.agent=? AND runner_work.ended_at IS NULL AND runner_work.lease_until>?",
+              )
+              .get(runnerId, agent, runnerLeaseCutoff(now()))!.count;
+            return {
+              agent,
+              connected: account?.connected === 1,
+              running,
+              session: session ? snapshot(read(session.id)) : null,
+            };
+          }),
       };
     },
     start(principal: WorkspacePrincipal, runnerId: string, agent: Agent) {

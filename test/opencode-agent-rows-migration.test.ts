@@ -75,7 +75,6 @@ test("opencode joins every runner agent row without losing what was recorded", (
       { id: "l", agent: "codex", state: "connected" },
     ]);
 
-    // The widened allowlist accepts opencode everywhere it now writes.
     for (const id of ["c2", "p2", "l2"])
       db.run(
         "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES(?,'r','probe','{}',9)",

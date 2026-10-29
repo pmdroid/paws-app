@@ -49,14 +49,13 @@ export type GrokConfig = {
 };
 
 export type OpencodeConfig = {
-  /** Set only to use a PATH or absolute `opencode`. Otherwise Paws uses `opencode` from PATH. */
   path: string | null;
 };
 
 export type AgentsConfig = {
   implementer: ImplementerName;
   grok: GrokConfig;
-  /** Present only when `[agents.opencode]` sets `path`. */
+
   opencode?: OpencodeConfig;
 };
 

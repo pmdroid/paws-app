@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
-type Agent = "claude" | "codex" | "grok" | "opencode";
+type Agent = "claude" | "codex" | "grok";
 
 /**
  * Files a sign-in writes, relative to the home. `merge` files hold the agent's own state too,
@@ -24,7 +24,6 @@ const CREDENTIALS: Record<Agent, { path: string; merge?: readonly string[] }[]> 
   ],
   codex: [{ path: ".codex/auth.json" }],
   grok: [{ path: ".grok/auth.json" }],
-  opencode: [{ path: ".local/share/opencode/auth.json" }],
 };
 
 /**
@@ -34,8 +33,8 @@ const CREDENTIALS: Record<Agent, { path: string; merge?: readonly string[] }[]> 
 export function stageLoginHome(home: string): string {
   const staged = join(home, `.paws-login-${randomUUID()}`);
   mkdirSync(staged, { mode: 0o700 });
-  for (const directory of [".claude", ".codex", ".grok", ".local/share/opencode"])
-    mkdirSync(join(staged, directory), { recursive: true, mode: 0o700 });
+  for (const directory of [".claude", ".codex", ".grok"])
+    mkdirSync(join(staged, directory), { mode: 0o700 });
   return staged;
 }
 

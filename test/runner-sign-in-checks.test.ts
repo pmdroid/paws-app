@@ -79,6 +79,11 @@ function fixture() {
         status === "revoked" ? at : null,
       ],
     );
+    db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
+      id,
+      "0.1.53",
+      at,
+    ]);
     return id;
   };
   const checks = (runnerId?: string) =>
@@ -376,4 +381,24 @@ test("a login check readies the runner's agent or marks it signed out", () => {
     false,
   );
   expect(policy()).toEqual({ ready: 0, authExpired: 1 });
+});
+
+test("older runners keep their three login checks and reject OpenCode before dispatch", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  f.db.run("UPDATE runner_host_status SET runner_version='0.1.52' WHERE runner_id=?", [runnerId]);
+  f.health.refresh();
+  expect(f.checks().map((command) => command.agent)).toEqual(["claude", "codex", "grok"]);
+  expect(() =>
+    f.health.request(f.owner, runnerId, { type: "login_check", agent: "opencode" }),
+  ).toThrow("OpenCode needs runner 0.1.53");
+  expect(f.checks()).toHaveLength(3);
+  f.db.run("UPDATE runner_host_status SET runner_version='0.1.53' WHERE runner_id=?", [runnerId]);
+  f.health.refresh();
+  expect(f.checks().map((command) => command.agent)).toEqual([
+    "claude",
+    "codex",
+    "grok",
+    "opencode",
+  ]);
 });

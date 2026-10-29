@@ -401,7 +401,6 @@ async function snapshotAgentSession(
   },
   emit: (event: RunnerWorkerEvent) => void,
 ): Promise<void> {
-  // Only the agents with a native session file Paws can read take a snapshot.
   if (!isSessionAgent(agent)) return;
   const stagingName = `.session-${randomUUID()}.tmp`;
   const stagingPath = join(options.outputDirectory, stagingName);
@@ -1568,7 +1567,9 @@ export async function executeRunnerCommand(
             ? "claude auth login"
             : command.agent === "codex"
               ? "codex login --device-auth"
-              : "grok login",
+              : command.agent === "opencode"
+                ? "opencode auth login"
+                : "grok login",
       };
     }
     if (agentLimits.length) result.run = { ...result.run, agentLimits };

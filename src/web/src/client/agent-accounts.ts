@@ -132,7 +132,8 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
         terminal.dataset.output = output;
       }
       terminal.hidden = !output;
-      row.querySelector<HTMLElement>("[data-agent-input]")!.hidden = !active || agent !== "claude";
+      row.querySelector<HTMLElement>("[data-agent-input]")!.hidden =
+        !active || (agent !== "claude" && agent !== "opencode");
       const authorization = row.querySelector<HTMLElement>("[data-agent-authorization]")!;
       const challenge =
         active && login ? loginChallenge(agent, login.authorization, login.terminal) : null;

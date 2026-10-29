@@ -1,10 +1,5 @@
 import type { Migration } from "../migration";
 
-/**
- * `opencode` joins the agents a runner records: its sign-in state, its usage rows, its model
- * catalog and probes, and its login sessions. Each table keeps its exact columns and checks;
- * only the `agent` allowlists grow. SQLite cannot alter a CHECK, so each table is rebuilt.
- */
 export const migration: Migration = {
   id: "20261029T1559_opencode_agent_rows",
   foreignKeys: false,
@@ -25,7 +20,7 @@ CREATE TABLE runner_agent_policy_opencode (
 INSERT INTO runner_agent_policy_opencode SELECT * FROM runner_agent_policy;
 DROP TABLE runner_agent_policy;
 ALTER TABLE runner_agent_policy_opencode RENAME TO runner_agent_policy;
--- Rebuilding the table drops its triggers, so both are recreated exactly as migration 133 made them.
+
 CREATE TRIGGER runner_setup_check_agent_added AFTER INSERT ON runner_agent_policy
 WHEN NEW.ready=1 AND NEW.auth_expired=0 AND EXISTS(SELECT 1 FROM runner_setup_hold)
 BEGIN

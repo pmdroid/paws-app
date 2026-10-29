@@ -47,7 +47,11 @@ export function createRunnerModels(options: {
 }) {
   const { db, work } = options;
   const now = options.now ?? Date.now;
-  const sources = (at = now()) => db.query<Source, [number]>(eligible).all(at);
+  const sources = (at = now()) =>
+    db
+      .query<Source, [number]>(eligible)
+      .all(at)
+      .filter((source) => work.supportsAgent(source.runnerId, source.agent));
   function cached(source: Source) {
     return db
       .query<Pick<Cached, "model" | "resultJson" | "updatedAt">, [string, string, string]>(

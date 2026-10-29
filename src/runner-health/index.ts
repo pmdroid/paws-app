@@ -194,6 +194,7 @@ export function createRunnerHealth(options: {
             const last = history(runner.id, at);
             let pending = pendingChecks(runner.id, at);
             for (const agent of runnerAgents) {
+              if (!work.supportsAgent(runner.id, agent)) continue;
               if (pending >= 4) return;
               const entry = last(agent);
               if (
@@ -221,6 +222,7 @@ export function createRunnerHealth(options: {
         const runner = getRunner(db, runnerId);
         if (
           !runner ||
+          !work.supportsAgent(runnerId, agent) ||
           runner.status !== "active" ||
           !workspaceMember(db, runner.workspaceId, runner.ownerUserId)?.active ||
           history(runnerId, at)(agent)?.inFlight ||

@@ -3339,8 +3339,7 @@ export class Orchestrator {
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
-    // Grok and OpenCode have no review command of their own, so their reviewer runs a normal
-    // read-only ACP turn with the review brief; Claude and Codex use the review command.
+
     const reviewerAgent = deps.profiles?.reviewer?.agent;
     const reviewer =
       reviewerAgent === "grok" || reviewerAgent === "opencode"
