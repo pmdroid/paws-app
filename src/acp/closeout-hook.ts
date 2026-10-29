@@ -219,6 +219,7 @@ export async function installCloseoutStopHook(input: {
   sourceEnv: NodeJS.ProcessEnv;
   /** Registered workspace hooks. Each one runs after Closeout's, never in its place. */
   workspaceHooks?: readonly WorkspaceHook[];
+  skillRoot?: string;
   codexSkills?: string;
 }): Promise<InstalledCloseoutStopHook | undefined> {
   if (input.agent === "grok" || input.agent === "opencode") return undefined;
@@ -233,6 +234,7 @@ export async function installCloseoutStopHook(input: {
     hooks: input.workspaceHooks ?? [],
     runDirectory: input.runDirectory,
     pythonPath,
+    skillRoot: input.skillRoot,
   });
   if (input.agent === "claude") {
     return {
