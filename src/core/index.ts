@@ -68,6 +68,7 @@ export {
   formatAwakeBreakdown,
   timeLimitQuestion,
   TIME_LIMIT_EXTENSION_MS,
+  TIME_LIMIT_MERGE,
   TIME_LIMIT_OPTIONS,
   type AwakeBreakdown,
   type CapReason,
@@ -79,7 +80,7 @@ export {
   type LinearCommand,
 } from "./commands";
 export { LONG_SLEEP_MS, WAKE_GAP_MS } from "./limits";
-export { JOB_KIND, MERGE_LANE, MERGE_WORK, OUTBOX_ACTIVITY, isMergeWork } from "./kinds";
+export { JOB_KIND, MERGE_WORK, OUTBOX_ACTIVITY, isMergeWork } from "./kinds";
 export {
   AWAKE_ITEM_STATES,
   decideStartup,
@@ -160,10 +161,20 @@ export {
   HIGH_RISK_PATHS_FILE,
   HIGH_RISK_PATHS_FILE_MAX_BYTES,
   classifyRisk,
+  classifyRiskByList,
   highRiskGlobError,
   parseHighRiskPathsFile,
   riskCarryOverReason,
   riskLine,
   type RiskClassification,
+  type RiskList,
+  type RiskMatch,
   type RiskTier,
 } from "./risk";
+export {
+  findingPlace,
+  normalizeFindingText,
+  reviewFindingKey,
+  type FindingPlace,
+  type ReviewFindingStatus,
+} from "./review-finding";

@@ -10,6 +10,8 @@ import { fakeMergeReadiness, fakeRequiredChecks } from "./fake";
 import { defaultGitExec } from "./git";
 import { readPullFacts, rebaseOntoMain, squashPull, type SerialMergeInput } from "./merge";
 import { openPullRequest, publishAccepted, pushBranch } from "./pulls";
+import { pushDenial } from "./push";
+import { PushOutageError, isPushOutage, pushOutageCause } from "./transport";
 import {
   GitCommandError,
   INSTALLATION_PERMISSIONS,
@@ -653,6 +655,91 @@ describe("Git transport failures and rejected pushes", () => {
     }
   });
 
+  test("a push GitHub denies to the App is a push outage that keeps the head it rebased from", async () => {
+    const repo = await oneClone();
+    const other = await cloneOf(repo.bare);
+    try {
+      await commitFile(repo.work, "file.txt", "candidate\n");
+      await commitFile(other, "other.txt", "main moved\n");
+      await exec("git", ["-C", other, "push", "origin", "HEAD:main"]);
+      const accepted = await revParse(repo.work, "HEAD");
+      const denied =
+        "remote: Permission to pmdroid/paws-demo.git denied to paws-helper[bot].\nfatal: unable to access 'https://x-access-token:ghs_abcdefghijklmnopqrstuvwxyz@github.com/pmdroid/paws-demo.git/': The requested URL returned error: 403\n";
+      const error = await rebaseOntoMain({
+        ...lane(repo, mergingClient(repo.bare, []), 8),
+        sleep: async () => {},
+        gitExec: networkExec(repo.bare, async (command, args) => {
+          if (command === "push") throw new GitCommandError(args, denied);
+        }),
+      }).then(
+        () => null,
+        (failure: unknown) => failure,
+      );
+      const outage = pushOutageCause(error);
+      expect(outage).toBeInstanceOf(PushOutageError);
+      // The held push still names the token and the permission GitHub said it lacked.
+      expect(error instanceof Error ? error.message : "").toBe(
+        'push rejected: GitHub denied the GitHub App push token for pmdroid/paws-demo (installation 22) acting as paws-helper[bot] with HTTP 403: it lacks "contents: write" on pmdroid/paws-demo',
+      );
+      expect(outage?.held).toBe(false);
+      expect(await revParse(repo.work, "HEAD")).toBe(accepted);
+    } finally {
+      await repo.cleanup();
+      await rm(other, { recursive: true, force: true });
+    }
+  });
+
+  test("a push refused for the workflows permission is still a rejected push", async () => {
+    const repo = await oneClone();
+    try {
+      await commitFile(repo.work, "file.txt", "candidate\n");
+      const result = await rebaseOntoMain({
+        ...lane(repo, mergingClient(repo.bare, []), 8),
+        sleep: async () => {},
+        gitExec: networkExec(repo.bare, async (command, args) => {
+          if (command !== "push") return;
+          throw new GitCommandError(
+            args,
+            "To https://github.com/pmdroid/paws-demo.git\n ! [remote rejected] HEAD -> paws/ENG-8 (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)\nerror: failed to push some refs\n",
+          );
+        }),
+      });
+      expect(result).toMatchObject({ rebased: false, result: { outcome: "push_rejected" } });
+      if (result.rebased) return;
+      expect(result.result.message).toBe(
+        'push rejected: GitHub denied the GitHub App push token for pmdroid/paws-demo (installation 22): it lacks the "workflows" permission needed to push a change to .github/workflows/ci.yml',
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("pushDenial tells a missing permission from a token for another repository", () => {
+    const token = { owner: "pmdroid", repo: "paws-demo", installationId: "22" };
+    expect(
+      pushDenial(
+        "remote: Permission to pmdroid/other.git denied to paws-helper[bot].\nfatal: unable to access 'https://github.com/pmdroid/other.git/': The requested URL returned error: 403\n",
+        token,
+      ),
+    ).toBe(
+      "GitHub denied the GitHub App push token for pmdroid/paws-demo (installation 22) acting as paws-helper[bot] with HTTP 403: the token is scoped to pmdroid/paws-demo, not pmdroid/other",
+    );
+    expect(
+      pushDenial(
+        " ! [remote rejected] HEAD -> paws/ENG-8 (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)\n",
+        token,
+      ),
+    ).toBe(
+      'GitHub denied the GitHub App push token for pmdroid/paws-demo (installation 22): it lacks the "workflows" permission needed to push a change to .github/workflows/ci.yml',
+    );
+    expect(
+      pushDenial("fatal: The requested URL returned error: 403\n", { owner: "o", repo: "r" }),
+    ).toBe(
+      'GitHub denied the GitHub App push token for o/r with HTTP 403: it lacks "contents: write" on o/r',
+    );
+    expect(pushDenial("remote: error: GH006: Protected branch update failed\n", token)).toBeNull();
+  });
+
   test("a push refused before Git ran reports that reason", async () => {
     const repo = await oneClone();
     try {
@@ -894,3 +981,33 @@ async function showMain(bare: string, file: string): Promise<string> {
     await rm(tmp, { recursive: true, force: true });
   }
 }
+
+describe("isPushOutage", () => {
+  test.each([
+    [
+      "remote: Permission to pmdroid/paws-app.git denied to paws-helper[bot].\nfatal: unable to access 'https://github.com/pmdroid/paws-app.git/': The requested URL returned error: 403",
+      true,
+    ],
+    [
+      "fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 403",
+      true,
+    ],
+    ["remote: Permission to o/r.git denied to paws-helper[bot].", true],
+    [
+      " ! [remote rejected] HEAD -> paws/x (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)",
+      false,
+    ],
+    ["remote: error: GH006: Protected branch update failed for refs/heads/main.", false],
+    ["remote: error: GH013: Repository rule violations found for refs/heads/paws/x.", false],
+    [
+      "fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 502",
+      false,
+    ],
+    [
+      "remote: Repository not found.\nfatal: repository 'https://github.com/o/r.git/' not found",
+      false,
+    ],
+  ])("%s is a push outage: %p", (stderr, outage) => {
+    expect(isPushOutage(stderr)).toBe(outage);
+  });
+});

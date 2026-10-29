@@ -6,8 +6,9 @@ import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from
 import type { RunnerHelpers } from "../runner-helpers";
 import type { RunnerPlacement } from "../runner-placement";
 import { RunnerSlotsBusyError, UserFacingError } from "../core";
-import { immediate, runnerHasCapacity } from "../db";
-import type { RunnerCommand } from "../runner-protocol";
+import { immediate, runnerHasCapacity, workspaceSessionIds } from "../db";
+import { FINDING_GROUPS_RUNNER_VERSION, type RunnerCommand } from "../runner-protocol";
+import { versionAtLeast } from "./session-restore";
 
 import { RetryableRunnerError, runWithFailover } from "./failover";
 
@@ -48,6 +49,7 @@ export function createRemoteSessionAgentRunner(options: {
           const runners = options.placement
             ? await options.placement.candidates({
                 sessionId,
+                ...(purpose === "finding_groups" ? { findingGroups: true } : {}),
                 profile,
                 role: input.role,
                 purpose: "helper",
@@ -55,13 +57,41 @@ export function createRemoteSessionAgentRunner(options: {
                 signal: input.signal,
               })
             : options.db
-                .query<{ id: string }, [number, number]>(
-                  "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?) ORDER BY r.last_seen_at DESC,r.id",
+                .query<{ id: string }, [number]>(
+                  "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? ORDER BY r.last_seen_at DESC,r.id",
                 )
-                .all(now() - 60_000, now())
-                .filter((runner) => runnerHasCapacity(options.db, runner.id, now()));
+                .all(now() - 60_000);
           for (const runner of runners) {
             if (excluded.includes(runner.id)) continue;
+            if (purpose === "finding_groups") {
+              const host = options.db
+                .query<{ version: string | null }, [string]>(
+                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                )
+                .get(runner.id);
+              if (!versionAtLeast(host?.version, FINDING_GROUPS_RUNNER_VERSION)) continue;
+              const owner = options.db
+                .query<{ workspaceId: string; userId: string }, [string]>(
+                  "SELECT workspace_id AS workspaceId, owner_user_id AS userId FROM runner WHERE id=?",
+                )
+                .get(runner.id);
+              const installation = options.db
+                .query<{ clientId: string | null }, [string]>(
+                  "SELECT oauth_client_id AS clientId FROM linear_session WHERE session_id=?",
+                )
+                .get(sessionId);
+              if (
+                !owner ||
+                !installation?.clientId ||
+                !workspaceSessionIds(
+                  options.db,
+                  owner.workspaceId,
+                  owner.userId,
+                  installation.clientId,
+                ).includes(sessionId)
+              )
+                continue;
+            }
             try {
               command = immediate(options.db, () => {
                 const dispatched = options.helpers.dispatch({
@@ -106,8 +136,9 @@ export function createRemoteSessionAgentRunner(options: {
             );
           await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
         }
+        let accounted = false;
+        const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
         try {
-          const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
           while (now() < deadline) {
             input.signal?.throwIfAborted();
             const result = options.helpers.result(command.id);
@@ -121,6 +152,7 @@ export function createRemoteSessionAgentRunner(options: {
                   finishedAt: now(),
                 }),
               );
+              accounted = true;
               if (
                 disposition?.retryable &&
                 result.agentExited &&
@@ -133,6 +165,28 @@ export function createRemoteSessionAgentRunner(options: {
                     ? "The runner agent requires sign-in."
                     : "The runner agent exhausted its observed quota.",
                 );
+              if (purpose === "finding_groups") {
+                if (
+                  result.errorMessage ||
+                  result.stopReason !== "end_turn" ||
+                  result.timedOut ||
+                  result.cancelled ||
+                  result.authRequired ||
+                  !result.agentExited
+                )
+                  throw new Error(
+                    result.errorMessage ?? "Finding grouping helper did not complete.",
+                  );
+                await input.onEvent?.({
+                  type: "session_update",
+                  sessionId: result.sessionId ?? command.id,
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: { type: "text", text: result.text },
+                  },
+                });
+                return { ...result, transcriptPath: "" };
+              }
               const transcriptRunId = command.purpose === "classify" ? input.runId : command.id;
               const transcript = `${runDir(input.pawsRoot, transcriptRunId)}/acp.jsonl`;
               mkdirSync(runDir(input.pawsRoot, transcriptRunId), { recursive: true, mode: 0o700 });
@@ -165,15 +219,44 @@ export function createRemoteSessionAgentRunner(options: {
           }
           throw new Error("Remote session helper timed out");
         } finally {
-          options.helpers.finish(command.id);
+          // A locally aborted or expired helper is not evidence of a lost runner heartbeat.
+          // Cleanup failures must not replace the original timeout, fence or cancellation error.
+          try {
+            if (!accounted)
+              immediate(options.db, () =>
+                options.placement?.finished({
+                  commandId: command.id,
+                  runnerId: command.runnerId,
+                  profile,
+                  failure: input.signal?.aborted
+                    ? input.signal.reason instanceof Error &&
+                      input.signal.reason.name === "TimeoutError"
+                      ? "timeout"
+                      : "cancelled"
+                    : now() >= deadline
+                      ? "timeout"
+                      : "error",
+                  finishedAt: now(),
+                }),
+              );
+          } catch (error) {
+            journalCaught(error, "helpers.forSession.accountingCleanup", null);
+          }
+          try {
+            options.helpers.finish(command.id);
+          } catch (error) {
+            journalCaught(error, "helpers.forSession.finishCleanup", null);
+          }
         }
       };
       return (input: RunAgentOptions) =>
-        runWithFailover(
-          { ...input, timeoutMs: input.timeoutMs ?? 60_000 },
-          attempt,
-          async () => {},
-        );
+        purpose === "finding_groups"
+          ? attempt(input, [])
+          : runWithFailover(
+              { ...input, timeoutMs: input.timeoutMs ?? 60_000 },
+              attempt,
+              async () => {},
+            );
     },
   };
 }

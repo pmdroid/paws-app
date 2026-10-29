@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FakeClock, JOB_KIND, MERGE_LANE } from "../core";
+import { FakeClock, JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   beginImplementRun,
   bindWorkItemRepository,
+  actionableDue,
   claimJobSql,
   claimNextJob,
   completeJob,
@@ -40,7 +41,6 @@ function bindRepo(db: ReturnType<typeof queue>["db"], itemId: string, owner: str
 function enqueueMerge(db: ReturnType<typeof queue>["db"], clock: FakeClock, itemId: string) {
   return enqueueJob(db, {
     queue: JOB_KIND.merge,
-    lane: MERGE_LANE,
     payload: { itemId },
     now: clock.now(),
   });
@@ -70,6 +70,21 @@ describe("job queue", () => {
     expect(claim(db, clock, ["tick"])).toBeNull();
     clock.advance(5_000);
     expect(claim(db, clock, ["tick"])?.queue).toBe("tick");
+  });
+
+  test("actionable due work matches what a claim can take", () => {
+    const { db, clock } = queue();
+    const due = enqueueJob(db, { queue: "tick", runAt: clock.now() - 1_000, now: clock.now() });
+    enqueueJob(db, { queue: "tick", runAt: clock.now() + 5_000, now: clock.now() });
+    enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: { itemId: "unreserved" },
+      runAt: clock.now() - 60_000,
+      now: clock.now(),
+    });
+    expect(actionableDue(db, clock.now())).toEqual({ count: 1, oldestRunAt: clock.now() - 1_000 });
+    expect(claim(db, clock, ["tick"])?.id).toBe(due);
+    expect(actionableDue(db, clock.now())).toEqual({ count: 0, oldestRunAt: null });
   });
 
   test("an unregistered queue does not block a job this process can run", () => {

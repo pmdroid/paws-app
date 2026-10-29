@@ -4,14 +4,14 @@ import {
   compareVersions,
   hostEnrollmentCommand,
   listedRunners,
-  livePoll,
   memberVmDeleteDialogMarkup,
   memberVmMarkup,
+  memberVmMoveMarkup,
+  memberVmPoolMarkup,
   memberVmSizeMarkup,
   memberVmsMarkup,
   runnerVmMarkup,
   type MemberVm,
-  RUNNER_POLL_MS,
   runnerActionsMarkup,
   runnerDetailMarkup,
   runnerHistoryMarkup,
@@ -71,7 +71,7 @@ const view = {
     sharing: 1,
   },
   userId: "owner",
-  role: "owner",
+  role: "admin",
   busy: false,
 };
 
@@ -243,7 +243,7 @@ describe("what a runner is running now", () => {
     expect(labels[0]).toContain(">under a minute</span>");
   });
 
-  test("owners and admins can move a running session; members and observers see no button", () => {
+  test("admins can move a running session; members see no button", () => {
     const busy = {
       ...runner,
       idle: false,
@@ -257,19 +257,15 @@ describe("what a runner is running now", () => {
       /<section class="runner-block" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(
         runnerDetailMarkup(busy, { ...view, userId: "someone", role }),
       )?.[0] ?? "";
-    for (const role of ["owner", "admin"]) {
-      const slots = slotsOf(role);
-      // Only the session with a live lease can be handed over now.
-      expect(slots.match(/data-session-move=/g)).toHaveLength(1);
-      expect(slots).toContain(
-        `<button class="btn" data-session-move="run-1" data-runner="${runner.id}" data-focus="move:run-1">Move to another runner</button>`,
-      );
-    }
-    for (const role of ["member", "observer"]) {
-      const slots = slotsOf(role);
-      expect(slots).not.toContain("<button");
-      expect(slots).not.toContain("Move to another runner");
-    }
+    const admin = slotsOf("admin");
+    // Only the session with a live lease can be handed over now.
+    expect(admin.match(/data-session-move=/g)).toHaveLength(1);
+    expect(admin).toContain(
+      `<button class="btn" data-session-move="run-1" data-runner="${runner.id}" data-focus="move:run-1">Move to another runner</button>`,
+    );
+    const member = slotsOf("member");
+    expect(member).not.toContain("<button");
+    expect(member).not.toContain("Move to another runner");
   });
 
   test("a moving session says so, with the reason while no runner is eligible", () => {
@@ -401,18 +397,15 @@ describe("what a runner is running now", () => {
       expect(html).not.toContain("data-runner-move-all");
     });
 
-    test("only owners and admins see Move running work, and only while draining", () => {
-      for (const role of ["owner", "admin"])
-        expect(
-          slotsOf(runnerDetailMarkup(draining(two), { ...view, userId: "someone", role })),
-        ).toContain("Move running work</button>");
-      for (const role of ["member", "observer"]) {
-        const html = slotsOf(
-          runnerDetailMarkup(draining(two), { ...view, userId: "someone", role }),
-        );
-        expect(html).toContain("2 sessions still run here.");
-        expect(html).not.toContain("<button");
-      }
+    test("only admins see Move running work, and only while draining", () => {
+      expect(
+        slotsOf(runnerDetailMarkup(draining(two), { ...view, userId: "someone", role: "admin" })),
+      ).toContain("Move running work</button>");
+      const html = slotsOf(
+        runnerDetailMarkup(draining(two), { ...view, userId: "someone", role: "member" }),
+      );
+      expect(html).toContain("2 sessions still run here.");
+      expect(html).not.toContain("<button");
       const active = { ...draining(two), status: "active" as const };
       expect(runnerDetailMarkup(active, view)).not.toContain("Move running work");
       expect(runnerDetailMarkup(active, view)).not.toContain("runner-drain");
@@ -423,14 +416,14 @@ describe("what a runner is running now", () => {
     });
   });
 
-  test("the runner card lists every session to members and observers alike", () => {
+  test("the runner card lists every session to admins and members alike", () => {
     const busy = {
       ...runner,
       idle: false,
       slots: { used: 2, total: 3 },
       running: [working, closeout],
     };
-    for (const role of ["owner", "member", "observer"]) {
+    for (const role of ["admin", "member"]) {
       const html = runnerDetailMarkup(busy, { ...view, userId: "someone", role });
       const slots =
         /<section class="runner-block" aria-labelledby="[^"]+-slots">.*?<\/section>/.exec(
@@ -448,7 +441,7 @@ describe("what a runner is running now", () => {
     }
     const idle = runnerDetailMarkup(
       { ...runner, slots: { used: 0, total: 1 }, running: [] },
-      { ...view, role: "observer" },
+      { ...view, userId: "someone", role: "member" },
     );
     expect(idle).toContain("Nothing running");
     expect(idle).not.toContain("data-running-run=");
@@ -601,9 +594,6 @@ describe("runner details", () => {
       expect(runnerDetailMarkup(runner, { ...view, userId: "someone", role })).not.toContain(
         "data-runner-signin",
       );
-    expect(runnerDetailMarkup(runner, { ...view, role: "observer" })).not.toContain(
-      "data-runner-signin",
-    );
   });
 
   describe("concurrency", () => {
@@ -613,28 +603,24 @@ describe("runner details", () => {
       concurrency: { desired: 2, applied: 2, ceiling: 4 },
     };
 
-    test("owners and admins edit it next to the slots, up to the host limit", () => {
-      for (const role of ["owner", "admin"]) {
-        const html = runnerDetailMarkup(tuned, { ...view, role });
-        expect(html).toContain('<h3>Slots</h3><div><form class="row" data-runner-concurrency=');
-        expect(html).toContain(`data-runner-concurrency="${runner.id}"`);
-        expect(html).toContain('aria-label="Slots, from 1 to 4" value="2"');
-        expect(html).toContain("Runner limit 4. Runner applied 2.");
-      }
+    test("admins edit it next to the slots, up to the host limit", () => {
+      const html = runnerDetailMarkup(tuned, view);
+      expect(html).toContain('<h3>Slots</h3><div><form class="row" data-runner-concurrency=');
+      expect(html).toContain(`data-runner-concurrency="${runner.id}"`);
+      expect(html).toContain('aria-label="Slots, from 1 to 4" value="2"');
+      expect(html).toContain("Runner limit 4. Runner applied 2.");
       expect(runnerDetailMarkup(tuned, { ...view, busy: true })).toMatch(
         /name="concurrency"[^>]* disabled/,
       );
       expect(runnerDetailMarkup(tuned, { ...view, concurrencyDraft: "3" })).toContain('value="3"');
     });
 
-    test("members and observers see the value without a field", () => {
-      for (const role of ["member", "observer"]) {
-        const html = runnerDetailMarkup(tuned, { ...view, userId: role, role });
-        expect(html).toContain(
-          '<h3>Slots</h3><div>2 <span class="muted">Runner limit 4. Runner applied 2.</span></div>',
-        );
-        expect(html).not.toContain("data-runner-concurrency");
-      }
+    test("members see the value without a field", () => {
+      const html = runnerDetailMarkup(tuned, { ...view, userId: "member", role: "member" });
+      expect(html).toContain(
+        '<h3>Slots</h3><div>2 <span class="muted">Runner limit 4. Runner applied 2.</span></div>',
+      );
+      expect(html).not.toContain("data-runner-concurrency");
     });
 
     test("a runner without a reported ceiling keeps its config value", () => {
@@ -889,56 +875,6 @@ test("versions compare numerically", () => {
   expect(compareVersions("dev", "1.0.0")).toBeNull();
 });
 
-describe("live polling", () => {
-  function fakes() {
-    const listeners = new Set<() => void>();
-    const doc = {
-      visibilityState: "visible" as DocumentVisibilityState,
-      addEventListener: (_: string, listener: () => void) => listeners.add(listener),
-      removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
-    };
-    let handler: (() => void) | null = null;
-    let every = 0;
-    const timers = {
-      setInterval: (next: () => void, ms: number) => {
-        handler = next;
-        every = ms;
-        return 1;
-      },
-      clearInterval: () => {
-        handler = null;
-      },
-    };
-    return {
-      doc,
-      timers,
-      listeners,
-      fire: () => handler?.(),
-      every: () => every,
-      running: () => handler !== null,
-    };
-  }
-
-  test("refreshes on an interval only while the page is visible", () => {
-    const fake = fakes();
-    let ticks = 0;
-    const stop = livePoll(() => ticks++, fake.doc as never, fake.timers as never);
-    expect(fake.every()).toBe(RUNNER_POLL_MS);
-    fake.fire();
-    expect(ticks).toBe(1);
-    fake.doc.visibilityState = "hidden";
-    fake.fire();
-    for (const listener of fake.listeners) listener();
-    expect(ticks).toBe(1);
-    fake.doc.visibilityState = "visible";
-    for (const listener of fake.listeners) listener();
-    expect(ticks).toBe(2);
-    stop();
-    expect(fake.running()).toBe(false);
-    expect(fake.listeners.size).toBe(0);
-  });
-});
-
 describe("coding agent versions", () => {
   test("shows the offered version and why a version was refused", () => {
     const at = Date.parse("2026-10-24T12:00:00Z");
@@ -1004,13 +940,49 @@ describe("hostEnrollmentCommand", () => {
 
 test("Create VM names the size it asks exe.dev for", () => {
   expect(memberVmSizeMarkup(undefined)).toBe("");
-  expect(memberVmSizeMarkup({})).toContain("Create VM uses exe.dev&#39;s default size.");
+  expect(memberVmSizeMarkup({})).toContain(
+    "Create VM uses exe.dev&#39;s default size, in the exe.dev team&#39;s default placement.",
+  );
   expect(
     memberVmSizeMarkup({ cpu: 8, memoryGb: 16, diskGb: 100, image: "ubuntu:24.04" }),
-  ).toContain("Create VM uses 8 CPUs · 16 GB memory · 100 GB disk · image ubuntu:24.04.");
+  ).toContain("Create VM uses 8 CPUs · 16 GB memory · 100 GB disk · image ubuntu:24.04, in");
   expect(memberVmSizeMarkup({ cpu: 1 })).toContain(
-    "Create VM uses 1 CPU · default memory · default disk.",
+    "Create VM uses 1 CPU · default memory · default disk, in the exe.dev team&#39;s default placement.",
   );
+  expect(memberVmSizeMarkup({ pool: "build" })).toContain(
+    'Create VM uses exe.dev&#39;s default size, in exe.dev pool <b class="mono">build</b>.',
+  );
+});
+
+test("Create VM offers the other exe.dev pools for one VM", () => {
+  const pools = {
+    state: "listed" as const,
+    pools: [
+      { name: "build", region: "lon", status: "active" },
+      { name: "gpu", region: "nyc", status: "pending" },
+    ],
+  };
+  const html = memberVmPoolMarkup("build", pools, { choice: "", busy: false });
+  expect(html).toContain('<option value="" selected>build ([member_vm] pool)</option>');
+  expect(html).toContain('<option value="gpu">gpu · nyc · pending</option>');
+  expect(html).not.toContain('value="build"');
+  expect(memberVmPoolMarkup(undefined, pools, { choice: "gpu", busy: false })).toContain(
+    '<option value="">Team default placement</option>',
+  );
+  expect(
+    memberVmPoolMarkup(
+      "build",
+      { state: "listed", pools: [pools.pools[0]!] },
+      { choice: "", busy: false },
+    ),
+  ).toBe("");
+  expect(
+    memberVmPoolMarkup(
+      undefined,
+      { state: "failed", error: "exe.dev refused the token." },
+      { choice: "", busy: false },
+    ),
+  ).toContain("exe.dev pools could not be listed: exe.dev refused the token.");
 });
 
 describe("member VM", () => {
@@ -1162,7 +1134,7 @@ describe("member VM", () => {
     expect(forced).not.toContain("data-vm-delete-force");
   });
 
-  test("owners and admins see other members' VMs, with or without a runner, with Delete VM", () => {
+  test("admins see other members' VMs, with or without a runner, with Delete VM", () => {
     const failed = vm({
       id: "grace-vm",
       vmName: "grace-paws",
@@ -1189,6 +1161,33 @@ describe("member VM", () => {
     expect(html).toContain("exe.dev VM");
     expect(html).toContain('data-vm-delete="vm"');
     expect(runnerVmMarkup(deleting(), { busy: false })).toContain("data-vm-delete-step");
+  });
+
+  test("Move to pool offers the other pools with exe.dev's warning, or exe.dev's refusal", () => {
+    const pools = {
+      state: "listed" as const,
+      pools: [
+        { name: "build", region: null, status: null },
+        { name: "gpu", region: null, status: null },
+      ],
+    };
+    const html = runnerVmMarkup(vm({ step: "ready", pool: "build" }), {
+      busy: false,
+      pools,
+      denied: null,
+    });
+    expect(html).toContain('It is in exe.dev pool <b class="mono">build</b>.');
+    expect(html).toContain('data-vm-move="vm"');
+    expect(html).toContain('<option value="gpu">gpu</option>');
+    expect(html).not.toContain('<option value="build">');
+    expect(html).toContain("can take several minutes and needs an exe.dev team admin token");
+    const denied = memberVmMoveMarkup(vm(), pools, {
+      busy: false,
+      denied: "exe.dev refused moving ada-paws to pool gpu: only team admins can adopt VMs.",
+    });
+    expect(denied).not.toContain("data-vm-move=");
+    expect(denied).toContain("only team admins can adopt VMs.");
+    expect(memberVmMoveMarkup(vm(), { state: "loading" }, { busy: false, denied: null })).toBe("");
   });
 
   test("the runner row names its owner", () => {

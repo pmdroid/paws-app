@@ -51,9 +51,12 @@ import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
 import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
+import { renderPushOutages } from "./push-outage";
+import { itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
+import { riskCard } from "./risk";
 
 export interface RenderModel {
   route: Route;
@@ -74,6 +77,9 @@ export interface Rendered {
   title: string;
 }
 
+/** The Findings page loads its own data into this root. */
+const FINDINGS_ROOT = `${pageHeading("findings")}<div id="findings-page"></div>`;
+
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
 
 export function render(model: RenderModel): Rendered {
@@ -90,18 +96,20 @@ export function render(model: RenderModel): Rendered {
     content:
       model.route.view === "runners"
         ? '<div id="runner-settings"></div>'
-        : model.route.view === "settings"
-          ? renderSettingsPage(model.route.page)
-          : model.phase !== "loading" && openDetail(model)
-            ? issuePage(
-                model.detail!,
-                model.detail!.id,
-                model.closeout ?? emptyCloseoutView(),
-                model.engineUrl,
-              )
-            : snapshot && model.phase !== "loading"
-              ? renderView(snapshot, model)
-              : renderPending(model),
+        : model.route.view === "findings"
+          ? FINDINGS_ROOT
+          : model.route.view === "settings"
+            ? renderSettingsPage(model.route.page)
+            : model.phase !== "loading" && openDetail(model)
+              ? issuePage(
+                  model.detail!,
+                  model.detail!.id,
+                  model.closeout ?? emptyCloseoutView(),
+                  model.engineUrl,
+                )
+              : snapshot && model.phase !== "loading"
+                ? renderView(snapshot, model)
+                : renderPending(model),
     title,
   };
 }
@@ -140,7 +148,7 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "runs":
       return viewRuns(snapshot, model.route.id);
     case "mergeQueue":
-      return `${pageHeading("mergeQueue")}${renderMergeQueue(snapshot)}`;
+      return `${pageHeading("mergeQueue")}${renderPushOutages(snapshot)}${renderMergeQueue(snapshot)}`;
     case "questions":
       return viewQuestions(snapshot, model.route.id);
     case "evidence":
@@ -152,6 +160,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
       );
     case "runners":
       return '<div id="runner-settings"></div>';
+    case "findings":
+      return FINDINGS_ROOT;
     case "settings":
       return renderSettingsPage(model.route.page);
   }
@@ -168,7 +178,7 @@ type NeedsYou = {
 };
 
 function viewOverview(snapshot: StatusSnapshot): string {
-  const intake = renderIntake(snapshot);
+  const intake = `${renderPushOutages(snapshot)}${renderIntake(snapshot)}`;
   if (!snapshot.items.length && !snapshot.questions.length)
     return `${pageHeading("overview")}${intake}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
   const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
@@ -251,7 +261,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
   return `${pageHeading("overview")}
     <div class="between"><p class="overview-summary">${esc(summary)}</p><a href="${routeHref({ view: "issues", id: null })}">All issues</a></div>
     <section class="overview-section" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs you</h2>
-      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p></div><a class="btn${entry.primary ? " primary" : ""}" href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
+      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p>${ageOf(snapshot, entry.itemId)}</div><a class="btn${entry.primary ? " primary" : ""}" href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
     </section>
     ${intake}
     <section class="overview-section" aria-labelledby="work-heading"><h2 id="work-heading">Working now</h2>
@@ -261,14 +271,20 @@ function viewOverview(snapshot: StatusSnapshot): string {
               .slice(0, 6)
               .map((item) => {
                 const href = routeHref({ view: "issues", id: item.id });
-                return `<li class="overview-row"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}</li>`;
+                return `<li class="overview-row"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${itemAge(item)}${statePill(item.state, itemLabel(item.state))}</li>`;
               })
               .join(
                 "",
               )}</ul>${work.length > 6 ? `<a href="${routeHref({ view: "issues", id: null })}">View all ${work.length} working issues</a>` : ""}`
           : '<p class="muted">No work is running right now.</p>'
       }
-    </section>`;
+    </section>
+    ${mergedTimesSection(snapshot.mergedTimes)}`;
+}
+
+function ageOf(snapshot: StatusSnapshot, itemId: string): string {
+  const item = findItem(snapshot, itemId);
+  return item ? itemAge(item) : "";
 }
 
 const EMPTY_ISSUES = "No issues yet. Delegate an issue to Paws in Linear.";
@@ -339,7 +355,7 @@ function projectFilter(items: readonly StatusItem[]): string {
 function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
   const blockers = item.blockers;
   const reason = waitReason(item) ?? (blockers.length ? `Blocked by ${blockers.join(", ")}` : null);
-  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
+  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${itemAge(item)}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
 }
 
 function issueMeta(item: StatusItem): string {
@@ -405,6 +421,7 @@ function issuePage(
     </header>
     ${run ? phaseStrip(item, run, verdict, agent) : ""}
     ${queueNotice(item)}
+    ${stateTimeBar(item.stateTimes)}
     ${deadDeliveriesSection(snapshot, item.id)}
     ${run ? (run.usagePause ? usagePauseSection(item, run, run.usagePause) : executionControls(item, run)) : ""}
     ${snapshot.questions
@@ -422,6 +439,7 @@ function issuePage(
       .join("")}
     ${riskCarryOverSection(snapshot, item)}
     ${visualReviewSection(snapshot, item, engineUrl, run?.itemId)}
+    ${"risk" in snapshot ? riskCard((snapshot as StatusItemDetail).risk) : ""}
     ${verdict ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>` : ""}
     ${verdict ? reviewFindingsSection(verdict, closeout) : ""}
     ${verdict ? renderRuleResults(verdict, closeout, engineUrl) : ""}
@@ -593,9 +611,11 @@ function pullRequestSection(snapshot: StatusItemDetail, item: StatusItem): strin
           ? `Back with the agent after ${outcome.reason === "conflict" ? "a branch update conflicted" : "CI failed"}.`
           : item.state === "merge_queue"
             ? "Waiting to merge."
-            : item.pr
-              ? "Not in the merge queue yet."
-              : "";
+            : item.mergeQueue?.rechecking
+              ? "Re-checking, keeps its place in the merge queue."
+              : item.pr
+                ? "Not in the merge queue yet."
+                : "";
   const pr = item.pr
     ? `<a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer">Pull request #${item.pr.number}</a>`
     : "";
@@ -760,14 +780,18 @@ function queueNotice(item: StatusItem): string {
   return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>${esc(item.queue.ownerCap ? `Waiting: ${capLine(item, item.queue.ownerCap)}. Paws starts ${item.id} when one of them finishes.` : `${held ? `${held}. ` : ""}Paws starts ${item.id} when a slot frees.`)} It holds no runner slot while it waits.</p></div></section>`;
 }
 
-/** Where an item stands in its repository's merge queue. Only the first one moves. */
+/** Where an item stands in its repository's merge queue. Only the first ready one moves. */
 function mergeQueueNotice(item: StatusItem): string {
-  const queue = item.state === "merge_queue" ? item.mergeQueue : undefined;
+  const queue =
+    item.state === "merge_queue" || (item.state === "verifying" && item.mergeQueue?.rechecking)
+      ? item.mergeQueue
+      : undefined;
   if (!queue) return "";
-  const detail =
-    queue.position === 1
+  const detail = queue.rechecking
+    ? "Re-checking, keeps its place. Closeout runs again on this pull request; the ready ones behind it merge meanwhile, and it merges next once Closeout accepts it."
+    : queue.position === 1 || queue.ahead === null
       ? "This pull request moves now: Paws updates its branch onto main if main moved, waits for CI on that commit, and merges it."
-      : `${queue.ahead ?? "The item ahead"} merges first. When this one's turn comes, Paws updates its branch onto main if main moved and waits for CI.`;
+      : `${queue.ahead} merges first. When this one's turn comes, Paws updates its branch onto main if main moved and waits for CI.`;
   return `<section class="closeout-result queue-notice" aria-labelledby="merge-queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${queue.position}</span><div><h3 id="merge-queue-${esc(item.id)}">${esc(mergeQueueLine(queue))}</h3><p>${esc(detail)}</p></div></section>`;
 }
 

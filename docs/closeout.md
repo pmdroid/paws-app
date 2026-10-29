@@ -7,6 +7,8 @@ Each candidate goes through Closeout twice:
 1. **Agent Closeout.** The agent runs the command checks itself while it works.
 2. **Paws Closeout.** After the agent's turn ends, Paws verifies the result, runs the independent review, and decides whether the candidate can be published.
 
+Before the pull request, the policy in this repository also runs two hygiene checks. `bun run links` fails on a broken local link, a doc under `docs/` that no other document links to, or an inline `src/...` path that no longer exists. `bun run knip` fails on an unused file, an unused or unlisted dependency, or a duplicate export. Delete an outdated page instead of keeping it; an orphaned page is a failed check.
+
 ```mermaid
 flowchart TD
   A[Agent changes code and commits] --> B[get_closeout lists the required checks]
@@ -113,7 +115,7 @@ When the turn ends, the item moves to `verifying` and Paws runs the policy again
   - `scope: diff` is accepted, but the review command has no slot for it, so the review reads what the command reads.
   - `parallel: true` starts the review alongside the command checks instead of after them.
   - `minChangedLines: N` skips the review when the change adds and removes fewer than N lines.
-- **Security review.** In this repository, a candidate that changes a high-risk path also gets `security-review`: a second reviewer, in its own session and on a different model, runs `.agents/skills/security-paws/SKILL.md` on the diff. It checks the rules Paws sets for itself: secrets stay in `~/.paws/secrets` and out of logs and the agent environment, webhooks fail closed, routes and answers check authorization, SQL is not built from input, paths stay inside the worktree, and child processes are not started from input. A P1 or P0 finding fails it. Its `paths` list the high-risk globs, among them `src/auth/**`, `src/credentials/**`, the webhook handlers, route modules, and `.agents/**`. A candidate that touches none of them, such as a docs-only change, skips it.
+- **Security review.** In this repository, a candidate that changes a high-risk path also gets `security-review`: a second reviewer, in its own session and on a different model, runs `.agents/skills/security-paws/SKILL.md` on the diff. It checks the rules Paws sets for itself: secrets stay in `~/.paws/secrets` and out of logs and the agent environment, webhooks fail closed, routes and answers check authorization, SQL is not built from input, paths stay inside the worktree, and child processes are not started from input. A P1 or P0 finding fails it. Its `paths` list the high-risk globs, among them `src/auth/**`, `src/credentials/**`, the webhook handlers, route modules, and `.agents/**`. They are the same list as the repository's `.paws/high-risk-paths`, which makes a candidate's risk tier high, and `test/closeout-security-review.test.ts` fails when the two differ. A candidate that touches none of them, such as a docs-only change, skips it. The Risk card on the issue page shows the tier, the paths that matched with the list each came from (Settings › Merging › High-risk paths or `.paws/high-risk-paths`), and whether the security review ran or was skipped.
 
 The run page shows these steps and their output while they run. A review row shows how long the reviewer took and how many tokens it reported.
 
@@ -198,6 +200,8 @@ When `mergeable(S)` is false, the first failing condition decides:
 
 A rebase that conflicts is a rebase return: `restart(item, conflict)` with the conflicting files, after the lane is released. Returns are limited to three in a row on a known main commit and six in any rolling hour. A conflict on an unknown main counts only toward the hour. A newer main does not refill the budget; only a person's reply does. When either limit is reached, Paws asks with the main commits and files involved.
 
+The lane judges only the front of the queue, but a conflict behind it does not wait for its turn. Whenever main moves (the lane merges, or a `push` to the default branch or a merged `pull_request` webhook arrives), Paws reads GitHub's `mergeable` for every other pull request in that repository's `merge_queue`, retrying briefly while GitHub computes it. One that conflicts goes back at once as the same rebase return, under the same budget, and keeps its place in the queue for when Closeout accepts its rebased head. Each head goes back once. A pull request that is only behind main is left for the lane to update when it reaches the front.
+
 The entry policy sets the two budget integers, both defaulting to 3:
 
 ```yaml
@@ -230,6 +234,23 @@ A re-check of an item already in the merge queue (after a CI fix, a conflict fix
 
 `ci:` is a Paws extension to the policy schema, so a runner older than the change rejects a policy that uses it: ship the deploy and the runner release before the policy.
 
+### Affected tests
+
+In this repository, the `test` check runs `bun scripts/affected-tests.ts`, which runs only the tests the change affects between the run's base and the candidate head. The base is `git merge-base origin/main HEAD`; on a runner, Closeout's checkout points `origin/main` at the run's base. GitHub CI runs the full suite on every pull request and is required before merge, so a test the selection misses still runs before merge.
+
+- **Test files** changed in the diff run.
+- **Source files:** a change under `src/<module>/` runs that module's tests, the tests of every module that imports it (followed transitively through other modules), and every other test file that reaches the module, directly, through another module, or through a helper under `test/`. A file directly under `src/`, such as `src/index.ts`, runs the tests that import it.
+- **Shared files:** a change to `package.json`, `bun.lock`, `bunfig.toml`, a `tsconfig*.json`, a helper or fixture under `test/`, or anything under `scripts/` runs the full suite.
+- **Other files**, such as docs, run the tests whose source names the changed path.
+- `test/boundaries.test.ts` and `test/empty-catches.test.ts` always run. Both read every file under `src/` by path.
+
+When the diff, a test, or an imported helper cannot be read, when import parsing fails, or when there is no base, the full suite runs. Imports are parsed as code so fixture strings and comments do not affect the import graph. The check's log starts with the files that ran and why, for example:
+
+````
+test/merge-lane.test.ts  imports src/merge/index.ts
+full suite (556 files): package.json changed
+``` `bun scripts/affected-tests.ts --list <base> <head>` prints the selection without running it.
+
 ## Review escapes
 
 A review escape is a bug that Closeout's independent review accepted and a later pull request had to fix. `evals/review-escapes.jsonl` collects the confirmed ones, so a change to the reviewer can be scored against real misses instead of guessed.
@@ -256,7 +277,7 @@ One JSON object per line:
   "confirmedAt": "2026-10-26",
   "confidence": "confirmed"
 }
-```
+````
 
 | Field                  | Meaning                                                                                                                           |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |

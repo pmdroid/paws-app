@@ -13,6 +13,7 @@ export {
   RunnerHookSchema,
   RunnerRuntimeSchema,
   RunnerRuntimesSchema,
+  legacyRuntimeTool,
   RunnerInstalledRuntimeSchema,
   RunnerInstalledRuntimesSchema,
   SignedRunnerCommandSchema,
@@ -112,3 +113,22 @@ export {
   type RunnerCodingAgent,
   type RunnerInstalledAgent,
 } from "./agents";
+
+export {
+  type RunnerVersion,
+  OPENCODE_RUNNER_VERSION,
+  SKILL_HOOK_RUNNER_VERSION,
+  REBASE_RUNNER_VERSION,
+  SESSION_RESUME_RUNNER_VERSION,
+  RUNTIMES_RUNNER_VERSION,
+  ANY_MISE_BACKEND_RUNNER_VERSION,
+  CLAUDE_SESSION_SNAPSHOT_RUNNER_VERSION,
+  CLAUDE_SESSION_RESTORE_RUNNER_VERSION,
+  HANDOVER_RUNNER_VERSION,
+  CODEX_SESSION_RUNNER_VERSION,
+  GROK_SESSION_RUNNER_VERSION,
+  CHECKPOINT_RUNNER_VERSION,
+  REVIEW_COMMAND_RUNNER_VERSION,
+  CANDIDATE_REBASE_RUNNER_VERSION,
+  FINDING_GROUPS_RUNNER_VERSION,
+} from "./versions";

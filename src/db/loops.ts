@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { systemClock, type Clock } from "../core";
 import { OutboxDispatcher } from "./dispatcher";
-import { JobLoop } from "./loop";
+import { JOB_IDLE_CLAIM_MS, JobLoop } from "./loop";
 import { LINEAR_PROGRESS_INTERVAL_MS } from "./outbox";
 
 const JOB_LEASE_MS = 120_000;
@@ -24,6 +24,7 @@ export function startLoops(input: {
   const jobs = new JobLoop(input.db, clock, {
     concurrency: input.concurrency ?? JOB_WORKERS,
     leaseMs: JOB_LEASE_MS,
+    pollMs: JOB_IDLE_CLAIM_MS,
   });
   const outbox = new OutboxDispatcher(input.db, clock, {
     progressIntervalMs: LINEAR_PROGRESS_INTERVAL_MS,

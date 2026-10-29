@@ -11,7 +11,7 @@ const CI_FIX_ATTEMPTS_MAX = 10;
 const QUEUE_START_TIMEOUT_DEFAULT = 24;
 const QUEUE_START_TIMEOUT_MAX = 720;
 const OWNER_CAP_MAX = 1000;
-const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok" };
+const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok", opencode: "OpenCode" };
 
 export function settingsProblems(settings: AgentSettings): string[] {
   const profiles = [
@@ -87,7 +87,7 @@ type SettingsView = {
 };
 
 export function renderAgentSettings(view: SettingsView): string {
-  if (view.denied) return '<p class="sub">Only workspace owners can change agent profiles.</p>';
+  if (view.denied) return '<p class="sub">Only workspace admins can change agent profiles.</p>';
   const intro = `<p class="sub">Agents run on an installed runner. Model and effort choices refresh automatically from your signed-in <a href="${routeHref({ view: "runners", id: null })}">Runners</a>.</p>`;
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading agent settings…")}</div>${view.error ? '<button class="btn" type="button" data-settings="reload">Try again</button>' : ""}`;

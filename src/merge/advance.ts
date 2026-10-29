@@ -48,6 +48,7 @@ import {
   type OrderCapabilities,
 } from "./orders";
 import type { RebaseConflict } from "./budget";
+import { mainMoved as checkQueueBehind } from "./queue-conflicts";
 import { ciFixes, rebaseBudgetFor } from "./returns";
 import {
   laneTurn,
@@ -138,7 +139,11 @@ export async function advanceMerge(
   const mergeSettings = await caps.settings(item, published.signal);
   if (mergeSettings.order === "github-queue") {
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
-    if (handed !== "no_queue") return handed;
+    if (handed !== "no_queue") {
+      if (handed.kind === "merged")
+        checkQueueBehind(db, { repository: queueName(repository), main: null, now: caps.now() });
+      return handed;
+    }
   }
   const queued = mergeSettings.order === "queue";
   if (queued) {
@@ -146,6 +151,16 @@ export async function advanceMerge(
       number: pull.number,
       head: published.head,
     });
+    if (wait?.reason === "ahead" && policyChanged(db, item, caps, published.worktree)) {
+      // A policy change spent every waiting acceptance; each re-verifies now, in parallel up to
+      // the free slots, and keeps its place instead of waiting for its turn at the front.
+      reverify(
+        merge,
+        { kind: "reverify", head: published.head, base: "", rebased: false },
+        input.jobId,
+      );
+      return { kind: "returned" };
+    }
     if (wait) return { kind: "wait", ...wait };
     if (caps.stopped()) return { kind: "obsolete" };
   }
@@ -167,8 +182,13 @@ export async function advanceMerge(
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     remoteUrl: repository.remoteUrl,
     isCancelled: () => mergeHeld(merge),
-    ...(mergeSettings.mainMoved === "overlap"
-      ? { overlap: { packages: caps.packages(`${repository.owner}/${repository.repo}`) } }
+    ...(mergeSettings.mainMoved === "overlap" || mergeSettings.mainMoved === "green"
+      ? {
+          overlap: {
+            packages: caps.packages(`${repository.owner}/${repository.repo}`),
+            anyFiles: mergeSettings.mainMoved === "green",
+          },
+        }
       : {}),
   };
   const turn = await laneTurn({
@@ -227,7 +247,12 @@ export async function advanceMerge(
     });
   if (step.kind === "wait" && step.reason === "ci")
     return caps.stopped() ? { kind: "obsolete" } : step;
-  if (turn.kind === "merged")
+  if (turn.kind === "merged") {
+    checkQueueBehind(db, {
+      repository: queueName(repository),
+      main: turn.result.sha ?? null,
+      now: caps.now(),
+    });
     recordConfirmedRemoteMerge(db, {
       itemId: item.id,
       repositoryOwner: repository.owner,
@@ -237,6 +262,7 @@ export async function advanceMerge(
       mergeSha: turn.result.sha ?? null,
       confirmedAt: caps.now(),
     });
+  }
   if (turn.kind === "merged") endMergeCall(db, item.id);
   if (caps.stopped()) {
     if (turn.kind === "merged") completeMergedItem(db, { itemId: item.id, now: caps.now() });
@@ -327,6 +353,11 @@ export async function advanceMerge(
   return { kind: "failed", reason: "merge", message };
 }
 
+/** The repository as the merge queue names it. */
+function queueName(repository: { owner: string; repo: string }): string {
+  return `${repository.owner}/${repository.repo}`;
+}
+
 /**
  * Records the merge of a pull request merged outside the lane, and takes the item out of the
  * queue. The `merged` step completes it like a lane merge, which cancels its queued merge jobs.
@@ -396,6 +427,20 @@ function dependencyWait(item: WorkItemRecord, caps: MergeCapabilities): MergeSte
   const message = `${item.linearIdentifier}: waiting for ${what}`;
   caps.voice.status(item, message, `${item.id}:merge-dependencies:${what}`);
   return { kind: "wait", message, queued: true, reason: "dependencies" };
+}
+
+/** Closeout accepted the item under a policy digest that differs from the readable one now. */
+function policyChanged(
+  db: Database,
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+  worktree: string,
+): boolean {
+  const acceptedHead = getWorkItem(db, item.id)?.acceptedHead ?? null;
+  if (acceptedHead === null) return false;
+  const accepted = closeoutPolicyDigest(db, item.id, acceptedHead);
+  const current = caps.policyDigest(item, worktree);
+  return accepted !== null && current !== null && accepted !== current;
 }
 
 /**
@@ -482,6 +527,8 @@ function reverify(
       now: caps.now(),
     });
   });
+  // Busy now, it no longer holds the lane: the ready tasks behind it look again.
+  wakeMergesBehind(db, caps.now());
   if (step.rebased)
     caps.voice.status(
       item,

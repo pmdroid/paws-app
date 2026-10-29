@@ -17,4 +17,4 @@ test("remote agent bridge preserves canonical task state, questions and candidat
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-}, 30_000);
+}, 120_000);

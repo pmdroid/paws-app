@@ -21,6 +21,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
+  workspaceLinearMember,
 } from "../src/db";
 import { readyItems, syncItemDependencies } from "../src/intake";
 import { attachOrchestrator, deliverLinearOutbox } from "../src/loop";
@@ -268,7 +269,7 @@ function fixture({
           : { outcome: "refused", reason: "denied" },
       authorizeLinearIntake: (sessionId, spec) => assignments.authorizeIntake(sessionId, spec),
       ...(agent
-        ? { repository: agent.repository, launch: agent.launch }
+        ? { repositories: [agent.repository], launch: agent.launch }
         : {
             launch: () => {
               throw new Error("No agent may start in the onboarding fixture");
@@ -527,7 +528,7 @@ for (const change of [
   "membership",
   "guest",
   "team",
-  "observer",
+  "inactive member",
 ])
   test(`assignment continuation fails closed after ${change} changes`, async () => {
     const f = fixture();
@@ -547,10 +548,8 @@ for (const change of [
       if (change === "membership") f.setActive(false);
       if (change === "guest") f.setGuest(true);
       if (change === "team") f.setTeams([]);
-      if (change === "observer")
-        f.db.run(
-          "UPDATE workspace_member SET role='observer',manual_role='observer',source='manual' WHERE user_id<>'owner'",
-        );
+      if (change === "inactive member")
+        f.db.run("UPDATE workspace_member SET active=0 WHERE user_id<>'owner'");
       const jobs = f.jobs();
       await jobs.tick();
       await jobs.tick();
@@ -597,7 +596,7 @@ test("held prompts cannot become initial delegation; waiting writes nothing; Sto
   }
 });
 
-test("linked members avoid a new-issue sign-in hold while observers and removed members do not", async () => {
+test("linked members avoid a new-issue sign-in hold while removed members do not", async () => {
   const f = fixture();
   try {
     const userId = putWorkspaceUser(f.db, {
@@ -616,7 +615,7 @@ test("linked members avoid a new-issue sign-in hold while observers and removed 
     });
     expect(await f.assignments.authorize(f.event)).toEqual({ outcome: "accepted" });
     expect(listOutbox(f.db)).toHaveLength(0);
-    f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id='member'");
+    f.db.run("UPDATE workspace_member SET active=0 WHERE user_id='member'");
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
     expect(getLinearSession(f.db, "session")!.creatorId).toBe("member");
   } finally {
@@ -673,21 +672,11 @@ const rules: [string, string, (f: ReturnType<typeof fixture>) => void][] = [
     (f) => advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() }),
   ],
   ["inactive account", "Your Linear account is not active.", (f) => f.setActive(false)],
-  [
-    "guest",
-    "Linear guests cannot delegate issues to Paws. Ask a member of Platform to delegate this issue.",
-    (f) => f.setGuest(true),
-  ],
   ["outside the team", "You are not a member of this issue's Linear team.", (f) => f.setTeams([])],
   [
     "inactive membership",
     "Your Paws workspace membership is not active.",
     (f) => f.db.run("UPDATE workspace_member SET active=0 WHERE user_id='member'"),
-  ],
-  [
-    "observer",
-    "Observers in the Paws workspace cannot delegate issues to Paws. Ask a member of Platform to delegate this issue.",
-    (f) => f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id='member'"),
   ],
 ];
 
@@ -702,6 +691,28 @@ for (const [rule, reason, apply] of rules)
       await f.close();
     }
   });
+
+test("a Linear guest's delegation is ignored, and the session's response says guests can't use Paws", async () => {
+  const f = fixture();
+  try {
+    linkMember(f);
+    f.setGuest(true);
+    expect(await f.assignments.authorize(f.event)).toEqual({
+      outcome: "refused",
+      reason: "Linear guests can't use Paws.",
+      response: true,
+    });
+    await acknowledgeNewSession(f.tracker, f.event, (event) => f.orchestrator.onLinearEvent(event));
+    expect(listWorkItems(f.db)).toHaveLength(0);
+    expect(f.tracker.progress.slice(1).map((update) => [update.kind, update.body])).toEqual([
+      ["response", "Linear guests can't use Paws."],
+    ]);
+    // A linked member who became a guest loses access, the same as a deactivated account.
+    expect(workspaceLinearMember(f.db, "workspace", "member")?.active).toBe(false);
+  } finally {
+    await f.close();
+  }
+});
 
 test("a member's delegation whose first Linear read fails is retried and accepted", async () => {
   const f = fixture();
@@ -1149,7 +1160,7 @@ test("the runner step offers Create VM when Paws can create one", async () => {
   }
 });
 
-test("the onboarding page reads no Linear data and hides runner setup from observers", async () => {
+test("the onboarding page reads no Linear data and is gone once the member loses access", async () => {
   const f = fixture({ createVm: true });
   try {
     await f.assignments.authorize(f.event);
@@ -1161,11 +1172,10 @@ test("the onboarding page reads no Linear data and hides runner setup from obser
       memberReads++;
     });
     const sessionReads = f.sessionReads;
+    const fetchPage = () =>
+      fetch(`${f.local}${onboardPath(link)}`, { redirect: "manual", headers: { cookie } });
     const open = async () => {
-      const page = await fetch(`${f.local}${onboardPath(link)}`, {
-        redirect: "manual",
-        headers: { cookie },
-      });
+      const page = await fetchPage();
       expect(page.status).toBe(200);
       return page.text();
     };
@@ -1174,12 +1184,9 @@ test("the onboarding page reads no Linear data and hides runner setup from obser
     expect(member).toMatch(/<meta name="paws-csrf" content="[^"]+">/);
     await open();
     f.db.run(
-      "UPDATE workspace_member SET role='observer',manual_role='observer',source='manual' WHERE user_id=(SELECT id FROM workspace_user WHERE linear_user_id='member')",
+      "UPDATE workspace_member SET active=0 WHERE user_id=(SELECT id FROM workspace_user WHERE linear_user_id='member')",
     );
-    const observer = await open();
-    expect(observer).not.toContain('class="action" data-action=');
-    expect(observer).not.toContain('id="host"');
-    expect(observer).toContain("Observers cannot own a runner.");
+    expect((await fetchPage()).status).toBe(404);
     expect(memberReads).toBe(0);
     expect(f.sessionReads).toBe(sessionReads);
   } finally {

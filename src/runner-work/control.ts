@@ -29,6 +29,7 @@ import {
 } from "../db";
 import {
   RUNNER_LEASE_GRACE_MS,
+  OPENCODE_RUNNER_VERSION,
   RunnerCommandSchema,
   RunnerEventSchema,
   type RunnerEvent,
@@ -211,6 +212,18 @@ export function createRunnerWork(options: {
     )
       throw new RunnerWorkFencedError("Linear response task binding changed");
   }
+  /** Whether the runner's latest heartbeat named this run among the work it still runs. */
+  function stillReported(runnerId: string, runId: string) {
+    return (
+      db
+        .query(
+          `SELECT 1 FROM runner_work w JOIN runner r ON r.id=w.runner_id
+          WHERE w.run_id=? AND r.id=? AND w.confirmed_at IS NOT NULL
+          AND r.live_reported_at IS NOT NULL AND w.confirmed_at>=r.live_reported_at`,
+        )
+        .get(runId, runnerId) !== null
+    );
+  }
   function live(
     runnerId: string,
     runId: string,
@@ -218,10 +231,13 @@ export function createRunnerWork(options: {
     at: number,
     allowPendingQuestion = false,
     settled = false,
+    reported?: boolean,
   ): Assignment {
     const identity = runner(runnerId);
     const work = assignment(runId);
     const lapsed = work !== null && work.leaseUntil <= at && !settled;
+    // A lapsed lease keeps its grace while the runner still reports the run, however full the
+    // runner is: a busy Paws answers the renewing heartbeat late. Capacity decides the rest.
     if (
       !work ||
       work.runnerId !== runnerId ||
@@ -231,7 +247,8 @@ export function createRunnerWork(options: {
       work.endedAt !== null ||
       (lapsed &&
         (work.leaseUntil + RUNNER_LEASE_GRACE_MS <= at ||
-          !runnerHasCapacity(db, runnerId, at, runId)))
+          (!(reported ?? stillReported(runnerId, runId)) &&
+            !runnerHasCapacity(db, runnerId, at, runId))))
     )
       throw new RunnerWorkFencedError("Runner work is fenced or its lease expired.");
     const command = workCommand(work);
@@ -311,7 +328,29 @@ export function createRunnerWork(options: {
     if (!grant) throw new Error("Run grant is invalid or expired.");
     return work;
   }
+  function supportsAgent(runnerId: string, agent: string) {
+    if (agent !== "opencode") return true;
+    const version = db
+      .query<{ version: string | null }, [string]>(
+        "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+      )
+      .get(runnerId)?.version;
+    const parts = version
+      ?.match(/^(\d+)\.(\d+)\.(\d+)(?:$|[-+])/)
+      ?.slice(1)
+      .map(Number);
+    if (!parts) return false;
+    for (const [index, part] of parts.entries())
+      if (part !== OPENCODE_RUNNER_VERSION[index]) return part > OPENCODE_RUNNER_VERSION[index]!;
+    return true;
+  }
   function queue(command: RunnerCommand) {
+    const agent =
+      "profile" in command ? command.profile.agent : "agent" in command ? command.agent : null;
+    if (agent && !supportsAgent(command.runnerId, agent))
+      throw new Error(
+        `OpenCode needs runner ${OPENCODE_RUNNER_VERSION.join(".")} or later. Upgrade the runner, then try again.`,
+      );
     const envelope = signRunnerCommand({
       keyId: options.keyId,
       privateKey: options.privateKey,
@@ -332,6 +371,7 @@ export function createRunnerWork(options: {
     return envelope;
   }
   return {
+    supportsAgent,
     identity(runnerId: string) {
       return runner(runnerId);
     },
@@ -409,7 +449,8 @@ export function createRunnerWork(options: {
           runnerId: command.runnerId,
           agent: command.profile.agent,
           hooks:
-            command.type === "run" && command.profile.agent !== "grok"
+            command.type === "run" &&
+            (command.profile.agent === "claude" || command.profile.agent === "codex")
               ? [
                   { name: "Paws Closeout", event: "stop" },
                   ...(command.hooks ?? []).map((hook) => ({
@@ -551,7 +592,9 @@ export function createRunnerWork(options: {
           agents &&
           runnerAgentTargets(db, runnerId).flatMap((target) => {
             const parsed = RunnerAgentTargetSchema.safeParse(target);
-            return parsed.success ? [parsed.data] : [];
+            return parsed.success && supportsAgent(runnerId, parsed.data.agent)
+              ? [parsed.data]
+              : [];
           });
         const rows = db
           .query<Assignment, [string]>(
@@ -563,7 +606,15 @@ export function createRunnerWork(options: {
         for (const row of rows) {
           try {
             const settled = accepted(row);
-            live(runnerId, row.runId, row.generation, at, true, settled);
+            live(
+              runnerId,
+              row.runId,
+              row.generation,
+              at,
+              true,
+              settled,
+              running && running.has(`${row.runId}:${row.generation}`),
+            );
             if (running?.has(`${row.runId}:${row.generation}`))
               db.run("UPDATE runner_work SET confirmed_at=? WHERE run_id=?", [at, row.runId]);
             else if (running && !settled && acknowledgedBy(row, at - RUNNER_LIVE_GRACE_MS)) {

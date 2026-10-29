@@ -24,7 +24,7 @@ export type ProjectAgentProfiles = {
 export type AgentSettings = { defaults: AgentProfiles; projects: ProjectAgentProfiles[] };
 
 const profileSchema = z.strictObject({
-  agent: z.enum(["claude", "grok", "codex"]),
+  agent: z.enum(["claude", "grok", "codex", "opencode"]),
   model: z
     .string()
     .trim()
@@ -58,10 +58,6 @@ const settingsSchema = z.strictObject({
   defaults: z.strictObject({ implementer: profileSchema, reviewer: profileSchema }),
   projects: z.array(projectSchema).max(200),
 });
-
-export function parseAgentProfile(value: unknown): AgentProfile {
-  return profileSchema.parse(value);
-}
 
 export function parseAgentSettings(value: unknown): AgentSettings {
   const settings = settingsSchema.parse(value);

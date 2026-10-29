@@ -1,3 +1,4 @@
+export { replaceLeasedJobPayload, refreshVerificationJobVersion } from "./job-payload";
 export {
   drainCommands,
   enqueueCommand,
@@ -138,6 +139,7 @@ export {
   extendJobLease,
   hasLiveJob,
   failJob,
+  actionableDue,
   getJob,
   listJobs,
   mergeLaneSql,
@@ -149,7 +151,13 @@ export {
   type JobStatus,
   type NewJob,
 } from "./jobs";
-export { JobLoop, type JobContext, type JobHandler } from "./loop";
+export {
+  JobLoop,
+  JOB_PROGRESS_STALE_MS,
+  type JobContext,
+  type JobHandler,
+  type JobLoopLiveness,
+} from "./loop";
 export { startLoops } from "./loops";
 export { migrate } from "./migrate";
 export {
@@ -181,7 +189,31 @@ export {
   type CandidateRisk,
 } from "./candidate-risk";
 export { getOpenFindingsLine, saveOpenFindings, withOpenFindings } from "./open-findings";
+export {
+  getReviewFinding,
+  getReviewFindingByKey,
+  listReviewFindings,
+  markReviewFindingFiled,
+  recordReviewFindings,
+  reviewFindingItems,
+  setReviewFindingStatus,
+  type ReviewFindingFilter,
+  type ReviewFindingItem,
+  type ReviewFindingRecord,
+  type ReviewFindingReport,
+  type ReviewFindingSeverity,
+  type ReviewFindingWhy,
+} from "./review-findings";
 export { deleteRiskFix, getRiskFix, latestRiskFix, saveRiskFix, type RiskFix } from "./risk-fix";
+export {
+  endPushOutage,
+  getPushOutage,
+  listPushOutages,
+  recordPushOutage,
+  setPushOutageQuestion,
+  takePushOutageProbe,
+  type PushOutage,
+} from "./push-outage";
 export { frozenMigrations } from "./migrations";
 export {
   MIGRATION_DIRECTORY,
@@ -192,7 +224,6 @@ export {
 export type { Migration } from "./migration";
 export { openDatabase } from "./open";
 export { journal, setJournalSink } from "./journal";
-export { assertLinearQueue } from "./legacy-tracker";
 export {
   advanceOutboxSession,
   attachSessionUpdates,
@@ -234,7 +265,13 @@ export {
   type DeadDeliveryRef,
 } from "./dead-deliveries";
 export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
-export { runnerLeaseCutoff, runnerLeaseLive, runnerWorkSettled } from "./runner-lease";
+export {
+  runnerHoldsRunWork,
+  runnerWorkHasResult,
+  runnerLeaseCutoff,
+  runnerLeaseLive,
+  runnerWorkSettled,
+} from "./runner-lease";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {
   getRun,
@@ -303,6 +340,7 @@ export {
 export {
   appendCloseoutOutput,
   acceptedCloseoutReviews,
+  acceptedCloseoutRuns,
   ensureCloseoutProgress,
   finishCloseoutProgress,
   latestCloseoutIdentity,
@@ -312,6 +350,7 @@ export {
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,
   type AcceptedCloseoutReviews,
+  type AcceptedCloseoutRun,
   type CloseoutProgressIdentity,
   type CloseoutProgressRecord,
   type CloseoutStepRecord,
@@ -348,10 +387,19 @@ export {
 export {
   countRebaseReturns,
   listRebaseReturns,
+  rebaseReturnedFor,
   recordRebaseReturn,
   type RebaseReturn,
   type RebaseReturnRecord,
 } from "./rebase-returns";
+export {
+  HOT_FILE_WINDOW_MS,
+  hotFiles,
+  latestCandidatePaths,
+  repositoryKey,
+  saveCandidatePaths,
+  type HotFile,
+} from "./hot-files";
 export {
   recordGitHubDelivery,
   latestGitHubDelivery,
@@ -574,10 +622,13 @@ export type { TaskMergeSettings } from "./merge-settings";
 export {
   inMergeQueue,
   joinMergeQueue,
+  keepMergeQueuePlace,
   leaveMergeQueue,
   listMergeQueues,
   markMergeQueueNotified,
   mergeQueuePosition,
+  releaseMergeQueuePlace,
+  returnToMergeQueue,
   restartedFromMergeQueue,
 } from "./merge-queue";
 export type { MergeQueuePosition } from "./merge-queue";
@@ -674,3 +725,23 @@ export { restart, fixRounds, restartLimit, type RestartHandoff } from "./restart
 export { jobVersionCurrent } from "./jobs";
 
 export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
+
+export { listFindingGroups, lastFindingGroupRun, findingGroupSources } from "./finding-groups";
+export type { FindingGroup, FindingGroupRun } from "./finding-groups";
+
+export { findingGroupingAdmins, recoverFindingGroupRuns } from "./finding-groups";
+
+export { getFindingGroup, removeFindingFromOpenGroups } from "./finding-groups";
+export { reviewFindingsByIds } from "./review-findings";
+
+export { yieldFindingGroupHelpers, runnerHelperAvailability } from "./runner-capacity";
+
+export {
+  getReviewFindingIssue,
+  reviewFindingIssues,
+  reviewFindingKey,
+  reviewFindingPlace,
+  saveReviewFindingIssue,
+  type ReviewFindingIssue,
+  type ReviewFindingPlace,
+} from "./review-finding-issues";

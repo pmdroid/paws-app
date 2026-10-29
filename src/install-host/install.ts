@@ -171,6 +171,7 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
   await resolve("member_vm_memory_gb", size?.memoryGb === undefined ? "" : String(size.memoryGb));
   await resolve("member_vm_disk_gb", size?.diskGb === undefined ? "" : String(size.diskGb));
   await resolve("member_vm_image", size?.image ?? "");
+  await resolve("member_vm_pool", size?.pool ?? "");
   const tailnet = raw.paws_public_dashboard === "yes" ? tailnetHost(raw.paws_public_url!) : null;
   let renew: string | null = null;
   if (raw.paws_public_dashboard === "yes") {

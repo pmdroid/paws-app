@@ -93,6 +93,8 @@ export function detaching(exe: FakeExeDev): ExeDev & { outer: OuterCall[] } {
     createVm: (name) => exe.createVm(name),
     deleteVm: (name) => exe.deleteVm(name),
     getVm: (name) => exe.getVm(name),
+    listPools: () => exe.listPools(),
+    adoptVm: (name, pool) => exe.adoptVm(name, pool),
     async execVm(vm, command, options = {}) {
       const call = { ...parse(command), command, timeoutMs: options.timeoutMs ?? null };
       outer.push(call);

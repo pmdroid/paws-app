@@ -31,7 +31,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function harness(role: "owner" | "observer" = "owner") {
+async function harness(active = true) {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item", sessionKey: "ses_1" });
@@ -68,7 +68,14 @@ async function harness(role: "owner" | "observer" = "owner") {
     email: "ada@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 1]);
-  syncWorkspaceMember(db, { workspaceId: "ws-1", userId, role, active: true, teamIds: [], now: 1 });
+  syncWorkspaceMember(db, {
+    workspaceId: "ws-1",
+    userId,
+    role: "admin",
+    active,
+    teamIds: [],
+    now: 1,
+  });
   const calls: Parameters<VisualReviewChanges>[0][] = [];
   let result: Awaited<ReturnType<VisualReviewChanges>> = "answered";
   const send = async (
@@ -204,8 +211,8 @@ describe("POST /api/visual-review-changes", () => {
     expect(h.calls).toHaveLength(0);
   });
 
-  test("an observer can't request changes", async () => {
-    const h = await harness("observer");
+  test("an inactive member can't request changes", async () => {
+    const h = await harness(false);
     expect((await h.send(h.form({ questionId: h.questionId, note: "x" }))).status).toBe(403);
     expect(h.calls).toHaveLength(0);
   });

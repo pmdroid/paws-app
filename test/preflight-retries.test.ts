@@ -98,7 +98,7 @@ async function runPreflight(fault: {
     tracker,
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     retryBaseMs: 10,
     reviewRequirements(...args) {
       if (fault.policy !== undefined && remaining > 0) {

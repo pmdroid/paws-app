@@ -391,8 +391,8 @@ async function runTask(input: {
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
       appId: "1",
       installationId: "2",
       privateKeyPem: privateKey as string,
@@ -420,7 +420,7 @@ async function runTask(input: {
           return { status: 200, body };
         },
       },
-    },
+    }),
     launch,
     linearTaskModes: true,
     linearAccess: gate,
@@ -555,11 +555,14 @@ test("Linear requests for a long Closeout with an agent question and a visual re
   expect(result.asked).toEqual(["agent", "visual-review"]);
   expect(result.perCaller, result.operations).toEqual({
     context: 1,
-    // Two of them put the visual review link on the session and take it off again.
-    outbox: 14,
+    outbox: expect.any(Number),
     "session-read": 1,
     "task-access": 7,
   });
+  // Session metadata is latest-wins, so dispatch timing can coalesce a request.
+  // Keep the request ceiling without requiring every intermediate update to be sent.
+  // This includes putting the visual review link on the session and taking it off again.
+  expect(result.perCaller["outbox"], result.operations).toBeLessThanOrEqual(14);
 });
 
 test("a Closeout fix round that publishes a screenshot asks for a visual review, not Closeout help", async () => {

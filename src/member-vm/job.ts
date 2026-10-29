@@ -9,7 +9,14 @@ import {
   type ProvisioningErrorCode,
 } from "../provisioning";
 import { workspaceTokenHash } from "../workspace";
-import { getMemberVm, MEMBER_VM_QUEUE, STEP_AT, type MemberRef, type MemberVm } from "./store";
+import {
+  freeVmName,
+  getMemberVm,
+  MEMBER_VM_QUEUE,
+  STEP_AT,
+  type MemberRef,
+  type MemberVm,
+} from "./store";
 
 export type MintEnrollment = (
   member: MemberRef,
@@ -46,6 +53,7 @@ const REJECTED: ReadonlySet<ProvisioningErrorCode> = new Set([
   "no_token",
   "unauthorized",
   "conflict",
+  "name_unavailable",
   "missing",
   "rate_limited",
 ]);
@@ -126,10 +134,25 @@ async function runStep(
       const asked = row.createRequestedAt;
       update(db, row, { create_requested_at: asked ?? now() }, now());
       try {
-        await exeDev.createVm(vm, options.size);
+        await exeDev.createVm(
+          vm,
+          row.pool === null ? options.size : { ...options.size, pool: row.pool },
+        );
       } catch (error) {
         const ours = isProvisioningError(error) && error.code === "conflict" && asked !== null;
         if (ours) journalCaught(error, "member-vm.createVm", null, "resuming our create request");
+        // exe.dev names are global, so another account may hold this one. Nothing was created
+        // under it for us, so the row takes the next name and asks again.
+        if (asked === null && isProvisioningError(error) && error.code === "name_unavailable") {
+          journalCaught(error, "member-vm.createVm", null, "trying the next VM name");
+          update(
+            db,
+            row,
+            { vm_name: freeVmName(db, member, vm), create_requested_at: null },
+            now(),
+          );
+          return { next: "advance" };
+        }
         if (!ours) {
           if (rejected(error))
             db.run(
@@ -244,7 +267,8 @@ async function runStep(
 }
 
 type Columns = {
-  create_requested_at?: number;
+  vm_name?: string;
+  create_requested_at?: number | null;
   install_started_at?: number;
   token_expires_at?: number | null;
   runner_id?: string;

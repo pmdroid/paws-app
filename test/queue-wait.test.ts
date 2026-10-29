@@ -35,7 +35,7 @@ function oneBusyRunnerSlot(db: ReturnType<typeof tempDb>): void {
   syncWorkspaceMember(db, {
     workspaceId: "runner-ws",
     userId,
-    role: "owner",
+    role: "admin",
     active: true,
     teamIds: [],
     now: 0,

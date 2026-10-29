@@ -17,6 +17,8 @@ import {
   getWorkItem,
   saveCheckpoint,
   saveTaskMode,
+  saveHook,
+  deleteHook,
   recordAgentCloseout,
   resumeUsagePauseNow,
   usagePause,
@@ -89,7 +91,7 @@ export async function probeRunnerBackend(
   const principal = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };
@@ -142,6 +144,9 @@ export async function probeRunnerBackend(
     assert.equal(code, 0, err);
     return out.trim();
   }
+  // GitHub, served from the source repository, so no run reaches the network.
+  const networkGit = (args: string[]) =>
+    git(args.map((arg) => (arg === "https://github.com/fixture/repository.git" ? source : arg)));
   await git(["init", "-b", "main", source]);
   writeFileSync(join(source, "result.txt"), "base");
   await git(["-C", source, "add", "."]);
@@ -170,7 +175,7 @@ export async function probeRunnerBackend(
     pollIntervalMs: 1,
     async fetchCandidate(candidate) {
       assert.equal(candidate.remoteUrl, "https://github.com/fixture/repository.git");
-      assert.equal(candidate.networkGit, git);
+      assert.equal(candidate.networkGit, networkGit);
       assert.equal(candidate.branch, getWorkItem(db, candidate.itemId)?.branchName);
       assert.equal(candidate.baseSha, base);
       assert.equal(candidate.candidateSha, head);
@@ -181,7 +186,9 @@ export async function probeRunnerBackend(
   const backend = createRemoteAgentRunner(backendOptions);
   const seen = new Set<string>();
   async function next(selectedRunnerId = runnerId, acknowledge = true) {
-    for (let i = 0; i < 500; i++) {
+    // Measured in time, not polls: four test files run at once and can starve a 1 ms poll.
+    const until = performance.now() + 10_000;
+    while (performance.now() < until) {
       for (const envelope of work.commands(selectedRunnerId)) {
         const v = verifyRunnerCommand(envelope, {
           trustedKeys: new Map([["fixture", signing.publicKey]]),
@@ -244,7 +251,7 @@ export async function probeRunnerBackend(
       prompt: "Implement fixture",
       worktreePath: source,
       pawsRoot: root,
-      networkGit: git,
+      networkGit,
       ...overrides,
     };
   }
@@ -690,6 +697,44 @@ export async function probeRunnerBackend(
         ),
       { runtimeCommands, runtimeLines },
     );
+    saveHook(
+      db,
+      {
+        id: "uploaded-guard",
+        event: "after_edit",
+        matcher: null,
+        command: '"$PAWS_SKILL_DIR/hooks/check.sh"',
+        timeoutSeconds: 60,
+        agents: ["codex"],
+        skill: "guard",
+      },
+      Date.now(),
+    );
+    db.run(
+      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+      [runnerId, "0.1.52", Date.now()],
+    );
+    const oldHookRun = item();
+    await assert.rejects(
+      backend.forItem(oldHookRun.id)(input(oldHookRun)),
+      /needs runner 0.1.53 or later to run skill hooks/,
+    );
+    db.run("UPDATE runner_host_status SET runner_version='0.1.53' WHERE runner_id=?", [runnerId]);
+    const hookRun = item();
+    const hookStop = new AbortController();
+    const hooked = backend.forItem(hookRun.id)(
+      input(hookRun, { signal: hookStop.signal, checkpoint: false }),
+    );
+    void hooked.catch(() => undefined);
+    let hookCommand = await next();
+    while (hookCommand.type !== "run" || hookCommand.itemId !== hookRun.id)
+      hookCommand = await next();
+    assert.equal(hookCommand.hooks?.[0]?.skill, "guard");
+    hookStop.abort();
+    await hooked.catch(() => undefined);
+    while (work.commands(runnerId).length) await next();
+    deleteHook(db, "uploaded-guard");
+    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
     await git(["-C", source, "reset", "--hard", base]);
     const detached = item();
     const shutdown = new AbortController();
@@ -3058,7 +3103,6 @@ export async function probeRunnerBackend(
         return command;
       };
       await git(["-C", source, "reset", "--hard", head]);
-      const legacy = await sent("0.1.18");
       const current = await sent("0.1.19");
       const moved = (
         await git(["-C", source, "commit-tree", `${base}^{tree}`, "-p", base, "-m", "moved main"])
@@ -3084,16 +3128,12 @@ export async function probeRunnerBackend(
           stale: stale.repository.mainSha,
         },
       );
-      if (legacy.type !== "run" || current.type !== "run") throw new Error("Expected run commands");
-      assert.equal(legacy.repository.mainSha, undefined);
-      assert.equal(legacy.checkpoint, undefined);
+      if (current.type !== "run") throw new Error("Expected run commands");
       assert.equal(current.repository.mainSha, base);
       assert.equal(current.checkpoint, false);
-      observe(
-        "only runners on 0.1.19 or later receive the task's main commit and checkpoint opt-out",
-        true,
-        { legacy: legacy.repository.baseSha, current: current.repository.mainSha },
-      );
+      observe("runners receive the task's main commit and checkpoint opt-out", true, {
+        current: current.repository.mainSha,
+      });
       const nextRun = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds)

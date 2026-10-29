@@ -4,9 +4,10 @@ import { mountShell } from "./shell";
 import { mergeQueueCount } from "./merge-queue";
 
 import {
+  FINDING_ISSUE_PATH,
+  hasStatusSlice,
   parseStatusCheckLog,
   parseStatusItemDetail,
-  parseStatusSnapshot,
   statusCheckLogPath,
   statusItemPath,
   type StatusCheckLog,
@@ -27,7 +28,8 @@ import {
 } from "./closeout";
 import { captureLogs, restoreLogs } from "./log-scroll";
 import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-closeout";
-import { earlierRoundsKey } from "./review-findings";
+import { earlierRoundsKey, findingIssueKey } from "./review-findings";
+import { readCsrfToken } from "./csrf";
 import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
 import {
   issueRedirect,
@@ -35,8 +37,12 @@ import {
   needsSnapshot,
   parseRoute,
   routerBase,
+  routeCovered,
+  routeSlices,
   type Route,
 } from "./route";
+import { livePoll } from "./poll";
+import { createStatusReader, STATUS_POLL_MS } from "./status-reader";
 import type { SettingsPage } from "./settings-pages";
 
 import { createAgentSettings } from "./agent-settings";
@@ -46,6 +52,7 @@ import { createHookSettings } from "./hooks";
 import { createCheckoutSettings } from "./checkout-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
+import { createFindings } from "./findings";
 import { createExecutionControls } from "./execution-controls";
 import { linkAskAnchor } from "./link-ask";
 import { rememberLinkAskDraft, stopFromLinkAsk, submitLinkAsk } from "./link-ask-submit";
@@ -70,12 +77,13 @@ const hookSettings = createHookSettings();
 const checkoutSettings = createCheckoutSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
+const findings = createFindings();
 const executionControls = createExecutionControls(reload);
 const deadDeliveryRetry = createDeadDeliveryRetry(reload);
 const reviewDraw = createReviewDraw(reload);
 const evidence = createEvidenceMedia(() => paint());
 
-const POLL_MS = 5000;
+const readStatus = createStatusReader();
 
 const regions = ["#top", "#banner", "#page-content"] as const;
 const painted = new Map<string, string>();
@@ -89,7 +97,7 @@ let snapshot: StatusSnapshot | null = null;
 /** The open issue page's data. While an issue page is open, only this is polled. */
 let detail: StatusItemDetail | null = null;
 let error: string | null = null;
-let timer = 0;
+let stopPolling: (() => void) | null = null;
 let workspaceReady = false;
 let booted = false;
 let shownPath = router.state.location.pathname;
@@ -156,9 +164,10 @@ async function boot(): Promise<void> {
 }
 
 function routeChanged(): void {
-  const issue = openIssue(currentRoute());
-  // A newly opened issue page waits for its own detail instead of showing list data.
+  const route = currentRoute();
+  const issue = openIssue(route);
   if (issue !== null && detail?.id !== issue) phase = "loading";
+  else if (issue === null && !routeCovered(route, snapshot)) phase = "loading";
   paint();
   if (!booted) return;
   void reload();
@@ -174,15 +183,13 @@ async function reload(): Promise<void> {
     const loaded = await loadDetail(route);
     if (loaded === "signed-out") return;
     if (loaded === "none") {
-      const response = await fetch("/api/status", {
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-      });
-      if (!(await signedIn(response))) return;
-      if (!response.ok) throw new Error(await errorText(response));
-      const parsed = parseStatusSnapshot(await response.json());
-      if (!parsed.ok) throw new Error(parsed.error);
-      snapshot = parsed.snapshot;
+      const read = await readStatus(routeSlices(route));
+      if (read.kind === "response") {
+        if (!(await signedIn(read.response))) return;
+        throw new Error(await errorText(read.response));
+      }
+      if (!routeCovered(currentRoute(), read.snapshot)) return;
+      snapshot = read.snapshot;
     }
     phase = "ready";
     error = null;
@@ -248,14 +255,60 @@ function followIssueRedirect(): boolean {
 }
 
 function schedule(): void {
-  window.clearInterval(timer);
+  stopPolling?.();
+  stopPolling = null;
   const route = currentRoute();
   if (!needsSnapshot(route)) return;
   // Stored evidence does not change, and a repaint would interrupt the video.
   if (route.view === "evidence") return;
-  timer = window.setInterval(() => {
-    void reload();
-  }, POLL_MS);
+  stopPolling = livePoll(() => void reload(), STATUS_POLL_MS);
+}
+
+/**
+ * Files a pre-existing finding in Linear, or reads the issue already filed from it. The button
+ * shows the issue, or Linear's error beside it.
+ */
+async function fileFindingIssue(
+  itemId: string,
+  reviewId: string,
+  location: string,
+  explanation: string,
+): Promise<void> {
+  const key = findingIssueKey(itemId, reviewId, { location, explanation });
+  closeout.filing ??= {};
+  closeout.filing[key] = { state: "sending" };
+  paint();
+  try {
+    const response = await fetch(FINDING_ISSUE_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-paws-csrf": readCsrfToken(document) },
+      body: JSON.stringify({ itemId, reviewId, location, explanation }),
+    });
+    const body: unknown = await response.json().catch(() => null);
+    const field = (name: string) =>
+      typeof body === "object" && body !== null && name in body
+        ? (body as Record<string, unknown>)[name]
+        : undefined;
+    const identifier = field("identifier");
+    const url = field("url");
+    const problem = field("error");
+    if (!response.ok || typeof identifier !== "string")
+      throw new Error(
+        typeof problem === "string" ? problem : "The issue was not filed. Try again.",
+      );
+    closeout.filing[key] = {
+      state: "filed",
+      identifier,
+      url: typeof url === "string" ? url : null,
+    };
+  } catch (caught) {
+    journalCaught(caught, "main.fileFindingIssue.fetch", itemId);
+    closeout.filing[key] = {
+      state: "failed",
+      error: caught instanceof Error ? caught.message : "The issue was not filed. Try again.",
+    };
+  }
+  paint();
 }
 
 function paint(): void {
@@ -276,7 +329,8 @@ function paint(): void {
   const data = pageData();
   const shown =
     route.view === "evidence" ? snapshot?.evidence?.find((entry) => entry.id === route.id) : null;
-  if (snapshot) shell.setCounts({ mergeQueue: mergeQueueCount(snapshot) });
+  if (hasStatusSlice(snapshot, "mergeQueue"))
+    shell.setCounts({ mergeQueue: mergeQueueCount(snapshot) });
   shell.setBreadcrumb(
     shown
       ? { issueId: shown.itemId, entityId: shown.id }
@@ -330,6 +384,9 @@ function paint(): void {
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
   if (runnerRoot && model.route.view === "runners")
     runners.mount(runnerRoot, currentEngine(), source(), model.route.id);
+  const findingsRoot = document.querySelector<HTMLElement>("#findings-page");
+  if (findingsRoot && model.route.view === "findings")
+    findings.mount(findingsRoot, currentEngine(), source());
   if (loadOpenLogs()) paint();
 }
 
@@ -551,6 +608,16 @@ function onClick(event: MouseEvent): void {
   }
   if (!checkId) return;
   const key = checkKey(itemId, attempt, checkId);
+  if (action === "file-finding-issue") {
+    const button = target.closest<HTMLButtonElement>("button[data-explanation]");
+    if (button && !button.disabled)
+      void fileFindingIssue(
+        itemId,
+        checkId,
+        button.dataset["location"] ?? "",
+        button.dataset["explanation"] ?? "",
+      );
+  }
   if (action === "review-rounds-toggle") {
     const rounds = earlierRoundsKey(itemId, checkId);
     closeout.open[rounds] = closeout.open[rounds] !== true;

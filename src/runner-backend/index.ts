@@ -55,13 +55,26 @@ import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
-import { RUNNER_LEASE_GRACE_MS, type RunnerCommand, type RunnerResult } from "../runner-protocol";
+import {
+  SKILL_HOOK_RUNNER_VERSION,
+  REBASE_RUNNER_VERSION,
+  REVIEW_COMMAND_RUNNER_VERSION,
+  RUNNER_LEASE_GRACE_MS,
+  RUNTIMES_RUNNER_VERSION,
+  ANY_MISE_BACKEND_RUNNER_VERSION,
+  legacyRuntimeTool,
+  SESSION_RESUME_RUNNER_VERSION,
+  type RunnerCommand,
+  type RunnerResult,
+  type RunnerVersion,
+} from "../runner-protocol";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { fastForwardToBranchTip } from "./candidate";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
+import { ensureStartOnRemote, lostCommitsNote, RemoteStartUnverified } from "./start-commit";
 import {
   planSessionRestore,
   runnerGoneReason,
@@ -118,16 +131,6 @@ const RUN_HUNG_THOUGHT = (minutes: number) =>
   `The agent sent nothing for ${minutes} minutes, so Paws stopped it; continuing from the branch.`;
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
-const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
-const REBASE_RUNNER_VERSION = [0, 1, 23];
-const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
-/** First runner release whose command schema accepts `runtimes`. Older runners reject the field. */
-export const RUNTIMES_RUNNER_VERSION = [0, 1, 26];
-/** First runner release that runs the agent's own review command for a `review` command. */
-export const REVIEW_COMMAND_RUNNER_VERSION = [0, 1, 47];
-/** First runner release that snapshots a run's Claude session when a turn ends. */
-export const CLAUDE_SESSION_SNAPSHOT_RUNNER_VERSION = [0, 1, 42];
-
 type SessionHolder = { runnerId: string; agent: string; sessionId: string };
 
 function earlierSession(
@@ -183,7 +186,7 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
   return undefined;
 }
 
-function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
+function versionAtLeast(version: string | null | undefined, minimum: RunnerVersion): boolean {
   const parts = version
     ?.match(/^(\d+)\.(\d+)\.(\d+)/)
     ?.slice(1)
@@ -299,6 +302,7 @@ export function createRemoteAgentRunner(options: {
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
   const reservations = new Map<string, string>();
+  const readers = new Set<string>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
   function usageLimitReset(agent: string, sessionId: string | null): number | null {
@@ -315,10 +319,21 @@ export function createRemoteAgentRunner(options: {
     );
   }
   /** Workspace hooks for the run's agent, signed into the command with everything else. */
-  function runHooks(agent: string): { hooks?: WorkspaceHook[] } {
+  function runHooks(agent: string, runnerId: string): { hooks?: WorkspaceHook[] } {
     const hooks = listHooks(db).filter((hook) =>
       (hook.agents as readonly string[]).includes(agent),
     );
+    if (hooks.some((hook) => hook.skill !== null)) {
+      const version = db
+        .query<{ version: string | null }, [string]>(
+          "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+        )
+        .get(runnerId)?.version;
+      if (!versionAtLeast(version, SKILL_HOOK_RUNNER_VERSION))
+        throw new Error(
+          `Runner ${runnerId} needs runner ${SKILL_HOOK_RUNNER_VERSION.join(".")} or later to run skill hooks. Upgrade the runner, then run again.`,
+        );
+    }
     return hooks.length ? { hooks: hooks.slice(0, WORKSPACE_HOOK_LIMIT) } : {};
   }
   async function select(
@@ -541,16 +556,27 @@ export function createRemoteAgentRunner(options: {
     }
     return null;
   }
-  function attachedWork(itemId: string, role: RunAgentOptions["role"]) {
+  /**
+   * The open work a runner kept for the item. A Closeout review or check run passes its prompt,
+   * which names the heads it covers: it attaches only to the same command, and cancels other open
+   * work no attempt here is reading so it can be placed again.
+   */
+  function attachedWork(itemId: string, type: WorkCommand["type"], closeoutPrompt?: string) {
     const runId = getWorkItem(db, itemId)?.currentRunId;
     if (!runId) return undefined;
     const row = db
       .query<
-        { runnerId: string; workspaceId: string; envelope: string; cursor: number },
+        {
+          runnerId: string;
+          workspaceId: string;
+          envelope: string;
+          cursor: number;
+          generation: number;
+        },
         [string, number]
       >(
         `SELECT w.runner_id AS runnerId, w.workspace_id AS workspaceId, c.envelope,
-         w.consumed_sequence AS cursor
+         w.consumed_sequence AS cursor, w.generation
          FROM runner_work w JOIN runner_command c ON c.id=w.command_id
          WHERE w.run_id=?1 AND w.ended_at IS NULL AND (w.lease_until>?2 OR EXISTS(
            SELECT 1 FROM runner_result r
@@ -563,7 +589,33 @@ export function createRemoteAgentRunner(options: {
         "utf8",
       ),
     ) as WorkCommand;
-    if (command.type !== (role === "reviewer" ? "review" : "run")) return undefined;
+    if (
+      closeoutPrompt !== undefined &&
+      (command.type !== type || command.prompt !== closeoutPrompt)
+    ) {
+      // The run holds one command at a time, so the stale one would block the new assignment.
+      if (!reservations.has(runId)) {
+        try {
+          const issuedAt = now();
+          work.enqueue({
+            id: randomUUID(),
+            runnerId: row.runnerId,
+            workspaceId: row.workspaceId,
+            issuedAt,
+            expiresAt: issuedAt + 60_000,
+            type: "cancel",
+            runId,
+            generation: row.generation,
+          });
+        } catch (error) {
+          journalCaught(error, "runner-backend.attachedWork.cancelStale", itemId);
+        }
+      }
+      return undefined;
+    }
+    if (command.type !== type) return undefined;
+    if (reservations.has(runId)) throw new RunnerCapacityWait([row.runnerId]);
+    reservations.set(runId, row.runnerId);
     return {
       selected: {
         id: row.runnerId,
@@ -571,8 +623,9 @@ export function createRemoteAgentRunner(options: {
         runId,
       },
       assigned: command,
-      baseSha: command.repository!.baseSha,
-      mainSha: command.repository!.mainSha,
+      // A response task without a repository has no commit.
+      baseSha: command.repository?.baseSha,
+      mainSha: command.type === "task" ? undefined : command.repository.mainSha,
       deadline: command.expiresAt,
       cursor: row.cursor,
     };
@@ -621,6 +674,7 @@ export function createRemoteAgentRunner(options: {
   return {
     cancelItem,
     handOverItem,
+    runInProgress: (runId: string) => readers.has(runId),
     forItem(itemId: string) {
       const attempt = async (
         input: RunAgentOptions,
@@ -652,7 +706,12 @@ export function createRemoteAgentRunner(options: {
           (responseTask || input.prepareOnly || input.role !== "reviewer" || !input.readOnly)
         )
           throw new Error("A review command runs only as read-only reviewer work");
-        if (input.reviewCommand && (input.profile.agent === "grok" || !input.profile.model))
+        if (
+          input.reviewCommand &&
+          (input.profile.agent === "grok" ||
+            input.profile.agent === "opencode" ||
+            !input.profile.model)
+        )
           throw new Error(
             "The reviewer profile needs a Claude or Codex model to run the agent's review command",
           );
@@ -706,8 +765,18 @@ export function createRemoteAgentRunner(options: {
             : {}),
           signal: input.signal,
         };
-        const attached =
-          !input.prepareOnly && !responseTask ? attachedWork(itemId, input.role) : undefined;
+        // A Closeout review or check run: work that continues no session and runs while verifying.
+        const closeoutWork =
+          !responseTask && (input.role === "reviewer" || input.checkpoint === false);
+        // Work a runner kept through a Paws restart is read from where it stopped. A response
+        // task binds its Linear session again below, before any event is read.
+        const attached = input.prepareOnly
+          ? undefined
+          : attachedWork(
+              itemId,
+              responseTask ? "task" : input.role === "reviewer" ? "review" : "run",
+              closeoutWork ? input.prompt : undefined,
+            );
         const chosen = attached
           ? undefined
           : move.from
@@ -888,11 +957,78 @@ export function createRemoteAgentRunner(options: {
               );
             }
           };
+          /** Pushes a head GitHub lacks, else falls back; returns the handoff for lost commits. */
+          const remoteStart = async (
+            scoped: { item: { branchName: string }; repository?: { remoteUrl: string } },
+            networkGit: (args: string[]) => Promise<string>,
+          ) => {
+            const checkpoint = getWorkItem(db, itemId)?.checkpoint;
+            // A handoff saved by an earlier fallback still goes out until a runner receives it.
+            const pending = checkpoint?.lostCommits;
+            if (!scoped.repository || !scoped.item.branchName) return pending;
+            // A first run starts from the mirror's commit, which came from GitHub.
+            if (
+              !checkpoint?.baseSha ||
+              (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim() ===
+                checkpoint.baseSha
+            )
+              return pending;
+            let lostCommits: string | undefined;
+            let repeated = false;
+            const start = await ensureStartOnRemote({
+              worktree: input.worktreePath,
+              branch: scoped.item.branchName,
+              remoteUrl: scoped.repository!.remoteUrl,
+              networkGit,
+              ...(checkpoint?.wipCommit ? { wipCommit: checkpoint.wipCommit } : {}),
+              ...(checkpoint?.baseSha ? { baseSha: checkpoint.baseSha } : {}),
+              persistFallback: (fallback) => {
+                const note = lostCommitsNote(fallback.start, fallback.lost);
+                // A stop after this save but before the reset repeats the same fallback.
+                repeated = pending?.includes(note) === true;
+                lostCommits = repeated ? pending : pending ? `${pending}\n${note}` : note;
+                saveCheckpoint(db, itemId, {
+                  ...checkpoint,
+                  wipCommit: fallback.start,
+                  lostCommits,
+                });
+              },
+              signal,
+            }).catch((error: unknown) => {
+              // No runner gets a commit GitHub may lack; the item retries later.
+              if (error instanceof RemoteStartUnverified)
+                journal(`item ${itemId}: ${error.message}`);
+              throw error;
+            });
+            if (start.status === "remote") return pending;
+            if (start.status === "pushed") {
+              journal(`item ${itemId} pushed ${start.head} to GitHub before the run`);
+              return pending;
+            }
+            journal(
+              `item ${itemId} starts from ${start.start} because ${start.head} is not on GitHub and its push failed: ${start.error}`,
+            );
+            if (!repeated)
+              await emit({
+                type: "progress",
+                text: `Commit ${start.head.slice(0, 8)} never reached GitHub, so this run continues from ${start.start.slice(0, 8)} and the agent redoes the rest.\n`,
+              });
+            return lostCommits;
+          };
           const placed =
             attached ??
             (await (async () => {
+              const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
+              // A runner's saved WIP comes first; then the head it gives must be on GitHub.
+              if (!taskScope && input.role === "implementer" && input.networkGit)
+                await importCheckpoint(input.networkGit);
+              const lostNote =
+                !taskScope && input.role === "implementer" && input.networkGit
+                  ? await remoteStart(scoped, input.networkGit)
+                  : undefined;
               // A runner command does not carry the caller's session, so a resume replays.
-              const prompt = input.resume?.replayPrompt ?? input.prompt;
+              const replayed = input.resume?.replayPrompt ?? input.prompt;
+              const prompt = lostNote ? `${lostNote}\n\n${replayed}` : replayed;
               const prepared = input.prepareInputFiles
                 ? await input.prepareInputFiles({
                     workspace: input.worktreePath,
@@ -900,7 +1036,6 @@ export function createRemoteAgentRunner(options: {
                     signal,
                   })
                 : { prompt, inputFiles: [] };
-              const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
               const files = snapshotAgentInputs(input.worktreePath, [
                 ...suppliedInputs,
                 ...prepared.inputFiles,
@@ -940,7 +1075,7 @@ export function createRemoteAgentRunner(options: {
                   ? options.inputs!.stagePrompt(commandId, prepared.prompt)
                   : undefined;
               // A run that leaves its pinned runner may continue its saved agent session there.
-              const restorePlan: SessionRestorePlan | undefined =
+              let restorePlan: SessionRestorePlan | undefined =
                 !taskScope &&
                 input.role === "implementer" &&
                 input.checkpoint !== false &&
@@ -952,44 +1087,33 @@ export function createRemoteAgentRunner(options: {
                       targetRunnerId: selected.id,
                     })
                   : undefined;
-              if (!taskScope && input.role === "implementer" && input.networkGit)
-                await importCheckpoint(input.networkGit);
               const head = taskScope
                 ? undefined
                 : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
-              // The checkout holds the snapshot's commit, or the latest pushed commit when newer.
+              // A session snapshot is conversation state, never authority for an unverified start.
+              if (
+                restorePlan?.eligible &&
+                head &&
+                !(await git([
+                  "-C",
+                  input.worktreePath,
+                  "merge-base",
+                  "--is-ancestor",
+                  restorePlan.commitSha,
+                  head,
+                ]).then(
+                  () => true,
+                  () => false,
+                ))
+              )
+                restorePlan = { eligible: false, failure: "no_snapshot" };
               const baseSha = taskScope
                 ? taskScope.repository
                   ? snapshotCommit(input.worktreePath, taskScope.repository)
                   : undefined
-                : restorePlan?.eligible &&
-                    restorePlan.commitSha !== head &&
-                    (await git([
-                      "-C",
-                      input.worktreePath,
-                      "merge-base",
-                      "--is-ancestor",
-                      head!,
-                      restorePlan.commitSha,
-                    ]).then(
-                      () => true,
-                      (caughtError) => {
-                        journalCaught(caughtError, "runner-backend.forItem.restoreCommit", itemId);
-                        return false;
-                      },
-                    ))
-                  ? restorePlan.commitSha
-                  : head;
+                : head;
               if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
                 saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
-              const acceptsMainCommit = versionAtLeast(
-                db
-                  .query<{ version: string | null }, [string]>(
-                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                  )
-                  .get(selected.id)?.version,
-                MAIN_COMMIT_RUNNER_VERSION,
-              );
               const acceptsRebase =
                 !taskScope &&
                 versionAtLeast(
@@ -1038,7 +1162,6 @@ export function createRemoteAgentRunner(options: {
               const mainCandidate = input.mainSha ?? fetchedMain ?? checkpointBase;
               const mainSha =
                 !taskScope &&
-                acceptsMainCommit &&
                 baseSha &&
                 mainCandidate &&
                 mainCandidate !== baseSha &&
@@ -1138,16 +1261,23 @@ export function createRemoteAgentRunner(options: {
                     })
                   : undefined;
               signal.throwIfAborted();
-              const acceptsRuntimes = versionAtLeast(
-                db
-                  .query<{ version: string | null }, [string]>(
-                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                  )
-                  .get(selected.id)?.version,
-                RUNTIMES_RUNNER_VERSION,
+              const runnerVersion = db
+                .query<{ version: string | null }, [string]>(
+                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                )
+                .get(selected.id)?.version;
+              const acceptsRuntimes = versionAtLeast(runnerVersion, RUNTIMES_RUNNER_VERSION);
+              // An older runner rejects the whole command over one tool it does not know.
+              const anyBackend = versionAtLeast(runnerVersion, ANY_MISE_BACKEND_RUNNER_VERSION);
+              const held = anyBackend
+                ? []
+                : (runtimeList?.runtimes ?? []).filter(
+                    (runtime) => !legacyRuntimeTool(runtime.tool),
+                  );
+              const sendable = (runtimeList?.runtimes ?? []).filter(
+                (runtime) => !held.includes(runtime),
               );
-              const runtimes =
-                runtimeList?.runtimes.length && acceptsRuntimes ? runtimeList.runtimes : undefined;
+              const runtimes = sendable.length && acceptsRuntimes ? sendable : undefined;
               if (
                 input.reviewCommand &&
                 !versionAtLeast(
@@ -1167,6 +1297,11 @@ export function createRemoteAgentRunner(options: {
                 ...(runtimeList?.runtimes.length && !acceptsRuntimes
                   ? [
                       `Paws did not send the repository's runtimes to this runner because it needs runner ${RUNTIMES_RUNNER_VERSION.join(".")} or later.`,
+                    ]
+                  : []),
+                ...(acceptsRuntimes && held.length
+                  ? [
+                      `Paws did not send ${held.map((runtime) => `\`${runtime.tool}\``).join(", ")} to this runner because tools other than core and aqua: need runner ${ANY_MISE_BACKEND_RUNNER_VERSION.join(".")} or later.`,
                     ]
                   : []),
               ];
@@ -1209,16 +1344,14 @@ export function createRemoteAgentRunner(options: {
                         ? { reviewCommand: { base: input.reviewCommand.base } }
                         : {}),
                       ...(skillsInputId !== undefined ? { skillsInputId } : {}),
-                      ...(input.role === "reviewer" ? {} : runHooks(profile.agent)),
+                      ...(input.role === "reviewer" ? {} : runHooks(profile.agent, selected.id)),
                       repository: {
                         ...scoped.repository!,
                         baseSha: baseSha!,
                         checkoutExclusions,
                         ...(mainSha ? { mainSha } : {}),
                       },
-                      ...(acceptsMainCommit &&
-                      input.role !== "reviewer" &&
-                      input.checkpoint === false
+                      ...(input.role !== "reviewer" && input.checkpoint === false
                         ? { checkpoint: false as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -1765,6 +1898,12 @@ export function createRemoteAgentRunner(options: {
             await input.askTeam.ask(
               {
                 question: `Paws could not push the candidate to \`${complete.pushFailure.branch}\` on GitHub:\n\n\`\`\`\n${complete.pushFailure.error}\n\`\`\`\n\nFix the cause if it needs one, then reply to run the task again.`,
+                pushRejected: {
+                  branch: complete.pushFailure.branch,
+                  ...(complete.pushFailure.conflicts
+                    ? { conflicts: complete.pushFailure.conflicts }
+                    : {}),
+                },
               },
               { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
             );
@@ -1832,6 +1971,7 @@ export function createRemoteAgentRunner(options: {
             );
             if (complete.stopReason !== "end_turn" || complete.errorMessage)
               saveCheckpoint(db, itemId, {
+                ...getWorkItem(db, itemId)?.checkpoint,
                 phase: "running",
                 baseSha: getWorkItem(db, itemId)?.checkpoint?.baseSha ?? baseSha!,
                 wipCommit: complete.candidateSha,
@@ -1899,6 +2039,24 @@ export function createRemoteAgentRunner(options: {
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
           }
+          // Keep the handoff through cancellation, lost runners and failed candidate imports.
+          // Only a successfully completed implementer command proves the agent received it.
+          const delivered = getWorkItem(db, itemId)?.checkpoint;
+          if (
+            assigned.type === "run" &&
+            delivered?.lostCommits &&
+            assigned.prompt?.includes(delivered.lostCommits) &&
+            complete.stopReason === "end_turn" &&
+            complete.agentExited &&
+            complete.candidateSha &&
+            !complete.cancelled &&
+            !complete.timedOut &&
+            !complete.authRequired &&
+            !complete.errorMessage
+          ) {
+            const { lostCommits: _sent, ...rest } = delivered;
+            saveCheckpoint(db, itemId, rest);
+          }
           work.finish(assigned.runId, assigned.generation);
           command = undefined;
           await emit({ type: "prompt_complete", stopReason: complete.stopReason });
@@ -1923,12 +2081,18 @@ export function createRemoteAgentRunner(options: {
             transcriptPath: transcript,
           };
         } finally {
+          // A Paws restart leaves implementer work and response tasks running on the runner, and
+          // a verifying item's Closeout review or check run; the startup resume or re-verify
+          // reattaches to them.
+          const state = getWorkItem(db, itemId)?.state;
           const detached =
             signal.reason instanceof PawsShutdown &&
-            command?.type === "run" &&
-            command.checkpoint !== false &&
-            !responseTask &&
-            getWorkItem(db, itemId)?.state === "running";
+            command !== undefined &&
+            (closeoutWork
+              ? state === "verifying"
+              : ((command.type === "run" && command.checkpoint !== false) ||
+                  command.type === "task") &&
+                state === "running");
           // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
           // first, and the next turn starts from it.
           const saving =
@@ -1963,16 +2127,23 @@ export function createRemoteAgentRunner(options: {
           reservations.delete(selected.runId);
         }
       };
-      return (input: RunAgentOptions) => {
-        const move: HandoverMove = {};
-        const moving: FailoverAttempt = (next, excluded, limit) =>
-          attempt(next, excluded, limit, move);
-        return runWithFailover(
-          input,
-          moving,
-          async () => cancelItem(itemId, input.signal),
-          usageLimitWait(itemId, input),
-        );
+      return async (input: RunAgentOptions) => {
+        const runId = getWorkItem(db, itemId)?.currentRunId;
+        if (runId && readers.has(runId)) throw new RunnerCapacityWait([]);
+        if (runId) readers.add(runId);
+        try {
+          const move: HandoverMove = {};
+          const moving: FailoverAttempt = (next, excluded, limit) =>
+            attempt(next, excluded, limit, move);
+          return await runWithFailover(
+            input,
+            moving,
+            async () => cancelItem(itemId, input.signal),
+            usageLimitWait(itemId, input),
+          );
+        } finally {
+          if (runId) readers.delete(runId);
+        }
       };
     },
   };
@@ -1981,16 +2152,13 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
+export { ensureStartOnRemote, RemoteStartUnverified } from "./start-commit";
 
 export { remoteCommandsGone } from "./released";
 
-export { CHECKPOINT_RUNNER_VERSION, createRemoteCheckpoint } from "./checkpoint";
+export { createRemoteCheckpoint } from "./checkpoint";
 
-export {
-  createRemoteHandover,
-  HANDOVER_RUNNER_VERSION,
-  type RunnerHandoverOutcome,
-} from "./handover";
+export { createRemoteHandover, type RunnerHandoverOutcome } from "./handover";
 
 const HANDOVER_FAILURE_STEP = {
   commit: "commit its work in progress",
@@ -2091,3 +2259,4 @@ function clockTime(at: number, now: number): string {
 }
 
 export { UsageLimitExhaustedError } from "./failover";
+export { createFindingGroupHelper } from "./finding-groups";

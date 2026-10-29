@@ -185,7 +185,7 @@ const errors = [];
             await fetch("/api/workspaces/members", {
               method: "PUT",
               headers: { "content-type": "application/json", "x-paws-csrf": session.csrfToken },
-              body: JSON.stringify({ userId, role: "owner" }),
+              body: JSON.stringify({ userId, role: "admin" }),
             })
           ).status;
         }, memberId),

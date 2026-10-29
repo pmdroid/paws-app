@@ -1,11 +1,15 @@
 import { journalCaught } from "../journal";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, posix, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   CHECK_LOG_TAIL_BYTES,
+  GENERATED_AT_HEADER,
   parseStatusItemDetail,
+  parseStatusSlices,
   parseStatusSnapshot,
+  selectStatusSlices,
   statusCheckLogPath,
   STATUS_API_PATH,
   STATUS_ITEM_API_PATH,
@@ -62,6 +66,11 @@ export interface StatusServerOptions {
   linearUsage?: LiveStatusOptions["linearUsage"];
   /** Where status API response sizes go. Defaults to the process's per-minute journal line. */
   responseSizes?: ResponseSizeJournal;
+  /**
+   * Reuses a built `/api/status` snapshot for a second; the engine passes `statusSnapshots`.
+   * Omit it to build the body on every request.
+   */
+  snapshotCache?: StatusSnapshotCache;
 }
 
 export function fakeStatusProvider(): StatusProvider {
@@ -81,7 +90,8 @@ export function fakeStatusProvider(): StatusProvider {
 const CORS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-  "Access-Control-Allow-Headers": "Accept, Content-Type, ngrok-skip-browser-warning",
+  "Access-Control-Allow-Headers": "Accept, Content-Type, If-None-Match, ngrok-skip-browser-warning",
+  "Access-Control-Expose-Headers": `ETag, ${GENERATED_AT_HEADER}`,
   "Access-Control-Max-Age": "86400",
 };
 
@@ -126,7 +136,8 @@ export async function handleStatusRequest(
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
   const sizes = options.responseSizes ?? statusResponseSizes;
-  if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(options), sizes);
+  if (pathname === STATUS_API_PATH)
+    return apiResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname.startsWith(`${STATUS_ITEM_API_PATH}/`))
     return itemResponse(request, providerFor(options), pathname, sizes);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
@@ -240,10 +251,64 @@ function artifactHome(options: StatusServerOptions): string | null {
   return null;
 }
 
+/** How long a built `/api/status` snapshot answers repeated polls before it is built again. */
+export const STATUS_SNAPSHOT_REUSE_MS = 1_000;
+
+type BuiltSnapshot = { snapshot: StatusSnapshot } | { error: string };
+
+/**
+ * Built `/api/status` snapshots, per data source and reader, so a dashboard polling from several
+ * tabs builds the snapshot at most once a second. A poll that arrives while one is being built
+ * waits for it.
+ */
+export interface StatusSnapshotCache {
+  get(source: object, reader: string, build: () => Promise<BuiltSnapshot>): Promise<BuiltSnapshot>;
+}
+
+export function createStatusSnapshotCache(
+  options: { now?: () => number; reuseMs?: number } = {},
+): StatusSnapshotCache {
+  const now = options.now ?? Date.now;
+  const reuseMs = options.reuseMs ?? STATUS_SNAPSHOT_REUSE_MS;
+  const sources = new WeakMap<object, Map<string, { at: number; built: Promise<BuiltSnapshot> }>>();
+  return {
+    get(source, reader, build) {
+      const at = now();
+      let readers = sources.get(source);
+      if (readers === undefined) sources.set(source, (readers = new Map()));
+      for (const [key, entry] of readers) if (at - entry.at >= reuseMs) readers.delete(key);
+      const cached = readers.get(reader);
+      if (cached !== undefined) return cached.built;
+      const built = build();
+      const entry = { at, built };
+      readers.set(reader, entry);
+      // A failed build is not reused: the next poll tries again.
+      void built.then(
+        (result) => {
+          if ("error" in result && readers.get(reader) === entry) readers.delete(reader);
+        },
+        () => {
+          if (readers.get(reader) === entry) readers.delete(reader);
+        },
+      );
+      return built;
+    },
+  };
+}
+
+/** The process's cache, shared by every status request the engine serves. */
+export const statusSnapshots = createStatusSnapshotCache();
+
+const UNCACHED: StatusSnapshotCache = { get: (_source, _reader, build) => build() };
+
+/** Status bodies built without a database or provider share this source. */
+const EMPTY_SOURCE = {};
+
 async function apiResponse(
   request: Request,
-  provider: StatusProvider,
+  options: StatusServerOptions,
   sizes: ResponseSizeJournal,
+  cache: StatusSnapshotCache,
 ): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: { ...CORS } });
@@ -251,11 +316,24 @@ async function apiResponse(
   if (request.method !== "GET" && request.method !== "HEAD") {
     return json({ error: "Method not allowed" }, 405);
   }
+  const slices = parseStatusSlices(new URL(request.url).searchParams.get("slices"));
+  if (!slices.ok) return json({ error: slices.error }, 400);
   try {
-    const snapshot = await provider.snapshot();
-    const parsed = parseStatusSnapshot(snapshot);
-    if (!parsed.ok) return json({ error: parsed.error }, 500);
-    return served(sizes, request, parsed.snapshot);
+    const source = options.provider ?? options.db ?? EMPTY_SOURCE;
+    const reader =
+      options.sessionIds === undefined ? "*" : [...options.sessionIds].sort().join(",");
+    const built = await cache.get(source, reader, async () => {
+      const parsed = parseStatusSnapshot(await providerFor(options).snapshot());
+      return parsed.ok ? { snapshot: parsed.snapshot } : { error: parsed.error };
+    });
+    if ("error" in built) return json({ error: built.error }, 500);
+    const body =
+      slices.slices === null ? built.snapshot : selectStatusSlices(built.snapshot, slices.slices);
+    const etag = statusEtag(body);
+    const headers = { ETag: etag, [GENERATED_AT_HEADER]: body.generatedAt };
+    if (etagMatches(request.headers.get("If-None-Match"), etag))
+      return new Response(null, { status: 304, headers: { ...CORS, ...JSON_HEADERS, ...headers } });
+    return served(sizes, request, body, headers);
   } catch (caughtError1) {
     journalCaught(caughtError1, "handler.apiResponse.snapshot", null);
     return json({ error: "status unavailable" }, 500);
@@ -447,26 +525,43 @@ function defaultStaticDir(): string | null {
   return existsSync(join(dir, "index.html")) ? dir : null;
 }
 
+function statusEtag(snapshot: StatusSnapshot): string {
+  const { generatedAt: _generatedAt, ...rest } = snapshot;
+  return `W/"${createHash("sha256").update(JSON.stringify(rest)).digest("base64url").slice(0, 32)}"`;
+}
+
+function etagMatches(header: string | null, etag: string): boolean {
+  if (header === null) return false;
+  const opaque = (tag: string) => tag.trim().replace(/^W\//, "");
+  return header.split(",").some((tag) => tag.trim() === "*" || opaque(tag) === opaque(etag));
+}
+
+const JSON_HEADERS: Record<string, string> = {
+  "Content-Type": "application/json; charset=utf-8",
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+};
+
 /** A 200 JSON body whose size counts toward the minute's largest response. */
-function served(sizes: ResponseSizeJournal, request: Request, body: unknown): Response {
+function served(
+  sizes: ResponseSizeJournal,
+  request: Request,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Response {
   const encoded = JSON.stringify(body);
   sizes.record(new URL(request.url).pathname, Buffer.byteLength(encoded));
-  return jsonText(encoded, 200);
+  return jsonText(encoded, 200, headers);
 }
 
 function json(body: unknown, status: number): Response {
   return jsonText(JSON.stringify(body), status);
 }
 
-function jsonText(body: string, status: number): Response {
+function jsonText(body: string, status: number, headers: Record<string, string> = {}): Response {
   return new Response(body, {
     status,
-    headers: {
-      ...CORS,
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      "X-Content-Type-Options": "nosniff",
-    },
+    headers: { ...CORS, ...JSON_HEADERS, ...headers },
   });
 }
 

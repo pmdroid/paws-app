@@ -147,7 +147,7 @@ export async function probeRunnerTaskAuthority(
   const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
   try {
     const enrollmentGrant = coordinator.control.createEnrollment(
-      { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
+      { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now, teamIds: [] },
       { name: "Response task proof" },
     );
     const enrolled = await daemon.enroll("Response task proof", enrollmentGrant.token);

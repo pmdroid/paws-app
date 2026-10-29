@@ -103,6 +103,11 @@ export interface AskTeamRequest {
   question: string;
   options?: readonly AskTeamOption[];
   context?: string;
+  /**
+   * Set by Paws, not the agent: the run's candidate push to `branch` was rejected. `conflicts`
+   * names the files where rebasing the candidate onto the moved branch conflicted.
+   */
+  pushRejected?: { branch: string; conflicts?: readonly string[] };
 }
 
 export interface AskTeamResponse {
@@ -278,8 +283,6 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     },
   };
 }
-
-export const startHostToolBridge = startAskTeamBridge;
 
 async function handleConnection(
   socket: Socket,

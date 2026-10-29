@@ -1,5 +1,12 @@
 import { journal, journalCaught } from "../journal";
-import { assertCommand, assertVmName, newVmCommand, shellQuote } from "./names";
+import {
+  adoptVmCommand,
+  assertCommand,
+  assertVmName,
+  isExeDevPoolName,
+  newVmCommand,
+  shellQuote,
+} from "./names";
 import {
   ProvisioningError,
   type ExeDev,
@@ -8,6 +15,7 @@ import {
   type ExeDevDeleteResult,
   type ExeDevExecOptions,
   type ExeDevExecResult,
+  type ExeDevPool,
   type ExeDevVm,
   type ProvisioningErrorCode,
   type ProvisioningOperation,
@@ -35,6 +43,8 @@ export const DEFAULT_TIMEOUT_MS: Readonly<Record<ProvisioningOperation, number>>
   getVm: 15_000,
   // A little past exe.dev's own limit, so its 504 arrives before Paws gives up.
   execVm: EXE_DEV_EXEC_LIMIT_MS + 5_000,
+  listPools: 15_000,
+  adoptVm: EXE_DEV_EXEC_LIMIT_MS + 5_000,
 };
 
 export const DEFAULT_MAX_RESPONSE_BYTES: Readonly<Record<ProvisioningOperation, number>> = {
@@ -42,10 +52,16 @@ export const DEFAULT_MAX_RESPONSE_BYTES: Readonly<Record<ProvisioningOperation, 
   deleteVm: 64 * 1024,
   getVm: 64 * 1024,
   execVm: 8 * 1024 * 1024,
+  listPools: 64 * 1024,
+  adoptVm: 64 * 1024,
 };
 
 const TOKEN = /^[A-Za-z0-9._~+/=-]+$/;
 const STATUS_WORD = /^[a-z][a-z0-9_-]{0,31}$/;
+/** A region or pool status as `pool list` shows it. */
+const LABEL = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/;
+/** What `call` names when a request is about the team rather than one VM. */
+const TEAM = "the team";
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 export function createExeDev(options: ExeDevOptions): ExeDev {
@@ -145,13 +161,42 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
         return parseCreated(vm, status, text);
       } catch (error) {
         if (!sizeRefusal(error, size)) throw error;
-        const token = await Promise.resolve()
-          .then(() => options.readToken())
-          .catch((caughtError6) => {
-            journalCaught(caughtError6, "client.createVm.readToken", null);
-            return null;
-          });
-        throw sizeRefused(error, vm, command, token);
+        throw sizeRefused(error, vm, command, await quietToken(options.readToken));
+      }
+    },
+
+    async listPools() {
+      const { status, text } = await call(
+        "listPools",
+        TEAM,
+        "pool list",
+        "application/json",
+        timeout.listPools,
+      );
+      return parsePools(status, text);
+    },
+
+    async adoptVm(name, pool) {
+      const command = adoptVmCommand(name, pool);
+      try {
+        const { status, text } = await call(
+          "adoptVm",
+          name,
+          command,
+          "application/json",
+          timeout.adoptVm,
+        );
+        if (text.trim().length > 0) commandFailure("adoptVm", name, status, parseJson(text));
+      } catch (error) {
+        if (!(error instanceof ProvisioningError) || error.detail === null) throw error;
+        const said = exeDevSaid(error.detail, await quietToken(options.readToken));
+        throw new ProvisioningError(
+          "adoptVm",
+          error.code,
+          `exe.dev refused moving ${name} to pool ${pool}: ${said}`,
+          error.status,
+          error.detail,
+        );
       }
     },
 
@@ -213,6 +258,15 @@ export function createExeDev(options: ExeDevOptions): ExeDev {
       return parseExec(vm, status, contentType, text);
     },
   };
+}
+
+async function quietToken(read: ExeDevTokenReader): Promise<string | null> {
+  return Promise.resolve()
+    .then(() => read())
+    .catch((caughtError7) => {
+      journalCaught(caughtError7, "client.quietToken.read", null);
+      return null;
+    });
 }
 
 async function bearer(operation: ProvisioningOperation, read: ExeDevTokenReader): Promise<string> {
@@ -303,7 +357,9 @@ function httpError(
     const detail =
       operation === "execVm"
         ? `the command is still running on the VM or timed out there; exe.dev stops waiting after ${EXE_DEV_EXEC_LIMIT_MS / 1000} s`
-        : "exe.dev stopped waiting for the request";
+        : operation === "adoptVm"
+          ? `exe.dev stops waiting after ${EXE_DEV_EXEC_LIMIT_MS / 1000} s, and the move can take several minutes, so it may still be running`
+          : "exe.dev stopped waiting for the request";
     return new ProvisioningError(
       operation,
       "timeout",
@@ -322,13 +378,13 @@ function httpError(
   );
 }
 
-const SIZE_FLAGS = /^--(?:cpu|memory|disk|image)=/;
+const SIZE_FLAGS = /^--(?:cpu|memory|disk|image|pool)=/;
 const MAX_DETAIL = 300;
 
 /**
- * A `new` with size flags that exe.dev refuses, for example over the plan's CPU limit, carries
- * exe.dev's own message so the Runners page can say which value to change. A bare `new` keeps
- * the message without exe.dev's text.
+ * A `new` with size or pool flags that exe.dev refuses, for example over the plan's CPU limit
+ * or for a pool it does not know, carries exe.dev's own message so the Runners page can say
+ * which value to change. A bare `new` keeps the message without exe.dev's text.
  */
 function sizeRefusal(
   error: unknown,
@@ -337,35 +393,45 @@ function sizeRefusal(
   return (
     error instanceof ProvisioningError &&
     error.detail !== null &&
-    error.code === "unknown" &&
+    (error.code === "unknown" || error.code === "missing") &&
     size !== undefined &&
     Object.values(size).some((value) => value !== undefined)
   );
 }
 
-function sizeRefused(
+/** The fake throws the same error, so tests see what the Runners page shows. */
+export function sizeRefused(
   error: ProvisioningError & { detail: string },
   vm: string,
   command: string,
   token: string | null,
 ): ProvisioningError {
   const flags = command.split(" ").filter((flag) => SIZE_FLAGS.test(flag));
-  const trimmed = token?.trim();
-  const said = (trimmed ? error.detail.replaceAll(trimmed, "[redacted]") : error.detail)
-    // oxlint-disable-next-line no-control-regex -- exe.dev's text goes on one line of the page
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    .trim();
-  const shown = said.length > MAX_DETAIL ? `${said.slice(0, MAX_DETAIL - 1)}…` : said;
+  const change = flags.some((flag) => flag.startsWith("--pool="))
+    ? "Change [member_vm] in config.toml or choose another pool."
+    : "Change [member_vm] in config.toml.";
   return new ProvisioningError(
     "createVm",
     error.code,
-    `exe.dev refused Create VM for ${vm} with ${flags.join(" ")}: ${shown}${/[.!?]$/.test(shown) ? "" : "."} Change [member_vm] in config.toml.`,
+    `exe.dev refused Create VM for ${vm} with ${flags.join(" ")}: ${exeDevSaid(error.detail, token)} ${change}`,
     error.status,
     error.detail,
   );
 }
 
+/** exe.dev's own text on one line, without the token, ending in a full stop. */
+function exeDevSaid(detail: string, token: string | null): string {
+  const trimmed = token?.trim();
+  const said = (trimmed ? detail.replaceAll(trimmed, "[redacted]") : detail)
+    // oxlint-disable-next-line no-control-regex -- exe.dev's text goes on one line of the page
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim();
+  const shown = said.length > MAX_DETAIL ? `${said.slice(0, MAX_DETAIL - 1)}…` : said;
+  return `${shown}${/[.!?…]$/.test(shown) ? "" : "."}`;
+}
+
 function codeFor(status: number, error: string | null): ProvisioningErrorCode {
+  if (error !== null && /\bvm name\b.*\bnot available\b/i.test(error)) return "name_unavailable";
   if (status === 401 || status === 403) return "unauthorized";
   if (status === 409) return "conflict";
   if (status === 404 || status === 410) return "missing";
@@ -429,6 +495,26 @@ function parseListed(vm: string, status: number, text: string): ExeDevVm {
     throw invalid("getVm", vm, status);
   }
   return { name: vm, status: state, sshDest, httpsUrl, region };
+}
+
+/** `pool list` as `{ "pools": [...] }` or a bare array, each pool named by `name`. */
+function parsePools(status: number, text: string): ExeDevPool[] {
+  const body = parseJson(text);
+  commandFailure("listPools", TEAM, status, body);
+  const entries = Array.isArray(body) ? body : isRecord(body) ? body["pools"] : undefined;
+  if (!Array.isArray(entries) || !entries.every(isRecord)) throw invalid("listPools", TEAM, status);
+  return entries.map((entry) => {
+    const name = entry["name"] ?? entry["pool_name"] ?? entry["pool"];
+    const region = entry["region"] ?? null;
+    const state = entry["status"] ?? entry["state"] ?? null;
+    if (!isExeDevPoolName(name) || !isLabel(region) || !isLabel(state))
+      throw invalid("listPools", TEAM, status);
+    return { name, region, status: state };
+  });
+}
+
+function isLabel(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && LABEL.test(value));
 }
 
 function parseExec(

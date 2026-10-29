@@ -103,7 +103,14 @@ export function assertScopedToken(
     throw new GitHubTokenError("installation token must cover exactly one repository");
   }
   const only = body.repositories[0];
-  if (!isRecord(only) || only.name !== repo || only.full_name !== `${owner}/${repo}`) {
+  // GitHub owner and repository names are case-insensitive.
+  if (
+    !isRecord(only) ||
+    typeof only.name !== "string" ||
+    typeof only.full_name !== "string" ||
+    only.name.toLowerCase() !== repo.toLowerCase() ||
+    only.full_name.toLowerCase() !== `${owner}/${repo}`.toLowerCase()
+  ) {
     throw new GitHubTokenError("installation token repository does not match the configured repo");
   }
   if (!isRecord(body.permissions))

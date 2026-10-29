@@ -80,7 +80,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
     if (!response.ok || !data) {
       if (
         data?.code === "reauth_required" ||
-        data?.code === "owner_required" ||
+        data?.code === "admin_required" ||
         response.status === 401
       ) {
         requiresSignIn = true;

@@ -49,12 +49,12 @@ export function teamRepositoryDenial(
     : noRepositoryDenial(team, workspaceAdministratorNames(db, scope.workspaceId));
 }
 
-/** The delegator is not in the issue's team in Paws, or is an observer. */
+/** The delegator is not in the issue's team in Paws. */
 export function teamMemberDenial(db: Database, item: WorkItemRecord): GitHubDenial {
   return notTeamMemberDenial(issueTeamName(db, item));
 }
 
-/** Names of the workspace's active owners and admins, from the database. */
+/** Names of the workspace's active admins, from the database. */
 export function workspaceAdministratorNames(db: Database, workspaceId: string): string[] {
   return listWorkspaceMembers(db, workspaceId)
     .filter((member) => member.active && isWorkspaceAdmin(member.role))

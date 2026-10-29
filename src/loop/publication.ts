@@ -17,6 +17,8 @@ export function guardGitHubPublication(input: {
   onCleanupFailure(): void;
   isCurrent(): boolean;
   assert(purpose?: TokenPurpose, merging?: boolean): Promise<void>;
+  /** Around each push: `before` may refuse it, `after` hears that it worked. */
+  push?: { before(): void; after(): void };
 }): GitHubBinding & { gitExec: GitExec } {
   const current = () => {
     input.signal.throwIfAborted();
@@ -67,12 +69,18 @@ export function guardGitHubPublication(input: {
     ...input.github,
     client,
     async gitExec(args, options) {
-      if (args.includes("push")) await check("push");
+      const pushing = args.includes("push");
+      if (pushing) {
+        await check("push");
+        input.push?.before();
+      }
       current();
-      return ownedGitExec(args, {
+      const result = await ownedGitExec(args, {
         ...options,
         signal: options.signal ? AbortSignal.any([input.signal, options.signal]) : input.signal,
       });
+      if (pushing) input.push?.after();
+      return result;
     },
     tokenProvider: {
       mode: provider.mode,

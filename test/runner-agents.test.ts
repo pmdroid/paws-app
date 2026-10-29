@@ -38,6 +38,7 @@ test("agents.json pins the same agent versions as package.json and lists every p
     claude: "@agentclientprotocol/claude-agent-acp",
     codex: "@agentclientprotocol/codex-acp",
     grok: "@xai-official/grok",
+    opencode: "@opencode/cli",
   };
   expect(Object.keys(manifest.agents).sort()).toEqual(Object.keys(packages));
   for (const [agent, name] of Object.entries(packages)) {

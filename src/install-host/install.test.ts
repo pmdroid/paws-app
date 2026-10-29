@@ -116,6 +116,7 @@ const FIRST = [
   "", // member_vm memory
   "", // member_vm disk
   "", // member_vm image
+  "", // member_vm pool: the team's placement
   "", // tailscale cert: yes
 ];
 
@@ -174,7 +175,7 @@ describe("paws install", () => {
     const runtime = loadRuntime(parseEnv(written.env));
     expect(runtime.configError).toBeNull();
     expect(runtime.env.port).toBe(443);
-    expect(runtime.repo).toBe("pmdroid/paws-app");
+    expect(runtime.repos).toEqual(["pmdroid/paws-app", "pmdroid/agentbox"]);
   });
 
   test("a re-run keeps unchanged values and unrelated config.toml keys", async () => {
@@ -193,13 +194,13 @@ describe("paws install", () => {
     writeFileSync(envPath, `${readFileSync(envPath, "utf8")}PAWS_EXECUTION=remote\n`);
     const before = files(home);
 
-    const prompt = fakePrompt(Array.from({ length: 15 }, () => ""));
+    const prompt = fakePrompt(Array.from({ length: 16 }, () => ""));
     const run = deps(home, prompt);
     expect(await runInstall(parseInstallArgs([]), run.deps)).toBe(0);
     expect(files(home)).toEqual(before);
     expect(run.out).toContain("Nothing changed.");
 
-    const rerun = fakePrompt(["", "", "", "8443", "", "", "", "", "", "-", "", "", "", "", ""]);
+    const rerun = fakePrompt(["", "", "", "8443", "", "", "", "", "", "-", "", "", "", "", "", ""]);
     expect(await runInstall(parseInstallArgs([]), deps(home, rerun).deps)).toBe(0);
     const after = files(home);
     expect(after.env).toContain("PAWS_PORT=8443\n");
@@ -228,6 +229,7 @@ describe("paws install", () => {
       "https://paws.example.com/path",
       "https://paws.example.com",
       "-",
+      "",
       "",
       "",
       "",
@@ -292,23 +294,36 @@ describe("paws install", () => {
       "100",
       "ubuntu 24.04",
       "ubuntu:24.04",
+      "build pool",
+      "build",
       "", // tailscale cert: yes
     ]);
     const run = deps(home, prompt);
     expect(await runInstall(parseInstallArgs([]), run.deps)).toBe(0);
     expect(prompt.questions.filter((q) => q.startsWith("exe.dev runner VM CPUs"))).toHaveLength(3);
     expect(prompt.questions.filter((q) => q.startsWith("exe.dev runner VM image"))).toHaveLength(2);
+    expect(prompt.questions.filter((q) => q.startsWith("exe.dev pool"))).toHaveLength(2);
     expect(run.out).toContain("  member_vm.cpu must be a whole number from 1 to 512");
+    expect(
+      run.out.some((line) => line.startsWith("  member_vm.pool must be an exe.dev pool")),
+    ).toBe(true);
     const written = parseConfigToml(files(home).config).memberVm;
-    expect(written).toEqual({ cpu: 8, memoryGb: 16, diskGb: 100, image: "ubuntu:24.04" });
+    expect(written).toEqual({
+      cpu: 8,
+      memoryGb: 16,
+      diskGb: 100,
+      image: "ubuntu:24.04",
+      pool: "build",
+    });
     expect(files(home).config).toContain("[member_vm]\ncpu = 8\n");
+    expect(files(home).config).toContain('pool = "build"\n');
 
-    const keep = fakePrompt(Array.from({ length: 15 }, () => ""));
+    const keep = fakePrompt(Array.from({ length: 16 }, () => ""));
     const kept = deps(home, keep);
     expect(await runInstall(parseInstallArgs([]), kept.deps)).toBe(0);
     expect(kept.out).toContain("Nothing changed.");
 
-    const clear = fakePrompt([...FIRST.slice(0, 10).map(() => ""), "-", "", "-", "-", ""]);
+    const clear = fakePrompt([...FIRST.slice(0, 10).map(() => ""), "-", "", "-", "-", "-", ""]);
     expect(await runInstall(parseInstallArgs([]), deps(home, clear).deps)).toBe(0);
     expect(parseConfigToml(files(home).config).memberVm).toEqual({ memoryGb: 16 });
   });
@@ -508,7 +523,7 @@ describe("paws install TLS", () => {
     const before = [statSync(timer), statSync(service)].map((stat) => [stat.ino, stat.mtimeMs]);
     const text = readFileSync(timer, "utf8");
 
-    const run = deps(home, fakePrompt(Array.from({ length: 15 }, () => "")));
+    const run = deps(home, fakePrompt(Array.from({ length: 16 }, () => "")));
     expect(await runInstall(parseInstallArgs([]), run.deps)).toBe(0);
     expect(run.out).toContain("Nothing changed.");
     expect([statSync(timer), statSync(service)].map((stat) => [stat.ino, stat.mtimeMs])).toEqual(
@@ -546,7 +561,7 @@ describe("paws install TLS", () => {
     const open = join(home, "open.key");
     writeFileSync(open, readFileSync(cert("paws.example.com").key), { mode: 0o644 });
     chmodSync(open, 0o644);
-    const answers = [...FIRST.slice(0, 5), "https://paws.example.com", ...FIRST.slice(6, 14)];
+    const answers = [...FIRST.slice(0, 5), "https://paws.example.com", ...FIRST.slice(6, 15)];
     const prompt = fakePrompt([
       ...answers,
       open,

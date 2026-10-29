@@ -86,7 +86,7 @@ async function fixture() {
     authenticatedAt: clock.now(),
     teamIds: [],
   });
-  const person = (name: string, role: Role): WorkspacePrincipal => {
+  const person = (name: string, role: Role, active = true): WorkspacePrincipal => {
     const userId = putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `vm-${name}`,
@@ -97,7 +97,7 @@ async function fixture() {
       workspaceId: workspace.id,
       userId,
       role,
-      active: true,
+      active,
       teamIds: [],
       now: clock.now(),
     });
@@ -106,8 +106,7 @@ async function fixture() {
   const member = person("Ada Lovelace", "member");
   const colleague = person("Grace Hopper", "member");
   const admin = person("Alan Turing", "admin");
-  const observer = person("Watcher", "observer");
-  const owner = principal(ownerUserId, "owner");
+  const inactive = person("Watcher", "member", false);
   const disconnected: string[] = [];
   const control = createRunnerControl({
     db,
@@ -238,8 +237,7 @@ async function fixture() {
     member,
     colleague,
     admin,
-    observer,
-    owner,
+    inactive,
     exeDev,
     bootstrap,
     loop,
@@ -453,10 +451,10 @@ describe("Delete VM", () => {
     expect(audits(f.db, "runner.revoked")).toBe(1);
   });
 
-  test("only the VM's owner or a workspace owner or admin may delete it", async () => {
+  test("only the VM's owner or a workspace admin may delete it", async () => {
     const f = await fixture();
     const vm = await f.ready();
-    for (const who of [f.colleague, f.observer]) {
+    for (const who of [f.colleague, f.inactive]) {
       const refused = await f.remove(who, vm.id);
       expect(refused.status).toBe(403);
     }
@@ -468,19 +466,12 @@ describe("Delete VM", () => {
     const listed = (body: Record<string, unknown>) =>
       (body as Extract<MemberVmResponse, { available: true }>).vms.map((entry) => entry.id);
     expect(listed((await f.call(f.admin, "/api/runners/vm")).body)).toEqual([vm.id]);
-    expect(listed((await f.call(f.owner, "/api/runners/vm")).body)).toEqual([vm.id]);
     expect(listed((await f.call(f.colleague, "/api/runners/vm")).body)).toEqual([]);
     expect(listed((await f.call(f.member, "/api/runners/vm")).body)).toEqual([vm.id]);
 
     expect((await f.remove(f.admin, vm.id)).status).toBe(200);
     await f.settle();
     expect(getMemberVm(f.db, vm.id)).toBeNull();
-
-    const g = await fixture();
-    const other = await g.ready();
-    expect((await g.remove(g.owner, other.id)).status).toBe(200);
-    await g.settle();
-    expect(getMemberVm(g.db, other.id)).toBeNull();
   });
 
   test("re-running any step after it finished changes nothing more", async () => {
@@ -564,7 +555,7 @@ describe("Delete VM", () => {
   });
 });
 
-test("an owner or admin sees and deletes another member's VM that never got a runner", async () => {
+test("an admin sees and deletes another member's VM that never got a runner", async () => {
   const f = await fixture();
   const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
   f.exeDev.fail("createVm", "rate_limited");
@@ -770,7 +761,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(getRunner(f.db, orphan.id)!.status).toBe("paused");
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
 
-    f.control.setStatus(f.owner, orphan.id, "revoked");
+    f.control.setStatus(f.admin, orphan.id, "revoked");
     await f.remove(f.member, row.id);
     await f.settle();
     expect(getMemberVm(f.db, row.id)).toBeNull();

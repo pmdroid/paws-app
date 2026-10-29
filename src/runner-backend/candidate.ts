@@ -97,7 +97,7 @@ export async function fastForwardToBranchTip(input: {
       () => true,
       () => false,
     );
-    if (!descends) return null;
+    if (!descends && !(await containedIn(run, tip, head))) return null;
     if ((await run(["rev-parse", "HEAD"])).trim() !== head) return null;
     input.signal.throwIfAborted();
     await run(["reset", "--hard", tip]);
@@ -107,4 +107,54 @@ export async function fastForwardToBranchTip(input: {
       signal: AbortSignal.timeout(5_000),
     }).catch(() => undefined);
   }
+}
+
+async function containedIn(
+  run: (args: string[]) => Promise<string>,
+  tip: string,
+  head: string,
+): Promise<boolean> {
+  const main = await run([
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    "refs/paws/upstream-main^{commit}",
+  ]).then(
+    (out) => out.trim(),
+    () => "",
+  );
+  const own = main
+    ? await run(["merge-base", head, main]).then(
+        (out) => out.trim(),
+        () => "",
+      )
+    : "";
+  const cherry = await run(["cherry", tip, head, ...(own ? [own] : [])]).then(
+    (out) => out.trim(),
+    () => null,
+  );
+  if (cherry === null) return false;
+  const missing = cherry
+    .split("\n")
+    .filter((line) => line.startsWith("+ "))
+    .map((line) => line.slice(2));
+  if (missing.length === 0) return true;
+  const tipBase = main
+    ? await run(["merge-base", tip, main]).then(
+        (out) => out.trim(),
+        () => "",
+      )
+    : own;
+  const onTip = await run(["log", "--format=%s", tip, ...(tipBase ? [`^${tipBase}`] : [])]).then(
+    (out) => new Set(out.split("\n").filter(Boolean)),
+    () => new Set<string>(),
+  );
+  for (const sha of missing) {
+    const subject = await run(["log", "-1", "--format=%s", sha]).then(
+      (out) => out.trim(),
+      () => "",
+    );
+    if (!subject || !onTip.has(subject)) return false;
+  }
+  return true;
 }

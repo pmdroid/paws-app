@@ -26,6 +26,7 @@ describe("candidate risk", () => {
       base: "base",
       tier: "high",
       paths: ["src/auth/session.ts"],
+      matches: [{ path: "src/auth/session.ts", lists: ["settings", "file"] }],
       classifiedAt: 10,
     });
     saveCandidateRisk(db, {
@@ -42,8 +43,10 @@ describe("candidate risk", () => {
       base: "base",
       tier: "high",
       paths: ["src/auth/session.ts"],
+      matches: [{ path: "src/auth/session.ts", lists: ["settings", "file"] }],
       classifiedAt: 10,
     });
+    expect(getCandidateRisk(db, "item", "bbb")).not.toHaveProperty("matches");
     expect(latestCandidateRisk(db, "item")?.head).toBe("bbb");
     expect(getCandidateRisk(db, "item", "ccc")).toBeNull();
     expect(() =>

@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { cancelOpenJobs } from "./jobs";
 import { getWorkItem, type WorkItemRecord } from "./items";
-import { leaveMergeQueue } from "./merge-queue";
+import { releaseMergeQueuePlace } from "./merge-queue";
 import { runnerWorkSettled } from "./runner-lease";
 import { markRun, releaseRunCapacity } from "./runs";
 import { immediate } from "./tx";
@@ -19,7 +19,7 @@ export function halt(db: Database, item: WorkItemRecord, now: number): WorkItemR
       else markRun(db, current.currentRunId, "ended", now);
     }
     db.run("DELETE FROM scheduler_admission WHERE item_id=?", [item.id]);
-    leaveMergeQueue(db, item.id);
+    releaseMergeQueuePlace(db, item.id);
     return getWorkItem(db, item.id);
   });
 }

@@ -26,6 +26,7 @@ AGENT_PACKAGES = {
     "claude": "@agentclientprotocol/claude-agent-acp",
     "codex": "@agentclientprotocol/codex-acp",
     "grok": "@xai-official/grok",
+    "opencode": "@opencode/cli",
 }
 # The agents and the packages that carry their native builds (and every platform variant of those).
 AGENT_ONLY = frozenset({*AGENT_PACKAGES.values(), "@anthropic-ai/claude-agent-sdk", "@openai/codex"})
@@ -39,18 +40,21 @@ PROVIDER_EXECUTABLES = {
     "codex-acp": ("codex", "node_modules/@agentclientprotocol/codex-acp/dist/index.js", True),
     "codex": ("codex", "node_modules/@openai/codex/bin/codex.js", True),
     "grok": ("grok", "node_modules/@xai-official/grok/bin/grok", True),
+    "opencode": ("opencode", f"node_modules/@opencode/cli-linux-{ARCHITECTURE[0]}{'-baseline' if ARCHITECTURE[0] == 'x64' else ''}/bin/opencode", False),
 }
 # The package that carries each agent's native builds; the Paws catalog names the version it expects.
 AGENT_NATIVE_PACKAGE = {
     "claude": "@anthropic-ai/claude-agent-sdk",
     "codex": "@openai/codex",
     "grok": "@xai-official/grok",
+    "opencode": "@opencode/cli",
 }
 # Native files each agent needs, which must be executable after install.
 AGENT_NATIVE = {
     "claude": (f"node_modules/@anthropic-ai/claude-agent-sdk-linux-{ARCHITECTURE[0]}/claude",),
     "codex": (CODEX_VENDOR + "/bin/codex",),
     "grok": (),
+    "opencode": (),
 }
 # Removed from the staged install before it is put in place. Codex's voice host is for the
 # interactive voice mode, which agent sessions never start. codex-code-mode-host stays: the Codex
@@ -59,6 +63,7 @@ AGENT_DROPPED = {
     "claude": (),
     "codex": (CODEX_VENDOR + "/codex-resources/voice",),
     "grok": (),
+    "opencode": (),
 }
 AGENT_MANIFEST_LIMIT = 8_388_608
 INTEGRITY = re.compile(r"sha512-[A-Za-z0-9+/]{86}==\Z")
@@ -318,7 +323,7 @@ def parse_agent_manifest(content):
         raise ValueError("Invalid agent manifest")
     agents = manifest["agents"]
     if not isinstance(agents, dict) or set(agents) != set(AGENT_PACKAGES):
-        raise ValueError("The agent manifest must list exactly the claude, codex and grok agents")
+        raise ValueError("The agent manifest must list exactly the claude, codex, grok and opencode agents")
     for agent, entry in agents.items():
         check_agent_entry(agent, entry)
     return manifest

@@ -139,7 +139,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
         {
           workspaceId: workspace.id,
           userId: ownerId,
-          role: "owner",
+          role: "admin",
           authenticatedAt: now,
           teamIds: [],
         },
@@ -226,7 +226,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     pawsRoot: root,
     home: root,
     tracker,
-    repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
+    repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
     scheduling: () => ({}),
     runnersUrl: RUNNERS_URL,
     eligibleRunner: (itemId, agent, at) => itemOwnerEligibleRunner(db, { itemId, agent, now: at }),

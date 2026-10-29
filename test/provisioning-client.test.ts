@@ -166,9 +166,37 @@ describe("createVm", () => {
     );
   });
 
+  test("a pool becomes --pool on `new`, and exe.dev's refusal names it", async () => {
+    const { exe, sent } = client(() => json(CREATED));
+    await exe.createVm("ada-paws", { cpu: 4, pool: "build" });
+    await exe.createVm("ada-paws", { pool: "build" });
+    expect(sent.map((request) => request.body)).toEqual([
+      "new --name=ada-paws --cpu=4 --pool=build",
+      "new --name=ada-paws --pool=build",
+    ]);
+    for (const [status, said] of [
+      [422, 'pool "gpu" not found'],
+      [200, "pool gpu is pending approval"],
+      [400, "vm needs 8 cpus but pool gpu has 4 free"],
+    ] as const) {
+      const refused = client(() => json({ error: said }, status));
+      const error = await failure(refused.exe.createVm("ada-paws", { pool: "gpu" }));
+      expect(error.message).toBe(
+        `exe.dev refused Create VM for ada-paws with --pool=gpu: ${said}. Change [member_vm] in config.toml or choose another pool.`,
+      );
+    }
+  });
+
   test("an invalid size fails before any request", async () => {
     const { exe, sent } = client(() => json(CREATED));
-    for (const size of [{ cpu: 0 }, { memoryGb: -1 }, { diskGb: 2.5 }, { image: "x --cpu=99" }])
+    for (const size of [
+      { cpu: 0 },
+      { memoryGb: -1 },
+      { diskGb: 2.5 },
+      { image: "x --cpu=99" },
+      { pool: "build --cpu=99" },
+      { pool: "" },
+    ])
       expectCode(await failure(exe.createVm("ada-paws", size)), "createVm", "invalid_command");
     expect(sent).toHaveLength(0);
   });
@@ -210,6 +238,7 @@ describe("createVm", () => {
       [403, { error: "command not allowed" }, "unauthorized"],
       [409, { error: "busy" }, "conflict"],
       [422, { error: 'VM "ada-paws" already exists' }, "conflict"],
+      [422, { error: 'VM name "ada-paws" is not available' }, "name_unavailable"],
       [404, { error: "unknown command" }, "missing"],
       [422, { error: 'VM "ada-paws" not found' }, "missing"],
       [429, { error: "slow down" }, "rate_limited"],
@@ -227,9 +256,68 @@ describe("createVm", () => {
     }
   });
 
+  test("a name exe.dev holds for someone else is not blamed on the size or pool", async () => {
+    const { exe } = client(() => json({ error: 'VM name "ada-paws" is not available' }, 422));
+    const error = await failure(exe.createVm("ada-paws", { cpu: 8, pool: "build" }));
+    expectCode(error, "createVm", "name_unavailable");
+    expect(error.message).not.toContain("[member_vm]");
+  });
+
   test("a 200 `{error}` body is a refused command", async () => {
     const { exe } = client(() => json({ error: 'VM "ada-paws" already exists' }));
     expectCode(await failure(exe.createVm("ada-paws")), "createVm", "conflict");
+  });
+});
+
+describe("pools", () => {
+  test("`pool list` returns each pool's name, region and status", async () => {
+    const { exe, sent } = client(() =>
+      json({
+        pools: [
+          { name: "build", region: "lon", status: "active", vcpu: 16, memory_gb: 64 },
+          { pool_name: "gpu", region: "nyc", status: "pending" },
+          { name: "spare" },
+        ],
+      }),
+    );
+    expect(await exe.listPools()).toEqual([
+      { name: "build", region: "lon", status: "active" },
+      { name: "gpu", region: "nyc", status: "pending" },
+      { name: "spare", region: null, status: null },
+    ]);
+    expect(sent[0]?.body).toBe("pool list");
+    expect(DEFAULT_TIMEOUT_MS.listPools).toBeLessThan(EXE_DEV_EXEC_LIMIT_MS);
+    const bare = client(() => json([{ name: "build" }]));
+    expect(await bare.exe.listPools()).toEqual([{ name: "build", region: null, status: null }]);
+  });
+
+  test("an odd `pool list` is invalid_response", async () => {
+    for (const body of [{}, { pools: [{}] }, { pools: [{ name: "a b" }] }, { pools: "x" }]) {
+      const { exe } = client(() => json(body));
+      expectCode(await failure(exe.listPools()), "listPools", "invalid_response");
+    }
+  });
+
+  test("`pool adopt` moves a VM and shows exe.dev's refusal in its words", async () => {
+    const { exe, sent } = client(() => new Response("", { status: 200 }));
+    await exe.adoptVm("ada-paws", "build");
+    expect(sent[0]?.body).toBe("pool adopt --vm=ada-paws --pool=build");
+    expect(DEFAULT_TIMEOUT_MS.adoptVm).toBeLessThanOrEqual(EXE_DEV_EXEC_LIMIT_MS + 10_000);
+
+    const denied = client(() => json({ error: "only team admins can adopt VMs" }, 403));
+    const error = await failure(denied.exe.adoptVm("ada-paws", "build"));
+    expectCode(error, "adoptVm", "unauthorized");
+    expect(error.message).toBe(
+      "exe.dev refused moving ada-paws to pool build: only team admins can adopt VMs.",
+    );
+
+    const slow = client(() => new Response("", { status: 504 }));
+    expect((await failure(slow.exe.adoptVm("ada-paws", "build"))).message).toContain(
+      "the move can take several minutes, so it may still be running",
+    );
+    const invalid = client(() => json({}));
+    expectCode(await failure(invalid.exe.adoptVm("ada-paws", "x y")), "adoptVm", "invalid_command");
+    expect(invalid.sent).toHaveLength(0);
   });
 });
 

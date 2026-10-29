@@ -13,7 +13,7 @@ test("runner identity uses real TLS certificates, peer verification and immediat
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 15);
+    assert.equal(observations.length, 16);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

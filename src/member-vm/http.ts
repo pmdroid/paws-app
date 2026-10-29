@@ -1,11 +1,19 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { workspaceMember } from "../db";
-import type { ExeDevVmSize } from "../provisioning";
+import {
+  isExeDevPoolName,
+  isProvisioningError,
+  type ExeDev,
+  type ExeDevPool,
+  type ExeDevVmSize,
+} from "../provisioning";
 import type { WorkspacePrincipal } from "../workspace";
 import {
   findMemberVm,
+  getMemberVm,
   listDeletableMemberVms,
+  mayDeleteMemberVm,
   MEMBER_VM_DELETE_STEPS,
   MemberVmDeleteDenied,
   MemberVmMissing,
@@ -45,6 +53,8 @@ export type MemberVmDeleteView = {
 export type MemberVmView = {
   id: string;
   vmName: string;
+  /** The pool chosen in Create VM or moved to. Null: `[member_vm] pool` when it was created. */
+  pool: string | null;
   userId: string;
   ownerName: string | null;
   step: MemberVm["step"];
@@ -61,9 +71,12 @@ export type MemberVmResponse =
       available: true;
       vm: MemberVmView | null;
       vms: MemberVmView[];
-      /** The size Create VM asks exe.dev for. Absent when config.toml cannot be read. */
+      /** The size and pool Create VM asks exe.dev for. Absent when config.toml cannot be read. */
       size?: ExeDevVmSize;
     };
+
+/** What `GET /api/runners/vm/pools` answers: exe.dev's `pool list`. */
+export type MemberVmPoolsResponse = { available: false } | { available: true; pools: ExeDevPool[] };
 
 export function memberVmView(
   row: MemberVm,
@@ -100,6 +113,7 @@ export function memberVmView(
   return {
     id: row.id,
     vmName: row.vmName,
+    pool: row.pool,
     userId: row.userId,
     ownerName,
     step: row.step,
@@ -167,19 +181,29 @@ function parseBlocked(text: string | null): MemberVmBlockingTask[] {
   }
 }
 
-const ROUTES = new Set(["/api/runners/vm", "/api/runners/vm/retry", "/api/runners/vm/delete"]);
+const ROUTES = new Set([
+  "/api/runners/vm",
+  "/api/runners/vm/retry",
+  "/api/runners/vm/delete",
+  "/api/runners/vm/pools",
+  "/api/runners/vm/pool",
+]);
 const MAX_BODY = 4096;
 
 /**
- * `GET /api/runners/vm`, `POST /api/runners/vm` and `POST /api/runners/vm/retry`. The server
- * checks the workspace session and CSRF before this runs; this refuses observers and inactive
- * members. Without an exe.dev token every route answers `{ available: false }`.
+ * `GET /api/runners/vm`, `POST /api/runners/vm` (with an optional `{ pool }`), `POST
+ * /api/runners/vm/retry`, `/delete`, `GET /api/runners/vm/pools` (exe.dev's `pool list`) and
+ * `POST /api/runners/vm/pool` (`pool adopt`). The server checks the workspace session and CSRF
+ * before this runs; this refuses inactive members. Without an exe.dev token every route answers
+ * `{ available: false }`.
  */
 export function createMemberVmHttp(options: {
   db: Database;
   available: () => boolean | Promise<boolean>;
   /** `[member_vm]` from config.toml. */
   size?: () => ExeDevVmSize;
+  /** For `pool list` and `pool adopt`. Without it the pool routes answer 404. */
+  exeDev?: Pick<ExeDev, "listPools" | "adoptVm">;
   now?: () => number;
 }) {
   const { db } = options;
@@ -191,16 +215,25 @@ export function createMemberVmHttp(options: {
     const path = new URL(request.url).pathname;
     if (!ROUTES.has(path)) return null;
     const method = request.method;
-    if (path === "/api/runners/vm" ? method !== "GET" && method !== "POST" : method !== "POST")
-      return json({ error: "Method not allowed." }, 405);
+    const allowed =
+      path === "/api/runners/vm"
+        ? ["GET", "POST"]
+        : path === "/api/runners/vm/pools"
+          ? ["GET"]
+          : ["POST"];
+    if (!allowed.includes(method)) return json({ error: "Method not allowed." }, 405);
+    const pools = options.exeDev;
+    if (pools === undefined && path.startsWith("/api/runners/vm/pool")) return null;
     const current = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (!current?.active || current.role === "observer")
+    if (!current?.active)
       return json(
         {
           error:
             path === "/api/runners/vm/delete"
-              ? "Observers cannot delete a VM."
-              : "Only workspace members can create a VM.",
+              ? "Only active workspace members can delete a VM."
+              : path === "/api/runners/vm/pool"
+                ? "Only active workspace members can move a VM."
+                : "Only workspace members can create a VM.",
         },
         403,
       );
@@ -213,10 +246,40 @@ export function createMemberVmHttp(options: {
     if (!available) return json({ available: false } satisfies MemberVmResponse);
     const member = { workspaceId: principal.workspaceId, userId: principal.userId };
     const at = now();
+    if (pools !== undefined && path === "/api/runners/vm/pools") {
+      try {
+        return json({
+          available: true,
+          pools: await pools.listPools(),
+        } satisfies MemberVmPoolsResponse);
+      } catch (error) {
+        journalCaught(error, "http.createMemberVmHttp.listPools", null);
+        return exeDevError(error, "exe.dev did not list its pools.");
+      }
+    }
     try {
-      if (method === "POST" && path === "/api/runners/vm")
-        startMemberVm(db, { ...member, now: at });
-      else if (path === "/api/runners/vm/retry") retryMemberVm(db, { ...member, now: at });
+      if (method === "POST" && path === "/api/runners/vm") {
+        const body = await createBody(request);
+        if (body === null)
+          return json({ error: "Send an optional exe.dev pool name as JSON." }, 400);
+        startMemberVm(db, { ...member, ...body, now: at });
+      } else if (pools !== undefined && path === "/api/runners/vm/pool") {
+        const body = await poolBody(request);
+        if (body === null)
+          return json({ error: "Send the VM id and an exe.dev pool as JSON." }, 400);
+        const row = getMemberVm(db, body.id);
+        if (row === null || row.workspaceId !== member.workspaceId) throw new MemberVmMissing();
+        if (!mayDeleteMemberVm(db, row, member))
+          return json({ error: "Only the VM's owner or a workspace admin can move it." }, 403);
+        if (row.deleteStep !== null) return json({ error: "This VM is being deleted." }, 409);
+        try {
+          await pools.adoptVm(row.vmName, body.pool);
+        } catch (error) {
+          journalCaught(error, "http.createMemberVmHttp.adoptVm", null);
+          return exeDevError(error, `exe.dev did not move ${row.vmName}.`);
+        }
+        db.run("UPDATE member_vm SET pool=?,updated_at=? WHERE id=?", [body.pool, now(), row.id]);
+      } else if (path === "/api/runners/vm/retry") retryMemberVm(db, { ...member, now: at });
       else if (path === "/api/runners/vm/delete") {
         const body = await deleteBody(request);
         if (body === null)
@@ -253,6 +316,12 @@ function readSize(read: (() => ExeDevVmSize) | undefined): ExeDevVmSize | null {
   }
 }
 
+/** exe.dev's refusal in its own words, as the client words it; 403 when the token may not. */
+function exeDevError(error: unknown, fallback: string): Response {
+  if (!isProvisioningError(error)) return json({ error: fallback }, 502);
+  return json({ error: error.message }, error.code === "unauthorized" ? 403 : 502);
+}
+
 function memberName(db: Database, userId: string): string | null {
   return (
     db.query<{ name: string }, [string]>("SELECT name FROM workspace_user WHERE id=?").get(userId)
@@ -260,23 +329,48 @@ function memberName(db: Database, userId: string): string | null {
   );
 }
 
-async function deleteBody(request: Request): Promise<{ id: string; force: boolean } | null> {
+/** Create VM's body: none, `{}` or `{ pool }`. */
+async function createBody(request: Request): Promise<{ pool?: string } | null> {
+  if (!request.headers.get("content-type")?.startsWith("application/json")) return {};
+  const record = await jsonRecord(request, ["pool"]);
+  if (record === null) return null;
+  if (record.pool === undefined) return {};
+  return isExeDevPoolName(record.pool) ? { pool: record.pool } : null;
+}
+
+async function poolBody(request: Request): Promise<{ id: string; pool: string } | null> {
+  const record = await jsonRecord(request, ["id", "pool"]);
+  if (record === null) return null;
+  const { id, pool } = record;
+  if (typeof id !== "string" || id.length === 0 || id.length > 80) return null;
+  return isExeDevPoolName(pool) ? { id, pool } : null;
+}
+
+async function jsonRecord(
+  request: Request,
+  keys: readonly string[],
+): Promise<Record<string, unknown> | null> {
   if (!request.headers.get("content-type")?.startsWith("application/json")) return null;
   const text = await request.text().catch((caughtError4) => {
-    journalCaught(caughtError4, "http.deleteBody.text", null);
+    journalCaught(caughtError4, "http.jsonRecord.text", null);
     return null;
   });
   if (text === null || text.length > MAX_BODY) return null;
   let value: unknown;
   try {
-    value = JSON.parse(text);
+    value = JSON.parse(text.trim() === "" ? "{}" : text);
   } catch (caughtError5) {
-    journalCaught(caughtError5, "http.deleteBody.parse", null);
+    journalCaught(caughtError5, "http.jsonRecord.parse", null);
     return null;
   }
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== "id" && key !== "force")) return null;
+  return Object.keys(record).every((key) => keys.includes(key)) ? record : null;
+}
+
+async function deleteBody(request: Request): Promise<{ id: string; force: boolean } | null> {
+  const record = await jsonRecord(request, ["id", "force"]);
+  if (record === null) return null;
   const { id, force } = record;
   if (typeof id !== "string" || id.length === 0 || id.length > 80) return null;
   if (force !== undefined && typeof force !== "boolean") return null;

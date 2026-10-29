@@ -322,3 +322,41 @@ test("a sign-in that writes no credentials fails and leaves the live ones", asyn
     rmSync(home, { recursive: true, force: true });
   }
 }, 10000);
+
+test("OpenCode signs in against its live SQLite home without replacing session data", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-opencode-login-"));
+  const updates: RunnerLoginUpdate[] = [];
+  try {
+    const directory = join(home, ".local", "share", "opencode");
+    mkdirSync(directory, { recursive: true });
+    const database = join(directory, "opencode.db");
+    writeFileSync(database, "existing sessions");
+    const script = join(home, "login.js");
+    writeFileSync(
+      script,
+      `const fs = require("node:fs"); const path = process.env.HOME + "/.local/share/opencode/opencode.db"; if (fs.readFileSync(path, "utf8") !== "existing sessions") process.exit(1); process.stdout.write("Choose provider: "); process.stdin.once("data", () => { fs.appendFileSync(path, " and credentials"); process.exit(0); });`,
+    );
+    let answered = false;
+    await runProviderLogin({
+      agent: "opencode",
+      home,
+      command: [process.execPath, script],
+      signal: AbortSignal.timeout(5000),
+      emit: (update) => updates.push(update),
+      answer: async (_id, signal) => {
+        if (!answered) {
+          answered = true;
+          return { answer: JSON.stringify({ text: "provider\r" }) };
+        }
+        return new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        );
+      },
+    });
+    expect(updates.at(-1)?.state).toBe("connected");
+    expect(readFileSync(database, "utf8")).toBe("existing sessions and credentials");
+    expect(readdirSync(home).filter((name) => name.startsWith(".paws-login-"))).toEqual([]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 10000);

@@ -24,10 +24,13 @@ import {
 
 const requestSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("probe"), profile: RunnerProfileSchema }),
-  z.strictObject({ type: z.literal("login_check"), agent: z.enum(["claude", "codex", "grok"]) }),
+  z.strictObject({
+    type: z.literal("login_check"),
+    agent: z.enum(["claude", "codex", "grok", "opencode"]),
+  }),
 ]);
 type HealthRequest = z.infer<typeof requestSchema>;
-type Agent = "claude" | "codex" | "grok";
+type Agent = "claude" | "codex" | "grok" | "opencode";
 export type AgentSignIn = {
   agent: Agent;
   status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "unknown";
@@ -43,7 +46,7 @@ type History = {
 };
 const SIGN_IN_INTERVAL_MS = 5 * 60_000;
 const RECENTLY_SEEN_MS = 60_000;
-const runnerAgents = ["claude", "codex", "grok"] as const;
+const runnerAgents = ["claude", "codex", "grok", "opencode"] as const;
 
 export function createRunnerHealth(options: {
   db: Database;
@@ -191,6 +194,7 @@ export function createRunnerHealth(options: {
             const last = history(runner.id, at);
             let pending = pendingChecks(runner.id, at);
             for (const agent of runnerAgents) {
+              if (!work.supportsAgent(runner.id, agent)) continue;
               if (pending >= 4) return;
               const entry = last(agent);
               if (
@@ -218,6 +222,7 @@ export function createRunnerHealth(options: {
         const runner = getRunner(db, runnerId);
         if (
           !runner ||
+          !work.supportsAgent(runnerId, agent) ||
           runner.status !== "active" ||
           !workspaceMember(db, runner.workspaceId, runner.ownerUserId)?.active ||
           history(runnerId, at)(agent)?.inFlight ||

@@ -35,7 +35,7 @@ function fixture() {
     tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  for (const role of ["admin", "member", "observer"] as const) {
+  for (const role of ["admin", "member"] as const) {
     putWorkspaceUser(db, {
       id: role,
       linearUserId: `linear-${role}`,
@@ -101,11 +101,11 @@ function fixture() {
   };
 }
 
-test("signed-in owners and administrators can revalidate the App regardless of sign-in age", async () => {
+test("signed-in admins, including the one who connected the workspace, can revalidate the App regardless of sign-in age", async () => {
   const f = fixture();
   try {
     for (const role of ["owner", "admin"]) expect((await f.request(role)).status).toBe(200);
-    for (const role of ["member", "observer"]) expect((await f.request(role)).status).toBe(403);
+    expect((await f.request("member")).status).toBe(403);
     expect((await f.request("admin", { stale: true })).status).toBe(200);
     expect((await f.request("admin", { csrf: false })).status).toBe(403);
     expect((await f.request("admin", { origin: "https://other.example" })).status).toBe(403);

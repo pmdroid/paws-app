@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { listHooks, migrate, openDatabase, saveSkill } from "../src/db";
-import { RunnerCommandSchema, RunnerEventSchema } from "../src/runner-protocol";
+import { getSkill, listHooks, migrate, openDatabase, saveSkill } from "../src/db";
+import { RunnerCommandSchema, RunnerEventSchema, tarModes } from "../src/runner-protocol";
 import { handleHookSettingsRequest, type HookSettingsOptions } from "../src/settings";
+import { fakeSkillResolver, SKILL_BUNDLE_FILE } from "../src/skills";
 
 let root: string;
 let db: Database;
@@ -29,6 +30,8 @@ function options(role?: string): HookSettingsOptions {
     csrfToken: "csrf",
     ...(role ? { role } : {}),
     audit: (action, subject) => audits.push([action, subject]),
+    root: join(root, "skills"),
+    resolver: fakeSkillResolver(),
     now: () => 1_000,
   };
 }
@@ -38,6 +41,31 @@ function post(body: unknown, headers: Record<string, string> = {}): Request {
     method: "POST",
     headers: { "content-type": "application/json", "x-paws-csrf": "csrf", ...headers },
     body: JSON.stringify(body),
+  });
+}
+
+async function upload(
+  files: readonly (readonly [string, string])[],
+  agents: readonly string[] = ["claude", "codex"],
+): Promise<Request> {
+  const form = new FormData();
+  form.append("folder", files[0]?.[0] ?? "hook.sh");
+  for (const agent of agents) form.append("agents", agent);
+  for (const [path, text] of files) {
+    form.append("path", path);
+    form.append("file", new File([text], path));
+  }
+  const body = new Response(form);
+  const type = body.headers.get("content-type")!;
+  const bytes = await body.arrayBuffer();
+  return new Request("http://127.0.0.1:8787/api/settings/hooks", {
+    method: "POST",
+    headers: {
+      "content-type": type,
+      "content-length": String(bytes.byteLength),
+      "x-paws-csrf": "csrf",
+    },
+    body: bytes,
   });
 }
 
@@ -72,7 +100,7 @@ describe("hook settings", () => {
       ["settings.hook.add", "Added hook after a file edit: bun run fmt for Claude, Codex"],
     ]);
     const removed = await read(
-      await handleHookSettingsRequest(post({ action: "remove", id: hook!.id }), options("owner")),
+      await handleHookSettingsRequest(post({ action: "remove", id: hook!.id }), options("admin")),
     );
     expect(removed.status).toBe(200);
     expect(listHooks(db)).toEqual([]);
@@ -83,7 +111,7 @@ describe("hook settings", () => {
     const added = await read(
       await handleHookSettingsRequest(
         post({ action: "add", event: "session_start", command: "setup-tools" }),
-        options("owner"),
+        options("admin"),
       ),
     );
     expect(added.status).toBe(200);
@@ -112,7 +140,7 @@ describe("hook settings", () => {
   test("a change needs the CSRF token", async () => {
     const response = await handleHookSettingsRequest(
       post({ action: "add", event: "stop", command: "true" }, { "x-paws-csrf": "" }),
-      options("owner"),
+      options("admin"),
     );
     expect(response!.status).toBe(403);
   });
@@ -135,7 +163,7 @@ describe("hook settings", () => {
       [{ action: "add", event: "stop", command: "x", skill: "missing" }, "No registered skill"],
     ];
     for (const [body, error] of cases) {
-      const response = await read(await handleHookSettingsRequest(post(body), options("owner")));
+      const response = await read(await handleHookSettingsRequest(post(body), options("admin")));
       expect(response.status).toBe(400);
       expect(String(response.body.error)).toContain(error);
     }
@@ -160,7 +188,7 @@ describe("hook settings", () => {
           command: '"$PAWS_SKILL_DIR/guard.sh"',
           skill: "guard",
         }),
-        options("owner"),
+        options("admin"),
       ),
     );
     expect(both.status).toBe(400);
@@ -174,12 +202,81 @@ describe("hook settings", () => {
           skill: "guard",
           agents: ["claude"],
         }),
-        options("owner"),
+        options("admin"),
       ),
     );
     expect(claude.status).toBe(200);
     expect(claude.body.skills).toEqual([{ name: "guard", agents: ["claude"] }]);
     expect(listHooks(db)[0]?.skill).toBe("guard");
+  });
+
+  test("an uploaded script is executable and prefills its skill, path and command", async () => {
+    const path = "hooks/check $HOME.sh";
+    const command = '"$PAWS_SKILL_DIR/hooks/check \\$HOME.sh"';
+    const uploaded = await read(
+      await handleHookSettingsRequest(
+        await upload([["check $HOME.sh", "#!/bin/sh\necho checked\n"]], ["claude"]),
+        options("admin"),
+      ),
+    );
+    expect(uploaded.status).toBe(200);
+    const skill = getSkill(db, "check-home.sh")!;
+    expect(skill).toMatchObject({
+      source: { kind: "upload", folder: "check $HOME.sh" },
+      agents: ["claude"],
+      removedAt: null,
+    });
+    expect(uploaded.body.uploaded).toEqual({ skill: skill.name, path, command });
+    expect(uploaded.body.skills).toContainEqual({ name: skill.name, agents: ["claude"] });
+    expect(listHooks(db)).toEqual([]);
+    const bundle = join(root, "skills", skill.name, skill.version, SKILL_BUNDLE_FILE);
+    expect(tarModes(readFileSync(bundle))).toEqual(
+      new Map([
+        ["SKILL.md", 0o644],
+        [path, 0o755],
+      ]),
+    );
+    expect(audits).toEqual([
+      ["settings.skill.add", `Uploaded hook ${path} as skill ${skill.name}`],
+    ]);
+
+    const added = await read(
+      await handleHookSettingsRequest(
+        post({
+          action: "add",
+          event: "after_edit",
+          command,
+          skill: skill.name,
+          agents: ["claude"],
+        }),
+        options("admin"),
+      ),
+    );
+    expect(added.status).toBe(200);
+    expect(listHooks(db)[0]).toMatchObject({ command, skill: skill.name, agents: ["claude"] });
+  });
+
+  test("a hook upload takes one script and only hook agents", async () => {
+    const multiple = await handleHookSettingsRequest(
+      await upload([
+        ["one.sh", "#!/bin/sh\n"],
+        ["two.sh", "#!/bin/sh\n"],
+      ]),
+      options("admin"),
+    );
+    expect(multiple!.status).toBe(400);
+    expect((await read(multiple)).body.error).toBe("Choose one hook script to upload.");
+
+    const unsupported = await handleHookSettingsRequest(
+      await upload([["one.sh", "#!/bin/sh\n"]], ["grok"]),
+      options("admin"),
+    );
+    expect(unsupported!.status).toBe(400);
+    expect((await read(unsupported)).body.error).toBe(
+      "Hook scripts run only for Claude and Codex.",
+    );
+    expect(listHooks(db)).toEqual([]);
+    expect(audits).toEqual([]);
   });
 });
 

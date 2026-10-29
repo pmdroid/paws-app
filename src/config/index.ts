@@ -23,7 +23,7 @@ export type {
   PawsSetupConfig,
   TrackerKind,
 } from "./file";
-export { checkMemberVmValue, renderMemberVmSettings } from "./member-vm";
+export { checkMemberVmValue, isMemberVmPool, renderMemberVmSettings } from "./member-vm";
 export type { MemberVmKey, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths } from "./paths";
 export type { PawsPaths } from "./paths";
@@ -33,7 +33,6 @@ export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app
 export type { GitHubAppCredentials } from "./github-app";
 
 export {
-  parseAgentProfile,
   parseAgentSettings,
   readAgentSettings,
   resolveAgentProfiles,

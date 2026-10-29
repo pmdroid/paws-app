@@ -72,3 +72,12 @@ export function listRebaseReturns(
       files: row.files === null ? null : (JSON.parse(row.files) as string[]),
     }));
 }
+
+/** Whether the item already went back to the agent for a rebase of `candidate`. */
+export function rebaseReturnedFor(db: Database, itemId: string, candidate: string): boolean {
+  return (
+    db
+      .query("SELECT 1 FROM rebase_return WHERE item_id = ? AND candidate = ? LIMIT 1")
+      .get(itemId, candidate) !== null
+  );
+}

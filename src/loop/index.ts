@@ -1,6 +1,6 @@
 export { classifyTask, parseTaskClassification, type TaskClassification } from "./task-classifier";
 export { parsePlanResult, planDecision, type PlanDecision, type PlanResult } from "./plan-proposal";
-export { classifyCandidateRisk, type RiskGit } from "./candidate-risk";
+export { classifyCandidateRisk, highRiskPathsFileAt, type RiskGit } from "./candidate-risk";
 export {
   KEEPALIVE_MS,
   FIRST_ACTIVITY_MS,
@@ -103,6 +103,12 @@ export {
   type OpenFinding,
   type OpenItems,
 } from "./open-findings";
+export {
+  backfillReviewFindings,
+  recordAcceptedFindings,
+  REVIEW_FINDINGS_BACKFILL_JOB,
+  type TaskReviewReader,
+} from "./review-findings";
 export {
   askRiskApproval,
   riskApprovalFor,

@@ -61,7 +61,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       await control.enroll({
         ...pending,
         token: control.createEnrollment(
-          { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
+          { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now, teamIds: [] },
           pending,
         ).token,
       })

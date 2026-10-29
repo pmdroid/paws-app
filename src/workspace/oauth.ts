@@ -29,13 +29,19 @@ export function beginWorkspaceOAuth(
   const state = workspaceSecret();
   const browser = workspaceSecret();
   const verifier = pkceVerifier(browser, state);
-  saveWorkspaceOAuthRequest(db, {
-    stateHash: workspaceTokenHash(state),
-    browserHash: workspaceTokenHash(browser),
-    bootstrapHash: options.bootstrap === null ? null : workspaceTokenHash(options.bootstrap),
-    expiresAt: options.now + 10 * 60_000,
-    assignmentHash: options.assignmentHash,
-  });
+  if (
+    !saveWorkspaceOAuthRequest(db, {
+      stateHash: workspaceTokenHash(state),
+      browserHash: workspaceTokenHash(browser),
+      bootstrapHash: options.bootstrap === null ? null : workspaceTokenHash(options.bootstrap),
+      expiresAt: options.now + 10 * 60_000,
+      assignmentHash: options.assignmentHash,
+    })
+  )
+    return Response.json(
+      { error: "Too many sign-in attempts. Try again later." },
+      { status: 429, headers: { "cache-control": "no-store", "retry-after": "60" } },
+    );
   const target = new URL("https://linear.app/oauth/authorize");
   target.search = new URLSearchParams({
     client_id: options.clientId,

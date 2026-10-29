@@ -192,7 +192,7 @@ export function assertNonSecretArtifactPath(path: string): void {
   const names = path.toLowerCase().split(/[/\\]/);
   if (
     names.some((name) =>
-      /^(?:\.env(?:\..*)?|\.(?:git|paws|ssh|aws|claude|codex|grok|gnupg|npmrc|netrc|git-credentials)|secrets?(?:\..*)?|credentials?(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\..*)?|.*\.(?:pem|key|p12|pfx))$/.test(
+      /^(?:\.env(?:\..*)?|\.(?:git|paws|ssh|aws|claude|codex|grok|opencode|gnupg|npmrc|netrc|git-credentials)|secrets?(?:\..*)?|credentials?(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\..*)?|.*\.(?:pem|key|p12|pfx))$/.test(
         name,
       ),
     ) ||

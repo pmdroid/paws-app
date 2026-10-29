@@ -159,7 +159,7 @@ function carriedMessage(
   pull: PullFacts,
 ): string {
   const updated = `Branch updated onto main ${base.slice(0, 7)}, waiting for CI.`;
-  if (mainMoved !== "overlap")
+  if (mainMoved !== "overlap" && mainMoved !== "green")
     return `${updated} Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
   if (pull.upToDateRule)
     return `${updated} GitHub requires branches to be up to date before merging, so Paws updates the branch and waits for CI even when main changed other files. Turn off "Require branches to be up to date before merging" for the base branch to merge without an update.`;

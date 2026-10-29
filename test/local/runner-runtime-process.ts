@@ -17,7 +17,6 @@ import { createLocalRunnerTranscriptObjects } from "../../src/runner-transcripts
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { RunnerRequestError, openRunnerDaemon } from "../../src/runner-daemon";
 import {
-  createRunnerBrokerClient,
   readRunnerJob,
   readRunnerJobInputs,
   readRunnerResultFile,
@@ -142,7 +141,7 @@ if (mode === "prepare") {
   const principal = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };
@@ -486,7 +485,10 @@ if (mode === "prepare") {
     results: { root: join(root, "results"), agentUid: 1002, resultsGid: 1003 },
     repositoryRoot: join(root, "repositories"),
     home: join(root, "daemon"),
-    broker: createRunnerBrokerClient({ socketPath: join(root, "broker.sock") }),
+    broker: {
+      start: () => Promise.reject(new Error("Runner broker is unavailable")),
+      stop: () => Promise.reject(new Error("Runner broker is unavailable")),
+    },
     monotonic: () => performance.now() + offset,
     onError: (error) => console.error(error.message),
     async networkGit(input) {

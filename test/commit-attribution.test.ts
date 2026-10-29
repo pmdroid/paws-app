@@ -100,13 +100,7 @@ test("a delegator who did not link GitHub gets no credit", () => {
   }
 });
 
-for (const scenario of [
-  "no-actor",
-  "unknown-actor",
-  "observer",
-  "inactive",
-  "no-workspace",
-] as const)
+for (const scenario of ["no-actor", "unknown-actor", "inactive", "no-workspace"] as const)
   test(`no credit without a permitted delegating member: ${scenario}`, () => {
     const f = fixture();
     try {
@@ -114,8 +108,6 @@ for (const scenario of [
         f.db.run("UPDATE work_item SET owner_user_id=NULL, delegated_by=NULL");
       if (scenario === "unknown-actor")
         f.db.run("UPDATE work_item SET owner_user_id=NULL, delegated_by='stranger'");
-      if (scenario === "observer")
-        f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id='steerer'");
       if (scenario === "inactive")
         f.db.run("UPDATE workspace_member SET active=0 WHERE user_id='steerer'");
       if (scenario === "no-workspace")

@@ -298,7 +298,7 @@ async function runRemoteFault(fault: Fault) {
   const owner = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };
@@ -417,7 +417,7 @@ async function runRemoteFault(fault: Fault) {
     pawsRoot: root,
     home: root,
     tracker,
-    repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
+    repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
     retryBaseMs: 10,
     placementPollMs: 5,
     launch() {
@@ -613,7 +613,9 @@ async function runRemoteFault(fault: Fault) {
           // The runner stays alive and names the command, but its agent never sends anything.
           runner.faultedAttempts++;
           runner.faulty = false;
-          live.set(command.id, { command, at: Date.now(), hung: true });
+          // Paws starts its silence clock when it issues the command, which a busy machine can
+          // leave well before this loop picks it up, so the hung bound is measured from then.
+          live.set(command.id, { command, at: command.issuedAt, hung: true });
           continue;
         }
         if (fault === "silent-unconfirmed" && runner.faulty) {

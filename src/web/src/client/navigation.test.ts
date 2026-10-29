@@ -7,11 +7,14 @@ import {
   matchRoute,
   needsSnapshot,
   parseRoute,
+  ROUTE_SLICES,
+  routeCovered,
   routeHref,
   routerBase,
   type Route,
 } from "./route";
 import { render } from "./render";
+import { STATUS_SLICES } from "../contract";
 
 const model = {
   phase: "ready" as const,
@@ -112,4 +115,34 @@ test("the Conversations page is gone and its old links open the issue list", () 
 test("only work pages read the status snapshot", () => {
   const pages = Object.keys(PAGES).filter((view) => needsSnapshot({ view, id: null } as Route));
   expect(pages).toEqual(["overview", "issues", "runs", "mergeQueue", "evidence", "questions"]);
+});
+
+test("every route names the status slices it renders", () => {
+  expect(Object.keys(ROUTE_SLICES).sort()).toEqual(Object.keys(PAGES).sort());
+  for (const slices of Object.values(ROUTE_SLICES))
+    for (const slice of slices) expect(STATUS_SLICES).toContain(slice);
+  expect(ROUTE_SLICES).toEqual({
+    overview: ["items", "questions", "mergeQueue", "intake"],
+    issues: ["items"],
+    runs: ["items"],
+    mergeQueue: ["items", "mergeQueue", "mergeHistory"],
+    questions: ["items", "questions"],
+    evidence: ["items", "evidence"],
+    findings: [],
+    runners: [],
+    settings: [],
+  });
+});
+
+test("a list loaded for one page does not stand in for another page's slices", () => {
+  const overview = { ...statusFixture(), slices: ["items", "questions", "mergeQueue", "intake"] };
+  const evidenceOnly = { ...statusFixture(), slices: ["evidence"] } as typeof overview;
+  expect(routeCovered({ view: "overview" }, overview as never)).toBe(true);
+  expect(routeCovered({ view: "issues", id: null }, overview as never)).toBe(true);
+  expect(routeCovered({ view: "mergeQueue" }, overview as never)).toBe(false);
+  expect(routeCovered({ view: "evidence", id: null }, overview as never)).toBe(false);
+  expect(routeCovered({ view: "issues", id: null }, evidenceOnly as never)).toBe(false);
+  expect(routeCovered({ view: "runners", id: null }, null)).toBe(true);
+  expect(routeCovered({ view: "mergeQueue" }, statusFixture())).toBe(true);
+  expect(routeCovered({ view: "overview" }, null)).toBe(false);
 });

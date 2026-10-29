@@ -115,7 +115,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
   const owner = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };
@@ -168,7 +168,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     pawsRoot: root,
     home: root,
     tracker,
-    repository: { owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL },
+    repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
     scheduling: () => ({}),
     // Waits for a runner are re-placed in milliseconds rather than seconds.
     placementPollMs: 1,
