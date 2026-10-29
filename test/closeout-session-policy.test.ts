@@ -7,6 +7,7 @@ import {
   createCloseoutSession,
   decodePolicyFiles,
   encodePolicyFiles,
+  encodePolicyChunk,
   trustedPolicyFiles,
   workspacePolicyFiles,
   type PolicyFilesLoad,
@@ -155,7 +156,7 @@ test("a remote session asks Paws for the policy through the runner channel", asy
   const load = remoteCloseoutPolicy(
     (event) => emitted.push(event),
     async (requestId) => {
-      expect(emitted).toEqual([{ type: "closeout_policy", requestId }]);
+      expect(emitted).toEqual([{ type: "closeout_policy", requestId, offset: 0 }]);
       return { answer: encodePolicyFiles(loaded) };
     },
     new AbortController().signal,
@@ -171,5 +172,42 @@ test("a remote session asks Paws for the policy through the runner channel", asy
   expect(await failing()).toMatchObject({
     ok: false,
     message: expect.stringContaining("Paws could not provide the Closeout policy"),
+  });
+});
+
+test("large policies are transferred in bounded chunks and policy changes fail closed", async () => {
+  const loaded = trusted("lint");
+  if (!loaded.ok || loaded.absent) throw new Error("expected policy");
+  const large = {
+    ...loaded,
+    files: new Map([...loaded.files, ["extra", new Uint8Array(100_000).fill(65)]]),
+  };
+  let request: { offset?: number; hash?: string } = {};
+  let count = 0;
+  const load = remoteCloseoutPolicy(
+    (event) => {
+      request = event;
+      count++;
+    },
+    async () => ({ answer: encodePolicyChunk(large, request.offset!, request.hash) }),
+    new AbortController().signal,
+  );
+  expect(await load()).toEqual(large);
+  expect(count).toBeGreaterThan(1);
+  let changed = false;
+  const unstable = remoteCloseoutPolicy(
+    (event) => {
+      request = event;
+    },
+    async () => {
+      const response = encodePolicyChunk(changed ? loaded : large, request.offset!, request.hash);
+      changed = true;
+      return { answer: response };
+    },
+    new AbortController().signal,
+  );
+  expect(await unstable()).toMatchObject({
+    ok: false,
+    message: "Closeout policy changed during transfer",
   });
 });

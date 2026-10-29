@@ -36,3 +36,16 @@ export const POLICY_TRANSFER_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
 export const FINDING_GROUPS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
 export const OPENCODE_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
 export const SKILL_HOOK_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+/**
+ * First runner release whose Closeout policy parser knows a check's `ci` key. 0.1.48 rejects it,
+ * and 0.1.49 through 0.1.52 shipped without it. The next runner is 0.1.53.
+ */
+export const CLOSEOUT_CI_KEY_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+/**
+ * First runner release whose Closeout policy parser leaves out a key it does not know, with a
+ * warning, instead of blocking the run, and knows a check's `recheck` key. Same release as `ci`:
+ * 0.1.52 is the newest tag, so both land on 0.1.53.
+ */
+export const CLOSEOUT_POLICY_KEYS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+/** First runner release that requests Closeout policies in bounded chunks. */
+export const CLOSEOUT_POLICY_CHUNKS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];

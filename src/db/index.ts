@@ -214,6 +214,13 @@ export {
   takePushOutageProbe,
   type PushOutage,
 } from "./push-outage";
+export {
+  clearPolicyRunnerWarning,
+  listPolicyRunnerWarnings,
+  policyKeysLowestRunnerLacks,
+  savePolicyRunnerWarning,
+  type PolicyRunnerWarning,
+} from "./policy-runner-warning";
 export { frozenMigrations } from "./migrations";
 export {
   MIGRATION_DIRECTORY,
@@ -346,6 +353,7 @@ export {
   latestCloseoutIdentity,
   closeoutHeadsStarted,
   closeoutPolicyDigest,
+  closeoutPolicyDigests,
   listCloseoutProgress,
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,

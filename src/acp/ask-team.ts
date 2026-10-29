@@ -17,7 +17,12 @@ import {
   type PublishArtifactHook,
   type PublishArtifactRequest,
 } from "./artifacts";
-export { decodePolicyFiles, encodePolicyFiles } from "../closeout-spec";
+export {
+  decodePolicyFiles,
+  encodePolicyFiles,
+  encodePolicyChunk,
+  decodePolicyChunk,
+} from "../closeout-spec";
 export type { PolicyFilesLoad } from "../closeout-spec";
 import {
   createCloseoutSession,

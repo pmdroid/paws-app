@@ -123,6 +123,26 @@ describe("status HTTP stub", () => {
     expect((await get("/api/status?slices=items")).pushOutages).toBeUndefined();
   });
 
+  test("the merge queue slice carries policy runner warnings, which Overview and Merge queue show", async () => {
+    const warning = {
+      repository: "acme/app",
+      policyDigest: `sha256:${"a".repeat(64)}`,
+      runnerVersion: "0.1.48",
+      keys: [{ key: "items[].ci", needs: "0.1.49" }],
+      checkedAt: "2026-10-28T06:43:00.000Z",
+    };
+    const provider = {
+      ...fakeStatusProvider(),
+      snapshot: () => ({ ...statusList(fullStatusFixture()), policyRunnerWarnings: [warning] }),
+    };
+    const get = async (path: string) =>
+      (await (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
+        provider,
+      }))!.json()) as Record<string, unknown>;
+    expect((await get("/api/status?slices=mergeQueue")).policyRunnerWarnings).toEqual([warning]);
+    expect((await get("/api/status?slices=items")).policyRunnerWarnings).toBeUndefined();
+  });
+
   test("the items slice carries the last 24 hours of merge times, which Overview shows", async () => {
     const mergedTimes = {
       since: "2026-10-26T10:00:00.000Z",

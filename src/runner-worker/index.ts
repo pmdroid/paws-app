@@ -52,6 +52,7 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
   decodePolicyFiles,
+  decodePolicyChunk,
   providerCliPath,
   type PolicyFilesLoad,
 } from "../acp";
@@ -228,15 +229,50 @@ export async function runWithFollowUps(
 }
 
 export function remoteCloseoutPolicy(
-  emit: (event: { type: "closeout_policy"; requestId: string }) => void,
+  emit: (event: {
+    type: "closeout_policy";
+    requestId: string;
+    offset?: number;
+    hash?: string;
+  }) => void,
   answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
   signal: AbortSignal,
 ): () => Promise<PolicyFilesLoad> {
   return async () => {
-    const requestId = randomUUID();
     try {
-      emit({ type: "closeout_policy", requestId });
-      return decodePolicyFiles((await answer(requestId, signal)).answer);
+      let content = "";
+      let hash: string | undefined;
+      let total: number | undefined;
+      do {
+        const requestId = randomUUID();
+        emit({
+          type: "closeout_policy",
+          requestId,
+          offset: content.length,
+          ...(hash ? { hash } : {}),
+        });
+        const response = (await answer(requestId, signal)).answer;
+        const chunk = decodePolicyChunk(response);
+        if (!chunk) {
+          const result = decodePolicyFiles(response);
+          return content.length === 0 || !result.ok
+            ? result
+            : { ok: false, message: "Paws sent an invalid Closeout policy chunk" };
+        }
+        if (
+          chunk.offset !== content.length ||
+          (hash !== undefined && chunk.hash !== hash) ||
+          (total !== undefined && chunk.total !== total) ||
+          chunk.offset + chunk.data.length > chunk.total
+        )
+          return { ok: false, message: "Paws sent an invalid Closeout policy chunk" };
+        hash = chunk.hash;
+        total = chunk.total;
+        content += chunk.data;
+      } while (content.length < total);
+      if (createHash("sha256").update(content).digest("hex") !== hash)
+        return { ok: false, message: "Paws sent an invalid Closeout policy chunk" };
+      return decodePolicyFiles(content);
     } catch (error) {
       signal.throwIfAborted();
       journalCaught(error, "runner-worker.remoteCloseoutPolicy.emit", null);
@@ -250,7 +286,7 @@ export function remoteCloseoutPolicy(
 
 export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
-  | { type: "closeout_policy"; requestId: string }
+  | { type: "closeout_policy"; requestId: string; offset?: number; hash?: string }
   | { type: "acp"; event: AcpEvent }
   | {
       type: "question";

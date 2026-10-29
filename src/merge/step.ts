@@ -22,7 +22,7 @@ export type LaneTurn =
       kind: "rebased";
       base: string;
       head: string;
-      /** Closeout had accepted the head the lane rebased, under the current policy digest. */
+      /** Closeout had accepted the head the lane rebased, and no check marked `recheck` changed. */
       accepted: boolean;
       pull: PullFacts;
     }

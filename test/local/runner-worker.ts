@@ -243,7 +243,7 @@ export async function probeRunnerWorker(
         async answer(requestId) {
           if (
             readFileSync(join(firstOutput, "events.jsonl"), "utf8").includes(
-              JSON.stringify({ type: "closeout_policy", requestId }),
+              JSON.stringify({ type: "closeout_policy", requestId, offset: 0 }),
             )
           )
             return {

@@ -351,7 +351,9 @@ test.skipIf(!linux)(
         handover: context.requestWhen('"type":"question"'),
         // Paws answers the Closeout policy request; nobody answers the question.
         answer: (requestId, signal) =>
-          context.events().includes(`{"type":"closeout_policy","requestId":"${requestId}"}`)
+          context
+            .events()
+            .includes(`{"type":"closeout_policy","requestId":"${requestId}","offset":0}`)
             ? Promise.resolve({ answer: "{}" })
             : new Promise((_, reject) =>
                 signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
@@ -391,7 +393,11 @@ test.skipIf(!linux)(
         handover: context.requestWhen('"type":"question"', 300),
         // The question is answered once the handover gave up, so the turn can end.
         answer: async (requestId, signal) => {
-          if (context.events().includes(`{"type":"closeout_policy","requestId":"${requestId}"}`))
+          if (
+            context
+              .events()
+              .includes(`{"type":"closeout_policy","requestId":"${requestId}","offset":0}`)
+          )
             return { answer: "{}" };
           await context.until(TIMED_OUT, signal);
           return { answer: "Blue" };
