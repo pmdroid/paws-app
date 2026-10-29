@@ -831,6 +831,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           await backend.agents.cancelItem(itemId);
         },
         commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
+        runInProgress: async (runId) => (await remote).agents.runInProgress(runId),
         slotFree: () =>
           db
             .query<{ id: string }, []>(
