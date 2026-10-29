@@ -142,6 +142,9 @@ export async function probeRunnerBackend(
     assert.equal(code, 0, err);
     return out.trim();
   }
+  // GitHub, served from the source repository, so no run reaches the network.
+  const networkGit = (args: string[]) =>
+    git(args.map((arg) => (arg === "https://github.com/fixture/repository.git" ? source : arg)));
   await git(["init", "-b", "main", source]);
   writeFileSync(join(source, "result.txt"), "base");
   await git(["-C", source, "add", "."]);
@@ -156,12 +159,6 @@ export async function probeRunnerBackend(
   const artifacts = createRunnerArtifactStore({ root: join(root, "artifact-store"), work });
   let published = false;
   const bot = { appId: "99", login: "paws-test[bot]", id: 88 };
-  // The fixture remote is not reachable: a fetch from it fails at once instead of asking GitHub.
-  const networkGit = async (args: string[]) => {
-    if (args.includes("https://github.com/fixture/repository.git"))
-      throw new Error("The fixture remote is not reachable.");
-    return git(args);
-  };
   const backendOptions: Parameters<typeof createRemoteAgentRunner>[0] = {
     async checkpointBot(repository) {
       assert.equal(repository, "fixture/repository");
