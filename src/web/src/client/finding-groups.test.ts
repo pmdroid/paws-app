@@ -6,6 +6,7 @@ import type { FindingGroupsResponse } from "../finding-groups";
 
 const data: FindingGroupsResponse = {
   canRun: true,
+  enabled: true,
   lastRun: {
     id: "run",
     startedAt: Date.parse("2026-10-28T06:00Z"),
@@ -91,9 +92,9 @@ test("run now is admin-only, remote views are read-only and actions disable whil
   expect(renderFindingGroups(data, true, true)).toContain(
     'data-group-action="file" data-group-id="group" disabled',
   );
-  expect(renderFindingGroups({ groups: [], lastRun: null, canRun: true }, true, false)).toContain(
-    "No groups yet",
-  );
+  expect(
+    renderFindingGroups({ groups: [], lastRun: null, canRun: true, enabled: true }, true, false),
+  ).toContain("No groups yet");
 });
 
 test("the run status explains an unchanged snapshot without implying a helper ran", () => {
@@ -109,4 +110,11 @@ test("the run status explains an unchanged snapshot without implying a helper ra
     false,
   );
   expect(html).toContain("Skipped: No findings changed");
+});
+
+test("a workspace with grouping off says so instead of the last run", () => {
+  const html = renderFindingGroups({ ...data, enabled: false, canRun: false }, true, false);
+  expect(html).toContain("Daily grouping is off.");
+  expect(html).not.toContain("Last run");
+  expect(html).not.toContain("Run now");
 });
