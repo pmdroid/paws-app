@@ -38,7 +38,6 @@ export {
   startAskTeamBridge,
   decodePolicyFiles,
   encodePolicyFiles,
-  startHostToolBridge,
   type AskTeamBridge,
   type AskTeamContext,
   type AskTeamHook,

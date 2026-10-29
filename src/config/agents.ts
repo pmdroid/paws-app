@@ -59,10 +59,6 @@ const settingsSchema = z.strictObject({
   projects: z.array(projectSchema).max(200),
 });
 
-export function parseAgentProfile(value: unknown): AgentProfile {
-  return profileSchema.parse(value);
-}
-
 export function parseAgentSettings(value: unknown): AgentSettings {
   const settings = settingsSchema.parse(value);
   const repos = new Set<string>();
