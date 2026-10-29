@@ -1,4 +1,10 @@
 export {
+  creditedLeaseUntil,
+  PAWS_ALIVE_INTERVAL_MS,
+  PAWS_ALIVE_LEASE_SKEW_MS,
+  runnerReleaseAtLeast,
+} from "./lease";
+export {
   RUNNER_LEASE_GRACE_MS,
   RUNNER_LEASE_MS,
   RUNNER_OFFLINE_BUDGET_MS,

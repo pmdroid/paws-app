@@ -14,6 +14,7 @@ import {
   listJobs,
   markPawsAlive,
   openDatabase,
+  PAWS_ALIVE_LEASE_SKEW_MS,
   prepareShutdown,
   pawsAliveAt,
   putWorkspaceUser,
@@ -213,7 +214,10 @@ test("Paws down 20 minutes with a 30-minute budget: the runner still holds the w
     expect(resumes(f.db)).toHaveLength(1);
     expect(resumes(f.db)[0]?.payload).toMatchObject({ reason: "process_restart" });
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
-    expect(f.work.heartbeat(f.runnerId).fenced).toEqual([]);
+    const beat = f.work.heartbeat(f.runnerId);
+    expect(beat.fenced).toEqual([]);
+    expect(beat.offlineBudgetMs).toBe(BUDGET);
+    expect(beat.aliveAt).toBe(f.clock.at);
     // A second recovery in the same process does not shift the lease again.
     recoverOnStartup(f.db, f.clock.at, BUDGET);
     expect(f.leaseUntil()).toBe(before + 20 * MINUTE);
@@ -320,6 +324,38 @@ test("alive marks recover after the wall clock moves backward", () => {
   }
 });
 
+test("a lease renewed within the alive skew still receives downtime credit", async () => {
+  const f = await fixture();
+  try {
+    f.admit();
+    const before = f.leaseUntil();
+    markPawsAlive(f.db, before - PAWS_ALIVE_LEASE_SKEW_MS);
+    f.clock.at += 20 * MINUTE;
+    expect(recoverOnStartup(f.db, f.clock.at, BUDGET)).toEqual([
+      { type: "resume", freshSession: true, checkpoint: null, reattach: true },
+    ]);
+    expect(f.leaseUntil()).toBe(before + 20 * MINUTE);
+  } finally {
+    f.close();
+  }
+}, 30_000);
+
+test("a lease renewed past the alive skew receives no downtime credit", async () => {
+  const f = await fixture();
+  try {
+    f.admit();
+    const before = f.leaseUntil();
+    markPawsAlive(f.db, before - PAWS_ALIVE_LEASE_SKEW_MS - 1);
+    f.clock.at += 20 * MINUTE;
+    expect(recoverOnStartup(f.db, f.clock.at, BUDGET)).toEqual([
+      { type: "resume", freshSession: true, checkpoint: null },
+    ]);
+    expect(f.leaseUntil()).toBe(before);
+  } finally {
+    f.close();
+  }
+}, 30_000);
+
 test("leases renewed after an obsolete alive mark receive no downtime credit", async () => {
   const f = await fixture();
   try {
@@ -344,6 +380,9 @@ test("a runner older than the offline lease release is not extended", async () =
     f.db.run("UPDATE runner_host_status SET runner_version='0.1.51' WHERE runner_id=?", [
       f.runnerId,
     ]);
+    const beat = f.work.heartbeat(f.runnerId);
+    expect(beat).not.toHaveProperty("offlineBudgetMs");
+    expect(beat).not.toHaveProperty("aliveAt");
     const before = f.leaseUntil();
     f.down(20 * MINUTE);
     expect(recoverOnStartup(f.db, f.clock.at, BUDGET)).toEqual([

@@ -260,6 +260,7 @@ export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recove
 export {
   markPawsAlive,
   PAWS_ALIVE_INTERVAL_MS,
+  PAWS_ALIVE_LEASE_SKEW_MS,
   pawsAliveAt,
   runnerLeaseCutoff,
   runnerLeaseLive,

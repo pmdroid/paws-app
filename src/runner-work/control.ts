@@ -8,6 +8,7 @@ import {
   recordRunnerSkills,
   runnerAgentTargets,
   teamRepositoryAllowedSql,
+  pawsAliveAt,
   runnerLeaseCutoff,
 } from "../db";
 import type { KeyObject } from "node:crypto";
@@ -28,9 +29,12 @@ import {
   runnerCancelPending,
 } from "../db";
 import {
+  OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
   RUNNER_LEASE_MS,
+  RUNNER_OFFLINE_BUDGET_MS,
   RunnerCommandSchema,
+  runnerReleaseAtLeast,
   RunnerEventSchema,
   type RunnerEvent,
   signRunnerCommand,
@@ -555,6 +559,17 @@ export function createRunnerWork(options: {
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
       return immediate(db, () => {
         runner(runnerId);
+        const storedVersion = db
+          .query<{ version: string | null }, [string]>(
+            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+          )
+          .get(runnerId)?.version;
+        const aliveAt = pawsAliveAt(db);
+        const offlineCredit =
+          aliveAt !== null &&
+          runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)
+            ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
+            : undefined;
         const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling);
         const at = now();
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
@@ -627,6 +642,7 @@ export function createRunnerWork(options: {
         return {
           leases,
           fenced,
+          ...(offlineCredit === undefined ? {} : offlineCredit),
           ...(concurrency === undefined ? {} : { concurrency }),
           ...(skills === undefined ? {} : { skills }),
           ...(targets === undefined ? {} : { agents: targets }),

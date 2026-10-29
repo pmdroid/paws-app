@@ -5,10 +5,9 @@ import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 export const RUNNER_LEASE_MS = 60_000;
 export const RUNNER_LEASE_GRACE_MS = 5 * 60_000;
 /**
- * How much Paws downtime does not count against a runner lease. On start, Paws moves an open
- * lease of a runner at `OFFLINE_LEASE_RUNNER_VERSION` or newer forward by the time it was down,
- * up to this budget and the command's `expiresAt`. An older runner still stops at the lease plus
- * the grace, and its lease is not moved.
+ * How much time Paws is unreachable does not count against a runner lease. `creditedLeaseUntil`
+ * adds it, capped by this budget and the command's `expiresAt`. Only a runner at
+ * `OFFLINE_LEASE_RUNNER_VERSION` or newer is told the budget and has its stored lease moved.
  */
 export const RUNNER_OFFLINE_BUDGET_MS = 30 * 60_000;
 /** A handover waits this long for a safe point; after that the session keeps running. */
