@@ -12,10 +12,10 @@ The loop lives in `src/loop` and is wired from `src/index.ts`. A real run is `do
 bun install
 bun run paws doctor  # prerequisites for a real Linear / GitHub / Closeout run
 bun run paws          # 127.0.0.1:8787, data in ~/.paws
-bun run check         # lint, fmt:check, typecheck, test
+bun run check         # lint, fmt:check, typecheck, test, build:status, links, knip
 ```
 
-Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`); Closeout's `test` check does the same.
+Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`), `links` (documentation links, orphaned docs and source paths), `knip` (unused files, dependencies and duplicate exports). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`); Closeout's `test` check does the same.
 
 Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported from each module.
 
@@ -27,6 +27,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/onboarding-start.ts`, `src/onboarding-readiness.ts` | Onboarding startup and readiness wiring                               |
 | `src/acp`                                                | ACP agents, permissions, worktrees, checkpoints and tool servers      |
 | `src/agent-catalog`                                      | Agent and model catalog and registry                                  |
+| `src/agent-sessions`                                     | Stored agent session snapshots and their object storage               |
 | `src/auth`                                               | GitHub App credentials and hosted workspace authentication            |
 | `src/closeout`                                           | Verification gate, fix loop, reports and independent review           |
 | `src/closeout-spec`                                      | Closeout policy schema, sessions, retries and evidence approval       |
@@ -43,13 +44,16 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/github`                                             | GitHub App API, repository access, pull requests and Git operations   |
 | `src/host`                                               | Sleep, wake and process supervision                                   |
 | `src/install`                                            | Agent adapter installation, login and usage probes                    |
+| `src/install-host`                                       | Host installation checks and package verification                     |
 | `src/installer`                                          | `paws install`: prompts, env file and the secrets step                |
 | `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness    |
+| `src/journal`                                            | Durable journal lines for process and workflow events                 |
 | `src/linear`                                             | Tracker adapter, webhooks, polling, sessions and workspace access     |
 | `src/loop`                                               | Agent turns, `restart()` and `ask()`, Closeout, publication, recovery |
 | `src/member-vm`                                          | Member VM provisioning, persistence and HTTP routes                   |
 | `src/merge`                                              | Merge lane: `mergeable(S)`, squash at head S, rebase returns, CI      |
 | `src/onboarding`                                         | Onboarding routes and reconnection                                    |
+| `src/probe-collector`                                    | Runner probe collection and result storage                            |
 | `src/process`                                            | Owned child processes and process anchors                             |
 | `src/provisioning`                                       | Remote VM bootstrap, releases, mise and Tailscale setup               |
 | `src/questions`                                          | Elicitations, answer authorization, lifecycle and visual review       |
@@ -90,6 +94,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/skills`                                             | Skill discovery, sources, bundles, hooks and updates                  |
 | `src/slack`                                              | Slack OAuth, identity, authorization and webhooks                     |
 | `src/web`                                                | Status dashboard client, server contract and build                    |
+| `src/webhook-body`                                       | Bounded webhook request bodies and raw signature checks               |
 | `src/workspace`                                          | Workspace membership, integrations, assignments and policies          |
 | `src/worktree-checkout`                                  | Worktree checkout and folder exclusion policies                       |
 
@@ -110,27 +115,16 @@ Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not
 - TypeScript strict. Public types leave through the module `index.ts`.
 - Prefer `import type` for types (`verbatimModuleSyntax`).
 - Fakes live next to the interface they implement and are exported from that module. They record calls in memory.
-- Identifiers in the design are ULIDs. The foundation does not mint them yet.
+- Identifiers are ULIDs (`src/intake/ulid.ts`).
 - Secrets stay in `~/.paws/secrets` (directory mode `0700`). Never log them, never put them in the agent environment, and never commit them.
 - The status page is static files under `src/web` so it can ship on its own. The process serves them on localhost at `/status` and `GET /api/status`.
+- Documentation describes the code as it is now. Delete a page that no longer matches instead of keeping it for history; `bun run links` fails on an orphaned doc, a broken local link or an inline `src/...` path that no longer exists. `bun run knip` fails on an unused file, dependency or duplicate export.
 
 ## Parallel work
 
 Stay inside the directory your issue owns. Shared files are `src/index.ts` (wire a constructed adapter) and `src/server/serve.ts` (one route branch). Add a module rather than widening an existing one when the work is a new concern (`src/intake`, `src/host`).
 
-| Issue                                  | Directory                                  | Leaves alone                |
-| -------------------------------------- | ------------------------------------------ | --------------------------- |
-| QM-03 webhooks, dedupe, first activity | `src/linear`                               | ACP, Closeout, GitHub merge |
-| QM-04 intake and `blocks` order        | new `src/intake`                           | `src/linear/webhook.ts`     |
-| QM-05 worktree, ACP, permission guard  | `src/acp`                                  | Closeout, GitHub            |
-| QM-06 Closeout gate and fix loop       | `src/closeout`                             | the ACP client              |
-| QM-07 `ask_team` elicitation           | `src/questions`                            | webhook verification        |
-| QM-08 GitHub App, PR, serial merge     | `src/github`                               | the state-machine table     |
-| QM-09 recovery, stop, caps             | `src/core/transition.ts`, `src/db/jobs.ts` | adapter internals           |
-| QM-11 status page                      | `src/web`                                  | the workflow                |
-| QM-12 sleep and wake                   | new `src/host`                             | merge logic                 |
-
-QM-09 is the owner of the edge table and the job claim. Other issues call `transition()`, `enqueueJob()`, and `enqueueOutbox()` without editing those files. `claimNextJob` and `dispatchOutbox` throw on purpose.
+Call `transition()`, `enqueueJob()`, and `enqueueOutbox()` from the owner module; do not edit the edge table or the job claim to add a second path.
 
 Domain rows are `work_item`, `run`, and `inbox_event`. Sibling items share `work_item.delegation_id`. `work_item.state` uses the unions in `src/core/states.ts`, and `transition()` is the work-item edge table.
 

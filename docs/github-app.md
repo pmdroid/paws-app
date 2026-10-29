@@ -41,7 +41,7 @@ A config that still sets `auth = "oauth"` or `auth = "gh"`, or a `GITHUB_AUTH` w
 
 ## Integrations
 
-Start Paws, sign in with Linear as a workspace owner, and open **Settings > Integrations**.
+Start Paws, sign in with Linear as a workspace admin, and open **Settings > Integrations**.
 
 1. Select **Continue with GitHub** and authorize the App.
 2. If the App needs repository access, choose **Choose repositories on GitHub**, select the repositories on GitHub, then return to Paws and refresh the list.

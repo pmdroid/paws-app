@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { FakeClock, OUTBOX_ACTIVITY } from "../core";
 import {
@@ -10,6 +11,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  setJournalSink,
 } from "./index";
 
 function harness(batchSize = 32) {
@@ -236,5 +238,67 @@ describe("transactional outbox", () => {
     dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[1]?.status).toBe("sent");
+  });
+
+  test("a claim error does not stop later delivery", async () => {
+    const clock = new FakeClock(5_000);
+    const real = openDatabase(":memory:");
+    migrate(real);
+    let fail = true;
+    const db = new Proxy(real, {
+      get(target, property, receiver) {
+        if (property === "query") {
+          return (sql: string) => {
+            const statement = target.query(sql);
+            if (!fail || !sql.includes("UPDATE outbox SET locked_by")) return statement;
+            return new Proxy(statement, {
+              get(statementTarget, statementProperty, statementReceiver) {
+                if (statementProperty === "all") {
+                  return () => {
+                    fail = false;
+                    throw new Error("SQLITE_BUSY: database is locked");
+                  };
+                }
+                const value = Reflect.get(statementTarget, statementProperty, statementReceiver);
+                return typeof value === "function" ? value.bind(statementTarget) : value;
+              },
+            });
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Database;
+    const lines: string[] = [];
+    const restore = setJournalSink((line) => lines.push(line));
+    const dispatcher = new OutboxDispatcher(db, clock);
+    enqueueOutbox(real, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "ses",
+      idempotencyKey: "once",
+      payload: { text: "hi" },
+      now: clock.now(),
+    });
+    const seen: number[] = [];
+    dispatcher.setHandler((message) => {
+      seen.push(message.id);
+    });
+    const controller = new AbortController();
+    let steps = 0;
+    try {
+      await dispatcher.run(controller.signal, async () => {
+        steps += 1;
+        if (seen.length > 0 || steps > 3) controller.abort();
+      });
+      expect(seen).toHaveLength(1);
+      expect(listOutbox(real)[0]?.status).toBe("sent");
+      expect(
+        lines.some((line) => line.includes("dispatcher.run.tick") && line.includes("SQLITE_BUSY")),
+      ).toBe(true);
+    } finally {
+      restore();
+      real.close();
+    }
   });
 });

@@ -8,7 +8,6 @@ export {
   linearReadRetry,
 } from "./acknowledge";
 export type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
-export { authorizeLinear, LINEAR_REDIRECT_URI } from "./authorize";
 export {
   budgetFromHeaders,
   createLinearLedger,

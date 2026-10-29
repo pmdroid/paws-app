@@ -139,6 +139,7 @@ export {
   extendJobLease,
   hasLiveJob,
   failJob,
+  actionableDue,
   getJob,
   listJobs,
   mergeLaneSql,
@@ -150,7 +151,13 @@ export {
   type JobStatus,
   type NewJob,
 } from "./jobs";
-export { JobLoop, type JobContext, type JobHandler } from "./loop";
+export {
+  JobLoop,
+  JOB_PROGRESS_STALE_MS,
+  type JobContext,
+  type JobHandler,
+  type JobLoopLiveness,
+} from "./loop";
 export { startLoops } from "./loops";
 export { migrate } from "./migrate";
 export {
