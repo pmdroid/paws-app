@@ -20,9 +20,11 @@ export const PUBLIC_POLICY_PATH = ".agents/closeout.yaml";
 
 /**
  * Most bytes of policy files Paws sends to the runner. A skill or a probe larger than this can
- * never reach it, so a probe past it fails the load.
+ * never reach it, so a probe past it fails the load. The policy bundle carries whole skill
+ * directories, so this is a bundle budget rather than a per-file one: 45 KB was below a single
+ * verified skill and blocked every item before Closeout could start.
  */
-export const POLICY_MAX_BYTES = 45_000;
+export const POLICY_MAX_BYTES = 4 * 1024 * 1024;
 
 type TreeRead =
   | { status: "file"; bytes: Uint8Array }
