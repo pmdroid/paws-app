@@ -9,14 +9,8 @@
     "test/local/*.ts",
     ".agents/probes/*.ts"
   ],
-  "project": [
-    "src/**/*.{ts,tsx}",
-    "scripts/**/*.ts",
-    "test/**/*.ts"
-  ],
-  "ignore": [
-    "test/fixtures/**"
-  ],
+  "project": ["src/**/*.{ts,tsx}", "scripts/**/*.ts", "test/**/*.ts"],
+  "ignore": ["test/fixtures/**"],
   "ignoreDependencies": [
     "@agentclientprotocol/claude-agent-acp",
     "@agentclientprotocol/codex-acp",
