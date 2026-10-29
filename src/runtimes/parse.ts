@@ -4,7 +4,8 @@ import { journalCaught } from "../journal";
  *
  * Only the tool list leaves this module. `[env]`, `[hooks]`, `[tasks]`,
  * `[settings]`, `[plugins]`, tool options such as `postinstall`, and any
- * templated value are dropped, so a repository cannot run code through mise.
+ * templated value are dropped. Every mise backend is carried, and backends such as
+ * `npm:`, `cargo:`, `pipx:` and `go:` run that package's own build or install steps on the runner.
  */
 
 /** One runtime the runner installs with mise, such as `{ tool: "node", version: "22" }`. */
@@ -16,7 +17,7 @@ export type RuntimeList = { runtimes: Runtime[]; notices: string[] };
 /** Repository-root files Paws reads, highest precedence first. */
 export const RUNTIME_FILES = ["mise.toml", ".mise.toml", ".tool-versions"] as const;
 
-/** mise core tools a task may ask for. Other backends are refused, except `aqua:`. */
+/** mise core tools. `core:` and asdf aliases resolve to these names. */
 export const CORE_RUNTIME_TOOLS = [
   "node",
   "python",
@@ -33,7 +34,12 @@ export const RUNTIME_LIMIT = 32;
 
 /** asdf names that mise maps to its core tools. */
 const ALIASES: Record<string, string> = { nodejs: "node", golang: "go" };
-const AQUA = /^aqua:[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){1,3}$/;
+/**
+ * Any mise tool: a registry short name such as `uv`, or `backend:name` such as `npm:prettier`,
+ * `cargo:ripgrep` or `go:github.com/owner/repo/cmd/x`. It cannot start with `-`, and it holds no
+ * spaces, quotes, brackets or `=` that mise would read as options.
+ */
+export const RUNTIME_TOOL = /^(?:[a-z][a-z0-9-]{0,31}:)?[A-Za-z0-9@][A-Za-z0-9@._/+-]{0,199}$/;
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 
 type Entry = { tool: string; versions: unknown[] };
@@ -66,7 +72,7 @@ export function parseRuntimeFiles(files: ReadonlyMap<string, Uint8Array>): Runti
       const tool = allowedTool(entry.tool);
       if (tool === undefined) {
         notices.push(
-          `Paws refused the mise tool ${quote(entry.tool)} in ${name}: only ${CORE_RUNTIME_TOOLS.join(", ")} and aqua: tools are allowed.`,
+          `Paws refused the mise tool ${quote(entry.tool)} in ${name}: it is not a mise tool name.`,
         );
         continue;
       }
@@ -135,7 +141,7 @@ function allowedTool(name: string): string | undefined {
   const bare = name.startsWith("core:") ? name.slice("core:".length) : name;
   const tool = ALIASES[bare] ?? bare;
   if ((CORE_RUNTIME_TOOLS as readonly string[]).includes(tool)) return tool;
-  return AQUA.test(name) ? name : undefined;
+  return RUNTIME_TOOL.test(name) ? name : undefined;
 }
 
 /** A version string, or the `version` of a tool table. Tool options are dropped. */

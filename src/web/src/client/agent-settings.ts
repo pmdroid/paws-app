@@ -11,7 +11,7 @@ const CI_FIX_ATTEMPTS_MAX = 10;
 const QUEUE_START_TIMEOUT_DEFAULT = 24;
 const QUEUE_START_TIMEOUT_MAX = 720;
 const OWNER_CAP_MAX = 1000;
-const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok" };
+const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok", opencode: "OpenCode" };
 
 export function settingsProblems(settings: AgentSettings): string[] {
   const profiles = [

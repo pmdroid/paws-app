@@ -238,6 +238,7 @@ describe("createVm", () => {
       [403, { error: "command not allowed" }, "unauthorized"],
       [409, { error: "busy" }, "conflict"],
       [422, { error: 'VM "ada-paws" already exists' }, "conflict"],
+      [422, { error: 'VM name "ada-paws" is not available' }, "name_unavailable"],
       [404, { error: "unknown command" }, "missing"],
       [422, { error: 'VM "ada-paws" not found' }, "missing"],
       [429, { error: "slow down" }, "rate_limited"],
@@ -253,6 +254,13 @@ describe("createVm", () => {
       expect(error.message).not.toContain("plan");
       expect(error.message).not.toContain("slow down");
     }
+  });
+
+  test("a name exe.dev holds for someone else is not blamed on the size or pool", async () => {
+    const { exe } = client(() => json({ error: 'VM name "ada-paws" is not available' }, 422));
+    const error = await failure(exe.createVm("ada-paws", { cpu: 8, pool: "build" }));
+    expectCode(error, "createVm", "name_unavailable");
+    expect(error.message).not.toContain("[member_vm]");
   });
 
   test("a 200 `{error}` body is a refused command", async () => {

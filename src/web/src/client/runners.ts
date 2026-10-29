@@ -437,8 +437,13 @@ export function hostEnrollmentCommand(enrollment: HostEnrollment & { config: obj
   ].join(" && \\\n  ");
 }
 
-const AGENTS = ["claude", "codex", "grok"] as const;
-const AGENT_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
+const AGENTS = ["claude", "codex", "grok", "opencode"] as const;
+const AGENT_LABELS: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  grok: "Grok",
+  opencode: "OpenCode",
+};
 const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
   signed_in: ["ok", "Signed in"],
   signed_out: ["bad", "Signed out"],
@@ -713,7 +718,7 @@ export function waitingLabel(tasks: number, runner: string): string {
 
 export function runnerSkillsMarkup(skills: readonly RunnerSkill[], runner: string): string {
   if (!skills.length)
-    return '<p class="muted">No skills registered. Owners and admins add them in Settings → Agents.</p>';
+    return '<p class="muted">No skills registered. Admins add them in Settings → Agents.</p>';
   const rows = skills
     .map((skill) => {
       const [tone, state] = SKILL_STATES[skill.state] ?? SKILL_STATES.installing;

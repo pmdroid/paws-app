@@ -104,8 +104,9 @@ async function installLocked(
   try {
     const configDir = join(scratch, "config");
     mkdirSync(configDir, { mode: 0o700 });
+    const base = "/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin";
     const env: Record<string, string> = {
-      PATH: "/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin",
+      PATH: base,
       HOME: options.home,
       TMPDIR: scratch,
       MISE_DATA_DIR: context.dataDir,
@@ -158,6 +159,8 @@ async function installLocked(
         };
       installed.push(runtime);
       binPaths.push(join(dir, "bin"));
+      // A later `npm:`, `cargo:` or `pipx:` install finds the node, rust or python listed before it.
+      env.PATH = [...binPaths, base].join(delimiter);
     }
     return { ok: true, durationMs: Date.now() - context.started, installed, binPaths };
   } finally {

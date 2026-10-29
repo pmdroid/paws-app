@@ -86,7 +86,8 @@ export function createLinearClient(options: {
         const detail = message !== null ? `: ${message}` : "";
         throw new LinearHttpError(response.status, detail, response.headers, ledger.now());
       }
-      if (message !== null) throw new Error(`Linear GraphQL: ${message}`);
+      if (message !== null)
+        throw new LinearGraphQLError(message, Array.isArray(errors) ? errors : []);
       if (!isRecord(json)) throw new Error("Linear GraphQL returned no data");
       if (json["data"] === undefined) throw new Error("Linear GraphQL returned no data");
       return json["data"];
@@ -160,5 +161,21 @@ export class LinearHttpError extends Error {
     this.name = "LinearHttpError";
     this.status = status;
     this.retryAfterMs = resetRetryMs(headers, now) ?? undefined;
+  }
+}
+
+/** Structured GraphQL refusals are distinct from transport failures with an uncertain write. */
+export class LinearGraphQLError extends Error {
+  readonly codes: string[];
+  readonly errorsCount: number;
+  constructor(message: string, errors: readonly unknown[]) {
+    super(`Linear GraphQL: ${message}`);
+    this.name = "LinearGraphQLError";
+    this.errorsCount = errors.length;
+    this.codes = errors.flatMap((error) =>
+      isRecord(error) && isRecord(error.extensions) && typeof error.extensions.code === "string"
+        ? [error.extensions.code]
+        : [],
+    );
   }
 }

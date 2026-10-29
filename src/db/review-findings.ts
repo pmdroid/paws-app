@@ -372,3 +372,14 @@ function mapRow(row: Row): ReviewFindingRecord {
     filedIssue: row.filed_issue,
   };
 }
+
+/** Read a bounded member set without scanning the global findings table. */
+export function reviewFindingsByIds(db: Database, ids: readonly number[]): ReviewFindingRecord[] {
+  if (!ids.length) return [];
+  return db
+    .query<Row, [string]>(
+      "SELECT * FROM review_finding WHERE id IN (SELECT value FROM json_each(?))",
+    )
+    .all(JSON.stringify(ids))
+    .map(mapRow);
+}

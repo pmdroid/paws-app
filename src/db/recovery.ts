@@ -12,7 +12,12 @@ import { enqueueJobOnce } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
 import { applyWorkItemEvent, getWorkItem, listInFlightItems, listWorkItemsByStates } from "./items";
 import type { WorkItemRecord } from "./items";
-import { markPawsAlive, runnerLeaseCutoff, shiftRunnerLeasesForDowntime } from "./runner-lease";
+import {
+  markPawsAlive,
+  runnerHoldsRunWork,
+  runnerLeaseCutoff,
+  shiftRunnerLeasesForDowntime,
+} from "./runner-lease";
 import { mergeCallInFlight } from "./remote-merges";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { immediate } from "./tx";
@@ -167,13 +172,7 @@ function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boole
   return (
     (item.state === "running" || item.state === "verifying") &&
     item.currentRunId !== null &&
-    db
-      .query(
-        `SELECT 1 FROM runner_work w WHERE w.run_id=?1 AND w.ended_at IS NULL AND (w.lease_until>?2 OR
-         (?3=0 AND EXISTS(SELECT 1 FROM runner_result r
-           WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)))`,
-      )
-      .get(item.currentRunId, runnerLeaseCutoff(now), item.cancelRequested ? 1 : 0) !== null
+    runnerHoldsRunWork(db, item.currentRunId, now, item.cancelRequested)
   );
 }
 

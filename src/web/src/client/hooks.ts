@@ -22,7 +22,9 @@ export type HookListing = {
   agents: HookAgent[];
   skills: { name: string; agents: string[] }[];
   limit: number;
+  limitBytes?: number;
   notice?: string;
+  uploaded?: { skill: string; path: string; command: string };
 };
 
 type HookDraft = {
@@ -87,6 +89,7 @@ export function renderHookSettings(view: HookView): string {
   const skills = data.skills.length
     ? `<div class="settings-field"><label for="hook-skill">Script from a skill</label><select id="hook-skill" name="hook-skill"><option value="">No skill</option>${data.skills.map((skill) => `<option value="${esc(skill.name)}" ${draft.skill === skill.name ? "selected" : ""}>${esc(skill.name)}</option>`).join("")}</select><small class="sub">The command runs with $PAWS_SKILL_DIR set to the skill's installed folder.</small></div>`
     : "";
+  const megabytes = Math.round((data.limitBytes ?? 50 * 1024 * 1024) / (1024 * 1024));
   return `<section class="settings-section">${intro}<div class="col">${table}${feedback}
     <form id="hook-add-form" class="col"><fieldset class="settings-fields" ${busy ? "disabled" : ""}>
       <div class="settings-field"><label for="hook-event">Add a hook</label><select id="hook-event" name="hook-event">${data.events.map((event) => `<option value="${event.id}" ${draft.event === event.id ? "selected" : ""}>${esc(event.label)}</option>`).join("")}</select></div>
@@ -94,6 +97,9 @@ export function renderHookSettings(view: HookView): string {
       <details class="skill-options"><summary>Tool matcher, timeout and skill</summary><div class="settings-controls"><div class="settings-field"><label for="hook-matcher">Tool matcher</label><input id="hook-matcher" name="hook-matcher" value="${esc(draft.matcher)}" placeholder="Edit|Write" autocapitalize="none" spellcheck="false" aria-describedby="hook-matcher-help"><small class="sub" id="hook-matcher-help">Only for a hook before a tool call. Empty matches every tool.</small></div><div class="settings-field"><label for="hook-timeout">Timeout in seconds</label><input id="hook-timeout" name="hook-timeout" type="number" min="1" max="600" inputmode="numeric" value="${esc(draft.timeout)}"></div>${skills}</div></details>
       <div class="settings-field"><span class="sub">Agents</span><div class="row">${data.agents.map((agent) => `<label class="settings-inherit"><input type="checkbox" name="hook-agent" value="${agent}" ${draft.agents.includes(agent) ? "checked" : ""}>${AGENT_NAMES[agent]}</label>`).join("")}</div></div>
       <div class="row"><button class="btn primary" type="submit">Add hook</button></div>
+    </fieldset></form>
+    <form id="hook-upload-form" class="col"><fieldset class="settings-fields" ${busy ? "disabled" : ""}>
+      <div class="settings-field"><label for="hook-upload">Upload a hook script</label><input id="hook-upload" name="hook-upload" type="file" aria-describedby="hook-upload-help"><small class="sub" id="hook-upload-help">Upload one executable script (up to ${megabytes} MB). Paws stores it as a Claude/Codex skill bundle under hooks/, makes it executable, prefills $PAWS_SKILL_DIR, and sets correct settings to run it—review and add the hook to finish.</small></div>
     </fieldset></form></div></section>`;
 }
 
@@ -101,16 +107,18 @@ async function hookRequest(
   engine: string,
   init: { method: "GET" } | { method: "POST"; body: unknown },
 ): Promise<HookListing> {
+  const upload = init.method === "POST" && init.body instanceof FormData;
   const response = await fetch(new URL(PATH, engine), {
     method: init.method,
     cache: "no-store",
     headers: {
       Accept: "application/json",
-      ...(init.method === "POST"
-        ? { "x-paws-csrf": readCsrfToken(document), "Content-Type": "application/json" }
-        : {}),
+      ...(init.method === "POST" ? { "x-paws-csrf": readCsrfToken(document) } : {}),
+      ...(init.method === "POST" && !upload ? { "Content-Type": "application/json" } : {}),
     },
-    ...(init.method === "POST" ? { body: JSON.stringify(init.body) } : {}),
+    ...(init.method === "POST"
+      ? { body: upload ? (init.body as FormData) : JSON.stringify(init.body) }
+      : {}),
   });
   const data = await response.json().catch((caughtError1) => {
     journalCaught(caughtError1, "hooks.hookRequest.json", null);
@@ -167,6 +175,23 @@ export function createHookSettings(): {
       view.data = data;
       view.denied = false;
       view.notice = data.notice ?? null;
+      if (data.uploaded) {
+        const draft = view.draft ??
+          readDraft() ?? {
+            event: "after_edit",
+            matcher: "",
+            command: "",
+            timeout: "60",
+            skill: "",
+            agents: data.agents,
+          };
+        view.draft = {
+          ...draft,
+          command: data.uploaded.command,
+          skill: data.uploaded.skill,
+          agents: draft.agents.length ? draft.agents : data.agents,
+        };
+      }
       if (reset) view.draft = undefined;
     } catch (error) {
       journalCaught(error, "hooks.createHookSettings.hookRequest", null);
@@ -187,6 +212,8 @@ export function createHookSettings(): {
   const submit = (event: Event) => {
     event.preventDefault();
     if (view.busy) return;
+    const form = event.target as HTMLFormElement;
+    if (form.id === "hook-upload-form") return;
     const draft = readDraft();
     if (!draft || !draft.command.trim() || draft.agents.length === 0) {
       view.draft = draft;
@@ -210,11 +237,28 @@ export function createHookSettings(): {
       true,
     );
   };
+  const change = (event: Event) => {
+    const input = event.target as HTMLInputElement;
+    if (input.name !== "hook-upload" || !input.files?.length || view.busy || !engine) return;
+    const file = input.files[0]!;
+    const draft = readDraft();
+    const form = new FormData();
+    form.append("folder", file.name);
+    form.append("path", file.name);
+    form.append("file", file);
+    for (const agent of draft?.agents?.length
+      ? draft.agents
+      : (view.data?.agents ?? ["claude", "codex"]))
+      form.append("agents", agent);
+    input.value = "";
+    void run("Uploading hook script…", form, false);
+  };
   return {
     mount(next, nextEngine) {
       if (root === next && engine === nextEngine) return;
       root?.removeEventListener("click", click);
       root?.removeEventListener("submit", submit);
+      root?.removeEventListener("change", change);
       if (engine !== nextEngine) {
         generation += 1;
         view = { data: null, busy: null, error: null, notice: null };
@@ -223,6 +267,7 @@ export function createHookSettings(): {
       engine = nextEngine;
       root.addEventListener("click", click);
       root.addEventListener("submit", submit);
+      root.addEventListener("change", change);
       if (!engine) {
         view.error = "Connect to your Paws dashboard to manage hooks.";
         paint();

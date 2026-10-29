@@ -16,6 +16,7 @@ import type { ProjectOverview } from "./project-scope";
 import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearMergeChoices, LinearMergeContext } from "./merge-context";
 import type { SubIssueRequest } from "./sub-issues";
+import type { FiledFindingIssue, FindingIssueRequest } from "./finding-issues";
 
 export type TrackerRequestOptions = {
   signal?: AbortSignal;
@@ -52,6 +53,14 @@ export interface TrackerAdapter {
     request: SubIssueRequest,
     options?: TrackerRequestOptions,
   ): Promise<FiledSubIssue[]>;
+  /**
+   * File an issue from a pre-existing review finding next to the related issue, in Triage and
+   * not delegated. Idempotent per `key`.
+   */
+  fileFindingIssue?(
+    request: FindingIssueRequest,
+    options?: TrackerRequestOptions,
+  ): Promise<FiledFindingIssue>;
   /** The issue's project and labels, matched by Settings → Merging when a task starts. */
   issueMergeContext?(id: string, options?: TrackerRequestOptions): Promise<LinearMergeContext>;
   mergeChoices?(options?: TrackerRequestOptions): Promise<LinearMergeChoices>;

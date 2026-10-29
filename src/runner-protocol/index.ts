@@ -21,6 +21,7 @@ export {
   RunnerHookSchema,
   RunnerRuntimeSchema,
   RunnerRuntimesSchema,
+  legacyRuntimeTool,
   RunnerInstalledRuntimeSchema,
   RunnerInstalledRuntimesSchema,
   SignedRunnerCommandSchema,
@@ -123,9 +124,12 @@ export {
 
 export {
   type RunnerVersion,
+  OPENCODE_RUNNER_VERSION,
+  SKILL_HOOK_RUNNER_VERSION,
   REBASE_RUNNER_VERSION,
   SESSION_RESUME_RUNNER_VERSION,
   RUNTIMES_RUNNER_VERSION,
+  ANY_MISE_BACKEND_RUNNER_VERSION,
   CLAUDE_SESSION_SNAPSHOT_RUNNER_VERSION,
   CLAUDE_SESSION_RESTORE_RUNNER_VERSION,
   HANDOVER_RUNNER_VERSION,
@@ -135,4 +139,14 @@ export {
   REVIEW_COMMAND_RUNNER_VERSION,
   CANDIDATE_REBASE_RUNNER_VERSION,
   OFFLINE_LEASE_RUNNER_VERSION,
+  FINDING_GROUPS_RUNNER_VERSION,
+  CLOSEOUT_CI_KEY_RUNNER_VERSION,
+  CLOSEOUT_POLICY_KEYS_RUNNER_VERSION,
+  CLOSEOUT_POLICY_CHUNKS_RUNNER_VERSION,
 } from "./versions";
+export {
+  POLICY_KEY_RUNNER_VERSIONS,
+  policyKeysAbove,
+  runnerVersionAtLeast,
+  type PolicyKeyNeed,
+} from "./policy-keys";

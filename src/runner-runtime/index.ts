@@ -2,7 +2,12 @@ import { journalCaught, journalRejection } from "../journal";
 import { closeSync, constants, fsyncSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { prepareRepositorySnapshot } from "../acp";
-import { isPushOutage, pushOutageProbeDelayMs, runGitHubGit } from "../github";
+import {
+  isPushOutage,
+  PUBLICATION_STAGING_FAILURE,
+  pushOutageProbeDelayMs,
+  runGitHubGit,
+} from "../github";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import { RUNNER_ARTIFACT_CHUNK_BYTES } from "../runner-artifacts";
@@ -1228,17 +1233,24 @@ export async function openRunnerRuntime(options: {
         }
         const tries = (entry.pushTries ?? 0) + 1;
         entry.pushTries = tries;
-        const permanent = PERMANENT_PUSH_REJECTION.test(error.message);
+        // Staging fails on the runner before any push, so a retry fails the same way.
+        const staging = error.message.indexOf(PUBLICATION_STAGING_FAILURE);
+        const permanent = staging >= 0 || PERMANENT_PUSH_REJECTION.test(error.message);
         if (!permanent && tries <= CANDIDATE_PUSH_RETRY_MS.length) {
           entry.pushAt = monotonic() + CANDIDATE_PUSH_RETRY_MS[tries - 1]!;
           throw error;
         }
-        const failure = { branch: credential.branch, error: error.message.slice(0, 4096) };
+        const failure = {
+          branch: credential.branch,
+          error: (staging >= 0 ? error.message.slice(staging) : error.message).slice(0, 4096),
+        };
         await interrupt(
           entry,
-          permanent
-            ? `GitHub rejected the candidate push to ${failure.branch}: ${failure.error}`
-            : `the candidate push to ${failure.branch} failed ${tries} times: ${failure.error}`,
+          staging >= 0
+            ? `the candidate for ${failure.branch} could not be staged for the push: ${failure.error}`
+            : permanent
+              ? `GitHub rejected the candidate push to ${failure.branch}: ${failure.error}`
+              : `the candidate push to ${failure.branch} failed ${tries} times: ${failure.error}`,
           true,
           failure,
         );

@@ -33,6 +33,7 @@ import {
   RUNNER_LEASE_GRACE_MS,
   RUNNER_LEASE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
+  OPENCODE_RUNNER_VERSION,
   RunnerCommandSchema,
   runnerReleaseAtLeast,
   RunnerEventSchema,
@@ -332,7 +333,29 @@ export function createRunnerWork(options: {
     if (!grant) throw new Error("Run grant is invalid or expired.");
     return work;
   }
+  function supportsAgent(runnerId: string, agent: string) {
+    if (agent !== "opencode") return true;
+    const version = db
+      .query<{ version: string | null }, [string]>(
+        "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+      )
+      .get(runnerId)?.version;
+    const parts = version
+      ?.match(/^(\d+)\.(\d+)\.(\d+)(?:$|[-+])/)
+      ?.slice(1)
+      .map(Number);
+    if (!parts) return false;
+    for (const [index, part] of parts.entries())
+      if (part !== OPENCODE_RUNNER_VERSION[index]) return part > OPENCODE_RUNNER_VERSION[index]!;
+    return true;
+  }
   function queue(command: RunnerCommand) {
+    const agent =
+      "profile" in command ? command.profile.agent : "agent" in command ? command.agent : null;
+    if (agent && !supportsAgent(command.runnerId, agent))
+      throw new Error(
+        `OpenCode needs runner ${OPENCODE_RUNNER_VERSION.join(".")} or later. Upgrade the runner, then try again.`,
+      );
     const envelope = signRunnerCommand({
       keyId: options.keyId,
       privateKey: options.privateKey,
@@ -353,6 +376,7 @@ export function createRunnerWork(options: {
     return envelope;
   }
   return {
+    supportsAgent,
     identity(runnerId: string) {
       return runner(runnerId);
     },
@@ -430,7 +454,8 @@ export function createRunnerWork(options: {
           runnerId: command.runnerId,
           agent: command.profile.agent,
           hooks:
-            command.type === "run" && command.profile.agent !== "grok"
+            command.type === "run" &&
+            (command.profile.agent === "claude" || command.profile.agent === "codex")
               ? [
                   { name: "Paws Closeout", event: "stop" },
                   ...(command.hooks ?? []).map((hook) => ({
@@ -583,7 +608,9 @@ export function createRunnerWork(options: {
           agents &&
           runnerAgentTargets(db, runnerId).flatMap((target) => {
             const parsed = RunnerAgentTargetSchema.safeParse(target);
-            return parsed.success ? [parsed.data] : [];
+            return parsed.success && supportsAgent(runnerId, parsed.data.agent)
+              ? [parsed.data]
+              : [];
           });
         const rows = db
           .query<Assignment, [string]>(
