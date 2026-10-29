@@ -11,6 +11,7 @@ import {
   recordReviewEscape,
   settlePullReview,
   type PullReviewRecord,
+  type PullFeedbackWait,
   type PullReviewState,
   type WorkItemRecord,
 } from "../db";
@@ -42,6 +43,7 @@ export function recordReviewDelivery(
   event: string,
   body: unknown,
   now: number,
+  wait?: PullFeedbackWait,
 ): boolean {
   if (event !== "pull_request_review") return false;
   const payload = record(body);
@@ -74,17 +76,21 @@ export function recordReviewDelivery(
     if (item === null) return false;
     const opened = getItemPullRequest(db, item.id);
     if (opened !== null && opened.pullNumber !== pullNumber) return false;
-    return recordPullReview(db, {
-      reviewId,
-      itemId: item.id,
-      state: state as PullReviewState,
-      pullNumber,
-      head: typeof review.commit_id === "string" ? review.commit_id : null,
-      reviewer:
-        typeof record(review.user).login === "string" ? String(record(review.user).login) : null,
-      body: typeof review.body === "string" ? review.body : "",
-      receivedAt: now,
-    });
+    return recordPullReview(
+      db,
+      {
+        reviewId,
+        itemId: item.id,
+        state: state as PullReviewState,
+        pullNumber,
+        head: typeof review.commit_id === "string" ? review.commit_id : null,
+        reviewer:
+          typeof record(review.user).login === "string" ? String(record(review.user).login) : null,
+        body: typeof review.body === "string" ? review.body : "",
+        receivedAt: now,
+      },
+      wait,
+    );
   });
 }
 

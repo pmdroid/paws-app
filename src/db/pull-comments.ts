@@ -39,18 +39,33 @@ type Row = {
 
 /**
  * Quiet time after the last comment or changes-requested review before they go to the agent
- * together.
+ * together, unless `[merge] comment_quiet_seconds` says otherwise.
  */
 export const PULL_COMMENT_SETTLE_MS = 60_000;
-/** The longest a steady stream of comments and reviews delays the restart. */
+/**
+ * The longest a steady stream of comments and reviews delays the restart, unless
+ * `[merge] comment_max_wait_seconds` says otherwise.
+ */
 export const PULL_COMMENT_MAX_SETTLE_MS = 5 * 60_000;
+
+/** How long comments and reviews are collected: `quietMs` after the latest, `maxMs` at most. */
+export type PullFeedbackWait = { quietMs: number; maxMs: number };
+export const DEFAULT_PULL_FEEDBACK_WAIT: PullFeedbackWait = {
+  quietMs: PULL_COMMENT_SETTLE_MS,
+  maxMs: PULL_COMMENT_MAX_SETTLE_MS,
+};
 
 /**
  * Move the item's pending comment job and changes-requested review jobs to a quiet minute after
  * `receivedAt`, never past five minutes after each job was created. A review and the comments and
  * bot reviews that follow it then reach the agent in one restart. The number of jobs moved.
  */
-export function deferPullFeedback(db: Database, itemId: string, receivedAt: number): number {
+export function deferPullFeedback(
+  db: Database,
+  itemId: string,
+  receivedAt: number,
+  wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
+): number {
   return db.run(
     `UPDATE job SET run_at = MIN(MAX(run_at, ?), created_at + ?)
      WHERE status = 'pending' AND (
@@ -58,8 +73,8 @@ export function deferPullFeedback(db: Database, itemId: string, receivedAt: numb
        OR (queue = ? AND job_key IN (SELECT 'pull-review:' || review_id FROM pull_review
                                      WHERE item_id = ? AND handled_at IS NULL)))`,
     [
-      receivedAt + PULL_COMMENT_SETTLE_MS,
-      PULL_COMMENT_MAX_SETTLE_MS,
+      receivedAt + wait.quietMs,
+      Math.max(wait.maxMs, wait.quietMs),
       JOB_KIND.pullComments,
       itemId,
       JOB_KIND.pullReview,
@@ -77,6 +92,7 @@ export function deferPullFeedback(db: Database, itemId: string, receivedAt: numb
 export function recordPullComment(
   db: Database,
   comment: Omit<PullCommentRecord, "handledAt" | "outcome">,
+  wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
 ): boolean {
   const inserted = db.run(
     `INSERT INTO pull_comment (source, comment_id, item_id, pull_number, review_id, author, body, path, line, received_at)
@@ -95,8 +111,8 @@ export function recordPullComment(
     ],
   );
   if (inserted.changes === 0) return false;
-  const settle = comment.receivedAt + PULL_COMMENT_SETTLE_MS;
-  deferPullFeedback(db, comment.itemId, comment.receivedAt);
+  const settle = comment.receivedAt + wait.quietMs;
+  deferPullFeedback(db, comment.itemId, comment.receivedAt, wait);
   const gathering = db
     .query<{ n: number }, [string, string]>(
       `SELECT count(*) AS n FROM job WHERE queue = ? AND status = 'pending'

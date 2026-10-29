@@ -42,6 +42,7 @@ export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles }
 
 export {
   DEFAULT_CI_FIX_ATTEMPTS,
+  DEFAULT_COMMENT_WAIT,
   DEFAULT_IGNORED_COMMENT_BOTS,
   DEFAULT_MERGE_CHOICE,
   ignoredCommentBots,
@@ -49,6 +50,7 @@ export {
   MAX_CI_FIX_ATTEMPTS,
   MERGE_ORDERS,
   highRiskPaths,
+  parseCommentWait,
   parseHighRiskPathSettings,
   parseMergePolicy,
   parseMergeSettings,
@@ -59,6 +61,7 @@ export {
   writeMergePolicy,
 } from "./merge";
 export type {
+  CommentWait,
   MainMoved,
   MergeChoice,
   MergeLevel,

@@ -11,6 +11,7 @@ import {
   recordReviewEscape,
   settlePullComments,
   type PullCommentRecord,
+  type PullFeedbackWait,
   type WorkItemRecord,
 } from "../db";
 import type { ReviewThread } from "../github";
@@ -44,6 +45,8 @@ export type PullCommentFilter = {
   appLogin(repository: string): string | null;
   /** Lowercased bot logins whose comments only report status on `owner/repo`. */
   ignoredBots(repository: string): readonly string[];
+  /** How long comments and reviews are collected before one restart; the defaults when missing. */
+  commentWait?(): PullFeedbackWait;
 };
 
 const NO_FILTER: PullCommentFilter = {
@@ -110,18 +113,22 @@ export function recordCommentDelivery(
       // which also leaves out every fork.
       const item = itemForPull(db, owner, repo, pullNumber);
       if (item === null) return false;
-      return recordPullComment(db, {
-        source: "conversation",
-        commentId,
-        itemId: item.id,
-        pullNumber,
-        reviewId: null,
-        author,
-        body: text,
-        path: null,
-        line: null,
-        receivedAt: now,
-      });
+      return recordPullComment(
+        db,
+        {
+          source: "conversation",
+          commentId,
+          itemId: item.id,
+          pullNumber,
+          reviewId: null,
+          author,
+          body: text,
+          path: null,
+          line: null,
+          receivedAt: now,
+        },
+        filter.commentWait?.(),
+      );
     });
   }
   const pull = record(payload.pull_request);
@@ -144,18 +151,22 @@ export function recordCommentDelivery(
     if (opened !== null && opened.pullNumber !== pullNumber) return false;
     const reviewId = inline ? comment.pull_request_review_id : commentId;
     const line = comment.line ?? comment.original_line;
-    return recordPullComment(db, {
-      source: inline ? "inline" : "review",
-      commentId,
-      itemId: item.id,
-      pullNumber,
-      reviewId: typeof reviewId === "number" ? reviewId : null,
-      author,
-      body: text,
-      path: inline && typeof comment.path === "string" ? comment.path : null,
-      line: inline && typeof line === "number" ? line : null,
-      receivedAt: now,
-    });
+    return recordPullComment(
+      db,
+      {
+        source: inline ? "inline" : "review",
+        commentId,
+        itemId: item.id,
+        pullNumber,
+        reviewId: typeof reviewId === "number" ? reviewId : null,
+        author,
+        body: text,
+        path: inline && typeof comment.path === "string" ? comment.path : null,
+        line: inline && typeof line === "number" ? line : null,
+        receivedAt: now,
+      },
+      filter.commentWait?.(),
+    );
   });
 }
 

@@ -14,6 +14,7 @@ import {
   recordItemPullRequest,
   unpostedReviewReplies,
   unreportedReviewReplies,
+  type PullFeedbackWait,
 } from "../db";
 import {
   commentOnPullRequest,
@@ -120,6 +121,7 @@ function setup() {
     resolveReviewThread: (threadId) => resolveReviewThread({ ...access, threadId }),
   };
   let delivery = 0;
+  let wait: PullFeedbackWait | undefined;
   const send = (event: string, payload: Record<string, unknown>) =>
     acceptGitHubDelivery(
       db,
@@ -132,7 +134,7 @@ function setup() {
         }),
       },
       clock,
-      FILTER,
+      wait ? { ...FILTER, commentWait: () => wait! } : FILTER,
     );
   const pull = () => ({
     number: 7,
@@ -184,6 +186,7 @@ function setup() {
     inline,
     conversation,
     tick: (ms: number) => (clock += ms),
+    setWait: (value: PullFeedbackWait) => (wait = value),
   };
 }
 
@@ -221,6 +224,38 @@ describe("a review and the comments after it reach the agent together", () => {
     });
     expect(reviewJob().runAt).toBe(41_000 + PULL_COMMENT_SETTLE_MS);
     expect(jobs(db, JOB_KIND.pullComments)[0]!.runAt).toBe(41_000 + PULL_COMMENT_SETTLE_MS);
+  });
+
+  test("the wait from Settings › Merging replaces the default quiet minute and five-minute cap", () => {
+    const { db, review, inline, tick, setWait } = setup();
+    setWait({ quietMs: 10_000, maxMs: 25_000 });
+    review({
+      id: 601,
+      author: "pascal",
+      state: "changes_requested",
+      body: "Please fix the ranking.",
+    });
+    const reviewJob = () => jobs(db, JOB_KIND.pullReview)[0]!;
+    expect(reviewJob().runAt).toBe(11_000);
+    tick(8_000);
+    inline({
+      id: 9101,
+      review: 701,
+      author: "cursor[bot]",
+      body: "Bug: the tenant.",
+      path: "src/cache.ts",
+    });
+    expect(reviewJob().runAt).toBe(19_000);
+    tick(8_000);
+    inline({
+      id: 9102,
+      review: 702,
+      author: "cursor[bot]",
+      body: "Bug: another.",
+      path: "src/cache.ts",
+    });
+    // Capped at 25 seconds after the review job was created.
+    expect(reviewJob().runAt).toBe(26_000);
   });
 
   test("the review restart carries the bot comment, and the comment job then has nothing left", async () => {

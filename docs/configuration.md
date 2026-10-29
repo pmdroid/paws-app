@@ -19,19 +19,19 @@ For a scripted install, pass `--non-interactive` with flags such as `--paws-port
 
 ## `config.toml`
 
-| Section                            | Keys                                                                | Notes                                                                                              |
-| ---------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `[linear]`                         | `team`, `team_id`, `viewer_id`, `secret`, `client_file`, `webhooks` | Written by setup. `secret` and `client_file` are paths under `~/.paws`, never the secret itself.   |
-| `[github]`                         | `auth`, `repo`, `repos`                                             | `auth` accepts only `"app"`; see [GitHub App](github-app.md).                                      |
-| `[tracker]`                        | `kind`                                                              | Only `"linear"`.                                                                                   |
-| `[checkout]`                       | `path`                                                              | The repository checkout Paws works from.                                                           |
-| `[checkout.projects."owner/repo"]` | `exclude`                                                           | Folders left out of worktrees; see the [README](../README.md).                                     |
-| `[caps]`                           | `max_turns`, `max_awake_ms`                                         | Turn and awake-time caps.                                                                          |
-| `[agents]`, `[agents.grok]`        | `implementer`, `path`, `allow_api_key`                              | `implementer` is `claude`, `grok` or `codex`. Models and effort are set in Settings, under Agents. |
-| `[closeout.projects."owner/repo"]` | `policy_root`                                                       | A [local Closeout policy](local-closeout.md).                                                      |
-| `[skills.projects."owner/repo"]`   | `root`                                                              | [Local skills](local-skills.md).                                                                   |
-| `[merge]`                          | `order`, `main_moved`, `ci_fix_attempts`                            | See [below](#merge).                                                                               |
-| `[queue]`                          | `start_timeout_hours`, `max_running_per_owner`                      | See [below](#queue).                                                                               |
+| Section                            | Keys                                                                                          | Notes                                                                                              |
+| ---------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `[linear]`                         | `team`, `team_id`, `viewer_id`, `secret`, `client_file`, `webhooks`                           | Written by setup. `secret` and `client_file` are paths under `~/.paws`, never the secret itself.   |
+| `[github]`                         | `auth`, `repo`, `repos`                                                                       | `auth` accepts only `"app"`; see [GitHub App](github-app.md).                                      |
+| `[tracker]`                        | `kind`                                                                                        | Only `"linear"`.                                                                                   |
+| `[checkout]`                       | `path`                                                                                        | The repository checkout Paws works from.                                                           |
+| `[checkout.projects."owner/repo"]` | `exclude`                                                                                     | Folders left out of worktrees; see the [README](../README.md).                                     |
+| `[caps]`                           | `max_turns`, `max_awake_ms`                                                                   | Turn and awake-time caps.                                                                          |
+| `[agents]`, `[agents.grok]`        | `implementer`, `path`, `allow_api_key`                                                        | `implementer` is `claude`, `grok` or `codex`. Models and effort are set in Settings, under Agents. |
+| `[closeout.projects."owner/repo"]` | `policy_root`                                                                                 | A [local Closeout policy](local-closeout.md).                                                      |
+| `[skills.projects."owner/repo"]`   | `root`                                                                                        | [Local skills](local-skills.md).                                                                   |
+| `[merge]`                          | `order`, `main_moved`, `ci_fix_attempts`, `comment_quiet_seconds`, `comment_max_wait_seconds` | See [below](#merge).                                                                               |
+| `[queue]`                          | `start_timeout_hours`, `max_running_per_owner`                                                | See [below](#queue).                                                                               |
 
 ### `[merge]`
 
@@ -55,6 +55,8 @@ order = "ci-green"
 
   A changed Closeout policy sends a carried head back through Closeout under every value.
 
+- **`comment_quiet_seconds`**: how long Paws waits after the latest pull request comment or changes-requested review before it sends what it collected to the agent in one fix round. Default 60, from 0 to 3600. Settings › Merging › Pull request comments sets it as "Quiet time". A change applies to the next comment, without a restart.
+- **`comment_max_wait_seconds`**: the longest Paws keeps collecting while comments keep arriving, counted from the first one. Default 300, from 0 to 3600, and never below the quiet time. Settings › Merging calls it "Longest wait".
 - **`ci_fix_attempts`**: legacy. Still read and shown in Settings, but it no longer sets a separate CI budget. Red CI on the pull request is a fix round and counts against the policy's `retry.fix_rounds_per_item`.
 - **`[merge.repositories."owner/repo"] packages`**: package roots such as `apps/*`. With `main_moved = "overlap"`, a change anywhere under the same root on main counts as an overlap.
 - **`[merge.repositories."owner/repo"] ignore_comment_bots`**: bot logins such as `codecov[bot]` whose pull request comments only report status, so they never restart the item. Replaces the default list (Cloudflare Pages, Linear, Codecov, Netlify, Vercel, changesets) for that repository; `[]` ignores no bot.

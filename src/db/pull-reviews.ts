@@ -1,7 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import { enqueueJobOnce } from "./jobs";
-import { deferPullFeedback, PULL_COMMENT_SETTLE_MS } from "./pull-comments";
+import {
+  DEFAULT_PULL_FEEDBACK_WAIT,
+  deferPullFeedback,
+  type PullFeedbackWait,
+} from "./pull-comments";
 
 export type PullReviewState = "changes_requested" | "commented";
 export type PullReviewOutcome = "restarted" | "asked" | "posted" | "dropped";
@@ -44,6 +48,7 @@ export function pullReviewJobKey(reviewId: number): string {
 export function recordPullReview(
   db: Database,
   review: Omit<PullReviewRecord, "handledAt" | "outcome">,
+  wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
 ): boolean {
   const inserted = db.run(
     `INSERT INTO pull_review (review_id, item_id, state, pull_number, head, reviewer, body, received_at)
@@ -62,13 +67,13 @@ export function recordPullReview(
   if (inserted.changes === 0) return false;
   // A review waits out the same quiet minute as comments, so the bot reviews and comments that
   // follow it reach the agent in the same restart.
-  deferPullFeedback(db, review.itemId, review.receivedAt);
+  deferPullFeedback(db, review.itemId, review.receivedAt, wait);
   // No `itemId` in the payload: a restart cancels the item's jobs, and this one must outlive them.
   enqueueJobOnce(db, {
     queue: JOB_KIND.pullReview,
     jobKey: pullReviewJobKey(review.reviewId),
     payload: { reviewId: review.reviewId },
-    runAt: review.receivedAt + PULL_COMMENT_SETTLE_MS,
+    runAt: review.receivedAt + wait.quietMs,
     now: review.receivedAt,
   });
   return true;

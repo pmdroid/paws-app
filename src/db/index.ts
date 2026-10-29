@@ -30,6 +30,8 @@ export {
   pendingPullComments,
   PULL_COMMENT_MAX_SETTLE_MS,
   PULL_COMMENT_SETTLE_MS,
+  DEFAULT_PULL_FEEDBACK_WAIT,
+  type PullFeedbackWait,
   recordPullComment,
   settlePullComments,
   type PullCommentOutcome,
