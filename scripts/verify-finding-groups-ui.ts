@@ -58,6 +58,7 @@ const findings: FindingsResponse = {
 };
 const groups: FindingGroupsResponse = {
   canRun: true,
+  enabled: true,
   lastRun: {
     id: "run",
     startedAt: Date.parse("2026-10-28T06:00Z"),
