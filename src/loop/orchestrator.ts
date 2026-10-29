@@ -4261,6 +4261,7 @@ export class Orchestrator {
       repo: repository.repo,
       title: draft?.title ?? item.title,
       ...(draft ? { description: draft.body } : {}),
+      reviewer: getItemRunCommitPolicy(this.db, item.id)?.credit?.login,
       client: github.client,
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,

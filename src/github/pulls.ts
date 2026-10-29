@@ -53,6 +53,7 @@ export async function openPullRequest(
     title?: string;
     description?: string;
     evidence: string;
+    reviewer?: string;
     client: GitHubClient;
   } & GitHubCredentialInput,
 ): Promise<OpenedPull> {
@@ -74,7 +75,15 @@ export async function openPullRequest(
     },
   });
   if (created.status === 201) {
-    return pullFrom(created.body, body);
+    const pull = pullFrom(created.body, body);
+    if (input.reviewer)
+      await input.client.request({
+        method: "POST",
+        path: repoApiPath(input.owner, input.repo, `/pulls/${pull.number}/requested_reviewers`),
+        token,
+        body: { reviewers: [input.reviewer] },
+      });
+    return pull;
   }
   if (created.status === 422) {
     const existing = await findOpenPull(input, token, branch);
@@ -136,6 +145,7 @@ export async function publishAccepted(
     repo: string;
     title?: string;
     description?: string;
+    reviewer?: string;
     remoteUrl?: string;
     gitExec?: GitExec;
     client: GitHubClient;
