@@ -726,6 +726,16 @@ export { jobVersionCurrent } from "./jobs";
 
 export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
 
+export { listFindingGroups, lastFindingGroupRun, findingGroupSources } from "./finding-groups";
+export type { FindingGroup, FindingGroupRun } from "./finding-groups";
+
+export { findingGroupingAdmins, recoverFindingGroupRuns } from "./finding-groups";
+
+export { getFindingGroup, removeFindingFromOpenGroups } from "./finding-groups";
+export { reviewFindingsByIds } from "./review-findings";
+
+export { yieldFindingGroupHelpers, runnerHelperAvailability } from "./runner-capacity";
+
 export {
   getReviewFindingIssue,
   reviewFindingIssues,

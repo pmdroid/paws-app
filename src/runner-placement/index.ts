@@ -63,6 +63,8 @@ export type RunnerSetupNeed =
   | { reason: "agent-not-signed-in"; runnerId: string; runnerName: string; agent: string };
 export type PlacementProfile = Pick<RunnerProfile, "agent"> & { model?: string | null };
 export type PlacementRequest = {
+  /** Workspace maintenance helpers run only on active admins own runners. */
+  findingGroups?: boolean;
   itemId?: string;
   sessionId?: string;
   profile?: PlacementProfile;
@@ -113,7 +115,7 @@ export type RunnerPlacement = {
     runnerId: string;
     profile?: PlacementProfile;
     result?: RunnerResult | RunnerHelperResult;
-    failure?: "heartbeat_lost";
+    failure?: "heartbeat_lost" | "cancelled" | "timeout" | "error";
     finishedAt: number;
   }): { retryable: boolean; usageLimit?: { resetsAt: number | null } };
 };

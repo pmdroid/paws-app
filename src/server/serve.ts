@@ -20,6 +20,9 @@ import {
   fakeStatusProvider,
   FINDINGS_API_PATH,
   handleFindingsRequest,
+  handleFindingGroupsRequest,
+  FINDING_GROUPS_API_PATH,
+  type FindingGroupServices,
   handleStatusRequest,
   statusSnapshots,
   type ReadLinearArtifact,
@@ -68,6 +71,7 @@ import {
 import type { WorkspaceSession } from "../db";
 
 export type ServerOptions = {
+  findingGroups?: FindingGroupServices;
   server?: Bun.Server<undefined>;
   onboarding?: (request: Request, client: WorkspaceClient) => Promise<Response | null>;
   tls?: PublicTls;
@@ -209,6 +213,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             : {}),
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
+          ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
           ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
           ...(options.findingIssues ? { findingIssues: options.findingIssues } : {}),
           ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
@@ -242,6 +247,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
 }
 
 type Secrets = {
+  findingGroups?: FindingGroupServices;
   health: ReturnType<typeof createHealthReport>;
   /** The socket peer address, for the sign-in rate limits. */
   ip?: string | null;
@@ -436,6 +442,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       principal,
       sessionIds,
       submit: secrets.visualReviewChanges,
+    }))!;
+  }
+  if (path === FINDING_GROUPS_API_PATH) {
+    if (!secrets.db) return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleFindingGroupsRequest(request, {
+      db: secrets.db,
+      ...(principal ? { principal } : {}),
+      ...(sessionIds ? { sessionIds } : {}),
+      ...(secrets.findingGroups ? { services: secrets.findingGroups } : {}),
     }))!;
   }
   if (path === FINDINGS_API_PATH) {
