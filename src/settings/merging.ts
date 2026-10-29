@@ -46,6 +46,16 @@ export type MergeSettingsOptions = {
    * mirror, without a network call. Null when Paws has no local copy yet.
    */
   highRiskFile?: (repo: string) => Promise<HighRiskFile | null>;
+  /** The files that caused merge-queue conflicts in the last 7 days, shown read-only. */
+  hotFiles?: () => HotFileView[];
+};
+
+/** One conflict-prone file under Settings › Merging. */
+export type HotFileView = {
+  repository: string;
+  path: string;
+  conflicts: number;
+  items: string[];
 };
 
 /** `paths` is null when the commit has no `.paws/high-risk-paths`. */
@@ -73,6 +83,7 @@ const ORDER_NAMES: Record<MergeChoice["order"], string> = {
 };
 const MAIN_MOVED_NAMES: Record<MergeChoice["mainMoved"], string> = {
   overlap: "Update and re-test only when main changed the same files or package",
+  green: "Merge on green CI without updating the branch onto main",
   ci: "Always update the branch and wait for CI",
   closeout: "Always update the branch and run Closeout again",
 };
@@ -115,6 +126,7 @@ export async function handleMergeSettingsRequest(
       ...(choicesError ? { choicesError } : {}),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
       ...(options.upToDateRules ? await upToDateRuleView(options.upToDateRules) : {}),
+      ...(options.hotFiles ? hotFileView(options.hotFiles) : {}),
     });
   }
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
@@ -310,6 +322,15 @@ async function upToDateRuleView(
     return [];
   });
   return repositories.length ? { upToDateRule: repositories } : {};
+}
+
+function hotFileView(read: () => HotFileView[]): { hotFiles?: HotFileView[] } {
+  try {
+    return { hotFiles: read() };
+  } catch (caughtError) {
+    journalCaught(caughtError, "merging.hotFileView.read", null);
+    return {};
+  }
 }
 
 /** Whether any level chooses "Add to the GitHub merge queue". */

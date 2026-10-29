@@ -463,6 +463,9 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2 [&>.st]:mt-0.5 [&>.st]:justify-self-end [&>.issue-facts]:col-span-full",
     );
+  if (has("finding-facts"))
+    return styled("flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm leading-relaxed");
+  if (has("finding-text")) return styled("text-base leading-relaxed [overflow-wrap:anywhere]");
   if (has("issue-facts")) return styled("flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1");
   if (has("page-heading")) return styled("space-y-2");
   if (has("entity-picker")) return styled("flex w-full min-w-0 max-w-lg flex-col gap-2");
@@ -503,7 +506,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("checkout-add")) return styled("flex min-w-0 flex-col gap-2");
   if (has("checkout-add-row"))
     return styled("grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]");
-  if (has("checkout-error"))
+  if (has("checkout-error", "review-file-error"))
     return styled(
       "rounded-base border-2 border-border bg-red-200 px-3 py-2 text-sm leading-relaxed text-black",
     );

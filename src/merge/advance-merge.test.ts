@@ -454,6 +454,26 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     expect(reverifyJobs(h)).toEqual([]);
   });
 
+  test("green: main changed the same package, and the accepted head still merges without a rebase", async () => {
+    const h = await start({ settings: { mainMoved: "green" } });
+    h.state.packages = ["apps/*"];
+    const item = await h.addItem("ENG-1", { file: "apps/web/a.txt", content: "a\n" });
+    await h.moveMain("apps/web/b.txt", "b\n");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
+    expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
+    expect(reverifyJobs(h)).toEqual([]);
+  });
+
+  test("green: GitHub's up-to-date rule still updates the branch and waits for CI", async () => {
+    const h = await start({ settings: { mainMoved: "green" } });
+    h.state.upToDateRule = true;
+    const item = await h.addItem("ENG-1");
+    await h.moveMain("side.txt", "side\n");
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(await h.remoteHead("ENG-1")).not.toBe(item.accepted);
+  });
+
   test("overlap: GitHub's up-to-date rule updates the branch and waits for CI", async () => {
     const h = await start({ settings: { mainMoved: "overlap" } });
     h.state.upToDateRule = true;

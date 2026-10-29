@@ -43,10 +43,8 @@ export type OnboardingPageInput = {
   issueUrl: string | null;
   teamName: string | null;
   member: { name: string; email: string | null };
-  /** Active, not an observer, and in the issue's team. */
+  /** Active and in the issue's team. */
   memberOfTeam: boolean;
-  /** Observers cannot own a runner, so the page offers neither Create VM nor Add a host. */
-  observer: boolean;
   readiness: OnboardingReadiness;
   github: { login: string } | null;
   /** Paws can create a VM for the member, so the runner step offers Create VM. */
@@ -55,7 +53,7 @@ export type OnboardingPageInput = {
   csrfToken: string;
   /**
    * The form that starts the consented GitHub credit link, or null when it cannot be offered
-   * (already linked, an observer, or no GitHub App client metadata). `action` is this page's own
+   * (already linked, or no GitHub App client metadata). `action` is this page's own
    * `/onboard/<id>/github`; `csrf` is the viewer's session token.
    */
   githubLink?: { action: string; csrf: string } | null;
@@ -339,9 +337,8 @@ function escape(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-/** Create VM, when Paws can make one and the member has none, and Add a host. Never for observers. */
+/** Create VM, when Paws can make one and the member has none, and Add a host. */
 function setupActions(input: OnboardingPageInput): Action[] {
-  if (input.observer) return [];
   const actions: Action[] = [];
   if (input.createVm && !input.readiness.memberVm)
     actions.push({ button: "create-vm", label: "Create VM" });
@@ -351,8 +348,6 @@ function setupActions(input: OnboardingPageInput): Action[] {
 
 /** What the member can do when no runner is eligible. */
 function setupHint(input: OnboardingPageInput): string {
-  if (input.observer)
-    return "Observers cannot own a runner. Ask a workspace member to delegate this issue.";
   return input.createVm && !input.readiness.memberVm
     ? "Create a VM, or add a host with an enrollment token. This step completes when the runner is ready."
     : "Add a host with an enrollment token. This step completes when it pairs.";
@@ -400,9 +395,7 @@ function runnerStep(input: OnboardingPageInput): Step {
         title,
         state: "needed",
         label: runner.state === "offline" ? "Offline" : "Paused",
-        detail: input.observer
-          ? `${which} is ${runner.state}. ${fix}.`
-          : `${which} is ${runner.state}. ${fix}, or set up a runner of your own.`,
+        detail: `${which} is ${runner.state}. ${fix}, or set up a runner of your own.`,
         actions: [
           ...setupActions(input),
           ...(runner.sharedBy === undefined ? [{ href: RUNNERS_PAGE, label: "Open Runners" }] : []),
@@ -424,7 +417,7 @@ function runnerStep(input: OnboardingPageInput): Step {
         label: "Failed",
         detail: `Setting up ${runner.name} stopped: ${runner.failure} Retry resumes from the failed step.`,
         vmSteps: runner.steps,
-        actions: input.observer ? [] : [{ button: "retry-vm", label: "Retry" }],
+        actions: [{ button: "retry-vm", label: "Retry" }],
       };
     case "needed":
       return {
@@ -454,9 +447,7 @@ export function onboardingSteps(input: OnboardingPageInput): Step[] {
           title: "Membership",
           state: "needed",
           label: "Needed",
-          detail: input.observer
-            ? "You are an observer in Paws. Observers can view the dashboard but cannot own work. Ask a workspace member to delegate this issue."
-            : `You are not a member of ${team} in Linear. Ask a team admin to add you.`,
+          detail: `You are not a member of ${team} in Linear. Ask a team admin to add you.`,
         },
     runnerStep(input),
   ];
@@ -579,11 +570,9 @@ export function onboardingPage(input: OnboardingPageInput): Response {
     `<a href="/status/issues/${escape(encodeURIComponent(input.identifier))}">Open dashboard</a>`,
   ].join("");
   // Add a host lives outside the steps, so a refresh of the steps keeps a shown command.
-  const host = input.observer
-    ? ""
-    : `<section class="host" id="host" hidden aria-labelledby="host-heading"><h2 id="host-heading">Add a host</h2><form id="host-form"><label>Host name<input name="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${escape(
-        `${first.toLowerCase().replace(/[^a-z0-9-]+/g, "-") || "my"}-host`,
-      )}"></label><button type="submit" class="action">Create command</button></form><div id="host-command" aria-live="polite"></div></section>`;
+  const host = `<section class="host" id="host" hidden aria-labelledby="host-heading"><h2 id="host-heading">Add a host</h2><form id="host-form"><label>Host name<input name="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${escape(
+    `${first.toLowerCase().replace(/[^a-z0-9-]+/g, "-") || "my"}-host`,
+  )}"></label><button type="submit" class="action">Create command</button></form><div id="host-command" aria-live="polite"></div></section>`;
   // While something is still moving, the page re-reads itself: every few seconds while a VM is
   // being set up, otherwise every 15 s. Each read is this page, which reads only SQLite.
   const poll = remaining === 0 ? "" : String(runner.state === "setting-up" ? VM_POLL_MS : POLL_MS);

@@ -51,7 +51,7 @@ export function createRunnerControl(options: {
   }
   function enrollingMember(workspace: string, userId: string) {
     const member = workspaceMember(db, workspace, userId);
-    if (!member?.active || member.role === "observer")
+    if (!member?.active)
       throw new Error("Active workspace membership is required to own a runner.");
   }
   function authorized(peer: RunnerPeer, at = now()): RunnerRecord {
@@ -61,8 +61,7 @@ export function createRunnerControl(options: {
   }
   return {
     /**
-     * Mint a single-use enrollment token for ten minutes. Any active member who is not an
-     * observer may mint one, and owns the runner it produces. The token is returned once; only
+     * Mint a single-use enrollment token for ten minutes. Any active member may mint one, and owns the runner it produces. The token is returned once; only
      * its hash is stored.
      */
     createEnrollment(principal: WorkspacePrincipal, input: { name: string }) {

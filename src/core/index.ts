@@ -171,3 +171,10 @@ export {
   type RiskMatch,
   type RiskTier,
 } from "./risk";
+export {
+  findingPlace,
+  normalizeFindingText,
+  reviewFindingKey,
+  type FindingPlace,
+  type ReviewFindingStatus,
+} from "./review-finding";

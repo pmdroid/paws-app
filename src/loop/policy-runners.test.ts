@@ -50,7 +50,7 @@ function check(db: Database, digest = DIGEST) {
 describe("a Closeout policy key the lowest online runner does not know", () => {
   test("is recorded for the dashboard and journaled once", () => {
     const db = database();
-    runner(db, "new", "0.1.52", NOW - 1_000);
+    runner(db, "new", "0.1.53", NOW - 1_000);
     runner(db, "old", "0.1.48", NOW - 1_000);
     // Offline for ten minutes: it takes no work, so it does not count.
     runner(db, "gone", "0.1.40", NOW - 600_000);
@@ -62,20 +62,20 @@ describe("a Closeout policy key the lowest online runner does not know", () => {
           repository: REPOSITORY,
           policyDigest: DIGEST,
           runnerVersion: "0.1.48",
-          keys: [{ key: "items[].ci", needs: "0.1.52" }],
+          keys: [{ key: "items[].ci", needs: "0.1.53" }],
           checkedAt: NOW,
         });
     } finally {
       restore();
     }
-    expect(lines.filter((line) => line.includes("items[].ci (runner 0.1.52)"))).toHaveLength(1);
+    expect(lines.filter((line) => line.includes("items[].ci (runner 0.1.53)"))).toHaveLength(1);
     expect(lines[0]).toContain("the lowest online runner is 0.1.48");
     expect(listPolicyRunnerWarnings(db)).toEqual([
       {
         repository: REPOSITORY,
         policyDigest: DIGEST,
         runnerVersion: "0.1.48",
-        keys: [{ key: "items[].ci", needs: "0.1.52" }],
+        keys: [{ key: "items[].ci", needs: "0.1.53" }],
         checkedAt: NOW,
       },
     ]);
@@ -85,7 +85,7 @@ describe("a Closeout policy key the lowest online runner does not know", () => {
     const db = database();
     runner(db, "old", "0.1.48", NOW - 1_000);
     expect(check(db)).not.toBeNull();
-    db.run("UPDATE runner_host_status SET runner_version='0.1.52'");
+    db.run("UPDATE runner_host_status SET runner_version='0.1.53'");
     expect(check(db)).toBeNull();
     expect(listPolicyRunnerWarnings(db)).toEqual([]);
   });

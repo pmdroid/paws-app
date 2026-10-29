@@ -1,4 +1,5 @@
 import { createHealthReport } from "./health";
+import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
@@ -15,7 +16,13 @@ import {
   type LinearWebhookDeps,
 } from "../linear";
 import {
+  FINDING_ISSUE_PATH,
   fakeStatusProvider,
+  FINDINGS_API_PATH,
+  handleFindingsRequest,
+  handleFindingGroupsRequest,
+  FINDING_GROUPS_API_PATH,
+  type FindingGroupServices,
   handleStatusRequest,
   statusSnapshots,
   type ReadLinearArtifact,
@@ -48,20 +55,25 @@ import {
   auditWorkspaceAccess,
   getArtifact,
   getWorkItem,
+  hotFiles,
   listWorkspaceRepositoryNames,
   workspaceSessionIds,
 } from "../db";
 import {
   handleWorkspaceGitHubIntegration,
+  isWorkspaceAdmin,
   requestWorkspaceSession,
   validWorkspaceCsrf,
   type WorkspaceAccess,
+  type WorkspaceClient,
   type WorkspacePrincipal,
 } from "../workspace";
+import type { WorkspaceSession } from "../db";
 
 export type ServerOptions = {
+  findingGroups?: FindingGroupServices;
   server?: Bun.Server<undefined>;
-  onboarding?: (request: Request) => Promise<Response | null>;
+  onboarding?: (request: Request, client: WorkspaceClient) => Promise<Response | null>;
   tls?: PublicTls;
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
   /** `POST /api/runner-enrollments`, where a host enrolls itself with a member's token. */
@@ -77,6 +89,21 @@ export type ServerOptions = {
     request: Request,
     principal: WorkspacePrincipal | undefined,
     sessionIds: readonly string[] | undefined,
+  ) => Promise<Response | null>;
+  /**
+   * `POST /api/review-findings/issues`: file a pre-existing review finding in Linear. The
+   * server checked the origin and the CSRF token; the handler checks them again with `access`.
+   */
+  findingIssues?: (
+    request: Request,
+    access:
+      | {
+          principal: WorkspacePrincipal;
+          session: WorkspaceSession;
+          origin: string;
+          sessionIds: readonly string[];
+        }
+      | undefined,
   ) => Promise<Response | null>;
   hostname?: string;
   port?: number;
@@ -95,6 +122,8 @@ export type ServerOptions = {
   db?: Database;
   /** Clock for local health checks. */
   healthNow?: () => number;
+  /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
+  jobLoop?: () => JobLoopLiveness | null;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
@@ -139,6 +168,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     linearWebhook: webhooks && Boolean(linearWebhookSecret),
     githubWebhook: webhooks && Boolean(githubWebhookSecret),
     now: options.healthNow,
+    ...(options.jobLoop === undefined ? {} : { jobLoop: options.jobLoop }),
   });
   const statusEnv = options.statusEnv;
   const closeoutHome = options.closeoutHome;
@@ -165,7 +195,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
       if (stopping) return new Response("Paws is stopping.", { status: 503 });
       const ip = current?.requestIP(request)?.address ?? null;
       const operation = (async () =>
-        (await options.onboarding?.(request)) ??
+        (await options.onboarding?.(request, { ip })) ??
         route(request, {
           health,
           slackSigningSecret,
@@ -183,7 +213,9 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             : {}),
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
+          ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
           ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
+          ...(options.findingIssues ? { findingIssues: options.findingIssues } : {}),
           ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
           ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
           ...(options.agentSettings
@@ -215,6 +247,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
 }
 
 type Secrets = {
+  findingGroups?: FindingGroupServices;
   health: ReturnType<typeof createHealthReport>;
   /** The socket peer address, for the sign-in rate limits. */
   ip?: string | null;
@@ -223,6 +256,7 @@ type Secrets = {
   runnerControl?: ServerOptions["runnerControl"];
   executionControls?: ServerOptions["executionControls"];
   linkAsks?: ServerOptions["linkAsks"];
+  findingIssues?: ServerOptions["findingIssues"];
   slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
@@ -332,12 +366,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         path.startsWith("/api/settings/") ||
         (path === "/api/linear/sessions" && request.method !== "GET");
       const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
-      // Admins manage skills and merging next to owners; every other setting stays with owners.
-      const roles = [SKILL_SETTINGS_PATH, MERGE_SETTINGS_PATH, HOOK_SETTINGS_PATH].includes(path)
-        ? ["owner", "admin"]
-        : ["owner"];
       if (
-        (privileged && !roles.includes(access.principal.role)) ||
+        (privileged && !isWorkspaceAdmin(access.principal.role)) ||
         (unsafe &&
           (request.headers.get("origin") !== workspace.origin ||
             !validWorkspaceCsrf(request, access.session)))
@@ -350,7 +380,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           now: Date.now(),
         });
         return Response.json(
-          { error: "Workspace ownership and a valid CSRF token are required." },
+          { error: "Workspace administration and a valid CSRF token are required." },
           { status: 403 },
         );
       }
@@ -388,6 +418,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         const response = await secrets.runnerControl(request, access.principal);
         if (response !== null) return response;
       }
+      if (path === FINDING_ISSUE_PATH && secrets.findingIssues !== undefined) {
+        const response = await secrets.findingIssues(request, {
+          principal: access.principal,
+          session: access.session,
+          origin: workspace.origin,
+          sessionIds,
+        });
+        if (response !== null) return response;
+      }
     }
   }
   if (path === "/api/link-asks" && secrets.linkAsks !== undefined) {
@@ -403,6 +442,23 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       principal,
       sessionIds,
       submit: secrets.visualReviewChanges,
+    }))!;
+  }
+  if (path === FINDING_GROUPS_API_PATH) {
+    if (!secrets.db) return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleFindingGroupsRequest(request, {
+      db: secrets.db,
+      ...(principal ? { principal } : {}),
+      ...(sessionIds ? { sessionIds } : {}),
+      ...(secrets.findingGroups ? { services: secrets.findingGroups } : {}),
+    }))!;
+  }
+  if (path === FINDINGS_API_PATH) {
+    if (secrets.db === undefined) return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleFindingsRequest(request, {
+      db: secrets.db,
+      ...(principal === undefined ? {} : { principal }),
+      ...(sessionIds === undefined ? {} : { sessionIds }),
     }))!;
   }
   if (path.startsWith(EVIDENCE_API_PATH)) {
@@ -441,6 +497,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === HOOK_SETTINGS_PATH && secrets.db) {
     const db = secrets.db;
     return (await handleHookSettingsRequest(request, {
+      ...secrets.skillSettings,
       db,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
@@ -509,6 +566,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
             }
           : {}),
         ...(highRiskFile ? { highRiskFile } : {}),
+        ...(secrets.db ? { hotFiles: () => hotFiles(secrets.db!, Date.now()) } : {}),
         ...(mergeChoices ? { choices: mergeChoices } : {}),
         ...(githubQueues ? { githubQueues } : {}),
         ...(upToDateRules ? { upToDateRules } : {}),

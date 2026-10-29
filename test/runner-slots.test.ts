@@ -24,7 +24,7 @@ function fixture(now: number) {
   syncWorkspaceMember(db, {
     workspaceId: "ws-1",
     userId,
-    role: "owner",
+    role: "admin",
     active: true,
     teamIds: [],
     now,

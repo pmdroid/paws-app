@@ -31,22 +31,6 @@ const RUN_LABEL: Record<RunState, string> = {
   stopped: "Stopped",
 };
 
-const VERDICT_LABEL: Record<VerdictDecision, string> = {
-  accepted: "Accepted",
-  rejected: "Rejected",
-  exhausted: "Exhausted",
-  running: "Verifying…",
-  blocked: "Blocked",
-};
-
-const VERDICT_DETAIL: Record<VerdictDecision, string> = {
-  accepted: "Fresh evidence satisfied the applicable requirements.",
-  rejected: "Findings go back to the implementing agent.",
-  exhausted: "Retry budget for this item is used up.",
-  running: "Closeout is still collecting evidence.",
-  blocked: "Closeout stopped and needs a person.",
-};
-
 export function esc(value: string): string {
   return value.replace(/[&<>"']/g, (char) => {
     switch (char) {
@@ -73,8 +57,6 @@ export function runLabel(state: RunState): string {
 }
 
 export const PHASE_NAMES = ["Implementation", "Closeout", "Waiting to merge", "Complete"] as const;
-
-export const RUN_STATES = Object.keys(RUN_LABEL) as RunState[];
 
 export function taskPhase(
   itemState: ItemState | null,
@@ -147,14 +129,6 @@ export function durationLabel(ms: number): string {
   const rest = seconds % 60;
   if (minutes <= 0) return `${seconds}s`;
   return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
-}
-
-export function verdictLabel(decision: VerdictDecision): string {
-  return VERDICT_LABEL[decision];
-}
-
-export function verdictDetail(decision: VerdictDecision): string {
-  return VERDICT_DETAIL[decision];
 }
 
 export function statePill(state: string, label: string): string {
@@ -272,6 +246,7 @@ const HELD_LINES: Record<HeldReason, string> = {
   cap: "its owner already runs the most items at once",
   slot: "no free slot on any runner",
   workspace: "no Linear workspace is configured",
+  overlap: "another item that changes the same conflict-prone files has to merge first",
 };
 
 export function heldLine(item: StatusItem): string | null {
@@ -279,6 +254,10 @@ export function heldLine(item: StatusItem): string | null {
   if (!held) return null;
   if (held.reason === "blocked" && held.blockers.length)
     return `Waiting: blocked by ${held.blockers.join(", ")}`;
+  if (held.reason === "overlap" && held.blockers[0]) {
+    const names = [...new Set((held.files ?? []).map((path) => path.split("/").pop()!))];
+    return `Held: waiting for ${held.blockers[0]} to merge${names.length ? ` (both change ${names.join(", ")})` : ""}`;
+  }
   if (held.reason === "cap" && item.queue?.ownerCap)
     return `Waiting: ${capLine(item, item.queue.ownerCap)}`;
   return `Waiting: ${HELD_LINES[held.reason]}`;

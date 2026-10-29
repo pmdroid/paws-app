@@ -286,7 +286,7 @@ function untrackedEnrollments(
     .filter((runner) => !ids.has(runner.id));
   if (runners.length > 0)
     throw new Error(
-      `${row.vmName} was created before Paws recorded which runners a VM enrolls, so Paws cannot tell whether ${runners.map((runner) => `runner ${runner.name} (${runner.id})`).join(", ")} belongs to it or was paired by hand. Ask a workspace owner or admin to revoke it on its runner page, then Retry. A host paired by hand under this name has to be revoked and paired again.`,
+      `${row.vmName} was created before Paws recorded which runners a VM enrolls, so Paws cannot tell whether ${runners.map((runner) => `runner ${runner.name} (${runner.id})`).join(", ")} belongs to it or was paired by hand. Ask a workspace admin to revoke it on its runner page, then Retry. A host paired by hand under this name has to be revoked and paired again.`,
     );
   const pending = db
     .query<{ expiresAt: number }, [string, string, string, number]>(

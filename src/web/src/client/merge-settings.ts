@@ -2,6 +2,7 @@ import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import type {
   HighRiskRepository,
+  HotFile,
   MainMoved,
   MergeChoice,
   MergeOrder,
@@ -18,6 +19,7 @@ const ORDERS: Record<MergeOrder, string> = {
 };
 const MAIN_MOVED: Record<MainMoved, string> = {
   overlap: "Update and re-test only when main changed the same files or package",
+  green: "Merge on green CI without updating the branch onto main",
   ci: "Always update the branch and wait for CI",
   closeout: "Always update the branch and run Closeout again",
 };
@@ -28,6 +30,8 @@ const ORDER_HELP: Record<MergeOrder, string> = {
 };
 const MAIN_MOVED_HELP: Record<MainMoved, string> = {
   overlap: "Needs GitHub's “Require branches to be up to date” rule off for this repository.",
+  green:
+    "Main's new commits are not tested with this change before it merges. Needs GitHub's “Require branches to be up to date” rule off.",
   ci: "Closeout does not run again after the branch update.",
   closeout: "A Closeout re-check starts with a fresh retry budget.",
 };
@@ -140,8 +144,7 @@ function riskSection(repositories: readonly HighRiskRepository[]): string {
 }
 
 export function renderMergeSettings(view: View): string {
-  if (view.denied)
-    return '<p class="sub">Only workspace owners and admins can change merging settings.</p>';
+  if (view.denied) return '<p class="sub">Only workspace admins can change merging settings.</p>';
   const intro = '<p class="sub">An item keeps the settings it had when it started.</p>';
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading merging settings…")}</div>${view.error ? '<button class="btn" type="button" data-merge="reload">Try again</button>' : ""}`;
@@ -192,8 +195,22 @@ export function renderMergeSettings(view: View): string {
       <div class="settings-add"><label for="merge-rule-project">New rule</label>${ruleProject}${ruleLabel}<div class="row"><button class="btn" type="button" data-merge="add-rule">Add rule</button></div></div></div></section>
       ${riskGateSection(data.riskGate)}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
+      ${data.hotFiles ? hotFileSection(data.hotFiles) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
+}
+
+/** Read-only: the files that caused merge-queue conflicts in the last 7 days. */
+function hotFileSection(files: readonly HotFile[]): string {
+  const body = files.length
+    ? `<ul class="risk-file">${files
+        .map(
+          (file) =>
+            `<li><code>${esc(file.path)}</code> <span class="sub">${esc(file.repository)} · ${file.conflicts} ${file.conflicts === 1 ? "conflict" : "conflicts"} (${esc(file.items.join(", "))})</span></li>`,
+        )
+        .join("")}</ul>`
+    : '<p class="sub">No merge-queue conflicts in the last 7 days.</p>';
+  return `<section class="settings-section" id="merge-hot-files"><div class="settings-label"><h2>Conflict-prone files</h2><p class="sub">Files that sent work back for a merge-queue conflict in the last 7 days. A queued item that changes one of them waits while a running or merge-queue item changes it too, until that one merges. Read-only.</p></div><div class="col">${body}</div></section>`;
 }
 
 /** Whether high-risk pull requests wait for an approval in Paws, and why not. */
@@ -393,7 +410,7 @@ export function createMergeSettings(invalidate: () => void): {
     const started = generation;
     const choices = view.data.choices;
     const choicesError = view.data.choicesError;
-    const { githubQueue, githubQueueError, upToDateRule, riskGate } = view.data;
+    const { githubQueue, githubQueueError, upToDateRule, riskGate, hotFiles } = view.data;
     void request("Saving merging settings…", async () => {
       const data = await mergeSettingsRequest(
         engine!,
@@ -410,6 +427,7 @@ export function createMergeSettings(invalidate: () => void): {
         ...(githubQueueError ? { githubQueueError } : {}),
         ...(upToDateRule ? { upToDateRule } : {}),
         ...(riskGate ? { riskGate } : {}),
+        ...(hotFiles ? { hotFiles } : {}),
       };
       view.saved = true;
     });

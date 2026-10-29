@@ -1,6 +1,6 @@
 # Paws status
 
-Read-only status for a local Paws engine: epics, items and their states, current runs, open questions, Closeout results, and the merge queue.
+Read-only status for a local Paws engine: items and their states, current runs, open questions, Closeout results, and the merge queue.
 
 The Paws process serves the dashboard files and status routes. The live reader imports `src/db` through its public index.
 
@@ -46,7 +46,6 @@ Example:
   "source": "live",
   "generatedAt": "2026-10-09T22:15:00.000Z",
   "project": { "name": "Platform", "team": "ENG", "repo": "acme/platform", "workspace": "acme" },
-  "epics": [],
   "items": [],
   "runs": [],
   "questions": [],
@@ -54,6 +53,8 @@ Example:
   "mergeQueue": []
 }
 ```
+
+`GET /api/findings` feeds the Findings page at `/status/findings`, `FindingsResponse` in [`src/findings.ts`](src/findings.ts). It reads `review_finding`: one row per distinct review finding that did not block a merge (pre-existing, or below the review's `failOn`), keyed by `reviewFindingKey` in `src/core` (repository, path, line range and normalized text). Paws records them when Closeout accepts a head, from the stored review evidence, and a one-time job backfilled the runs accepted before. The query filters by `repository`, `severity`, `review`, `status` (`open` by default, `all` for any) and `path` prefix; the list is newest last seen first, at most 500, with `counts` per severity over the other filters, and shows a finding only when the reader can open an item that reported it. `POST /api/findings` with the CSRF token lets an active member send `{ id, action: "dismiss", reason }` or `{ id, action: "reopen" }` on a dismissed one. `filed`, with the Linear issue, is written through `markReviewFindingFiled`; `gone` is set by Paws when a later accepted review of the same path no longer reports it.
 
 `createLiveStatusProvider(db)` is exported from [`index.ts`](index.ts) and reads the engine database (`source: "live"`). `fakeStatusProvider()` returns an empty live snapshot. The server mounts the live reader like this:
 
@@ -94,3 +95,11 @@ bun run check
 ```
 
 That runs oxlint, oxfmt, `tsc` (engine plus the browser client), the tests, and the static build.
+
+The Findings page also loads `GET /api/finding-groups`. Its Groups view lists the shared fix, scope, member severities and links to individual rows, alongside the last grouping run's time, duration, tokens when reported, and group count. `POST /api/finding-groups` accepts `run` for admins, or `file`, `add`, and `dismiss` with a group `id`; dismissal includes `reason`. Workspace access and CSRF apply to every mutation. Each member must have access to every finding in a group to act on it. Filing and commenting use stable Linear ids for safe retries. The daily job never writes to Linear.
+
+Run `bun scripts/verify-finding-groups-ui.ts /tmp/finding-groups-evidence` after `bun run build:status` for light and dark desktop and 390 px captures, linked-row navigation, and group action checks using a local fixture server.
+
+Groups load independently of the Findings list and do not reload on finding filter changes. The API returns up to 200 groups, with open groups first, and batches member reads. A confirmed refusal before an issue or comment write releases the action so members can choose another action. Uncertain writes keep their stable identifier and must be retried to reconcile the result safely. Interrupted grouping runs are marked failed after their ten-minute execution window and one minute of grace.
+
+Untouched groups shrink when a member finding is dismissed individually. A claimed Linear action can still reconcile its stable identifier if a review later marks members gone. Missing targets and deterministic mutation refusals release the claim; transport errors retain it for safe retries. The Groups run status explains when an unchanged snapshot was skipped.

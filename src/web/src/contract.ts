@@ -267,12 +267,16 @@ export const HELD_REASONS = [
   "cap",
   "slot",
   "workspace",
+  "overlap",
 ] as const;
 export type HeldReason = (typeof HELD_REASONS)[number];
 
 export interface StatusHeld {
   reason: HeldReason;
+  /** The blocking issues, or for `overlap` the item it waits for to merge. */
   blockers: string[];
+  /** For `overlap`: the conflict-prone files both items change. */
+  files?: string[];
 }
 
 export interface StatusActivity {
@@ -511,7 +515,18 @@ export interface StatusReviewFinding {
   blocking: boolean;
   /** Null in a review's first round and in `fixed`. */
   since: ReviewFindingSince | null;
+  /** The Linear issue filed from this pre-existing finding, on any item. */
+  filed?: StatusFiledIssue;
 }
+
+/** A Linear issue filed from a review finding. */
+export interface StatusFiledIssue {
+  identifier: string;
+  url: string | null;
+}
+
+/** `POST` `{ itemId, reviewId, location, explanation }`: file a pre-existing finding in Linear. */
+export const FINDING_ISSUE_PATH = "/api/review-findings/issues";
 
 /** One Closeout run of a candidate (head and policy), oldest first in `StatusVerdict.attempts`. */
 export interface StatusCloseoutAttempt {
@@ -638,7 +653,7 @@ export type MergeWaitReason = (typeof MERGE_WAIT_REASONS)[number];
 /** Settings → Merging. `queue` merges one at a time per repository. */
 export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
 export type MergeOrderSetting = (typeof MERGE_ORDERS)[number];
-export const MAIN_MOVED_CHOICES = ["overlap", "ci", "closeout"] as const;
+export const MAIN_MOVED_CHOICES = ["overlap", "green", "ci", "closeout"] as const;
 export type MainMovedSetting = (typeof MAIN_MOVED_CHOICES)[number];
 
 /** The merge settings a task resolved, and the issue rule's label when a rule chose them. */
@@ -1645,6 +1660,7 @@ function readHeld(input: unknown, path: string): StatusHeld {
   return {
     reason: oneOf(string(body, "reason", path), HELD_REASONS, `${path}.reason`),
     blockers: stringArray(body, "blockers", path),
+    ...(body.files === undefined ? {} : { files: stringArray(body, "files", path) }),
   };
 }
 
@@ -1923,6 +1939,15 @@ function readReviewFinding(input: unknown, path: string): StatusReviewFinding {
       since === null || since === undefined
         ? null
         : oneOf(string(body, "since", path), REVIEW_FINDING_SINCE, `${path}.since`),
+    ...(body.filed === undefined ? {} : { filed: readFiledIssue(body.filed, `${path}.filed`) }),
+  };
+}
+
+function readFiledIssue(input: unknown, path: string): StatusFiledIssue {
+  const body = object(input, path);
+  return {
+    identifier: text(body, "identifier", path),
+    url: body.url === null || body.url === undefined ? null : string(body, "url", path),
   };
 }
 

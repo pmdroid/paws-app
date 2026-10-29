@@ -119,7 +119,7 @@ describe("hooks section", () => {
       notice: null,
       denied: true,
     });
-    expect(denied).toContain("Only workspace owners and admins can change hooks.");
+    expect(denied).toContain("Only workspace admins can change hooks.");
     expect(denied).not.toContain("hook-add-form");
   });
 

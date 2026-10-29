@@ -7,6 +7,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { runAgent } from "../src/acp";
+import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { JOB_KIND, type Clock } from "../src/core";
 import {
   JobLoop,
@@ -23,7 +25,11 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
 } from "../src/db";
-import { createFakeCloseoutGate, type CloseoutVerdict } from "../src/closeout";
+import {
+  createFakeCloseoutGate,
+  type CloseoutVerdict,
+  type CandidateIdentity,
+} from "../src/closeout";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
@@ -172,6 +178,570 @@ test("a resume job claimed for an item in verifying journals and asks instead of
     await f.close();
   }
 }, 90_000);
+
+test("a reverify waits beside the turn's own Closeout and survives its state change", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    const runId = item.currentRunId!;
+    const jobId = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: item.id },
+      maxAttempts: 1,
+      now: Date.now(),
+    });
+    // Reproduce a duplicate dispatched outside the ordinary same-item claim exclusion.
+    f.db.run("UPDATE job SET queue='held-test-turn' WHERE id=?", [f.jobId]);
+    await f.tickReverify();
+    f.db.run("UPDATE job SET queue=? WHERE id=?", [JOB_KIND.start, f.jobId]);
+
+    expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      lastError: null,
+    });
+    expect(f.gate.runs).toHaveLength(1);
+    expect(getWorkItem(f.db, item.id)).toMatchObject({ state: "verifying", currentRunId: runId });
+    expect(f.stalls()).toEqual([]);
+    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+
+    f.release();
+    await f.turn;
+    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+    await f.tickReverify();
+    expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe("done");
+    expect(f.gate.runs).toHaveLength(2);
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+for (const hold of ["sibling", "live-decide"] as const)
+  test(`a ${hold} hold preserves a decide request without spending attempts`, async () => {
+    const f = await verifyingWithHeldGate({ remote: true });
+    try {
+      if (hold === "sibling") {
+        f.release();
+        await f.turn;
+        await f.restart();
+      }
+      const item = listWorkItems(f.db)[0]!;
+      // Reproduce the sibling context installed by the merge lane's hold().
+      const contexts = (
+        f.orchestrator as unknown as {
+          jobContexts: Map<string, unknown>;
+        }
+      ).jobContexts;
+      if (hold === "sibling") contexts.set(item.id, { isCurrent: () => true });
+      const jobId = enqueueJob(f.db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: item.id, decide: true },
+        maxAttempts: 1,
+        now: Date.now(),
+      });
+      f.db.run("UPDATE job SET queue='held-test-turn' WHERE id=?", [f.jobId]);
+      await f.tickReverify();
+      expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        payload: { itemId: item.id, decide: true },
+      });
+      expect(f.gate.runs).toHaveLength(1);
+      expect(f.gate.decisions).toHaveLength(0);
+      expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+      if (hold === "sibling") contexts.delete(item.id);
+      else {
+        f.release();
+        await f.turn;
+      }
+      f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+      await f.tickReverify();
+      expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+        status: "done",
+        attempts: 1,
+        lastError: null,
+      });
+      expect(f.gate.decisions).toHaveLength(1);
+      expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    } finally {
+      f.release();
+      await f.turn;
+      await f.close();
+    }
+  }, 90_000);
+
+test("a deferred duplicate survives an aborted live Closeout with its flags", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    const jobId = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      maxAttempts: 1,
+      now: Date.now(),
+      payload: { itemId: item.id, recheckHead: true, failClosed: true },
+    });
+    f.db.run("UPDATE job SET queue='held-test-turn' WHERE id=?", [f.jobId]);
+    await f.tickReverify();
+    expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      payload: { itemId: item.id, recheckHead: true, failClosed: true },
+    });
+    f.throwFromRun(new DOMException("Lost original Closeout", "AbortError"));
+    f.db.run("UPDATE job SET locked_by='lost' WHERE id=?", [f.jobId]);
+    f.release();
+    await f.turn;
+    f.throwFromRun(null);
+    f.db.run("UPDATE job SET status='done' WHERE id=?", [f.jobId]);
+    f.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [Date.now(), item.currentRunId!]);
+    f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+    await f.tickReverify();
+    expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+      status: "done",
+      lastError: null,
+    });
+    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect(f.gate.runs).toHaveLength(2);
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+for (const scenario of ["imported", "retry", "terminal", "mismatch", "question", "reader"] as const)
+  test(`a delivered runner result survives lease grace: ${scenario}`, async () => {
+    const importResult = scenario === "imported";
+    const f = await verifyingWithHeldGate({ remote: true });
+    try {
+      f.release();
+      await f.turn;
+      await f.restart();
+      const item = listWorkItems(f.db)[0]!;
+      const runId = item.currentRunId!;
+      f.db.run("UPDATE run SET status='active' WHERE id=?", [runId]);
+      f.db.run("UPDATE work_item SET state='verifying' WHERE id=?", [item.id]);
+      f.db.run("UPDATE runner_work SET ended_at=NULL, lease_until=? WHERE run_id=?", [
+        Date.now() - RUNNER_LEASE_GRACE_MS - 1000,
+        runId,
+      ]);
+      f.db.run(
+        "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at) SELECT command_id,runner_id,run_id,generation,'run','{}',? FROM runner_work WHERE run_id=?",
+        [Date.now() + 60_000, runId],
+      );
+      f.db.run(
+        "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) SELECT run_id,generation,command_id,'{}',? FROM runner_work WHERE run_id=?",
+        [Date.now(), runId],
+      );
+      if (scenario === "mismatch") {
+        f.db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [item.id]);
+        const port = f.orchestrator as unknown as {
+          candidateForItem: (input: typeof item) => Promise<CandidateIdentity | null>;
+        };
+        const original = port.candidateForItem.bind(f.orchestrator);
+        port.candidateForItem = async () => ({
+          ...(await original(item))!,
+          model: "different-model",
+        });
+      }
+      let readerBusy = scenario === "reader";
+      const runtime = f.orchestrator as unknown as {
+        options: { remoteExecution: { runInProgress?: (id: string) => Promise<boolean> } };
+      };
+      runtime.options.remoteExecution.runInProgress = async (id) => id === runId && readerBusy;
+      let imported = false;
+      const verify = f.gate.run;
+      f.gate.run = async (input) => {
+        expect(getWorkItem(f.db, item.id)?.currentRunId).toBe(runId);
+        expect(getRun(f.db, runId)?.status).toBe("active");
+        expect(
+          f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").get(runId),
+        ).not.toBeNull();
+        if (scenario === "question") {
+          f.db.run("UPDATE work_item SET state='awaiting_input' WHERE id=?", [item.id]);
+          throw new DOMException("fixture question", "AbortError");
+        }
+        if (!importResult) throw new Error("fixture import interrupted");
+        // The fake gate imports the delivered result, just as the remote backend does.
+        f.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [Date.now(), runId]);
+        imported = true;
+        return verify(input);
+      };
+      const jobId = enqueueJob(f.db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: item.id },
+        now: Date.now(),
+        maxAttempts: scenario === "terminal" ? 1 : 2,
+      });
+      await f.tickReverify();
+      if (scenario === "reader") {
+        expect(f.gate.runs).toHaveLength(1);
+        expect(getRun(f.db, runId)?.status).toBe("active");
+        expect(listJobs(f.db).find((j) => j.id === jobId)?.status).toBe("pending");
+        readerBusy = false;
+        f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+        await f.tickReverify();
+      }
+      expect(imported).toBe(importResult);
+      const current = getWorkItem(f.db, item.id)!;
+      if (scenario === "terminal") {
+        expect(current.state).toBe("failed");
+        expect(getRun(f.db, runId)?.status).toBe("lost");
+      } else if (scenario === "question") {
+        expect(current.state).toBe("awaiting_input");
+        expect(getRun(f.db, runId)?.status).toBe("active");
+      } else {
+        expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe(
+          importResult ? "done" : "pending",
+        );
+        expect(current).toMatchObject({
+          state: importResult || scenario === "mismatch" ? "merge_queue" : "verifying",
+          currentRunId: runId,
+        });
+        expect(getRun(f.db, runId)?.status).toBe(importResult ? "ended" : "active");
+      }
+      expect(
+        f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").get(runId) !==
+          null,
+      ).toBe(!importResult && scenario !== "terminal");
+    } finally {
+      f.release();
+      await f.turn;
+      await f.close();
+    }
+  }, 90_000);
+
+test("a prolonged sibling ownership hold cannot interrupt its healthy owner", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    f.release();
+    await f.turn;
+    await f.restart();
+    const item = listWorkItems(f.db)[0]!;
+    const contexts = (f.orchestrator as unknown as { jobContexts: Map<string, unknown> })
+      .jobContexts;
+    contexts.set(item.id, { isCurrent: () => true });
+    const jobId = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      now: Date.now(),
+      maxAttempts: 1,
+      payload: { itemId: item.id, verificationWaitSince: Date.now() - 20 * 60_000 },
+    });
+    await f.tickReverify();
+    contexts.delete(item.id);
+    expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+      status: "pending",
+      lastError: null,
+    });
+    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(f.gate.runs).toHaveLength(1);
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+test("a long live Closeout finishes without a waiter opening a blocked question", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    const jobId = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      now: Date.now(),
+      payload: { itemId: item.id, decide: true, verificationWaitSince: Date.now() - 30 * 60_000 },
+    });
+    f.db.run("UPDATE job SET queue='held-test-turn' WHERE id=?", [f.jobId]);
+    await f.tickReverify();
+    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
+    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(listJobs(f.db).find((j) => j.id === jobId)?.status).toBe("pending");
+    f.release();
+    await f.turn;
+    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+test("ownership acquired during preparation preserves the original wait timer", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    f.release();
+    await f.turn;
+    await f.restart();
+    const item = listWorkItems(f.db)[0]!;
+    f.db.run("UPDATE run SET status='active' WHERE id=?", [item.currentRunId]);
+    const port = f.orchestrator as unknown as {
+      live: Map<string, { itemId: string }>;
+      candidateForItem: (input: typeof item) => Promise<CandidateIdentity | null>;
+    };
+    const candidate = port.candidateForItem.bind(f.orchestrator);
+    port.candidateForItem = async (input) => {
+      const result = await candidate(input);
+      port.live.set(item.currentRunId!, { itemId: item.id });
+      return result;
+    };
+    const since = Date.now() - 19 * 60_000;
+    const jobId = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      now: Date.now(),
+      payload: { itemId: item.id, verificationWaitSince: since },
+    });
+    await f.tickReverify();
+    port.live.delete(item.currentRunId!);
+    expect(listJobs(f.db).find((j) => j.id === jobId)).toMatchObject({
+      status: "pending",
+      payload: { verificationWaitSince: since },
+      attempts: 0,
+    });
+    expect(f.gate.runs).toHaveLength(1);
+    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+for (const state of [
+  "running",
+  "queued",
+  "paused",
+  "recovering",
+  "awaiting_input",
+  "failed",
+  "cancelled",
+  "completed",
+  "merged",
+  "cancel-requested",
+] as const)
+  test(`a stale reverify cannot park or ask on ${state}`, async () => {
+    const f = await verifyingWithHeldGate({ remote: true });
+    try {
+      f.release();
+      await f.turn;
+      await f.restart();
+      const item = listWorkItems(f.db)[0]!;
+      f.db.run("UPDATE work_item SET state=?,cancel_requested=? WHERE id=?", [
+        state === "cancel-requested" ? "verifying" : state,
+        state === "cancel-requested" ? 1 : 0,
+        item.id,
+      ]);
+      const contexts = (f.orchestrator as unknown as { jobContexts: Map<string, unknown> })
+        .jobContexts;
+      contexts.set(item.id, { isCurrent: () => true });
+      const jobId = enqueueJob(f.db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: item.id, verificationWaitSince: Date.now() - 30 * 60_000 },
+        now: Date.now(),
+      });
+      await f.tickReverify();
+      contexts.delete(item.id);
+      expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe("done");
+      expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+      expect(getWorkItem(f.db, item.id)?.state).toBe(
+        state === "cancel-requested" ? "verifying" : state,
+      );
+      expect(f.gate.runs).toHaveLength(1);
+    } finally {
+      f.release();
+      await f.turn;
+      await f.close();
+    }
+  }, 90_000);
+
+test("an ownership timer is cleared before work and a later hold starts a fresh timer", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  try {
+    f.release();
+    await f.turn;
+    await f.restart();
+    const item = listWorkItems(f.db)[0]!;
+    const contexts = (f.orchestrator as unknown as { jobContexts: Map<string, unknown> })
+      .jobContexts;
+    const jobId = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: item.id, verificationWaitSince: Date.now() - 19 * 60_000 },
+      now: Date.now(),
+    });
+    let entered = false;
+    f.gate.run = async () => {
+      entered = true;
+      expect(listJobs(f.db).find((job) => job.id === jobId)?.payload).not.toHaveProperty(
+        "verificationWaitSince",
+      );
+      throw new Error("fixture transport pause");
+    };
+    await f.tickReverify();
+    expect(entered).toBe(true);
+    expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe("pending");
+    contexts.set(item.id, { isCurrent: () => true });
+    f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+    await f.tickReverify();
+    contexts.delete(item.id);
+    const waiting = listJobs(f.db).find((job) => job.id === jobId)!;
+    expect(waiting.status).toBe("pending");
+    expect(
+      (waiting.payload as { verificationWaitSince: number }).verificationWaitSince,
+    ).toBeGreaterThan(Date.now() - 10_000);
+    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+for (const problem of ["no-session", "notification-error"] as const)
+  test(`an ownership timeout with ${problem} has a terminal outcome`, async () => {
+    const f = await verifyingWithHeldGate({ remote: true });
+    try {
+      f.release();
+      await f.turn;
+      await f.restart();
+      const item = listWorkItems(f.db)[0]!;
+      const internals = f.orchestrator as unknown as {
+        jobContexts: Map<string, unknown>;
+        activitySession: () => string | null;
+        askCloseoutHelp: () => Promise<void>;
+      };
+      f.db.run("UPDATE run SET status='active' WHERE id=?", [item.currentRunId]);
+      f.db.run("UPDATE runner_work SET ended_at=NULL, lease_until=? WHERE run_id=?", [
+        Date.now() + 60_000,
+        item.currentRunId,
+      ]);
+      if (problem === "no-session") internals.activitySession = () => null;
+      else
+        internals.askCloseoutHelp = async () => {
+          throw new Error("fixture notification unavailable");
+        };
+      const jobId = enqueueJob(f.db, {
+        queue: JOB_KIND.reverify,
+        maxAttempts: 1,
+        payload: { itemId: item.id, verificationWaitSince: Date.now() - 30 * 60_000 },
+        now: Date.now(),
+      });
+      await f.tickReverify();
+      internals.jobContexts.delete(item.id);
+      expect(getWorkItem(f.db, item.id)?.state).toBe("failed");
+      expect(["done", "cancelled"]).toContain(
+        listJobs(f.db).find((job) => job.id === jobId)?.status ?? "",
+      );
+      expect(f.gate.runs).toHaveLength(1);
+    } finally {
+      f.release();
+      await f.turn;
+      await f.close();
+    }
+  }, 90_000);
+
+for (const state of ["verifying", "merge_queue"] as const)
+  for (const lease of ["missing", "expired", "live", "grace"] as const)
+    test(`a reverify after restart handles an active ${state} run with ${lease} runner work`, async () => {
+      const f = await verifyingWithHeldGate({ remote: true });
+      try {
+        f.release();
+        await f.turn;
+        await f.restart();
+        const item = listWorkItems(f.db)[0]!;
+        const runId = item.currentRunId!;
+        // A rebased merge-queue head still needs a new round even with a verifying checkpoint.
+        f.db.run(
+          "UPDATE work_item SET checkpoint=json_set(checkpoint,'$.phase','verifying') WHERE id=?",
+          [item.id],
+        );
+        const port = f.orchestrator as unknown as {
+          startCloseoutRound: (item: unknown, head: string) => Promise<void>;
+        };
+        const startRound = port.startCloseoutRound.bind(f.orchestrator);
+        let rounds = 0;
+        port.startCloseoutRound = async (owned, head) => {
+          rounds++;
+          await startRound(owned, head);
+        };
+        // Restore the rows a process restart can leave behind, with no in-memory owner.
+        f.db.run("UPDATE run SET status='active' WHERE id=?", [runId]);
+        f.db.run("UPDATE work_item SET state=? WHERE id=?", [state, item.id]);
+        if (lease === "missing") f.db.run("DELETE FROM runner_work WHERE run_id=?", [runId]);
+        else
+          f.db.run("UPDATE runner_work SET ended_at=NULL, lease_until=? WHERE run_id=?", [
+            Date.now() +
+              (lease === "live"
+                ? 60_000
+                : lease === "grace"
+                  ? -1_000
+                  : -RUNNER_LEASE_GRACE_MS - 1_000),
+            runId,
+          ]);
+        const jobId = enqueueJob(f.db, {
+          queue: JOB_KIND.reverify,
+          payload: { itemId: item.id },
+          maxAttempts: 1,
+          now: Date.now(),
+        });
+        await f.tickReverify();
+
+        const waiting = lease === "live" || lease === "grace";
+        expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+          status: waiting ? "pending" : "done",
+          attempts: waiting ? 0 : 1,
+          lastError: null,
+        });
+        if (waiting) {
+          expect(f.gate.runs).toHaveLength(1);
+          expect(getRun(f.db, runId)?.status).toBe("active");
+          expect(getWorkItem(f.db, item.id)).toMatchObject({ state, currentRunId: runId });
+          // The same durable request must take over promptly once the lease expires.
+          f.db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
+            Date.now() - RUNNER_LEASE_GRACE_MS - 1_000,
+            runId,
+          ]);
+          f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
+          await f.tickReverify();
+          expect(listJobs(f.db).find((job) => job.id === jobId)).toMatchObject({
+            status: "done",
+            attempts: 1,
+            lastError: null,
+          });
+        }
+        {
+          expect(f.gate.runs).toHaveLength(2);
+          expect(rounds).toBe(state === "merge_queue" ? 1 : 0);
+          expect(getRun(f.db, runId)?.status).toBe("lost");
+          expect(
+            f.db.query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL").all(runId),
+          ).toEqual([]);
+          const current = getWorkItem(f.db, item.id)!;
+          expect(current.state).toBe("merge_queue");
+          expect(current.currentRunId).not.toBe(runId);
+          expect(getRun(f.db, current.currentRunId!)).toMatchObject({
+            kind: "recheck",
+            status: "ended",
+          });
+        }
+        expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+        expect(f.stalls()).toEqual([]);
+        expect(
+          f.db
+            .query(
+              "SELECT 1 FROM work_item_event WHERE item_id=? AND event='closeout_infra_failed'",
+            )
+            .all(item.id),
+        ).toEqual([]);
+      } finally {
+        f.release();
+        await f.turn;
+        await f.close();
+      }
+    }, 90_000);
 
 /** Review attempts ran out at `head`: the independent review is exhausted, the rest passed. */
 function reviewExhausted(head: string): CloseoutVerdict {
@@ -348,7 +918,7 @@ function restartReasons(db: Database, itemId: string): string[] {
 }
 
 /** One item whose turn ended and whose Closeout run is held open by the fake gate. */
-async function verifyingWithHeldGate(options: { publicUrl?: string } = {}) {
+async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boolean } = {}) {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
     {
@@ -396,27 +966,32 @@ async function verifyingWithHeldGate(options: { publicUrl?: string } = {}) {
     };
   };
   const github = createFakeGitHub();
-  const orchestrator = attachOrchestrator({
-    db,
-    admission: workspaceAdmission(db),
-    jobs,
-    outbox,
-    clock,
-    pawsRoot: layout.pawsRoot,
-    home: layout.home,
-    tracker,
-    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
-    githubForRepository: () => ({
-      appId: "1",
-      installationId: "2",
-      privateKeyPem: privateKey as string,
-      client: githubClient(layout.bare, github),
-    }),
-    launch,
-    closeoutGate: () => gate,
-    journal: (line) => lines.push(line),
-    ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
-  });
+  const attach = () =>
+    attachOrchestrator({
+      db,
+      admission: workspaceAdmission(db),
+      jobs,
+      outbox,
+      clock,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+      githubForRepository: () => ({
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: privateKey as string,
+        client: githubClient(layout.bare, github),
+      }),
+      launch,
+      ...(options.remote
+        ? { remoteExecution: { agentForItem: () => runAgent, agentForSession: () => runAgent } }
+        : {}),
+      closeoutGate: () => gate,
+      journal: (line) => lines.push(line),
+      ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
+    });
+  let orchestrator = attach();
   await orchestrator.onLinearEvent(created());
   db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
   const turn = jobs.tick();
@@ -443,14 +1018,21 @@ async function verifyingWithHeldGate(options: { publicUrl?: string } = {}) {
     jobId,
     release: () => release(),
     /** The held run throws this instead of returning its verdict. */
-    throwFromRun(error: Error) {
+    throwFromRun(error: Error | null) {
       thrown = error;
     },
     turn,
     tracker,
-    orchestrator,
+    get orchestrator() {
+      return orchestrator;
+    },
     flush,
     stalls: () => lines.filter((line) => line.includes("in verifying:")),
+    async restart() {
+      await orchestrator.shutdown();
+      orchestrator = attach();
+    },
+    tickReverify: () => jobs.tick([JOB_KIND.reverify]),
     async tickAll() {
       while ((await jobs.tick()) !== null);
       await flush();
@@ -479,7 +1061,7 @@ async function attachRunnerLease(db: Database): Promise<void> {
       syncWorkspaceMember(db, {
         workspaceId: "ws-1",
         userId,
-        role: "owner",
+        role: "admin",
         active: true,
         teamIds: [],
         now,

@@ -1,9 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { reviewRecordsAt, type Finding } from "../closeout";
 import { riskLine, type RiskClassification } from "../core";
-import { acceptedCloseoutReviews, type WorkItemRecord } from "../db";
+import { acceptedCloseoutReviews, type AcceptedCloseoutReviews, type WorkItemRecord } from "../db";
 
 const SEVERITIES: readonly Finding["severity"][] = ["P0", "P1", "P2", "P3"];
+
+/** One review round stored in a task's evidence. */
+export type ReviewRecord = { itemId: string; attempt: number; findings: readonly Finding[] };
 
 /** A finding text longer than this is cut, so each finding stays one line. */
 const TEXT_LIMIT = 160;
@@ -41,11 +44,28 @@ export async function openFindings(
   const accepted = acceptedCloseoutReviews(db, item.id, head);
   if (accepted === null || accepted.reviews.length === 0) return [];
   const records = await reviewRecordsAt(accepted.taskId, accepted.head, pawsRoot);
-  return accepted.reviews.flatMap((review) => {
+  return nonBlockingFindings(accepted.reviews, records);
+}
+
+/** The review rounds an accepted run counted: each review's latest record at its attempt. */
+export function acceptedReviewRecords(
+  reviews: AcceptedCloseoutReviews["reviews"],
+  records: readonly ReviewRecord[],
+): Array<{ review: AcceptedCloseoutReviews["reviews"][number]; record: ReviewRecord }> {
+  return reviews.flatMap((review) => {
     const record = records
       .filter((entry) => entry.itemId === review.id && entry.attempt === review.attempt)
       .at(-1);
-    if (record === undefined) return [];
+    return record === undefined ? [] : [{ review, record }];
+  });
+}
+
+/** The findings of an accepted run's reviews that did not block it. */
+export function nonBlockingFindings(
+  reviews: AcceptedCloseoutReviews["reviews"],
+  records: readonly ReviewRecord[],
+): OpenFinding[] {
+  return acceptedReviewRecords(reviews, records).flatMap(({ review, record }) => {
     const preExisting = new Set(review.preExisting ?? []);
     return record.findings.flatMap((finding, index): OpenFinding[] => {
       const why = preExisting.has(index)

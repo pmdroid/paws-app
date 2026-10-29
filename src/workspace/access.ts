@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
+import { LINEAR_GUEST_REFUSAL } from "./eligibility";
 import type { Database } from "bun:sqlite";
 import type { WorkspaceAssignments } from "./assignments";
 import {
@@ -15,6 +16,7 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   workspaceForOrganization,
+  workspaceLinearMember,
   workspaceMember,
 } from "../db";
 import { linearItem, type LinearMembershipReads } from "../linear";
@@ -141,8 +143,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           const applied = syncWorkspaceMember(options.db, {
             workspaceId: workspaceKey,
             userId,
-            active: identity.active,
-            role: identity.guest ? "observer" : "member",
+            active: identity.active && !identity.guest,
+            role: "member",
             teamIds: identity.teamIds,
             now: observedAt,
           });
@@ -252,8 +254,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           issueUrl: done.issueUrl,
           teamName: done.teamName,
           member: { name: owner.name, email: owner.email },
-          memberOfTeam: owner.role !== "observer" && owner.teamIds.includes(done.teamId),
-          observer: owner.role === "observer",
+          memberOfTeam: owner.teamIds.includes(done.teamId),
           csrfToken: signedIn.session.csrfToken,
           readiness: options.onboardingReadiness?.({
             workspaceId: done.workspaceId,
@@ -268,9 +269,9 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           },
           github: credit,
           createVm: await createVmAvailable(),
-          // Observers cannot link; without App client metadata there is nothing to start.
+          // Without App client metadata there is nothing to start.
           githubLink:
-            credit === null && attribution.configured && owner.role !== "observer"
+            credit === null && attribution.configured
               ? {
                   action: `/onboard/${done.linkId}${GITHUB_STEP}`,
                   csrf: signedIn.session.csrfToken,
@@ -292,6 +293,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     if (path === "/auth/linear") {
       if (!["GET", "POST"].includes(request.method))
         return json({ error: "Method not allowed" }, 405);
+      const perIp = limits.startsPerIp.take(ip);
+      if (!perIp.allowed) return limited(limits.startsPerIp, perIp.retryAfterSeconds);
       let bootstrap: string | null = null;
       if (request.method === "POST") {
         if (request.headers.get("origin") !== origin) return json({ error: "Forbidden" }, 403);
@@ -359,11 +362,32 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           : (options.assignments?.issueIdentifier(result.assignmentHash) ?? null);
       const identity = await (held === null ? read() : linearItem(held, read));
       if (
-        !identity.active ||
         identity.userId !== result.identity.userId ||
         identity.organizationId !== result.identity.organizationId
       )
         return json({ error: "Current Linear membership is required." }, 403);
+      if (!identity.active || identity.guest) {
+        // A fresh read ends an existing membership and its sessions, as a membership refresh does.
+        const known = workspaceForOrganization(options.db, identity.organizationId);
+        const linked = known && workspaceLinearMember(options.db, known.id, identity.userId);
+        if (linked)
+          syncWorkspaceMember(options.db, {
+            workspaceId: known.id,
+            userId: linked.userId,
+            active: false,
+            role: "member",
+            teamIds: linked.teamIds,
+            now: observedAt,
+          });
+        return json(
+          {
+            error: identity.active
+              ? LINEAR_GUEST_REFUSAL
+              : "Current Linear membership is required.",
+          },
+          403,
+        );
+      }
       const userId = putWorkspaceUser(options.db, {
         id: workspaceId(now()),
         linearUserId: result.identity.userId,
@@ -373,7 +397,6 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       let workspace = workspaceForOrganization(options.db, result.identity.organizationId);
       let syncAt = observedAt;
       if (result.bootstrapHash !== null) {
-        if (identity.guest) return json({ error: "Guests cannot bootstrap a workspace." }, 403);
         syncAt = now();
         workspace = consumeWorkspaceBootstrap(options.db, {
           id: workspaceId(now()),
@@ -385,7 +408,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         });
       }
       if (workspace === null) {
-        if (!identity.admin || identity.guest)
+        if (!identity.admin)
           return json(
             { error: "A Linear workspace admin must connect this workspace first." },
             403,
@@ -404,7 +427,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         workspaceId: workspace.id,
         userId,
         active: true,
-        role: identity.guest ? "observer" : "member",
+        role: "member",
         teamIds: identity.teamIds,
         now: syncAt,
       });
@@ -556,7 +579,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     repositoryTeams: (request: Request, signal: AbortSignal) =>
       track(async () => {
         const access = await authenticate(request);
-        if (access?.principal.role !== "owner" || !options.readTeams)
+        if (access?.principal.role !== "admin" || !options.readTeams)
           throw new Error("Workspace team access is unavailable.");
         return options.readTeams(signal);
       }),

@@ -150,3 +150,17 @@ test("a local rebase onto newer main that never reached GitHub gives way to the 
   expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBe(tip);
   expect(await f.head()).toBe(tip);
 });
+
+test("a branch tip whose rebase resolved a conflict in the checkout's commit is adopted", async () => {
+  const f = await fixture();
+  await localCommit(f, "the item's work");
+  writeFileSync(join(f.publisher, "result.txt"), "main changed this line");
+  await f.run(["-C", f.publisher, "commit", "-qam", "main changed this line"]);
+  writeFileSync(join(f.publisher, "result.txt"), "the item's work, merged with main");
+  await f.run(["-C", f.publisher, "commit", "-qam", "the item's work"]);
+  const rebased = (await f.run(["-C", f.publisher, "rev-parse", "HEAD"])).trim();
+  await f.push("paws/task");
+
+  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBe(rebased);
+  expect(await f.head()).toBe(rebased);
+});

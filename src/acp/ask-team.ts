@@ -289,8 +289,6 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
   };
 }
 
-export const startHostToolBridge = startAskTeamBridge;
-
 async function handleConnection(
   socket: Socket,
   options: HostToolBridgeOptions,

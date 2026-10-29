@@ -1,6 +1,6 @@
 # Smoke test
 
-Run Paws against a Linear epic with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop, then exercise the merge lane: a rebase after main moved, a changes-requested review and a forced conflict loop. Install Bun 1.4.2 or newer and Git. Enroll a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Enrollment is in [Enroll a remote Linux runner](runner-enrollment.md). GitHub App setup is in [GitHub App](github-app.md).
+Run Paws against a delegated parent issue with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop, then exercise the merge lane: a rebase after main moved, a changes-requested review and a forced conflict loop. Install Bun 1.4.2 or newer and Git. Enroll a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Enrollment is in [Enroll a remote Linux runner](runner-enrollment.md). GitHub App setup is in [GitHub App](github-app.md).
 
 ```sh
 bun install

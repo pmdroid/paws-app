@@ -5,7 +5,7 @@ Configure a Linear OAuth app with these callback URLs for your Paws HTTPS origin
 - `/auth/linear/callback` for personal sign-in.
 - `/auth/linear/install/callback` for the workspace app authorization.
 
-Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Set the GitHub App credentials described in [GitHub App](github-app.md) so workspace owners can connect repositories in Integrations.
+Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Before the first installation, set `LINEAR_ORGANIZATION_ID` to the ID of the Linear workspace this Paws instance will serve. Paws accepts installation only for that organization. Set the GitHub App credentials described in [GitHub App](github-app.md) so workspace admins can connect repositories in Integrations.
 
 Give Paws a valid TLS certificate and its matching private key. The key must be readable by the Paws process and have mode `0400` or `0600`.
 
@@ -16,31 +16,31 @@ PAWS_HOST=0.0.0.0 \
 PAWS_PORT=8787 \
 PAWS_TLS_KEY_PATH=/etc/paws/tls.key \
 PAWS_TLS_CERT_PATH=/etc/paws/tls.crt \
+LINEAR_ORGANIZATION_ID=your-linear-organization-id \
 bun run paws
 ```
 
-Open the dashboard and select **Sign in with Linear**. A Linear workspace admin completes the personal sign-in and approves installing Paws into that same workspace. Paws rechecks their admin membership through the new app authorization, stores encrypted credentials, creates the owner's workspace, and starts the connected service automatically. The owner continues to **Integrations** to connect GitHub and map repositories to Linear teams.
+Open the dashboard and select **Sign in with Linear**. A Linear workspace admin completes the personal sign-in and approves installing Paws into that same workspace. Paws rechecks their admin membership through the new app authorization, stores encrypted credentials, creates the workspace with that person as its first Paws admin, and starts the connected service automatically. The admin continues to **Integrations** to connect GitHub and map repositories to Linear teams.
 
-If Linear revokes the app authorization, the dashboard offers **Reconnect Linear**. A workspace admin signs in and authorizes the same installation again. Paws preserves the workspace and its roles.
+If Linear revokes the app authorization, the dashboard offers **Reconnect Linear**. A workspace admin signs in and authorizes the same installation again. Paws preserves the workspace and its roles. The stored workspace binds reconnection to its organization. If `LINEAR_ORGANIZATION_ID` is set, it must match that stored organization.
 
 Subsequent members use **Sign in with Linear** to open the workspace. A connected instance verifies each user's current membership against its installed Linear workspace.
 
-Owners can assign Paws roles and map repositories to verified Linear teams in the workspace controls. Linear guests receive observer access. Membership refresh updates team visibility and revokes sessions when a member loses access. Sign out ends the current browser session. Each visit extends the session; it expires after thirty days without use. The dashboard shows only the sign-in page until you sign in.
+Paws has two workspace roles: `admin` and `member`. Admins assign roles and map repositories to verified Linear teams in the workspace controls. Linear guests cannot use Paws. Membership refresh updates team visibility and revokes sessions when a member loses access or becomes a guest. Sign out ends the current browser session. Each visit extends the session; it expires after thirty days without use. The dashboard shows only the sign-in page until you sign in.
 
 ## Admission
 
-There is one admission mode: automatic. No admin approves a new member. When a person signs in with Linear, Paws reads their current Linear membership and creates their Paws membership: `member` for a Linear member, `observer` for a Linear guest. A role an owner set by hand survives later syncs.
+There is one admission mode: automatic. No admin approves a new member. When a person signs in with Linear, Paws reads their current Linear membership and creates their Paws membership as `member`; a Linear workspace admin becomes `admin`. A role an admin set by hand survives later syncs.
 
 Who may delegate an issue to Paws is decided when the delegation arrives, with the person's live Linear membership (`canAct` in `src/workspace/eligibility.ts`). Each refusal ends the session with an error that starts "Paws did not start this work.":
 
-| Delegator                           | Reason in the error                                                                                            |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Inactive Linear account             | Your Linear account is not active.                                                                             |
-| Linear guest                        | Linear guests cannot delegate issues to Paws. Ask a member of <team> to delegate this issue.                   |
-| Not in the issue's Linear team      | You are not a member of this issue's Linear team.                                                              |
-| Paws observer                       | Observers in the Paws workspace cannot delegate issues to Paws. Ask a member of <team> to delegate this issue. |
-| Inactive Paws membership            | Your Paws workspace membership is not active.                                                                  |
-| Active team member, never signed in | No error. Paws holds the delegation and posts one sign-in action (below).                                      |
+| Delegator                           | Reason in the error                                                       |
+| ----------------------------------- | ------------------------------------------------------------------------- |
+| Inactive Linear account             | Your Linear account is not active.                                        |
+| Linear guest                        | Linear guests can't use Paws.                                             |
+| Not in the issue's Linear team      | You are not a member of this issue's Linear team.                         |
+| Inactive Paws membership            | Your Paws workspace membership is not active.                             |
+| Active team member, never signed in | No error. Paws holds the delegation and posts one sign-in action (below). |
 
 ## A first delegation
 
@@ -53,14 +53,14 @@ A Linear member who has never signed in to Paws can delegate an issue anyway. Pa
 | Step             | Done when                                                                                                    | Otherwise                                                                                                                                                                                                                                                                                                                                                     |
 | ---------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Linear           | Always, once signed in: "Signed in as <email>."                                                              | —                                                                                                                                                                                                                                                                                                                                                             |
-| Membership       | Active member of the issue's team: "Member of <team>."                                                       | An observer reads that observers cannot own work and should ask a workspace member to delegate. Someone outside the team is asked to have a team admin add them.                                                                                                                                                                                              |
+| Membership       | Active member of the issue's team: "Member of <team>."                                                       | A Linear guest is refused. Someone outside the team is asked to have a team admin add them.                                                                                                                                                                                                                                                                   |
 | Runner           | An eligible runner: "<runner> will run this task.", or "<lead>'s shared runner <runner> will run this task." | **Create VM** (when Paws can create one and the member has no VM) and **Add a host**. Create VM shows its four steps (Create the VM, Install the runner, Enroll with Paws, First heartbeat); a failed setup offers **Retry**. Add a host asks for a host name and shows a one-time enrollment command. An offline or paused runner is named, with what to do. |
 | Claude and Codex | Both are signed in on the chosen runner                                                                      | **Sign in on <runner>**, which opens the runner on the Runners page. On a lead's shared runner, the page asks the delegator to ask the lead. Before a runner exists, the step reads "After the runner".                                                                                                                                                       |
 | GitHub credit    | Linked: "Commits will credit @<login>."                                                                      | Optional. A consent box and **Link GitHub**; GitHub returns the member to this page. Skipping it is fine: the commits are by the Paws App only.                                                                                                                                                                                                               |
 
 The heading reads "Welcome, <first name>" and the lead line counts the remaining steps ("2 more steps before Paws starts PAS-n."). Once nothing is missing it reads "You're set up. Paws runs PAS-n on <runner>." The member can close the tab: Paws starts the task by itself once the runner and its agents are ready (see [Automatic start](#automatic-start)).
 
-A runner is eligible when it is the delegator's own, or when it is shared and belongs to the lead of a Linear project in the delegation. Only the owner of a runner can sign its agents in or share it. Observers are offered neither Create VM nor Add a host. How Create VM works is in [Create a VM](create-vm.md); Add a host is [Enroll a remote Linux runner](runner-enrollment.md); the credit link is in [GitHub App](github-app.md#credit-link).
+A runner is eligible when it is the delegator's own, or when it is shared and belongs to the lead of a Linear project in the delegation. Only the owner of a runner can sign its agents in or share it. Linear guests never reach this page. How Create VM works is in [Create a VM](create-vm.md); Add a host is [Enroll a remote Linux runner](runner-enrollment.md); the credit link is in [GitHub App](github-app.md#credit-link).
 
 ### Automatic start
 
@@ -70,7 +70,7 @@ The resume never waits on a clock. A runner heartbeat, an agent sign-in becoming
 
 Repository access comes from the Linear team to repository mapping in Integrations. A team with mappings uses only those repositories; a team without any may use any repository in the catalog. A delegation Paws cannot place ends with one response that says why, instead of "Cancelled from Linear.":
 
-- "<team> has no repository in Paws yet. Ask <owners and admins> to map one in Integrations, then delegate again."
+- "<team> has no repository in Paws yet. Ask <admins> to map one in Integrations, then delegate again."
 - "<owner/repo> isn't mapped to <team> in Paws."
 - "You're not a member of <team> in Paws."
 

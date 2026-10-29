@@ -19,7 +19,7 @@ import { tempDb } from "./helpers";
 const MAPPED = { workspaceId: "ws", teamId: "mapped" };
 const UNMAPPED = { workspaceId: "ws", teamId: "unmapped" };
 const NO_REPOSITORY =
-  "Pascal has no repository in Paws yet. Ask Ada Owner or Grace Admin to map one in Integrations, then delegate again.";
+  "Pascal has no repository in Paws yet. Ask Ada Admin or Grace Admin to map one in Integrations, then delegate again.";
 
 async function seed() {
   const db = tempDb();
@@ -27,7 +27,7 @@ async function seed() {
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
   );
   for (const [id, name, role, active] of [
-    ["owner", "Ada Owner", "owner", 1],
+    ["ada", "Ada Admin", "admin", 1],
     ["admin", "Grace Admin", "admin", 1],
     ["former", "Old Admin", "admin", 0],
     ["member", "Lin Member", "member", 1],
@@ -117,11 +117,11 @@ test("an unmapped team may use any catalog repository, as placement does", async
 test("a workspace without active admins names the role instead of a person", async () => {
   const { db, item } = await seed();
   try {
-    db.run("UPDATE workspace_member SET active=0 WHERE role IN ('owner','admin')");
+    db.run("UPDATE workspace_member SET active=0 WHERE role='admin'");
     expect(
       teamRepositoryDenial(db, item(), UNMAPPED, { owner: "acme", repo: "elsewhere" })?.reason,
     ).toBe(
-      "Pascal has no repository in Paws yet. Ask a Paws owner or admin to map one in Integrations, then delegate again.",
+      "Pascal has no repository in Paws yet. Ask a Paws admin to map one in Integrations, then delegate again.",
     );
   } finally {
     db.close();

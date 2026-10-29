@@ -24,18 +24,18 @@ export async function probeRunnerPolicyBrowser(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const owner = putWorkspaceUser(db, {
+  const admin = putWorkspaceUser(db, {
     id: workspaceId(),
-    linearUserId: "owner",
-    name: "Owner",
-    email: "owner@example.invalid",
+    linearUserId: "admin",
+    name: "Admin",
+    email: "admin@example.invalid",
   });
   const token = issueWorkspaceBootstrap(db, "org", now);
   const workspace = consumeWorkspaceBootstrap(db, {
     id: workspaceId(),
     organizationId: "org",
     name: "Test",
-    userId: owner,
+    userId: admin,
     tokenHash: workspaceTokenHash(token),
     now,
   });
@@ -84,7 +84,7 @@ export async function probeRunnerPolicyBrowser(
       200,
     );
     assert.equal(
-      (await request(`/api/runners/${runnerId}/policy`, principal(owner, "owner"), policy))!.status,
+      (await request(`/api/runners/${runnerId}/policy`, principal(admin, "admin"), policy))!.status,
       403,
     );
     const saved = (await (await request(
@@ -110,7 +110,7 @@ export async function probeRunnerPolicyBrowser(
         400,
       );
     assert.equal(
-      await request("/api/runners/policy", principal(owner, "owner"), {
+      await request("/api/runners/policy", principal(admin, "admin"), {
         personalOrganizationHost: true,
       }),
       null,
@@ -131,12 +131,12 @@ export async function probeRunnerPolicyBrowser(
     observe("Cross-workspace settings changes fail closed", true, { denied: 1 });
     const ownRunner = workspaceId();
     db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,'Owner host','active',?)",
-      [ownRunner, workspace.id, owner, now],
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,'Admin host','active',?)",
+      [ownRunner, workspace.id, admin, now],
     );
     for (const [id, userId, host] of [
       ["member-usage", member, runnerId],
-      ["owner-usage", owner, ownRunner],
+      ["admin-usage", admin, ownRunner],
     ])
       db.run(
         "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,role,purpose,started_at,ended_at,outcome) VALUES(?,?,?,'implementer','helper',?,?,'success')",
@@ -147,22 +147,22 @@ export async function probeRunnerPolicyBrowser(
     };
     const adminUsage = (await (await request(
       "/api/runners/usage",
-      principal(owner, "owner"),
+      principal(admin, "admin"),
     ))!.json()) as { usage: unknown[] };
     assert.equal(privateUsage.usage.length, 1);
     assert.equal(privateUsage.usage[0]!.ownerUserId, member);
     assert.equal(adminUsage.usage.length, 2);
     const hostUsage = (await (await request(
       `/api/runners/usage?runner=${ownRunner}`,
-      principal(owner, "owner"),
+      principal(admin, "admin"),
     ))!.json()) as { usage: { runnerId: string; commandId: string }[] };
     assert.deepEqual(
       hostUsage.usage.map((entry) => [entry.runnerId, entry.commandId]),
-      [[ownRunner, "owner-usage"]],
+      [[ownRunner, "admin-usage"]],
     );
     observe("Execution usage is personal for members and workspace-wide for administrators", true, {
       memberRows: 1,
-      ownerRows: 2,
+      adminRows: 2,
       hostRows: 1,
     });
     db.run("UPDATE workspace_member SET active=0 WHERE user_id=?", [member]);

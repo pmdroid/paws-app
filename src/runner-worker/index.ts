@@ -320,7 +320,7 @@ export interface RunnerWorkerResult {
   reviewText?: string;
   text?: string;
   login?: {
-    agent: "claude" | "codex" | "grok";
+    agent: "claude" | "codex" | "grok" | "opencode";
     authenticated: boolean;
     method: "subscription" | "api_key" | "other" | "none";
     command: string;
@@ -428,7 +428,7 @@ function removeLeftoverCheckout(path: string): void {
 async function snapshotAgentSession(
   options: RunnerWorkerOptions,
   executionId: string,
-  agent: SessionAgent,
+  agent: string,
   session: {
     sessionId: string;
     workspacePath: string;
@@ -437,6 +437,7 @@ async function snapshotAgentSession(
   },
   emit: (event: RunnerWorkerEvent) => void,
 ): Promise<void> {
+  if (!isSessionAgent(agent)) return;
   const stagingName = `.session-${randomUUID()}.tmp`;
   const stagingPath = join(options.outputDirectory, stagingName);
   try {
@@ -519,6 +520,10 @@ const SESSION_TOO_LARGE: Record<SessionAgent, string> = {
   codex: CODEX_SESSION_TOO_LARGE,
   grok: GROK_SESSION_TOO_LARGE,
 };
+
+function isSessionAgent(agent: string): agent is SessionAgent {
+  return agent === "claude" || agent === "codex" || agent === "grok";
+}
 
 function resumedSession(directory: string): string | undefined {
   let sessionId: string | undefined;
@@ -1560,14 +1565,14 @@ export async function executeRunnerCommand(
     if (command.type === "helper") result.text = reviewText;
     if (command.type === "login_check") {
       const checked =
-        command.agent === "grok"
-          ? null
-          : await checkDeveloperLogin({
+        command.agent === "claude" || command.agent === "codex"
+          ? await checkDeveloperLogin({
               cli: command.agent,
               executable: providerCli(command.agent),
               env: agentEnv,
               run: options.loginCommand,
-            });
+            })
+          : null;
       const authenticated =
         run.stopReason === "end_turn" &&
         !run.authRequired &&
@@ -1598,7 +1603,9 @@ export async function executeRunnerCommand(
             ? "claude auth login"
             : command.agent === "codex"
               ? "codex login --device-auth"
-              : "grok login",
+              : command.agent === "opencode"
+                ? "opencode auth login"
+                : "grok login",
       };
     }
     if (agentLimits.length) result.run = { ...result.run, agentLimits };

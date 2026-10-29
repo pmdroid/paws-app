@@ -166,13 +166,12 @@ test("a slot taken before assignment waits for the runner without a retry and re
   const result = await runRemoteFault("busy");
   expect(result.state, result.detail).toBe("merge_queue");
   expect(result.errors, result.detail).toEqual([]);
-  // A slot wait is not a lease expiry: the item keeps its state and its run.
-  expect(result.deferredState, result.detail).toBe("running");
+  expect(result.deferredState, result.detail).toBe("recovering");
   expect(result.retries, result.detail).toEqual([0]);
   expect(result.faultedAttempts, result.detail).toBe(1);
   // The retry places the run again, and its start line is not posted a second time.
   expect(result.thoughts, result.detail).toEqual(["Starting on fixture in acme/fixture."]);
-  expect(result.runs, result.detail).toEqual(["implement:ended"]);
+  expect(result.runs, result.detail).toEqual(["implement:lost", "implement:ended"]);
 }, 60_000);
 
 test("a deferred remote run is lost, holds no runner slot, and its retry is a new run", async () => {
@@ -299,7 +298,7 @@ async function runRemoteFault(fault: Fault) {
   const owner = {
     workspaceId: workspace.id,
     userId,
-    role: "owner" as const,
+    role: "admin" as const,
     authenticatedAt: now,
     teamIds: [],
   };

@@ -166,7 +166,7 @@ function deliveryFacts(event: string, body: unknown): { shas: Set<string>; branc
   return { shas: strings(shas), branches: strings(branches) };
 }
 
-export function payloadRecord(payload: unknown): Record<string, unknown> {
+function payloadRecord(payload: unknown): Record<string, unknown> {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return {};
   return { ...(payload as Record<string, unknown>) };
 }

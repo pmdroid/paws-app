@@ -1,3 +1,8 @@
+import {
+  createFindingGrouping,
+  registerFindingGrouping,
+  workspaceGroupingSources,
+} from "./finding-groups";
 import { shutdownPaws, stopPawsComponents } from "./shutdown";
 import { journalCaught } from "./journal";
 import { startBrowserOnboarding } from "./onboarding-start";
@@ -48,6 +53,7 @@ import {
   ignoredCommentBots,
   LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,
+  resolveAgentProfiles,
   loadEnv,
   loadConfigFile,
   loadRunnerControl,
@@ -103,6 +109,7 @@ import {
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
+  type JobLoop,
   type WorkItemRecord,
   runnerHasCapacity,
   applyLinearIssueProject,
@@ -176,6 +183,8 @@ import {
   riskGateOn,
   RISK_GATE_NEEDS_PUBLIC_URL,
   highRiskPathsFileAt,
+  backfillReviewFindings,
+  REVIEW_FINDINGS_BACKFILL_JOB,
 } from "./loop";
 import {
   formatReviewScore,
@@ -184,6 +193,7 @@ import {
   scoreReview,
 } from "./review-score";
 import { handleLinkAskAnswer } from "./questions";
+import { createFindingIssueRoute } from "./finding-issues";
 import {
   createItemReconciler,
   createParentDelegations,
@@ -200,6 +210,7 @@ import {
   itemOwnerRunnerSetupNeed,
 } from "./runner-placement";
 import { startServer } from "./server";
+import { itemReviews } from "./web";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
@@ -241,6 +252,7 @@ import {
 import {
   createRemoteAgentRunner,
   createRemoteSessionAgentRunner,
+  createFindingGroupHelper,
   fetchRunnerCandidate,
   remoteCommandsGone,
 } from "./runner-backend";
@@ -352,6 +364,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         origin: runtime.publicUrl!,
         clientId: runtime.linearClientId,
         clientSecret: runtime.linearClientSecret,
+        expectedOrganizationId: runtime.linearOrganizationId,
         reconnect: true,
         installed() {},
       })
@@ -821,6 +834,25 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   void remote?.catch((caughtError4) => {
     journalCaught(caughtError4, "index.startPaws", null);
   });
+  const findingGrouping = linear?.findingIssues
+    ? createFindingGrouping({
+        db,
+        issues: linear.findingIssues,
+        helper: createFindingGroupHelper({
+          db,
+          helpers: async () => {
+            const coordinator = await runnerReady;
+            if (!coordinator) throw new Error("A paired runner is required for finding grouping.");
+            return coordinator.helpers;
+          },
+          profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+        }),
+        sources: (workspaceId) => {
+          if (!runtime.linearClientId) return [];
+          return workspaceGroupingSources(db, workspaceId, runtime.linearClientId);
+        },
+      })
+    : null;
   const remoteExecution: OrchestratorOptions["remoteExecution"] = remote
     ? {
         cancelItem: async (itemId) => {
@@ -828,6 +860,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           await backend.agents.cancelItem(itemId);
         },
         commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
+        runInProgress: async (runId) => (await remote).agents.runInProgress(runId),
         slotFree: () =>
           db
             .query<{ id: string }, []>(
@@ -883,17 +916,19 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         : undefined,
     );
   });
+  let jobLoop: JobLoop | null = null;
   let server: Bun.Server<undefined>;
   try {
     server = startServer({
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
-      onboarding: async (request) =>
+      onboarding: async (request, client) =>
         reconnectLinear &&
         !new URL(request.url).pathname.startsWith("/webhooks/") &&
         linearRevoked()
-          ? reconnectLinear(request)
+          ? reconnectLinear(request, client)
           : null,
+      ...(linear?.findingIssues ? { findingGroups: { issues: linear.findingIssues } } : {}),
       hostname: env.host,
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??
@@ -935,6 +970,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
       webhooks: webhooks || env.githubWebhookSecret !== null,
       db,
+      jobLoop: () => jobLoop?.liveness() ?? null,
       statusEnv: envSource,
       closeoutHome: paths.home,
       evidenceDir: paths.evidenceDir,
@@ -947,6 +983,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           sessionIds,
           submit: async (input) => (orchestrator ? orchestrator.decideLinkAsk(input) : "rejected"),
         }),
+      findingIssues: createFindingIssueRoute({
+        db,
+        reviews: (itemId) => itemReviews(db, itemId, paths.home, envSource),
+        // Linear is called only when someone files an issue, never when the page loads.
+        file: linear?.tracker?.fileFindingIssue
+          ? (request, fileOptions) => linear.tracker!.fileFindingIssue!(request, fileOptions)
+          : undefined,
+      }),
       readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: {
@@ -1392,6 +1436,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           now: Date.now(),
         });
       }
+      if (findingGrouping)
+        registerFindingGrouping(created.jobs, {
+          groupingTime: runtime.file.findingsGroupingTime ?? "06:00",
+          workspaces: () =>
+            db
+              .query<{ id: string }, []>("SELECT id FROM workspace")
+              .all()
+              .map((w) => w.id),
+          run: (workspaceId, signal) =>
+            findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
+        });
       registerScheduler(created.jobs, () => attached.reconcileExecution());
       // A conversation blocked on an unverified cleanup continues once its runner reports the
       // old command gone.
@@ -1425,6 +1480,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           ),
         ),
       );
+      // Enqueued once by a migration; it fills the Findings page from the review evidence of runs
+      // Closeout accepted before the page stored findings.
+      created.jobs.register(REVIEW_FINDINGS_BACKFILL_JOB, () =>
+        backfillReviewFindings({ db, pawsRoot: paths.home }).then(({ runs, recorded, gone }) =>
+          journal(
+            `review findings backfilled: ${runs} accepted runs, ${recorded} findings, ${gone} gone`,
+          ),
+        ),
+      );
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
       enqueueJobOnce(db, {
         queue: "github.auth.recover",
@@ -1435,6 +1499,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       });
     },
   });
+  jobLoop = loops.jobs;
 
   const host = startHost({
     db,
