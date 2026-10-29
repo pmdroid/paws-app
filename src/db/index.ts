@@ -732,6 +732,7 @@ export type { FindingGroup, FindingGroupRun } from "./finding-groups";
 export { findingGroupingAdmins, recoverFindingGroupRuns } from "./finding-groups";
 
 export { getFindingGroup, removeFindingFromOpenGroups } from "./finding-groups";
+export { findingGroupingEnabled, setFindingGrouping } from "./finding-groups";
 export { reviewFindingsByIds } from "./review-findings";
 
 export { yieldFindingGroupHelpers, runnerHelperAvailability } from "./runner-capacity";

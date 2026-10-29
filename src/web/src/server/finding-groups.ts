@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
   enqueueJobOnce,
+  findingGroupingEnabled,
   reviewFindingsByIds,
   getFindingGroup,
   immediate,
@@ -81,10 +82,12 @@ export async function handleFindingGroupsRequest(
     db.query<{ id: string }, []>("SELECT id FROM workspace ORDER BY id LIMIT 1").get()?.id;
   const member = principal ? workspaceMember(db, principal.workspaceId, principal.userId) : null;
   if (request.method === "GET") {
+    const enabled = !workspaceId || findingGroupingEnabled(db, workspaceId);
     const data: FindingGroupsResponse = {
       groups: [],
       lastRun: null,
-      canRun: !!member?.active && ["admin", "owner"].includes(member.role),
+      canRun: enabled && !!member?.active && ["admin", "owner"].includes(member.role),
+      enabled,
     };
     if (workspaceId && (!principal || member?.active)) {
       const groups = listFindingGroups(db, workspaceId, 200);
@@ -155,6 +158,11 @@ export async function handleFindingGroupsRequest(
       return Response.json({ error: "Only admins can run grouping." }, { status: 403 });
     if (!options.services)
       return Response.json({ error: "Finding grouping is unavailable." }, { status: 503 });
+    if (!findingGroupingEnabled(db, principal.workspaceId))
+      return Response.json(
+        { error: "Daily grouping is off. Turn it on in Settings → Findings." },
+        { status: 409 },
+      );
     const day = new Date(now).toISOString().slice(0, 10);
     const last = lastFindingGroupRun(db, principal.workspaceId);
     if (last && new Date(last.startedAt).toISOString().slice(0, 10) === day)

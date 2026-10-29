@@ -7,6 +7,7 @@ export type FindingGroupsResponse = {
   groups: FindingGroupView[];
   lastRun: FindingGroupRun | null;
   canRun: boolean;
+  enabled: boolean;
 };
 export type FindingGroupAction =
   | { action: "run" }

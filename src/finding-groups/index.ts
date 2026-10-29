@@ -8,6 +8,7 @@ import {
   findingGroupSources,
   workspaceSessionIds,
   findingGroupingAdmins,
+  findingGroupingEnabled,
   recoverFindingGroupRuns,
   type JobLoop,
   type ReviewFindingRecord,
@@ -196,6 +197,7 @@ export function createFindingGrouping(options: {
   recoverFindingGroupRuns(db, now());
   return {
     async run(workspaceId: string, signal: AbortSignal): Promise<void> {
+      if (!findingGroupingEnabled(db, workspaceId)) return;
       signal = AbortSignal.any([signal, AbortSignal.timeout(600_000)]);
       const at = now();
       recoverFindingGroupRuns(db, at);

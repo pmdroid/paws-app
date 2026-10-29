@@ -109,3 +109,12 @@ export function recoverFindingGroupRuns(db: Database, now: number): void {
     [now, now - 11 * 60_000],
   );
 }
+
+export function findingGroupingEnabled(db: Database, workspaceId: string): boolean {
+  return !db.query("SELECT 1 FROM finding_grouping_off WHERE workspace_id=?").get(workspaceId);
+}
+
+export function setFindingGrouping(db: Database, workspaceId: string, on: boolean): void {
+  if (on) db.run("DELETE FROM finding_grouping_off WHERE workspace_id=?", [workspaceId]);
+  else db.run("INSERT OR IGNORE INTO finding_grouping_off VALUES(?)", [workspaceId]);
+}

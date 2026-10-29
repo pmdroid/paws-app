@@ -7,7 +7,7 @@ import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
-import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime } from "../config";
+import { DEFAULT_HOST, DEFAULT_PORT, loadConfigFile, loadRuntime } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import {
   handleLinearWebhook,
@@ -37,11 +37,13 @@ import {
 } from "../evidence";
 import {
   CHECKOUT_SETTINGS_PATH,
+  FINDING_SETTINGS_PATH,
   HOOK_SETTINGS_PATH,
   SKILL_SETTINGS_PATH,
   handleAgentSettingsRequest,
   handleCheckoutSettingsRequest,
   handleMergeSettingsRequest,
+  handleFindingSettingsRequest,
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
   MERGE_SETTINGS_PATH,
@@ -482,6 +484,30 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...secrets.skillSettings,
       db,
       csrfToken,
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(db, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
+  if (path === FINDING_SETTINGS_PATH && secrets.db) {
+    const db = secrets.db;
+    const workspaceId =
+      principal?.workspaceId ??
+      db.query<{ id: string }, []>("SELECT id FROM workspace ORDER BY id LIMIT 1").get()?.id;
+    if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
+    const configPath = secrets.agentSettings?.configPath;
+    return (await handleFindingSettingsRequest(request, {
+      db,
+      csrfToken,
+      workspaceId,
+      groupingTime: (configPath && loadConfigFile(configPath).findingsGroupingTime) || "06:00",
       ...(principal === undefined ? {} : { role: principal.role }),
       audit: (action, subject) =>
         auditWorkspaceAccess(db, {
