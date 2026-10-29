@@ -47,6 +47,17 @@ export {
   type ReviewEscapeTrigger,
 } from "./review-escapes";
 export {
+  markReviewReplyPosted,
+  recordReviewReplies,
+  reportReviewReplies,
+  unpostedReviewReplies,
+  unreportedReviewReplies,
+  type NewReviewReply,
+  type ReviewReplyOutcome,
+  type ReviewReplyRecord,
+  type ReviewReplyTarget,
+} from "./review-replies";
+export {
   CANCEL_STILL_PENDING,
   runnerCancelPending,
   recordRunnerCapacity,

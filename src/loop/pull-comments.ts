@@ -5,6 +5,7 @@ import {
   getPullReview,
   getWorkItem,
   immediate,
+  pendingChangeRequests,
   pendingPullComments,
   recordPullComment,
   recordReviewEscape,
@@ -15,7 +16,13 @@ import {
 import type { ReviewThread } from "../github";
 import { ask, restart } from "./operations";
 import {
-  REVIEW_FIX_INSTRUCTION,
+  REVIEW_REPLY_MARKER,
+  recordReplyTargets,
+  replyListSection,
+  replyTargets,
+} from "./review-replies";
+import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
+import {
   clip,
   closeoutFindingsNote,
   itemForBranch,
@@ -27,7 +34,7 @@ import {
 const ENDED = new Set(["cancelled", "merged", "completed", "failed", "manual"]);
 const DIGEST_CHARS = 12_000;
 
-export const COMMENT_FIX_INSTRUCTION = `A comment can be a question, a note or a status line rather than a request; answer nothing and change nothing for those. ${REVIEW_FIX_INSTRUCTION}`;
+export const COMMENT_FIX_INSTRUCTION = `A comment can be a question, a note or a status line rather than a request; change nothing for those and answer them in the reply list. ${REVIEW_FIX_INSTRUCTION}`;
 
 /** Which comments never reach the agent. */
 export type PullCommentFilter = {
@@ -92,6 +99,8 @@ export function recordCommentDelivery(
     if (filter.ignoredBots(name).includes(login)) return false;
   }
   const text = typeof comment.body === "string" ? comment.body : "";
+  // Paws' own replies to handed-off comments, posted with a token that is not the App's.
+  if (text.includes(REVIEW_REPLY_MARKER)) return false;
   if (event === "issue_comment") {
     const issue = record(payload.issue);
     if (typeof issue.number !== "number" || issue.pull_request === undefined) return false;
@@ -188,6 +197,8 @@ export async function handlePullComments(
     return "dropped";
   }
   if (settleCovered(db, open, caps.now()) === open.length) return "done";
+  // A changes-requested review still waiting takes these comments with it.
+  if (pendingChangeRequests(db, itemId).length > 0) return "wait";
   const pullNumber = open.at(-1)!.pullNumber;
   if (item.state === "merge_queue") {
     // Before waiting on anything: GitHub's own merge queue does not wait for Paws.
@@ -218,15 +229,22 @@ export async function handlePullComments(
     if (rounds < limit) {
       const first = batch[0]!;
       const jobKey = `review:${current.id}:${first.source}:${first.commentId}`;
+      const targets = replyTargets({ pullNumber, threads, reviews: [], comments: batch });
       const jobId = restart(db, current, {
         reason: "review",
-        body: [digest, closeoutFindingsNote(findings, batch), COMMENT_FIX_INSTRUCTION]
+        body: [
+          digest,
+          closeoutFindingsNote(findings, batch),
+          COMMENT_FIX_INSTRUCTION,
+          replyListSection(targets),
+        ]
           .filter((part) => part !== "")
           .join("\n\n"),
         jobKey,
         now,
       });
       if (jobId === null) return "wait";
+      recordReplyTargets(db, current.id, jobKey, targets, now);
       if (current.acceptedHead !== null)
         recordReviewEscape(db, {
           triggerKey: jobKey,

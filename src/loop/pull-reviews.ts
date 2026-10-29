@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 import {
   fixRounds,
   getPullReview,
+  pendingPullComments,
+  settlePullComments,
   getItemPullRequest,
   getWorkItem,
   immediate,
@@ -15,6 +17,9 @@ import {
 import type { StoredReviewFinding } from "../closeout";
 import type { LeaveMergeQueueResult, ReviewThread } from "../github";
 import { ask, restart } from "./operations";
+import { commentDigest } from "./pull-comments";
+import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
+import { recordReplyTargets, replyListSection, replyTargets } from "./review-replies";
 import { worktreeBranch } from "./sources";
 
 /** How often a review waiting for a live turn, evaluation or merge attempt looks again. */
@@ -24,8 +29,7 @@ const ENDED = new Set(["cancelled", "merged", "completed", "failed", "manual"]);
 const COMMENT_CHARS = 2_000;
 const DIGEST_CHARS = 12_000;
 
-export const REVIEW_FIX_INSTRUCTION =
-  "Fix what you are confident about. Before changing anything you are unsure of, ask the team with ask_team in this session and wait for the answer. Commit the fixes on this branch. Leave the review threads for the reviewer to resolve.";
+export { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
 
 /**
  * Record a submitted changes-requested `pull_request_review` webhook for the item that owns the
@@ -165,9 +169,27 @@ export async function handlePullReview(
       return "wait";
     const rounds = fixRounds(db, current.id);
     const limit = caps.fixRoundLimit(current);
-    const digest = reviewDigest(review, threads);
+    // Comments that arrived with the review go to the agent in the same restart.
+    const comments = pendingPullComments(db, current.id).filter(
+      (comment) => comment.pullNumber === review.pullNumber,
+    );
+    const others = comments.filter(
+      (comment) => !(comment.source === "inline" && comment.reviewId === review.reviewId),
+    );
+    const digest = [
+      reviewDigest(review, threads),
+      others.length > 0 ? (commentDigest(others, threads) ?? "") : "",
+    ]
+      .filter((part) => part !== "")
+      .join("\n\n");
     if (rounds < limit) {
       const jobKey = `review:${current.id}:${review.reviewId}`;
+      const targets = replyTargets({
+        pullNumber: review.pullNumber,
+        threads,
+        reviews: [review],
+        comments,
+      });
       const jobId = restart(db, current, {
         reason: "review",
         body: [
@@ -182,6 +204,7 @@ export async function handlePullReview(
             })),
           ),
           REVIEW_FIX_INSTRUCTION,
+          replyListSection(targets),
         ]
           .filter((part) => part !== "")
           .join("\n\n"),
@@ -189,6 +212,8 @@ export async function handlePullReview(
         now: caps.now(),
       });
       if (jobId === null) return "wait";
+      recordReplyTargets(db, current.id, jobKey, targets, caps.now());
+      settlePullComments(db, comments, "covered", caps.now());
       if (current.acceptedHead !== null)
         recordReviewEscape(db, {
           triggerKey: jobKey,

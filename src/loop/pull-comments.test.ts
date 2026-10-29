@@ -247,7 +247,7 @@ describe("pull request comments restart the item", () => {
     expect(text).toContain("@rev: Older note on the same line.");
     expect(text).not.toContain("cache key");
     expect(text).not.toContain("Done already.");
-    expect(text).toEndWith(COMMENT_FIX_INSTRUCTION);
+    expect(text).toContain(`${COMMENT_FIX_INSTRUCTION}\n\nReply list.`);
     expect(getPullComment(db, "inline", 9001)?.outcome).toBe("restarted");
     expect(getPullComment(db, "review", 601)?.outcome).toBe("restarted");
 
@@ -302,7 +302,7 @@ describe("pull request comments restart the item", () => {
     expect(text).toContain(CONTRADICTION_INSTRUCTION);
     expect(CONTRADICTION_INSTRUCTION).toContain("do not change the code");
     expect(CONTRADICTION_INSTRUCTION).toContain("ask_team");
-    expect(text).toEndWith(COMMENT_FIX_INSTRUCTION);
+    expect(text).toContain(`${COMMENT_FIX_INSTRUCTION}\n\nReply list.`);
   });
 
   test("an unrelated Bugbot comment gets Closeout's findings as context only", async () => {
@@ -322,7 +322,7 @@ describe("pull request comments restart the item", () => {
     expect(text).toContain("- fixed, P1 at `src/cache.ts:41`");
     expect(text).not.toContain("These comments are on a file a Closeout finding names.");
     expect(text).toContain("Comments that do not touch a finding are handled as usual.");
-    expect(text).toEndWith(COMMENT_FIX_INSTRUCTION);
+    expect(text).toContain(`${COMMENT_FIX_INSTRUCTION}\n\nReply list.`);
   });
 
   test("without stored Closeout findings the handoff has no findings note", async () => {

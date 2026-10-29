@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import { enqueueJobOnce } from "./jobs";
+import { deferPullFeedback, PULL_COMMENT_SETTLE_MS } from "./pull-comments";
 
 export type PullReviewState = "changes_requested" | "commented";
 export type PullReviewOutcome = "restarted" | "asked" | "posted" | "dropped";
@@ -36,8 +37,9 @@ export function pullReviewJobKey(reviewId: number): string {
 }
 
 /**
- * Record a submitted review once by its GitHub id and enqueue the job that acts on it. False when
- * the id was already recorded, so a redelivered webhook does nothing. Call inside a transaction.
+ * Record a submitted review once by its GitHub id and enqueue the job that acts on it a quiet
+ * minute later. False when the id was already recorded, so a redelivered webhook does nothing.
+ * Call inside a transaction.
  */
 export function recordPullReview(
   db: Database,
@@ -58,11 +60,15 @@ export function recordPullReview(
     ],
   );
   if (inserted.changes === 0) return false;
+  // A review waits out the same quiet minute as comments, so the bot reviews and comments that
+  // follow it reach the agent in the same restart.
+  deferPullFeedback(db, review.itemId, review.receivedAt);
   // No `itemId` in the payload: a restart cancels the item's jobs, and this one must outlive them.
   enqueueJobOnce(db, {
     queue: JOB_KIND.pullReview,
     jobKey: pullReviewJobKey(review.reviewId),
     payload: { reviewId: review.reviewId },
+    runAt: review.receivedAt + PULL_COMMENT_SETTLE_MS,
     now: review.receivedAt,
   });
   return true;

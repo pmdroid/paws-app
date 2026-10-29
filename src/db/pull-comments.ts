@@ -37,15 +37,41 @@ type Row = {
   outcome: PullCommentOutcome | null;
 };
 
-/** Quiet time after the last comment before the comments go to the agent together. */
+/**
+ * Quiet time after the last comment or changes-requested review before they go to the agent
+ * together.
+ */
 export const PULL_COMMENT_SETTLE_MS = 60_000;
-/** The longest a steady stream of comments delays the restart. */
+/** The longest a steady stream of comments and reviews delays the restart. */
 export const PULL_COMMENT_MAX_SETTLE_MS = 5 * 60_000;
 
 /**
+ * Move the item's pending comment job and changes-requested review jobs to a quiet minute after
+ * `receivedAt`, never past five minutes after each job was created. A review and the comments and
+ * bot reviews that follow it then reach the agent in one restart. The number of jobs moved.
+ */
+export function deferPullFeedback(db: Database, itemId: string, receivedAt: number): number {
+  return db.run(
+    `UPDATE job SET run_at = MIN(MAX(run_at, ?), created_at + ?)
+     WHERE status = 'pending' AND (
+       (queue = ? AND json_extract(payload, '$.pullCommentsFor') = ?)
+       OR (queue = ? AND job_key IN (SELECT 'pull-review:' || review_id FROM pull_review
+                                     WHERE item_id = ? AND handled_at IS NULL)))`,
+    [
+      receivedAt + PULL_COMMENT_SETTLE_MS,
+      PULL_COMMENT_MAX_SETTLE_MS,
+      JOB_KIND.pullComments,
+      itemId,
+      JOB_KIND.pullReview,
+      itemId,
+    ],
+  ).changes;
+}
+
+/**
  * Record a pull request comment once by its source and GitHub id, and make sure one pending job
- * gathers the item's comments. A comment that arrives while that job is pending moves it to a
- * minute after this comment, so comments close together become one restart. False when the
+ * gathers the item's comments. A comment moves that job and the item's pending review jobs to a
+ * minute after this comment, so comments and reviews close together become one restart. False when the
  * comment was already recorded. Call inside a transaction.
  */
 export function recordPullComment(
@@ -70,12 +96,14 @@ export function recordPullComment(
   );
   if (inserted.changes === 0) return false;
   const settle = comment.receivedAt + PULL_COMMENT_SETTLE_MS;
-  const moved = db.run(
-    `UPDATE job SET run_at = MIN(MAX(run_at, ?), created_at + ?)
-     WHERE queue = ? AND status = 'pending' AND json_extract(payload, '$.pullCommentsFor') = ?`,
-    [settle, PULL_COMMENT_MAX_SETTLE_MS, JOB_KIND.pullComments, comment.itemId],
-  );
-  if (moved.changes > 0) return true;
+  deferPullFeedback(db, comment.itemId, comment.receivedAt);
+  const gathering = db
+    .query<{ n: number }, [string, string]>(
+      `SELECT count(*) AS n FROM job WHERE queue = ? AND status = 'pending'
+       AND json_extract(payload, '$.pullCommentsFor') = ?`,
+    )
+    .get(JOB_KIND.pullComments, comment.itemId);
+  if ((gathering?.n ?? 0) > 0) return true;
   enqueueJobOnce(db, {
     queue: JOB_KIND.pullComments,
     jobKey: `pull-comments:${comment.itemId}:${comment.source}:${comment.commentId}`,
