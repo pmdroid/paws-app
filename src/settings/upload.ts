@@ -9,7 +9,6 @@ export type SkillUpload = {
 
 export async function readSkillUpload(request: Request, limit: number): Promise<SkillUpload> {
   const length = Number(request.headers.get("content-length"));
-  // Multipart framing adds a little per file on top of the skill's own bytes.
   if (!Number.isFinite(length) || length <= 0)
     throw new SkillError("Upload the folder with a Content-Length.", 411);
   if (length > limit + 4 * 1024 * 1024)

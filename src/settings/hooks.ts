@@ -34,7 +34,6 @@ export type HookSettingsOptions = {
   role?: string;
   /** Records every hook change in the audit history. */
   audit: (action: string, subject: string) => void;
-  /** Uploaded hooks are stored as single-script skill bundles. */
   root?: string;
   resolver?: SkillResolver;
   limit?: number;
@@ -45,7 +44,7 @@ const AGENT_NAMES: Record<HookAgent, string> = { claude: "Claude", codex: "Codex
 
 type UploadedHook = { skill: string; path: string; command: string };
 
-/** `GET` lists the hooks; `POST` uploads a script, or adds or removes a hook. */
+/** `GET` lists the hooks; `POST` adds or removes one. */
 export async function handleHookSettingsRequest(
   request: Request,
   options: HookSettingsOptions,
