@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { snapshotArtifactFile } from "./artifacts";
-import { startHostToolBridge } from "./ask-team";
+import { startAskTeamBridge } from "./ask-team";
 
 const roots: string[] = [];
 
@@ -92,7 +92,7 @@ test("bridge close aborts a held upload and destroys sockets awaiting a request"
   let ready!: () => void;
   const entered = new Promise<void>((resolve) => (ready = resolve));
   let signal: AbortSignal | undefined;
-  const bridge = await startHostToolBridge({
+  const bridge = await startAskTeamBridge({
     socketPath: join(root, "tools.sock"),
     context: { itemId: "item", runId: "run", worktreePath: root, role: "implementer" },
     signal: new AbortController().signal,
@@ -123,7 +123,7 @@ test("cancellation prevents a waiting artifact request from launching an upload"
   await writeFile(join(root, "report.txt"), "report");
   const controller = new AbortController();
   let uploads = 0;
-  const bridge = await startHostToolBridge({
+  const bridge = await startAskTeamBridge({
     socketPath: join(root, "tools.sock"),
     context: { itemId: "item", runId: "run", worktreePath: root, role: "implementer" },
     signal: controller.signal,
