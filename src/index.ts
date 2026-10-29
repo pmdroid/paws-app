@@ -814,18 +814,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     size: memberVmSize,
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
   });
+  let remoteAgents: ReturnType<typeof createRemoteAgentRunner> | undefined;
   const remote = placeOnRunner
     ? runnerReady.then((coordinator) => {
         if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");
         if (!placement) throw new Error("Remote execution requires current Linear ownership.");
+        const agents = createRemoteAgentRunner({
+          db,
+          ...coordinator,
+          fetchCandidate: fetchRunnerCandidate,
+          checkpointBot: repositoryAccess?.checkpointBot,
+          placement,
+        });
+        remoteAgents = agents;
         return {
-          agents: createRemoteAgentRunner({
-            db,
-            ...coordinator,
-            fetchCandidate: fetchRunnerCandidate,
-            checkpointBot: repositoryAccess?.checkpointBot,
-            placement,
-          }),
+          agents,
           sessions: createRemoteSessionAgentRunner({
             db,
             helpers: coordinator.helpers,
@@ -871,6 +874,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             )
             .all()
             .some((host) => runnerHasCapacity(db, host.id, Date.now())),
+        // Before the runner backend exists, do not block. Once it does, the hold is synchronous.
+        tryReserve: (itemId) => remoteAgents?.tryReserve(itemId) ?? { ok: true, held: false },
+        releaseReserve: (itemId) => remoteAgents?.releaseReserve(itemId),
+        retargetReserve: (fromRunId, toRunId) => remoteAgents?.retargetReserve(fromRunId, toRunId),
         agentForItem: (itemId) => async (input) => {
           input.signal?.throwIfAborted();
           await ready;

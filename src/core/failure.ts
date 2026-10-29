@@ -50,6 +50,15 @@ export function placementWaitMs(attempt: number, pollIntervalMs = 250) {
   return pollIntervalMs * PLACEMENT_WAIT_POLLS[Math.min(attempt, PLACEMENT_WAIT_POLLS.length - 1)]!;
 }
 
+/**
+ * How much earlier one recovering resume may run. Subtract it from the base delay (never add it):
+ * a crowd of retries then wakes across a few seconds, and the wait stays inside the base delay.
+ */
+export function resumeRetrySpreadMs(delayMs: number, random: () => number = Math.random): number {
+  if (delayMs <= 1) return 0;
+  return Math.floor(random() * Math.min(delayMs, 5_000));
+}
+
 export class RunnerCapacityWait extends Error {
   override readonly name = "RunnerCapacityWait";
   constructor(
