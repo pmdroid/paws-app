@@ -445,17 +445,27 @@ export function createFakeGroupingHelper(text: string) {
   return { run, calls };
 }
 
+export function groupingAuthorityUser(db: Database, workspaceId: string): string | null {
+  const admins = findingGroupingAdmins(db, workspaceId);
+  if (!admins.length) return null;
+  const owners = new Set(
+    db
+      .query<{ userId: string }, [string]>(
+        "SELECT owner_user_id AS userId FROM runner WHERE workspace_id=? AND revoked_at IS NULL AND status<>'revoked'",
+      )
+      .all(workspaceId)
+      .map((row) => row.userId),
+  );
+  return admins.find((admin) => owners.has(admin.userId))?.userId ?? admins[0]!.userId;
+}
+
 export function workspaceGroupingSources(
   db: Database,
   workspaceId: string,
   clientId: string,
 ): GroupingInput[] {
-  const admin = findingGroupingAdmins(db, workspaceId)[0];
-  return admin
-    ? scopedGroupingSources(
-        db,
-        workspaceId,
-        workspaceSessionIds(db, workspaceId, admin.userId, clientId),
-      )
+  const userId = groupingAuthorityUser(db, workspaceId);
+  return userId
+    ? scopedGroupingSources(db, workspaceId, workspaceSessionIds(db, workspaceId, userId, clientId))
     : [];
 }

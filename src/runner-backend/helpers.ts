@@ -6,7 +6,7 @@ import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from
 import type { RunnerHelpers } from "../runner-helpers";
 import type { RunnerPlacement } from "../runner-placement";
 import { RunnerSlotsBusyError, UserFacingError } from "../core";
-import { immediate, runnerHasCapacity } from "../db";
+import { immediate, runnerHasCapacity, workspaceSessionIds } from "../db";
 import { FINDING_GROUPS_RUNNER_VERSION, type RunnerCommand } from "../runner-protocol";
 import { versionAtLeast } from "./session-restore";
 
@@ -70,6 +70,27 @@ export function createRemoteSessionAgentRunner(options: {
                 )
                 .get(runner.id);
               if (!versionAtLeast(host?.version, FINDING_GROUPS_RUNNER_VERSION)) continue;
+              const owner = options.db
+                .query<{ workspaceId: string; userId: string }, [string]>(
+                  "SELECT workspace_id AS workspaceId, owner_user_id AS userId FROM runner WHERE id=?",
+                )
+                .get(runner.id);
+              const installation = options.db
+                .query<{ clientId: string | null }, [string]>(
+                  "SELECT oauth_client_id AS clientId FROM linear_session WHERE session_id=?",
+                )
+                .get(sessionId);
+              if (
+                !owner ||
+                !installation?.clientId ||
+                !workspaceSessionIds(
+                  options.db,
+                  owner.workspaceId,
+                  owner.userId,
+                  installation.clientId,
+                ).includes(sessionId)
+              )
+                continue;
             }
             try {
               command = immediate(options.db, () => {

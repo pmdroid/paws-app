@@ -12,6 +12,7 @@ import {
   runnerSlotsHeldBetweenCommands,
   delegatedLinearUserId,
   workspaceMember,
+  workspaceSessionIds,
   findingGroupingAdmins,
 } from "../db";
 import type { PlacementReason, PlacementRequest, RunnerPlacement } from "./index";
@@ -262,23 +263,36 @@ export function createRunnerPlacement(options: {
               )
               .get(pinnedRunnerId, at - RUNNER_ONLINE_MS) !== null
           : false;
-      const groupingTeam =
+      const groupingSession =
         input.findingGroups && input.purpose === "helper"
           ? db
-              .query<{ teamId: string | null }, [string]>(
-                "SELECT team_id AS teamId FROM linear_session WHERE session_id=?",
+              .query<{ teamId: string | null; clientId: string | null }, [string]>(
+                "SELECT team_id AS teamId, oauth_client_id AS clientId FROM linear_session WHERE session_id=?",
               )
-              .get(current.session.sessionId)?.teamId
+              .get(current.session.sessionId)
           : null;
-      if (input.findingGroups && !groupingTeam) throw new Error("Runner issue team is unavailable");
+      if (input.findingGroups && !groupingSession?.teamId)
+        throw new Error("Runner issue team is unavailable");
       const scopes =
         input.findingGroups && input.purpose === "helper"
-          ? findingGroupingAdmins(db, current.workspace.id).map((admin) => ({
-              workspaceId: current.workspace.id,
-              teamId: groupingTeam!,
-              ownerUserId: admin.userId,
-              leadUserIds: [],
-            }))
+          ? findingGroupingAdmins(db, current.workspace.id).flatMap((admin) =>
+              groupingSession?.clientId &&
+              workspaceSessionIds(
+                db,
+                current.workspace.id,
+                admin.userId,
+                groupingSession.clientId,
+              ).includes(current.session.sessionId)
+                ? [
+                    {
+                      workspaceId: current.workspace.id,
+                      teamId: groupingSession.teamId!,
+                      ownerUserId: admin.userId,
+                      leadUserIds: [] as string[],
+                    },
+                  ]
+                : [],
+            )
           : [eligibility(current)];
       const rows = scopes
         .flatMap((owner) =>

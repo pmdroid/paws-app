@@ -506,3 +506,97 @@ test("a failed receipt completion is retried by cleanup before the original erro
     f.db.close();
   }
 });
+
+test("grouping runs on a later admin's runner when the earlier admin has none", async () => {
+  const f = seed();
+  try {
+    putWorkspaceUser(f.db, {
+      id: "aaa",
+      linearUserId: "linear-aaa",
+      name: "Aaa",
+      email: "aaa@example.invalid",
+    });
+    syncWorkspaceMember(f.db, {
+      workspaceId: "ws",
+      userId: "aaa",
+      role: "admin",
+      active: true,
+      teamIds: [],
+      now: f.now,
+    });
+    let runnerId = "";
+    const helper = createFindingGroupHelper({
+      db: f.db,
+      profile: () => ({ agent: "codex", model: null }),
+      helpers: async () => ({
+        ...f.helpers,
+        dispatch(input) {
+          runnerId = input.runnerId;
+          const issued = f.helpers.dispatch(input);
+          f.helpers.submit(input.runnerId, {
+            commandId: issued.command.id,
+            executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            role: "implementer",
+            stopReason: "end_turn",
+            timedOut: false,
+            cancelled: false,
+            authRequired: false,
+            agentExited: true,
+            text: '{"groups":[]}',
+          });
+          return issued;
+        },
+      }),
+    });
+    await helper({
+      workspaceId: "ws",
+      sessionId: "reporting-session",
+      prompt: "Group",
+      signal: new AbortController().signal,
+    });
+    expect(runnerId).toBe("runner");
+    expect(
+      f.db.query<{ userId: string }, []>("SELECT owner_user_id AS userId FROM runner").get()
+        ?.userId,
+    ).toBe("admin");
+  } finally {
+    f.db.close();
+  }
+});
+
+test("grouping does not dispatch a session the runner owner cannot authorize", async () => {
+  const { insertQueuedItem } = await import("../src/db");
+  const f = seed();
+  try {
+    insertQueuedItem(f.db, { id: "outside", sessionKey: "reporting-session", now: f.now });
+    f.db.run(
+      "INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES('outside','other','secret','https://github.com/other/secret.git')",
+    );
+    f.db.run(
+      "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws','acme/allowed','team')",
+    );
+    let attempts = 0;
+    const helper = createFindingGroupHelper({
+      db: f.db,
+      profile: () => ({ agent: "codex", model: null }),
+      helpers: async () => ({
+        ...f.helpers,
+        dispatch(input) {
+          attempts++;
+          return f.helpers.dispatch(input);
+        },
+      }),
+    });
+    await expect(
+      helper({
+        workspaceId: "ws",
+        sessionId: "reporting-session",
+        prompt: "Group",
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("No paired runner");
+    expect(attempts).toBe(0);
+  } finally {
+    f.db.close();
+  }
+});

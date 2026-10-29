@@ -760,6 +760,43 @@ test("admin grouping covers findings reported by teams outside that admin's memb
   }
 });
 
+test("grouping authority is an admin who owns a runner, not an earlier admin without one", async () => {
+  const { recordLinearInstallation } = await import("../src/db");
+  const { groupingAuthorityUser, workspaceGroupingSources } = await import("../src/finding-groups");
+  const f = seed();
+  try {
+    putWorkspaceUser(f.db, {
+      id: "aaa",
+      linearUserId: "linear-aaa",
+      name: "Aaa",
+      email: "aaa@example.invalid",
+    });
+    syncWorkspaceMember(f.db, {
+      workspaceId: "ws",
+      userId: "aaa",
+      role: "admin",
+      active: true,
+      teamIds: [],
+      now: 2,
+    });
+    recordLinearInstallation(f.db, {
+      sessionId: "session",
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      teamId: "team",
+      observedAtMs: 3,
+    });
+    f.db.run(
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','ada','Runner','active',1,1)",
+    );
+    expect(groupingAuthorityUser(f.db, "ws")).toBe("ada");
+    expect(workspaceGroupingSources(f.db, "ws", "client").length).toBeGreaterThan(0);
+  } finally {
+    f.db.close();
+  }
+});
+
 test("a partial grouping cycle processes each finding and then skips unchanged snapshots", async () => {
   const f = seed();
   try {
