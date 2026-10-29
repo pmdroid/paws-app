@@ -49,6 +49,7 @@ import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
 import { createMergeSettings } from "./merge-settings";
 import { createHookSettings } from "./hooks";
+import { createFindingSettings } from "./finding-settings";
 import { createCheckoutSettings } from "./checkout-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
@@ -74,6 +75,7 @@ const settings = createAgentSettings(() => paint());
 const skillSettings = createSkillSettings();
 const mergeSettings = createMergeSettings(() => paint());
 const hookSettings = createHookSettings();
+const findingSettings = createFindingSettings();
 const checkoutSettings = createCheckoutSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
@@ -367,6 +369,8 @@ function paint(): void {
   if (mergeRoot) mergeSettings.mount(mergeRoot, currentEngine());
   const hooksRoot = document.querySelector<HTMLElement>("#hook-settings");
   if (hooksRoot) hookSettings.mount(hooksRoot, currentEngine());
+  const findingSettingsRoot = document.querySelector<HTMLElement>("#finding-settings");
+  if (findingSettingsRoot) findingSettings.mount(findingSettingsRoot, currentEngine());
   const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
   if (sessionRoot)
     sessionStart.mount(
