@@ -60,6 +60,8 @@ import {
   REVIEW_COMMAND_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
   RUNTIMES_RUNNER_VERSION,
+  ANY_MISE_BACKEND_RUNNER_VERSION,
+  legacyRuntimeTool,
   SESSION_RESUME_RUNNER_VERSION,
   type RunnerCommand,
   type RunnerResult,
@@ -298,6 +300,7 @@ export function createRemoteAgentRunner(options: {
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
   const reservations = new Map<string, string>();
+  const readers = new Set<string>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
   function usageLimitReset(agent: string, sessionId: string | null): number | null {
@@ -598,6 +601,8 @@ export function createRemoteAgentRunner(options: {
       return undefined;
     }
     if (command.type !== type) return undefined;
+    if (reservations.has(runId)) throw new RunnerCapacityWait([row.runnerId]);
+    reservations.set(runId, row.runnerId);
     return {
       selected: {
         id: row.runnerId,
@@ -656,6 +661,7 @@ export function createRemoteAgentRunner(options: {
   return {
     cancelItem,
     handOverItem,
+    runInProgress: (runId: string) => readers.has(runId),
     forItem(itemId: string) {
       const attempt = async (
         input: RunAgentOptions,
@@ -1174,16 +1180,23 @@ export function createRemoteAgentRunner(options: {
                     })
                   : undefined;
               signal.throwIfAborted();
-              const acceptsRuntimes = versionAtLeast(
-                db
-                  .query<{ version: string | null }, [string]>(
-                    "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-                  )
-                  .get(selected.id)?.version,
-                RUNTIMES_RUNNER_VERSION,
+              const runnerVersion = db
+                .query<{ version: string | null }, [string]>(
+                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                )
+                .get(selected.id)?.version;
+              const acceptsRuntimes = versionAtLeast(runnerVersion, RUNTIMES_RUNNER_VERSION);
+              // An older runner rejects the whole command over one tool it does not know.
+              const anyBackend = versionAtLeast(runnerVersion, ANY_MISE_BACKEND_RUNNER_VERSION);
+              const held = anyBackend
+                ? []
+                : (runtimeList?.runtimes ?? []).filter(
+                    (runtime) => !legacyRuntimeTool(runtime.tool),
+                  );
+              const sendable = (runtimeList?.runtimes ?? []).filter(
+                (runtime) => !held.includes(runtime),
               );
-              const runtimes =
-                runtimeList?.runtimes.length && acceptsRuntimes ? runtimeList.runtimes : undefined;
+              const runtimes = sendable.length && acceptsRuntimes ? sendable : undefined;
               if (
                 input.reviewCommand &&
                 !versionAtLeast(
@@ -1203,6 +1216,11 @@ export function createRemoteAgentRunner(options: {
                 ...(runtimeList?.runtimes.length && !acceptsRuntimes
                   ? [
                       `Paws did not send the repository's runtimes to this runner because it needs runner ${RUNTIMES_RUNNER_VERSION.join(".")} or later.`,
+                    ]
+                  : []),
+                ...(acceptsRuntimes && held.length
+                  ? [
+                      `Paws did not send ${held.map((runtime) => `\`${runtime.tool}\``).join(", ")} to this runner because tools other than core and aqua: need runner ${ANY_MISE_BACKEND_RUNNER_VERSION.join(".")} or later.`,
                     ]
                   : []),
               ];
@@ -2009,16 +2027,23 @@ export function createRemoteAgentRunner(options: {
           reservations.delete(selected.runId);
         }
       };
-      return (input: RunAgentOptions) => {
-        const move: HandoverMove = {};
-        const moving: FailoverAttempt = (next, excluded, limit) =>
-          attempt(next, excluded, limit, move);
-        return runWithFailover(
-          input,
-          moving,
-          async () => cancelItem(itemId, input.signal),
-          usageLimitWait(itemId, input),
-        );
+      return async (input: RunAgentOptions) => {
+        const runId = getWorkItem(db, itemId)?.currentRunId;
+        if (runId && readers.has(runId)) throw new RunnerCapacityWait([]);
+        if (runId) readers.add(runId);
+        try {
+          const move: HandoverMove = {};
+          const moving: FailoverAttempt = (next, excluded, limit) =>
+            attempt(next, excluded, limit, move);
+          return await runWithFailover(
+            input,
+            moving,
+            async () => cancelItem(itemId, input.signal),
+            usageLimitWait(itemId, input),
+          );
+        } finally {
+          if (runId) readers.delete(runId);
+        }
       };
     },
   };

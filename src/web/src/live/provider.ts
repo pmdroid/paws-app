@@ -978,7 +978,15 @@ function heldOf(
   holds: ReadonlyMap<string, ItemHold>,
 ): { held?: StatusHeld } {
   const hold = record.state === "queued" ? holds.get(record.id) : undefined;
-  return hold ? { held: { reason: hold.reason, blockers: hold.blockers } } : {};
+  return hold
+    ? {
+        held: {
+          reason: hold.reason,
+          blockers: hold.blockers,
+          ...(hold.files ? { files: hold.files } : {}),
+        },
+      }
+    : {};
 }
 
 function visualReviewsOf(

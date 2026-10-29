@@ -100,7 +100,7 @@ export function recordRunnerCapacity(
 
 export class RunnerConcurrencyError extends Error {}
 
-/** Stores the concurrency an owner or admin chose, from 1 up to the ceiling the runner reported. */
+/** Stores the concurrency an admin chose, from 1 up to the ceiling the runner reported. */
 export function setRunnerConcurrency(
   db: Database,
   input: {
@@ -212,7 +212,8 @@ export function pinnedSlotsReserved(
 }
 
 export const CANCEL_STILL_PENDING = `(c.expires_at>? OR COALESCE(r.live_reported_at,0)<=c.expires_at
-  OR COALESCE((SELECT MAX(confirmed_at) FROM runner_work x WHERE x.run_id=c.run_id AND x.runner_id=c.runner_id),0)>c.expires_at)`;
+  OR COALESCE((SELECT MAX(confirmed_at) FROM runner_work x WHERE x.run_id=c.run_id AND x.runner_id=c.runner_id
+    AND x.generation=c.generation AND x.ended_at IS NULL),0)>c.expires_at)`;
 
 export function runnerCancelPending(db: Database, runnerId: string, now: number): boolean {
   return (

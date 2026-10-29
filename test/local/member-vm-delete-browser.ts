@@ -14,7 +14,7 @@ const STEP_WAIT_MS = 45_000;
 type Manifest = {
   origin: string;
   cookie: string;
-  sessions: Record<"member" | "observer" | "admin", string>;
+  sessions: Record<"member" | "admin", string>;
   member: string;
 };
 
@@ -96,11 +96,7 @@ const errors: string[] = [];
 const observations: { name: string; observed: unknown }[] = [];
 const observe = (name: string, observed: unknown = true) => observations.push({ name, observed });
 
-async function pageFor(
-  browser: Browser,
-  manifest: Manifest,
-  identity: "member" | "observer" | "admin",
-) {
+async function pageFor(browser: Browser, manifest: Manifest, identity: "member" | "admin") {
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
     viewport: { width: 1440, height: 1000 },
@@ -122,9 +118,7 @@ async function pageFor(
   page.setDefaultTimeout(15_000);
   page.on("pageerror", (error) => errors.push(`${identity}: ${error.message}`));
   await page.goto(`${manifest.origin}/status/runners`);
-  if (identity !== "observer")
-    await page.getByRole("button", { name: "Add a runner", exact: true }).waitFor();
-  else await page.locator("[data-runner-row]").first().waitFor();
+  await page.getByRole("button", { name: "Add a runner", exact: true }).waitFor();
   return page;
 }
 

@@ -1,4 +1,5 @@
 import { createHealthReport } from "./health";
+import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
@@ -50,11 +51,13 @@ import {
   auditWorkspaceAccess,
   getArtifact,
   getWorkItem,
+  hotFiles,
   listWorkspaceRepositoryNames,
   workspaceSessionIds,
 } from "../db";
 import {
   handleWorkspaceGitHubIntegration,
+  isWorkspaceAdmin,
   requestWorkspaceSession,
   validWorkspaceCsrf,
   type WorkspaceAccess,
@@ -98,6 +101,8 @@ export type ServerOptions = {
   db?: Database;
   /** Clock for local health checks. */
   healthNow?: () => number;
+  /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
+  jobLoop?: () => JobLoopLiveness | null;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
@@ -142,6 +147,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     linearWebhook: webhooks && Boolean(linearWebhookSecret),
     githubWebhook: webhooks && Boolean(githubWebhookSecret),
     now: options.healthNow,
+    ...(options.jobLoop === undefined ? {} : { jobLoop: options.jobLoop }),
   });
   const statusEnv = options.statusEnv;
   const closeoutHome = options.closeoutHome;
@@ -335,12 +341,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         path.startsWith("/api/settings/") ||
         (path === "/api/linear/sessions" && request.method !== "GET");
       const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
-      // Admins manage skills and merging next to owners; every other setting stays with owners.
-      const roles = [SKILL_SETTINGS_PATH, MERGE_SETTINGS_PATH, HOOK_SETTINGS_PATH].includes(path)
-        ? ["owner", "admin"]
-        : ["owner"];
       if (
-        (privileged && !roles.includes(access.principal.role)) ||
+        (privileged && !isWorkspaceAdmin(access.principal.role)) ||
         (unsafe &&
           (request.headers.get("origin") !== workspace.origin ||
             !validWorkspaceCsrf(request, access.session)))
@@ -353,7 +355,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           now: Date.now(),
         });
         return Response.json(
-          { error: "Workspace ownership and a valid CSRF token are required." },
+          { error: "Workspace administration and a valid CSRF token are required." },
           { status: 403 },
         );
       }
@@ -520,6 +522,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
             }
           : {}),
         ...(highRiskFile ? { highRiskFile } : {}),
+        ...(secrets.db ? { hotFiles: () => hotFiles(secrets.db!, Date.now()) } : {}),
         ...(mergeChoices ? { choices: mergeChoices } : {}),
         ...(githubQueues ? { githubQueues } : {}),
         ...(upToDateRules ? { upToDateRules } : {}),

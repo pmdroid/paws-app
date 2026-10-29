@@ -10,5 +10,5 @@ export {
 } from "./scheduler";
 export { createAdmission } from "./admission";
 export type { Admission, HeldReason, ItemAdmission } from "./admission";
-export { WAIT_KEEPALIVE_MS, waitingLine } from "./waits";
+export { WAIT_KEEPALIVE_MS, overlapLine, waitingLine } from "./waits";
 export type { ItemWait } from "./waits";

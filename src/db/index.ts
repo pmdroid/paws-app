@@ -1,3 +1,4 @@
+export { replaceLeasedJobPayload, refreshVerificationJobVersion } from "./job-payload";
 export {
   drainCommands,
   enqueueCommand,
@@ -138,6 +139,7 @@ export {
   extendJobLease,
   hasLiveJob,
   failJob,
+  actionableDue,
   getJob,
   listJobs,
   mergeLaneSql,
@@ -149,7 +151,13 @@ export {
   type JobStatus,
   type NewJob,
 } from "./jobs";
-export { JobLoop, type JobContext, type JobHandler } from "./loop";
+export {
+  JobLoop,
+  JOB_PROGRESS_STALE_MS,
+  type JobContext,
+  type JobHandler,
+  type JobLoopLiveness,
+} from "./loop";
 export { startLoops } from "./loops";
 export { migrate } from "./migrate";
 export {
@@ -257,7 +265,13 @@ export {
   type DeadDeliveryRef,
 } from "./dead-deliveries";
 export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
-export { runnerLeaseCutoff, runnerLeaseLive, runnerWorkSettled } from "./runner-lease";
+export {
+  runnerHoldsRunWork,
+  runnerWorkHasResult,
+  runnerLeaseCutoff,
+  runnerLeaseLive,
+  runnerWorkSettled,
+} from "./runner-lease";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {
   getRun,
@@ -378,6 +392,14 @@ export {
   type RebaseReturn,
   type RebaseReturnRecord,
 } from "./rebase-returns";
+export {
+  HOT_FILE_WINDOW_MS,
+  hotFiles,
+  latestCandidatePaths,
+  repositoryKey,
+  saveCandidatePaths,
+  type HotFile,
+} from "./hot-files";
 export {
   recordGitHubDelivery,
   latestGitHubDelivery,

@@ -159,7 +159,7 @@ describe("skills section", () => {
       notice: null,
       denied: true,
     });
-    expect(denied).toContain("Only workspace owners and admins can change skills.");
+    expect(denied).toContain("Only workspace admins can change skills.");
     expect(denied).not.toContain("skill-add-form");
   });
 
@@ -238,7 +238,7 @@ describe("skill source field", () => {
     expect(skillSourceGuess("impeccable")).toBeNull();
   });
 
-  test("an untouched guess leaves the split to the server; an owner's change is sent", () => {
+  test("an untouched guess leaves the split to the server; an admin's change is sent", () => {
     expect(parseSkillSource(TREE, "main", ".claude/skills/impeccable")).toEqual({
       kind: "git",
       url: TREE,

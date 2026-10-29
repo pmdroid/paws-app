@@ -70,7 +70,7 @@ export function initializeWorkspaceGitHub(
           : data.status === "needs_repositories"
             ? canEditRepositories
               ? "Add the repositories Paws can work on for your Linear teams."
-              : "Ask a workspace owner to add repositories in Workspace access."
+              : "Ask a workspace admin to add repositories in Workspace access."
             : !data.canManage
               ? "Ask a workspace admin to install and connect the GitHub App."
               : data.requiresSignIn

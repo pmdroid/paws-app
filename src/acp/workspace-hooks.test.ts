@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,13 +58,26 @@ function claudeHooks(meta: Record<string, unknown> | undefined): Hooks {
   return claude.options.settings.hooks;
 }
 
-function runWrapper(
+async function runWrapper(
   script: string,
   input: string,
   env: Record<string, string>,
-): { status: number | null; stdout: string; stderr: string } {
-  const ran = spawnSync(script, { input, env, encoding: "utf8" });
-  return { status: ran.status, stdout: ran.stdout, stderr: ran.stderr };
+  args: string[] = [],
+): Promise<{ status: number; stdout: string; stderr: string }> {
+  const child = Bun.spawn([script, ...args], {
+    stdin: Buffer.from(input),
+    stdout: "pipe",
+    stderr: "pipe",
+    env,
+    timeout: 10_000,
+    killSignal: "SIGKILL",
+  });
+  const [status, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { status, stdout, stderr };
 }
 
 test("a Claude session's settings carry the workspace hook and the Closeout hook", async () => {
@@ -180,14 +192,16 @@ test("a hook's output cannot end the session past Closeout", async () => {
       command: `printf '{"continue":false,"stopReason":"done","decision":"block","reason":"lint"}'`,
     }),
   ]);
-  const ran = runWrapper(join(runDirectory, "workspace-hook-0"), "{}", { PATH: process.env.PATH! });
+  const ran = await runWrapper(join(runDirectory, "workspace-hook-0"), "{}", {
+    PATH: process.env.PATH!,
+  });
   expect(ran.status).toBe(0);
   expect(JSON.parse(ran.stdout)).toEqual({ decision: "block", reason: "lint" });
 });
 
 test("a hook's environment holds no Paws secrets", async () => {
   const { runDirectory } = await install("claude", [hook({ command: "env; cat" })]);
-  const ran = runWrapper(join(runDirectory, "workspace-hook-0"), '{"tool_name":"Edit"}', {
+  const ran = await runWrapper(join(runDirectory, "workspace-hook-0"), '{"tool_name":"Edit"}', {
     PATH: process.env.PATH!,
     HOME: "/var/lib/paws-runner-members/member",
     LANG: "C.UTF-8",
@@ -220,7 +234,7 @@ test("a skill hook finds its script in the agent's installed skill folder", asyn
   const { runDirectory } = await install("claude", [
     hook({ command: 'printf %s "$PAWS_SKILL_DIR"', skill: "guard" }),
   ]);
-  const ran = runWrapper(join(runDirectory, "workspace-hook-0"), "{}", {
+  const ran = await runWrapper(join(runDirectory, "workspace-hook-0"), "{}", {
     PATH: process.env.PATH!,
     HOME: "/home/agent",
   });
@@ -234,10 +248,10 @@ test("a failing or slow hook is recorded for the run page and does not block the
     hook({ id: "hook_block", event: "before_shell", command: "echo no >&2; exit 2" }),
   ]);
   const env = { PATH: process.env.PATH! };
-  expect(runWrapper(join(runDirectory, "workspace-hook-0"), "{}", env).status).toBe(3);
-  expect(runWrapper(join(runDirectory, "workspace-hook-1"), "{}", env).status).toBe(0);
+  expect((await runWrapper(join(runDirectory, "workspace-hook-0"), "{}", env)).status).toBe(3);
+  expect((await runWrapper(join(runDirectory, "workspace-hook-1"), "{}", env)).status).toBe(0);
   // Exit 2 is the hook deliberately blocking a tool, not a failure.
-  expect(runWrapper(join(runDirectory, "workspace-hook-2"), "{}", env).status).toBe(2);
+  expect((await runWrapper(join(runDirectory, "workspace-hook-2"), "{}", env)).status).toBe(2);
   const { failures, offset } = readHookFailures(join(runDirectory, HOOK_FAILURES_FILE), 0);
   expect(failures).toEqual([
     {
@@ -276,11 +290,12 @@ test("a session start hook runs once when a Claude or Codex session starts", asy
     expect(group?.matcher).toBeUndefined();
     expect(group?.hooks).toHaveLength(1);
     const handler = group!.hooks[0]!;
-    const ran = spawnSync(handler.command, handler.args ?? [], {
-      input: JSON.stringify({ hook_event_name: "SessionStart", source: "startup" }),
-      env: { PATH: process.env.PATH! },
-      encoding: "utf8",
-    });
+    const ran = await runWrapper(
+      handler.command,
+      JSON.stringify({ hook_event_name: "SessionStart", source: "startup" }),
+      { PATH: process.env.PATH! },
+      handler.args,
+    );
     expect(ran.status).toBe(0);
     expect(readFileSync(marker, "utf8")).toBe("started\n");
     if (agent === "codex")

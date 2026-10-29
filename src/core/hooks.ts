@@ -26,7 +26,7 @@ export const HOOK_TIMEOUT_DEFAULT_SECONDS = 60;
 export const HOOK_TIMEOUT_MAX_SECONDS = 600;
 export const WORKSPACE_HOOK_LIMIT = 20;
 
-/** A hook an owner or admin registered for every run, next to Paws's own Closeout Stop hook. */
+/** A hook an admin registered for every run, next to Paws's own Closeout Stop hook. */
 export type WorkspaceHook = {
   id: string;
   event: HookEvent;

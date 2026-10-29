@@ -111,7 +111,7 @@ const server = Bun.serve({
     if (path === "/api/auth/session")
       return Response.json({
         userId: "owner",
-        role: "owner",
+        role: "admin",
         csrfToken: "runner-agents-fixture",
         workspaceId: "workspace",
         workspaces: [{ id: "workspace", name: "Paws" }],

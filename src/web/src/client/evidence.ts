@@ -152,5 +152,5 @@ export function renderEvidencePage(
  * Missing and forbidden look the same, so the page names no issue, repository or file.
  */
 export function noEvidenceAccess(): string {
-  return `<h1 class="sr-only">Evidence</h1><section class="card" aria-label="No access"><h2>You don't have access to this evidence</h2><p class="muted">Ask a workspace owner for access to the repository, or sign in with another account. Then open the link again.</p><div class="row"><a class="btn" href="${esc(routeHref({ view: "settings", page: "account" }))}">Switch account</a><a class="btn" href="${esc(routeHref({ view: "overview" }))}">Back to Overview</a></div></section>`;
+  return `<h1 class="sr-only">Evidence</h1><section class="card" aria-label="No access"><h2>You don't have access to this evidence</h2><p class="muted">Ask a workspace admin for access to the repository, or sign in with another account. Then open the link again.</p><div class="row"><a class="btn" href="${esc(routeHref({ view: "settings", page: "account" }))}">Switch account</a><a class="btn" href="${esc(routeHref({ view: "overview" }))}">Back to Overview</a></div></section>`;
 }

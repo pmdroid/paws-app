@@ -75,11 +75,11 @@ export function createGitHubRepositorySetup(options: {
     const denied = () =>
       reply(
         {
-          code: access?.principal.role === "owner" ? "reauth_required" : "owner_required",
+          code: access?.principal.role === "admin" ? "reauth_required" : "admin_required",
           error:
-            access?.principal.role === "owner"
+            access?.principal.role === "admin"
               ? "Sign in again to set up GitHub repositories."
-              : "Ask a workspace owner to set up GitHub repositories.",
+              : "Ask a workspace admin to set up GitHub repositories.",
         },
         403,
       );
@@ -89,7 +89,7 @@ export function createGitHubRepositorySetup(options: {
         access &&
         current?.session.tokenHash === access.session.tokenHash &&
         current.principal.workspaceId === access.principal.workspaceId &&
-        current.principal.role === "owner"
+        current.principal.role === "admin"
       );
     };
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
