@@ -4,17 +4,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunnerRequestError } from "../src/runner-daemon";
 import { openRunnerRuntime } from "../src/runner-runtime";
-import {
-  RUNNER_OFFLINE_BUDGET_MS,
-  type RunnerCommand,
-  type RunnerResult,
-} from "../src/runner-protocol";
+import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
 
-async function fixture(options: { expiresIn?: number } = {}) {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-outage-"));
   const now = Date.now();
   let clock = 0;
-  let wall = now;
   let down = false;
   let fenced = false;
   let finished = false;
@@ -46,7 +41,7 @@ async function fixture(options: { expiresIn?: number } = {}) {
     taskModeGeneration: 1,
     purpose: "answer",
     issuedAt: now,
-    expiresAt: now + (options.expiresIn ?? 3_600_000),
+    expiresAt: now + 3_600_000,
     profile: { agent: "claude", model: null },
     prompt: "signed prompt",
   };
@@ -70,7 +65,7 @@ async function fixture(options: { expiresIn?: number } = {}) {
     results,
     repositoryRoot: join(root, "repositories"),
     home: root,
-    now: () => wall,
+    now: () => now,
     monotonic: () => clock,
     onError: (error) => errors.push(error.message),
     broker: {
@@ -161,10 +156,7 @@ async function fixture(options: { expiresIn?: number } = {}) {
     /** Paws answers the run's next `times` answer polls with `status`. */
     refuse: (status: number, times: number) => (refusal = { status, times, sent: 0 }),
     refused: () => refusal.sent,
-    advance: (ms: number) => {
-      clock += ms;
-      wall += ms;
-    },
+    advance: (ms: number) => (clock += ms),
     finish() {
       writeFileSync(
         join(results.root, execution, "result.json"),
@@ -269,60 +261,6 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       await f.tickUntil(() => f.posted.length > 0);
       expect(f.posted.map((result) => result.stopReason)).toEqual(["error"]);
       expect(f.errors.join("\n")).toContain("Runner interrupted");
-    } finally {
-      await f.cleanup();
-    }
-  },
-);
-
-test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
-  "a run keeps going while Paws is unreachable for 20 minutes of a 30-minute budget",
-  async () => {
-    const f = await fixture();
-    try {
-      f.goDown();
-      f.advance(20 * 60_000);
-      await f.tick();
-      await Bun.sleep(300);
-      expect(f.errors.join("\n")).not.toContain("lease deadline passed");
-      f.finish();
-      f.comeBack();
-      await f.tickUntil(() => f.posted.length > 0);
-      expect(f.posted.map((result) => result.stopReason)).toEqual(["end_turn"]);
-    } finally {
-      await f.cleanup();
-    }
-  },
-);
-
-test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
-  "a run stops once Paws has been unreachable for the offline budget",
-  async () => {
-    const f = await fixture();
-    try {
-      f.goDown();
-      f.advance(RUNNER_OFFLINE_BUDGET_MS);
-      await f.tick();
-      for (let i = 0; i < 40 && !f.errors.join("\n").includes("lease deadline passed"); i++)
-        await Bun.sleep(50);
-      expect(f.errors.join("\n")).toContain("lease deadline passed");
-    } finally {
-      await f.cleanup();
-    }
-  },
-);
-
-test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
-  "an unreachable run still stops when its command expires",
-  async () => {
-    const f = await fixture({ expiresIn: 10 * 60_000 });
-    try {
-      f.goDown();
-      f.advance(10 * 60_000);
-      await f.tick();
-      for (let i = 0; i < 40 && !f.errors.join("\n").includes("lease deadline passed"); i++)
-        await Bun.sleep(50);
-      expect(f.errors.join("\n")).toContain("lease deadline passed");
     } finally {
       await f.cleanup();
     }

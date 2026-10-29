@@ -31,12 +31,7 @@ import {
   runnerCheckpointPublishedId,
 } from "../runner-answers";
 import { CandidateRebaseConflict, createRunnerRepositories } from "../runner-repositories";
-import {
-  RUNNER_LEASE_GRACE_MS,
-  RUNNER_OFFLINE_BUDGET_MS,
-  RunnerResultSchema,
-  type RunnerResult,
-} from "../runner-protocol";
+import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
 import { openRunnerRuntimeInventory } from "./runtimes";
 export {
@@ -100,13 +95,6 @@ type Active = {
   execution: Execution;
   abort: AbortController;
   deadline: number;
-  /** Monotonic time of the last lease Paws granted. Offline time is measured from here. */
-  offlineAnchor: number;
-  /**
-   * While Paws cannot be reached, the watchdog waits until this monotonic time instead of
-   * `deadline` plus the grace. Absent while Paws is answering.
-   */
-  offlineHoldUntil?: number;
   grant?: RunnerGrant;
   /** When `grant` was issued, so it is renewed halfway through its lifetime. */
   grantedAt?: number;
@@ -520,37 +508,8 @@ export async function openRunnerRuntime(options: {
     })();
     return entry.quiesced;
   }
-  /** A 4xx other than 408 or 429 is Paws refusing the call. Everything else means it is unreachable. */
-  function pawsUnreachable(error: unknown): boolean {
-    return !(
-      error instanceof RunnerRequestError &&
-      error.status >= 400 &&
-      error.status < 500 &&
-      error.status !== 408 &&
-      error.status !== 429
-    );
-  }
-  /**
-   * Paws downtime does not count against the lease, up to the offline budget and `expiresAt`.
-   * The grace for a runner that goes silent while Paws answers is unchanged.
-   */
-  function holdWhileUnreachable() {
-    const at = monotonic();
-    for (const entry of active.values()) {
-      if (entry.abort.signal.aborted) continue;
-      const wallLeft = entry.execution.command.expiresAt - now();
-      entry.offlineHoldUntil = Math.min(
-        entry.offlineAnchor + RUNNER_OFFLINE_BUDGET_MS,
-        at + Math.max(0, wallLeft),
-      );
-    }
-  }
-  function leaseLapsed(entry: Active): boolean {
-    const until = entry.offlineHoldUntil ?? entry.deadline + RUNNER_LEASE_GRACE_MS;
-    return monotonic() >= until;
-  }
   function check(entry: Active) {
-    if (closed || leaseLapsed(entry)) {
+    if (closed || monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS) {
       void interrupt(entry, closed ? "runner stopping" : "lease deadline passed", !closed).catch(
         journalRejection("runner-runtime.check.interrupt", report, entry.execution.command.itemId),
       );
@@ -592,21 +551,15 @@ export async function openRunnerRuntime(options: {
         report(error);
       }
       // Paws renews only the work named here, so a restart that lost a command fences it.
-      let response: Awaited<ReturnType<typeof options.daemon.heartbeat>>;
-      try {
-        response = await options.daemon.heartbeat(
-          options.skills?.installed(),
-          runtimes.installed(),
-          agents,
-          [...active.values()].map(({ execution }) => ({
-            runId: execution.command.runId,
-            generation: execution.command.generation,
-          })),
-        );
-      } catch (error) {
-        if (pawsUnreachable(error)) holdWhileUnreachable();
-        throw error;
-      }
+      const response = await options.daemon.heartbeat(
+        options.skills?.installed(),
+        runtimes.installed(),
+        agents,
+        [...active.values()].map(({ execution }) => ({
+          runId: execution.command.runId,
+          generation: execution.command.generation,
+        })),
+      );
       if (closed) return;
       if (response.agents && options.agents)
         try {
@@ -648,11 +601,7 @@ export async function openRunnerRuntime(options: {
               entry.execution.command.itemId,
             ),
           );
-        else if (!entry.abort.signal.aborted) {
-          entry.deadline = deadline;
-          entry.offlineAnchor = observed;
-          entry.offlineHoldUntil = undefined;
-        }
+        else if (!entry.abort.signal.aborted) entry.deadline = deadline;
       }
       const identity = options.daemon.status();
       if (identity.phase === "paired" && identity.expiresAt - now() < 60 * 60_000)
@@ -1304,12 +1253,7 @@ export async function openRunnerRuntime(options: {
           await options.daemon.acknowledgeCommand(command.id);
           continue;
         }
-        const entry: Active = {
-          execution,
-          abort: new AbortController(),
-          deadline,
-          offlineAnchor: monotonic(),
-        };
+        const entry: Active = { execution, abort: new AbortController(), deadline };
         active.set(key(command), entry);
         prepare(entry);
         await options.daemon
@@ -1370,7 +1314,7 @@ export async function openRunnerRuntime(options: {
   }, 15_000);
   const watchdog = setInterval(() => {
     for (const entry of active.values())
-      if (leaseLapsed(entry))
+      if (monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS)
         void interrupt(entry, "lease deadline passed", true).catch(
           journalRejection(
             "runner-runtime.openRunnerRuntime.interrupt",

@@ -27,8 +27,3 @@ export const CHECKPOINT_RUNNER_VERSION: RunnerVersion = [0, 1, 46];
 export const REVIEW_COMMAND_RUNNER_VERSION: RunnerVersion = [0, 1, 47];
 /** First runner release that rebases a candidate onto its moved branch and pushes it again. */
 export const CANDIDATE_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 48];
-/**
- * First runner release that keeps an agent working while Paws is unreachable, up to
- * `RUNNER_OFFLINE_BUDGET_MS`. Older runners still stop at the lease plus the grace.
- */
-export const OFFLINE_LEASE_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
