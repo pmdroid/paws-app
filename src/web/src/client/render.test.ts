@@ -253,6 +253,10 @@ describe("status views", () => {
       [{ reason: "cap", blockers: [] }, "Waiting: its owner already runs the most items at once"],
       [{ reason: "slot", blockers: [] }, "Waiting: no free slot on any runner"],
       [{ reason: "workspace", blockers: [] }, "Waiting: no Linear workspace is configured"],
+      [
+        { reason: "overlap", blockers: ["PAS-785"], files: ["src/web/src/live/provider.ts"] },
+        "Held: waiting for PAS-785 to merge (both change provider.ts)",
+      ],
     ];
     for (const [held, line] of lines) {
       item.held = held;

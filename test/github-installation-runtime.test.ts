@@ -64,6 +64,20 @@ async function until(check: () => boolean): Promise<void> {
   }
 }
 
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      // A killed agent can remain a zombie until the container init reaps it.
+      if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function prompt(userId: string, id: string, body = "I signed in") {
   return parseAgentEvent(
     JSON.stringify({
@@ -89,7 +103,7 @@ test("a missing installation holds the item before Git and a reply cannot releas
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
     expect(question.kind).toBe("github-auth");
-    expect(question.body).toContain("Waiting for a workspace owner or administrator");
+    expect(question.body).toContain("Waiting for a workspace admin");
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
     expect(existsSync(join(f.home, "worktrees"))).toBe(false);
     expect(f.tracker.statuses).toEqual([]);
@@ -204,20 +218,7 @@ test.each(["pending", "rejected"] as const)(
       await shutting;
       await running;
       const pid = Number(readFileSync(pidFile, "utf8"));
-      // Teardown confirms that no writer is live. Linux can retain the dead child as a
-      // zombie briefly before reaping it; signal 0 still succeeds during that interval.
-      await until(() => {
-        try {
-          process.kill(pid, 0);
-          if (process.platform !== "linux") return false;
-          const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-          return /^[ZX] /.test(stat.slice(stat.lastIndexOf(")") + 2));
-        } catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code === "ESRCH" || code === "ENOENT") return true;
-          throw error;
-        }
-      });
+      expect(alive(pid)).toBe(false);
       expect(getWorkItem(f.db, writer.id)?.state).toBe("running");
     } finally {
       if (!released) linked.resolve(true);

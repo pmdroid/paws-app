@@ -58,7 +58,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "vm-org", clock.now())),
     now: clock.now(),
   });
-  const person = (name: string, role: "member" | "observer"): WorkspacePrincipal => {
+  const person = (name: string, active = true): WorkspacePrincipal => {
     const userId = putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `vm-${name}`,
@@ -68,15 +68,21 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId,
-      role,
-      active: true,
+      role: "member",
+      active,
       teamIds: [],
       now: clock.now(),
     });
-    return { workspaceId: workspace.id, userId, role, authenticatedAt: clock.now(), teamIds: [] };
+    return {
+      workspaceId: workspace.id,
+      userId,
+      role: "member",
+      authenticatedAt: clock.now(),
+      teamIds: [],
+    };
   };
-  const member = person("Ada Lovelace", "member");
-  const observer = person("Watcher", "observer");
+  const member = person("Ada Lovelace");
+  const inactive = person("Watcher", false);
   const control = createRunnerControl({
     db,
     authority,
@@ -141,7 +147,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
     clock,
     workspace,
     member,
-    observer,
+    inactive,
     bootstrap,
     exeDev,
     call,
@@ -163,15 +169,15 @@ describe("member VM routes", () => {
     expect(findMemberVm(f.db, f.member)).toBeNull();
   });
 
-  test("observers are refused on every route", async () => {
+  test("inactive members are refused on every route", async () => {
     const f = await fixture();
     for (const [method, path] of [
       ["GET", "/api/runners/vm"],
       ["POST", "/api/runners/vm"],
       ["POST", "/api/runners/vm/retry"],
     ] as const)
-      expect((await f.call(f.observer, method, path)).status).toBe(403);
-    expect(findMemberVm(f.db, f.observer)).toBeNull();
+      expect((await f.call(f.inactive, method, path)).status).toBe(403);
+    expect(findMemberVm(f.db, f.inactive)).toBeNull();
   });
 
   test("other paths fall through and wrong methods answer 405", async () => {
@@ -280,7 +286,7 @@ describe("member VM routes", () => {
       },
     });
     expect(
-      (await f.call(f.observer, "POST", "/api/runners/vm/pool", { id, pool: "build" })).status,
+      (await f.call(f.inactive, "POST", "/api/runners/vm/pool", { id, pool: "build" })).status,
     ).toBe(403);
     expect(
       (await f.call(f.member, "POST", "/api/runners/vm/pool", { id: "nope", pool: "build" }))

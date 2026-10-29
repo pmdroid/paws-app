@@ -406,15 +406,13 @@ const errors = [];
     await settings(member.page, "Workspace access");
     assert.equal(await member.page.getByRole("button", { name: "Save repositories" }).count(), 0);
     await settings(member.page, "Agents");
-    await member.page.getByText("Only workspace owners can change agent profiles.").waitFor();
+    await member.page.getByText("Only workspace admins can change agent profiles.").waitFor();
     await settings(member.page, "Audit history");
-    await member.page
-      .getByText("Audit history is available to workspace owners and admins.")
-      .waitFor();
+    await member.page.getByText("Audit history is available to workspace admins.").waitFor();
     observations.push({
       memberStatusVisible: true,
       administratorControlsHidden: true,
-      ownerAgentControlsPreserved: true,
+      adminAgentControlsPreserved: true,
     });
     await settings(page, "Workspace access");
     await page.getByRole("button", { name: "Refresh members" }).click();

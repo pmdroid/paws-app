@@ -92,7 +92,7 @@ async function fixture() {
   const { runnerId } = await control.enroll({
     ...enrollment,
     token: control.createEnrollment(
-      { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
+      { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now, teamIds: [] },
       enrollment,
     ).token,
   });
@@ -388,6 +388,41 @@ test("a Closeout check run keeps running through a Paws restart and its report i
     expect(f.events.filter((event) => event.type === "prompt_complete")).toHaveLength(1);
     expect(results(f)).toBe(1);
     expect(ended(f)).not.toBeNull();
+  } finally {
+    await f.close();
+  }
+}, 60_000);
+
+test("a delivered Closeout result has only one backend importer", async () => {
+  const f = await fixture();
+  try {
+    const command = await shutDownMidCommand(f, f.review);
+    restartWithRunnerHolding(f);
+    f.finish(command, { reviewText: REVIEW_TEXT });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = false;
+    const input = f.review(new AbortController().signal);
+    input.onEvent = async () => {
+      entered = true;
+      await held;
+    };
+    const reader = f.services.backend.forItem(f.item.id)(input);
+    try {
+      await f.until(() => entered);
+      expect(f.services.backend.runInProgress(f.run.id)).toBe(true);
+      await expect(
+        f.services.backend.forItem(f.item.id)(f.review(new AbortController().signal)),
+      ).rejects.toBeInstanceOf(RunnerCapacityWait);
+    } finally {
+      release();
+      await reader;
+    }
+    expect(f.services.backend.runInProgress(f.run.id)).toBe(false);
+    expect(ended(f)).not.toBeNull();
+    expect(f.placed).toHaveLength(1);
   } finally {
     await f.close();
   }

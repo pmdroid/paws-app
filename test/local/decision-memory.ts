@@ -55,7 +55,7 @@ export async function probeDecisionMemory(root: string) {
     tags: ["pagination"],
   };
   try {
-    assert.equal((await call(input, "observer")).status, 400);
+    assert.equal((await call(input, "inactive")).status, 401);
     assert.equal((await call(input, "outside")).status, 400);
     assert.equal((await call(input, "member", { "x-paws-csrf": "invalid" })).status, 403);
     assert.equal((await call(input, "member", { origin: "https://other.invalid" })).status, 403);
@@ -84,7 +84,7 @@ export async function probeDecisionMemory(root: string) {
     assert.equal(f.db.query("SELECT * FROM job WHERE queue='run.resume'").all().length, 0);
     observations.push("Search and persisted suggestions leave work awaiting human input");
     assert.throws(() =>
-      confirmDecision(f.db, pending.id, options[0]!.value, "observer", Date.now()),
+      confirmDecision(f.db, pending.id, options[0]!.value, "inactive", Date.now()),
     );
     assert.throws(() =>
       confirmDecision(f.db, pending.id, options[0]!.value, "outside", Date.now()),

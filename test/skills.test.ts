@@ -738,7 +738,7 @@ describe("skill pins", () => {
     syncWorkspaceMember(db, {
       workspaceId: "ws-1",
       userId,
-      role: "owner",
+      role: "admin",
       active: true,
       teamIds: [],
       now: 1,
@@ -798,22 +798,20 @@ describe("skill settings API", () => {
     audit.length = 0;
   });
 
-  test("members and observers can neither read nor change skills", async () => {
-    for (const role of ["member", "observer"]) {
-      const list = await handleSkillSettingsRequest(
-        new Request("http://127.0.0.1:8787/api/settings/skills"),
-        options({ role }),
-      );
-      const add = await handleSkillSettingsRequest(
-        post({ action: "add", source: { kind: "npm", package: "impeccable" } }),
-        options({ role }),
-      );
-      expect([list!.status, add!.status]).toEqual([403, 403]);
-    }
+  test("members can neither read nor change skills", async () => {
+    const list = await handleSkillSettingsRequest(
+      new Request("http://127.0.0.1:8787/api/settings/skills"),
+      options({ role: "member" }),
+    );
+    const add = await handleSkillSettingsRequest(
+      post({ action: "add", source: { kind: "npm", package: "impeccable" } }),
+      options({ role: "member" }),
+    );
+    expect([list!.status, add!.status]).toEqual([403, 403]);
     expect(audit).toEqual([]);
   });
 
-  test("owners and admins add, update, re-scope and remove, and each change is audited", async () => {
+  test("admins add, update, re-scope and remove, and each change is audited", async () => {
     const shared = options({ role: "admin" });
     const add = await handleSkillSettingsRequest(
       post({ action: "add", source: { kind: "npm", package: "impeccable" }, name: "impeccable" }),
@@ -821,9 +819,8 @@ describe("skill settings API", () => {
     );
     expect(add!.status).toBe(200);
     expect((await read(add)).skills).toMatchObject([{ name: "impeccable", version: "1.0.0" }]);
-    const owner = { ...shared, role: "owner" };
     const update = await read(
-      await handleSkillSettingsRequest(post({ action: "update", name: "impeccable" }), owner),
+      await handleSkillSettingsRequest(post({ action: "update", name: "impeccable" }), shared),
     );
     expect(update.skills[0]!.version).toBe("1.1.0");
     const agents = await read(
@@ -834,7 +831,7 @@ describe("skill settings API", () => {
     );
     expect(agents.skills[0]!.agents).toEqual(["claude", "codex"]);
     const removed = await read(
-      await handleSkillSettingsRequest(post({ action: "remove", name: "impeccable" }), owner),
+      await handleSkillSettingsRequest(post({ action: "remove", name: "impeccable" }), shared),
     );
     expect(removed.skills[0]!.removedAt).toBe(10);
     expect(audit).toEqual([
@@ -899,7 +896,7 @@ describe("skill settings API", () => {
     });
   });
 
-  test("the API reads git forms in the url field and an owner's ref or subfolder wins", async () => {
+  test("the API reads git forms in the url field and an admin's ref or subfolder wins", async () => {
     const resolver = fakeSkillResolver();
     const add = (source: unknown) =>
       handleSkillSettingsRequest(post({ action: "add", source }), options({ resolver }));
@@ -1065,7 +1062,7 @@ describe("skill settings API", () => {
         { action: "add", source: { kind: "npm", package: "impeccable" } },
         { "x-paws-csrf": "" },
       ),
-      options({ role: "owner" }),
+      options({ role: "admin" }),
     );
     expect(response!.status).toBe(403);
     expect(audit).toEqual([]);

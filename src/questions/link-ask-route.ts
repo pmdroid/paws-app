@@ -114,7 +114,7 @@ export async function handleLinkAskAnswer(
     });
     return Response.json({ error: LINK_ASK_ANSWERERS }, { status: 403 });
   };
-  if (!member?.active || member.role === "observer" || !member.linearUserId) return refuse();
+  if (!member?.active || !member.linearUserId) return refuse();
   const result = await options.submit({
     questionId: ask.questionId,
     decision,

@@ -103,6 +103,7 @@ import {
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
+  type JobLoop,
   type WorkItemRecord,
   runnerHasCapacity,
   applyLinearIssueProject,
@@ -831,6 +832,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           await backend.agents.cancelItem(itemId);
         },
         commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
+        runInProgress: async (runId) => (await remote).agents.runInProgress(runId),
         slotFree: () =>
           db
             .query<{ id: string }, []>(
@@ -886,6 +888,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         : undefined,
     );
   });
+  let jobLoop: JobLoop | null = null;
   let server: Bun.Server<undefined>;
   try {
     server = startServer({
@@ -938,6 +941,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
       webhooks: webhooks || env.githubWebhookSecret !== null,
       db,
+      jobLoop: () => jobLoop?.liveness() ?? null,
       statusEnv: envSource,
       closeoutHome: paths.home,
       evidenceDir: paths.evidenceDir,
@@ -1447,6 +1451,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       });
     },
   });
+  jobLoop = loops.jobs;
 
   const host = startHost({
     db,

@@ -54,7 +54,7 @@ const runner: Runner = {
   idle: true,
   codingAgents: [claude, codex],
 };
-const view = { now, serverVersion: null, policy: null, userId: null, role: "owner", busy: false };
+const view = { now, serverVersion: null, policy: null, userId: null, role: "admin", busy: false };
 
 describe("runner card coding agents", () => {
   test("shows each installed version, the newest eligible one, and Update", () => {
@@ -129,7 +129,7 @@ describe("runner card coding agents", () => {
     );
   });
 
-  test("Update all runners appears for owners and admins while an agent is behind", () => {
+  test("Update all runners appears for admins while an agent is behind", () => {
     expect(codingAgentsBehind([runner], catalog)).toBe(1);
     expect(
       codingAgentsBehind([{ ...runner, codingAgents: [pending("installing")] }], catalog),

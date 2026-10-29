@@ -58,7 +58,6 @@ export function createRunnerLogin(options: {
     const runner = getRunner(db, runnerId);
     if (
       !member?.active ||
-      member.role === "observer" ||
       !runner ||
       runner.workspaceId !== workspaceId ||
       runner.ownerUserId !== userId ||

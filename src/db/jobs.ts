@@ -76,6 +76,26 @@ export type ClaimOptions = {
 
 const EXCLUSIVE_QUEUES = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify] as const;
 
+const jobReadyListeners = new Set<(db: Database) => void>();
+
+/** Fires after a job row is inserted. The job loop wakes its claimer from this. */
+export function onJobReady(listener: (db: Database) => void): () => void {
+  jobReadyListeners.add(listener);
+  return () => {
+    jobReadyListeners.delete(listener);
+  };
+}
+
+function emitJobReady(db: Database): void {
+  for (const listener of jobReadyListeners) {
+    try {
+      listener(db);
+    } catch (error) {
+      journalCaught(error, "jobs.enqueueJob.emitJobReady", null);
+    }
+  }
+}
+
 function sqlLiteral(value: string): string {
   if (!/^[A-Za-z0-9._%:-]+$/.test(value)) throw new Error(`unsafe SQL literal: ${value}`);
   return `'${value}'`;
@@ -98,11 +118,28 @@ const SAME_ITEM = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id 
     AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${ITEM_ID})`;
 const CLAIMABLE =
   "(candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ?)))";
+const HELD_SAME_MERGE_LANE = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")} AND NOT (EXISTS (SELECT 1 FROM work_item_repository mine
+    JOIN work_item_repository other ON other.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
+    WHERE mine.item_id = ${ITEM_ID}
+      AND (lower(mine.owner) != lower(other.owner) OR lower(mine.repo) != lower(other.repo)))))`;
 
 function queueFilterSql(queueCount: number): string {
   return queueCount > 0
     ? ` AND candidate.queue IN (${Array.from({ length: queueCount }, () => "?").join(", ")})`
     : "";
+}
+
+/** Shared by the claim and by the health check. Placeholders: run_at, then one `now` per lease cutoff. */
+function claimWhereSql(queueCount: number): string {
+  return (
+    "candidate.run_at <= ?" +
+    queueFilterSql(queueCount) +
+    ` AND ${CLAIMABLE} ` +
+    `AND NOT (${NEEDS_RESERVATION} AND NOT (${RESERVATION})) ` +
+    `AND NOT (${mergeLaneSql("candidate")} AND ${HELD_SAME_MERGE_LANE}) ` +
+    `AND NOT (${EXECUTION_SQL} AND ${SAME_ITEM}) `
+  );
 }
 
 /**
@@ -113,22 +150,27 @@ function queueFilterSql(queueCount: number): string {
  * merge jobs in the same repository cannot hold overlapping leases. Other items run independently.
  */
 export function claimJobSql(queueCount: number): string {
-  const heldSameMergeLane = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
-    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")} AND NOT (EXISTS (SELECT 1 FROM work_item_repository mine
-    JOIN work_item_repository other ON other.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
-    WHERE mine.item_id = ${ITEM_ID}
-      AND (lower(mine.owner) != lower(other.owner) OR lower(mine.repo) != lower(other.repo)))))`;
   return (
     "UPDATE job SET status = 'running', locked_by = ?, locked_until = ?, attempts = attempts + 1 " +
     "WHERE id = (" +
-    "SELECT candidate.id FROM job AS candidate WHERE candidate.run_at <= ?" +
-    queueFilterSql(queueCount) +
-    ` AND ${CLAIMABLE} ` +
-    `AND NOT (${NEEDS_RESERVATION} AND NOT (${RESERVATION})) ` +
-    `AND NOT (${mergeLaneSql("candidate")} AND ${heldSameMergeLane}) ` +
-    `AND NOT (${EXECUTION_SQL} AND ${SAME_ITEM}) ` +
+    "SELECT candidate.id FROM job AS candidate WHERE " +
+    claimWhereSql(queueCount) +
     "ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1) RETURNING *"
   );
+}
+
+/** Due work the loop could claim right now. A start without a reservation is not included. */
+export function actionableDue(
+  db: Database,
+  now: number,
+): { count: number; oldestRunAt: number | null } {
+  const row = db
+    .query<{ count: number; oldest: number | null }, [number, number, number, number]>(
+      `SELECT count(*) AS count, min(candidate.run_at) AS oldest
+       FROM job AS candidate WHERE ${claimWhereSql(0)}`,
+    )
+    .get(now, now, now, now);
+  return { count: row?.count ?? 0, oldestRunAt: row?.oldest ?? null };
 }
 
 /** Insert in the same transaction as the state change that needs the work. */
@@ -157,6 +199,7 @@ export function enqueueJob(db: Database, job: NewJob): number {
   if (row === null) {
     throw new Error("enqueueJob did not return an id");
   }
+  emitJobReady(db);
   return row.id;
 }
 
@@ -196,6 +239,30 @@ export function getJob(db: Database, id: number): Job | null {
 
 export function listJobs(db: Database): Job[] {
   return db.query<JobRow, []>("SELECT * FROM job ORDER BY id").all().map(mapJob);
+}
+
+/**
+ * Earliest `run_at` among rows a claim could take, or null when none exist.
+ * This does not claim. The job loop sleeps until this time.
+ */
+export function nextClaimableRunAt(
+  db: Database,
+  options: { now?: number; queues?: readonly string[] } = {},
+): number | null {
+  const queues = options.queues;
+  if (queues !== undefined && queues.length === 0) return null;
+  const now = options.now ?? Date.now();
+  const row = db
+    .query<{ run_at: number | null }, Array<number | string>>(
+      `SELECT MIN(run_at) AS run_at FROM job
+       WHERE (
+         status = 'pending'
+         OR (status = 'running' AND (locked_until IS NULL OR locked_until <= ?))
+       )
+       ${queues === undefined ? "" : `AND queue IN (${queues.map(() => "?").join(", ")})`}`,
+    )
+    .get(now, ...(queues ?? []));
+  return row?.run_at ?? null;
 }
 
 export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | null {

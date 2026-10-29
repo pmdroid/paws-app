@@ -115,6 +115,26 @@ describe("GitHub App tokens", () => {
     ).toThrow(/selected/);
   });
 
+  test("a repository named in another case is the same repository, and another one is refused", () => {
+    const body = (repository: { name: string; full_name: string }) =>
+      tokenBody("ghs_case", { repositories: [repository] });
+    const scoped = assertScopedToken(
+      body({ name: "Monorepo", full_name: "ArcadeAI/Monorepo" }),
+      "arcadeai",
+      "monorepo",
+      new Date(),
+    );
+    expect(scoped.token).toBe("ghs_case");
+    expect(() =>
+      assertScopedToken(
+        body({ name: "other", full_name: "ArcadeAI/other" }),
+        "arcadeai",
+        "monorepo",
+        new Date(),
+      ),
+    ).toThrow(/does not match/);
+  });
+
   test("the fetch client uses the injected fetch and does not require the network", async () => {
     const original = globalThis.fetch;
     globalThis.fetch = (() => {

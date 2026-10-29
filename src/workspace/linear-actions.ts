@@ -98,8 +98,8 @@ export function createWorkspaceLinearActions(options: {
       syncWorkspaceMember(options.db, {
         workspaceId: workspace.id,
         userId: latest.userId,
-        active: identity.active,
-        role: identity.guest ? "observer" : "member",
+        active: identity.active && !identity.guest,
+        role: "member",
         teamIds: identity.teamIds,
         now: observedAt,
       });

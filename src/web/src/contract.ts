@@ -267,12 +267,16 @@ export const HELD_REASONS = [
   "cap",
   "slot",
   "workspace",
+  "overlap",
 ] as const;
 export type HeldReason = (typeof HELD_REASONS)[number];
 
 export interface StatusHeld {
   reason: HeldReason;
+  /** The blocking issues, or for `overlap` the item it waits for to merge. */
   blockers: string[];
+  /** For `overlap`: the conflict-prone files both items change. */
+  files?: string[];
 }
 
 export interface StatusActivity {
@@ -1605,6 +1609,7 @@ function readHeld(input: unknown, path: string): StatusHeld {
   return {
     reason: oneOf(string(body, "reason", path), HELD_REASONS, `${path}.reason`),
     blockers: stringArray(body, "blockers", path),
+    ...(body.files === undefined ? {} : { files: stringArray(body, "files", path) }),
   };
 }
 

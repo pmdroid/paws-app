@@ -261,7 +261,7 @@ export function createHostedGitHubConnect(options: {
         const repositories = [...new Set(initialRepositories.map((entry) => entry.repository))];
         if (!repositories.length)
           return Response.json(
-            { error: "Ask a workspace owner to add repositories first." },
+            { error: "Ask a workspace admin to add repositories first." },
             { status: 409 },
           );
         try {

@@ -23,8 +23,8 @@ type Row = Omit<EligibleRunner, "eligible" | "reason"> & {
  * there and the one reason why. Reads SQLite only.
  *
  * A runner is eligible when the work's owner owns it (`own`), or when it is shared and owned by
- * a lead of a Linear project in the delegation (`lead-shared`), and its owner is an active,
- * non-observer member who is an owner, admin or in the issue's team, and it is online and active,
+ * a lead of a Linear project in the delegation (`lead-shared`), and its owner is an active
+ * member who is an admin or in the issue's team, and it is online and active,
  * and for anything but `prepare` its agent sign-in has not expired and for `work` the agent is
  * signed in and ready.
  *
@@ -63,7 +63,7 @@ export function eligibleRunners(db: Database, input: EligibleRunnersInput): Elig
         else return "not-yours";
       }
       const member = workspaceMember(db, input.workspaceId, runner.ownerId);
-      if (!member?.active || member.role === "observer") return "owner-inactive";
+      if (!member?.active) return "owner-inactive";
       if (!isWorkspaceAdmin(member.role) && !member.teamIds.includes(input.teamId))
         return "owner-not-in-team";
       // A runner that has not acknowledged a cancel is not taking commands, so it counts as offline.
