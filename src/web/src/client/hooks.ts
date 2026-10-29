@@ -176,14 +176,15 @@ export function createHookSettings(): {
       view.denied = false;
       view.notice = data.notice ?? null;
       if (data.uploaded) {
-        const draft = view.draft ?? readDraft() ?? {
-          event: "after_edit",
-          matcher: "",
-          command: "",
-          timeout: "60",
-          skill: "",
-          agents: data.agents,
-        };
+        const draft = view.draft ??
+          readDraft() ?? {
+            event: "after_edit",
+            matcher: "",
+            command: "",
+            timeout: "60",
+            skill: "",
+            agents: data.agents,
+          };
         view.draft = {
           ...draft,
           command: data.uploaded.command,
@@ -245,7 +246,9 @@ export function createHookSettings(): {
     form.append("folder", file.name);
     form.append("path", file.name);
     form.append("file", file);
-    for (const agent of draft?.agents?.length ? draft.agents : view.data?.agents ?? ["claude", "codex"])
+    for (const agent of draft?.agents?.length
+      ? draft.agents
+      : (view.data?.agents ?? ["claude", "codex"]))
       form.append("agents", agent);
     input.value = "";
     void run("Uploading hook script…", form, false);
