@@ -237,10 +237,10 @@ A re-check of an item already in the merge queue (after a CI fix, a conflict fix
 In this repository, the `test` check runs `bun scripts/affected-tests.ts`, which runs only the tests the change affects between the run's base and the candidate head. The base is `git merge-base origin/main HEAD`; on a runner, Closeout's checkout points `origin/main` at the run's base. GitHub CI runs the full suite on every pull request and is required before merge, so a test the selection misses still runs before merge.
 
 - **Test files** changed in the diff run.
-- **Source files:** a change under `src/<module>/` runs that module's tests and every other test file that imports the module, directly or through a helper under `test/`. A file directly under `src/`, such as `src/index.ts`, runs the tests that import it.
+- **Source files:** a change under `src/<module>/` runs that module's tests, the tests of every module that imports it (followed transitively through other modules), and every other test file that reaches the module, directly, through another module, or through a helper under `test/`. A file directly under `src/`, such as `src/index.ts`, runs the tests that import it.
 - **Shared files:** a change to `package.json`, `bun.lock`, `bunfig.toml`, a `tsconfig*.json`, a helper or fixture under `test/`, or anything under `scripts/` runs the full suite.
 - **Other files**, such as docs, run the tests whose source names the changed path.
-- `test/boundaries.test.ts` always runs.
+- `test/boundaries.test.ts` and `test/empty-catches.test.ts` always run. Both read every file under `src/` by path.
 
 When the diff, a test, or an imported helper cannot be read, when import parsing fails, or when there is no base, the full suite runs. Imports are parsed as code so fixture strings and comments do not affect the import graph. The check's log starts with the files that ran and why, for example `test/merge-lane.test.ts  imports src/merge` or `full suite (556 files): package.json changed`. `bun scripts/affected-tests.ts --list <base> <head>` prints the selection without running it.
 

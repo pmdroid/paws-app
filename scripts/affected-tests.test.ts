@@ -14,10 +14,15 @@ const FILES: Record<string, string> = {
   "src/merge/step.ts": "export const step = 1;\n",
   "src/merge/step.test.ts": `import { step } from "./step";\n`,
   "src/merge/lane/order.test.ts": `import { step } from "../step";\n`,
-  "src/loop/index.ts": `export const loop = 1;\n`,
+  "src/loop/index.ts": `export { step as loop } from "../merge";\n`,
   "src/loop/loop.test.ts": `import { loop } from "./index";\n`,
   "src/loop/merge-jobs.test.ts": `import { step } from "../merge";\n`,
+  "src/web/index.ts": `export { loop } from "../loop";\n`,
+  "src/web/page.test.ts": `import { loop } from "./index";\n`,
+  "src/web/untouched.test.ts": "export {};\n",
   "test/boundaries.test.ts": `const SRC = new URL("../src/", import.meta.url);\n`,
+  "test/empty-catches.test.ts": `const root = new URL("../src/", import.meta.url);\n`,
+  "test/through-web.test.ts": `import { loop } from "../src/web";\n`,
   "test/merge-lane.test.ts": `import { step } from "../src/merge";\n`,
   "test/merge-step.test.ts": `import { step } from "../src/merge/step.ts";\n`,
   "test/merge-mock.test.ts": `mock.module("../src/merge/index.ts", () => ({}));\n`,
@@ -73,21 +78,31 @@ afterAll(() => {
 test("a change in src/merge/step.ts selects src/merge tests and the tests that import src/merge", () => {
   const selection = select({ "src/merge/step.ts": "export const step = 2;\n" });
   expect(paths(selection)).toEqual([
+    "src/loop/loop.test.ts",
     "src/loop/merge-jobs.test.ts",
     "src/merge/lane/order.test.ts",
     "src/merge/step.test.ts",
+    "src/web/page.test.ts",
+    "src/web/untouched.test.ts",
     "test/boundaries.test.ts",
+    "test/empty-catches.test.ts",
     "test/helper-user.test.ts",
+    "test/loop.test.ts",
     "test/merge-lane.test.ts",
     "test/merge-mock.test.ts",
     "test/merge-step.test.ts",
+    "test/through-web.test.ts",
   ]);
   const why = Object.fromEntries(
     (selection.full ? [] : selection.files).map((file) => [file.path, file.reasons.join(", ")]),
   );
   expect(why["src/merge/step.test.ts"]).toBe("in src/merge");
   expect(why["test/merge-lane.test.ts"]).toBe("imports src/merge");
+  expect(why["src/loop/loop.test.ts"]).toBe("imports src/merge");
+  expect(why["src/web/untouched.test.ts"]).toBe("imports src/merge");
+  expect(why["test/through-web.test.ts"]).toBe("imports src/merge");
   expect(why["test/boundaries.test.ts"]).toBe("always");
+  expect(why["test/empty-catches.test.ts"]).toBe("always");
   expect(describeSelection(selection, 13)).toContain(
     "  test/merge-lane.test.ts       imports src/merge\n",
   );
@@ -101,6 +116,7 @@ test("a changed test file runs with the reason changed", () => {
     full: false,
     files: [
       { path: "test/boundaries.test.ts", reasons: ["always"] },
+      { path: "test/empty-catches.test.ts", reasons: ["always"] },
       { path: "test/loop.test.ts", reasons: ["changed"] },
     ],
   });
@@ -128,10 +144,13 @@ test("shared files select everything", () => {
   });
 });
 
-test("a docs-only change selects only test/boundaries.test.ts", () => {
+test("a docs-only change selects only the always-run tests", () => {
   expect(select({ "docs/merge.md": "# Merge lane\n" })).toEqual({
     full: false,
-    files: [{ path: "test/boundaries.test.ts", reasons: ["always"] }],
+    files: [
+      { path: "test/boundaries.test.ts", reasons: ["always"] },
+      { path: "test/empty-catches.test.ts", reasons: ["always"] },
+    ],
   });
 });
 
@@ -139,7 +158,24 @@ test("a test that names a changed non-source file runs", () => {
   expect(paths(select({ "docs/closeout.md": "# Closeout\n" }))).toEqual([
     "test/boundaries.test.ts",
     "test/docs.test.ts",
+    "test/empty-catches.test.ts",
   ]);
+});
+
+test("a change in a dependent module does not select the modules it imports", () => {
+  const selection = select({ "src/web/index.ts": `export { loop } from "../loop";\n// touch\n` });
+  expect(paths(selection)).toEqual([
+    "src/web/page.test.ts",
+    "src/web/untouched.test.ts",
+    "test/boundaries.test.ts",
+    "test/empty-catches.test.ts",
+    "test/through-web.test.ts",
+  ]);
+  expect(
+    selection.full
+      ? ""
+      : selection.files.find((file) => file.path === "src/web/page.test.ts")?.reasons,
+  ).toEqual(["in src/web"]);
 });
 
 test("an unreadable diff selects everything", () => {

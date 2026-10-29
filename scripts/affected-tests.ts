@@ -13,8 +13,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize, relative } from "node:path";
 
-/** Always runs: it reads every module, so any change can break it. */
-export const BOUNDARIES = "test/boundaries.test.ts";
+/**
+ * Always runs. Both read every file under `src/` by path, so a change can break them without
+ * an import the graph can see.
+ */
+export const ALWAYS = ["test/boundaries.test.ts", "test/empty-catches.test.ts"] as const;
 
 export const TEST_COMMAND = ["bun", "test", "--parallel=4", "--timeout=20000", "--no-orphans"];
 
@@ -94,10 +97,17 @@ export function selectTests(input: {
   }
   const graph = createImportGraph(root);
   try {
+    const users = units.size === 0 ? new Map<string, Set<string>>() : unitsThatImport(root, graph);
     for (const test of tests) {
+      const home = sourceUnit(test);
+      let reached: Set<string> | undefined;
       for (const unit of units) {
         if (test.startsWith(`${unit}/`)) choose(test, `in ${unit}`);
-        else if (graph.reaches(test).has(unit)) choose(test, `imports ${unit}`);
+        else if (
+          (reached ??= graph.reaches(test)).has(unit) ||
+          (home !== undefined && home !== unit && users.get(unit)?.has(home) === true)
+        )
+          choose(test, `imports ${unit}`);
       }
       if (others.length === 0) continue;
       const text = graph.read(test);
@@ -109,7 +119,7 @@ export function selectTests(input: {
       reason: `import graph could not be read: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  if (tests.includes(BOUNDARIES)) choose(BOUNDARIES, "always");
+  for (const path of ALWAYS) if (tests.includes(path)) choose(path, "always");
   return {
     full: false,
     files: [...chosen]
@@ -120,7 +130,7 @@ export function selectTests(input: {
 
 /** Parse executable imports without treating fixture strings or comments as code. */
 function relativeImports(path: string, text: string): string[] {
-  if (path.endsWith(".json")) return [];
+  if (!/\.(tsx?|jsx?|mjs|cjs)$/.test(path)) return [];
   const parsed = parseSync(path, text);
   if (parsed.errors.length) throw new Error(`cannot parse ${path}`);
   const imports = new Set<string>();
@@ -139,7 +149,12 @@ function relativeImports(path: string, text: string): string[] {
       return;
     }
     const node = record(value);
-    if (node.type === "ImportExpression") add(record(node.source).value);
+    if (
+      node.type === "ImportExpression" ||
+      node.type === "ExportAllDeclaration" ||
+      node.type === "ExportNamedDeclaration"
+    )
+      add(record(node.source).value);
     if (node.type === "CallExpression") {
       const callee = record(node.callee);
       if (
@@ -159,8 +174,9 @@ function relativeImports(path: string, text: string): string[] {
 }
 
 /**
- * Relative imports, followed through files outside `src/` (test helpers) and stopped at the
- * first `src/` unit they reach.
+ * Relative imports, followed through test helpers and through `src/` so a file that imports
+ * `src/loop`, which imports `src/merge`, reaches both units. A finished file is cached. A walk
+ * that hit a file still on the stack is not, so a cycle cannot store a partial result.
  */
 function createImportGraph(root: string) {
   const texts = new Map<string, string>();
@@ -182,20 +198,61 @@ function createImportGraph(root: string) {
     }
     return target;
   };
-  const reaches = (path: string, seen = new Set<string>()): Set<string> => {
+  const cache = new Map<string, Set<string>>();
+  // `partial` is true when a dependency was still on the stack. That result must not be cached:
+  // the in-progress file may import a unit this walk could not see yet.
+  const walk = (path: string, stack: Set<string>): { units: Set<string>; partial: boolean } => {
+    const cached = cache.get(path);
+    if (cached !== undefined) return { units: cached, partial: false };
+    if (stack.has(path)) return { units: new Set(), partial: true };
+    stack.add(path);
     const units = new Set<string>();
-    seen.add(path);
+    let partial = false;
     for (const specifier of relativeImports(path, read(path))) {
       const target = resolve(path, specifier);
-      if (target === undefined) continue;
+      if (target === undefined || target.includes("node_modules/")) continue;
       const unit = sourceUnit(target);
       if (unit !== undefined) units.add(unit);
-      else if (!seen.has(target) && !target.includes("node_modules/"))
-        for (const found of reaches(target, seen)) units.add(found);
+      if (stack.has(target)) {
+        partial = true;
+        continue;
+      }
+      const found = walk(target, stack);
+      partial ||= found.partial;
+      for (const reached of found.units) units.add(reached);
     }
-    return units;
+    stack.delete(path);
+    if (!partial) cache.set(path, units);
+    return { units, partial };
   };
-  return { read, reaches: (path: string) => reaches(path) };
+  return { read, reaches: (path: string) => walk(path, new Set()).units };
+}
+
+/** Units that import `unit`, directly or through another unit. The unit itself is left out. */
+function unitsThatImport(
+  root: string,
+  graph: ReturnType<typeof createImportGraph>,
+): Map<string, Set<string>> {
+  const imports = new Map<string, Set<string>>();
+  const files = [...new Bun.Glob("src/**/*").scanSync({ cwd: root, onlyFiles: true })].filter(
+    (path) => /\.(tsx?|jsx?|mjs|cjs)$/.test(path) && !TEST_FILE.test(path) && !SKIPPED.test(path),
+  );
+  for (const file of files) {
+    const unit = sourceUnit(file);
+    if (unit === undefined) continue;
+    const deps = imports.get(unit) ?? new Set<string>();
+    for (const found of graph.reaches(file)) if (found !== unit) deps.add(found);
+    imports.set(unit, deps);
+  }
+  const users = new Map<string, Set<string>>();
+  for (const [unit, deps] of imports) {
+    for (const dep of deps) {
+      const set = users.get(dep) ?? new Set<string>();
+      set.add(unit);
+      users.set(dep, set);
+    }
+  }
+  return users;
 }
 
 /** What ran and why, for the check's log and evidence. */
