@@ -34,7 +34,7 @@ export const CANDIDATE_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 48];
  * Paws moves that runner's lease by the same rule and tells it the budget on heartbeat.
  * Older runners are not told and are not moved; they stop at the lease plus the grace.
  */
-export const OFFLINE_LEASE_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
+export const OFFLINE_LEASE_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
 /** First runner release whose policy transfer accepts the whole bundle Closeout sends to it. */
 export const POLICY_TRANSFER_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
 

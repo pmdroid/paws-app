@@ -86,7 +86,7 @@ async function fixture() {
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   db.run(
-    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.52',?)",
+    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.53',?)",
     [runnerId, now()],
   );
   const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
@@ -329,12 +329,13 @@ test("a lease renewed within the alive skew still receives downtime credit", asy
   try {
     f.admit();
     const before = f.leaseUntil();
-    markPawsAlive(f.db, before - PAWS_ALIVE_LEASE_SKEW_MS);
+    const aliveAt = before - PAWS_ALIVE_LEASE_SKEW_MS;
+    markPawsAlive(f.db, aliveAt);
     f.clock.at += 20 * MINUTE;
     expect(recoverOnStartup(f.db, f.clock.at, BUDGET)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },
     ]);
-    expect(f.leaseUntil()).toBe(before + 20 * MINUTE);
+    expect(f.leaseUntil()).toBe(before + f.clock.at - aliveAt);
   } finally {
     f.close();
   }
@@ -377,7 +378,7 @@ test("a runner older than the offline lease release is not extended", async () =
   const f = await fixture();
   try {
     f.admit();
-    f.db.run("UPDATE runner_host_status SET runner_version='0.1.51' WHERE runner_id=?", [
+    f.db.run("UPDATE runner_host_status SET runner_version='0.1.52' WHERE runner_id=?", [
       f.runnerId,
     ]);
     const beat = f.work.heartbeat(f.runnerId);
