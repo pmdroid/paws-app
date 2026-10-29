@@ -17,7 +17,6 @@ export const CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp";
 export const CLAUDE_AGENT_ACP_BIN = "claude-agent-acp";
 export const CODEX_ACP_BIN = "codex-acp";
 
-/** Package `@opencode/cli` ships the `opencode` bin. It is installed globally, not in the checkout. */
 export const OPENCODE_PACKAGE = "@opencode/cli";
 export const OPENCODE_ACP_BIN = "opencode";
 
@@ -238,11 +237,6 @@ export function selectGrokAuthMethod(
   return null;
 }
 
-/**
- * `opencode acp`. `agents.opencode.path` uses that executable; otherwise the
- * `opencode` binary comes from the runner launcher or PATH, because
- * `@opencode/cli` is installed globally rather than in the paws checkout.
- */
 export function resolveOpencodeCommand(
   agents?: AgentsConfig,
   packageRoot: string = pawsPackageRoot(),
@@ -263,7 +257,15 @@ export function resolveOpencodeCommand(
   }
   const launcher = installedLauncher(packageRoot, OPENCODE_ACP_BIN, runnerBase);
   if (launcher) return { command: launcher, args, error: null };
-  return { command: OPENCODE_ACP_BIN, args, error: null };
+  const native = join(
+    packageRoot,
+    "node_modules",
+    "@opencode",
+    `cli-${process.platform}-${process.arch}${process.arch === "x64" ? "-baseline" : ""}`,
+    "bin",
+    "opencode",
+  );
+  return { command: existsSync(native) ? native : OPENCODE_ACP_BIN, args, error: null };
 }
 
 export function xaiApiKeyPresent(env: NodeJS.ProcessEnv): boolean {
@@ -323,7 +325,6 @@ function installedVersion(root: string, packageName: string, bin: string): strin
   return parsed.version;
 }
 
-/** The installed version, or null when the package is absent. */
 function installedVersionOrNull(root: string, packageName: string): string | null {
   const manifestPath = join(root, "node_modules", packageName, "package.json");
   if (!existsSync(manifestPath)) return null;
