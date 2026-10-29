@@ -187,6 +187,7 @@ import {
   scoreReview,
 } from "./review-score";
 import { handleLinkAskAnswer } from "./questions";
+import { createFindingIssueRoute } from "./finding-issues";
 import {
   createItemReconciler,
   createParentDelegations,
@@ -203,6 +204,7 @@ import {
   itemOwnerRunnerSetupNeed,
 } from "./runner-placement";
 import { startServer } from "./server";
+import { itemReviews } from "./web";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
@@ -954,6 +956,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           sessionIds,
           submit: async (input) => (orchestrator ? orchestrator.decideLinkAsk(input) : "rejected"),
         }),
+      findingIssues: createFindingIssueRoute({
+        db,
+        reviews: (itemId) => itemReviews(db, itemId, paths.home, envSource),
+        // Linear is called only when someone files an issue, never when the page loads.
+        file: linear?.tracker?.fileFindingIssue
+          ? (request, fileOptions) => linear.tracker!.fileFindingIssue!(request, fileOptions)
+          : undefined,
+      }),
       readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       skillSettings: {
