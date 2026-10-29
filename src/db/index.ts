@@ -1,3 +1,4 @@
+export { replaceLeasedJobPayload, refreshVerificationJobVersion } from "./job-payload";
 export {
   drainCommands,
   enqueueCommand,
@@ -257,7 +258,13 @@ export {
   type DeadDeliveryRef,
 } from "./dead-deliveries";
 export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
-export { runnerLeaseCutoff, runnerLeaseLive, runnerWorkSettled } from "./runner-lease";
+export {
+  runnerHoldsRunWork,
+  runnerWorkHasResult,
+  runnerLeaseCutoff,
+  runnerLeaseLive,
+  runnerWorkSettled,
+} from "./runner-lease";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {
   getRun,
