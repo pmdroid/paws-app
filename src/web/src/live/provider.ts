@@ -844,7 +844,8 @@ function toItem(
   const runId = linkedRunId(record, runs);
   const pr = pullRequest(record, rows, repo);
   const fact = facts.get(record.id);
-  const waiting = record.state === "queued" ? queue.get(record.id) : undefined;
+  const waiting =
+    record.state === "queued" && !record.cancelRequested ? queue.get(record.id) : undefined;
   const mergeQueue =
     record.state === "merge_queue" || record.state === "verifying"
       ? merging.get(record.id)
@@ -977,6 +978,8 @@ function heldOf(
   record: WorkItemRecord,
   holds: ReadonlyMap<string, ItemHold>,
 ): { held?: StatusHeld } {
+  if (record.state === "queued" && record.cancelRequested)
+    return { held: { reason: "cancelled", blockers: [] } };
   const hold = record.state === "queued" ? holds.get(record.id) : undefined;
   return hold
     ? {

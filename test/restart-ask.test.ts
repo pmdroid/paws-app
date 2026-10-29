@@ -45,6 +45,10 @@ describe("restart and ask", () => {
     "%s restarts preserve the run and session and dispatch their original handoff",
     (reason) => {
       const { db, item } = fixture();
+      db.run(
+        "UPDATE work_item SET cancel_requested=1, turn_count=4, recovery_attempts=2 WHERE id=?",
+        [item.id],
+      );
       const prior = enqueueJob(db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id },
@@ -55,6 +59,9 @@ describe("restart and ask", () => {
       const queued = getWorkItem(db, item.id)!;
       expect(queued).toMatchObject({
         state: "queued",
+        cancelRequested: false,
+        turnCount: 0,
+        recoveryAttempts: 0,
         sessionKey: item.sessionKey,
         currentRunId: item.currentRunId,
       });

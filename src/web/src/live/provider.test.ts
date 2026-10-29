@@ -1627,6 +1627,18 @@ describe("live status provider", () => {
     },
   );
 
+  test("a queued item with cancellation requested is reported as cancelled", () => {
+    const db = database();
+    const record = insertQueuedItem(db, { id: "cancelled-queued", now: 10 });
+    db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [record.id]);
+    const item = createLiveStatusProvider(db)
+      .snapshot()
+      .items.find((entry) => entry.id === record.id)!;
+    expect(item.held?.reason).toBe("cancelled");
+    expect(item.queue).toBeUndefined();
+    expect(waitReason(item)).toBe("Cancelled");
+  });
+
   test("task blocks use the latest item on a Linear issue and skip issues with no item", () => {
     const db = database();
     const older = insertQueuedItem(db, { id: "older", title: "Old", now: 10 });

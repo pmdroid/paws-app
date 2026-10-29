@@ -265,6 +265,7 @@ export function waitReason(item: StatusItem): string | null {
 }
 
 const HELD_LINES: Record<HeldReason, string> = {
+  cancelled: "cancelled",
   blocked: "blocked by another issue",
   project: "its project has not released it yet",
   reconciling: "Linear changes are still syncing",
@@ -278,6 +279,7 @@ const HELD_LINES: Record<HeldReason, string> = {
 export function heldLine(item: StatusItem): string | null {
   const held = item.state === "queued" ? item.held : undefined;
   if (!held) return null;
+  if (held.reason === "cancelled") return "Cancelled";
   if (held.reason === "blocked" && held.blockers.length)
     return `Waiting: blocked by ${held.blockers.join(", ")}`;
   if (held.reason === "overlap" && held.blockers[0]) {
