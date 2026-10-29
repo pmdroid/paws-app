@@ -737,8 +737,8 @@ function detachedVm(shell: string) {
   return { run, live };
 }
 
-async function until(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 100 && !check(); i++) await Bun.sleep(50);
+async function until(check: () => boolean, attempts = 100): Promise<void> {
+  for (let i = 0; i < attempts && !check(); i++) await Bun.sleep(50);
 }
 
 test("a detached step runs in the background on a real shell and its poll reads the status", async () => {
@@ -746,12 +746,14 @@ test("a detached step runs in the background on a real shell and its poll reads 
   for (const shell of GUEST_SHELLS) {
     const vm = detachedVm(shell);
     const started = Date.now();
-    const start = vm.run(detachCommand("enroll", "echo out; sleep 0.3; echo err >&2; exit 3"));
-    expect(Date.now() - started).toBeLessThan(250);
+    // The sleep is the proof the start returned early. A GitHub runner spent 415 ms in the
+    // nested shells before the old 250 ms bound, which is still under this bound.
+    const start = vm.run(detachCommand("enroll", "echo out; sleep 1.5; echo err >&2; exit 3"));
+    expect(Date.now() - started).toBeLessThan(1_200);
     expect(start).toEqual({ exitCode: 0, stdout: expect.stringMatching(/^[1-9][0-9]*\n$/) });
     expect(vm.run(pollCommand("enroll")).stdout).toBe("running\n");
     let polled = "";
-    await until(() => (polled = vm.run(pollCommand("enroll")).stdout).startsWith("exited"));
+    await until(() => (polled = vm.run(pollCommand("enroll")).stdout).startsWith("exited"), 160);
     expect(polled).toBe("exited 3\nout\nerr\n");
   }
 

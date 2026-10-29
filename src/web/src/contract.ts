@@ -515,7 +515,18 @@ export interface StatusReviewFinding {
   blocking: boolean;
   /** Null in a review's first round and in `fixed`. */
   since: ReviewFindingSince | null;
+  /** The Linear issue filed from this pre-existing finding, on any item. */
+  filed?: StatusFiledIssue;
 }
+
+/** A Linear issue filed from a review finding. */
+export interface StatusFiledIssue {
+  identifier: string;
+  url: string | null;
+}
+
+/** `POST` `{ itemId, reviewId, location, explanation }`: file a pre-existing finding in Linear. */
+export const FINDING_ISSUE_PATH = "/api/review-findings/issues";
 
 /** One Closeout run of a candidate (head and policy), oldest first in `StatusVerdict.attempts`. */
 export interface StatusCloseoutAttempt {
@@ -1888,6 +1899,15 @@ function readReviewFinding(input: unknown, path: string): StatusReviewFinding {
       since === null || since === undefined
         ? null
         : oneOf(string(body, "since", path), REVIEW_FINDING_SINCE, `${path}.since`),
+    ...(body.filed === undefined ? {} : { filed: readFiledIssue(body.filed, `${path}.filed`) }),
+  };
+}
+
+function readFiledIssue(input: unknown, path: string): StatusFiledIssue {
+  const body = object(input, path);
+  return {
+    identifier: text(body, "identifier", path),
+    url: body.url === null || body.url === undefined ? null : string(body, "url", path),
   };
 }
 

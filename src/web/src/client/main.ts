@@ -4,6 +4,7 @@ import { mountShell } from "./shell";
 import { mergeQueueCount } from "./merge-queue";
 
 import {
+  FINDING_ISSUE_PATH,
   hasStatusSlice,
   parseStatusCheckLog,
   parseStatusItemDetail,
@@ -27,7 +28,8 @@ import {
 } from "./closeout";
 import { captureLogs, restoreLogs } from "./log-scroll";
 import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-closeout";
-import { earlierRoundsKey } from "./review-findings";
+import { earlierRoundsKey, findingIssueKey } from "./review-findings";
+import { readCsrfToken } from "./csrf";
 import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
 import {
   issueRedirect,
@@ -260,6 +262,53 @@ function schedule(): void {
   // Stored evidence does not change, and a repaint would interrupt the video.
   if (route.view === "evidence") return;
   stopPolling = livePoll(() => void reload(), STATUS_POLL_MS);
+}
+
+/**
+ * Files a pre-existing finding in Linear, or reads the issue already filed from it. The button
+ * shows the issue, or Linear's error beside it.
+ */
+async function fileFindingIssue(
+  itemId: string,
+  reviewId: string,
+  location: string,
+  explanation: string,
+): Promise<void> {
+  const key = findingIssueKey(itemId, reviewId, { location, explanation });
+  closeout.filing ??= {};
+  closeout.filing[key] = { state: "sending" };
+  paint();
+  try {
+    const response = await fetch(FINDING_ISSUE_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-paws-csrf": readCsrfToken(document) },
+      body: JSON.stringify({ itemId, reviewId, location, explanation }),
+    });
+    const body: unknown = await response.json().catch(() => null);
+    const field = (name: string) =>
+      typeof body === "object" && body !== null && name in body
+        ? (body as Record<string, unknown>)[name]
+        : undefined;
+    const identifier = field("identifier");
+    const url = field("url");
+    const problem = field("error");
+    if (!response.ok || typeof identifier !== "string")
+      throw new Error(
+        typeof problem === "string" ? problem : "The issue was not filed. Try again.",
+      );
+    closeout.filing[key] = {
+      state: "filed",
+      identifier,
+      url: typeof url === "string" ? url : null,
+    };
+  } catch (caught) {
+    journalCaught(caught, "main.fileFindingIssue.fetch", itemId);
+    closeout.filing[key] = {
+      state: "failed",
+      error: caught instanceof Error ? caught.message : "The issue was not filed. Try again.",
+    };
+  }
+  paint();
 }
 
 function paint(): void {
@@ -559,6 +608,16 @@ function onClick(event: MouseEvent): void {
   }
   if (!checkId) return;
   const key = checkKey(itemId, attempt, checkId);
+  if (action === "file-finding-issue") {
+    const button = target.closest<HTMLButtonElement>("button[data-explanation]");
+    if (button && !button.disabled)
+      void fileFindingIssue(
+        itemId,
+        checkId,
+        button.dataset["location"] ?? "",
+        button.dataset["explanation"] ?? "",
+      );
+  }
   if (action === "review-rounds-toggle") {
     const rounds = earlierRoundsKey(itemId, checkId);
     closeout.open[rounds] = closeout.open[rounds] !== true;

@@ -106,6 +106,14 @@ export { linearTokenPath, openLinear, sessionHasItemInFlight } from "./runtime";
 export type { LinearRunning, OpenLinear } from "./runtime";
 export { createLinearTracker } from "./tracker";
 export { subIssueDescription, subIssueId, type SubIssueRequest } from "./sub-issues";
+export {
+  findingIssueId,
+  findingIssueState,
+  REVIEW_FINDING_LABEL,
+  type FiledFindingIssue,
+  type FindingIssueRequest,
+  type FindingIssueTeamState,
+} from "./finding-issues";
 export type { LinearSessionAdapter } from "./sessions";
 export type {
   ActionDetails,

@@ -280,7 +280,8 @@ async function usageLimitScenario(restart: boolean) {
     worktreePath: worktree,
     pawsRoot: root,
     profile: { agent: "claude" as const, model: null },
-    networkGit: git,
+    // GitHub, served from the bare origin, so the run never reaches the network.
+    networkGit: (args: string[]) => git(args.map((arg) => (arg === GITHUB_URL ? origin : arg))),
     signal,
   });
   let shutdownError: unknown;
