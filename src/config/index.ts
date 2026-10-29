@@ -33,7 +33,6 @@ export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app
 export type { GitHubAppCredentials } from "./github-app";
 
 export {
-  parseAgentProfile,
   parseAgentSettings,
   readAgentSettings,
   resolveAgentProfiles,

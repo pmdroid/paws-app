@@ -713,7 +713,7 @@ export function waitingLabel(tasks: number, runner: string): string {
 
 export function runnerSkillsMarkup(skills: readonly RunnerSkill[], runner: string): string {
   if (!skills.length)
-    return '<p class="muted">No skills registered. Owners and admins add them in Settings → Agents.</p>';
+    return '<p class="muted">No skills registered. Admins add them in Settings → Agents.</p>';
   const rows = skills
     .map((skill) => {
       const [tone, state] = SKILL_STATES[skill.state] ?? SKILL_STATES.installing;
