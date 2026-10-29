@@ -17,7 +17,9 @@ export function loadPublicTls(source: EnvSource): PublicTls | undefined {
     throw new Error("PAWS_TLS_KEY_PATH and PAWS_TLS_CERT_PATH must both be absolute paths");
   const keyFile = statSync(keyPath);
   if (!keyFile.isFile() || ![0o400, 0o600].includes(keyFile.mode & 0o777))
-    throw new Error("Public TLS private key must be an owner-only readable file");
+    throw new Error(
+      `Public TLS private key must be an owner-only readable file: chmod 600 ${keyPath}`,
+    );
   const key = readFileSync(keyPath, "utf8");
   const cert = readFileSync(certPath, "utf8");
   try {
@@ -29,15 +31,15 @@ export function loadPublicTls(source: EnvSource): PublicTls | undefined {
     const now = Date.now();
     const validFrom = Date.parse(certificate.validFrom);
     const validTo = Date.parse(certificate.validTo);
-    if (
-      !Number.isFinite(validFrom) ||
-      !Number.isFinite(validTo) ||
-      validFrom > now ||
-      validTo <= now
-    )
-      throw new Error("expired");
-  } catch {
-    throw new Error("Public TLS certificate and private key must be valid and match");
+    if (validFrom > now) throw new Error(`not valid until ${certificate.validFrom}`);
+    if (validTo <= now) throw new Error(`expired on ${certificate.validTo}`);
+    if (!Number.isFinite(validFrom) || !Number.isFinite(validTo))
+      throw new Error("invalid validity dates");
+  } catch (error) {
+    throw new Error(
+      `Public TLS certificate and private key must be valid and match: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
   return { key, cert };
 }
