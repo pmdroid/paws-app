@@ -103,6 +103,8 @@ import {
   migrate,
   openDatabase,
   prepareShutdown,
+  markPawsAlive,
+  PAWS_ALIVE_INTERVAL_MS,
   recoverOnStartup,
   listSkills,
   listRepositoryCatalog,
@@ -1540,6 +1542,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     },
   });
 
+  // Startup reads the last mark to tell how long Paws was down (runner leases do not count it).
+  const aliveTimer = setInterval(() => {
+    try {
+      markPawsAlive(db, Date.now());
+    } catch (error) {
+      journalCaught(error, "index.startPaws.markPawsAlive", null);
+    }
+  }, PAWS_ALIVE_INTERVAL_MS);
+  aliveTimer.unref?.();
+
   let stopping: Promise<void> | undefined;
   return {
     env,
@@ -1584,7 +1596,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 policy,
               );
           }),
-        close: () => db.close(),
+        close: () => {
+          clearInterval(aliveTimer);
+          db.close();
+        },
       });
       return stopping;
     },

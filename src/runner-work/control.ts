@@ -8,6 +8,7 @@ import {
   recordRunnerSkills,
   runnerAgentTargets,
   teamRepositoryAllowedSql,
+  pawsAliveAt,
   runnerLeaseCutoff,
 } from "../db";
 import type { KeyObject } from "node:crypto";
@@ -28,9 +29,13 @@ import {
   runnerCancelPending,
 } from "../db";
 import {
+  OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
+  RUNNER_LEASE_MS,
+  RUNNER_OFFLINE_BUDGET_MS,
   OPENCODE_RUNNER_VERSION,
   RunnerCommandSchema,
+  runnerReleaseAtLeast,
   RunnerEventSchema,
   type RunnerEvent,
   signRunnerCommand,
@@ -272,7 +277,7 @@ export function createRunnerWork(options: {
     return work;
   }
   function renew(work: Assignment, at: number) {
-    const leaseUntil = Math.min(workCommand(work).expiresAt, at + 60_000);
+    const leaseUntil = Math.min(workCommand(work).expiresAt, at + RUNNER_LEASE_MS);
     db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [leaseUntil, work.runId]);
     return leaseUntil;
   }
@@ -428,7 +433,7 @@ export function createRunnerWork(options: {
             availableIdentity(previous.runnerId)?.fence === previous.runnerFence)
         )
           throw new Error("Run assignment generation conflicts.");
-        const leaseUntil = Math.min(command.expiresAt, at + 60_000);
+        const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
         const envelope = queue(command);
         db.run(
           `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
@@ -579,6 +584,17 @@ export function createRunnerWork(options: {
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
       return immediate(db, () => {
         runner(runnerId);
+        const storedVersion = db
+          .query<{ version: string | null }, [string]>(
+            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+          )
+          .get(runnerId)?.version;
+        const aliveAt = pawsAliveAt(db);
+        const offlineCredit =
+          aliveAt !== null &&
+          runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)
+            ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
+            : undefined;
         const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling);
         const at = now();
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
@@ -653,6 +669,7 @@ export function createRunnerWork(options: {
         return {
           leases,
           fenced,
+          ...(offlineCredit === undefined ? {} : offlineCredit),
           ...(concurrency === undefined ? {} : { concurrency }),
           ...(skills === undefined ? {} : { skills }),
           ...(targets === undefined ? {} : { agents: targets }),

@@ -273,11 +273,16 @@ export {
 } from "./dead-deliveries";
 export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
 export {
-  runnerHoldsRunWork,
-  runnerWorkHasResult,
+  markPawsAlive,
+  PAWS_ALIVE_INTERVAL_MS,
+  PAWS_ALIVE_LEASE_SKEW_MS,
+  pawsAliveAt,
   runnerLeaseCutoff,
   runnerLeaseLive,
   runnerWorkSettled,
+  shiftRunnerLeasesForDowntime,
+  runnerHoldsRunWork,
+  runnerWorkHasResult,
 } from "./runner-lease";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {

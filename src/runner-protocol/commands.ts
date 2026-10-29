@@ -1,7 +1,15 @@
 import { z } from "zod";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 
+/** Maximum time granted by a work assignment or heartbeat renewal. */
+export const RUNNER_LEASE_MS = 60_000;
 export const RUNNER_LEASE_GRACE_MS = 5 * 60_000;
+/**
+ * How much time Paws is unreachable does not count against a runner lease. `creditedLeaseUntil`
+ * adds it, capped by this budget and the command's `expiresAt`. Only a runner at
+ * `OFFLINE_LEASE_RUNNER_VERSION` or newer is told the budget and has its stored lease moved.
+ */
+export const RUNNER_OFFLINE_BUDGET_MS = 30 * 60_000;
 /** A handover waits this long for a safe point; after that the session keeps running. */
 export const RUNNER_HANDOVER_LIMIT_MS = 120_000;
 /**
