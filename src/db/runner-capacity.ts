@@ -100,7 +100,7 @@ export function recordRunnerCapacity(
 
 export class RunnerConcurrencyError extends Error {}
 
-/** Stores the concurrency an owner or admin chose, from 1 up to the ceiling the runner reported. */
+/** Stores the concurrency an admin chose, from 1 up to the ceiling the runner reported. */
 export function setRunnerConcurrency(
   db: Database,
   input: {

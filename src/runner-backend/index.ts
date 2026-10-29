@@ -73,6 +73,7 @@ import { fastForwardToBranchTip } from "./candidate";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
+import { ensureStartOnRemote, lostCommitsNote, RemoteStartUnverified } from "./start-commit";
 import {
   planSessionRestore,
   runnerGoneReason,
@@ -939,11 +940,78 @@ export function createRemoteAgentRunner(options: {
               );
             }
           };
+          /** Pushes a head GitHub lacks, else falls back; returns the handoff for lost commits. */
+          const remoteStart = async (
+            scoped: { item: { branchName: string }; repository?: { remoteUrl: string } },
+            networkGit: (args: string[]) => Promise<string>,
+          ) => {
+            const checkpoint = getWorkItem(db, itemId)?.checkpoint;
+            // A handoff saved by an earlier fallback still goes out until a runner receives it.
+            const pending = checkpoint?.lostCommits;
+            if (!scoped.repository || !scoped.item.branchName) return pending;
+            // A first run starts from the mirror's commit, which came from GitHub.
+            if (
+              !checkpoint?.baseSha ||
+              (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim() ===
+                checkpoint.baseSha
+            )
+              return pending;
+            let lostCommits: string | undefined;
+            let repeated = false;
+            const start = await ensureStartOnRemote({
+              worktree: input.worktreePath,
+              branch: scoped.item.branchName,
+              remoteUrl: scoped.repository!.remoteUrl,
+              networkGit,
+              ...(checkpoint?.wipCommit ? { wipCommit: checkpoint.wipCommit } : {}),
+              ...(checkpoint?.baseSha ? { baseSha: checkpoint.baseSha } : {}),
+              persistFallback: (fallback) => {
+                const note = lostCommitsNote(fallback.start, fallback.lost);
+                // A stop after this save but before the reset repeats the same fallback.
+                repeated = pending?.includes(note) === true;
+                lostCommits = repeated ? pending : pending ? `${pending}\n${note}` : note;
+                saveCheckpoint(db, itemId, {
+                  ...checkpoint,
+                  wipCommit: fallback.start,
+                  lostCommits,
+                });
+              },
+              signal,
+            }).catch((error: unknown) => {
+              // No runner gets a commit GitHub may lack; the item retries later.
+              if (error instanceof RemoteStartUnverified)
+                journal(`item ${itemId}: ${error.message}`);
+              throw error;
+            });
+            if (start.status === "remote") return pending;
+            if (start.status === "pushed") {
+              journal(`item ${itemId} pushed ${start.head} to GitHub before the run`);
+              return pending;
+            }
+            journal(
+              `item ${itemId} starts from ${start.start} because ${start.head} is not on GitHub and its push failed: ${start.error}`,
+            );
+            if (!repeated)
+              await emit({
+                type: "progress",
+                text: `Commit ${start.head.slice(0, 8)} never reached GitHub, so this run continues from ${start.start.slice(0, 8)} and the agent redoes the rest.\n`,
+              });
+            return lostCommits;
+          };
           const placed =
             attached ??
             (await (async () => {
+              const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
+              // A runner's saved WIP comes first; then the head it gives must be on GitHub.
+              if (!taskScope && input.role === "implementer" && input.networkGit)
+                await importCheckpoint(input.networkGit);
+              const lostNote =
+                !taskScope && input.role === "implementer" && input.networkGit
+                  ? await remoteStart(scoped, input.networkGit)
+                  : undefined;
               // A runner command does not carry the caller's session, so a resume replays.
-              const prompt = input.resume?.replayPrompt ?? input.prompt;
+              const replayed = input.resume?.replayPrompt ?? input.prompt;
+              const prompt = lostNote ? `${lostNote}\n\n${replayed}` : replayed;
               const prepared = input.prepareInputFiles
                 ? await input.prepareInputFiles({
                     workspace: input.worktreePath,
@@ -951,7 +1019,6 @@ export function createRemoteAgentRunner(options: {
                     signal,
                   })
                 : { prompt, inputFiles: [] };
-              const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
               const files = snapshotAgentInputs(input.worktreePath, [
                 ...suppliedInputs,
                 ...prepared.inputFiles,
@@ -991,7 +1058,7 @@ export function createRemoteAgentRunner(options: {
                   ? options.inputs!.stagePrompt(commandId, prepared.prompt)
                   : undefined;
               // A run that leaves its pinned runner may continue its saved agent session there.
-              const restorePlan: SessionRestorePlan | undefined =
+              let restorePlan: SessionRestorePlan | undefined =
                 !taskScope &&
                 input.role === "implementer" &&
                 input.checkpoint !== false &&
@@ -1003,34 +1070,31 @@ export function createRemoteAgentRunner(options: {
                       targetRunnerId: selected.id,
                     })
                   : undefined;
-              if (!taskScope && input.role === "implementer" && input.networkGit)
-                await importCheckpoint(input.networkGit);
               const head = taskScope
                 ? undefined
                 : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
-              // The checkout holds the snapshot's commit, or the latest pushed commit when newer.
+              // A session snapshot is conversation state, never authority for an unverified start.
+              if (
+                restorePlan?.eligible &&
+                head &&
+                !(await git([
+                  "-C",
+                  input.worktreePath,
+                  "merge-base",
+                  "--is-ancestor",
+                  restorePlan.commitSha,
+                  head,
+                ]).then(
+                  () => true,
+                  () => false,
+                ))
+              )
+                restorePlan = { eligible: false, failure: "no_snapshot" };
               const baseSha = taskScope
                 ? taskScope.repository
                   ? snapshotCommit(input.worktreePath, taskScope.repository)
                   : undefined
-                : restorePlan?.eligible &&
-                    restorePlan.commitSha !== head &&
-                    (await git([
-                      "-C",
-                      input.worktreePath,
-                      "merge-base",
-                      "--is-ancestor",
-                      head!,
-                      restorePlan.commitSha,
-                    ]).then(
-                      () => true,
-                      (caughtError) => {
-                        journalCaught(caughtError, "runner-backend.forItem.restoreCommit", itemId);
-                        return false;
-                      },
-                    ))
-                  ? restorePlan.commitSha
-                  : head;
+                : head;
               if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
                 saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
               const acceptsRebase =
@@ -1890,6 +1954,7 @@ export function createRemoteAgentRunner(options: {
             );
             if (complete.stopReason !== "end_turn" || complete.errorMessage)
               saveCheckpoint(db, itemId, {
+                ...getWorkItem(db, itemId)?.checkpoint,
                 phase: "running",
                 baseSha: getWorkItem(db, itemId)?.checkpoint?.baseSha ?? baseSha!,
                 wipCommit: complete.candidateSha,
@@ -1956,6 +2021,24 @@ export function createRemoteAgentRunner(options: {
               });
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
+          }
+          // Keep the handoff through cancellation, lost runners and failed candidate imports.
+          // Only a successfully completed implementer command proves the agent received it.
+          const delivered = getWorkItem(db, itemId)?.checkpoint;
+          if (
+            assigned.type === "run" &&
+            delivered?.lostCommits &&
+            assigned.prompt?.includes(delivered.lostCommits) &&
+            complete.stopReason === "end_turn" &&
+            complete.agentExited &&
+            complete.candidateSha &&
+            !complete.cancelled &&
+            !complete.timedOut &&
+            !complete.authRequired &&
+            !complete.errorMessage
+          ) {
+            const { lostCommits: _sent, ...rest } = delivered;
+            saveCheckpoint(db, itemId, rest);
           }
           work.finish(assigned.runId, assigned.generation);
           command = undefined;
@@ -2052,6 +2135,7 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
+export { ensureStartOnRemote, RemoteStartUnverified } from "./start-commit";
 
 export { remoteCommandsGone } from "./released";
 

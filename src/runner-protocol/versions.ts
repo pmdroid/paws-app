@@ -29,6 +29,8 @@ export const CHECKPOINT_RUNNER_VERSION: RunnerVersion = [0, 1, 46];
 export const REVIEW_COMMAND_RUNNER_VERSION: RunnerVersion = [0, 1, 47];
 /** First runner release that rebases a candidate onto its moved branch and pushes it again. */
 export const CANDIDATE_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 48];
+/** First runner release whose policy transfer accepts the whole bundle Closeout sends to it. */
+export const POLICY_TRANSFER_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
 
 /** First runner release accepting the read-only daily finding grouping helper purpose. */
-export const FINDING_GROUPS_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
+export const FINDING_GROUPS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];

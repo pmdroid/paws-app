@@ -43,7 +43,7 @@ function seed() {
     [now, now],
   );
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner','codex',1)");
-  recordRunnerHostStatus(db, "runner", { runnerVersion: "0.1.52" }, now);
+  recordRunnerHostStatus(db, "runner", { runnerVersion: "0.1.53" }, now);
   const { privateKey } = generateKeyPairSync("ed25519");
   const helpers = createRunnerHelpers({ db, keyId: "key", privateKey, now: () => now });
   return {
@@ -216,7 +216,7 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'runner2',workspace_id,owner_user_id,'Second','active',created_at,last_seen_at FROM runner WHERE id='runner'",
     );
     f.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner2','codex',1)");
-    recordRunnerHostStatus(f.db, "runner2", { runnerVersion: "0.1.52" }, f.now);
+    recordRunnerHostStatus(f.db, "runner2", { runnerVersion: "0.1.53" }, f.now);
     let attempts = 0;
     const helper = createFindingGroupHelper({
       db: f.db,

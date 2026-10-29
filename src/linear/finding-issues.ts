@@ -1,271 +1,201 @@
-import { z } from "zod";
-import {
-  LinearEntityNotFoundError,
-  LinearHttpError,
-  LinearGraphQLError,
-  type LinearClient,
-} from "./graphql";
+import type { TrackerRequestOptions } from "./adapter";
+import type { LinearClient } from "./graphql";
+import { isRecord, readNumber, readString } from "./read";
 import { stableUuid } from "./sub-issues";
 
-export type FindingIssueTitle = { identifier: string; title: string; teamId: string };
-export interface FindingIssueAdapter {
-  openTitles(teamIds: readonly string[], signal: AbortSignal): Promise<FindingIssueTitle[]>;
-  file(input: { key: string; teamId: string; title: string; description: string }): Promise<string>;
-  add(input: { key: string; teamId: string; identifier: string; body: string }): Promise<void>;
+/**
+ * File one issue from a review finding next to `relatedIssueId`: in its team and project, in
+ * the team's Triage state (Backlog without Triage), with the `review finding` label and a
+ * `related` relation. Nothing is delegated. `key` names the finding; the issue and relation
+ * ids derive from it, so a retried call finds what an earlier attempt filed.
+ */
+export type FindingIssueRequest = {
+  key: string;
+  relatedIssueId: string;
+  title: string;
+  description: string;
+};
+
+export type FiledFindingIssue = { id: string; identifier: string; url: string | null };
+
+/** A team's workflow state, as Linear lists it. */
+export type FindingIssueTeamState = { id: string; type: string; position: number };
+
+export const REVIEW_FINDING_LABEL = "review finding";
+
+export const findingIssueId = (key: string) => stableUuid(`paws:finding-issue:${key}`);
+
+/** The team's Triage state, else its first Backlog state. Null when it has neither. */
+export function findingIssueState(states: readonly FindingIssueTeamState[]): string | null {
+  const ranked = (type: string) =>
+    states
+      .filter((state) => state.type === type)
+      .sort((left, right) => left.position - right.position)[0]?.id ?? null;
+  return ranked("triage") ?? ranked("backlog");
 }
-/** A deterministic refusal before any issue/comment mutation. Safe to release a new action claim. */
-class FindingWriteRefused extends Error {
-  readonly noFindingWrite = true;
+
+export function validateFindingIssueRequest(request: FindingIssueRequest): void {
+  if (!request.key.trim() || !request.relatedIssueId.trim())
+    throw new Error("A finding issue needs a key and a related issue");
+  if (!request.title.trim()) throw new Error("A finding issue needs a title");
 }
-function definiteRefusal(error: unknown): boolean {
-  return (
-    error instanceof LinearEntityNotFoundError ||
-    (error instanceof LinearHttpError && [400, 401, 403, 404, 422].includes(error.status)) ||
-    (error instanceof LinearGraphQLError &&
-      error.codes.length > 0 &&
-      error.codes.length === error.errorsCount &&
-      error.codes.every((code) =>
-        [
-          "BAD_USER_INPUT",
-          "INPUT_ERROR",
-          "VALIDATION_ERROR",
-          "GRAPHQL_VALIDATION_FAILED",
-          "FORBIDDEN",
-          "UNAUTHENTICATED",
-          "NOT_FOUND",
-          "ENTITY_NOT_FOUND",
-          "PERMISSION_DENIED",
-        ].includes(code),
-      ))
-  );
-}
-async function findingWrite(
-  client: LinearClient,
-  query: string,
-  variables: Record<string, unknown>,
-  operation: "issueCreate" | "commentCreate",
-) {
-  let data: unknown;
-  try {
-    data = await client.query(query, variables);
-  } catch (error) {
-    if (definiteRefusal(error))
-      throw new FindingWriteRefused(
-        "Linear refused this finding write. Check the issue and team access.",
-      );
-    throw error;
+
+const TARGET = `query FindingIssueTarget($id: String!, $ids: [ID!]!) {
+  issue(id: $id) {
+    id
+    team { id states(first: 100) { nodes { id type position } } }
+    project { id }
   }
-  if (z.object({ [operation]: z.object({ success: z.literal(false) }) }).safeParse(data).success)
-    throw new FindingWriteRefused("Linear did not accept this finding write.");
-  return data;
-}
-const node = z.object({ id: z.string() });
-const page = z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() });
-const issue = node.extend({ identifier: z.string() });
-export function createFindingIssueAdapter(client: LinearClient): FindingIssueAdapter {
-  async function existing(id: string) {
-    return z
-      .object({ issues: z.object({ nodes: z.array(issue) }) })
-      .parse(
-        await client.query(
-          `query FindingFiled($id: ID!) { issues(filter:{id:{eq:$id}},first:1) { nodes { id identifier } } }`,
-          { id },
-        ),
-      ).issues.nodes[0];
+  issues(first: 1, filter: { id: { in: $ids } }) {
+    nodes { id identifier url relations(first: 50) { nodes { type relatedIssue { id } } } }
   }
+}`;
+
+const LABELS = `query FindingIssueLabels($name: String!) {
+  issueLabels(first: 50, filter: { name: { eqIgnoreCase: $name } }) {
+    nodes { id isGroup team { id } }
+  }
+}`;
+
+const CREATE_LABEL = `mutation FindingIssueLabelCreate($input: IssueLabelCreateInput!) {
+  issueLabelCreate(input: $input) { success issueLabel { id } }
+}`;
+
+const CREATE = `mutation FindingIssueCreate($input: IssueCreateInput!) {
+  issueCreate(input: $input) { success issue { id identifier url } }
+}`;
+
+const RELATE = `mutation FindingIssueRelated($input: IssueRelationCreateInput!) {
+  issueRelationCreate(input: $input) { success }
+}`;
+
+export function createLinearFindingIssueMethods(client: LinearClient) {
   return {
-    async openTitles(teamIds, signal) {
-      const result: FindingIssueTitle[] = [];
-      // A bounded, fair title sample; the prompt cannot use more than 65k characters.
-      const budget = Math.max(1, Math.floor(65000 / Math.max(1, teamIds.length)));
-      for (const teamId of teamIds) {
-        let used = 0;
-        let full = false;
-        let count = 0;
-        let after: string | null = null;
-        do {
-          const data: {
-            nodes: { identifier: string; title: string }[];
-            pageInfo: { hasNextPage: boolean; endCursor: string | null };
-          } = z
-            .object({
-              issues: z.object({
-                nodes: z.array(z.object({ identifier: z.string(), title: z.string() })),
-                pageInfo: page,
-              }),
-            })
-            .parse(
-              await client.query(
-                `query FindingOpenIssues($team: ID!, $after: String) {
-              issues(first:100,after:$after,filter:{team:{id:{eq:$team}},state:{type:{nin:["completed","canceled"]}}}) {
-                nodes { identifier title } pageInfo { hasNextPage endCursor }
-              }
-            }`,
-                { team: teamId, after },
-                { signal },
-              ),
-            ).issues;
-          for (const entry of data.nodes) {
-            const title = { ...entry, title: entry.title.slice(0, 500), teamId };
-            const size = JSON.stringify(title).length + 1;
-            if (used + size > budget) {
-              full = true;
-              break;
-            }
-            used += size;
-            count++;
-            result.push(title);
-          }
-          // Even tiny titles stop after a bounded number of pages per team.
-          if (full || used >= budget - 700 || count >= 1000) break;
-          if (
-            data.pageInfo.hasNextPage &&
-            (!data.pageInfo.endCursor || data.pageInfo.endCursor === after)
-          )
-            throw new Error("Linear issue pagination did not advance");
-          after = data.pageInfo.hasNextPage ? data.pageInfo.endCursor : null;
-        } while (after);
-      }
-      return result;
-    },
-    async file(input) {
-      const id = stableUuid(`paws:finding-group:${input.key}`);
-      const previous = await existing(id);
-      if (previous) return previous.identifier;
-      const prepared = await (async () => {
-        const team = z
-          .object({
-            team: z.object({
-              states: z.object({ nodes: z.array(node.extend({ type: z.string() })) }),
-              labels: z.object({ nodes: z.array(node.extend({ name: z.string() })) }),
+    async fileFindingIssue(
+      request: FindingIssueRequest,
+      options?: TrackerRequestOptions,
+    ): Promise<FiledFindingIssue> {
+      validateFindingIssueRequest(request);
+      options?.signal?.throwIfAborted();
+      const id = findingIssueId(request.key);
+      const target = await client.query(TARGET, { id: request.relatedIssueId, ids: [id] }, options);
+      const related = dig(target, "issue");
+      const relatedId = isRecord(related) ? readString(related, "id") : null;
+      const team = dig(related, "team");
+      const teamId = isRecord(team) ? readString(team, "id") : null;
+      if (!relatedId || !teamId) throw new Error("Linear returned no issue to file the finding by");
+      let issue = nodes(dig(target, "issues"))
+        .filter(isRecord)
+        .find((node) => node["id"] === id);
+      if (!issue) {
+        const project = dig(related, "project");
+        const projectId = isRecord(project) ? readString(project, "id") : null;
+        const stateId = findingIssueState(
+          nodes(dig(team, "states"))
+            .filter(isRecord)
+            .flatMap((state) => {
+              const workflowState = readString(state, "id");
+              const type = readString(state, "type");
+              return workflowState && type
+                ? [{ id: workflowState, type, position: readNumber(state, "position") ?? 0 }]
+                : [];
             }),
-          })
-          .parse(
-            await client.query(
-              `query FindingTriage($id: String!) { team(id:$id) {
-          states(first:100) { nodes { id type } }
-          labels(first:100,filter:{name:{eq:"review finding"}}) { nodes { id name } }
-        } }`,
-              { id: input.teamId },
-            ),
-          ).team;
-        const stateId = team.states.nodes.find((s) => s.type === "triage")?.id;
-        if (!stateId)
-          throw new FindingWriteRefused("The Linear team needs a Triage state to file findings.");
-        let labelId = team.labels.nodes.find((l) => l.name === "review finding")?.id;
-        if (!labelId) {
-          const created = z
-            .object({ issueLabelCreate: z.object({ success: z.literal(true), issueLabel: node }) })
-            .parse(
-              await client.query(
-                `mutation FindingLabel($input: IssueLabelCreateInput!) { issueLabelCreate(input:$input) { success issueLabel { id } } }`,
-                { input: { name: "review finding", teamId: input.teamId } },
-              ),
-            );
-          labelId = created.issueLabelCreate.issueLabel.id;
-        }
-        return { stateId, labelId };
-      })().catch((error) => {
-        if (error instanceof FindingWriteRefused) throw error;
-        throw new FindingWriteRefused(
-          "Linear could not prepare the Triage state and review finding label. Check team access before retrying.",
         );
-      });
-      const created = z
-        .object({ issueCreate: z.object({ success: z.literal(true), issue }) })
-        .parse(
-          await findingWrite(
-            client,
-            `mutation FindingGroupIssue($input: IssueCreateInput!) { issueCreate(input:$input) { success issue { id identifier } } }`,
+        const labelId = await findingLabel(teamId);
+        const created = dig(
+          await client.query(
+            CREATE,
             {
               input: {
                 id,
-                teamId: input.teamId,
-                title: input.title,
-                description: input.description,
-                stateId: prepared.stateId,
-                labelIds: [prepared.labelId],
-                delegateId: null,
+                teamId,
+                ...(projectId ? { projectId } : {}),
+                ...(stateId ? { stateId } : {}),
+                labelIds: [labelId],
+                title: request.title,
+                description: request.description,
               },
             },
-            "issueCreate",
+            options,
           ),
+          "issueCreate",
         );
-      return created.issueCreate.issue.identifier;
-    },
-    async add(input) {
-      const target = z
-        .object({
-          issue: issue.extend({
-            team: node,
-            state: z.object({ type: z.string() }),
-            comments: z.object({ nodes: z.array(node) }),
-            archivedAt: z.string().nullable().optional(),
-          }),
-        })
-        .parse(
-          await client
-            .query(
-              `query FindingGroupTarget($id: String!, $comment: ID!) { issue(id:$id) {
-          id identifier archivedAt team { id } state { type } comments(first:1,filter:{id:{eq:$comment}}) { nodes { id } }
-        } }`,
-              {
-                id: input.identifier,
-                comment: stableUuid(`paws:finding-group-comment:${input.key}`),
+        const value = dig(created, "issue");
+        if (!isRecord(created) || created["success"] !== true || !isRecord(value))
+          throw new Error("Linear did not create the issue");
+        issue = value;
+      }
+      const identifier = readString(issue, "identifier");
+      if (readString(issue, "id") !== id || !identifier)
+        throw new Error("Linear returned an unexpected issue");
+      const linked = nodes(dig(issue, "relations"))
+        .filter(isRecord)
+        .some(
+          (relation) =>
+            relation["type"] === "related" &&
+            isRecord(relation["relatedIssue"]) &&
+            relation["relatedIssue"]["id"] === relatedId,
+        );
+      if (!linked) {
+        options?.signal?.throwIfAborted();
+        const relation = dig(
+          await client.query(
+            RELATE,
+            {
+              input: {
+                id: stableUuid(`paws:finding-issue-related:${request.key}`),
+                type: "related",
+                issueId: id,
+                relatedIssueId: relatedId,
               },
-            )
-            .then((data) => {
-              if (z.object({ issue: z.null() }).safeParse(data).success)
-                throw new FindingWriteRefused("The suggested issue is unavailable.");
-              return data;
-            })
-            .catch((error) => {
-              if (definiteRefusal(error))
-                throw new FindingWriteRefused(
-                  "The suggested issue is unavailable. Check its access or choose another action.",
-                );
-              throw error;
-            }),
-        ).issue;
-      if (target.team.id !== input.teamId)
-        throw new FindingWriteRefused("The suggested issue is outside this group's team.");
-      if (target.comments.nodes.length) return;
-      if (target.archivedAt || ["completed", "canceled"].includes(target.state.type))
-        throw new FindingWriteRefused("The suggested issue is no longer open.");
-      z.object({ commentCreate: z.object({ success: z.literal(true) }) }).parse(
-        await findingWrite(
-          client,
-          `mutation FindingGroupComment($input: CommentCreateInput!) { commentCreate(input:$input) { success } }`,
-          {
-            input: {
-              id: stableUuid(`paws:finding-group-comment:${input.key}`),
-              issueId: target.id,
-              body: input.body,
             },
-          },
-          "commentCreate",
-        ),
-      );
+            options,
+          ),
+          "issueRelationCreate",
+        );
+        if (!isRecord(relation) || relation["success"] !== true)
+          throw new Error(`Linear did not relate ${identifier} to the issue`);
+      }
+      return { id, identifier, url: readString(issue, "url") };
+
+      /** The team's or the workspace's `review finding` label, created in the team when missing. */
+      async function findingLabel(labelTeam: string): Promise<string> {
+        const found = nodes(
+          dig(await client.query(LABELS, { name: REVIEW_FINDING_LABEL }, options), "issueLabels"),
+        )
+          .filter(isRecord)
+          .filter((label) => label["isGroup"] !== true)
+          .map((label) => ({
+            id: readString(label, "id"),
+            team: isRecord(label["team"]) ? readString(label["team"], "id") : null,
+          }));
+        const label =
+          found.find((entry) => entry.team === labelTeam) ??
+          found.find((entry) => entry.team === null);
+        if (label?.id) return label.id;
+        const created = dig(
+          await client.query(
+            CREATE_LABEL,
+            { input: { name: REVIEW_FINDING_LABEL, teamId: labelTeam } },
+            options,
+          ),
+          "issueLabelCreate",
+        );
+        const value = dig(created, "issueLabel");
+        const labelId = isRecord(value) ? readString(value, "id") : null;
+        if (!isRecord(created) || created["success"] !== true || !labelId)
+          throw new Error(`Linear did not create the "${REVIEW_FINDING_LABEL}" label`);
+        return labelId;
+      }
     },
   };
 }
 
-export function createFakeFindingIssueAdapter(initial: FindingIssueTitle[] = []) {
-  const reads: string[][] = [];
-  const files: Parameters<FindingIssueAdapter["file"]>[0][] = [];
-  const comments: Parameters<FindingIssueAdapter["add"]>[0][] = [];
-  const adapter: FindingIssueAdapter = {
-    async openTitles(teamIds) {
-      reads.push([...teamIds]);
-      return initial.filter((i) => teamIds.includes(i.teamId));
-    },
-    async file(input) {
-      if (!files.some((f) => f.key === input.key)) files.push(input);
-      return `PAS-${files.findIndex((f) => f.key === input.key) + 1}`;
-    },
-    async add(input) {
-      if (!comments.some((c) => c.key === input.key)) comments.push(input);
-    },
-  };
-  return { ...adapter, reads, files, comments };
+function dig(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : undefined;
+}
+
+function nodes(value: unknown): unknown[] {
+  const list = dig(value, "nodes");
+  return Array.isArray(list) ? list : [];
 }

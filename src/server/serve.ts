@@ -1,4 +1,5 @@
 import { createHealthReport } from "./health";
+import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
@@ -15,6 +16,7 @@ import {
   type LinearWebhookDeps,
 } from "../linear";
 import {
+  FINDING_ISSUE_PATH,
   fakeStatusProvider,
   FINDINGS_API_PATH,
   handleFindingsRequest,
@@ -66,6 +68,7 @@ import {
   type WorkspaceClient,
   type WorkspacePrincipal,
 } from "../workspace";
+import type { WorkspaceSession } from "../db";
 
 export type ServerOptions = {
   findingGroups?: FindingGroupServices;
@@ -87,6 +90,21 @@ export type ServerOptions = {
     principal: WorkspacePrincipal | undefined,
     sessionIds: readonly string[] | undefined,
   ) => Promise<Response | null>;
+  /**
+   * `POST /api/review-findings/issues`: file a pre-existing review finding in Linear. The
+   * server checked the origin and the CSRF token; the handler checks them again with `access`.
+   */
+  findingIssues?: (
+    request: Request,
+    access:
+      | {
+          principal: WorkspacePrincipal;
+          session: WorkspaceSession;
+          origin: string;
+          sessionIds: readonly string[];
+        }
+      | undefined,
+  ) => Promise<Response | null>;
   hostname?: string;
   port?: number;
   linearWebhookSecret?: string | null;
@@ -104,6 +122,8 @@ export type ServerOptions = {
   db?: Database;
   /** Clock for local health checks. */
   healthNow?: () => number;
+  /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
+  jobLoop?: () => JobLoopLiveness | null;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
@@ -148,6 +168,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     linearWebhook: webhooks && Boolean(linearWebhookSecret),
     githubWebhook: webhooks && Boolean(githubWebhookSecret),
     now: options.healthNow,
+    ...(options.jobLoop === undefined ? {} : { jobLoop: options.jobLoop }),
   });
   const statusEnv = options.statusEnv;
   const closeoutHome = options.closeoutHome;
@@ -194,6 +215,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
           ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
+          ...(options.findingIssues ? { findingIssues: options.findingIssues } : {}),
           ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
           ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
           ...(options.agentSettings
@@ -234,6 +256,7 @@ type Secrets = {
   runnerControl?: ServerOptions["runnerControl"];
   executionControls?: ServerOptions["executionControls"];
   linkAsks?: ServerOptions["linkAsks"];
+  findingIssues?: ServerOptions["findingIssues"];
   slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
@@ -393,6 +416,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {
         const response = await secrets.runnerControl(request, access.principal);
+        if (response !== null) return response;
+      }
+      if (path === FINDING_ISSUE_PATH && secrets.findingIssues !== undefined) {
+        const response = await secrets.findingIssues(request, {
+          principal: access.principal,
+          session: access.session,
+          origin: workspace.origin,
+          sessionIds,
+        });
         if (response !== null) return response;
       }
     }

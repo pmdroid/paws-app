@@ -1,5 +1,5 @@
 specVersion: "0.1"
-description: Lint, format, typecheck, the status dashboard build, Markdown links, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request. The test suite runs in GitHub CI, which must be green before a merge. A merge-queue re-check takes the checks with `ci:` from green GitHub CI on the same commit.
+description: Lint, format, typecheck, the tests the change affects, the status dashboard build, the documentation checks, dead-code and dependency checks, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request. GitHub CI runs the full test suite, which must be green before a merge. A merge-queue re-check takes the checks with `ci:` from green GitHub CI on the same commit.
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
@@ -37,6 +37,11 @@ items:
     kind: command
     gate: beforePR
     exec: ["bun", "run", "links"]
+    timeoutSeconds: 300
+  - id: knip
+    kind: command
+    gate: beforePR
+    exec: ["bun", "run", "knip"]
     timeoutSeconds: 300
   - id: visual-proof
     kind: evidence
@@ -111,3 +116,9 @@ rules:
     probe: .agents/probes/restart-and-ask-from-loop.ts
     failOn: P1
     onFail: fix
+  - id: api-contract
+    summary: No removed runner schema, status field or route, new required runner input, or narrowed type.
+    probe: .agents/probes/api-contract.ts
+    paths: ["src/**"]
+    failOn: P1
+    onFail: approve

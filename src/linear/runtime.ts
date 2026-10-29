@@ -1,4 +1,4 @@
-import { createFindingIssueAdapter, type FindingIssueAdapter } from "./finding-issues";
+import { createFindingIssueAdapter, type FindingIssueAdapter } from "./finding-group-issues";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { IN_FLIGHT_ITEM_STATES, type LinearCommand } from "../core";

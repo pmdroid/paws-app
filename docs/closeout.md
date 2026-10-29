@@ -7,6 +7,8 @@ Each candidate goes through Closeout twice:
 1. **Agent Closeout.** The agent runs the command checks itself while it works.
 2. **Paws Closeout.** After the agent's turn ends, Paws verifies the result, runs the independent review, and decides whether the candidate can be published.
 
+Before the pull request, the policy in this repository also runs two hygiene checks. `bun run links` fails on a broken local link, a doc under `docs/` that no other document links to, or an inline `src/...` path that no longer exists. `bun run knip` fails on an unused file, an unused or unlisted dependency, or a duplicate export. Delete an outdated page instead of keeping it; an orphaned page is a failed check.
+
 ```mermaid
 flowchart TD
   A[Agent changes code and commits] --> B[get_closeout lists the required checks]
@@ -232,6 +234,23 @@ A re-check of an item already in the merge queue (after a CI fix, a conflict fix
 
 `ci:` is a Paws extension to the policy schema, so a runner older than the change rejects a policy that uses it: ship the deploy and the runner release before the policy.
 
+### Affected tests
+
+In this repository, the `test` check runs `bun scripts/affected-tests.ts`, which runs only the tests the change affects between the run's base and the candidate head. The base is `git merge-base origin/main HEAD`; on a runner, Closeout's checkout points `origin/main` at the run's base. GitHub CI runs the full suite on every pull request and is required before merge, so a test the selection misses still runs before merge.
+
+- **Test files** changed in the diff run.
+- **Source files:** a change under `src/<module>/` runs that module's tests, the tests of every module that imports it (followed transitively through other modules), and every other test file that reaches the module, directly, through another module, or through a helper under `test/`. A file directly under `src/`, such as `src/index.ts`, runs the tests that import it.
+- **Shared files:** a change to `package.json`, `bun.lock`, `bunfig.toml`, a `tsconfig*.json`, a helper or fixture under `test/`, or anything under `scripts/` runs the full suite.
+- **Other files**, such as docs, run the tests whose source names the changed path.
+- `test/boundaries.test.ts` and `test/empty-catches.test.ts` always run. Both read every file under `src/` by path.
+
+When the diff, a test, or an imported helper cannot be read, when import parsing fails, or when there is no base, the full suite runs. Imports are parsed as code so fixture strings and comments do not affect the import graph. The check's log starts with the files that ran and why, for example:
+
+````
+test/merge-lane.test.ts  imports src/merge/index.ts
+full suite (556 files): package.json changed
+``` `bun scripts/affected-tests.ts --list <base> <head>` prints the selection without running it.
+
 ## Review escapes
 
 A review escape is a bug that Closeout's independent review accepted and a later pull request had to fix. `evals/review-escapes.jsonl` collects the confirmed ones, so a change to the reviewer can be scored against real misses instead of guessed.
@@ -258,7 +277,7 @@ One JSON object per line:
   "confirmedAt": "2026-10-26",
   "confidence": "confirmed"
 }
-```
+````
 
 | Field                  | Meaning                                                                                                                           |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |

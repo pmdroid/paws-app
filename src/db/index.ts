@@ -139,6 +139,7 @@ export {
   extendJobLease,
   hasLiveJob,
   failJob,
+  actionableDue,
   getJob,
   listJobs,
   mergeLaneSql,
@@ -150,7 +151,13 @@ export {
   type JobStatus,
   type NewJob,
 } from "./jobs";
-export { JobLoop, type JobContext, type JobHandler } from "./loop";
+export {
+  JobLoop,
+  JOB_PROGRESS_STALE_MS,
+  type JobContext,
+  type JobHandler,
+  type JobLoopLiveness,
+} from "./loop";
 export { startLoops } from "./loops";
 export { migrate } from "./migrate";
 export {
@@ -728,3 +735,13 @@ export { getFindingGroup, removeFindingFromOpenGroups } from "./finding-groups";
 export { reviewFindingsByIds } from "./review-findings";
 
 export { yieldFindingGroupHelpers, runnerHelperAvailability } from "./runner-capacity";
+
+export {
+  getReviewFindingIssue,
+  reviewFindingIssues,
+  reviewFindingKey,
+  reviewFindingPlace,
+  saveReviewFindingIssue,
+  type ReviewFindingIssue,
+  type ReviewFindingPlace,
+} from "./review-finding-issues";

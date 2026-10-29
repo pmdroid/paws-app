@@ -1,6 +1,6 @@
 # Paws status
 
-Read-only status for a local Paws engine: epics, items and their states, current runs, open questions, Closeout results, and the merge queue.
+Read-only status for a local Paws engine: items and their states, current runs, open questions, Closeout results, and the merge queue.
 
 The Paws process serves the dashboard files and status routes. The live reader imports `src/db` through its public index.
 
@@ -46,7 +46,6 @@ Example:
   "source": "live",
   "generatedAt": "2026-10-09T22:15:00.000Z",
   "project": { "name": "Platform", "team": "ENG", "repo": "acme/platform", "workspace": "acme" },
-  "epics": [],
   "items": [],
   "runs": [],
   "questions": [],
