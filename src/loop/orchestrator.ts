@@ -408,6 +408,7 @@ import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
   closeoutChecksPrompt,
+  createAcpCodexReviewer,
   createReviewCommandReviewer,
   hiddenPathsPrompt,
   implementPrompt,
@@ -3338,7 +3339,12 @@ export class Orchestrator {
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
-    const reviewer = createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
+
+    const reviewerAgent = deps.profiles?.reviewer?.agent;
+    const reviewer =
+      reviewerAgent === "grok" || reviewerAgent === "opencode"
+        ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
+        : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,

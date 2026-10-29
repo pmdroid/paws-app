@@ -437,8 +437,13 @@ export function hostEnrollmentCommand(enrollment: HostEnrollment & { config: obj
   ].join(" && \\\n  ");
 }
 
-const AGENTS = ["claude", "codex", "grok"] as const;
-const AGENT_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
+const AGENTS = ["claude", "codex", "grok", "opencode"] as const;
+const AGENT_LABELS: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  grok: "Grok",
+  opencode: "OpenCode",
+};
 const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
   signed_in: ["ok", "Signed in"],
   signed_out: ["bad", "Signed out"],

@@ -210,7 +210,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           socketPath,
           sourceEnv,
           ...(options.workspaceHooks ? { workspaceHooks: options.workspaceHooks } : {}),
-          ...(options.agentSkills && profile.agent !== "grok"
+          ...(options.agentSkills && (profile.agent === "claude" || profile.agent === "codex")
             ? { skillRoot: options.agentSkills[profile.agent] }
             : {}),
           ...(options.agentSkills ? { codexSkills: options.agentSkills.codex } : {}),

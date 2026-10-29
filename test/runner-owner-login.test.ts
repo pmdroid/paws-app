@@ -68,6 +68,11 @@ function fixture() {
     [runnerId, workspace, owner.userId, "Owner runner", at],
   );
   db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,1)", [runnerId]);
+  db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
+    runnerId,
+    "0.1.53",
+    at,
+  ]);
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     db,
@@ -396,6 +401,7 @@ for (const agent of ["claude", "grok"] as const) {
       ["claude", 1],
       ["codex", 0],
       ["grok", 0],
+      ["opencode", 0],
     ]);
   });
 }
