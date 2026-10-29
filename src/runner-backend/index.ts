@@ -50,6 +50,7 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
   encodePolicyFiles,
+  encodePolicyChunk,
 } from "../acp";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
@@ -1577,7 +1578,10 @@ export function createRemoteAgentRunner(options: {
                   runId: assigned.runId,
                   generation: assigned.generation,
                   sequence: row.sequence,
-                  answer: encodePolicyFiles(policy),
+                  answer:
+                    event.offset === undefined
+                      ? encodePolicyFiles(policy)
+                      : encodePolicyChunk(policy, event.offset, event.hash),
                 });
               }
               if (event.type === "artifact" && !answered && event.dropped !== undefined) {

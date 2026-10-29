@@ -38,3 +38,5 @@ export const CLOSEOUT_CI_KEY_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
  * 0.1.51 is the newest tag, so both land on 0.1.52.
  */
 export const CLOSEOUT_POLICY_KEYS_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
+/** First runner release that requests Closeout policies in bounded chunks. */
+export const CLOSEOUT_POLICY_CHUNKS_RUNNER_VERSION: RunnerVersion = [0, 1, 52];

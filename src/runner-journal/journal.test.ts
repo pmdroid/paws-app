@@ -23,6 +23,21 @@ const command: WorkCommand = {
   profile: { agent: "codex", model: null },
   prompt: "Implement delegated work",
 };
+test("policy chunk requests retain their offset and digest through the journal", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-policy-chunk-"));
+  const journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const requestId = "11111111-1111-4111-8111-111111111111";
+    const event = { type: "closeout_policy" as const, offset: 24000, hash: "a".repeat(64) };
+    journal.ingest(execution.id, Buffer.from(JSON.stringify({ ...event, requestId }) + "\n"));
+    expect(journal.pending(execution.id)).toEqual([{ sequence: 1, event }]);
+    expect(journal.requestId(execution.id, 1)).toBe(requestId);
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 test("durable execution admission preserves question values and rejects changed journal prefixes atomically", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-journal-"));
   let journal = openExecutionJournal(root);
