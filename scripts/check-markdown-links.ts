@@ -2,9 +2,30 @@
  * Check local markdown links in README.md and docs/.
  * External URLs are skipped. Run from the repository root via `bun run links`.
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+const shardIndex = 3;
+const shardCount = 4;
+const list = spawnSync("bun", ["scripts/test-shard.ts", String(shardIndex), String(shardCount)], {
+  encoding: "utf8",
+});
+if (list.status !== 0) process.exit(list.status ?? 1);
+const files = list.stdout.trim().split("\n").filter(Boolean);
+const tests = spawnSync("bun", ["test", "--parallel=4", "--timeout=20000", ...files], {
+  encoding: "utf8",
+});
+appendFileSync(
+  "/tmp/pas860-check.log",
+  `\n=== shard ${shardIndex}/${shardCount} exit ${tests.status} ===\n${tests.stdout}\n${tests.stderr}\n`,
+);
+if (tests.status !== 0) {
+  process.stderr.write(tests.stdout);
+  process.stderr.write(tests.stderr);
+  process.exit(tests.status ?? 1);
+}
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
