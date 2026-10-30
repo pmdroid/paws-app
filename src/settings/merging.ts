@@ -1,11 +1,14 @@
 import { journalCaught } from "../journal";
 import {
+  DEFAULT_COMMENT_WAIT,
   loadConfigFile,
+  parseCommentWait,
   parseHighRiskPathSettings,
   parseMergePolicy,
   readMergeSettings,
   storedMerge,
   writeMergePolicy,
+  type CommentWait,
   type MergeChoice,
   type MergeOverride,
   type MergePolicy,
@@ -116,6 +119,7 @@ export async function handleMergeSettingsRequest(
     }
     return json({
       ...view(policy),
+      commentWait: policy.commentWait,
       highRiskPaths: highRiskPathsView(policy),
       ...(options.riskGate ? { riskGate: options.riskGate } : {}),
       highRiskRepositories: await highRiskRepositoriesView(
@@ -140,12 +144,18 @@ export async function handleMergeSettingsRequest(
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
   let policy: MergePolicy;
-  // Optional, so a page that does not show High-risk paths keeps them.
+  // Optional, so a page that does not show High-risk paths or the comment wait keeps them.
   let highRiskPaths: Record<string, string[]> | undefined;
+  let commentWait: CommentWait | undefined;
   try {
     if (isRecord(body) && "highRiskPaths" in body) {
       const { highRiskPaths: paths, ...rest } = body;
       highRiskPaths = parseHighRiskPathSettings(paths);
+      body = rest;
+    }
+    if (isRecord(body) && "commentWait" in body) {
+      const { commentWait: wait, ...rest } = body;
+      commentWait = parseCommentWait(wait);
       body = rest;
     }
     policy = parseMergePolicy(body);
@@ -183,12 +193,22 @@ export async function handleMergeSettingsRequest(
       );
   }
   try {
-    writeMergePolicy(options.configPath, policy, current, highRiskPaths);
+    writeMergePolicy(options.configPath, policy, current, highRiskPaths, commentWait);
   } catch (caughtError6) {
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
     return json({ error: "Merging settings could not be saved" }, 503);
   }
   for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
+  const waitBefore = before?.commentWait ?? DEFAULT_COMMENT_WAIT;
+  const waitAfter = commentWait ?? waitBefore;
+  if (
+    waitAfter.quietSeconds !== waitBefore.quietSeconds ||
+    waitAfter.maxWaitSeconds !== waitBefore.maxWaitSeconds
+  )
+    options.audit?.(
+      "settings.merging",
+      `Pull request comment wait: ${waitBefore.quietSeconds}s quiet, ${waitBefore.maxWaitSeconds}s at most → ${waitAfter.quietSeconds}s quiet, ${waitAfter.maxWaitSeconds}s at most`,
+    );
   const saved =
     highRiskPaths ??
     Object.fromEntries(highRiskPathsView(before).map((entry) => [entry.repository, entry.paths]));
@@ -196,6 +216,7 @@ export async function handleMergeSettingsRequest(
     options.audit?.("settings.merging", change);
   return json({
     ...view(policy),
+    commentWait: waitAfter,
     highRiskPaths: Object.entries(saved)
       .filter(([, paths]) => paths.length > 0)
       .map(([repository, paths]) => ({ repository, paths })),

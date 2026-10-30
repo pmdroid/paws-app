@@ -55,4 +55,9 @@ export type Checkpoint = {
   wipCommit?: string;
   turn?: number;
   baseSha?: string;
+  /**
+   * The handoff naming commits that never reached GitHub, kept until a runner command carries it,
+   * so a run that fails or a restart before dispatch still tells the agent what to redo.
+   */
+  lostCommits?: string;
 };

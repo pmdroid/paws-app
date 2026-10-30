@@ -94,7 +94,7 @@ import {
   type ResolvedEvidence,
   type CandidateIdentity,
   type CiResult,
-  candidatePolicyDigest,
+  candidatePolicyDigests,
   ciMappings,
 } from "../closeout";
 import {
@@ -272,6 +272,9 @@ import {
   readPullMergeable,
   readReviewThreads,
   readPullCi,
+  commentOnPullRequest,
+  replyToReviewComment,
+  resolveReviewThread,
   mergedPullHeads,
   readPullMerge,
   branchContains,
@@ -375,6 +378,7 @@ import {
 } from "./link-ask";
 import { acceptCloseout, retryMergeLater, waitForMergeTurn, waitForRunnerSlot } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
+import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
 import { ciForRecheck, type CiRecheck } from "./ci-recheck";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
@@ -406,9 +410,11 @@ import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress } from "./closeout-progress";
+import { checkPolicyRunners } from "./policy-runners";
 import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
   closeoutChecksPrompt,
+  createAcpCodexReviewer,
   createReviewCommandReviewer,
   hiddenPathsPrompt,
   implementPrompt,
@@ -2827,6 +2833,8 @@ export class Orchestrator {
       if (!artifactPublicationReady(this.db, item.id))
         throw new Error("A requested artifact has not been uploaded successfully");
       saveRunResult(this.db, run.id, activity.resultBody(), this.now());
+      // A fix turn for pull request comments reports a reply for each one it was handed.
+      recordAgentReviewReplies(this.db, item.id, activity.resultBody(), this.now());
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
       this.saveCandidate(run.id, executed.run.identity);
@@ -2834,7 +2842,12 @@ export class Orchestrator {
       const base = (
         await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
       ).trim();
-      saveCheckpoint(this.db, item.id, { phase: "running", baseSha: base, wipCommit: head });
+      saveCheckpoint(this.db, item.id, {
+        ...getWorkItem(this.db, item.id)?.checkpoint,
+        phase: "running",
+        baseSha: base,
+        wipCommit: head,
+      });
       const commits = Number(
         (
           await git(["-C", executed.worktreePath, "rev-list", "--count", `${base}..${head}`])
@@ -3334,7 +3347,12 @@ export class Orchestrator {
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
-    const reviewer = createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
+
+    const reviewerAgent = deps.profiles?.reviewer?.agent;
+    const reviewer =
+      reviewerAgent === "grok" || reviewerAgent === "opencode"
+        ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
+        : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,
@@ -4036,9 +4054,9 @@ export class Orchestrator {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
         settings: (item, signal) => this.mergeSettingsFor(item, signal),
-        policyDigest: (item, worktree) => {
+        policyDigests: (item, worktree) => {
           const { home, policyRoot } = this.closeoutHome(item);
-          return candidatePolicyDigest(worktree, home, policyRoot, this.runCheckout(item).checks);
+          return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
         },
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
@@ -4251,6 +4269,7 @@ export class Orchestrator {
       repo: repository.repo,
       title: draft?.title ?? item.title,
       ...(draft ? { description: draft.body } : {}),
+      reviewer: getItemRunCommitPolicy(this.db, item.id)?.credit?.login,
       client: github.client,
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
@@ -4278,6 +4297,7 @@ export class Orchestrator {
       line: openLine,
       now: this.now(),
     });
+    await this.postReviewReplies(item, github, repository, published.pull.number, published.head);
     this.post(
       item,
       "response",
@@ -4661,6 +4681,7 @@ export class Orchestrator {
           const current = getWorkItem(this.db, item.id);
           if (current?.state === "running") {
             saveCheckpoint(this.db, item.id, {
+              ...current.checkpoint,
               phase: "awaiting_input",
               ...(current.checkpoint?.wipCommit ? { wipCommit: current.checkpoint.wipCommit } : {}),
               ...(current.checkpoint?.baseSha ? { baseSha: current.checkpoint.baseSha } : {}),
@@ -4855,6 +4876,7 @@ export class Orchestrator {
         },
       );
     saveCheckpoint(this.db, itemId, {
+      ...getWorkItem(this.db, itemId)?.checkpoint,
       phase,
       ...(head === "" ? {} : { wipCommit: head }),
       ...(base === "" ? {} : { baseSha: base }),
@@ -5963,6 +5985,7 @@ export class Orchestrator {
     return createRepositoryGit({
       remoteUrl: repository.remoteUrl,
       signal,
+      ...(access === "write" ? { pushBranch: item.branchName } : {}),
       token: (ownedSignal) => this.options.repositoryToken!(item, repository, ownedSignal, access),
       onCleanupFailure: () => this.blockConversation(item.id),
       assert: async () => {
@@ -7028,6 +7051,45 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * Reply on the pull request to each comment the last fix turn was handed, and resolve the threads
+   * it addressed. The head is on GitHub by now. A failure leaves the rest for the next publication
+   * and does not hold the merge.
+   */
+  private async postReviewReplies(
+    item: WorkItemRecord,
+    github: GitHubBinding,
+    repository: { owner: string; repo: string },
+    pullNumber: number,
+    head: string,
+  ): Promise<void> {
+    const access = {
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      ...this.gitHubCredentials(github),
+    };
+    await postReviewReplies(
+      this.db,
+      { itemId: item.id, pullNumber, head, now: () => this.now() },
+      {
+        replyToReviewComment: (prNumber, commentId, body) =>
+          replyToReviewComment({ ...access, prNumber, commentId, body }),
+        commentOnPullRequest: (prNumber, body) =>
+          commentOnPullRequest({ ...access, prNumber, body }),
+        resolveReviewThread: (threadId) => resolveReviewThread({ ...access, threadId }),
+      },
+    ).catch((error: unknown) =>
+      journalCaught(
+        error,
+        "orchestrator.postReviewReplies",
+        item.id,
+        undefined,
+        this.options.journal,
+      ),
+    );
+  }
+
   private gitHubCredentials(
     github: GitHubBinding,
   ):
@@ -7290,7 +7352,8 @@ export class Orchestrator {
     item: WorkItemRecord,
     input: RunAgentOptions,
   ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes"> {
-    if (input.prepareOnly || !this.repositoryForItem(item)) return {};
+    const repository = this.repositoryForItem(item);
+    if (input.prepareOnly || !repository) return {};
     const runtimes = { runtimes: () => this.runtimeList(item, input.worktreePath) };
     if (input.role !== "implementer") return runtimes;
     const { home, policyRoot } = this.closeoutHome(item);
@@ -7298,6 +7361,14 @@ export class Orchestrator {
       ...runtimes,
       closeoutPolicy: async () => {
         const load = trustedPolicyFiles(input.worktreePath, home, policyRoot);
+        // The runner parses the policy with its own release: say which keys it would leave out.
+        if (load.ok && !load.absent)
+          checkPolicyRunners(this.db, {
+            repository: `${repository.owner}/${repository.repo}`,
+            digest: load.digest,
+            files: load.files,
+            now: this.now(),
+          });
         return load.ok && !load.absent
           ? { ...load, published: publishedEvidence(this.db, item.id) }
           : load;

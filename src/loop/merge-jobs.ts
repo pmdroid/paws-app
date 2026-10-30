@@ -78,7 +78,7 @@ export function acceptGitHubDelivery(
 ): boolean {
   if (!recordGitHubDelivery(db, delivery, now)) return false;
   const body: unknown = JSON.parse(delivery.payload);
-  recordReviewDelivery(db, delivery.event, body, now);
+  recordReviewDelivery(db, delivery.event, body, now, comments?.commentWait?.());
   recordCommentDelivery(db, delivery.event, body, now, comments);
   const moved = mainMove(delivery.event, body);
   if (moved) mainMoved(db, { ...moved, now });

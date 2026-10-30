@@ -78,7 +78,12 @@ export class OutboxDispatcher {
     sleeper: (ms: number, signal?: AbortSignal) => Promise<void> = sleep,
   ): Promise<void> {
     while (!signal.aborted) {
-      this.tick();
+      try {
+        this.tick();
+      } catch (error) {
+        // Same failure as the job loop: one locked database must not end delivery for good.
+        journalCaught(error, "dispatcher.run.tick", null);
+      }
       if (signal.aborted) break;
       await sleeper(this.pollMs, signal);
     }

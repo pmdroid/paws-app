@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
+import { createRunnerWork } from "../src/runner-work";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
@@ -59,7 +61,12 @@ function fixture() {
 
 test("the catalog lists the 1M entry next to its standard model", () => {
   const { db, principal } = fixture();
-  const [catalog] = createRunnerModels({ db, work: undefined as never }).read(principal);
+  const work = createRunnerWork({
+    db,
+    keyId: "labels",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+  });
+  const [catalog] = createRunnerModels({ db, work }).read(principal);
   expect(catalog?.models.map(({ id, name, longContext }) => ({ id, name, longContext }))).toEqual([
     { id: "opus", name: "Opus 5.5", longContext: false },
     { id: "opus[1m]", name: "Opus 5.5 · 1M context", longContext: true },

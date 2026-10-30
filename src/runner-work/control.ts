@@ -8,6 +8,7 @@ import {
   recordRunnerSkills,
   runnerAgentTargets,
   teamRepositoryAllowedSql,
+  pawsAliveAt,
   runnerLeaseCutoff,
 } from "../db";
 import type { KeyObject } from "node:crypto";
@@ -28,8 +29,13 @@ import {
   runnerCancelPending,
 } from "../db";
 import {
+  OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
+  RUNNER_LEASE_MS,
+  RUNNER_OFFLINE_BUDGET_MS,
+  OPENCODE_RUNNER_VERSION,
   RunnerCommandSchema,
+  runnerReleaseAtLeast,
   RunnerEventSchema,
   type RunnerEvent,
   signRunnerCommand,
@@ -271,7 +277,7 @@ export function createRunnerWork(options: {
     return work;
   }
   function renew(work: Assignment, at: number) {
-    const leaseUntil = Math.min(workCommand(work).expiresAt, at + 60_000);
+    const leaseUntil = Math.min(workCommand(work).expiresAt, at + RUNNER_LEASE_MS);
     db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [leaseUntil, work.runId]);
     return leaseUntil;
   }
@@ -327,7 +333,29 @@ export function createRunnerWork(options: {
     if (!grant) throw new Error("Run grant is invalid or expired.");
     return work;
   }
+  function supportsAgent(runnerId: string, agent: string) {
+    if (agent !== "opencode") return true;
+    const version = db
+      .query<{ version: string | null }, [string]>(
+        "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+      )
+      .get(runnerId)?.version;
+    const parts = version
+      ?.match(/^(\d+)\.(\d+)\.(\d+)(?:$|[-+])/)
+      ?.slice(1)
+      .map(Number);
+    if (!parts) return false;
+    for (const [index, part] of parts.entries())
+      if (part !== OPENCODE_RUNNER_VERSION[index]) return part > OPENCODE_RUNNER_VERSION[index]!;
+    return true;
+  }
   function queue(command: RunnerCommand) {
+    const agent =
+      "profile" in command ? command.profile.agent : "agent" in command ? command.agent : null;
+    if (agent && !supportsAgent(command.runnerId, agent))
+      throw new Error(
+        `OpenCode needs runner ${OPENCODE_RUNNER_VERSION.join(".")} or later. Upgrade the runner, then try again.`,
+      );
     const envelope = signRunnerCommand({
       keyId: options.keyId,
       privateKey: options.privateKey,
@@ -348,6 +376,7 @@ export function createRunnerWork(options: {
     return envelope;
   }
   return {
+    supportsAgent,
     identity(runnerId: string) {
       return runner(runnerId);
     },
@@ -404,7 +433,7 @@ export function createRunnerWork(options: {
             availableIdentity(previous.runnerId)?.fence === previous.runnerFence)
         )
           throw new Error("Run assignment generation conflicts.");
-        const leaseUntil = Math.min(command.expiresAt, at + 60_000);
+        const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
         const envelope = queue(command);
         db.run(
           `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
@@ -425,7 +454,8 @@ export function createRunnerWork(options: {
           runnerId: command.runnerId,
           agent: command.profile.agent,
           hooks:
-            command.type === "run" && command.profile.agent !== "grok"
+            command.type === "run" &&
+            (command.profile.agent === "claude" || command.profile.agent === "codex")
               ? [
                   { name: "Paws Closeout", event: "stop" },
                   ...(command.hooks ?? []).map((hook) => ({
@@ -554,6 +584,17 @@ export function createRunnerWork(options: {
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
       return immediate(db, () => {
         runner(runnerId);
+        const storedVersion = db
+          .query<{ version: string | null }, [string]>(
+            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+          )
+          .get(runnerId)?.version;
+        const aliveAt = pawsAliveAt(db);
+        const offlineCredit =
+          aliveAt !== null &&
+          runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)
+            ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
+            : undefined;
         const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling);
         const at = now();
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
@@ -567,7 +608,9 @@ export function createRunnerWork(options: {
           agents &&
           runnerAgentTargets(db, runnerId).flatMap((target) => {
             const parsed = RunnerAgentTargetSchema.safeParse(target);
-            return parsed.success ? [parsed.data] : [];
+            return parsed.success && supportsAgent(runnerId, parsed.data.agent)
+              ? [parsed.data]
+              : [];
           });
         const rows = db
           .query<Assignment, [string]>(
@@ -626,6 +669,7 @@ export function createRunnerWork(options: {
         return {
           leases,
           fenced,
+          ...(offlineCredit === undefined ? {} : offlineCredit),
           ...(concurrency === undefined ? {} : { concurrency }),
           ...(skills === undefined ? {} : { skills }),
           ...(targets === undefined ? {} : { agents: targets }),

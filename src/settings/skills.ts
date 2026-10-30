@@ -13,16 +13,15 @@ import {
   removeSkill,
   SKILL_BUNDLE_LIMIT,
   SkillError,
-  skillPath,
   updateSkill,
   type FoundSkill,
-  type SkillFiles,
   type SkillRequest,
   type SkillResolver,
   type SkillUpdates,
 } from "../skills";
 import { isRecord, json, localRequest, readJson, sameToken } from "./handler";
 import { describeHook } from "./hooks";
+import { readSkillUpload } from "./upload";
 
 export const SKILL_SETTINGS_PATH = "/api/settings/skills";
 
@@ -85,7 +84,7 @@ export async function handleSkillSettingsRequest(
   try {
     const type = request.headers.get("content-type")?.split(";")[0]?.trim();
     if (type === "multipart/form-data") {
-      const upload = await readUpload(request, options.limit ?? SKILL_BUNDLE_LIMIT);
+      const upload = await readSkillUpload(request, options.limit ?? SKILL_BUNDLE_LIMIT);
       const skill = await addUploadedSkill(registry, upload.folder, upload.files, upload);
       options.audit("settings.skill.add", added(skill));
       return listing(`Added ${skill.name} ${shortVersion(skill)}.`);
@@ -195,47 +194,6 @@ function parseSource(value: unknown): SkillRequest {
   throw new SkillError("Choose an npm package or a git URL.");
 }
 
-async function readUpload(
-  request: Request,
-  limit: number,
-): Promise<{ folder: string; files: SkillFiles; name?: string; agents?: string[] }> {
-  const length = Number(request.headers.get("content-length"));
-  // Multipart framing adds a little per file on top of the skill's own bytes.
-  if (!Number.isFinite(length) || length <= 0)
-    throw new SkillError("Upload the folder with a Content-Length.", 411);
-  if (length > limit + 4 * 1024 * 1024)
-    throw new SkillError(`This skill is over the ${megabytes(limit)} MB bundle limit.`, 413);
-  let form: Awaited<ReturnType<Request["formData"]>>;
-  try {
-    form = await request.formData();
-  } catch {
-    throw new SkillError("The uploaded folder could not be read.");
-  }
-  const folder = form.get("folder");
-  if (typeof folder !== "string" || skillPath(folder) === null || folder.includes("/"))
-    throw new SkillError("Name the uploaded folder.");
-  const paths = form.getAll("path");
-  const uploads = form.getAll("file");
-  if (uploads.length === 0 || paths.length !== uploads.length)
-    throw new SkillError("Choose a folder to upload.");
-  const files: SkillFiles = new Map();
-  for (const [index, upload] of uploads.entries()) {
-    const path = paths[index];
-    const safe = typeof path === "string" ? skillPath(path) : null;
-    if (safe === null || typeof upload === "string")
-      throw new SkillError("The uploaded folder has a file outside it.");
-    files.set(safe, new Uint8Array(await upload.arrayBuffer()));
-  }
-  const name = form.get("name");
-  const agents = form.getAll("agents").filter((value) => typeof value === "string");
-  return {
-    folder,
-    files,
-    ...(typeof name === "string" && name.trim() ? { name: name.trim() } : {}),
-    ...(agents.length ? { agents } : {}),
-  };
-}
-
 function stringList(value: unknown): string[] | undefined {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : undefined;
 }
@@ -258,8 +216,4 @@ function shortVersion(skill: SkillPin): string {
 
 function agentList(agents: readonly string[]): string {
   return agents.map((agent) => AGENT_NAMES[agent] ?? agent).join(", ");
-}
-
-function megabytes(bytes: number): number {
-  return Math.round(bytes / (1024 * 1024));
 }

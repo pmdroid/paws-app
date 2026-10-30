@@ -73,13 +73,3 @@ export function SidebarMenuLink({
     />
   );
 }
-
-export function SidebarFooter({ className, ...props }: ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="sidebar-footer"
-      className={cn("shrink-0 border-t-2 border-border p-4 text-xs leading-relaxed", className)}
-      {...props}
-    />
-  );
-}

@@ -1,6 +1,14 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import type { CloseoutProgressRecord, CloseoutStepRecord } from "../../../db";
+import type { Database } from "bun:sqlite";
+import {
+  getWorkItemRepository,
+  listCloseoutProgress,
+  reviewFindingIssues,
+  reviewFindingKey,
+  type CloseoutProgressRecord,
+  type CloseoutStepRecord,
+} from "../../../db";
 import { redactCloseoutText } from "../server/artifact";
 import {
   REVIEW_SEVERITIES,
@@ -86,6 +94,54 @@ export function reviewsOf(
       }
       return { id, rounds };
     });
+}
+
+/**
+ * The reviews of work item `itemId`, each pre-existing finding with the Linear issue filed from
+ * it on any item. Reads the database only; Linear is called when someone files an issue.
+ */
+export function itemReviews(
+  db: Database,
+  itemId: string,
+  pawsHome: string,
+  env: NodeJS.ProcessEnv,
+  progress: readonly CloseoutProgressRecord[] = listCloseoutProgress(db),
+): StatusReview[] {
+  const reviews = reviewsOf(
+    progress.filter((row) => row.itemId === itemId),
+    pawsHome,
+    env,
+  );
+  const bound = getWorkItemRepository(db, itemId);
+  if (bound === null || reviews.length === 0) return reviews;
+  const repository = `${bound.owner}/${bound.repo}`;
+  const keyOf = (finding: StatusReviewFinding) =>
+    finding.preExisting
+      ? reviewFindingKey({ repository, location: finding.location, text: finding.explanation })
+      : null;
+  const all = reviews.flatMap((review) =>
+    review.rounds.flatMap((round) => [...round.findings, ...round.fixed]),
+  );
+  const filed = reviewFindingIssues(
+    db,
+    all.map(keyOf).filter((key) => key !== null),
+  );
+  if (filed.size === 0) return reviews;
+  const mark = (finding: StatusReviewFinding): StatusReviewFinding => {
+    const key = keyOf(finding);
+    const issue = key === null ? undefined : filed.get(key);
+    return issue
+      ? { ...finding, filed: { identifier: issue.identifier, url: issue.url } }
+      : finding;
+  };
+  return reviews.map((review) => ({
+    ...review,
+    rounds: review.rounds.map((round) => ({
+      ...round,
+      findings: round.findings.map(mark),
+      fixed: round.fixed.map(mark),
+    })),
+  }));
 }
 
 /**

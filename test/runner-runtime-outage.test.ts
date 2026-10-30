@@ -4,9 +4,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunnerRequestError } from "../src/runner-daemon";
 import { openRunnerRuntime } from "../src/runner-runtime";
-import type { RunnerCommand, RunnerResult } from "../src/runner-protocol";
+import {
+  PAWS_ALIVE_LEASE_SKEW_MS,
+  RUNNER_OFFLINE_BUDGET_MS,
+  type RunnerCommand,
+  type RunnerResult,
+} from "../src/runner-protocol";
 
-async function fixture() {
+async function fixture(options: { budget?: boolean; aliveOffsetMs?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-outage-"));
   const now = Date.now();
   let clock = 0;
@@ -85,9 +90,20 @@ async function fixture() {
       status: () => paired,
       async heartbeat() {
         reachable();
+        const budget =
+          options.budget === false
+            ? {}
+            : {
+                offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS,
+                aliveAt: now + (options.aliveOffsetMs ?? 0),
+              };
         return fenced
-          ? { leases: [], fenced: [{ runId: "run", generation: 1 }] }
-          : { leases: [{ runId: "run", generation: 1, expiresAt: now + 60_000 }], fenced: [] };
+          ? { leases: [], fenced: [{ runId: "run", generation: 1 }], ...budget }
+          : {
+              leases: [{ runId: "run", generation: 1, expiresAt: now + 60_000 }],
+              fenced: [],
+              ...budget,
+            };
       },
       async pollCommands() {
         reachable();
@@ -261,6 +277,81 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
       await f.tickUntil(() => f.posted.length > 0);
       expect(f.posted.map((result) => result.stopReason)).toEqual(["error"]);
       expect(f.errors.join("\n")).toContain("Runner interrupted");
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a runner told the offline budget keeps the same deadline Paws credits for 20 minutes",
+  async () => {
+    const f = await fixture();
+    try {
+      f.goDown();
+      await f.tick();
+      f.advance(20 * 60_000);
+      await f.tick();
+      await Bun.sleep(300);
+      expect(f.errors.join("\n")).not.toContain("lease deadline passed");
+      f.finish();
+      f.comeBack();
+      await f.tickUntil(() => f.posted.length > 0);
+      expect(f.posted.map((result) => result.stopReason)).toEqual(["end_turn"]);
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a runner without the offline budget still stops at its lease plus the grace",
+  async () => {
+    const f = await fixture({ budget: false });
+    try {
+      f.goDown();
+      await f.tick();
+      f.advance(20 * 60_000);
+      await f.tick();
+      const stopped = () => f.errors.some((error) => error.includes("lease deadline passed"));
+      for (let index = 0; index < 40 && !stopped(); index++) await Bun.sleep(25);
+      expect(f.errors.join("\n")).toContain("lease deadline passed");
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a runner whose lease sits past the alive skew still stops at the grace",
+  async () => {
+    const f = await fixture({ aliveOffsetMs: -(PAWS_ALIVE_LEASE_SKEW_MS - 60_000) - 1 });
+    try {
+      f.goDown();
+      await f.tick();
+      f.advance(20 * 60_000);
+      await f.tick();
+      const stopped = () => f.errors.some((error) => error.includes("lease deadline passed"));
+      for (let index = 0; index < 40 && !stopped(); index++) await Bun.sleep(25);
+      expect(f.errors.join("\n")).toContain("lease deadline passed");
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
+  "a runner told the offline budget stops once downtime passes that budget",
+  async () => {
+    const f = await fixture();
+    try {
+      f.goDown();
+      await f.tick();
+      f.advance(RUNNER_OFFLINE_BUDGET_MS + 60_000 + 5 * 60_000);
+      await f.tick();
+      const stopped = () => f.errors.some((error) => error.includes("lease deadline passed"));
+      for (let index = 0; index < 40 && !stopped(); index++) await Bun.sleep(25);
+      expect(f.errors.join("\n")).toContain("lease deadline passed");
     } finally {
       await f.cleanup();
     }
