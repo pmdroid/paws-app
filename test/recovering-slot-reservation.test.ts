@@ -3,8 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
-import { FakeClock, JOB_KIND, systemClock, type Clock } from "../src/core";
-import { setJournalSink } from "../src/core";
+import { FakeClock, JOB_KIND, systemClock, setJournalSink, type Clock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -51,18 +50,28 @@ test("twenty recovering items fill six free slots in one tick and do not fail fo
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   let jitter = 0;
+  const clock = new FakeClock(Date.now());
   try {
     await runRecovering({
       count: 20,
       capacity: 6,
       random: () => (jitter++ % 10) / 10,
-      clock: new FakeClock(Date.now()),
+      clock,
       lines,
       async assert(started, db) {
-        const pending = listJobs(db).filter(
-          (job) => job.queue === JOB_KIND.resume && job.status === "pending",
-        );
-        expect(new Set(pending.map((job) => job.runAt)).size).toBeGreaterThan(1);
+        // Initial placement has finished. Wake the parked, now recovering items together.
+        const pending = () =>
+          listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status === "pending");
+        clock.advance(5_000);
+        const deadline = Date.now() + 5_000;
+        while (
+          (pending().length !== 14 || pending().some((job) => job.runAt <= clock.now())) &&
+          Date.now() < deadline
+        )
+          await Bun.sleep(10);
+        expect(pending()).toHaveLength(14);
+        expect(pending().every((job) => job.runAt > clock.now())).toBe(true);
+        expect(new Set(pending().map((job) => job.runAt)).size).toBeGreaterThan(1);
         expect(started.size, lines.join("\n")).toBe(6);
         expect(
           listWorkItems(db).filter((item) => ["failed", "awaiting_input"].includes(item.state)),

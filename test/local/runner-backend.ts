@@ -2408,14 +2408,6 @@ export async function probeRunnerBackend(
         modes: ["answer", "artifact"],
       });
     }
-    // Earlier affinity scenarios exercise every host. Start this scenario with equal recent
-    // load so its explicit virtual-finish order chooses second before third.
-    db.run("UPDATE runner_execution_usage SET started_at=ended_at WHERE ended_at IS NOT NULL");
-    for (const [index, hostId] of hostIds.entries())
-      db.run("UPDATE runner_agent_policy SET virtual_finish=? WHERE runner_id=?", [
-        index * 10,
-        hostId,
-      ]);
     const beforeFailoverImports = fetched;
     await git(["-C", source, "reset", "--hard", base]);
     const selectionsBeforeWork = selectionReads;

@@ -185,7 +185,6 @@ export function createRunnerPlacement(options: {
     runnerIds: readonly string[],
     at: number,
     reserved?: ReadonlyMap<string, number>,
-    excludeRunId = "",
   ) {
     const from = at - LOAD_HISTORY_MS;
     const history = db.query<{ startedAt: number; endedAt: number }, [string, number, number]>(
@@ -194,9 +193,9 @@ export function createRunnerPlacement(options: {
     );
     return new Map(
       runnerIds.map((id) => {
-        const { capacity, occupied } = runnerOccupancy(db, id, at, excludeRunId);
+        const { capacity, occupied } = runnerOccupancy(db, id, at);
         const slots = Math.max(capacity, 1);
-        const held = runnerSlotsHeldBetweenCommands(db, id, at, excludeRunId);
+        const held = runnerSlotsHeldBetweenCommands(db, id, at);
         let busy = 0;
         for (const row of history.all(id, from, at))
           busy +=
@@ -392,7 +391,11 @@ export function createRunnerPlacement(options: {
         : undefined;
       let heldForSession = false;
       if (holder && input.itemId) {
-        if (runnerHasCapacity(db, holder.runner.id, at, current.item?.currentRunId ?? "")) {
+        const runId = current.item?.currentRunId ?? "";
+        const held =
+          runnerSlotsHeldBetweenCommands(db, holder.runner.id, at, runId) +
+          (input.reserved?.get(holder.runner.id) ?? 0);
+        if (runnerHasCapacity(db, holder.runner.id, at, runId, held)) {
           holder.rank = -1;
           sessionWaits.delete(input.itemId);
         } else {
@@ -410,7 +413,6 @@ export function createRunnerPlacement(options: {
         ranked.map(({ runner }) => runner.id),
         at,
         input.reserved,
-        current.item?.currentRunId ?? "",
       );
       ranked.sort(
         (a, b) =>

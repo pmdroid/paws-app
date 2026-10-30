@@ -1838,14 +1838,10 @@ export class Orchestrator {
   }
 
   private async executeRetried(job: Job, context: JobContext): Promise<void> {
-    const itemId = readString(job.payload, "itemId");
-    const recoveringResume =
-      job.queue === JOB_KIND.resume &&
-      itemId !== null &&
-      getWorkItem(this.db, itemId)?.state === "recovering";
     try {
       await this.executeQueued(job.payload);
     } catch (error) {
+      const itemId = readString(job.payload, "itemId");
       const item = itemId === null ? null : getWorkItem(this.db, itemId);
       if (
         this.shuttingDown ||
@@ -1869,7 +1865,7 @@ export class Orchestrator {
       if (wait) {
         deferWorkItem(this.db, item, {
           retry: retryCount(job.payload),
-          delayMs: this.resumeRunnerWaitMs(job, wait, recoveringResume),
+          delayMs: this.runnerWaitMs(wait),
           handoff: readString(job.payload, "handoff"),
           message: null,
           capacityWait: wait,
@@ -2088,19 +2084,6 @@ export class Orchestrator {
     return placementWaitMs(wait.attempt, this.options.placementPollMs);
   }
 
-  private resumeRunnerWaitMs(
-    job: Job,
-    wait: RunnerCapacityWaitState,
-    recoveringResume?: boolean,
-  ): number {
-    const baseMs = this.runnerWaitMs(wait);
-    const itemId = readString(job.payload, "itemId");
-    const item = itemId ? getWorkItem(this.db, itemId) : null;
-    if (job.queue !== JOB_KIND.resume || !(recoveringResume ?? item?.state === "recovering"))
-      return baseMs;
-    return Math.max(1, baseMs - resumeRetrySpreadMs(baseMs, this.options.random));
-  }
-
   private waitingForRunnerSlot(job: Job, beforePark?: () => Job): boolean {
     const waited = runnerCapacityWait(job.payload);
     const itemId = readString(job.payload, "itemId");
@@ -2118,7 +2101,12 @@ export class Orchestrator {
       return false;
     const next = { ...waited, attempt: waited.attempt + 1 };
     job = beforePark?.() ?? job;
-    waitForRunnerSlot(this.db, job, this.now(), this.resumeRunnerWaitMs(job, next), next);
+    const baseMs = this.runnerWaitMs(next);
+    const delayMs =
+      job.queue === JOB_KIND.resume && item.state === "recovering"
+        ? Math.max(1, baseMs - resumeRetrySpreadMs(baseMs, this.options.random))
+        : baseMs;
+    waitForRunnerSlot(this.db, job, this.now(), delayMs, next);
     return true;
   }
 

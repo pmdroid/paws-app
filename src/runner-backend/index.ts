@@ -544,17 +544,14 @@ export function createRemoteAgentRunner(options: {
         continue;
       }
       try {
-        const mode = getTaskMode(db, itemId);
-        if (isResponseTaskMode(mode))
-          work.scopeTask(item.currentRunId, runner.workspaceId, work.identity(runner.id).userId);
-        else work.scope(item.currentRunId, runner.workspaceId);
-        reservations.set(item.currentRunId, runner.id);
-        try {
+        immediate(db, () => {
+          const mode = getTaskMode(db, itemId);
+          if (isResponseTaskMode(mode))
+            work.scopeTask(item.currentRunId!, runner.workspaceId, work.identity(runner.id).userId);
+          else work.scope(item.currentRunId!, runner.workspaceId);
           releasePinnedSlot(db, itemId);
-        } catch (error) {
-          reservations.delete(item.currentRunId);
-          throw error;
-        }
+        });
+        reservations.set(item.currentRunId, runner.id);
         return { ...runner, runId: item.currentRunId };
       } catch (error) {
         journalCaught(error, "runner-backend.place.getTaskMode", itemId);
@@ -2078,8 +2075,6 @@ export function createRemoteAgentRunner(options: {
           return { ...complete, transcriptPath: transcript };
         } catch (error) {
           if (!(error instanceof Error) || error.message !== "cancelled" || !signal.aborted) {
-            // Free the placement before asynchronous cleanup or failover returns the error.
-            reservations.delete(selected.runId);
             throw error;
           }
           journalCaught(
@@ -2098,50 +2093,54 @@ export function createRemoteAgentRunner(options: {
             transcriptPath: transcript,
           };
         } finally {
-          // A Paws restart leaves implementer work and response tasks running on the runner, and
-          // a verifying item's Closeout review or check run; the startup resume or re-verify
-          // reattaches to them.
-          const state = getWorkItem(db, itemId)?.state;
-          const detached =
-            signal.reason instanceof PawsShutdown &&
-            command !== undefined &&
-            (closeoutWork
-              ? state === "verifying"
-              : ((command.type === "run" && command.checkpoint !== false) ||
-                  command.type === "task") &&
-                state === "running");
-          // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
-          // first, and the next turn starts from it.
-          const saving =
-            command?.type === "run" &&
-            command.checkpoint !== false &&
-            !detached &&
-            signal.aborted &&
-            !(signal.reason instanceof PawsShutdown)
-              ? checkpointBeforeStop(command.runId)
-              : null;
-          if (saving) await saving;
-          if (command && !detached) {
-            try {
-              const issuedAt = now();
-              work.enqueue({
-                id: randomUUID(),
-                runnerId: selected.id,
-                workspaceId: selected.workspaceId,
-                issuedAt,
-                expiresAt: issuedAt + 60_000,
-                type: "cancel",
-                runId: command.runId,
-                generation: command.generation,
-              });
-            } catch (caughtError4) {
-              journalCaught(caughtError4, "runner-backend.forItem.now", itemId);
+          try {
+            // A Paws restart leaves implementer work and response tasks running on the runner, and
+            // a verifying item's Closeout review or check run; the startup resume or re-verify
+            // reattaches to them.
+            const state = getWorkItem(db, itemId)?.state;
+            const detached =
+              signal.reason instanceof PawsShutdown &&
+              command !== undefined &&
+              (closeoutWork
+                ? state === "verifying"
+                : ((command.type === "run" && command.checkpoint !== false) ||
+                    command.type === "task") &&
+                  state === "running");
+            // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
+            // first, and the next turn starts from it.
+            const saving =
+              command?.type === "run" &&
+              command.checkpoint !== false &&
+              !detached &&
+              signal.aborted &&
+              !(signal.reason instanceof PawsShutdown)
+                ? checkpointBeforeStop(command.runId)
+                : null;
+            if (saving) await saving;
+            if (command && !detached) {
+              try {
+                const issuedAt = now();
+                work.enqueue({
+                  id: randomUUID(),
+                  runnerId: selected.id,
+                  workspaceId: selected.workspaceId,
+                  issuedAt,
+                  expiresAt: issuedAt + 60_000,
+                  type: "cancel",
+                  runId: command.runId,
+                  generation: command.generation,
+                });
+              } catch (caughtError4) {
+                journalCaught(caughtError4, "runner-backend.forItem.now", itemId);
+              }
             }
+            controller.abort();
+            await question;
+            input.signal?.removeEventListener("abort", abort);
+          } finally {
+            // Keep attachment fenced through cleanup, then free the slot before returning.
+            reservations.delete(selected.runId);
           }
-          controller.abort();
-          await question;
-          input.signal?.removeEventListener("abort", abort);
-          reservations.delete(selected.runId);
         }
       };
       return async (input: RunAgentOptions) => {
