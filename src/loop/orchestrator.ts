@@ -1846,7 +1846,6 @@ export class Orchestrator {
     try {
       await this.executeQueued(job.payload);
     } catch (error) {
-      const itemId = readString(job.payload, "itemId");
       const item = itemId === null ? null : getWorkItem(this.db, itemId);
       if (
         this.shuttingDown ||
