@@ -707,6 +707,7 @@ function automatic(
     missingRecord?: string;
     enabled?: boolean;
     policyPaths?: readonly string[] | null;
+    readError?: boolean;
   } = {},
 ) {
   return riskApprovalFor(db, {
@@ -721,6 +722,7 @@ function automatic(
       policyPaths: async () => (options.policyPaths === undefined ? [] : options.policyPaths),
       changedPaths: async () => options.paths ?? ["session.ts"],
       reviews: async () => {
+        if (options.readError) throw new Error("temporary evidence store read failure");
         const records = ["security-review", "independent-review"]
           .filter((id) => id !== options.missingRecord)
           .map((itemId) => ({
@@ -874,7 +876,7 @@ test("normal heads and a disabled risk gate never read the automatic eligibility
     // Unreadable configuration fails closed for high-risk heads, including stored approvals.
     cleanReviews(db);
     expect(await automatic(db)).toBe("automatic");
-    expect(await read(PUBLIC_URL)).toBe("missing");
+    await expect(read(PUBLIC_URL)).rejects.toMatchObject({ name: "PolicyFetchError" });
     expect(reads).toBe(1);
   } finally {
     db.close();
@@ -1049,6 +1051,21 @@ test("status uses manual carry-over precedence without saving a fix comparison",
       ).approval,
     ).toBe("approved");
     expect(getRiskFix(db, itemId, heads.ciFix)).toBeNull();
+  } finally {
+    db.close();
+  }
+});
+
+test("an unreadable evidence store retries without opening a person question", async () => {
+  const { db, itemId } = held();
+  try {
+    cleanReviews(db);
+    await expect(automatic(db, { readError: true })).rejects.toMatchObject({
+      name: "PolicyFetchError",
+    });
+    expect(findOpenQuestion(db, "ses_1")).toBeNull();
+    expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
+    expect(await automatic(db)).toBe("automatic");
   } finally {
     db.close();
   }

@@ -775,3 +775,5 @@ export {
   type ReviewFindingIssue,
   type ReviewFindingPlace,
 } from "./review-finding-issues";
+
+export { watchGitHubQueue, watchesGitHubQueue, unwatchGitHubQueue } from "./merge-queue";

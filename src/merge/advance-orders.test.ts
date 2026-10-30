@@ -12,6 +12,7 @@ import {
   listJobs,
   listMergeQueues,
   listReviewEscapes,
+  watchesGitHubQueue,
 } from "../db";
 import { createFakeMergeQueue } from "../github";
 import { findOpenQuestion } from "../questions";
@@ -503,6 +504,8 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     });
     expect(queue.isQueued(1)).toBe(true);
     clean = false;
+    h.state.orders.set("ENG-1", "queue");
+    expect(watchesGitHubQueue(h.db, "ENG-1")).toBe(true);
     // Recovery can create a fresh job without the earlier GitHub queue marker.
     expect(await h.pass("ENG-1", { itemId: "ENG-1" })).toEqual({ kind: "asked" });
     expect(queue.calls).toContain("dequeue");
@@ -535,6 +538,48 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     expect(await h.pass("ENG-1", { itemId: "ENG-1" })).toEqual({ kind: "merged" });
     expect(h.state.riskAsked).toEqual([]);
     expect(getConfirmedRemoteMerge(h.db, "ENG-1")?.mergeSha).toBe("race-merge-sha");
+  });
+
+  test("a held item still withdraws a queued pull and detects remote merges", async () => {
+    const { h, queue } = await githubQueue();
+    await h.pass("ENG-1");
+    applyWorkItemEvent(h.db, "ENG-1", "blocking_question");
+    expect(await h.pass("ENG-1", { itemId: "ENG-1" })).toEqual({ kind: "obsolete" });
+    expect(queue.isQueued(1)).toBe(false);
+    expect(queue.calls).toContain("dequeue");
+    h.state.handMerged.set(1, "manual-merge-sha");
+    expect(await h.pass("ENG-1", { itemId: "ENG-1" })).toEqual({ kind: "merged" });
+    expect(getConfirmedRemoteMerge(h.db, "ENG-1")?.mergeSha).toBe("manual-merge-sha");
+    expect(h.state.riskAsked).toEqual([]);
+  });
+
+  test("a closed pull request does not open a risk question", async () => {
+    const { h, queue } = await githubQueue();
+    const respond = queue.respond;
+    queue.respond = async (request) => {
+      const response = await respond(request);
+      if (
+        (request.body as { query?: string } | undefined)?.query?.includes("query MergeQueueEntry")
+      ) {
+        const body = response!.body as { data: { repository: { pullRequest: { state: string } } } };
+        body.data.repository.pullRequest.state = "CLOSED";
+      }
+      return response;
+    };
+    h.state.risk = () => "missing";
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "failed", reason: "pull_closed" });
+    expect(h.state.riskAsked).toEqual([]);
+  });
+
+  test("serial risk questions do not require GitHub queue access", async () => {
+    const { h, queue } = await githubQueue();
+    h.state.orders.set("ENG-1", "queue");
+    queue.respond = async () => {
+      throw new Error("queue API unavailable");
+    };
+    h.state.risk = () => "missing";
+    expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
+    expect(queue.calls).toEqual([]);
   });
 
   test("a high-risk pull request that was never queued is asked without a dequeue", async () => {

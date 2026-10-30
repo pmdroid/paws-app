@@ -138,12 +138,13 @@ export async function git(
   cwd: string,
   args: string[],
   env: Record<string, string>,
+  timeoutSeconds = GIT_TIMEOUT_SECONDS,
 ): Promise<GitResult> {
   const spawned = await spawnArgv(
     ["git", ...args],
     cwd,
     { ...env, GIT_TERMINAL_PROMPT: "0" },
-    GIT_TIMEOUT_SECONDS,
+    timeoutSeconds,
   );
   return {
     ok: spawned.started && !spawned.timedOut && spawned.exitCode === 0 && !spawned.truncated,

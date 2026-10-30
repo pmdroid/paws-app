@@ -2,6 +2,9 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
+  watchGitHubQueue,
+  watchesGitHubQueue,
+  unwatchGitHubQueue,
   beginMergeCall,
   carriedAcceptFor,
   closeoutPolicyDigests,
@@ -58,7 +61,7 @@ import {
   type MergeStep,
   type SerialMergeStep,
 } from "./step";
-import { wakeMergesBehind } from "./wait";
+import { githubQueueWatch, wakeMergesBehind } from "./wait";
 
 export type MergePublication = MergePull & {
   github: GitHubBinding & { gitExec: GitExec };
@@ -93,6 +96,8 @@ export type MergeCapabilities = OrderCapabilities & {
   mergedOutsideLane(
     item: WorkItemRecord,
   ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null>;
+  /** Withdraw a held item without republishing or starting an agent turn. */
+  withdrawQueuedPull(item: WorkItemRecord): Promise<"left" | "not_queued" | "merged" | "closed">;
   completed(): void;
 };
 
@@ -111,19 +116,33 @@ export async function advanceMerge(
   const item = getWorkItem(db, input.itemId);
   if (
     item === null ||
-    item.state === "awaiting_input" ||
     item.state === "cancelled" ||
     item.state === "merged" ||
     item.state === "completed"
   )
     return { kind: "obsolete" };
   if (getConfirmedRemoteMerge(db, item.id)) {
+    if (item.state === "awaiting_input") return { kind: "merged" };
     if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
     return { kind: "obsolete" };
   }
   // A pull request merged by hand on GitHub merges the item: publishing again would open another.
   const outside = await mergedOutsideLane(db, item, caps);
   if (outside) return outside;
+  if (item.state === "awaiting_input") {
+    if (watchesGitHubQueue(db, item.id) || githubQueueWatch(input.payload)?.queued) {
+      const left = await caps.withdrawQueuedPull(item);
+      if (left === "merged") {
+        const merged = await mergedOutsideLane(db, item, caps);
+        if (!merged)
+          throw new Error("GitHub merged the held pull request; waiting for merge details");
+        return merged;
+      }
+      unwatchGitHubQueue(db, item.id);
+    }
+    return { kind: "obsolete" };
+  }
+
   if (restartedDuringMergeCall(db, item.id, input.payload)) {
     reverifyAfterRestart(db, item, input.jobId, caps.now());
     return { kind: "returned" };
@@ -138,12 +157,18 @@ export async function advanceMerge(
   // A high-risk head waits for a person in Paws before it joins any merge queue.
   const riskApproval = await caps.riskApproval(item, published);
   if (caps.stopped()) return { kind: "obsolete" };
-  if (riskApproval === "missing") return releaseMissingRisk(merge, caps, published);
+  const mergeSettings = await caps.settings(item, published.signal);
+  const remoteQueue =
+    mergeSettings.order === "github-queue" ||
+    watchesGitHubQueue(db, item.id) ||
+    githubQueueWatch(input.payload)?.queued === true;
+  if (riskApproval === "missing") return releaseMissingRisk(merge, caps, published, remoteQueue);
   const { repository, github, pull } = published;
   const { voice } = caps;
-  const mergeSettings = await caps.settings(item, published.signal);
   if (mergeSettings.order === "github-queue") {
+    watchGitHubQueue(db, item.id);
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
+    if (handed === "no_queue" || handed.kind === "merged") unwatchGitHubQueue(db, item.id);
     if (handed !== "no_queue") {
       if (handed.kind === "merged")
         checkQueueBehind(db, { repository: queueName(repository), main: null, now: caps.now() });
@@ -205,7 +230,13 @@ export async function advanceMerge(
       // mergeFacts' recorded rebase check, but must never carry automatic eligibility.
       const currentRisk =
         facts.head === published.head
-          ? { head: facts.head, approval: await caps.riskApproval(item, published) }
+          ? {
+              head: facts.head,
+              approval:
+                riskApproval === "automatic"
+                  ? await caps.riskApproval(item, published)
+                  : riskApproval,
+            }
           : {
               head: published.head,
               approval: riskApproval === "automatic" ? ("missing" as const) : riskApproval,
@@ -289,7 +320,7 @@ export async function advanceMerge(
   await caps.assertReady(item);
   if (getWorkItem(db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
   if (step.kind === "unreadable") throw new Error(step.message);
-  if (step.kind === "ask_risk") return holdForRisk(db, item, caps, published);
+  if (step.kind === "ask_risk") return releaseMissingRisk(merge, caps, published, remoteQueue);
   if (step.kind === "reverify") {
     reverify(merge, step, input.jobId);
     if (step.rebased) await voice.flush();
@@ -385,8 +416,13 @@ async function mergedOutsideLane(
   caps: MergeCapabilities,
 ): Promise<MergeStep | null> {
   const merge = await caps.mergedOutsideLane(item);
-  if (merge === null || getWorkItem(db, item.id)?.state !== "merge_queue") return null;
+  if (
+    merge === null ||
+    !["merge_queue", "awaiting_input"].includes(getWorkItem(db, item.id)?.state ?? "")
+  )
+    return null;
   recordConfirmedRemoteMerge(db, { ...merge, itemId: item.id, confirmedAt: caps.now() });
+  unwatchGitHubQueue(db, item.id);
   endMergeCall(db, item.id);
   leaveMergeQueue(db, item.id);
   wakeMergesBehind(db, caps.now());
@@ -534,8 +570,10 @@ async function releaseMissingRisk(
   merge: MergeContext,
   caps: MergeCapabilities,
   published: MergePublication,
+  remoteQueue: boolean,
 ): Promise<MergeStep> {
   const { db, item } = merge;
+  if (!remoteQueue) return holdForRisk(db, item, caps, published);
   const { github, repository, pull } = published;
   const left = await leaveGitHubMergeQueue({
     client: github.client,
@@ -548,6 +586,13 @@ async function releaseMissingRisk(
     privateKeyPem: github.privateKeyPem,
     signal: published.signal,
   });
+  unwatchGitHubQueue(db, item.id);
+  if (left === "closed")
+    return {
+      kind: "failed",
+      reason: "pull_closed",
+      message: "The pull request was closed on GitHub.",
+    };
   if (left === "merged") {
     const completed = await mergedOutsideLane(db, item, caps);
     // Never ask about a pull request GitHub has confirmed is already on main.

@@ -148,6 +148,8 @@ import {
   cancelOpenJobs,
   getLinearSessionAccess,
   getConfirmedRemoteMerge,
+  openLinkAsks,
+  closeLinkAsk,
   type ConfirmedRemoteMerge,
   getLinearTaskDelegation,
   getTaskModeGeneration,
@@ -341,6 +343,7 @@ import {
   answerer,
   canAnswer,
   cancelItemQuestions,
+  removeLinkAskUrl,
   cancelQuestion,
   findAskedQuestion,
   findOpenQuestion,
@@ -4057,6 +4060,7 @@ export class Orchestrator {
     item: WorkItemRecord,
     worktree: string,
     head: string,
+    localOnly = false,
   ): AutomaticRiskChecks {
     return {
       enabled: () =>
@@ -4069,6 +4073,7 @@ export class Orchestrator {
           home,
           policyRoot,
           this.runCheckout(item).checks,
+          localOnly,
         );
         return policy?.digest === digest ? policy.paths : null;
       },
@@ -4093,7 +4098,11 @@ export class Orchestrator {
   }
 
   /** Current merge eligibility for the Risk card; never an approval record. */
-  async automaticRiskStatus(itemId: string, head: string): Promise<string[] | null> {
+  async automaticRiskStatus(
+    itemId: string,
+    head: string,
+    signal?: AbortSignal,
+  ): Promise<string[] | null> {
     const item = getWorkItem(this.db, itemId);
     const risk = getCandidateRisk(this.db, itemId, head);
     if (
@@ -4104,7 +4113,7 @@ export class Orchestrator {
     )
       return null;
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
-    const automatic = this.automaticRiskChecks(item, worktree, head);
+    const automatic = this.automaticRiskChecks(item, worktree, head, true);
     const eligibility = await riskEligibilityFor(this.db, {
       itemId,
       head,
@@ -4115,7 +4124,7 @@ export class Orchestrator {
         return repository
           ? this.fixRisk(
               item,
-              { worktree, head, repository, signal: new AbortController().signal },
+              { worktree, head, repository, signal: signal ?? AbortSignal.timeout(10_000) },
               approved,
               base,
             )
@@ -4170,6 +4179,21 @@ export class Orchestrator {
           return { kind: "asked" };
         },
         mergedOutsideLane: (item) => this.mergedOutsideLane(item),
+        withdrawQueuedPull: async (item) => {
+          const pull = getItemPullRequest(this.db, item.id);
+          const repository = pull ? this.repositoryForItem(item) : null;
+          const github = repository ? this.githubForRepository(repository) : null;
+          if (!pull || !repository || !github)
+            throw new PolicyFetchError("Cannot withdraw the held pull request from GitHub's queue");
+          return leaveGitHubMergeQueue({
+            client: github.client,
+            owner: repository.owner,
+            repo: repository.repo,
+            prNumber: pull.pullNumber,
+            ...this.gitHubCredentials(github),
+            signal: AbortSignal.timeout(30_000),
+          });
+        },
         completed: () => this.dispatch(),
       },
     );
@@ -4385,11 +4409,15 @@ export class Orchestrator {
       now: this.now(),
     });
     await this.postReviewReplies(item, github, repository, published.pull.number, published.head);
-    const automaticPass = await this.automaticRiskStatus(item.id, published.head);
+    const automaticPass = await this.automaticRiskStatus(
+      item.id,
+      published.head,
+      live.controller.signal,
+    );
     this.post(
       item,
       "response",
-      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.\n\n${riskLine(risk)}${automaticPass ? "\nPasses automatically: both reviews clean" : ""}${openLine ? `\n\n${openLine}` : ""}`,
+      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.\n\n${riskLine(risk)}${automaticPass ? `\nPasses automatically: both reviews clean at commit ${published.head.slice(0, 7)}. A new commit needs fresh reviews.` : ""}${openLine ? `\n\n${openLine}` : ""}`,
       `pull-request-ready:${item.id}:${item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0}`,
       {},
       "ordered",
@@ -4533,6 +4561,26 @@ export class Orchestrator {
   }
 
   private async completeMerge(item: WorkItemRecord, repository: RepositoryBinding): Promise<void> {
+    // A confirmed remote merge settles the question; this is not an approval or a new run.
+    if (
+      getConfirmedRemoteMerge(this.db, item.id) &&
+      getWorkItem(this.db, item.id)?.state === "awaiting_input"
+    ) {
+      immediate(this.db, () => {
+        cancelItemQuestions(this.db, item.id, this.now());
+        for (const question of openLinkAsks(this.db, item.id)) {
+          closeLinkAsk(this.db, question.questionId, {
+            reason: "cancelled",
+            note: "The pull request already merged on GitHub.",
+            now: this.now(),
+          });
+          removeLinkAskUrl(this.db, question.questionId, this.now());
+        }
+        applyWorkItemEvent(this.db, item.id, "answer_received");
+        applyWorkItemEvent(this.db, item.id, "turn_ended");
+        applyWorkItemEvent(this.db, item.id, "closeout_accepted");
+      });
+    }
     const merged = completeMergedItem(this.db, {
       itemId: item.id,
       now: this.now(),
@@ -7395,6 +7443,7 @@ export class Orchestrator {
         pawsRoot: this.options.pawsRoot,
         ...(this.options.home ? { home: this.options.home } : {}),
         prepareOnly: true,
+        readOnly: true,
         checkpoint: false,
         prompt: "",
         signal,

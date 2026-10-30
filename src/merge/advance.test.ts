@@ -31,6 +31,7 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     now: () => 10,
     stopped: () => false,
     publish: unused("publish"),
+    withdrawQueuedPull: unused("withdrawQueuedPull"),
     settings: unused("settings"),
     policyDigests: unused("policyDigests"),
     packages: unused("packages"),

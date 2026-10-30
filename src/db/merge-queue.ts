@@ -148,3 +148,15 @@ export function mergeQueuePosition(
 ): MergeQueuePosition | null {
   return listMergeQueues(db, held).find((entry) => entry.itemId === itemId) ?? null;
 }
+
+/** Durable intent to enqueue remotely, written before the API call so a crash cannot lose it. */
+export function watchGitHubQueue(db: Database, itemId: string): void {
+  db.run("INSERT OR IGNORE INTO github_queue_watch(item_id) VALUES(?)", [itemId]);
+}
+export function watchesGitHubQueue(db: Database, itemId: string): boolean {
+  return db.query("SELECT 1 FROM github_queue_watch WHERE item_id=?").get(itemId) !== null;
+}
+/** Clear only after GitHub confirms the entry is absent or the PR has ended. */
+export function unwatchGitHubQueue(db: Database, itemId: string): void {
+  db.run("DELETE FROM github_queue_watch WHERE item_id=?", [itemId]);
+}

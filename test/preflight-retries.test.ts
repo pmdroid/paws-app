@@ -115,6 +115,7 @@ async function runPreflight(fault: {
             },
             agentForItem() {
               return async (options: RunAgentOptions) => {
+                if (options.prepareOnly) expect(options.readOnly).toBe(true);
                 if (options.prepareOnly && remaining > 0) {
                   remaining -= 1;
                   throw new RemotePreparationTimeout();

@@ -236,11 +236,10 @@ function commentWaitSection(wait: CommentWait): string {
 
 function riskGateSection(data: MergeSettingsView): string {
   const gate = data.riskGate;
-  const body = !gate
-    ? ""
-    : gate.on
-      ? '<p class="sub">A pull request that changes a high-risk path needs approval before it joins the merge queue. Clean reviews can grant it automatically; otherwise approve on the issue page in Paws.</p>'
-      : `<p class="settings-message" role="status">${esc(gate.reason ?? "The risk gate is off.")}</p>`;
+  if (!gate) return "";
+  const body = gate.on
+    ? '<p class="sub">A pull request that changes a high-risk path needs approval before it joins the merge queue. Clean reviews can grant it automatically; otherwise approve on the issue page in Paws.</p>'
+    : `<p class="settings-message" role="status">${esc(gate.reason ?? "The risk gate is off.")}</p>`;
   return `<section class="settings-section" id="merge-risk-gate"><div class="settings-label"><h2>High-risk approval</h2><p class="sub">High-risk changes pass when both reviews are clean. Other high-risk heads need the person who delegated the issue or the project lead.</p></div><div class="col">${body}<label class="settings-inherit"><input type="checkbox" name="auto-approve-high-risk" ${data.autoApproveHighRisk === false ? "" : "checked"}> Let high-risk changes through when both reviews are clean</label><p class="sub">Requires both reviews on the same commit, no findings at P2 or worse, and no failed rule probe. Changes to .paws/high-risk-paths or .agents always need a person.</p></div></section>`;
 }
 

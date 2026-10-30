@@ -1,6 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { candidatePolicyInputs, trustedPolicyFiles } from "./index";
@@ -106,4 +114,43 @@ test("a slow origin policy read leaves the event loop available", async () => {
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(finished).toBe(false);
   expect((await pending)?.paths).toContain(".agents/closeout.yaml");
+});
+
+test("status policy reads need no remote and do not write FETCH_HEAD", async () => {
+  const { repo, home, root } = fixture();
+  const flag = join(root, "remote-called");
+  const upload = join(root, "unavailable-upload-pack");
+  writeFileSync(upload, `#!/bin/sh\ntouch '${flag}'\nexit 1\n`);
+  chmodSync(upload, 0o700);
+  execFileSync("git", ["-C", repo, "config", "remote.origin.uploadpack", upload]);
+  const fetchHead = join(repo, ".git/FETCH_HEAD");
+  const before = existsSync(fetchHead) ? readFileSync(fetchHead, "utf8") : null;
+  expect((await candidatePolicyInputs(repo, home, undefined, [], true))?.paths).toContain(
+    ".agents/closeout.yaml",
+  );
+  expect(existsSync(flag)).toBe(false);
+  expect(existsSync(fetchHead) ? readFileSync(fetchHead, "utf8") : null).toBe(before);
+  await expect(candidatePolicyInputs(repo, home)).rejects.toMatchObject({
+    name: "PolicyFetchError",
+  });
+  expect(existsSync(flag)).toBe(true);
+});
+
+test("trusted policy transport retains credential-helper environment", async () => {
+  const { repo, home, root } = fixture();
+  const upload = join(root, "authenticated-upload-pack");
+  writeFileSync(
+    upload,
+    '#!/bin/sh\ntest "$PAWS_TEST_TOKEN" = fixture-token || exit 1\nexec git-upload-pack "$@"\n',
+  );
+  chmodSync(upload, 0o700);
+  execFileSync("git", ["-C", repo, "config", "remote.origin.uploadpack", upload]);
+  const previous = process.env.PAWS_TEST_TOKEN;
+  process.env.PAWS_TEST_TOKEN = "fixture-token";
+  try {
+    expect((await candidatePolicyInputs(repo, home))?.paths).toContain(".agents/closeout.yaml");
+  } finally {
+    if (previous === undefined) delete process.env.PAWS_TEST_TOKEN;
+    else process.env.PAWS_TEST_TOKEN = previous;
+  }
 });

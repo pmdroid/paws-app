@@ -6,6 +6,7 @@ import { mirrorPath, worktreePath } from "../src/acp";
 import { FakeClock, type RepositoryBinding } from "../src/core";
 import {
   beginImplementRun,
+  applyWorkItemEvent,
   enterMergeQueue,
   getTaskMergeSettings,
   getWorkItem,
@@ -95,32 +96,36 @@ test("mergeSettingsFor journals the read failure once and leaves settings retrya
   }
 });
 
-test("removeWorktree failure is journaled once after the confirmed merge", async () => {
-  const f = await fixture();
-  try {
-    const repository = { owner: "test", repo: "repo", remoteUrl: "unused" };
-    beginImplementRun(f.db, f.item.id, 1_000);
-    enterMergeQueue(f.db, f.item.id, { phase: "merge_queue" });
-    recordConfirmedRemoteMerge(f.db, {
-      itemId: f.item.id,
-      repositoryOwner: repository.owner,
-      repositoryName: repository.repo,
-      pullNumber: 715,
-      pullUrl: null,
-      mergeSha: "merged-head",
-      confirmedAt: 1_000,
-    });
+test.each([false, true])(
+  "removeWorktree failure is journaled after the confirmed merge, awaiting input: %s",
+  async (held) => {
+    const f = await fixture();
+    try {
+      const repository = { owner: "test", repo: "repo", remoteUrl: "unused" };
+      beginImplementRun(f.db, f.item.id, 1_000);
+      enterMergeQueue(f.db, f.item.id, { phase: "merge_queue" });
+      if (held) applyWorkItemEvent(f.db, f.item.id, "blocking_question");
+      recordConfirmedRemoteMerge(f.db, {
+        itemId: f.item.id,
+        repositoryOwner: repository.owner,
+        repositoryName: repository.repo,
+        pullNumber: 715,
+        pullUrl: null,
+        mergeSha: "merged-head",
+        confirmedAt: 1_000,
+      });
 
-    await mkdir(mirrorPath(f.root, repository.owner, repository.repo), { recursive: true });
-    await mkdir(worktreePath(f.root, itemPathId(f.item)), { recursive: true });
-    await f.operations.completeMerge(getWorkItem(f.db, f.item.id)!, repository);
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("merged");
-    expect(f.lines).toHaveLength(1);
-    expect(f.lines[0]).toContain("item=item-715");
-    expect(f.lines[0]).toContain("operation=orchestrator.completeMerge.removeWorktree");
-    expect(f.lines[0]).toContain("not a git repository");
-    expect(f.lines[0]).not.toContain("\n");
-  } finally {
-    await f.close();
-  }
-});
+      await mkdir(mirrorPath(f.root, repository.owner, repository.repo), { recursive: true });
+      await mkdir(worktreePath(f.root, itemPathId(f.item)), { recursive: true });
+      await f.operations.completeMerge(getWorkItem(f.db, f.item.id)!, repository);
+      expect(getWorkItem(f.db, f.item.id)?.state).toBe("merged");
+      expect(f.lines).toHaveLength(1);
+      expect(f.lines[0]).toContain("item=item-715");
+      expect(f.lines[0]).toContain("operation=orchestrator.completeMerge.removeWorktree");
+      expect(f.lines[0]).toContain("not a git repository");
+      expect(f.lines[0]).not.toContain("\n");
+    } finally {
+      await f.close();
+    }
+  },
+);

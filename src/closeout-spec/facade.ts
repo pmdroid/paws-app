@@ -527,6 +527,8 @@ export type PolicyDigests = { digest: string; recheck: string };
 
 /**
  * The effective policy identity and its repository-relative inputs for automatic risk approval.
+ * `localOnly` is for display: it reads the locally observed origin/main without fetching.
+ * Merge authorization leaves it false and confirms the remote.
  * Uses the same exclusion-aware loader as `decision`. Local/home inputs outside the repository
  * cannot be edited by its candidate; inputs inside it are mapped from their policy root.
  */
@@ -535,9 +537,16 @@ export async function candidatePolicyInputs(
   home?: string,
   policyRoot?: string,
   checkoutExclusions: readonly string[] = [],
+  localOnly = false,
 ): Promise<{ digest: string; paths: string[] } | null> {
-  const loaded = await loadOriginAsync(repo, home, policyRoot, checkoutExclusions);
-  if (!loaded.ok) return null;
+  const loaded = localOnly
+    ? loadObservedOrigin(repo, home, policyRoot, checkoutExclusions)
+    : await loadOriginAsync(repo, home, policyRoot, checkoutExclusions);
+  if (!loaded.ok) {
+    const error = new Error("Could not read the current Closeout policy inputs");
+    error.name = "PolicyFetchError";
+    throw error;
+  }
   const policy = loaded.policy;
   if (policy.source === "none") return { digest: "", paths: [] };
   if (policy.source === "repo")
@@ -1005,14 +1014,30 @@ async function loadOriginAsync(
   exclusions: readonly string[],
 ): Promise<ReturnType<typeof loadPolicy>> {
   if (policyRoot !== undefined) return loadOrigin(repo, home, policyRoot, exclusions);
-  const env = scrubCommandEnv(process.env);
-  const fetched = await git(repo, ["fetch", "--no-tags", "origin", "refs/heads/main"], env);
+  // This is trusted repository transport, using the same credentials and bounds as gitReader.
+  const env = process.env as Record<string, string>;
+  const fetched = await git(
+    repo,
+    ["fetch", "--no-tags", "origin", "refs/heads/main"],
+    env,
+    FETCH_TIMEOUT_MS / 1000,
+  );
   const head = fetched.ok
     ? await git(repo, ["rev-parse", "--verify", "--end-of-options", "FETCH_HEAD^{commit}"], env)
     : fetched;
   const listed = head.ok
-    ? await git(repo, ["ls-remote", "--exit-code", "origin", "refs/heads/main"], env)
+    ? await git(
+        repo,
+        ["ls-remote", "--exit-code", "origin", "refs/heads/main"],
+        env,
+        REMOTE_TIMEOUT_MS / 1000,
+      )
     : head;
+  if (!head.ok || !listed.ok) {
+    const error = new Error("Could not confirm the current Closeout policy from origin/main");
+    error.name = "PolicyFetchError";
+    throw error;
+  }
   return loadOrigin(repo, home, policyRoot, exclusions, {
     ...gitReader,
     fetchOriginMain: () =>
@@ -1023,6 +1048,28 @@ async function loadOriginAsync(
       listed.ok
         ? { ok: true, stdout: listed.stdout.toString("utf8") }
         : { ok: false, stderr: listed.stderr },
+  });
+}
+
+/** Status uses the latest locally observed policy, without touching the remote or FETCH_HEAD. */
+function loadObservedOrigin(
+  repo: string,
+  home: string | undefined,
+  policyRoot: string | undefined,
+  exclusions: readonly string[],
+): ReturnType<typeof loadPolicy> {
+  if (policyRoot !== undefined) return loadOrigin(repo, home, policyRoot, exclusions);
+  const head = gitSync(
+    repo,
+    ["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"],
+    GIT_TIMEOUT_MS,
+  );
+  if (!head.ok) return { ok: false, source: "repo", message: "origin/main has not been observed" };
+  const commit = head.stdout.toString("utf8").trim().toLowerCase();
+  return loadOrigin(repo, home, policyRoot, exclusions, {
+    ...gitReader,
+    fetchOriginMain: () => ({ ok: true, commit }),
+    lsRemoteOriginMain: () => ({ ok: true, stdout: `${commit}\trefs/heads/main\n` }),
   });
 }
 

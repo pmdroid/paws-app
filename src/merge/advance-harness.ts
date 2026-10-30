@@ -24,6 +24,7 @@ import {
 } from "../db";
 import {
   createFakeGitHub,
+  leaveGitHubMergeQueue,
   defaultGitExec,
   fakeMergeReadiness,
   fakeRequiredChecks,
@@ -461,6 +462,14 @@ export async function mergeHarness(
           mergeSha: sha,
         };
       },
+      withdrawQueuedPull: async () =>
+        leaveGitHubMergeQueue({
+          client,
+          owner: "acme",
+          repo: "app",
+          prNumber: item.pull,
+          tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
+        }),
       completed: () => completed.push(id),
     };
   }

@@ -126,9 +126,9 @@ describe("Settings → Merging", () => {
       saved: false,
     });
     expect(on).toContain("otherwise approve on the issue page in Paws");
-    expect(renderMergeSettings({ data: data(), busy: null, error: null, saved: false })).toContain(
-      "High-risk approval",
-    );
+    expect(
+      renderMergeSettings({ data: data(), busy: null, error: null, saved: false }),
+    ).not.toContain("High-risk approval");
   });
 
   test("members see why they cannot change it", () => {
@@ -248,12 +248,19 @@ describe("Settings → Merging", () => {
 });
 
 test("automatic approval is checked by default and its off value is submitted", () => {
-  const view = { ...data(), autoApproveHighRisk: false };
+  const defaults = { ...data(), riskGate: { on: true } };
+  const view = { ...defaults, autoApproveHighRisk: false };
   expect(mergeSettingsBody(view).autoApproveHighRisk).toBe(false);
-  expect(renderMergeSettings({ data: data(), busy: null, error: null, saved: false })).toContain(
+  expect(renderMergeSettings({ data: defaults, busy: null, error: null, saved: false })).toContain(
     'name="auto-approve-high-risk" checked',
   );
   expect(renderMergeSettings({ data: view, busy: null, error: null, saved: false })).not.toContain(
     'name="auto-approve-high-risk" checked',
   );
+});
+
+test("a page without a risk gate does not offer an automatic-pass checkbox", () => {
+  expect(
+    renderMergeSettings({ data: data(), busy: null, error: null, saved: false }),
+  ).not.toContain('name="auto-approve-high-risk"');
 });

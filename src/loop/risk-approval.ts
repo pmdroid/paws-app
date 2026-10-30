@@ -22,6 +22,7 @@ import {
   type WorkItemRecord,
 } from "../db";
 import { journalCaught } from "../journal";
+import { PolicyFetchError } from "../closeout";
 import type { RiskApproval } from "../merge";
 import { shortCommit } from "../questions";
 import { askWithLink, closeLinkAsksOnHead, linkAskAvailable } from "./link-ask";
@@ -142,7 +143,7 @@ export type AutomaticRiskChecks = {
   >;
 };
 
-/** A missing or unreadable setting leaves the person gate in place. */
+/** Off leaves the person gate in place; an unreadable setting retries the merge job. */
 function automaticEnabled(
   checks: AutomaticRiskChecks | undefined,
   itemId: string,
@@ -151,11 +152,11 @@ function automaticEnabled(
     return checks?.enabled() === true;
   } catch (error) {
     journalCaught(error, "risk-approval.automaticEnabled", itemId);
-    return false;
+    throw new PolicyFetchError("Could not read the automatic high-risk setting", { cause: error });
   }
 }
 
-/** A bypass, skipped review, missing record or unreadable checkout always leaves the person gate. */
+/** Missing or unsafe evidence needs a person. Unreadable evidence retries instead. */
 export async function automaticRiskEvidence(
   db: Database,
   risk: CandidateRisk,
@@ -169,12 +170,7 @@ export async function automaticRiskEvidence(
     run.steps.some(
       (step) =>
         step.state !== "passed" &&
-        !(
-          step.state === "skipped" &&
-          (step.detail === "no changed path matches" ||
-            (step.kind === "review" &&
-              /^\d+ changed lines, under minChangedLines \d+$/.test(step.detail ?? "")))
-        ),
+        !(step.state === "skipped" && step.detail === "no changed path matches"),
     )
   )
     return null;
@@ -231,7 +227,9 @@ export async function automaticRiskEvidence(
     return reviews.map((step) => step!.evidencePath!);
   } catch (error) {
     journalCaught(error, "risk-approval.cleanReviewEvidence", risk.itemId);
-    return null;
+    throw new PolicyFetchError("Could not read current automatic high-risk evidence", {
+      cause: error,
+    });
   }
 }
 
