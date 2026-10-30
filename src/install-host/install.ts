@@ -10,6 +10,8 @@ import {
   pawsPaths,
   type EnvSource,
 } from "../config";
+import { doctorChecks, realProbe, type DoctorCheck } from "../doctor";
+import { finishInstall } from "./finish";
 import {
   ANSWER_KEYS,
   FIELDS,
@@ -66,6 +68,9 @@ export type InstallHostDeps = {
   prompt: Prompt | null;
   findBun(): Promise<BunInfo | null>;
   systemctl(args: string[]): Promise<number>;
+  doctor(env: EnvSource): Promise<DoctorCheck[]>;
+  loginctl(args: string[]): Promise<number>;
+  waitForHealth(url: string): Promise<boolean>;
   /** The `tailscale` CLI, or null when it is not on PATH. */
   tailscale: string | null;
   out(line: string): void;
@@ -81,6 +86,8 @@ export type InstallArgs = {
 export const INSTALL_HELP = `usage: paws install [--non-interactive] [--answers <file.toml>] [--<key> <value>]...
 
 Writes PAWS_HOME/${ENV_FILE}, config.toml and the systemd user unit, then reloads systemd.
+Initializes runner authority, runs doctor, and offers to enable and start paws.service.
+Starting requires yes at the prompt or --start-service yes.
 A public dashboard on a *.ts.net URL can fetch its certificate with tailscale cert and
 renews it weekly with ${RENEW_TIMER}.
 Keys: ${ANSWER_KEYS.map((key) => key.replaceAll("_", "-")).join(", ")}.
@@ -184,8 +191,6 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
     raw.tls_key_path = envNow.PAWS_TLS_KEY_PATH ?? "";
     raw.tls_cert_path = envNow.PAWS_TLS_CERT_PATH ?? "";
   }
-  deps.prompt?.close?.();
-
   const answers = toAnswers(raw as Required<RawAnswers>);
   ensureLayout(paths);
   const config = renderConfig(configText, answers);
@@ -241,7 +246,12 @@ export async function runInstall(args: InstallArgs, deps: InstallHostDeps): Prom
   if (tailnet !== null)
     for (const line of aclLines(answers.port, answers.runnerHost ? answers.runnerPort : null))
       deps.out(line);
-  return 0;
+  return finishInstall({
+    answers,
+    env: { ...deps.env, ...parseEnvFile(readText(envPath)), PAWS_HOME: paths.home },
+    deps,
+    consent: () => answer("start_service", "no", given.start_service, raw, deps),
+  });
 }
 
 /**
@@ -377,6 +387,39 @@ export function realInstallHostDeps(nonInteractive: boolean): InstallHostDeps {
       } catch {
         return 127;
       }
+    },
+    doctor: async (env) => doctorChecks(await realProbe(env)),
+    async loginctl(args) {
+      try {
+        return await Bun.spawn(["loginctl", ...args], { stdout: "inherit", stderr: "inherit" })
+          .exited;
+      } catch {
+        return 127;
+      }
+    },
+    async waitForHealth(url) {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        try {
+          const response = await fetch(url, {
+            signal: AbortSignal.timeout(2000),
+            redirect: "error",
+          });
+          const body: unknown = await response.json();
+          if (
+            response.ok &&
+            body !== null &&
+            typeof body === "object" &&
+            "ok" in body &&
+            body.ok === true
+          )
+            return true;
+        } catch {
+          // The listener may still be starting.
+        }
+        await Bun.sleep(500);
+      }
+      return false;
     },
     tailscale: Bun.which("tailscale"),
     out: (line) => console.log(line),

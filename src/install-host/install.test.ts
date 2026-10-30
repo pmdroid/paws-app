@@ -95,9 +95,21 @@ function deps(home: string, prompt: Prompt | null, out: string[] = []) {
     prompt,
     findBun: async () => BUN,
     systemctl,
+    doctor: async () => [],
+    loginctl: fakeSystemctl(),
+    waitForHealth: async () => true,
     tailscale: tailscale(home),
     out: (line) => out.push(line),
   };
+  const configPrompt = value.prompt;
+  if (configPrompt)
+    value.prompt = {
+      ...configPrompt,
+      ask: (question, current) =>
+        question.startsWith("Enable and start")
+          ? Promise.resolve("no")
+          : configPrompt.ask(question, current),
+    };
   return { deps: value, systemctl, out };
 }
 
@@ -176,6 +188,19 @@ describe("paws install", () => {
     expect(runtime.configError).toBeNull();
     expect(runtime.env.port).toBe(443);
     expect(runtime.repos).toEqual(["pmdroid/paws-app", "pmdroid/agentbox"]);
+  });
+
+  test("consented public startup polls health at the configured HTTPS origin", async () => {
+    const home = tempHome();
+    const run = deps(home, fakePrompt(FIRST));
+    const health: string[] = [];
+    run.deps.waitForHealth = async (url) => {
+      health.push(url);
+      return true;
+    };
+    expect(await runInstall(parseInstallArgs(["--start-service", "yes"]), run.deps)).toBe(0);
+    expect(health).toEqual(["https://agentbox.example.ts.net/health"]);
+    expect(run.systemctl.calls).toContainEqual(["--user", "enable", "--now", "paws.service"]);
   });
 
   test("a re-run keeps unchanged values and unrelated config.toml keys", async () => {

@@ -41,6 +41,7 @@ export const ANSWER_KEYS = [
   "member_vm_disk_gb",
   "member_vm_image",
   "member_vm_pool",
+  "start_service",
   "tailscale_cert",
   "tls_key_path",
   "tls_cert_path",
@@ -103,6 +104,10 @@ export const FIELDS: Record<AnswerKey, Field> = {
     "exe.dev pool for runner VMs (--pool; `ssh exe.dev pool list` names them)",
     "pool",
   ),
+  start_service: {
+    question: "Enable and start paws.service and enable linger (yes/no)",
+    check: yesNo,
+  },
   tailscale_cert: { question: "Run tailscale cert for the public host (yes/no)", check: yesNo },
   tls_key_path: { question: "PAWS_TLS_KEY_PATH", check: (value, _, home) => path(value, home) },
   tls_cert_path: { question: "PAWS_TLS_CERT_PATH", check: (value, _, home) => path(value, home) },

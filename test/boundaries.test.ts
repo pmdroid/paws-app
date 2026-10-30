@@ -161,7 +161,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "closeout-spec",
   ],
   install: ["journal", "acp", "config"],
-  "install-host": ["config", "deployment"],
+  "install-host": ["config", "deployment", "doctor", "runner-coordinator"],
   installer: ["config", "credentials", "doctor", "install-host"],
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
