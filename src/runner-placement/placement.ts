@@ -7,6 +7,7 @@ import {
   getWorkItemRepository,
   immediate,
   runnerHasCapacity,
+  pinnedSlotsReserved,
   runnerHelperAvailability,
   runnerOccupancy,
   runnerSlotsHeldBetweenCommands,
@@ -394,7 +395,8 @@ export function createRunnerPlacement(options: {
         const runId = current.item?.currentRunId ?? "";
         const held =
           runnerSlotsHeldBetweenCommands(db, holder.runner.id, at, runId) +
-          (input.reserved?.get(holder.runner.id) ?? 0);
+          (input.reserved?.get(holder.runner.id) ?? 0) +
+          pinnedSlotsReserved(db, holder.runner.id, input.itemId, at);
         if (runnerHasCapacity(db, holder.runner.id, at, runId, held)) {
           holder.rank = -1;
           sessionWaits.delete(input.itemId);

@@ -467,15 +467,17 @@ export function createRemoteAgentRunner(options: {
   /** Reservations per runner whose run has no runner_work row there yet. */
   function unassigned(excludeRunId = "") {
     const counts = new Map<string, number>();
+    const assigned = new Map(
+      db
+        .query<{ runId: string; runnerId: string }, [string]>(
+          `SELECT run_id AS runId, runner_id AS runnerId FROM runner_work
+       WHERE run_id IN (SELECT value FROM json_each(?))`,
+        )
+        .all(JSON.stringify([...reservations.keys()]))
+        .map((row) => [row.runId, row.runnerId]),
+    );
     for (const [runId, hostId] of reservations)
-      if (
-        runId !== excludeRunId &&
-        !db
-          .query<{ held: number }, [string, string]>(
-            "SELECT 1 AS held FROM runner_work WHERE run_id=? AND runner_id=?",
-          )
-          .get(runId, hostId)
-      )
+      if (runId !== excludeRunId && assigned.get(runId) !== hostId)
         counts.set(hostId, (counts.get(hostId) ?? 0) + 1);
     return counts;
   }
@@ -1211,6 +1213,9 @@ export function createRemoteAgentRunner(options: {
                 const admitted = (
                   await options.placement.candidates({
                     ...placementRequest,
+                    // Session grace chooses the initial runner. Recheck the selected runner's
+                    // authority without starting a new grace wait during preparation.
+                    session: undefined,
                     reserved: unassigned(selected.runId),
                   })
                 ).some(
@@ -2108,15 +2113,18 @@ export function createRemoteAgentRunner(options: {
                   state === "running");
             // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
             // first, and the next turn starts from it.
-            const saving =
-              command?.type === "run" &&
-              command.checkpoint !== false &&
-              !detached &&
-              signal.aborted &&
-              !(signal.reason instanceof PawsShutdown)
-                ? checkpointBeforeStop(command.runId)
-                : null;
-            if (saving) await saving;
+            try {
+              if (
+                command?.type === "run" &&
+                command.checkpoint !== false &&
+                !detached &&
+                signal.aborted &&
+                !(signal.reason instanceof PawsShutdown)
+              )
+                await checkpointBeforeStop(command.runId);
+            } catch (error) {
+              journalCaught(error, "runner-backend.cleanup.checkpoint", itemId);
+            }
             if (command && !detached) {
               try {
                 const issuedAt = now();
@@ -2135,7 +2143,11 @@ export function createRemoteAgentRunner(options: {
               }
             }
             controller.abort();
-            await question;
+            try {
+              await question;
+            } catch (error) {
+              journalCaught(error, "runner-backend.cleanup.question", itemId);
+            }
             input.signal?.removeEventListener("abort", abort);
           } finally {
             // Keep attachment fenced through cleanup, then free the slot before returning.

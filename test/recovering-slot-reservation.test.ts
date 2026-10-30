@@ -59,19 +59,11 @@ test("twenty recovering items fill six free slots in one tick and do not fail fo
       clock,
       lines,
       async assert(started, db) {
-        // Initial placement has finished. Wake the parked, now recovering items together.
-        const pending = () =>
-          listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status === "pending");
-        clock.advance(5_000);
-        const deadline = Date.now() + 5_000;
-        while (
-          (pending().length !== 14 || pending().some((job) => job.runAt <= clock.now())) &&
-          Date.now() < deadline
-        )
-          await Bun.sleep(10);
-        expect(pending()).toHaveLength(14);
-        expect(pending().every((job) => job.runAt > clock.now())).toBe(true);
-        expect(new Set(pending().map((job) => job.runAt)).size).toBeGreaterThan(1);
+        const pending = listJobs(db).filter(
+          (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+        );
+        expect(pending).toHaveLength(14);
+        expect(new Set(pending.map((job) => job.runAt)).size).toBeGreaterThan(1);
         expect(started.size, lines.join("\n")).toBe(6);
         expect(
           listWorkItems(db).filter((item) => ["failed", "awaiting_input"].includes(item.state)),

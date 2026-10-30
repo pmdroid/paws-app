@@ -1865,7 +1865,8 @@ export class Orchestrator {
       if (wait) {
         deferWorkItem(this.db, item, {
           retry: retryCount(job.payload),
-          delayMs: this.runnerWaitMs(wait),
+          // deferWorkItem transitions to recovering and schedules this resume retry.
+          delayMs: this.runnerWaitMs(wait, job.queue === JOB_KIND.resume),
           handoff: readString(job.payload, "handoff"),
           message: null,
           capacityWait: wait,
@@ -2080,8 +2081,9 @@ export class Orchestrator {
     };
   }
 
-  private runnerWaitMs(wait: RunnerCapacityWaitState): number {
-    return placementWaitMs(wait.attempt, this.options.placementPollMs);
+  private runnerWaitMs(wait: RunnerCapacityWaitState, recoveringResume = false): number {
+    const baseMs = placementWaitMs(wait.attempt, this.options.placementPollMs);
+    return recoveringResume ? baseMs - resumeRetrySpreadMs(baseMs, this.options.random) : baseMs;
   }
 
   private waitingForRunnerSlot(job: Job, beforePark?: () => Job): boolean {
@@ -2101,11 +2103,11 @@ export class Orchestrator {
       return false;
     const next = { ...waited, attempt: waited.attempt + 1 };
     job = beforePark?.() ?? job;
-    const baseMs = this.runnerWaitMs(next);
-    const delayMs =
-      job.queue === JOB_KIND.resume && item.state === "recovering"
-        ? Math.max(1, baseMs - resumeRetrySpreadMs(baseMs, this.options.random))
-        : baseMs;
+    const current = itemId === null ? null : getWorkItem(this.db, itemId);
+    const delayMs = this.runnerWaitMs(
+      next,
+      job.queue === JOB_KIND.resume && current?.state === "recovering",
+    );
     waitForRunnerSlot(this.db, job, this.now(), delayMs, next);
     return true;
   }

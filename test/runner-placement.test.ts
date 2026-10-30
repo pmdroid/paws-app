@@ -7,6 +7,7 @@ import {
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   insertRun,
+  enqueueJob,
   migrate,
   openDatabase,
   putWorkspaceUser,
@@ -278,6 +279,19 @@ test("session affinity waits for other runs' held slots and unassigned reservati
     expect(await placed.ids({ ...session, reserved: new Map([["second", 1]]) })).toEqual([
       "second",
     ]);
+    insertQueuedItem(db, { id: "pinned", now: placed.now() });
+    const pin = enqueueJob(db, {
+      queue: "run.resume",
+      now: placed.now(),
+      payload: {
+        itemId: "pinned",
+        pinnedSlot: { runnerId: "second", order: 0 },
+      },
+    });
+    expect(await placed.ids(session)).toEqual(["second"]);
+    // A post-preparation authority recheck must not restart session selection or grace.
+    expect(await placed.ids({ session: undefined })).toEqual(["own", "second"]);
+    db.run("UPDATE job SET status='cancelled' WHERE id=?", [pin]);
     // The held slot alone leaves room for this run to keep its session.
     expect(await placed.ids(session)).toEqual(["second", "own"]);
     db.run("UPDATE run SET status='ended' WHERE id=?", [other.id]);
