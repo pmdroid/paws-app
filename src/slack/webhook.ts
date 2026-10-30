@@ -1,4 +1,5 @@
 import { journalCaught } from "../journal";
+import { readWebhookBody } from "../webhook-body";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export async function handleSlackWebhook(
@@ -18,7 +19,8 @@ export async function handleSlackWebhook(
     Math.abs(now / 1000 - Number(timestamp)) > 300
   )
     return new Response("Unauthorized.", { status: 401 });
-  const raw = Buffer.from(await request.arrayBuffer());
+  const raw = await readWebhookBody(request, 1024 * 1024);
+  if (raw instanceof Response) return raw;
   const expected = `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:`).update(raw).digest("hex")}`;
   if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expected)))
     return new Response("Unauthorized.", { status: 401 });

@@ -11,6 +11,8 @@ export const REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 23];
 export const SESSION_RESUME_RUNNER_VERSION: RunnerVersion = [0, 1, 24];
 /** First runner release whose command schema accepts `runtimes`. Older runners reject the field. */
 export const RUNTIMES_RUNNER_VERSION: RunnerVersion = [0, 1, 26];
+/** First runner release whose command schema accepts any mise backend, not only core and `aqua:`. */
+export const ANY_MISE_BACKEND_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
 /** First runner release that snapshots a run's Claude session when a turn ends. */
 export const CLAUDE_SESSION_SNAPSHOT_RUNNER_VERSION: RunnerVersion = [0, 1, 42];
 /** First runner release that restores a Claude session snapshot before the agent starts. */
@@ -27,3 +29,29 @@ export const CHECKPOINT_RUNNER_VERSION: RunnerVersion = [0, 1, 46];
 export const REVIEW_COMMAND_RUNNER_VERSION: RunnerVersion = [0, 1, 47];
 /** First runner release that rebases a candidate onto its moved branch and pushes it again. */
 export const CANDIDATE_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 48];
+/**
+ * First runner release whose watchdog uses `creditedLeaseUntil` while Paws is unreachable.
+ * Paws moves that runner's lease by the same rule and tells it the budget on heartbeat.
+ * Older runners are not told and are not moved; they stop at the lease plus the grace.
+ */
+export const OFFLINE_LEASE_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+/** First runner release whose policy transfer accepts the whole bundle Closeout sends to it. */
+export const POLICY_TRANSFER_RUNNER_VERSION: RunnerVersion = [0, 1, 52];
+
+/** First runner release accepting the read-only daily finding grouping helper purpose. */
+export const FINDING_GROUPS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+export const OPENCODE_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+export const SKILL_HOOK_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+/**
+ * First runner release whose Closeout policy parser knows a check's `ci` key. 0.1.48 rejects it,
+ * and 0.1.49 through 0.1.52 shipped without it. The next runner is 0.1.53.
+ */
+export const CLOSEOUT_CI_KEY_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+/**
+ * First runner release whose Closeout policy parser leaves out a key it does not know, with a
+ * warning, instead of blocking the run, and knows a check's `recheck` key. Same release as `ci`:
+ * 0.1.52 is the newest tag, so both land on 0.1.53.
+ */
+export const CLOSEOUT_POLICY_KEYS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+/** First runner release that requests Closeout policies in bounded chunks. */
+export const CLOSEOUT_POLICY_CHUNKS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];

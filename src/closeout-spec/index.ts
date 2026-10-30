@@ -93,6 +93,7 @@ export {
   digest,
   candidatePolicyDigest,
   candidatePolicyInputs,
+  candidatePolicyDigests,
   policyCheckPaths,
   policyFixBudget,
   preExistingFindings,
@@ -110,13 +111,20 @@ export {
   workspacePolicyFiles,
 } from "./facade";
 export { approvalsAtHead, fixChangedPaths, samePatch } from "./published";
-export { decodePolicyFiles, encodePolicyFiles } from "./policy/transfer";
+export {
+  decodePolicyFiles,
+  encodePolicyFiles,
+  encodePolicyChunk,
+  decodePolicyChunk,
+} from "./policy/transfer";
+export { policyKeys } from "./policy/keys";
 export type { PolicyFilesLoad, RootFilesLoad } from "./policy/load";
 export type {
   AddReviewInput,
   AddReviewResult,
   DecisionInput,
   DigestResult,
+  PolicyDigests,
   ReviewIntake,
   RunRequest,
   ValidateResult,

@@ -47,8 +47,7 @@ export { createFetchGitHubClient } from "./client";
 export { checkRepositoryWriteAccess, checkRepositoryReadAccess } from "./repository-access";
 export type { FetchLike } from "./client";
 export { branchForIssue, fixesLine, githubHttpsUrl, pullRequestBody } from "./branch";
-export { createPullRequests, openPullRequest, publishAccepted, pushBranch } from "./pulls";
-export type { PullRequestClientOptions } from "./pulls";
+export { openPullRequest, publishAccepted, pushBranch } from "./pulls";
 export { fetchUpstreamMain, readPullFacts, rebaseOntoMain, squashPull } from "./merge";
 export { repositoriesRequiringUpToDate } from "./overlap";
 export {
@@ -60,6 +59,13 @@ export {
 export { readPullReview } from "./review";
 export type { PullReview } from "./review";
 export { readReviewThreads } from "./review-threads";
+export {
+  commentOnPullRequest,
+  createFakeReviewReplies,
+  replyToReviewComment,
+  resolveReviewThread,
+  type FakeReviewReplies,
+} from "./review-replies";
 export type { ReviewThread, ReviewThreadComment } from "./review-threads";
 export { listMergedPullsSince, readMergedPull, readPullComments } from "./pull-comments";
 export type { MergedPull, PullComment } from "./pull-comments";
@@ -109,8 +115,9 @@ export {
   pushOutageCause,
   pushOutageProbeDelayMs,
 } from "./transport";
+export { PUBLICATION_STAGING_FAILURE } from "./publication";
 
 export { closeStoppedPull } from "./stopped";
 export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";
-export { branchContains, readOpenPullHead } from "./pull-head";
+export { branchContains, readBranchWork, readOpenPullHead } from "./pull-head";
 export { inspectPullRequestMerge } from "./blocker-merge";

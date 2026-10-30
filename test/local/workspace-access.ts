@@ -87,7 +87,7 @@ export async function probeWorkspaceAccess(
   const member = workspaceMember(db, workspace.id, userId);
   observe(
     "Linear membership sync preserves the manual owner and its verified teams",
-    member?.role === "owner" && member.teamIds.join() === "team-one",
+    member?.role === "admin" && member.teamIds.join() === "team-one",
     member,
   );
   const issued = issueWorkspaceSession(db, { userId, workspaceId: workspace.id, now });
@@ -142,7 +142,7 @@ export async function probeWorkspaceAccess(
   const expected = JSON.stringify({
     workspaceId: workspace.id,
     userId,
-    role: "owner",
+    role: "admin",
     teamIds: ["team-one"],
     authenticatedAt: now,
   });
@@ -241,7 +241,7 @@ export async function probeWorkspaceAccess(
   const returnedPrincipal = requestWorkspaceSession(restored, returnedRequest, now + 4)?.principal;
   observe(
     "verified membership restoration retains the manually granted owner role",
-    returnedPrincipal?.role === "owner" &&
+    returnedPrincipal?.role === "admin" &&
       requestWorkspaceSession(restored, request, now + 4) === null,
     {
       role: returnedPrincipal?.role,

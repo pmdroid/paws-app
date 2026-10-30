@@ -1,7 +1,15 @@
 import { z } from "zod";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 
+/** Maximum time granted by a work assignment or heartbeat renewal. */
+export const RUNNER_LEASE_MS = 60_000;
 export const RUNNER_LEASE_GRACE_MS = 5 * 60_000;
+/**
+ * How much time Paws is unreachable does not count against a runner lease. `creditedLeaseUntil`
+ * adds it, capped by this budget and the command's `expiresAt`. Only a runner at
+ * `OFFLINE_LEASE_RUNNER_VERSION` or newer is told the budget and has its stored lease moved.
+ */
+export const RUNNER_OFFLINE_BUDGET_MS = 30 * 60_000;
 /** A handover waits this long for a safe point; after that the session keeps running. */
 export const RUNNER_HANDOVER_LIMIT_MS = 120_000;
 /**
@@ -16,7 +24,7 @@ export const RUNNER_CHECKPOINT_LIMIT_MS = 90_000;
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const time = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const generation = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const agent = z.enum(["claude", "codex", "grok"]);
+const agent = z.enum(["claude", "codex", "grok", "opencode"]);
 const owner = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/);
 const repo = z
   .string()
@@ -118,17 +126,23 @@ export const RunnerHookSchema = z
 
 /**
  * A runtime from the task repository's mise config on origin/main, installed by the runner
- * before the agent starts. Only mise core tools and the `aqua:` backend are carried.
+ * before the agent starts. Any mise tool is carried: a registry short name or `backend:name`. It
+ * cannot start with `-` or hold characters mise would read as options.
  */
 export const RunnerRuntimeSchema = z.strictObject({
   tool: z
     .string()
     .max(256)
-    .regex(
-      /^(?:node|python|go|java|ruby|rust|bun|deno|aqua:[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){1,3})$/,
-    ),
+    .regex(/^(?:[a-z][a-z0-9-]{0,31}:)?[A-Za-z0-9@][A-Za-z0-9@._/+-]{0,199}$/),
   version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/),
 });
+
+/** A tool a runner before `ANY_MISE_BACKEND_RUNNER_VERSION` accepts: a mise core tool or `aqua:`. */
+export function legacyRuntimeTool(tool: string): boolean {
+  return /^(?:node|python|go|java|ruby|rust|bun|deno|aqua:[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){1,3})$/.test(
+    tool,
+  );
+}
 
 export const RunnerRuntimesSchema = z.array(RunnerRuntimeSchema).max(32);
 
@@ -182,7 +196,7 @@ export const RunnerCommandSchema = z
       restoreSession: z
         .strictObject({
           generation: generation.min(1),
-          agent: z.enum(["claude", "codex", "grok"]),
+          agent: z.enum(["claude", "codex", "grok", "opencode"]),
           agentVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$/),
           sessionId: id,
           sha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -222,7 +236,7 @@ export const RunnerCommandSchema = z
       type: z.literal("helper"),
       sessionId: id,
       sessionGeneration: generation,
-      purpose: z.enum(["classify", "select_repository"]),
+      purpose: z.enum(["classify", "select_repository", "finding_groups"]),
       profile: RunnerProfileSchema,
       prompt: z.string().min(1).max(65_536),
     }),
@@ -277,12 +291,18 @@ export const RunnerCommandSchema = z
       command.type !== "review" ||
       !command.reviewCommand ||
       (command.profile.agent !== "grok" &&
+        command.profile.agent !== "opencode" &&
         command.profile.model !== null &&
         command.reviewCommand.base !== command.repository.baseSha),
   )
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine((command) => command.type !== "login" || command.expiresAt - command.issuedAt <= 600_000)
-  .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000);
+  .refine(
+    (command) =>
+      command.type !== "helper" ||
+      command.expiresAt - command.issuedAt <=
+        (command.purpose === "finding_groups" ? 600_000 : 60_000),
+  );
 
 export const SignedRunnerCommandSchema = z.strictObject({
   keyId: id,

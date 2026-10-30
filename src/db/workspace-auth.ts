@@ -83,32 +83,31 @@ export function changeWorkspaceRole(
 ): void {
   const error = immediate(db, () => {
     const actor = workspaceMember(db, input.workspaceId, input.actorId);
-    if (actor?.role !== "owner" || !actor.active)
-      throw new Error("Workspace ownership is required.");
+    if (actor?.role !== "admin" || !actor.active)
+      throw new Error("Workspace administration is required.");
     if (input.verified !== undefined) {
       if (
         !syncWorkspaceMember(db, {
           ...input,
-          active: input.verified.active,
-          role: input.verified.guest ? "observer" : "member",
+          active: input.verified.active && !input.verified.guest,
+          role: "member",
           teamIds: input.verified.teamIds,
         })
       )
         throw new Error("Linear membership changed. Try again.");
+      if (input.verified.guest) return "Linear guests can't use Paws.";
       if (!input.verified.active) return "Current Linear membership is required.";
-      if (input.verified.guest && input.role !== "observer")
-        return "Linear guests can only have observer access.";
     }
     const member = workspaceMember(db, input.workspaceId, input.userId);
     if (member === null || !member.active)
       throw new Error("An active workspace member is required.");
-    if (member.role === "owner" && input.role !== "owner") {
-      const owners = db
+    if (member.role === "admin" && input.role !== "admin") {
+      const admins = db
         .query<{ count: number }, [string]>(
-          "SELECT count(*) AS count FROM workspace_member WHERE workspace_id=? AND role='owner' AND active=1",
+          "SELECT count(*) AS count FROM workspace_member WHERE workspace_id=? AND role='admin' AND active=1",
         )
         .get(input.workspaceId)!.count;
-      if (owners <= 1) throw new Error("The workspace must retain an active owner.");
+      if (admins <= 1) throw new Error("The workspace must keep an active admin.");
     }
     db.run(
       "UPDATE workspace_member SET role=?,manual_role=?,source='manual' WHERE workspace_id=? AND user_id=?",
@@ -136,8 +135,8 @@ export function replaceWorkspaceRepositories(
 ): void {
   immediate(db, () => {
     const actor = workspaceMember(db, input.workspaceId, input.actorId);
-    if (actor?.role !== "owner" || !actor.active)
-      throw new Error("Workspace ownership is required.");
+    if (actor?.role !== "admin" || !actor.active)
+      throw new Error("Workspace administration is required.");
     db.run("DELETE FROM workspace_repository WHERE workspace_id=?", [input.workspaceId]);
     for (const entry of input.repositories)
       db.run("INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES(?,?,?)", [

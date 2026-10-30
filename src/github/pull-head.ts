@@ -68,3 +68,54 @@ export async function branchContains(
   const head = status === "identical" ? input.sha : typeof last?.sha === "string" ? last.sha : null;
   return { head, contains: status === "identical" || status === "ahead" };
 }
+
+/**
+ * What GitHub holds for `branch`: the state of its latest pull request into main and how many of
+ * its commits main lacks. A missing branch has no commits.
+ */
+export async function readBranchWork(
+  input: HeadRead & { branch: string },
+): Promise<{ pull: "open" | "closed" | "merged" | null; commits: number }> {
+  input.signal?.throwIfAborted();
+  const token = await acquireOperationToken(input, "pr");
+  const query = new URLSearchParams({
+    state: "all",
+    head: `${input.owner}:${input.branch}`,
+    base: "main",
+    sort: "created",
+    direction: "desc",
+    per_page: "1",
+  });
+  const listed = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, `/pulls?${query}`),
+    token,
+    signal: input.signal,
+  });
+  if (listed.status !== 200 || !Array.isArray(listed.body))
+    throw new Error(`Could not list the pull requests of ${input.branch}`);
+  const latest = listed.body[0] as { state?: unknown; merged_at?: unknown } | undefined;
+  const pull =
+    latest === undefined
+      ? null
+      : typeof latest.merged_at === "string"
+        ? "merged"
+        : latest.state === "open"
+          ? "open"
+          : "closed";
+  const compared = await input.client.request({
+    method: "GET",
+    path: repoApiPath(
+      input.owner,
+      input.repo,
+      `/compare/main...${encodeURIComponent(input.branch)}`,
+    ),
+    token,
+    signal: input.signal,
+  });
+  if (compared.status === 404) return { pull, commits: 0 };
+  const ahead = (compared.body as { ahead_by?: unknown } | null)?.ahead_by;
+  if (compared.status !== 200 || typeof ahead !== "number")
+    throw new Error(`Could not compare ${input.branch} with main`);
+  return { pull, commits: ahead };
+}

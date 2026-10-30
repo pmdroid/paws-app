@@ -23,7 +23,7 @@ function fixture(capacity: number) {
   syncWorkspaceMember(db, {
     workspaceId: "ws-1",
     userId: "ada",
-    role: "owner",
+    role: "admin",
     active: true,
     teamIds: [],
     now: 0,

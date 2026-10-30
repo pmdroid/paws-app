@@ -20,14 +20,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - run: bun test --parallel=4 --timeout=20000 --no-orphans $(bun scripts/test-shard.ts ${{ matrix.shard }} 4)
+      - run: bun test --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/4 --timings=test-timings.json
 
   check:
     name: lint, format, types, test, dashboard build
@@ -48,3 +48,5 @@ jobs:
       - run: bun run fmt:check
       - run: bun run typecheck
       - run: bun run build:status
+      - run: bun run links
+      - run: bun run knip

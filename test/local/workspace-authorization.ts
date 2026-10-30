@@ -79,7 +79,7 @@ export async function probeWorkspaceAuthorization(
     now,
   });
   const owner = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: ownerId, now });
-  const member = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: memberId, now });
+  let member = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: memberId, now });
   const admin = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: adminId, now });
   const oldOwner = issueWorkspaceSession(db, {
     workspaceId: workspace.id,
@@ -246,7 +246,7 @@ export async function probeWorkspaceAuthorization(
     };
     const entries = history.entries ?? [];
     observe(
-      "owners read bounded workspace audit history with actors and a stable older cursor",
+      "admins read bounded workspace audit history with actors and a stable older cursor",
       auditResponse.status === 200 &&
         auditResponse.headers.get("cache-control") === "no-store" &&
         entries.length === 50 &&
@@ -347,7 +347,7 @@ export async function probeWorkspaceAuthorization(
       body: JSON.stringify({ profile: { agent: "claude", model: null } }),
     });
     observe(
-      "members cannot read owner settings or invoke host credential probes",
+      "members cannot read admin settings or invoke host credential probes",
       settings.status === 403 && probe.status === 403,
       { settings: settings.status, probe: probe.status },
     );
@@ -373,8 +373,8 @@ export async function probeWorkspaceAuthorization(
       )
       .all(workspace.id);
     observe(
-      "only owners and admins change skills, and every skill change is audited",
-      JSON.stringify(skillStatuses) === JSON.stringify([403, 403, 200, 200, 200, 403]) &&
+      "only admins change skills, and every skill change is audited",
+      JSON.stringify(skillStatuses) === JSON.stringify([403, 403, 200, 200, 200, 200]) &&
         JSON.stringify(skillAudit) ===
           JSON.stringify([
             { userId: memberId, action: "access.denied", subject: "/api/settings/skills" },
@@ -397,12 +397,36 @@ export async function probeWorkspaceAuthorization(
           ]),
       { skillStatuses, skillAudit },
     );
+    const adminRoutes = [
+      "/api/settings/agents",
+      "/api/settings/merging",
+      "/api/settings/hooks",
+      "/api/settings/skills",
+      "/api/settings/checkout",
+      "/api/workspaces/members",
+      "/api/workspaces/repositories",
+      "/api/workspaces/audit",
+    ];
+    const routeStatuses = async (session: typeof owner) =>
+      Promise.all(
+        adminRoutes.map(
+          async (path) => (await fetch(`${origin}${path}`, { headers: headers(session) })).status,
+        ),
+      );
+    const adminStatuses = await routeStatuses(admin);
+    const memberStatuses = await routeStatuses(member);
+    observe(
+      "an admin uses every former owner route and a member gets 403 on each",
+      adminStatuses.every((status) => status !== 401 && status !== 403) &&
+        memberStatuses.every((status) => status === 403),
+      { adminStatuses, memberStatuses },
+    );
     const stale = await fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
       headers: headers(oldOwner),
       body: JSON.stringify({ userId: memberId, role: "admin" }),
     });
-    observe("an owner signed in days ago can still change workspace roles", stale.status === 200, {
+    observe("an admin signed in days ago can still change workspace roles", stale.status === 200, {
       status: stale.status,
     });
     const missingCsrf = await fetch(`${origin}/api/workspaces/members`, {
@@ -413,18 +437,52 @@ export async function probeWorkspaceAuthorization(
     const changed = await fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
       headers: headers(owner),
-      body: JSON.stringify({ userId: memberId, role: "observer" }),
+      body: JSON.stringify({ userId: memberId, role: "member" }),
     });
-    const lastOwner = await fetch(`${origin}/api/workspaces/members`, {
+    const demotedAdmin = await fetch(`${origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: headers(owner),
+      body: JSON.stringify({ userId: adminId, role: "member" }),
+    });
+    const lastAdmin = await fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
       headers: headers(owner),
       body: JSON.stringify({ userId: ownerId, role: "member" }),
     });
-    observe(
-      "owner administration enforces CSRF and retains an active owner",
-      missingCsrf.status === 403 && changed.status === 200 && lastOwner.status === 400,
-      { missingCsrf: missingCsrf.status, changed: changed.status, lastOwner: lastOwner.status },
+    const lastAdminError = ((await lastAdmin.json()) as { error: string }).error;
+    const formerRoles = await Promise.all(
+      ["owner", "observer"].map(
+        async (role) =>
+          (
+            await fetch(`${origin}/api/workspaces/members`, {
+              method: "PUT",
+              headers: headers(owner),
+              body: JSON.stringify({ userId: memberId, role }),
+            })
+          ).status,
+      ),
     );
+    observe(
+      "admin administration enforces CSRF, takes only admin or member, and keeps an active admin",
+      missingCsrf.status === 403 &&
+        changed.status === 200 &&
+        demotedAdmin.status === 200 &&
+        lastAdmin.status === 400 &&
+        lastAdminError === "The workspace must keep an active admin." &&
+        workspaceMember(db, workspace.id, ownerId)?.role === "admin" &&
+        formerRoles.join() === "400,400",
+      {
+        missingCsrf: missingCsrf.status,
+        changed: changed.status,
+        demotedAdmin: demotedAdmin.status,
+        lastAdmin: lastAdmin.status,
+        lastAdminError,
+        formerRoles,
+      },
+    );
+    db.run("UPDATE workspace_member SET role='admin',manual_role='admin' WHERE user_id=?", [
+      adminId,
+    ]);
     const unmapped = await fetch(`${origin}/api/workspaces/repositories`, {
       method: "PUT",
       headers: headers(owner),
@@ -441,7 +499,7 @@ export async function probeWorkspaceAuthorization(
       await fetch(`${origin}/api/status`, { headers: headers(owner) })
     ).json()) as typeof ownerSnapshot;
     observe(
-      "repository scope changes only after an owner maps a verified Linear team",
+      "repository scope changes only after an admin maps a verified Linear team",
       unmapped.status === 400 &&
         mapped.status === 200 &&
         remapped.items
@@ -472,7 +530,7 @@ export async function probeWorkspaceAuthorization(
       }),
     });
     observe(
-      "authenticated status HTML supplies the session CSRF accepted by owner settings",
+      "authenticated status HTML supplies the session CSRF accepted by admin settings",
       pageCsrf === owner.session.csrfToken && pageAction.status === 200,
       {
         matchingSessionCsrf: pageCsrf === owner.session.csrfToken,
@@ -539,13 +597,20 @@ export async function probeWorkspaceAuthorization(
       headers: headers(owner),
       body: JSON.stringify({ userId: memberId, role: "admin" }),
     });
+    const guestError = ((await guestPromotion.json()) as { error: string }).error;
+    const guestSession = await fetch(`${origin}/api/status`, { headers: headers(member) });
     observe(
-      "owner role overrides cannot grant steering to a verified Linear guest",
-      guestPromotion.status === 400,
-      { status: guestPromotion.status },
+      "an admin cannot give a verified Linear guest a role, and the guest loses access",
+      guestPromotion.status === 400 &&
+        guestError === "Linear guests can't use Paws." &&
+        workspaceMember(db, workspace.id, memberId)?.active === false &&
+        guestSession.status === 401,
+      { status: guestPromotion.status, error: guestError, session: guestSession.status },
     );
+    guest = false;
     memberTeams = [];
     await access.refreshMemberships();
+    member = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: memberId, now });
     const refreshed = (await (
       await fetch(`${origin}/api/status`, { headers: headers(member) })
     ).json()) as typeof ownerSnapshot;
@@ -556,13 +621,13 @@ export async function probeWorkspaceAuthorization(
       "forced membership sync removes team visibility immediately while retaining manual roles",
       refreshed.items.length === 0 &&
         refreshedSession.teamIds.length === 0 &&
-        refreshedSession.role === "observer",
+        refreshedSession.role === "member",
       { items: refreshed.items, teamIds: refreshedSession.teamIds, role: refreshedSession.role },
     );
     const invalidRole = await fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
       headers: headers(owner),
-      body: JSON.stringify({ userId: memberId, role: ["owner"] }),
+      body: JSON.stringify({ userId: memberId, role: ["admin"] }),
     });
     const invalidRoleBody = (await invalidRole.json()) as { error: string };
     observe(
@@ -570,7 +635,6 @@ export async function probeWorkspaceAuthorization(
       invalidRole.status === 400 && invalidRoleBody.error === "Choose a workspace member and role.",
       { status: invalidRole.status, error: invalidRoleBody.error },
     );
-    guest = false;
     await Bun.sleep(2);
     const restoredOverride = await fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
@@ -595,15 +659,15 @@ export async function probeWorkspaceAuthorization(
     const delayedPromotion = fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
       headers: headers(owner),
-      body: JSON.stringify({ userId: memberId, role: "owner" }),
+      body: JSON.stringify({ userId: memberId, role: "admin" }),
     });
     await pendingMembership.promise;
     guest = true;
     syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId: memberId,
-      role: "observer",
-      active: true,
+      role: "member",
+      active: false,
       teamIds: [],
       now: Date.now(),
     });
@@ -611,9 +675,9 @@ export async function probeWorkspaceAuthorization(
     const stalePromotion = await delayedPromotion;
     const cappedMember = workspaceMember(db, workspace.id, memberId)!;
     observe(
-      "delayed owner promotion cannot lift a newer verified guest cap",
-      stalePromotion.status === 400 && cappedMember.role === "observer",
-      { status: stalePromotion.status, role: cappedMember.role },
+      "a delayed promotion cannot restore a member a newer sync found to be a guest",
+      stalePromotion.status === 400 && !cappedMember.active,
+      { status: stalePromotion.status, active: cappedMember.active },
     );
     const ownerReadStarted = Promise.withResolvers<void>();
     const ownerReadRelease = Promise.withResolvers<void>();
@@ -627,19 +691,12 @@ export async function probeWorkspaceAuthorization(
       body: JSON.stringify({ userId: memberId, role: "admin" }),
     });
     await ownerReadStarted.promise;
-    syncWorkspaceMember(db, {
-      workspaceId: workspace.id,
-      userId: ownerId,
-      active: true,
-      role: "observer",
-      teamIds: [],
-      now: Date.now() + 1,
-    });
+    db.run("UPDATE workspace_member SET role='member' WHERE user_id=?", [ownerId]);
     ownerReadRelease.resolve();
     const deniedOwner = await demotedWrite;
     const afterDemotion = workspaceMember(db, workspace.id, memberId)!;
     observe(
-      "an owner demoted during membership lookup cannot mutate the target membership",
+      "an admin demoted during membership lookup cannot mutate the target membership",
       deniedOwner.status === 400 &&
         afterDemotion.checkedAt === beforeDemotion.checkedAt &&
         afterDemotion.role === beforeDemotion.role &&
@@ -658,6 +715,7 @@ export async function probeWorkspaceAuthorization(
       teamIds: ["team-a"],
       now: Date.now() + 2,
     });
+    db.run("UPDATE workspace_member SET role='admin' WHERE user_id=?", [ownerId]);
     changeLinearTeamAccess(db, {
       eventKey: "fixture-team-removal",
       organizationId: "org",
@@ -672,7 +730,7 @@ export async function probeWorkspaceAuthorization(
       await fetch(`${origin}/api/status`, { headers: headers(owner) })
     ).json()) as typeof ownerSnapshot;
     observe(
-      "verified app team access removal hides its historical data even from workspace owners",
+      "verified app team access removal hides its historical data even from workspace admins",
       withdrawn.items.map((item) => item.id).join() === "other-team",
       { items: withdrawn.items.map((item) => item.id) },
     );

@@ -156,6 +156,7 @@ export async function createWorktree(options: {
   repo: string;
   itemId: string;
   pawsRoot: string;
+  /** Where a new worktree starts. Missing means main; a given ref that does not exist throws. */
   startRef?: string;
   /** The run's agent exclusions. Missing means what `config.toml` sets for the repository now. */
   checkoutExclusions?: readonly string[];
@@ -191,6 +192,11 @@ async function addWorktree(
     throw new Error(`worktree path ${path} already exists and is not a worktree of ${gitDir}`);
   }
 
+  // An explicit start ref is the work to build on, such as a continued branch's tip. Starting
+  // from main instead would push over that branch's commits, so a missing one is an error.
+  if (options.startRef && !(await revParse(gitDir, options.startRef))) {
+    throw new Error(`mirror ${gitDir} has no ${options.startRef} to start the worktree from`);
+  }
   const startRef = await resolveStartRef(gitDir, options.startRef);
   if (!startRef) {
     throw new Error(`mirror ${gitDir} has no origin/main, main, or HEAD to branch from`);

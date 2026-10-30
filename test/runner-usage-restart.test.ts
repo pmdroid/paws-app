@@ -138,7 +138,7 @@ async function usageLimitScenario(restart: boolean) {
   const { runnerId } = await control.enroll({
     ...enrollment,
     token: control.createEnrollment(
-      { workspaceId: workspace.id, userId, role: "owner", authenticatedAt: now, teamIds: [] },
+      { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now, teamIds: [] },
       enrollment,
     ).token,
   });
@@ -280,7 +280,8 @@ async function usageLimitScenario(restart: boolean) {
     worktreePath: worktree,
     pawsRoot: root,
     profile: { agent: "claude" as const, model: null },
-    networkGit: git,
+    // GitHub, served from the bare origin, so the run never reaches the network.
+    networkGit: (args: string[]) => git(args.map((arg) => (arg === GITHUB_URL ? origin : arg))),
     signal,
   });
   let shutdownError: unknown;

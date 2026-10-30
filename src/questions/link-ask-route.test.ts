@@ -5,7 +5,7 @@ import { handleLinkAskAnswer, LINK_ASK_ANSWER_PATH, type LinkAskAnswer } from ".
 
 const NOW = 1_700_000_000_000;
 
-function setup(role: "member" | "observer" = "member", kind: "risk" | "bypass" | "rule" = "risk") {
+function setup(active = true, kind: "risk" | "bypass" | "rule" = "risk") {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1" });
@@ -24,8 +24,8 @@ function setup(role: "member" | "observer" = "member", kind: "risk" | "bypass" |
   syncWorkspaceMember(db, {
     workspaceId: "ws",
     userId: "user-1",
-    role,
-    active: true,
+    role: "member",
+    active,
     teamIds: [],
     now: NOW,
   });
@@ -86,8 +86,8 @@ test("someone the loop refuses gets 403 and an Audit history row", async () => {
   ).toEqual([{ action: "decision.refused", subject: "PAS-633 7f65200 risk" }]);
 });
 
-test("an observer is refused before the loop sees the decision", async () => {
-  const { db, questionId, calls } = setup("observer");
+test("an inactive member is refused before the loop sees the decision", async () => {
+  const { db, questionId, calls } = setup(false);
   const response = await handleLinkAskAnswer(post({ questionId, decision: "approve" }), {
     db,
     principal: { workspaceId: "ws", userId: "user-1" },
@@ -145,7 +145,7 @@ test("signed out, another session, a wrong decision or no note are refused", asy
 });
 
 test("a bypass approval sends each selected check with its reason", async () => {
-  const { db, questionId, calls } = setup("member", "bypass");
+  const { db, questionId, calls } = setup(true, "bypass");
   const options = {
     db,
     principal: { workspaceId: "ws", userId: "user-1" },
@@ -238,7 +238,7 @@ test("Stop on the Risk card goes to the loop without a note; it does not fit oth
   );
   expect(response?.status).toBe(200);
   expect(risk.calls).toMatchObject([{ decision: "stop", note: null, answeredBy: "linear-1" }]);
-  const bypass = setup("member", "bypass");
+  const bypass = setup(true, "bypass");
   const refused = await handleLinkAskAnswer(
     post({ questionId: bypass.questionId, decision: "stop" }),
     {
@@ -253,7 +253,7 @@ test("Stop on the Risk card goes to the loop without a note; it does not fit oth
 });
 
 test("approving a rule break needs a reason, which goes to the loop as the note", async () => {
-  const { db, questionId, calls } = setup("member", "rule");
+  const { db, questionId, calls } = setup(true, "rule");
   const options = {
     db,
     principal: { workspaceId: "ws", userId: "user-1" },

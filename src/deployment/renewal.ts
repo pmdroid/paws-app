@@ -11,7 +11,12 @@ export function validatePublicTls(source: EnvSource): PublicTls {
   const runtime = loadRuntime(source);
   if (runtime.configError !== null || runtime.publicUrl === null)
     throw new Error("Public HTTPS configuration is invalid.");
-  const url = new URL(runtime.publicUrl);
+  return validatePublicTlsFiles({ ...source, PAWS_PUBLIC_URL: runtime.publicUrl });
+}
+
+/** Validate only the public URL and certificate pair, without loading runtime configuration. */
+export function validatePublicTlsFiles(source: EnvSource): PublicTls {
+  const url = new URL(source.PAWS_PUBLIC_URL!);
   if (
     url.protocol !== "https:" ||
     url.username !== "" ||

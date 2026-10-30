@@ -194,8 +194,8 @@ const MAX_BODY = 4096;
  * `GET /api/runners/vm`, `POST /api/runners/vm` (with an optional `{ pool }`), `POST
  * /api/runners/vm/retry`, `/delete`, `GET /api/runners/vm/pools` (exe.dev's `pool list`) and
  * `POST /api/runners/vm/pool` (`pool adopt`). The server checks the workspace session and CSRF
- * before this runs; this refuses observers and inactive members. Without an exe.dev token every
- * route answers `{ available: false }`.
+ * before this runs; this refuses inactive members. Without an exe.dev token every route answers
+ * `{ available: false }`.
  */
 export function createMemberVmHttp(options: {
   db: Database;
@@ -225,14 +225,14 @@ export function createMemberVmHttp(options: {
     const pools = options.exeDev;
     if (pools === undefined && path.startsWith("/api/runners/vm/pool")) return null;
     const current = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (!current?.active || current.role === "observer")
+    if (!current?.active)
       return json(
         {
           error:
             path === "/api/runners/vm/delete"
-              ? "Observers cannot delete a VM."
+              ? "Only active workspace members can delete a VM."
               : path === "/api/runners/vm/pool"
-                ? "Observers cannot move a VM."
+                ? "Only active workspace members can move a VM."
                 : "Only workspace members can create a VM.",
         },
         403,
@@ -270,10 +270,7 @@ export function createMemberVmHttp(options: {
         const row = getMemberVm(db, body.id);
         if (row === null || row.workspaceId !== member.workspaceId) throw new MemberVmMissing();
         if (!mayDeleteMemberVm(db, row, member))
-          return json(
-            { error: "Only the VM's owner or a workspace owner or admin can move it." },
-            403,
-          );
+          return json({ error: "Only the VM's owner or a workspace admin can move it." }, 403);
         if (row.deleteStep !== null) return json({ error: "This VM is being deleted." }, 409);
         try {
           await pools.adoptVm(row.vmName, body.pool);

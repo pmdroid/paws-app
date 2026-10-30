@@ -4,7 +4,7 @@ import {
   applyWorkItemEvent,
   beginMergeCall,
   carriedAcceptFor,
-  closeoutPolicyDigest,
+  closeoutPolicyDigests,
   completeMergedItem,
   endMergeCall,
   enqueueJobOnce,
@@ -71,8 +71,11 @@ export type MergePublication = MergePull & {
 export type MergeCapabilities = OrderCapabilities & {
   publish(item: WorkItemRecord): Promise<MergePublication | MergeStep>;
   settings(item: WorkItemRecord, signal: AbortSignal): Promise<TaskMergeSettings>;
-  /** Closeout's policy digest for the item's worktree now: `""` without a policy, null unreadable. */
-  policyDigest(item: WorkItemRecord, worktree: string): string | null;
+  /**
+   * Closeout's policy digest for the item's worktree now, and the digest of its checks marked
+   * `recheck: true`: `""` without a policy or such a check, null when the policy is unreadable.
+   */
+  policyDigests(item: WorkItemRecord, worktree: string): { digest: string; recheck: string } | null;
   /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
   packages(repository: string): string[];
   assertReady(item: WorkItemRecord): Promise<void>;
@@ -157,9 +160,10 @@ export async function advanceMerge(
       number: pull.number,
       head: published.head,
     });
-    if (wait?.reason === "ahead" && policyChanged(db, item, caps, published.worktree)) {
-      // A policy change spent every waiting acceptance; each re-verifies now, in parallel up to
-      // the free slots, and keeps its place instead of waiting for its turn at the front.
+    if (wait?.reason === "ahead" && recheckChanged(db, item, caps, published.worktree)) {
+      // A change to a check marked `recheck: true` spent every waiting acceptance; each
+      // re-verifies now, in parallel up to the free slots, and keeps its place instead of
+      // waiting for its turn at the front.
       reverify(
         merge,
         { kind: "reverify", head: published.head, base: "", rebased: false },
@@ -188,8 +192,13 @@ export async function advanceMerge(
     ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
     remoteUrl: repository.remoteUrl,
     isCancelled: () => mergeHeld(merge),
-    ...(mergeSettings.mainMoved === "overlap"
-      ? { overlap: { packages: caps.packages(`${repository.owner}/${repository.repo}`) } }
+    ...(mergeSettings.mainMoved === "overlap" || mergeSettings.mainMoved === "green"
+      ? {
+          overlap: {
+            packages: caps.packages(`${repository.owner}/${repository.repo}`),
+            anyFiles: mergeSettings.mainMoved === "green",
+          },
+        }
       : {}),
   };
   const turn = await laneTurn({
@@ -209,7 +218,7 @@ export async function advanceMerge(
         db,
         item.id,
         facts,
-        caps.policyDigest(item, published.worktree),
+        caps.policyDigests(item, published.worktree),
         mergeSettings.mainMoved,
         currentRisk,
       );
@@ -441,8 +450,12 @@ function dependencyWait(item: WorkItemRecord, caps: MergeCapabilities): MergeSte
   return { kind: "wait", message, queued: true, reason: "dependencies" };
 }
 
-/** Closeout accepted the item under a policy digest that differs from the readable one now. */
-function policyChanged(
+/**
+ * Closeout accepted the item under a policy that differs from the readable one now in a check
+ * marked `recheck: true`, or under a run that did not record those checks. A change to any other
+ * check leaves the acceptance standing.
+ */
+function recheckChanged(
   db: Database,
   item: WorkItemRecord,
   caps: MergeCapabilities,
@@ -450,9 +463,11 @@ function policyChanged(
 ): boolean {
   const acceptedHead = getWorkItem(db, item.id)?.acceptedHead ?? null;
   if (acceptedHead === null) return false;
-  const accepted = closeoutPolicyDigest(db, item.id, acceptedHead);
-  const current = caps.policyDigest(item, worktree);
-  return accepted !== null && current !== null && accepted !== current;
+  const accepted = closeoutPolicyDigests(db, item.id, acceptedHead);
+  if (accepted === null) return false;
+  const current = caps.policyDigests(item, worktree);
+  if (current === null || accepted.digest === current.digest) return false;
+  return accepted.recheck !== current.recheck;
 }
 
 /**
@@ -463,11 +478,12 @@ function mergeFacts(
   db: Database,
   itemId: string,
   pull: PullFacts,
-  policyDigest: string | null,
+  policy: { digest: string; recheck: string } | null,
   mainMoved: TaskMergeSettings["mainMoved"],
   risk: { head: string; approval: RiskApproval },
 ): MergeFacts {
   const acceptedHead = getWorkItem(db, itemId)?.acceptedHead ?? null;
+  const accepted = acceptedHead === null ? null : closeoutPolicyDigests(db, itemId, acceptedHead);
   const { readiness } = pull;
   const carried =
     mainMoved !== "closeout" &&
@@ -482,9 +498,11 @@ function mergeFacts(
         ? null
         : {
             head: carried ? pull.head : acceptedHead,
-            policyDigest: closeoutPolicyDigest(db, itemId, acceptedHead),
+            policyDigest: accepted?.digest ?? null,
+            recheckDigest: accepted?.recheck ?? null,
           },
-    policyDigest,
+    policyDigest: policy?.digest ?? null,
+    recheckDigest: policy?.recheck ?? null,
     containsMain: pull.containsMain,
     ...(pull.apart === undefined ? {} : { apart: pull.apart }),
     ci:

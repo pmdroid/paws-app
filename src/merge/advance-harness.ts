@@ -42,6 +42,9 @@ const exec = promisify(execFile);
 /** The policy digest the harness's Closeout runs record. */
 export const CLOSEOUT_DIGEST = "sha256:harness-policy";
 
+/** The digest of the checks marked `recheck: true` the harness's Closeout runs record. */
+export const CLOSEOUT_RECHECK_DIGEST = "sha256:harness-recheck";
+
 type CheckNodes = ReturnType<
   typeof fakeMergeReadiness
 >["data"]["repository"]["object"]["statusCheckRollup"]["contexts"]["nodes"];
@@ -127,6 +130,11 @@ export async function mergeHarness(
     reviews: new Map<number, "REVIEW_REQUIRED" | "CHANGES_REQUESTED" | "APPROVED">(),
     /** The digest the lane reads now; acceptances record {@link CLOSEOUT_DIGEST}. */
     policyDigest: CLOSEOUT_DIGEST as string | null,
+    /**
+     * The digest of the checks marked `recheck: true` the lane reads now; acceptances record
+     * {@link CLOSEOUT_RECHECK_DIGEST}.
+     */
+    recheckDigest: CLOSEOUT_RECHECK_DIGEST,
     ciFixAttempts: 3,
     stopped: false,
     orders: new Map<string, TaskMergeSettings["order"]>(),
@@ -301,7 +309,14 @@ export async function mergeHarness(
     finishCloseoutProgress(
       db,
       id,
-      { taskId: id, base, head, policyDigest: CLOSEOUT_DIGEST, policyPath: null },
+      {
+        taskId: id,
+        base,
+        head,
+        policyDigest: CLOSEOUT_DIGEST,
+        policyPath: null,
+        recheckDigest: CLOSEOUT_RECHECK_DIGEST,
+      },
       "accepted",
       clock.now(),
     );
@@ -403,7 +418,10 @@ export async function mergeHarness(
         order: state.orders.get(id) ?? settings.order,
         resolved: {},
       }),
-      policyDigest: () => state.policyDigest,
+      policyDigests: () =>
+        state.policyDigest === null
+          ? null
+          : { digest: state.policyDigest, recheck: state.recheckDigest },
       packages: () => state.packages,
       assertReady: async () => {},
       riskApproval: async (_, published) => state.risk(published.head),

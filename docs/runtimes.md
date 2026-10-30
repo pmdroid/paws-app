@@ -25,21 +25,15 @@ Paws reads `mise.toml`, `.mise.toml`, and `.tool-versions`, in that order of pre
 
 Paws reads these files from `origin/main`, the same way it reads `.agents/closeout.yaml`. Changing them on a task branch has no effect until that change merges. Each file may be at most 64 KiB.
 
-## Allowed tools and backends
+## Tools and backends
 
-| Name                            | Notes                                                                                                   |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `node`                          | `nodejs` is accepted as an alias.                                                                       |
-| `python`                        |                                                                                                         |
-| `go`                            | `golang` is accepted as an alias.                                                                       |
-| `java`                          |                                                                                                         |
-| `ruby`                          |                                                                                                         |
-| `rust`                          |                                                                                                         |
-| `bun`                           |                                                                                                         |
-| `deno`                          |                                                                                                         |
-| `aqua:<owner>/<repo>[/<extra>]` | Any tool from the [aqua registry](https://github.com/aquaproj/aqua-registry), such as `"aqua:cli/cli"`. |
+Paws carries any mise tool: a registry short name such as `uv`, `ruff` or `golangci-lint`, a core tool such as `node`, or a `backend:name` entry such as `aqua:cli/cli`, `npm:prettier`, `cargo:ripgrep`, `pipx:black` or `go:github.com/owner/repo/cmd/tool`. `nodejs` and `golang` are accepted as aliases, and core tools may be written with a `core:` prefix, such as `"core:node"`.
 
-The core tools may also be written with a `core:` prefix, such as `"core:node"`. Every other backend is refused, including `npm:`, `pipx:`, `cargo:`, `go:`, `ubi:`, `github:`, `vfox:`, `asdf:`, and plugins. A refused tool installs nothing and leaves one line in the task's Linear session. The rest of the list still installs.
+A tool name cannot start with `-` and may contain only letters, digits and `@ . _ / + -` after its optional `backend:` prefix. Any other name is refused, installs nothing, and leaves one line in the task's Linear session. The rest of the list still installs.
+
+Backends such as `npm:`, `cargo:`, `pipx:` and `go:` build or install the package with its own scripts on the runner, in the runtime cache every task on that runner shares. They need their toolchain: list `node`, `rust`, `python` or `go` before them in the same config, and Paws puts each runtime it has installed on `PATH` for the installs after it.
+
+Runners before 0.1.52 accept only core tools and `aqua:` tools. Paws sends those runners only that part of the list and says in Linear which tools it held back.
 
 ## Versions
 

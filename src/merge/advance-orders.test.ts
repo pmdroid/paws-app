@@ -204,7 +204,27 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(mergedOrder(h, ids)).toEqual(["ENG-142", "ENG-143", "ENG-141", "ENG-144"]);
   });
 
-  test("a policy change re-verifies every waiting task at once, each keeping its place", async () => {
+  test("a policy digest change alone leaves every waiting task accepted and in its place", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    const ids = ["ENG-161", "ENG-162", "ENG-163"];
+    for (const id of ids) await h.addItem(id);
+    h.state.ci = pendingCi;
+    for (const id of ids) {
+      await h.pass(id);
+      h.clock.advance(1_000);
+    }
+    h.state.policyDigest = "sha256:changed-policy";
+    for (const id of ids.toReversed()) expect(await h.pass(id)).toMatchObject({ kind: "wait" });
+    expect(ids.map((id) => getWorkItem(h.db, id)?.state)).toEqual(ids.map(() => "merge_queue"));
+    expect(listJobs(h.db).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
+    h.state.ci = () => undefined;
+    // The front merges on the acceptance it already had; nothing ran through Closeout again.
+    expect(await passUntilMerged(h, "ENG-161")).toEqual({ kind: "merged" });
+    expect(mergedOrder(h, ids)).toEqual(["ENG-161"]);
+    expect(h.verified).toEqual([]);
+  });
+
+  test("a `recheck: true` check change re-verifies every waiting task at once, each keeping its place", async () => {
     const h = await start({ settings: { order: "queue" } });
     const ids = ["ENG-151", "ENG-152", "ENG-153", "ENG-154", "ENG-155"];
     for (const id of ids) await h.addItem(id);
@@ -214,6 +234,7 @@ describe("advanceMerge in the repository merge queue", () => {
       h.clock.advance(1_000);
     }
     h.state.policyDigest = "sha256:changed-policy";
+    h.state.recheckDigest = "sha256:changed-recheck";
     // Behind the front, each waiting task sends itself to Closeout without waiting for its turn.
     for (const id of ids.toReversed()) expect(await h.pass(id)).toEqual({ kind: "returned" });
     expect(ids.map((id) => getWorkItem(h.db, id)?.state)).toEqual(ids.map(() => "verifying"));

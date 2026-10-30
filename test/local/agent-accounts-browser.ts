@@ -53,7 +53,7 @@ const server = Bun.serve({
     if (url.pathname === "/api/status")
       return Response.json({ ...statusFixture(), source: "live" });
     const match = url.pathname.match(
-      /^\/api\/runners\/runner-a\/accounts\/(claude|codex|grok)\/login(?:\/([^/]+))?(\/input)?$/,
+      /^\/api\/runners\/runner-a\/accounts\/(claude|codex|grok|opencode)\/login(?:\/([^/]+))?(\/input)?$/,
     );
     if (url.pathname === "/api/runners")
       return Response.json({
@@ -65,7 +65,7 @@ const server = Bun.serve({
       return Response.json({ ownerUserId: "person", sharing: 0 });
     if (url.pathname === "/api/runners/runner-a/accounts")
       return Response.json({
-        accounts: ["claude", "codex", "grok"].map((agent) => ({
+        accounts: ["claude", "codex", "grok", "opencode"].map((agent) => ({
           agent,
           connected: sessions[agent]?.state === "connected",
           updatedAt: null,
@@ -90,7 +90,8 @@ const server = Bun.serve({
         agent,
         state: "waiting",
         expiresAt: Date.now() + 120000,
-        terminal: agent === "claude" ? "Paste your authorization code:" : "",
+        terminal:
+          agent === "claude" || agent === "opencode" ? "Paste your authorization code:" : "",
         authorization:
           agent === "codex"
             ? { url: "https://auth.openai.com/codex/device", message: "Enter code TEST-1234" }
@@ -206,6 +207,22 @@ try {
     .locator('[data-agent="grok"] [data-agent-status]')
     .filter({ hasText: "Sign-in cancelled" })
     .waitFor();
+  await page.getByRole("button", { name: "Sign in to OpenCode", exact: true }).click();
+  await page.getByLabel("Reply to OpenCode").fill("synthetic-opencode-code");
+  await page
+    .locator('[data-agent="opencode"]')
+    .getByRole("button", { name: "Send reply", exact: true })
+    .click();
+  await page
+    .locator('[data-agent="opencode"] [data-agent-status]')
+    .filter({ hasText: "Connected to your account" })
+    .waitFor();
+  if (
+    !calls.some(
+      (call) => call.path.includes("/opencode/") && call.body?.text === "synthetic-opencode-code\r",
+    )
+  )
+    throw new Error("OpenCode terminal reply was not delivered");
   if (errors.length) throw new Error(errors.join("\n"));
   if (
     !calls.some((c) => c.body?.accept === true) ||

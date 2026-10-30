@@ -5,6 +5,7 @@ import {
   listReviewFindings,
   reviewFindingItems,
   setReviewFindingStatus,
+  removeFindingFromOpenGroups,
   workspaceMember,
   type ReviewFindingItem,
   type ReviewFindingRecord,
@@ -68,7 +69,7 @@ function list(options: FindingsOptions, url: URL): FindingsResponse {
   const matching = rows.filter(({ row }) => !filter.severity || row.severity === filter.severity);
   const every = visible(options, listReviewFindings(options.db));
   return {
-    findings: matching.slice(0, FINDINGS_LIMIT).map(({ row, items }) => view(row, items)),
+    findings: matching.slice(0, FINDINGS_LIMIT).map(({ row, items }) => findingView(row, items)),
     total: matching.length,
     counts,
     repositories: [...new Set(every.map(({ row }) => row.repository))].sort(),
@@ -98,7 +99,7 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
   const { db, principal } = options;
   if (principal === undefined) return Response.json({ error: "Sign in to Paws." }, { status: 401 });
   const member = workspaceMember(db, principal.workspaceId, principal.userId);
-  if (!member?.active || member.role === "observer")
+  if (!member?.active)
     return Response.json({ error: "Your membership can't change findings." }, { status: 403 });
   let body: unknown;
   try {
@@ -114,6 +115,17 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
     listReviewFindings(db).filter((row) => row.id === action.id),
   );
   if (shown.length === 0) return Response.json({ error: "Finding not found." }, { status: 404 });
+  if (
+    db
+      .query(`SELECT 1 FROM finding_group
+      WHERE workspace_id=? AND status='open' AND action IS NOT NULL
+      AND EXISTS(SELECT 1 FROM json_each(member_ids) WHERE value=?)`)
+      .get(principal.workspaceId, action.id)
+  )
+    return Response.json(
+      { error: "This finding has a group action in progress. Finish that action first." },
+      { status: 409 },
+    );
   const now = (options.now ?? Date.now)();
   const by = member.name || member.email || principal.userId;
   const changed =
@@ -136,6 +148,7 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
       },
       { status: 409 },
     );
+  removeFindingFromOpenGroups(db, principal.workspaceId, action.id);
   auditWorkspaceAccess(db, {
     workspaceId: principal.workspaceId,
     userId: principal.userId,
@@ -143,7 +156,7 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
     subject: String(action.id),
     now,
   });
-  return Response.json({ finding: view(changed, shown[0]!.items) }, { headers: NO_STORE });
+  return Response.json({ finding: findingView(changed, shown[0]!.items) }, { headers: NO_STORE });
 }
 
 function parseAction(body: unknown): FindingAction | string {
@@ -159,7 +172,10 @@ function parseAction(body: unknown): FindingAction | string {
   return { id, action, reason: text };
 }
 
-function view(row: ReviewFindingRecord, items: readonly ReviewFindingItem[]): FindingView {
+export function findingView(
+  row: ReviewFindingRecord,
+  items: readonly ReviewFindingItem[],
+): FindingView {
   return {
     id: row.id,
     repository: row.repository,

@@ -20,6 +20,8 @@ export type CloseoutProgressIdentity = {
   head: string;
   policyDigest: string;
   policyPath: string | null;
+  /** The digest of the policy's checks marked `recheck: true`, `""` when none is. */
+  recheckDigest?: string;
 };
 
 export type CloseoutProgressStep = {

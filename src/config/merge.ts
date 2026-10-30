@@ -7,6 +7,15 @@ import type { PawsConfigFile } from "./file";
 export const DEFAULT_CI_FIX_ATTEMPTS = 3;
 export const MAX_CI_FIX_ATTEMPTS = 10;
 
+/**
+ * How long Paws collects pull request comments and changes-requested reviews before it hands them
+ * to the agent together: `quietSeconds` after the latest one, and never longer than
+ * `maxWaitSeconds` after the first.
+ */
+export type CommentWait = { quietSeconds: number; maxWaitSeconds: number };
+export const DEFAULT_COMMENT_WAIT: CommentWait = { quietSeconds: 60, maxWaitSeconds: 300 };
+export const MAX_COMMENT_WAIT_SECONDS = 3600;
+
 /** `queue`: one pull request at a time per repository. `ci-green`: each merges on its own green CI. */
 export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
 /**
@@ -14,7 +23,7 @@ export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
  * once its CI is green. `overlap`: merge without a rebase when main changed none of the pull
  * request's files or packages. `closeout`: rebase and run Closeout again on the new head.
  */
-export const MAIN_MOVED = ["overlap", "ci", "closeout"] as const;
+export const MAIN_MOVED = ["overlap", "green", "ci", "closeout"] as const;
 
 export type MergeOrder = (typeof MERGE_ORDERS)[number];
 export type MainMoved = (typeof MAIN_MOVED)[number];
@@ -42,11 +51,14 @@ export type MergeSettings = MergePolicy & {
   ciFixAttempts: number;
   autoApproveHighRisk: boolean;
   repositories: MergeRepositories;
+  commentWait: CommentWait;
 };
 /** The `[merge]` tables as written. Missing keys are not rendered. */
 export type StoredMerge = Partial<MergeChoice> & {
   ciFixAttempts?: number;
   autoApproveHighRisk?: boolean;
+  commentQuietSeconds?: number;
+  commentMaxWaitSeconds?: number;
   projects: Record<string, MergeOverride>;
   rules: MergeRule[];
   repositories?: MergeRepositories;
@@ -172,6 +184,12 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
       ? {}
       : { autoApproveHighRisk: config.autoApproveHighRisk }),
     ...(config.ciFixAttempts === undefined ? {} : { ciFixAttempts: config.ciFixAttempts }),
+    ...(config.commentQuietSeconds === undefined
+      ? {}
+      : { commentQuietSeconds: config.commentQuietSeconds }),
+    ...(config.commentMaxWaitSeconds === undefined
+      ? {}
+      : { commentMaxWaitSeconds: config.commentMaxWaitSeconds }),
     projects: config.mergeProjects ?? {},
     rules: config.mergeRules ?? [],
     ...(config.mergeRepositories ? { repositories: config.mergeRepositories } : {}),
@@ -190,7 +208,49 @@ export function readMergeSettings(config: PawsConfigFile): MergeSettings {
     repositories: stored.repositories ?? {},
     autoApproveHighRisk: stored.autoApproveHighRisk ?? true,
     ciFixAttempts: Math.min(stored.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS),
+    commentWait: commentWait(stored),
   };
+}
+
+/** The stored comment wait, within bounds, with the longest wait never below the quiet time. */
+function commentWait(stored: StoredMerge): CommentWait {
+  const bound = (value: number | undefined, fallback: number) =>
+    Math.min(Math.max(value ?? fallback, 0), MAX_COMMENT_WAIT_SECONDS);
+  const quietSeconds = bound(stored.commentQuietSeconds, DEFAULT_COMMENT_WAIT.quietSeconds);
+  return {
+    quietSeconds,
+    maxWaitSeconds: Math.max(
+      bound(stored.commentMaxWaitSeconds, DEFAULT_COMMENT_WAIT.maxWaitSeconds),
+      quietSeconds,
+    ),
+  };
+}
+
+/** The Merging settings body's `commentWait`: whole seconds, the longest wait at least the quiet time. */
+export function parseCommentWait(value: unknown): CommentWait {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("commentWait must be an object");
+  const { quietSeconds, maxWaitSeconds, ...rest } = value as Record<string, unknown>;
+  if (Object.keys(rest).length > 0) throw new Error("commentWait has an unknown key");
+  const seconds = (name: string, field: unknown) => {
+    if (
+      typeof field !== "number" ||
+      !Number.isInteger(field) ||
+      field < 0 ||
+      field > MAX_COMMENT_WAIT_SECONDS
+    )
+      throw new Error(
+        `commentWait.${name} must be a whole number of seconds from 0 to ${MAX_COMMENT_WAIT_SECONDS}`,
+      );
+    return field;
+  };
+  const wait = {
+    quietSeconds: seconds("quietSeconds", quietSeconds),
+    maxWaitSeconds: seconds("maxWaitSeconds", maxWaitSeconds),
+  };
+  if (wait.maxWaitSeconds < wait.quietSeconds)
+    throw new Error("commentWait.maxWaitSeconds must be at least the quiet time");
+  return wait;
 }
 
 /**
@@ -415,6 +475,12 @@ export function renderMergeSettings(settings: StoredMerge): string {
     ...(settings.ciFixAttempts === undefined
       ? []
       : [`ci_fix_attempts = ${settings.ciFixAttempts}`]),
+    ...(settings.commentQuietSeconds === undefined
+      ? []
+      : [`comment_quiet_seconds = ${settings.commentQuietSeconds}`]),
+    ...(settings.commentMaxWaitSeconds === undefined
+      ? []
+      : [`comment_max_wait_seconds = ${settings.commentMaxWaitSeconds}`]),
   ];
   return [
     lines.length === 0 ? "" : `\n[merge]\n${lines.join("\n")}\n`,
@@ -467,13 +533,15 @@ export function setMergeSettingsText(current: string, settings: StoredMerge): st
 
 /**
  * Write the Merging settings, keeping `ci_fix_attempts` and every other table. `riskPaths`,
- * when given, replaces each repository's high-risk globs.
+ * when given, replaces each repository's high-risk globs; `wait`, when given, replaces the comment
+ * wait.
  */
 export function writeMergePolicy(
   path: string,
   policy: MergePolicy,
   current: StoredMerge,
   riskPaths?: Record<string, string[]>,
+  wait?: CommentWait,
 ): void {
   const text = existsSync(path) ? readFileSync(path, "utf8") : "";
   const repositories =
@@ -488,6 +556,16 @@ export function writeMergePolicy(
         ? {}
         : { autoApproveHighRisk: current.autoApproveHighRisk }),
       ...(current.ciFixAttempts === undefined ? {} : { ciFixAttempts: current.ciFixAttempts }),
+      ...(wait
+        ? { commentQuietSeconds: wait.quietSeconds, commentMaxWaitSeconds: wait.maxWaitSeconds }
+        : {
+            ...(current.commentQuietSeconds === undefined
+              ? {}
+              : { commentQuietSeconds: current.commentQuietSeconds }),
+            ...(current.commentMaxWaitSeconds === undefined
+              ? {}
+              : { commentMaxWaitSeconds: current.commentMaxWaitSeconds }),
+          }),
       projects: policy.projects,
       rules: policy.rules,
       ...(repositories && Object.keys(repositories).length ? { repositories } : {}),

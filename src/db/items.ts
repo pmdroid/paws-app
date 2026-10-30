@@ -42,6 +42,10 @@ export type WorkItemRecord = {
   title: string;
   state: WorkItemState;
   branchName: string;
+  /** The earlier item of the same issue whose branch and pull request this one continues. */
+  continuesItemId?: string | null;
+  /** The pushed branch this item took over, `paws/<key>`. */
+  continuesBranch?: string | null;
   position: number;
   version: number;
   checkpoint: Checkpoint | null;
@@ -73,6 +77,8 @@ type ItemSql = {
   title: string;
   state: WorkItemState;
   branch_name: string;
+  continues_item_id?: string | null;
+  continues_branch?: string | null;
   position: number;
   version: number;
   checkpoint: string | null;
@@ -94,6 +100,23 @@ type ItemSql = {
   brief: string | null;
 };
 
+/** Work item columns with the branch an item continues, from `item_continuation`. */
+const CONTINUED_ITEM_COLUMNS = `work_item.*, continuation.previous_item_id AS continues_item_id,
+  continuation.branch AS continues_branch
+  FROM work_item LEFT JOIN item_continuation continuation ON continuation.item_id = work_item.id`;
+const migratedContinuation = new WeakSet<Database>();
+
+/** A database migrated only partway, as migration tests build, has no `item_continuation` yet. */
+function itemColumns(db: Database): string {
+  if (migratedContinuation.has(db)) return CONTINUED_ITEM_COLUMNS;
+  const table = db
+    .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_continuation'")
+    .get();
+  if (table === null) return "* FROM work_item";
+  migratedContinuation.add(db);
+  return CONTINUED_ITEM_COLUMNS;
+}
+
 export class TransitionRejectedError extends Error {
   readonly reason: "illegal_transition" | "terminal";
 
@@ -105,13 +128,13 @@ export class TransitionRejectedError extends Error {
 }
 
 export function getWorkItem(db: Database, id: string): WorkItemRecord | null {
-  const row = db.query<ItemSql, [string]>("SELECT * FROM work_item WHERE id = ?").get(id);
+  const row = db.query<ItemSql, [string]>(`SELECT ${itemColumns(db)} WHERE id = ?`).get(id);
   return row === null ? null : mapItem(row);
 }
 
 export function listWorkItems(db: Database): WorkItemRecord[] {
   return db
-    .query<ItemSql, []>("SELECT * FROM work_item ORDER BY created_at, id")
+    .query<ItemSql, []>(`SELECT ${itemColumns(db)} ORDER BY created_at, id`)
     .all()
     .map(mapItem);
 }
@@ -124,7 +147,7 @@ export function listWorkItemsByStates(
   const placeholders = states.map(() => "?").join(", ");
   return db
     .query<ItemSql, string[]>(
-      `SELECT * FROM work_item WHERE state IN (${placeholders}) ORDER BY created_at, id`,
+      `SELECT ${itemColumns(db)} WHERE state IN (${placeholders}) ORDER BY created_at, id`,
     )
     .all(...states)
     .map(mapItem);
@@ -171,8 +194,13 @@ export function applyWorkItemEvent(
       throw new TransitionRejectedError(result.reason);
     }
     if (event === "take_over") halt(db, current, record.now ?? Date.now());
+    // A state whose time is not tracked at all (queued, the merge queue) drops the awake clock's
+    // baseline, so the next counted state starts from its own first tick. Otherwise hours in the
+    // merge queue would count as agent time once a review sends the item back to the agent.
+    const untracked = awakeCategory(result.to, null) === null;
     const updated = db.run(
-      "UPDATE work_item SET state = ?, version = version + 1 WHERE id = ? AND state = ?",
+      `UPDATE work_item SET state = ?, version = version + 1${untracked ? ", last_mono_ms = NULL" : ""}
+       WHERE id = ? AND state = ?`,
       [result.to, id, current.state],
     );
     if (updated.changes === 0) {
@@ -525,6 +553,32 @@ function cancelAgentJobs(db: Database, itemId: string, now: number): void {
   );
 }
 
+/** A resume the time limit cancelled before the agent started it, with its handoff. */
+export type HeldHandoff = { jobId: number; handoff: string };
+
+/**
+ * Handoffs of resume jobs the time limit cancelled that no later restart carried yet, oldest
+ * first. A review or comment restart that the cap cut off waits here for a Continue answer.
+ */
+export function heldHandoffs(db: Database, itemId: string): HeldHandoff[] {
+  return db
+    .query<{ id: number; handoff: string | null }, [string, string]>(
+      `SELECT id, json_extract(payload, '$.handoff') AS handoff FROM job
+       WHERE queue = ? AND status = 'cancelled' AND last_error = 'time_limit'
+         AND json_extract(payload, '$.itemId') = ?
+       ORDER BY id`,
+    )
+    .all(JOB_KIND.resume, itemId)
+    .filter((row) => typeof row.handoff === "string" && row.handoff.trim() !== "")
+    .map((row) => ({ jobId: row.id, handoff: row.handoff! }));
+}
+
+/** Marks held handoffs as carried by a later restart, so none reaches the agent twice. */
+export function markHandoffsCarried(db: Database, held: readonly HeldHandoff[]): void {
+  for (const entry of held)
+    db.run("UPDATE job SET last_error = 'time_limit_carried' WHERE id = ?", [entry.jobId]);
+}
+
 /**
  * Without a Linear session to ask in, accepted work pauses at the time limit
  * instead of failing. The cap already allows another hour, so resuming it from
@@ -561,6 +615,7 @@ function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean 
   const sessionId = item.sessionKey;
   if (sessionId === null) return false;
   cancelAgentJobs(db, item.id, now);
+  const held = heldHandoffs(db, item.id).length > 0;
   if (item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
   enqueueJobOnce(db, {
     queue: "item.ask",
@@ -569,7 +624,7 @@ function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean 
       itemId: item.id,
       kind: "time-limit",
       reason: "time_limit",
-      body: timeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item)),
+      body: timeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item), held),
       options: [...TIME_LIMIT_OPTIONS],
     },
     now,
@@ -842,6 +897,8 @@ function mapItem(row: ItemSql): WorkItemRecord {
     title: row.title,
     state: row.state,
     branchName: row.branch_name,
+    continuesItemId: row.continues_item_id ?? null,
+    continuesBranch: row.continues_branch ?? null,
     position: row.position,
     version: row.version,
     checkpoint: parseCheckpoint(row.checkpoint),

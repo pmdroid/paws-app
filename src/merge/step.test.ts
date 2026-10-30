@@ -11,8 +11,9 @@ function facts(overrides: Partial<MergeFacts> = {}): MergeFacts {
   return {
     head: S,
     headMoved: false,
-    accept: { head: S, policyDigest: "sha256:policy" },
+    accept: { head: S, policyDigest: "sha256:policy", recheckDigest: "" },
     policyDigest: "sha256:policy",
+    recheckDigest: "",
     containsMain: true,
     ci: "green",
     unresolvedThreads: 0,
@@ -134,15 +135,36 @@ describe("mergeable(S)", () => {
     });
   });
 
-  test("an accept row for another head or another policy digest does not count", () => {
+  test("a policy digest change alone leaves S accepted", () => {
+    expect(mergeable(facts({ policyDigest: "sha256:changed" }))).toEqual({ ok: true });
+    expect(
+      mergeable(
+        facts({
+          accept: { head: S, policyDigest: "sha256:policy", recheckDigest: "sha256:recheck" },
+          policyDigest: "sha256:changed",
+          recheckDigest: "sha256:recheck",
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("an accept row for another head, or a changed `recheck: true` check, does not count", () => {
     expect(mergeable(facts({ accept: { head: S2, policyDigest: "sha256:policy" } }))).toEqual({
       ok: false,
       block: "not_accepted",
     });
-    expect(mergeable(facts({ policyDigest: "sha256:changed" }))).toEqual({
-      ok: false,
-      block: "not_accepted",
-    });
+    expect(
+      mergeable(facts({ policyDigest: "sha256:changed", recheckDigest: "sha256:recheck" })),
+    ).toEqual({ ok: false, block: "not_accepted" });
+    // A run that did not record its `recheck: true` checks cannot show they are unchanged.
+    expect(
+      mergeable(
+        facts({
+          accept: { head: S, policyDigest: "sha256:policy", recheckDigest: null },
+          policyDigest: "sha256:changed",
+        }),
+      ),
+    ).toEqual({ ok: false, block: "not_accepted" });
     expect(mergeable(facts({ policyDigest: null }))).toEqual({
       ok: false,
       block: "not_accepted",

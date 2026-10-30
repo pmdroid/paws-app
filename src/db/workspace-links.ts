@@ -43,7 +43,7 @@ export function saveWorkspaceIdentityLink(
     if (!member?.active) throw new Error("Choose an active workspace member.");
     if (input.method === "manual" || input.actorId !== undefined) {
       const actor = workspaceMember(db, input.workspaceId, input.actorId ?? "");
-      if (!actor?.active || !["owner", "admin"].includes(actor.role))
+      if (!actor?.active || actor.role !== "admin")
         throw new Error("Workspace administration is required.");
     }
     const changed = db.run(

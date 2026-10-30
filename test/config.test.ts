@@ -86,6 +86,18 @@ describe("config", () => {
     );
   });
 
+  test("loads the operator's Linear organization binding from the environment", () => {
+    const home = tempHome();
+    expect(loadRuntime({ PAWS_HOME: home }).linearOrganizationId).toBeNull();
+    expect(
+      loadRuntime({ PAWS_HOME: home, LINEAR_ORGANIZATION_ID: "  org-operator  " })
+        .linearOrganizationId,
+    ).toBe("org-operator");
+    expect(
+      loadRuntime({ PAWS_HOME: home, LINEAR_ORGANIZATION_ID: "  " }).linearOrganizationId,
+    ).toBeNull();
+  });
+
   test("reads overrides and rejects a bad port", () => {
     const env = loadEnv({
       PAWS_HOME: "/tmp/paws-home",
@@ -239,7 +251,27 @@ describe("config", () => {
       grok: { path: "/opt/grok", allowApiKey: true },
     });
     writeFileSync(paths.configFile, '[agents]\nimplementer = "gpt"\n');
-    expect(() => loadConfigFile(paths.configFile)).toThrow(/claude, grok, or codex/);
+    expect(() => loadConfigFile(paths.configFile)).toThrow(/claude, grok, codex, or opencode/);
+  });
+
+  test("parses agents.opencode path", () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
+    ensureLayout(paths);
+    writeFileSync(
+      paths.configFile,
+      [
+        "[agents]",
+        'implementer = "opencode"',
+        "",
+        "[agents.opencode]",
+        'path = "/opt/opencode"',
+        "",
+      ].join("\n"),
+    );
+    const parsed = loadConfigFile(paths.configFile);
+    expect(parsed.agents.implementer).toBe("opencode");
+    expect(parsed.agents.opencode).toEqual({ path: "/opt/opencode" });
   });
 
   test("writeImplementer keeps grok path and other keys", () => {

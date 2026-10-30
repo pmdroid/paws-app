@@ -11,7 +11,12 @@ import {
   listRebaseReturns,
   recordPullReview,
 } from "../db";
-import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
+import {
+  CLOSEOUT_RECHECK_DIGEST,
+  mergeHarness,
+  pendingCi,
+  type MergeHarness,
+} from "./advance-harness";
 import { REBASE_CONFLICT_INSTRUCTION, REBASE_CONFLICT_THOUGHT } from "./orders";
 
 let harness: MergeHarness | undefined;
@@ -148,11 +153,25 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     expect(h.bodies()).toEqual([]);
   });
 
-  test("a policy that changed or cannot be read since Closeout accepted the head sends it back", async () => {
-    for (const digest of ["sha256:changed-policy", null]) {
+  test("a policy digest change alone leaves the accepted head accepted, and it merges", async () => {
+    const h = await start();
+    const item = await h.addItem("ENG-1");
+    h.state.policyDigest = "sha256:changed-policy";
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
+    expect(reverifyJobs(h)).toEqual([]);
+    expect(h.verified).toEqual([]);
+  });
+
+  test("a change to a `recheck: true` check, or a policy that cannot be read, sends the head back", async () => {
+    for (const change of [
+      { digest: "sha256:changed-policy", recheck: "sha256:changed-recheck" },
+      { digest: null, recheck: CLOSEOUT_RECHECK_DIGEST },
+    ]) {
       const h = await start();
       const item = await h.addItem("ENG-1");
-      h.state.policyDigest = digest;
+      h.state.policyDigest = change.digest;
+      h.state.recheckDigest = change.recheck;
       expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
       expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
       expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${item.accepted}:merge:1`]);
@@ -381,13 +400,14 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     expect(reverifyJobs(h)).toEqual([]);
   });
 
-  test("ci: a policy that changed since Closeout accepted sends the rebased head to Closeout", async () => {
+  test("ci: a `recheck: true` check that changed since Closeout accepted sends the rebased head to Closeout", async () => {
     const h = await start({ settings: { mainMoved: "ci" } });
     await h.addItem("ENG-1");
     await h.moveMain("side.txt", "side\n");
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
     const head = await h.remoteHead("ENG-1");
     h.state.policyDigest = "sha256:changed-policy";
+    h.state.recheckDigest = "sha256:changed-recheck";
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
     expect(reverifyJobs(h)).toEqual([`reverify:ENG-1:${head}:merge:2`]);
@@ -432,6 +452,26 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([head]);
     expect(reverifyJobs(h)).toEqual([]);
+  });
+
+  test("green: main changed the same package, and the accepted head still merges without a rebase", async () => {
+    const h = await start({ settings: { mainMoved: "green" } });
+    h.state.packages = ["apps/*"];
+    const item = await h.addItem("ENG-1", { file: "apps/web/a.txt", content: "a\n" });
+    await h.moveMain("apps/web/b.txt", "b\n");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
+    expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
+    expect(reverifyJobs(h)).toEqual([]);
+  });
+
+  test("green: GitHub's up-to-date rule still updates the branch and waits for CI", async () => {
+    const h = await start({ settings: { mainMoved: "green" } });
+    h.state.upToDateRule = true;
+    const item = await h.addItem("ENG-1");
+    await h.moveMain("side.txt", "side\n");
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(await h.remoteHead("ENG-1")).not.toBe(item.accepted);
   });
 
   test("overlap: GitHub's up-to-date rule updates the branch and waits for CI", async () => {

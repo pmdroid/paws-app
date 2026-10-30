@@ -91,7 +91,7 @@ export function fakeStatusProvider(): StatusProvider {
 const CORS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-  "Access-Control-Allow-Headers": "Accept, Content-Type, If-None-Match, ngrok-skip-browser-warning",
+  "Access-Control-Allow-Headers": "Accept, Content-Type, If-None-Match",
   "Access-Control-Expose-Headers": `ETag, ${GENERATED_AT_HEADER}`,
   "Access-Control-Max-Age": "86400",
 };

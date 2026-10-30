@@ -49,8 +49,8 @@ export async function handleWorkspaceAdministration(
       { status: 403, headers: { "cache-control": "no-store" } },
     );
   };
+  if (!isWorkspaceAdmin(principal.role)) return deny("Workspace administration is required.");
   if (path === "/api/workspaces/audit") {
-    if (!isWorkspaceAdmin(principal.role)) return deny("Workspace administration is required.");
     if (request.method !== "GET")
       return Response.json({ error: "Method not allowed" }, { status: 405 });
     const cursor = new URL(request.url).searchParams.get("before");
@@ -65,7 +65,6 @@ export async function handleWorkspaceAdministration(
       headers: { "cache-control": "no-store" },
     });
   }
-  if (principal.role !== "owner") return deny("Workspace ownership is required.");
   if (request.method === "GET")
     return Response.json(
       path.endsWith("/members")
@@ -99,7 +98,7 @@ export async function handleWorkspaceAdministration(
         Object.keys(body).length !== 2 ||
         typeof body["userId"] !== "string" ||
         typeof body["role"] !== "string" ||
-        !["owner", "admin", "member", "observer"].includes(body["role"])
+        !["admin", "member"].includes(body["role"])
       )
         throw new Error("Choose a workspace member and role.");
       const member = workspaceMember(options.db, principal.workspaceId, body["userId"]);

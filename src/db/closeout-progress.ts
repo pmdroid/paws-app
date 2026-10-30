@@ -9,6 +9,8 @@ export type CloseoutProgressIdentity = {
   head: string;
   policyDigest: string;
   policyPath: string | null;
+  /** The digest of the policy's checks marked `recheck: true`, `""` when none is. */
+  recheckDigest?: string;
 };
 
 export type CloseoutStepWrite = {
@@ -104,12 +106,13 @@ export function ensureCloseoutProgress(
   immediate(db, () => {
     db.run(
       `INSERT INTO closeout_progress (
-         id, item_id, task_id, base, head, policy_digest, policy_path, decision, started_at, updated_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+         id, item_id, task_id, base, head, policy_digest, policy_path, recheck_digest, decision, started_at, updated_at, finished_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
        ON CONFLICT(id) DO UPDATE SET
          updated_at = excluded.updated_at,
          base = excluded.base,
          policy_path = COALESCE(excluded.policy_path, closeout_progress.policy_path),
+         recheck_digest = COALESCE(excluded.recheck_digest, closeout_progress.recheck_digest),
          decision = CASE WHEN ? = 1 THEN NULL ELSE closeout_progress.decision END,
          finished_at = CASE WHEN ? = 1 THEN NULL ELSE closeout_progress.finished_at END`,
       [
@@ -120,6 +123,7 @@ export function ensureCloseoutProgress(
         identity.head,
         identity.policyDigest,
         identity.policyPath,
+        identity.recheckDigest ?? null,
         now,
         now,
         reset ? 1 : 0,
@@ -318,6 +322,23 @@ export function latestCloseoutIdentity(
        WHERE item_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1`,
     )
     .get(itemId);
+}
+
+/**
+ * The policy digest of the latest Closeout run on `head` and the digest of its checks marked
+ * `recheck: true`, or null when no run was recorded. `recheck` is null when the run did not say.
+ */
+export function closeoutPolicyDigests(
+  db: Database,
+  itemId: string,
+  head: string,
+): { digest: string; recheck: string | null } | null {
+  return db
+    .query<{ digest: string; recheck: string | null }, [string, string]>(
+      `SELECT policy_digest AS digest, recheck_digest AS recheck FROM closeout_progress
+       WHERE item_id = ? AND head = ? ORDER BY updated_at DESC, id DESC LIMIT 1`,
+    )
+    .get(itemId, head);
 }
 
 /** The policy digest of the latest Closeout run on `head`, or null when none was recorded. */
