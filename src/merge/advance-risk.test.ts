@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { applyWorkItemEvent, getWorkItem, mergeQueuePosition } from "../db";
 import { mergeHarness, type MergeHarness } from "./advance-harness";
-import { PolicyFetchError } from "../closeout";
 import { mergeable, type MergeFacts } from "./mergeable";
 
 let harness: MergeHarness | undefined;
@@ -158,7 +157,7 @@ test("a temporary risk read failure retries without changing the item to awaitin
   const h = (harness = await mergeHarness());
   await h.addItem("ENG-1");
   h.state.risk = () => {
-    throw new PolicyFetchError("origin temporarily unavailable");
+    throw Object.assign(new Error("origin temporarily unavailable"), { name: "PolicyFetchError" });
   };
   await expect(h.pass("ENG-1")).rejects.toMatchObject({ name: "PolicyFetchError" });
   expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
