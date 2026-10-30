@@ -27,6 +27,7 @@ import {
   clip,
   closeoutFindingsNote,
   itemForBranch,
+  postPullFeedback,
   threadLines,
   type PullReviewCapabilities,
   type PullReviewStep,
@@ -255,6 +256,13 @@ export async function handlePullComments(
         now,
       });
       if (jobId === null) return "wait";
+      postPullFeedback(db, {
+        sessionId: caps.session(current),
+        item: current,
+        key: jobKey,
+        body: `${authors(batch)} commented on pull request #${pullNumber}. The agent is working on the comments.`,
+        now,
+      });
       recordReplyTargets(db, current.id, jobKey, targets, now);
       if (current.acceptedHead !== null)
         recordReviewEscape(db, {

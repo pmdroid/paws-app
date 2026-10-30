@@ -194,8 +194,13 @@ export function applyWorkItemEvent(
       throw new TransitionRejectedError(result.reason);
     }
     if (event === "take_over") halt(db, current, record.now ?? Date.now());
+    // A state whose time is not tracked at all (queued, the merge queue) drops the awake clock's
+    // baseline, so the next counted state starts from its own first tick. Otherwise hours in the
+    // merge queue would count as agent time once a review sends the item back to the agent.
+    const untracked = awakeCategory(result.to, null) === null;
     const updated = db.run(
-      "UPDATE work_item SET state = ?, version = version + 1 WHERE id = ? AND state = ?",
+      `UPDATE work_item SET state = ?, version = version + 1${untracked ? ", last_mono_ms = NULL" : ""}
+       WHERE id = ? AND state = ?`,
       [result.to, id, current.state],
     );
     if (updated.changes === 0) {
@@ -548,6 +553,32 @@ function cancelAgentJobs(db: Database, itemId: string, now: number): void {
   );
 }
 
+/** A resume the time limit cancelled before the agent started it, with its handoff. */
+export type HeldHandoff = { jobId: number; handoff: string };
+
+/**
+ * Handoffs of resume jobs the time limit cancelled that no later restart carried yet, oldest
+ * first. A review or comment restart that the cap cut off waits here for a Continue answer.
+ */
+export function heldHandoffs(db: Database, itemId: string): HeldHandoff[] {
+  return db
+    .query<{ id: number; handoff: string | null }, [string, string]>(
+      `SELECT id, json_extract(payload, '$.handoff') AS handoff FROM job
+       WHERE queue = ? AND status = 'cancelled' AND last_error = 'time_limit'
+         AND json_extract(payload, '$.itemId') = ?
+       ORDER BY id`,
+    )
+    .all(JOB_KIND.resume, itemId)
+    .filter((row) => typeof row.handoff === "string" && row.handoff.trim() !== "")
+    .map((row) => ({ jobId: row.id, handoff: row.handoff! }));
+}
+
+/** Marks held handoffs as carried by a later restart, so none reaches the agent twice. */
+export function markHandoffsCarried(db: Database, held: readonly HeldHandoff[]): void {
+  for (const entry of held)
+    db.run("UPDATE job SET last_error = 'time_limit_carried' WHERE id = ?", [entry.jobId]);
+}
+
 /**
  * Without a Linear session to ask in, accepted work pauses at the time limit
  * instead of failing. The cap already allows another hour, so resuming it from
@@ -584,6 +615,7 @@ function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean 
   const sessionId = item.sessionKey;
   if (sessionId === null) return false;
   cancelAgentJobs(db, item.id, now);
+  const held = heldHandoffs(db, item.id).length > 0;
   if (item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
   enqueueJobOnce(db, {
     queue: "item.ask",
@@ -592,7 +624,7 @@ function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean 
       itemId: item.id,
       kind: "time-limit",
       reason: "time_limit",
-      body: timeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item)),
+      body: timeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item), held),
       options: [...TIME_LIMIT_OPTIONS],
     },
     now,

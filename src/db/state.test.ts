@@ -538,6 +538,8 @@ describe("hard caps", () => {
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
     applyWorkItemEvent(db, item.id, "ejected");
+    // The merge queue dropped the baseline; the supervisor's next tick starts the clock again.
+    accrueAwake(db, item.id, clock.mono(), clock.now());
     clock.advance(2_000);
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).capped).toBe(true);
   });

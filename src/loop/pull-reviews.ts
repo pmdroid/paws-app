@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import {
+  enqueueOutboxOnce,
   fixRounds,
   getPullReview,
   pendingPullComments,
@@ -218,6 +220,13 @@ export async function handlePullReview(
         now: caps.now(),
       });
       if (jobId === null) return "wait";
+      postPullFeedback(db, {
+        sessionId: caps.session(current),
+        item: current,
+        key: jobKey,
+        body: `${reviewer(review)} requested changes on pull request #${review.pullNumber}. The agent is working on them.`,
+        now: caps.now(),
+      });
       recordReplyTargets(db, current.id, jobKey, targets, caps.now());
       settlePullComments(db, comments, "covered", caps.now());
       if (current.acceptedHead !== null)
@@ -257,6 +266,40 @@ export async function handlePullReview(
   });
   if (step !== "wait") await caps.flush();
   return step;
+}
+
+/**
+ * Tell the Linear session that review feedback sent the item back to the agent. Posted after the
+ * pull request response, so the key carries the `pull-feedback:` prefix the activity gate lets
+ * through. A thought, so the session shows the agent working again. Once per restart job key.
+ */
+export function postPullFeedback(
+  db: Database,
+  input: {
+    sessionId: string | null;
+    item: WorkItemRecord;
+    key: string;
+    body: string;
+    now: number;
+  },
+): void {
+  if (input.sessionId === null) return;
+  enqueueOutboxOnce(db, {
+    target: "linear",
+    op: "activity",
+    orderingKey: input.sessionId,
+    idempotencyKey: `pull-feedback:${input.key}`,
+    delivery: "critical",
+    payload: {
+      id: randomUUID(),
+      sessionId: input.sessionId,
+      itemId: input.item.id,
+      issueId: input.item.linearIssueId,
+      kind: "thought",
+      body: input.body,
+    },
+    now: input.now,
+  });
 }
 
 /** The review body and its unresolved threads, as the agent and the team read them. */
