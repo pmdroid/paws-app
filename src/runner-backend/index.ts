@@ -2238,8 +2238,14 @@ export function createRemoteAgentRunner(options: {
           input.signal?.removeEventListener("abort", abort);
           // A sticky hold covers preparation and the later work placement of this same job.
           // The job releases it when the turn ends. Any other hold ends with the attempt.
-          if (!releaseReservation && !reservations.get(selected.runId)?.sticky)
-            reservations.delete(selected.runId);
+          if (!releaseReservation) {
+            const hold = reservations.get(selected.runId);
+            if (!hold?.sticky) reservations.delete(selected.runId);
+            else if (input.prepareOnly)
+              // Preparation can use a different runner for each role. Keep the job's admission
+              // slot, but let the next preparation or implementation choose its own runner.
+              reservations.set(selected.runId, { runnerId: PENDING_RUNNER, sticky: true });
+          }
         }
       };
       return async (input: RunAgentOptions) => {

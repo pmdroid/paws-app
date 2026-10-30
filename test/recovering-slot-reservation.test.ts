@@ -263,6 +263,12 @@ async function runRecovering(input: {
   const basePlacement = createRunnerPlacement({ db });
   const trackedPlacement: RunnerPlacement = {
     ...basePlacement,
+    async candidates(request) {
+      const candidates = await basePlacement.candidates(request);
+      if (!input.reviewerRunner) return candidates;
+      const target = request.role === "reviewer" ? reviewerRunnerId : runnerId;
+      return candidates.filter((candidate) => candidate.id === target);
+    },
     started(value) {
       basePlacement.started(value);
       if (value.purpose === "prepare" && value.itemId) {
