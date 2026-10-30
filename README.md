@@ -6,17 +6,7 @@ Linear is the issue tracker. GitHub hosts the repositories and pull requests. Th
 
 ## Setup
 
-Configure the server's HTTPS origin, certificate, Linear OAuth app credentials, and GitHub App credentials as described in [Workspace access](docs/workspace-access.md). Install Bun 1.4 or newer, then start Paws:
-
-```sh
-bun install
-bun run build:status
-bun run paws
-```
-
-Open the configured HTTPS address. A Linear workspace admin signs in and authorizes Paws in the same workspace. Paws saves the app authorization, creates the workspace with that person as its first admin, and opens Integrations. Connect GitHub, choose repositories and their Linear teams, then [enroll a runner](docs/runner-enrollment.md) and sign in to its agents through Runners.
-
-Paws runs work only for a configured Linear workspace. `bun run paws doctor` reports `linear-workspace` as missing until `PAWS_PUBLIC_DASHBOARD=1` is set and a workspace admin has signed in.
+Follow [Install Paws](docs/install.md) to configure the control plane with `paws install`, add secrets, set up HTTPS and start the user service. The walkthrough ends with Linear sign-in, GitHub connection and pairing the first runner.
 
 ### Upgrading
 
