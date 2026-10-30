@@ -11,15 +11,15 @@ export const SETTINGS_PAGES = [
       "Choose the agents that implement and review your work. Check each connection on an installed runner after sign-in.",
   },
   {
-    id: "brief",
-    name: "Agent brief",
-    description: "Customize and preview the instructions given to coding agents.",
-  },
-  {
     id: "merging",
     name: "Merging",
     description:
       "Choose how accepted pull requests reach main, for the workspace, a Linear project, or a kind of issue.",
+  },
+  {
+    id: "brief",
+    name: "Agent brief",
+    description: "Customize and preview the instructions given to coding agents.",
   },
   {
     id: "findings",
