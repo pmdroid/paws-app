@@ -300,7 +300,8 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     if (getRunnerSetupHold(db, item.id) && current.state === "queued") return true;
     return listJobs(db).some(
       (job) =>
-        job.queue === JOB_KIND.resume &&
+        (job.queue === JOB_KIND.resume ||
+          (job.payload as { capacityWait?: unknown }).capacityWait !== undefined) &&
         job.status === "pending" &&
         (job.payload as { itemId?: string }).itemId === item.id,
     );
