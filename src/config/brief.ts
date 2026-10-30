@@ -34,8 +34,8 @@ export function parseBriefTemplates(text: string): BriefTemplates {
       if (!REPO.test(repo)) throw new Error("brief.projects keys must be owner/repo");
       const table = (value ?? {}) as { template?: unknown };
       if (table.template === undefined) continue;
-      const template = templateText(table.template, `brief.projects.${repo}`);
-      if (template !== null) stored[repo.toLowerCase()] = template;
+      const projectTemplate = templateText(table.template, `brief.projects.${repo}`);
+      if (projectTemplate !== null) stored[repo.toLowerCase()] = projectTemplate;
     }
   }
   return { template, projects: stored };

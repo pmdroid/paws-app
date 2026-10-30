@@ -49,6 +49,7 @@ const ICONS = {
   questions: CircleHelp,
   runners: Server,
   agents: Bot,
+  brief: BookOpen,
   merging: GitMerge,
   integrations: Plug,
   workspace: Users,

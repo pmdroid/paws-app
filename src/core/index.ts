@@ -179,4 +179,14 @@ export {
   type ReviewFindingStatus,
 } from "./review-finding";
 
-export { BRIEF_PLACEHOLDERS, BRIEF_RUN_SAMPLES, briefSectionSizes, briefTemplateProblem, defaultBriefTemplate, previewBriefValues, renderBriefTemplate, renderWorkContext, type BriefValues } from "./brief-template";
+export {
+  BRIEF_PLACEHOLDERS,
+  BRIEF_RUN_SAMPLES,
+  briefSectionSizes,
+  briefTemplateProblem,
+  defaultBriefTemplate,
+  previewBriefValues,
+  renderBriefTemplate,
+  renderWorkContext,
+  type BriefValues,
+} from "./brief-template";

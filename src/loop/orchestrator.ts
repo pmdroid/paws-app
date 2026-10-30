@@ -6558,10 +6558,14 @@ export class Orchestrator {
           .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral)
       : [];
     const repository = this.repositoryForItem(item);
-    const template = resolveBriefTemplate(loadConfigFile(join(this.options.pawsRoot, "config.toml")), repository ? `${repository.owner}/${repository.repo}` : null);
+    const template = resolveBriefTemplate(
+      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+      repository ? `${repository.owner}/${repository.repo}` : null,
+    );
     return renderWorkContext(template, {
       brief: item.brief,
-      projectOverview: (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
+      projectOverview:
+        (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
       userUpdates: listLinearTurnsForItem(this.db, item.id).map((turn) => turn.body),
       taskContext: classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
       sessionContext: item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",

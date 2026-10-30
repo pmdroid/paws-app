@@ -41,7 +41,8 @@ export function briefIssueFromQuery(data: unknown): BriefIssueRead | null {
   if (parentRecord !== null && parentRecord !== undefined) {
     if (!isRecord(parentRecord)) throw new Error("Linear returned an invalid parent issue.");
     parent = issueBrief(parentRecord);
-    if (parent === null) throw new Error("Linear parent issue was missing id, identifier, or title");
+    if (parent === null)
+      throw new Error("Linear parent issue was missing id, identifier, or title");
   }
   return { issue: brief, parent, projectOverview: projectOverview(issue["project"]) };
 }

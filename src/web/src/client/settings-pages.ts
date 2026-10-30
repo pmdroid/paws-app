@@ -11,6 +11,11 @@ export const SETTINGS_PAGES = [
       "Choose the agents that implement and review your work. Check each connection on an installed runner after sign-in.",
   },
   {
+    id: "brief",
+    name: "Agent brief",
+    description: "Customize and preview the instructions given to coding agents.",
+  },
+  {
     id: "merging",
     name: "Merging",
     description:
@@ -47,5 +52,5 @@ export type SettingsPage = (typeof SETTINGS_PAGES)[number]["id"];
 
 export function renderSettingsPage(page: SettingsPage = "agents"): string {
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `<h1 class="sr-only">${current.name}</h1><p class="sub">${current.description}</p>${page === "agents" ? '<div id="checkout-settings" class="skill-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div><div id="agent-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "findings" ? '<div id="finding-settings" class="skill-settings"></div>' : ""}`;
+  return `<h1 class="sr-only">${current.name}</h1><p class="sub">${current.description}</p>${page === "agents" ? '<div id="checkout-settings" class="skill-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div><div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "findings" ? '<div id="finding-settings" class="skill-settings"></div>' : ""}`;
 }

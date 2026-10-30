@@ -571,7 +571,17 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     };
     const settings =
       (await handleAgentSettingsRequest(request, shared)) ??
-      (await handleBriefSettingsRequest(request, { ...shared, ...(path === BRIEF_SETTINGS_PATH && secrets.db ? { repos: [...(shared.repos ?? []), ...listWorkspaceRepositoryNames(secrets.db, principal?.workspaceId)] } : {}) })) ??
+      (await handleBriefSettingsRequest(request, {
+        ...shared,
+        ...(path === BRIEF_SETTINGS_PATH && secrets.db
+          ? {
+              repos: [
+                ...(shared.repos ?? []),
+                ...listWorkspaceRepositoryNames(secrets.db, principal?.workspaceId),
+              ],
+            }
+          : {}),
+      })) ??
       (await handleCheckoutSettingsRequest(request, {
         ...shared,
         ...(path === CHECKOUT_SETTINGS_PATH && secrets.db
