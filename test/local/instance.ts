@@ -216,6 +216,7 @@ async function scenario(
       claude: "test-claude-model",
       codex: "test-codex-model",
       grok: "test-grok-model",
+      opencode: "test-opencode-model",
     };
     const selectedModel = input.profile?.model ?? defaultModels[agent];
     const script: FakeScript = {

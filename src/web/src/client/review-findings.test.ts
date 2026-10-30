@@ -10,14 +10,14 @@ import {
 } from "../contract";
 import { emptyCloseoutView, type CloseoutView } from "./closeout";
 import { render } from "./render";
-import { earlierRoundsKey } from "./review-findings";
+import { earlierRoundsKey, findingIssueKey } from "./review-findings";
 import { themedMarkup } from "./theme";
 
 function finding(
   severity: StatusReviewFinding["severity"],
   location: string,
   explanation: string,
-  marks: Partial<Pick<StatusReviewFinding, "preExisting" | "blocking" | "since">> = {},
+  marks: Partial<Pick<StatusReviewFinding, "preExisting" | "blocking" | "since" | "filed">> = {},
 ): StatusReviewFinding {
   return {
     severity,
@@ -174,5 +174,65 @@ describe("review findings on the issue page", () => {
     // Tailwind's `fixed` utility would pull a fixed finding out of the list.
     expect(html).not.toMatch(/class="(?:[^"]*\s)?fixed(?:\s[^"]*)?"/);
     expect(html).not.toMatch(/class="[^"]*review-finding[^"]*whitespace-nowrap/);
+  });
+
+  test("a pre-existing finding has File an issue; blocking and fixed findings do not", () => {
+    const html = page(withReviews());
+    const old = findingHtml(html, "src/retention/legacy.ts:7");
+    expect(old).toContain('data-action="file-finding-issue"');
+    expect(old).toContain(">File an issue</button>");
+    expect(old).toContain('data-check="independent-review"');
+    expect(old).toContain('data-location="src/retention/legacy.ts:7"');
+    expect(findingHtml(html, "src/retention/job.ts:44")).not.toContain("File an issue");
+    expect(findingHtml(html, "src/retention/policy.ts:12")).not.toContain("File an issue");
+  });
+
+  test("the finding text in the button is escaped", () => {
+    const old = findingHtml(page(withReviews()), "src/retention/legacy.ts:7");
+    expect(old).toContain('data-explanation="&lt;script&gt;alert(1)&lt;/script&gt; in old code"');
+    expect(old).not.toContain("<script>");
+  });
+
+  test("a filed finding links its issue instead of the button", () => {
+    const detail = withReviews();
+    const round = detail.verdicts
+      .find((entry) => entry.itemId === "ENG-100")!
+      .reviews![0]!.rounds.at(-1)!;
+    round.findings[1] = {
+      ...round.findings[1]!,
+      filed: { identifier: "PAS-123", url: "https://linear.app/kyku/issue/PAS-123" },
+    };
+    // The filed issue comes with the issue page's data, as the server sends it.
+    const parsed = parseStatusItemDetail(JSON.parse(JSON.stringify(detail)));
+    if (!parsed.ok) throw new Error(parsed.error);
+    const old = findingHtml(page(parsed.detail), "src/retention/legacy.ts:7");
+    expect(old).toContain(">PAS-123 filed</a>");
+    expect(old).toContain('href="https://linear.app/kyku/issue/PAS-123"');
+    expect(old).not.toContain("File an issue");
+  });
+
+  test("the issue a click filed shows at once, and Linear's error shows beside the button", () => {
+    const detail = withReviews();
+    const legacy = {
+      location: "src/retention/legacy.ts:7",
+      explanation: "<script>alert(1)</script> in old code",
+    };
+    const key = findingIssueKey("ENG-100", "independent-review", legacy);
+    const view = emptyCloseoutView();
+    view.filing = { [key]: { state: "filed", identifier: "PAS-123", url: null } };
+    expect(findingHtml(page(detail, view), legacy.location)).toContain("PAS-123 filed");
+
+    view.filing[key] = { state: "sending" };
+    expect(findingHtml(page(detail, view), legacy.location)).toContain("disabled>Filing…</button>");
+
+    view.filing[key] = {
+      state: "failed",
+      error: "Linear did not file the issue: <b>rate limited</b>",
+    };
+    const failed = findingHtml(page(detail, view), legacy.location);
+    expect(failed).toContain(">File an issue</button>");
+    expect(failed).toContain(
+      'role="alert">Linear did not file the issue: &lt;b&gt;rate limited&lt;/b&gt;</span>',
+    );
   });
 });

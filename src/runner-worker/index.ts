@@ -52,6 +52,7 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
   decodePolicyFiles,
+  decodePolicyChunk,
   providerCliPath,
   type PolicyFilesLoad,
 } from "../acp";
@@ -84,10 +85,12 @@ import {
 import {
   checkDeveloperLogin,
   claudeLimits,
+  claudeUsageLimits,
   codexLimits,
+  readClaudeRateLimits,
   readCodexRateLimits,
   type AgentLimit,
-  type CodexRateLimitReader,
+  type RateLimitReader,
   type LoginCommandRunner,
 } from "../install";
 import {
@@ -155,7 +158,8 @@ export interface RunnerWorkerOptions {
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
   followUp?: (sequence: number, signal: AbortSignal) => Promise<string>;
   loginCommand?: LoginCommandRunner;
-  codexRateLimits?: CodexRateLimitReader;
+  codexRateLimits?: RateLimitReader;
+  claudeRateLimits?: RateLimitReader;
   resume?: boolean;
   skills?: string;
   /** The mise binary and install cap. Tests point these at a fake. */
@@ -228,15 +232,50 @@ export async function runWithFollowUps(
 }
 
 export function remoteCloseoutPolicy(
-  emit: (event: { type: "closeout_policy"; requestId: string }) => void,
+  emit: (event: {
+    type: "closeout_policy";
+    requestId: string;
+    offset?: number;
+    hash?: string;
+  }) => void,
   answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
   signal: AbortSignal,
 ): () => Promise<PolicyFilesLoad> {
   return async () => {
-    const requestId = randomUUID();
     try {
-      emit({ type: "closeout_policy", requestId });
-      return decodePolicyFiles((await answer(requestId, signal)).answer);
+      let content = "";
+      let hash: string | undefined;
+      let total: number | undefined;
+      do {
+        const requestId = randomUUID();
+        emit({
+          type: "closeout_policy",
+          requestId,
+          offset: content.length,
+          ...(hash ? { hash } : {}),
+        });
+        const response = (await answer(requestId, signal)).answer;
+        const chunk = decodePolicyChunk(response);
+        if (!chunk) {
+          const result = decodePolicyFiles(response);
+          return content.length === 0 || !result.ok
+            ? result
+            : { ok: false, message: "Paws sent an invalid Closeout policy chunk" };
+        }
+        if (
+          chunk.offset !== content.length ||
+          (hash !== undefined && chunk.hash !== hash) ||
+          (total !== undefined && chunk.total !== total) ||
+          chunk.offset + chunk.data.length > chunk.total
+        )
+          return { ok: false, message: "Paws sent an invalid Closeout policy chunk" };
+        hash = chunk.hash;
+        total = chunk.total;
+        content += chunk.data;
+      } while (content.length < total);
+      if (createHash("sha256").update(content).digest("hex") !== hash)
+        return { ok: false, message: "Paws sent an invalid Closeout policy chunk" };
+      return decodePolicyFiles(content);
     } catch (error) {
       signal.throwIfAborted();
       journalCaught(error, "runner-worker.remoteCloseoutPolicy.emit", null);
@@ -250,7 +289,7 @@ export function remoteCloseoutPolicy(
 
 export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
-  | { type: "closeout_policy"; requestId: string }
+  | { type: "closeout_policy"; requestId: string; offset?: number; hash?: string }
   | { type: "acp"; event: AcpEvent }
   | {
       type: "question";
@@ -284,7 +323,7 @@ export interface RunnerWorkerResult {
   reviewText?: string;
   text?: string;
   login?: {
-    agent: "claude" | "codex" | "grok";
+    agent: "claude" | "codex" | "grok" | "opencode";
     authenticated: boolean;
     method: "subscription" | "api_key" | "other" | "none";
     command: string;
@@ -392,7 +431,7 @@ function removeLeftoverCheckout(path: string): void {
 async function snapshotAgentSession(
   options: RunnerWorkerOptions,
   executionId: string,
-  agent: SessionAgent,
+  agent: string,
   session: {
     sessionId: string;
     workspacePath: string;
@@ -401,6 +440,7 @@ async function snapshotAgentSession(
   },
   emit: (event: RunnerWorkerEvent) => void,
 ): Promise<void> {
+  if (!isSessionAgent(agent)) return;
   const stagingName = `.session-${randomUUID()}.tmp`;
   const stagingPath = join(options.outputDirectory, stagingName);
   try {
@@ -483,6 +523,10 @@ const SESSION_TOO_LARGE: Record<SessionAgent, string> = {
   codex: CODEX_SESSION_TOO_LARGE,
   grok: GROK_SESSION_TOO_LARGE,
 };
+
+function isSessionAgent(agent: string): agent is SessionAgent {
+  return agent === "claude" || agent === "codex" || agent === "grok";
+}
 
 function resumedSession(directory: string): string | undefined {
   let sessionId: string | undefined;
@@ -1524,14 +1568,14 @@ export async function executeRunnerCommand(
     if (command.type === "helper") result.text = reviewText;
     if (command.type === "login_check") {
       const checked =
-        command.agent === "grok"
-          ? null
-          : await checkDeveloperLogin({
+        command.agent === "claude" || command.agent === "codex"
+          ? await checkDeveloperLogin({
               cli: command.agent,
               executable: providerCli(command.agent),
               env: agentEnv,
               run: options.loginCommand,
-            });
+            })
+          : null;
       const authenticated =
         run.stopReason === "end_turn" &&
         !run.authRequired &&
@@ -1544,6 +1588,16 @@ export async function executeRunnerCommand(
             providerCli("codex"),
           ).catch((caughtError2) => {
             journalCaught(caughtError2, "runner-worker.executeRunnerCommand.providerCli", null);
+            return null;
+          }),
+        );
+      if (authenticated && command.agent === "claude")
+        agentLimits = claudeUsageLimits(
+          await (options.claudeRateLimits ?? readClaudeRateLimits)(
+            agentEnv,
+            providerCli("claude"),
+          ).catch((caughtError2) => {
+            journalCaught(caughtError2, "runner-worker.executeRunnerCommand.claudeUsage", null);
             return null;
           }),
         );
@@ -1562,7 +1616,9 @@ export async function executeRunnerCommand(
             ? "claude auth login"
             : command.agent === "codex"
               ? "codex login --device-auth"
-              : "grok login",
+              : command.agent === "opencode"
+                ? "opencode auth login"
+                : "grok login",
       };
     }
     if (agentLimits.length) result.run = { ...result.run, agentLimits };

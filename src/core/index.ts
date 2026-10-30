@@ -1,4 +1,3 @@
-export { NotImplementedError } from "./errors";
 export type { IssueBrief, WorkBrief } from "./brief";
 export {
   TASK_MODES,
@@ -134,6 +133,7 @@ export {
   TRANSIENT_RETRY_BASE_MS,
   isTransient,
   placementWaitMs,
+  resumeRetrySpreadMs,
   isTransientGitError,
   retryNote,
   retryAfterMs,

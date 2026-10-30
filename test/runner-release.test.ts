@@ -190,7 +190,7 @@ print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "dev
     expect(result.members).toContain("app/node_modules/left-pad/index.js");
     expect(result.members).toContain("app/node_modules/shared/index.js");
     expect(result.members).toContain("deploy/linux/agents.json");
-    expect(result.agents).toHaveLength(3);
+    expect(result.agents).toHaveLength(4);
     for (const name of [...result.agents, "agent-only", ".bin/claude-agent-acp"])
       expect(
         result.members.filter(

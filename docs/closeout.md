@@ -7,6 +7,8 @@ Each candidate goes through Closeout twice:
 1. **Agent Closeout.** The agent runs the command checks itself while it works.
 2. **Paws Closeout.** After the agent's turn ends, Paws verifies the result, runs the independent review, and decides whether the candidate can be published.
 
+Before the pull request, the policy in this repository also runs two hygiene checks. `bun run links` fails on a broken local link, a doc under `docs/` that no other document links to, or an inline `src/...` path that no longer exists. `bun run knip` fails on an unused file, an unused or unlisted dependency, or a duplicate export. Delete an outdated page instead of keeping it; an orphaned page is a failed check.
+
 ```mermaid
 flowchart TD
   A[Agent changes code and commits] --> B[get_closeout lists the required checks]
@@ -119,6 +121,8 @@ The run page shows these steps and their output while they run. A review row sho
 
 The reviewer's model and effort are set in Settings, under Agents.
 
+When the reviewer's agent is at its usage limit on every runner, a review waits for the reset Paws read from the limit message. With `[agents.defaults.reviewer_fallback]` in `config.toml` (an `agent`, `model` and optional `effort`), it runs on that profile instead and says so in the item's activity. The fallback uses a different agent than the reviewer and a different model than the implementer. A project whose reviewer already uses the fallback's agent gets no fallback.
+
 ### Fix rounds
 
 A fix round is one `restart(item, reason)`: the one operation that sends an item back to the agent. Restart cancels the item's pending jobs, releases its runner slot and merge lane, records the handoff and its reason, and moves the item to `queued`. It keeps the run and the Linear session, so the round reads as part of the same story. The agent's next turn starts from the handoff and ends in `verifying` on its new commit.
@@ -135,7 +139,9 @@ They share one counter, `retry.fix_rounds_per_item`, which defaults to 3 and onl
 
 A fix round that ends without a usable commit still counts. The next round gets the same findings plus the reason the last one failed. A cancelled fix stops at once.
 
-For a review, the handoff tells the agent to fix what it is confident about and to ask the team in the session before changing anything unclear. A new comment restarts the item the same way: a comment-only review, a single inline comment or a conversation comment, from a person or another bot such as Cursor Bugbot. Comments that arrive while a turn or evaluation runs wait for it, and comments less than a minute apart (up to five minutes in all) become one restart. The merge waits for them. Paws ignores edits and deletions, its own App's comments, forks, ended items, and bots that only post status: the default list in `DEFAULT_IGNORED_COMMENT_BOTS` (Cloudflare Pages, Linear, Codecov, Netlify, Vercel, changesets), or `ignore_comment_bots` under `[merge.repositories."owner/repo"]` in its place. With the fix rounds spent, the next comment asks the team instead.
+For a review, the handoff tells the agent to fix what it is confident about and to ask the team in the session before changing anything unclear. A new comment restarts the item the same way: a comment-only review, a single inline comment or a conversation comment, from a person or another bot such as Cursor Bugbot. Comments that arrive while a turn or evaluation runs wait for it. Paws waits for a quiet minute after the last comment or changes-requested review (up to five minutes in all), so a review and the comments and bot reviews that follow it become one restart. Settings › Merging › Pull request comments changes both times (`[merge] comment_quiet_seconds` and `comment_max_wait_seconds`). The merge waits for them.
+
+The handoff ends with a reply list: every review thread, review body and conversation comment in the round, numbered `R1`, `R2` and so on. The agent ends its turn with a `Review replies` section that answers each entry `fixed`, `answered` or `not changed`. After Closeout accepts the fix and the new head is on GitHub, Paws posts each reply with its App token: in the thread for a line comment, and in the conversation, quoting the comment, otherwise. It resolves the threads the agent fixed or answered and leaves the rest open for the reviewer. An entry the agent did not report on still gets a reply that says so. Paws never reads its own replies back as new comments. Paws ignores edits and deletions, its own App's comments, forks, ended items, and bots that only post status: the default list in `DEFAULT_IGNORED_COMMENT_BOTS` (Cloudflare Pages, Linear, Codecov, Netlify, Vercel, changesets), or `ignore_comment_bots` under `[merge.repositories."owner/repo"]` in its place. With the fix rounds spent, the next comment asks the team instead.
 
 Two other reasons send an item back without spending a fix round: `conflict`, a rebase return from the merge lane (see [After acceptance](#after-acceptance)), and `follow_up` or `answer`, a person's message in the session. Setup faults retry once and then ask, without spending a fix round. Infrastructure faults spend nothing.
 
@@ -232,6 +238,23 @@ A re-check of an item already in the merge queue (after a CI fix, a conflict fix
 
 `ci:` is a Paws extension to the policy schema, so a runner older than the change rejects a policy that uses it: ship the deploy and the runner release before the policy.
 
+### Affected tests
+
+In this repository, the `test` check runs `bun scripts/affected-tests.ts`, which runs only the tests the change affects between the run's base and the candidate head. The base is `git merge-base origin/main HEAD`; on a runner, Closeout's checkout points `origin/main` at the run's base. GitHub CI runs the full suite on every pull request and is required before merge, so a test the selection misses still runs before merge.
+
+- **Test files** changed in the diff run.
+- **Source files:** a change under `src/<module>/` runs that module's tests, the tests of every module that imports it (followed transitively through other modules), and every other test file that reaches the module, directly, through another module, or through a helper under `test/`. A file directly under `src/`, such as `src/index.ts`, runs the tests that import it.
+- **Shared files:** a change to `package.json`, `bun.lock`, `bunfig.toml`, a `tsconfig*.json`, a helper or fixture under `test/`, or anything under `scripts/` runs the full suite.
+- **Other files**, such as docs, run the tests whose source names the changed path.
+- `test/boundaries.test.ts` and `test/empty-catches.test.ts` always run. Both read every file under `src/` by path.
+
+When the diff, a test, or an imported helper cannot be read, when import parsing fails, or when there is no base, the full suite runs. Imports are parsed as code so fixture strings and comments do not affect the import graph. The check's log starts with the files that ran and why, for example:
+
+````
+test/merge-lane.test.ts  imports src/merge/index.ts
+full suite (556 files): package.json changed
+``` `bun scripts/affected-tests.ts --list <base> <head>` prints the selection without running it.
+
 ## Review escapes
 
 A review escape is a bug that Closeout's independent review accepted and a later pull request had to fix. `evals/review-escapes.jsonl` collects the confirmed ones, so a change to the reviewer can be scored against real misses instead of guessed.
@@ -258,7 +281,7 @@ One JSON object per line:
   "confirmedAt": "2026-10-26",
   "confidence": "confirmed"
 }
-```
+````
 
 | Field                  | Meaning                                                                                                                           |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |

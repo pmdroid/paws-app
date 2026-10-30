@@ -2,6 +2,7 @@ import { createIssuePullRequestReads } from "./issue-pulls";
 import { createLinearProjectScopeReads } from "./project-scope";
 import { createLinearAttachmentMethods } from "./attachments";
 import { createLinearSubIssueMethods } from "./sub-issues";
+import { createLinearFindingIssueMethods } from "./finding-issues";
 import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
@@ -70,6 +71,7 @@ type LinearTracker = LinearSessionAdapter &
   ReturnType<typeof createLinearSessionReads> &
   LinearRepositoryAdapter &
   ReturnType<typeof createLinearSubIssueMethods> &
+  ReturnType<typeof createLinearFindingIssueMethods> &
   ReturnType<typeof createLinearMergeReads>;
 
 type TrackerMethod = {
@@ -96,6 +98,7 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   createIssueAttachment: "issue-attachment",
   deleteIssueAttachment: "issue-attachment",
   createSubIssues: "sub-issues",
+  fileFindingIssue: "finding-issue",
   listIssuePullRequests: "issue-pull-requests",
   loadEpic: "issue-snapshot",
   listDeps: "issue-relations",
@@ -118,6 +121,7 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
     ...createLinearProjectScopeReads(client),
     ...repositories,
     ...createLinearSubIssueMethods(client, repositories.addRepositoryLabel),
+    ...createLinearFindingIssueMethods(client),
     ...createLinearMergeReads(client, starts),
     ...createLinearAttachmentMethods(client),
     listIssuePullRequests: createIssuePullRequestReads(client),

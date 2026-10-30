@@ -5,6 +5,7 @@ import {
   accrueAwake,
   applyWorkItemEvent,
   beginImplementRun,
+  enqueueJob,
   getWorkItem,
   insertQueuedItem,
   listJobs,
@@ -19,7 +20,7 @@ import { questionEffects } from "./question-effects";
 
 const MINUTE = 60_000;
 
-function askedAtTimeLimit() {
+function askedAtTimeLimit(pendingHandoff?: string) {
   const clock = new FakeClock(20_000);
   const db = openDatabase(":memory:");
   migrate(db);
@@ -35,6 +36,12 @@ function askedAtTimeLimit() {
   markCloseoutAccepted(db, item.id, "accepted");
   applyWorkItemEvent(db, item.id, "ejected");
   saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
+  if (pendingHandoff !== undefined)
+    enqueueJob(db, {
+      queue: "run.resume",
+      payload: { itemId: item.id, reason: "review", handoff: pendingHandoff },
+      now: clock.now(),
+    });
   accrueAwake(db, item.id, clock.mono(), clock.now());
   clock.advance(31 * MINUTE);
   expect(accrueAwake(db, item.id, clock.mono(), clock.now()).asked).toBe(true);
@@ -82,6 +89,20 @@ test("Continue at the time limit gives the agent another hour and resumes it", (
     capped: false,
     item: { state: "queued" },
   });
+});
+
+test("Continue hands over a review the time limit cut off before the agent started it", () => {
+  const review = "@reviewer requested changes on pull request #12.\n\nRename the flag.";
+  const { clock, db, item } = askedAtTimeLimit(review);
+  const question = db.query<{ body: string }, []>("SELECT body FROM question").get()!;
+  expect(question.body).toContain("The agent had not started on the latest feedback yet");
+  expect(reply(db, "Continue", clock.now()).status).toBe("answered");
+  const resumes = listJobs(db).filter((job) => job.queue === "run.resume");
+  expect(resumes.map((job) => job.status)).toEqual(["cancelled", "pending"]);
+  const handoff = (resumes[1]!.payload as { handoff: string }).handoff;
+  expect(handoff.startsWith(review)).toBe(true);
+  expect(handoff).toContain("Answer: Continue");
+  expect(getWorkItem(db, item.id)?.state).toBe("queued");
 });
 
 test("Stop at the time limit ends the task and names the accepted branch", () => {

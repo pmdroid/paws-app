@@ -15,6 +15,8 @@ import {
   runnerOccupancy,
   runnerSlotsHeldBetweenCommands,
   runnerWorkSettled,
+  runnerHoldsRunWork,
+  runnerWorkHasResult,
 } from "./index";
 
 const RENEWAL_MS = 60_000;
@@ -132,6 +134,27 @@ describe("the runner lease grace", () => {
       [run.id, clock.now()],
     );
     expect(runnerWorkSettled(db, run.id, clock.now())).toBe(true);
+  });
+
+  test("recovery retains a delivered current-command result after lease grace", () => {
+    const { clock, db, item, run } = leased();
+    clock.advance(PAST);
+    expect(runnerHoldsRunWork(db, run.id, clock.now())).toBe(false);
+    db.run(
+      "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) VALUES(?,1,'other','{}',?)",
+      [run.id, clock.now()],
+    );
+    expect(runnerWorkHasResult(db, run.id)).toBe(false);
+    db.run("UPDATE runner_result SET command_id='command' WHERE run_id=?", [run.id]);
+    expect(runnerHoldsRunWork(db, run.id, clock.now())).toBe(true);
+    expect(runnerWorkHasResult(db, run.id)).toBe(true);
+    expect(runnerHoldsRunWork(db, run.id, clock.now(), true)).toBe(false);
+    expect(recoverOnStartup(db, clock.now())).toMatchObject([{ type: "resume", reattach: true }]);
+    expect(getWorkItem(db, item.id)?.state).toBe("running");
+    expect(getRun(db, run.id)?.status).toBe("active");
+    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [clock.now(), run.id]);
+    expect(runnerWorkHasResult(db, run.id)).toBe(false);
+    db.close();
   });
 
   test("the halt core may release inside the grace once the runner acknowledged a cancel", () => {

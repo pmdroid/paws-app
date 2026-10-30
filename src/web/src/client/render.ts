@@ -52,6 +52,7 @@ import { PAGES } from "./navigation";
 import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
 import { renderPushOutages } from "./push-outage";
+import { renderPolicyRunnerWarnings } from "./policy-runners";
 import { itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
@@ -148,7 +149,7 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "runs":
       return viewRuns(snapshot, model.route.id);
     case "mergeQueue":
-      return `${pageHeading("mergeQueue")}${renderPushOutages(snapshot)}${renderMergeQueue(snapshot)}`;
+      return `${pageHeading("mergeQueue")}${renderPushOutages(snapshot)}${renderPolicyRunnerWarnings(snapshot)}${renderMergeQueue(snapshot)}`;
     case "questions":
       return viewQuestions(snapshot, model.route.id);
     case "evidence":
@@ -178,7 +179,7 @@ type NeedsYou = {
 };
 
 function viewOverview(snapshot: StatusSnapshot): string {
-  const intake = `${renderPushOutages(snapshot)}${renderIntake(snapshot)}`;
+  const intake = `${renderPushOutages(snapshot)}${renderPolicyRunnerWarnings(snapshot)}${renderIntake(snapshot)}`;
   if (!snapshot.items.length && !snapshot.questions.length)
     return `${pageHeading("overview")}${intake}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
   const runs = new Map(snapshot.runs.map((run) => [run.id, run]));

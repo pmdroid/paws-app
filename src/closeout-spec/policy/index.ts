@@ -6,7 +6,7 @@
  * remote entry is absent, from the home directory.
  */
 
-export { canonicalJson, policyCanonicalJson } from "./canonical";
+export { canonicalJson, policyCanonicalJson, recheckDigest } from "./canonical";
 export {
   createFakeGitReader,
   type FakeGitReader,
@@ -26,4 +26,6 @@ export {
   type RootFilesLoad,
 } from "./load";
 export { anyPathMatches, pathsMatch } from "./paths";
-export { POLICY_MAX_BYTES, PUBLIC_POLICY_PATH } from "./resolve";
+export { POLICY_MAX_BYTES, PUBLIC_POLICY_PATH, UNKNOWN_POLICY_KEYS_CODE } from "./resolve";
+export { createPolicyParser, parsePolicy, type ParsedPolicy, type PolicyParser } from "./document";
+export { policyKeys } from "./keys";

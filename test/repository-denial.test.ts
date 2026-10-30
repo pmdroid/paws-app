@@ -121,7 +121,7 @@ test("a workspace without active admins names the role instead of a person", asy
     expect(
       teamRepositoryDenial(db, item(), UNMAPPED, { owner: "acme", repo: "elsewhere" })?.reason,
     ).toBe(
-      "Pascal has no repository in Paws yet. Ask a Paws owner or admin to map one in Integrations, then delegate again.",
+      "Pascal has no repository in Paws yet. Ask a Paws admin to map one in Integrations, then delegate again.",
     );
   } finally {
     db.close();
