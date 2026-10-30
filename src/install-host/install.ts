@@ -415,7 +415,9 @@ export function realInstallHostDeps(nonInteractive: boolean): InstallHostDeps {
           )
             return true;
         } catch {
-          // The listener may still be starting.
+          // The listener may still be starting. Back off before retrying.
+          await Bun.sleep(500);
+          continue;
         }
         await Bun.sleep(500);
       }
