@@ -226,3 +226,65 @@ describe("usage limits pause the task instead of failing it", () => {
     expect(runners.calls[1]!.excluded).toEqual(["agentbox"]);
   });
 });
+
+describe("a review whose agent is limited everywhere moves to the fallback profile", () => {
+  const claude = { agent: "claude" as const, model: "opus" };
+  const codex = { agent: "codex" as const, model: "gpt-6-sol" };
+  function review(fallbackProfile?: typeof codex): RunAgentOptions {
+    return {
+      ...input(),
+      role: "reviewer",
+      profile: claude,
+      ...(fallbackProfile ? { fallbackProfile } : {}),
+    };
+  }
+  function reviewers() {
+    const profiles: (string | null)[] = [];
+    const progress: string[] = [];
+    let first = true;
+    const attempt: FailoverAttempt = async (options, _excluded, limit) => {
+      if (options.profile?.agent === "claude" && limit && limit.resumeAt > RESET - 3_600_000)
+        throw new UsageLimitPause("claude", limit.resumeAt, limit.resetsAt, limit.runnerId);
+      profiles.push(options.profile ? `${options.profile.agent}/${options.profile.model}` : null);
+      if (first) {
+        first = false;
+        throw limited("agentbox", RESET);
+      }
+      return { ...done(), role: "reviewer" };
+    };
+    const pauses: number[] = [];
+    const wait = {
+      now: () => RESET - 3 * 3_600_000,
+      async pause(limit: UsageLimitPause) {
+        pauses.push(limit.resumeAt);
+      },
+    };
+    const onEvent: RunAgentOptions["onEvent"] = (event) => {
+      if (event.type === "progress") progress.push(event.text);
+    };
+    return { profiles, progress, pauses, attempt, wait, onEvent };
+  }
+
+  test("Claude at its weekly limit on every runner reviews with Codex instead of waiting", async () => {
+    const runners = reviewers();
+    const result = await runWithFailover(
+      { ...review(codex), onEvent: runners.onEvent },
+      runners.attempt,
+      async () => undefined,
+      runners.wait,
+    );
+    expect(result.stopReason).toBe("end_turn");
+    expect(runners.profiles).toEqual(["claude/opus", "codex/gpt-6-sol"]);
+    expect(runners.pauses).toEqual([]);
+    expect(runners.progress).toEqual([
+      "claude reached its usage limit on every runner. Reviewing with codex gpt-6-sol instead.",
+    ]);
+  });
+
+  test("without a fallback profile the review waits for the reset as before", async () => {
+    const runners = reviewers();
+    await runWithFailover(review(), runners.attempt, async () => undefined, runners.wait);
+    expect(runners.profiles).toEqual(["claude/opus", "claude/opus"]);
+    expect(runners.pauses).toEqual([RESET + 60_000]);
+  });
+});

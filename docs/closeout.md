@@ -121,6 +121,8 @@ The run page shows these steps and their output while they run. A review row sho
 
 The reviewer's model and effort are set in Settings, under Agents.
 
+When the reviewer's agent is at its usage limit on every runner, a review waits for the reset Paws read from the limit message. With `[agents.defaults.reviewer_fallback]` in `config.toml` (an `agent`, `model` and optional `effort`), it runs on that profile instead and says so in the item's activity. The fallback uses a different agent than the reviewer and a different model than the implementer. A project whose reviewer already uses the fallback's agent gets no fallback.
+
 ### Fix rounds
 
 A fix round is one `restart(item, reason)`: the one operation that sends an item back to the agent. Restart cancels the item's pending jobs, releases its runner slot and merge lane, records the handoff and its reason, and moves the item to `queued`. It keeps the run and the Linear session, so the round reads as part of the same story. The agent's next turn starts from the handoff and ends in `verifying` on its new commit.

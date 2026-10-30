@@ -316,6 +316,16 @@ export function createRunnerHealth(options: {
             limits: result.agentLimits,
             observedAt: at,
           });
+        if (assigned.type === "login_check" && result.login?.authenticated && result.agentLimits) {
+          const spent = result.agentLimits.filter((limit) => limit.usedPercent >= 100);
+          const resetsAt = spent.length
+            ? Math.max(...spent.map((limit) => limit.resetsAt ?? at + 15 * 60_000))
+            : null;
+          db.run(
+            "UPDATE runner_agent_policy SET quota_state=?,resets_at=?,cooldown_until=? WHERE runner_id=? AND agent=?",
+            [spent.length ? "exhausted" : "ok", resetsAt, resetsAt ?? 0, runnerId, assigned.agent],
+          );
+        }
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         return { duplicate: false };
       });
