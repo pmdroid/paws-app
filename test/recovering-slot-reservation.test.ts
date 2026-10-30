@@ -4,14 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
 import { FakeClock, JOB_KIND, systemClock, type Clock } from "../src/core";
-import { setJournalSink, RunnerCapacityWait } from "../src/core";
-import type { RunAgentOptions } from "../src/acp";
+import { setJournalSink } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
   applyWorkItemEvent,
   bindLinearSessionTask,
-  bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   enqueueJob,
   getWorkItem,
@@ -53,11 +51,6 @@ test("twenty recovering items fill six free slots in one tick and do not fail fo
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   let jitter = 0;
-  const warnings: string[] = [];
-  const warn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args.map((part) => String(part)).join(" "));
-  };
   try {
     await runRecovering({
       count: 20,
@@ -65,21 +58,23 @@ test("twenty recovering items fill six free slots in one tick and do not fail fo
       random: () => (jitter++ % 10) / 10,
       clock: new FakeClock(Date.now()),
       lines,
-      async assert(started, db, backend) {
-        const running = listWorkItems(db).filter((item) => started.has(item.linearIdentifier));
-        for (const item of running) expect(backend.tryReserve(item.id).ok).toBe(false);
+      async assert(started, db) {
         const pending = listJobs(db).filter(
           (job) => job.queue === JOB_KIND.resume && job.status === "pending",
         );
         expect(new Set(pending.map((job) => job.runAt)).size).toBeGreaterThan(1);
         expect(started.size, lines.join("\n")).toBe(6);
-        const noise = [...lines, ...warnings].join("\n");
-        expect(noise).not.toContain("Waiting for a free slot");
-        expect(noise).not.toContain("no free capacity");
+        expect(
+          listWorkItems(db).filter((item) => ["failed", "awaiting_input"].includes(item.state)),
+        ).toHaveLength(0);
+        const running = listWorkItems(db).filter((item) => started.has(item.linearIdentifier));
+        for (const item of running)
+          expect(lines.filter((line) => line.includes(`item=${item.id}`)).join("\n")).not.toContain(
+            "Waiting for a free slot",
+          );
       },
     });
   } finally {
-    console.warn = warn;
     restore();
   }
 }, 90_000);
@@ -124,167 +119,17 @@ test("a failed preparation releases its reservation and the next recovering item
   }
 }, 60_000);
 
-test("reviewer preparation can use another runner before implementation takes its slot", async () => {
-  await runRecovering({
-    count: 1,
-    capacity: 1,
-    reviewerRunner: true,
-    clock: new FakeClock(Date.now()),
-    lines: [],
-    assert(started) {
-      expect(started.size).toBe(1);
-    },
-  });
-}, 60_000);
-
-test("admission belongs to one job, follows run replacement, and only its owner can release it", async () => {
-  await runRecovering({
-    count: 2,
-    capacity: 1,
-    clock: new FakeClock(Date.now()),
-    lines: [],
-    beforeStart(db, backend) {
-      const [first, second] = listWorkItems(db);
-      const lease = backend.tryReserve(first!.id);
-      expect(lease.ok).toBe(true);
-      if (!lease.ok || !lease.release) throw new Error("Expected an owned admission");
-      const duplicate = backend.tryReserve(first!.id);
-      expect(duplicate.ok).toBe(false);
-      expect(backend.tryReserve(second!.id).ok).toBe(false);
-      const prior = first!.currentRunId!;
-      db.run("UPDATE run SET status='lost' WHERE id=?", [prior]);
-      const replacement = insertRun(db, {
-        itemId: first!.id,
-        now: Date.now(),
-        status: "active",
-        kind: "recheck",
-      });
-      setCurrentRun(db, first!.id, replacement.id);
-      expect(backend.tryReserve(second!.id).ok).toBe(false);
-      lease.release();
-      const next = backend.tryReserve(second!.id);
-      expect(next.ok).toBe(true);
-      if (!next.ok || !next.release) throw new Error("Expected the freed slot");
-      // A stale release must not delete a later job's hold, even for the same item.
-      next.release();
-      const later = backend.tryReserve(first!.id);
-      expect(later.ok).toBe(true);
-      lease.release();
-      expect(backend.tryReserve(second!.id).ok).toBe(false);
-      if (later.ok) later.release?.();
-      setCurrentRun(db, first!.id, prior);
-      db.run("UPDATE run SET status='active' WHERE id=?", [prior]);
-      db.run("UPDATE run SET status='ended' WHERE id=?", [replacement.id]);
-    },
-    assert(started) {
-      expect(started.size).toBe(1);
-    },
-  });
-}, 60_000);
-
-test("a failed attempt keeps its job's admission for the next preparation attempt", async () => {
-  let fail = true;
-  await runRecovering({
-    count: 2,
-    capacity: 1,
-    clock: new FakeClock(Date.now()),
-    lines: [],
-    wrap(placement) {
-      return {
-        ...placement,
-        started(value) {
-          placement.started(value);
-          if (fail && value.purpose === "prepare") {
-            fail = false;
-            throw new Error("retry preparation");
-          }
-        },
-      };
-    },
-    async beforeStart(db, backend, agentInput) {
-      const [first, second] = listWorkItems(db);
-      bindWorkItemRepository(db, first!.id, {
-        owner: "acme",
-        repo: "fixture",
-        remoteUrl: GITHUB_URL,
-      });
-      db.run("UPDATE work_item SET state='running' WHERE id=?", [first!.id]);
-      const lease = backend.tryReserve(first!.id);
-      if (!lease.ok || !lease.release) throw new Error("Expected an owned admission");
-      await expect(backend.forItem(first!.id)(agentInput)).rejects.toThrow("retry preparation");
-      expect(backend.tryReserve(second!.id).ok).toBe(false);
-      await backend.forItem(first!.id)(agentInput);
-      expect(backend.tryReserve(second!.id).ok).toBe(false);
-      lease.release();
-      const next = backend.tryReserve(second!.id);
-      expect(next.ok).toBe(true);
-      if (next.ok) next.release?.();
-      db.run("UPDATE work_item SET state='recovering' WHERE id=?", [first!.id]);
-    },
-    assert(started) {
-      expect(started.size).toBe(1);
-    },
-  });
-}, 60_000);
-
-test("concurrent preparation, attachment and stale review cannot read or cancel the active turn", async () => {
-  await runRecovering({
-    count: 1,
-    capacity: 1,
-    clock: new FakeClock(Date.now()),
-    lines: [],
-    async assert(started, db, backend, agentInput) {
-      const item = listWorkItems(db)[0]!;
-      const commands = () => db.query("SELECT id,kind FROM runner_command ORDER BY ordinal").all();
-      const before = commands();
-      const runAgent = backend.forItem(item.id);
-      await expect(runAgent(agentInput)).rejects.toBeInstanceOf(RunnerCapacityWait);
-      await expect(
-        runAgent({ ...agentInput, prepareOnly: false, readOnly: false }),
-      ).rejects.toBeInstanceOf(RunnerCapacityWait);
-      await expect(
-        runAgent({ ...agentInput, prepareOnly: false, role: "reviewer", prompt: "a new review" }),
-      ).rejects.toBeInstanceOf(RunnerCapacityWait);
-      const prior = item.currentRunId!;
-      const replacement = insertRun(db, { itemId: item.id, now: Date.now(), status: "active" });
-      setCurrentRun(db, item.id, replacement.id);
-      try {
-        await expect(runAgent({ ...agentInput, runId: replacement.id })).rejects.toBeInstanceOf(
-          RunnerCapacityWait,
-        );
-      } finally {
-        setCurrentRun(db, item.id, prior);
-        db.run("UPDATE run SET status='ended' WHERE id=?", [replacement.id]);
-      }
-      expect(commands()).toEqual(before);
-      expect(backend.runInProgress(prior)).toBe(true);
-      expect(started.size).toBe(1);
-    },
-  });
-}, 60_000);
-
 async function runRecovering(input: {
   count: number;
   capacity: number;
   clock: Clock;
   lines: string[];
-  reviewerRunner?: boolean;
-  beforeStart?: (
-    db: ReturnType<typeof migratedDatabase>,
-    backend: ReturnType<typeof createRemoteAgentRunner>,
-    agentInput: RunAgentOptions,
-  ) => void | Promise<void>;
   maxAttempts?: number;
   placementPollMs?: number;
   random?: () => number;
   wrap?: (placement: RunnerPlacement) => RunnerPlacement;
   ready?: (started: Set<string>, db: ReturnType<typeof migratedDatabase>) => boolean;
-  assert: (
-    started: Set<string>,
-    db: ReturnType<typeof migratedDatabase>,
-    backend: ReturnType<typeof createRemoteAgentRunner>,
-    agentInput: RunAgentOptions,
-  ) => void | Promise<void>;
+  assert: (started: Set<string>, db: ReturnType<typeof migratedDatabase>) => void | Promise<void>;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-recovering-slots-"));
   const source = join(root, "source");
@@ -360,27 +205,7 @@ async function runRecovering(input: {
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
 
-  let reviewerRunnerId = runnerId;
-  if (input.reviewerRunner) {
-    const reviewEnrollment = {
-      name: "reviewbox",
-      csr: (await createRunnerKey(join(root, "reviewbox"))).csr,
-    };
-    reviewerRunnerId = (
-      await control.enroll({
-        ...reviewEnrollment,
-        token: control.createEnrollment(owner, reviewEnrollment).token,
-      })
-    ).runnerId;
-    db.run("UPDATE runner SET status='active', last_seen_at=? WHERE id=?", [
-      Date.now(),
-      reviewerRunnerId,
-    ]);
-    db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [reviewerRunnerId]);
-  }
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [
-    reviewerRunnerId,
-  ]);
+  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [runnerId]);
 
   const work = createRunnerWork({
     db,
@@ -388,19 +213,12 @@ async function runRecovering(input: {
     privateKey: generateKeyPairSync("ed25519").privateKey,
   });
   work.heartbeat(runnerId, input.capacity);
-  work.heartbeat(reviewerRunnerId, input.capacity);
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
   const prepared = new Map<string, Set<string>>();
   const basePlacement = createRunnerPlacement({ db });
   const trackedPlacement: RunnerPlacement = {
     ...basePlacement,
-    async candidates(request) {
-      const candidates = await basePlacement.candidates(request);
-      if (!input.reviewerRunner) return candidates;
-      const target = request.role === "reviewer" ? reviewerRunnerId : runnerId;
-      return candidates.filter((candidate) => candidate.id === target);
-    },
     started(value) {
       basePlacement.started(value);
       if (value.purpose === "prepare" && value.itemId) {
@@ -472,14 +290,13 @@ async function runRecovering(input: {
       agentForItem(itemId) {
         return (options) => backend.forItem(itemId)({ ...options, networkGit: git });
       },
-      tryReserve: (itemId) => backend.tryReserve(itemId),
     },
   });
 
   const started = new Set<string>();
   const sim = { stopped: false };
   const handled = new Set<string>();
-  const runnerIds = [...new Set([runnerId, reviewerRunnerId])];
+  const runnerIds = [runnerId];
   const runner = (async () => {
     while (!sim.stopped) {
       for (const simulatedRunnerId of runnerIds) {
@@ -561,23 +378,6 @@ async function runRecovering(input: {
       input.clock.now(),
       JOB_KIND.start,
     ]);
-    const first = listWorkItems(db)[0]!;
-    const agentInput: RunAgentOptions = {
-      command: "/forbidden-local-agent",
-      args: [],
-      role: "implementer",
-      profile: { agent: "claude", model: null },
-      itemId: first.id,
-      runId: first.currentRunId!,
-      worktreePath: source,
-      pawsRoot: root,
-      prepareOnly: true,
-      readOnly: true,
-      checkpoint: false,
-      prompt: "",
-      networkGit: git,
-    };
-    await input.beforeStart?.(db, backend, agentInput);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 45_000;
     const parked = () =>
@@ -603,7 +403,7 @@ async function runRecovering(input: {
     }
     for (const item of listWorkItems(db).filter((row) => started.has(row.linearIdentifier)))
       expect([...(prepared.get(item.id) ?? [])].sort()).toEqual(["implementer", "reviewer"]);
-    await input.assert(started, db, backend, agentInput);
+    await input.assert(started, db);
   } finally {
     controller.abort();
     sim.stopped = true;
