@@ -63,7 +63,11 @@ test("twenty recovering items fill six free slots in one tick and do not fail fo
       random: () => (jitter++ % 10) / 10,
       clock: new FakeClock(Date.now()),
       lines,
-      async assert(started, db) {
+      async assert(started, db, backend) {
+        const running = listWorkItems(db).filter((item) => started.has(item.linearIdentifier));
+        for (const item of running) backend.releaseReserve(item.id);
+        for (const item of running)
+          expect(backend.tryReserve(item.id)).toEqual({ ok: true, held: true });
         const pending = listJobs(db).filter(
           (job) => job.queue === JOB_KIND.resume && job.status === "pending",
         );
@@ -130,7 +134,11 @@ async function runRecovering(input: {
   random?: () => number;
   wrap?: (placement: RunnerPlacement) => RunnerPlacement;
   ready?: (started: Set<string>, db: ReturnType<typeof migratedDatabase>) => boolean;
-  assert: (started: Set<string>, db: ReturnType<typeof migratedDatabase>) => void | Promise<void>;
+  assert: (
+    started: Set<string>,
+    db: ReturnType<typeof migratedDatabase>,
+    backend: ReturnType<typeof createRemoteAgentRunner>,
+  ) => void | Promise<void>;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-recovering-slots-"));
   const source = join(root, "source");
@@ -375,7 +383,7 @@ async function runRecovering(input: {
     if (input.clock instanceof FakeClock) {
       expect(parked(), detail).toBe(input.count - input.capacity);
     }
-    await input.assert(started, db);
+    await input.assert(started, db, backend);
   } finally {
     controller.abort();
     sim.stopped = true;

@@ -479,6 +479,15 @@ export function createRemoteAgentRunner(options: {
     for (const [runId, hold] of reservations) {
       if (runId === excludeRunId) continue;
       if (hold.runnerId === PENDING_RUNNER) {
+        // Existing work already occupies a slot, including the hold between commands.
+        // Reserving its resume must not count that same slot a second time.
+        const occupied = db
+          .query<{ held: number }, [string]>(
+            `SELECT 1 AS held FROM runner_work w JOIN run r ON r.id=w.run_id
+             WHERE w.run_id=? AND r.status IN ('active','provisioning')`,
+          )
+          .get(runId);
+        if (occupied) continue;
         pending += 1;
         continue;
       }
