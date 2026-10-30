@@ -31,11 +31,12 @@ function askedAtTimeLimit(pendingHandoff?: string) {
     now: clock.now(),
   });
   beginImplementRun(db, item.id, clock.now());
-  applyWorkItemEvent(db, item.id, "turn_ended");
-  applyWorkItemEvent(db, item.id, "closeout_accepted");
+  applyWorkItemEvent(db, item.id, "turn_ended", { now: clock.now() });
+  applyWorkItemEvent(db, item.id, "closeout_accepted", { now: clock.now() });
   markCloseoutAccepted(db, item.id, "accepted");
-  applyWorkItemEvent(db, item.id, "ejected");
+  applyWorkItemEvent(db, item.id, "ejected", { now: clock.now() });
   saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
+  clock.advance(1);
   if (pendingHandoff !== undefined)
     enqueueJob(db, {
       queue: "run.resume",

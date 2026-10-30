@@ -110,6 +110,7 @@ export {
   type LinkAskDecision,
   type LinkAskKind,
 } from "./link-asks";
+export { heldHandoffs, type HeldHandoff } from "./held-handoffs";
 export {
   TransitionRejectedError,
   accrueAtJobBoundary,
@@ -120,9 +121,7 @@ export {
   configureWorkItem,
   deferWorkItem,
   extendAwakeCap,
-  heldHandoffs,
   markCloseoutAccepted,
-  markHandoffsCarried,
   resetAwakeTime,
   runnerCapacityWait,
   type CapOutcome,
@@ -142,7 +141,6 @@ export {
   setCurrentRun,
   setRecoveryAttempts,
   syncClock,
-  type HeldHandoff,
   type WorkItemRecord,
 } from "./items";
 export {

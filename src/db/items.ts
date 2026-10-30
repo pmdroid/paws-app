@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { halt } from "./halt";
+import { heldHandoffs } from "./held-handoffs";
 import { readCheckpoint } from "./checkpoint";
 import {
   awakeCategory,
@@ -551,32 +552,6 @@ function cancelAgentJobs(db: Database, itemId: string, now: number): void {
        AND json_extract(payload, '$.itemId') = ?`,
     [now, JOB_KIND.start, JOB_KIND.resume, itemId],
   );
-}
-
-/** A resume the time limit cancelled before the agent started it, with its handoff. */
-export type HeldHandoff = { jobId: number; handoff: string };
-
-/**
- * Handoffs of resume jobs the time limit cancelled that no later restart carried yet, oldest
- * first. A review or comment restart that the cap cut off waits here for a Continue answer.
- */
-export function heldHandoffs(db: Database, itemId: string): HeldHandoff[] {
-  return db
-    .query<{ id: number; handoff: string | null }, [string, string]>(
-      `SELECT id, json_extract(payload, '$.handoff') AS handoff FROM job
-       WHERE queue = ? AND status = 'cancelled' AND last_error = 'time_limit'
-         AND json_extract(payload, '$.itemId') = ?
-       ORDER BY id`,
-    )
-    .all(JOB_KIND.resume, itemId)
-    .filter((row) => typeof row.handoff === "string" && row.handoff.trim() !== "")
-    .map((row) => ({ jobId: row.id, handoff: row.handoff! }));
-}
-
-/** Marks held handoffs as carried by a later restart, so none reaches the agent twice. */
-export function markHandoffsCarried(db: Database, held: readonly HeldHandoff[]): void {
-  for (const entry of held)
-    db.run("UPDATE job SET last_error = 'time_limit_carried' WHERE id = ?", [entry.jobId]);
 }
 
 /**

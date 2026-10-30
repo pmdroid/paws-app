@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, type RestartReason } from "../core";
 import { halt } from "./halt";
+import { heldHandoffs, markHandoffsCarried } from "./held-handoffs";
 import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
 import { enqueueJobOnce } from "./jobs";
 import { markRun } from "./runs";
@@ -35,18 +36,24 @@ export function restart(
     };
     const queued = applyWorkItemEvent(db, item.id, "restart", record);
     if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "running" });
-    return enqueueJobOnce(db, {
+    const jobKey = handoff.jobKey ?? `restart:${item.id}:${queued.version}`;
+    // A review or answer whose run stopped before the agent read it comes first, once.
+    const fresh = db.query("SELECT 1 FROM job WHERE job_key = ?").get(jobKey) === null;
+    const held = fresh ? heldHandoffs(db, item.id) : [];
+    const jobId = enqueueJobOnce(db, {
       queue: JOB_KIND.resume,
-      jobKey: handoff.jobKey ?? `restart:${item.id}:${queued.version}`,
+      jobKey,
       payload: {
         itemId: item.id,
         runId: item.currentRunId,
-        handoff: handoff.body,
+        handoff: [...held.map((entry) => entry.handoff), handoff.body].join("\n\n"),
         reason: handoff.reason,
         ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
       },
       now: handoff.now,
     });
+    markHandoffsCarried(db, held, jobId);
+    return jobId;
   });
 }
 

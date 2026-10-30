@@ -30,7 +30,7 @@ The host plan is monotonic. A completed host step (Wait, Implement, Verify, Fix 
 
 ### Restart reasons
 
-`restart(item, reason)` in `src/loop` is the one way back to the agent. The reason picks the title and the appended plan step:
+`restart(item, reason)` in `src/loop` is the one way back to the agent. When an earlier resume was cancelled before the agent finished a turn on it (its run failed first, or the time limit stopped it), the next restart hands that text to the agent ahead of its own, once, whatever its reason. A review cut off that way still reaches the agent after a "retry" or a Continue. The reason picks the title and the appended plan step:
 
 | Reason      | Cause                                          | Title while queued                                     | Title while running               |
 | ----------- | ---------------------------------------------- | ------------------------------------------------------ | --------------------------------- |
