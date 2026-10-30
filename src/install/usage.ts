@@ -32,6 +32,20 @@ export function claudeLimits(rateLimit: unknown): AgentLimit[] {
   });
 }
 
+const CLAUDE_USAGE_WINDOWS: Record<string, string> = { session: "5-hour", weekly_all: "Weekly" };
+
+export function claudeUsageLimits(report: unknown): AgentLimit[] {
+  const limits = record(report)?.limits;
+  if (!Array.isArray(limits)) return [];
+  return Object.entries(CLAUDE_USAGE_WINDOWS).flatMap(([kind, label]) => {
+    const entry = limits.map(record).find((value) => value?.kind === kind);
+    if (typeof entry?.percent !== "number" || !Number.isFinite(entry.percent)) return [];
+    const resetsAt =
+      typeof entry.resets_at === "string" ? Date.parse(entry.resets_at) / 1000 : null;
+    return [limit(label, entry.percent, resetsAt)];
+  });
+}
+
 export function codexWindow(minutes: number): string {
   if (minutes === 7 * 24 * 60) return "Weekly";
   if (minutes % (24 * 60) === 0) return `${minutes / (24 * 60)}-day`;
@@ -53,18 +67,16 @@ export function codexLimits(result: unknown): AgentLimit[] {
   });
 }
 
-export type CodexRateLimitReader = (
-  env: NodeJS.ProcessEnv,
-  executable?: string,
-) => Promise<unknown>;
+export type RateLimitReader = (env: NodeJS.ProcessEnv, executable?: string) => Promise<unknown>;
 
-/** `executable` is the `codex` CLI to run. The runner passes its launcher's absolute path. */
-export async function readCodexRateLimits(
+async function readJsonLines(
+  command: string[],
   env: NodeJS.ProcessEnv,
-  executable = "codex",
-  timeoutMs = 15_000,
+  timeoutMs: number,
+  input: string,
+  pick: (message: Record<string, unknown>) => unknown,
 ): Promise<unknown> {
-  const child = Bun.spawn([executable, "app-server"], {
+  const child = Bun.spawn(command, {
     env: Object.fromEntries(
       Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
     ),
@@ -74,12 +86,7 @@ export async function readCodexRateLimits(
   });
   const timer = setTimeout(() => child.kill(), timeoutMs);
   try {
-    for (const message of [
-      { id: 1, method: "initialize", params: { clientInfo: { name: "paws", version: "0" } } },
-      { method: "initialized" },
-      { id: 2, method: "account/rateLimits/read" },
-    ])
-      child.stdin.write(`${JSON.stringify(message)}\n`);
+    child.stdin.write(input);
     await child.stdin.flush();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -91,7 +98,8 @@ export async function readCodexRateLimits(
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
         const message = record(JSON.parse(line));
-        if (message?.id === 2) return message.result ?? null;
+        const picked = message && pick(message);
+        if (picked !== undefined) return picked;
       }
     }
     return null;
@@ -99,4 +107,53 @@ export async function readCodexRateLimits(
     clearTimeout(timer);
     child.kill();
   }
+}
+
+/** `executable` is the `claude` CLI to run. `/usage` is a local command, so it spends no tokens. */
+export function readClaudeRateLimits(
+  env: NodeJS.ProcessEnv,
+  executable = "claude",
+  timeoutMs = 15_000,
+): Promise<unknown> {
+  return readJsonLines(
+    [
+      executable,
+      "-p",
+      "/usage",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--no-session-persistence",
+    ],
+    env,
+    timeoutMs,
+    "",
+    (message) =>
+      record(message.usage_report)
+        ? (record(message.usage_report)?.rate_limits ?? null)
+        : message.type === "result"
+          ? null
+          : undefined,
+  );
+}
+
+/** `executable` is the `codex` CLI to run. The runner passes its launcher's absolute path. */
+export function readCodexRateLimits(
+  env: NodeJS.ProcessEnv,
+  executable = "codex",
+  timeoutMs = 15_000,
+): Promise<unknown> {
+  return readJsonLines(
+    [executable, "app-server"],
+    env,
+    timeoutMs,
+    [
+      { id: 1, method: "initialize", params: { clientInfo: { name: "paws", version: "0" } } },
+      { method: "initialized" },
+      { id: 2, method: "account/rateLimits/read" },
+    ]
+      .map((message) => `${JSON.stringify(message)}\n`)
+      .join(""),
+    (message) => (message.id === 2 ? (message.result ?? null) : undefined),
+  );
 }
