@@ -10,8 +10,9 @@
     "typecheck": "tsc --noEmit && tsc -p src/web/tsconfig.client.json --noEmit",
     "test": "bun test --parallel=4 --timeout=20000 --no-orphans",
     "links": "bun scripts/check-markdown-links.ts",
+    "knip": "knip --include files,dependencies,devDependencies,unlisted,binaries,duplicates,unresolved",
     "migrate:dry-run": "bun scripts/migrate-dry-run.ts",
-    "check": "bun run lint && bun run fmt:check && bun run typecheck && bun run test && bun run build:status && bun run links",
+    "check": "bun run lint && bun run fmt:check && bun run typecheck && bun run test && bun run build:status && bun run links && bun run knip",
     "build:status": "bun src/web/build.ts",
     "verify:local": "bun --no-env-file scripts/verify-local.ts",
     "verify:ui": "bun run build:status && bun --no-env-file scripts/verify-status-ui.ts"
@@ -36,6 +37,7 @@
     "clsx": "^2.1.1",
     "happy-dom": "^21.0.4",
     "html-react-parser": "^6.1.8",
+    "knip": "^6.43.0",
     "lucide-react": "^1.56.0",
     "oxc-parser": "^0.155.0",
     "oxfmt": "^0.72.0",
