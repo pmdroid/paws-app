@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { claudeLimits, codexLimits, codexWindow } from "./usage";
+import { claudeLimits, claudeUsageLimits, codexLimits, codexWindow } from "./usage";
 
 test("Claude rate-limit events report the 5-hour and weekly windows as percentages", () => {
   const event = {
@@ -27,6 +27,29 @@ test("a Claude event without unified windows reports the window it names", () =>
   expect(claudeLimits({ rateLimitType: "overage", utilization: 0.5 })).toEqual([]);
   for (const value of [undefined, null, "limit", 3, { unifiedWindows: "none" }])
     expect(claudeLimits(value)).toEqual([]);
+});
+
+test("Claude /usage reports the session and weekly windows with their reset times", () => {
+  const report = {
+    limits: [
+      {
+        kind: "session",
+        group: "session",
+        percent: 7,
+        resets_at: "2026-10-30T19:09:59.676247+00:00",
+        is_active: true,
+      },
+      { kind: "weekly_all", group: "weekly", percent: 106, resets_at: null, is_active: false },
+      { kind: "weekly_opus", group: "weekly", percent: 50, resets_at: null },
+    ],
+    extra_usage: { is_enabled: false },
+  };
+  expect(claudeUsageLimits(report)).toEqual([
+    { window: "5-hour", usedPercent: 7, resetsAt: Date.parse("2026-10-30T19:09:59.676Z") },
+    { window: "Weekly", usedPercent: 100, resetsAt: null },
+  ]);
+  for (const value of [undefined, null, {}, { limits: "none" }, { limits: [{ kind: "session" }] }])
+    expect(claudeUsageLimits(value)).toEqual([]);
 });
 
 test("Codex rate limits name their window from its duration and clamp the percentage", () => {

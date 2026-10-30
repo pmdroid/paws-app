@@ -85,10 +85,12 @@ import {
 import {
   checkDeveloperLogin,
   claudeLimits,
+  claudeUsageLimits,
   codexLimits,
+  readClaudeRateLimits,
   readCodexRateLimits,
   type AgentLimit,
-  type CodexRateLimitReader,
+  type RateLimitReader,
   type LoginCommandRunner,
 } from "../install";
 import {
@@ -156,7 +158,8 @@ export interface RunnerWorkerOptions {
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
   followUp?: (sequence: number, signal: AbortSignal) => Promise<string>;
   loginCommand?: LoginCommandRunner;
-  codexRateLimits?: CodexRateLimitReader;
+  codexRateLimits?: RateLimitReader;
+  claudeRateLimits?: RateLimitReader;
   resume?: boolean;
   skills?: string;
   /** The mise binary and install cap. Tests point these at a fake. */
@@ -1585,6 +1588,16 @@ export async function executeRunnerCommand(
             providerCli("codex"),
           ).catch((caughtError2) => {
             journalCaught(caughtError2, "runner-worker.executeRunnerCommand.providerCli", null);
+            return null;
+          }),
+        );
+      if (authenticated && command.agent === "claude")
+        agentLimits = claudeUsageLimits(
+          await (options.claudeRateLimits ?? readClaudeRateLimits)(
+            agentEnv,
+            providerCli("claude"),
+          ).catch((caughtError2) => {
+            journalCaught(caughtError2, "runner-worker.executeRunnerCommand.claudeUsage", null);
             return null;
           }),
         );
