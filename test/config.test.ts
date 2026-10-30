@@ -251,7 +251,27 @@ describe("config", () => {
       grok: { path: "/opt/grok", allowApiKey: true },
     });
     writeFileSync(paths.configFile, '[agents]\nimplementer = "gpt"\n');
-    expect(() => loadConfigFile(paths.configFile)).toThrow(/claude, grok, or codex/);
+    expect(() => loadConfigFile(paths.configFile)).toThrow(/claude, grok, codex, or opencode/);
+  });
+
+  test("parses agents.opencode path", () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
+    ensureLayout(paths);
+    writeFileSync(
+      paths.configFile,
+      [
+        "[agents]",
+        'implementer = "opencode"',
+        "",
+        "[agents.opencode]",
+        'path = "/opt/opencode"',
+        "",
+      ].join("\n"),
+    );
+    const parsed = loadConfigFile(paths.configFile);
+    expect(parsed.agents.implementer).toBe("opencode");
+    expect(parsed.agents.opencode).toEqual({ path: "/opt/opencode" });
   });
 
   test("writeImplementer keeps grok path and other keys", () => {

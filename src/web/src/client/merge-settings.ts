@@ -1,7 +1,9 @@
 import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import type {
+  CommentWait,
   HighRiskRepository,
+  HotFile,
   MainMoved,
   MergeChoice,
   MergeOrder,
@@ -192,13 +194,46 @@ export function renderMergeSettings(view: View): string {
           : '<p class="sub">No issue rules.</p>'
       }
       <div class="settings-add"><label for="merge-rule-project">New rule</label>${ruleProject}${ruleLabel}<div class="row"><button class="btn" type="button" data-merge="add-rule">Add rule</button></div></div></div></section>
+      ${data.commentWait ? commentWaitSection(data.commentWait) : ""}
       ${riskGateSection(data.riskGate)}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
+      ${data.hotFiles ? hotFileSection(data.hotFiles) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
 }
 
+/** Read-only: the files that caused merge-queue conflicts in the last 7 days. */
+function hotFileSection(files: readonly HotFile[]): string {
+  const body = files.length
+    ? `<ul class="risk-file">${files
+        .map(
+          (file) =>
+            `<li><code>${esc(file.path)}</code> <span class="sub">${esc(file.repository)} · ${file.conflicts} ${file.conflicts === 1 ? "conflict" : "conflicts"} (${esc(file.items.join(", "))})</span></li>`,
+        )
+        .join("")}</ul>`
+    : '<p class="sub">No merge-queue conflicts in the last 7 days.</p>';
+  return `<section class="settings-section" id="merge-hot-files"><div class="settings-label"><h2>Conflict-prone files</h2><p class="sub">Files that sent work back for a merge-queue conflict in the last 7 days. A queued item that changes one of them waits while a running or merge-queue item changes it too, until that one merges. Read-only.</p></div><div class="col">${body}</div></section>`;
+}
+
 /** Whether high-risk pull requests wait for an approval in Paws, and why not. */
+function commentWaitSection(wait: CommentWait): string {
+  const field = (name: string, id: string, title: string, value: number, help: string) =>
+    `<div class="settings-field"><label for="${id}">${title}</label><input id="${id}" name="${name}" type="number" inputmode="numeric" min="0" max="3600" step="1" value="${value}" aria-describedby="${id}-help"><small class="sub" id="${id}-help">${help}</small></div>`;
+  return `<section class="settings-section" id="merge-comment-wait"><div class="settings-label"><h2>Pull request comments</h2><p class="sub">How long Paws collects review comments, changes-requested reviews and bot reviews on a pull request before it sends them to the agent in one fix round. Applies to the next comment.</p></div><div class="col"><div class="settings-controls">${field(
+    "comment-quiet",
+    "merge-comment-quiet",
+    "Quiet time (seconds)",
+    wait.quietSeconds,
+    "Wait this long after the latest comment or review.",
+  )}${field(
+    "comment-max",
+    "merge-comment-max",
+    "Longest wait (seconds)",
+    wait.maxWaitSeconds,
+    "Send them anyway this long after the first one, even while comments keep coming.",
+  )}</div></div></section>`;
+}
+
 function riskGateSection(gate: MergeSettingsView["riskGate"]): string {
   if (!gate) return "";
   const body = gate.on
@@ -216,6 +251,7 @@ export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
     default: data.default,
     projects: data.projects,
     rules: data.rules,
+    ...(data.commentWait ? { commentWait: data.commentWait } : {}),
     ...(data.highRiskRepositories
       ? {
           highRiskPaths: data.highRiskRepositories.map((entry) => ({
@@ -300,6 +336,16 @@ export function createMergeSettings(invalidate: () => void): {
       const project = data.projects.find((entry) => entry.id === rule.project);
       return { ...base, ...read(scope, effective(rule, effective(project, data.default))) };
     });
+    if (data.commentWait) {
+      const seconds = (name: string, fallback: number) => {
+        const text = value(name)?.trim();
+        return text === undefined || text === "" ? fallback : Number(text);
+      };
+      data.commentWait = {
+        quietSeconds: seconds("comment-quiet", data.commentWait.quietSeconds),
+        maxWaitSeconds: seconds("comment-max", data.commentWait.maxWaitSeconds),
+      };
+    }
     data.highRiskRepositories = data.highRiskRepositories?.map((entry, index) => {
       const text = form.querySelector<HTMLTextAreaElement>(`[name="risk-${index}"]`)?.value;
       return text === undefined ? entry : { ...entry, paths: riskGlobs(text) };
@@ -395,7 +441,7 @@ export function createMergeSettings(invalidate: () => void): {
     const started = generation;
     const choices = view.data.choices;
     const choicesError = view.data.choicesError;
-    const { githubQueue, githubQueueError, upToDateRule, riskGate } = view.data;
+    const { githubQueue, githubQueueError, upToDateRule, riskGate, hotFiles } = view.data;
     void request("Saving merging settings…", async () => {
       const data = await mergeSettingsRequest(
         engine!,
@@ -412,6 +458,7 @@ export function createMergeSettings(invalidate: () => void): {
         ...(githubQueueError ? { githubQueueError } : {}),
         ...(upToDateRule ? { upToDateRule } : {}),
         ...(riskGate ? { riskGate } : {}),
+        ...(hotFiles ? { hotFiles } : {}),
       };
       view.saved = true;
     });

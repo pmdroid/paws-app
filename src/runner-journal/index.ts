@@ -39,7 +39,20 @@ const question = z.strictObject({
     .max(16),
 });
 
-const policyRequest = z.strictObject({ type: z.literal("closeout_policy"), requestId: z.uuid() });
+const policyRequest = z.strictObject({
+  type: z.literal("closeout_policy"),
+  requestId: z.uuid(),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .max(8 * 1024 * 1024)
+    .optional(),
+  hash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+});
 
 function executionId(now: number): string {
   const bytes = randomBytes(16);
@@ -175,7 +188,11 @@ export function openExecutionJournal(root: string) {
           const publication = artifact.safeParse(raw);
           const policy = policyRequest.safeParse(raw);
           if (policy.success) {
-            event = { type: "closeout_policy" };
+            event = {
+              type: "closeout_policy",
+              ...(policy.data.offset === undefined ? {} : { offset: policy.data.offset }),
+              ...(policy.data.hash === undefined ? {} : { hash: policy.data.hash }),
+            };
             requestId = policy.data.requestId;
           } else if (publication.success) {
             if (publication.data.requestId !== publication.data.artifact.id)

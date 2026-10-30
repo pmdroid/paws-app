@@ -225,7 +225,9 @@ test("a failed Serve clear stops the product and retries cleanup before reusing 
 
 test.each([
   ["0.1.48", false],
-  ["0.1.49", true],
+  ["0.1.49", false],
+  ["0.1.52", false],
+  ["0.1.53", true],
   ["0.2.0", true],
   [null, false],
   ["invalid", false],

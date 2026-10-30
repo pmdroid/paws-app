@@ -521,6 +521,8 @@ def fake_packages(version, marker):
         "@agentclientprotocol/codex-acp": ({"bin": {"codex-acp": "dist/index.js"}, "dependencies": {"@openai/codex": version, f"@openai/codex-linux-{ARCH}": version}}, {"dist/index.js": (node_agent("codex-acp", version), 0o755)}),
         "@openai/codex": ({"bin": {"codex": "bin/codex.js"}}, {"bin/codex.js": (node_agent("codex", version), 0o755)}),
         f"@openai/codex-linux-{ARCH}": ({}, {f"{vendor}/bin/codex": (native_agent("codex-native", version), 0o755), f"{vendor}/bin/codex-code-mode-host": (b"#!/bin/sh\n", 0o755), f"{vendor}/codex-resources/voice/bin/codex-voice-host": (b"#!/bin/sh\n", 0o755), f"{vendor}/codex-resources/bwrap": (b"#!/bin/sh\n", 0o755)}),
+        "@opencode/cli": ({"optionalDependencies": {f"@opencode/cli-linux-{ARCH}{'-baseline' if ARCH == 'x64' else ''}": version}}, {}),
+        f"@opencode/cli-linux-{ARCH}{'-baseline' if ARCH == 'x64' else ''}": ({}, {"bin/opencode": (native_agent("opencode", version), 0o755)}),
         "@xai-official/grok": ({"bin": {"grok": "bin/grok"}, "scripts": {"postinstall": f"touch {marker}"}}, {"bin/grok": (node_agent("grok", version), 0o755)}),
     }
 
@@ -676,7 +678,7 @@ class AgentInstallation(unittest.TestCase):
             manifest = self.installer.prepare_agents(output / "artifact.tar", self.base, self.registry.url)
             statuses = self.installer.finish_agents(manifest, self.base)
         self.assertEqual(statuses, {agent: {"version": "1.0.0", "status": "installed"} for agent in release.AGENT_PACKAGES})
-        expected = {"claude-agent-acp": "claude-agent-acp", "claude": "claude", "codex-acp": "codex-acp", "codex": "codex", "grok": "grok"}
+        expected = {"claude-agent-acp": "claude-agent-acp", "claude": "claude", "codex-acp": "codex-acp", "codex": "codex", "grok": "grok", "opencode": "opencode"}
         for launcher, (agent, target, _) in release.PROVIDER_EXECUTABLES.items():
             with self.subTest(launcher=launcher):
                 folder = self.base / "agents" / agent / "1.0.0"
@@ -745,7 +747,7 @@ class AgentInstallation(unittest.TestCase):
             self.install("1.0.0")
         self.assertFalse(self.marker.exists())
         self.assertTrue(all("--ignore-scripts" in arguments and "--frozen-lockfile" in arguments for arguments in calls))
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), len(release.AGENT_PACKAGES))
 
     def test_a_second_version_installs_beside_the_first_and_current_waits_for_sessions_on_the_old_one(self):
         self.install("1.0.0")

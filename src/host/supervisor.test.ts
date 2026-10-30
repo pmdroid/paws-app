@@ -81,6 +81,38 @@ function activities(db: ReturnType<typeof boot>["db"]) {
 }
 
 describe("supervisor accrual writes", () => {
+  test("hours in the merge queue do not count as agent time after a review restart", () => {
+    const { clock, db, host } = boot();
+    try {
+      startRun(db, clock);
+      host.tick();
+      clock.advance(10 * 60_000);
+      host.tick();
+      applyWorkItemEvent(db, "eng-9", "turn_ended");
+      applyWorkItemEvent(db, "eng-9", "closeout_accepted");
+      markCloseoutAccepted(db, "eng-9", "accepted");
+      for (let hour = 0; hour < 4; hour += 1) {
+        clock.advance(60 * 60_000);
+        host.tick();
+      }
+      // A changes-requested review sends the item back; it waits a tick for a runner.
+      applyWorkItemEvent(db, "eng-9", "restart", { kind: "restart", reason: "review" });
+      host.tick();
+      applyWorkItemEvent(db, "eng-9", "dispatched");
+      host.tick();
+      clock.advance(5 * 60_000);
+      host.tick();
+
+      expect(getWorkItem(db, "eng-9")).toMatchObject({
+        state: "running",
+        agentMs: 15 * 60_000,
+        awakeMs: 15 * 60_000,
+      });
+    } finally {
+      host.stop();
+    }
+  });
+
   test("only changed awake items are written once per tick", () => {
     const { clock, db, host } = boot();
     try {

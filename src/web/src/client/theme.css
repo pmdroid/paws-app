@@ -467,6 +467,13 @@ a.evidence-thumb:focus-visible {
 .review-location {
   overflow-wrap: anywhere;
 }
+.review-file {
+  align-items: center;
+}
+.review-file-error {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .result-icon {
   padding: 0.5rem 0.75rem;
   border: 2px solid var(--border);

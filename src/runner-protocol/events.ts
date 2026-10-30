@@ -146,7 +146,19 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("closeout"), progress: RunnerCloseoutProgressSchema }),
   z.strictObject({ type: z.literal("candidate"), sha: z.string().regex(/^[a-f0-9]{40}$/) }),
-  z.strictObject({ type: z.literal("closeout_policy") }),
+  z.strictObject({
+    type: z.literal("closeout_policy"),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .max(8 * 1024 * 1024)
+      .optional(),
+    hash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+  }),
   z.strictObject({ type: z.literal("completed") }),
   z.strictObject({ type: z.literal("failed"), message: z.string().max(16384) }),
 ]);

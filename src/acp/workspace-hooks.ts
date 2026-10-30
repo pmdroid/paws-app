@@ -73,6 +73,7 @@ export async function installWorkspaceHooks(input: {
   hooks: readonly WorkspaceHook[];
   runDirectory: string;
   pythonPath: string;
+  skillRoot?: string;
 }): Promise<InstalledWorkspaceHook[]> {
   const installed: InstalledWorkspaceHook[] = [];
   for (const [index, hook] of hooksForAgent(input.hooks, input.agent).entries()) {
@@ -84,6 +85,7 @@ export async function installWorkspaceHooks(input: {
         hook,
         pythonPath: input.pythonPath,
         failuresPath: join(input.runDirectory, HOOK_FAILURES_FILE),
+        skillRoot: input.skillRoot,
       }),
       { mode: 0o700 },
     );
@@ -227,14 +229,23 @@ export function workspaceHookScript(input: {
   hook: WorkspaceHook;
   pythonPath: string;
   failuresPath: string;
+  skillRoot?: string;
 }): string {
   const { hook } = input;
+  const skillRoot =
+    input.skillRoot === undefined
+      ? undefined
+      : input.agent === "claude"
+        ? join(input.skillRoot, ".claude", "skills")
+        : input.skillRoot;
   const skillDir =
     hook.skill === null
       ? null
-      : input.agent === "claude"
-        ? { base: "CLAUDE_CONFIG_DIR", fallback: ".claude", path: `skills/${hook.skill}` }
-        : { base: null, fallback: ".agents", path: `skills/${hook.skill}` };
+      : skillRoot !== undefined
+        ? join(skillRoot, hook.skill)
+        : input.agent === "claude"
+          ? { base: "CLAUDE_CONFIG_DIR", fallback: ".claude", path: `skills/${hook.skill}` }
+          : { base: null, fallback: ".agents", path: `skills/${hook.skill}` };
   return `#!${input.pythonPath}
 import json, os, signal, subprocess, sys, time
 HOOK = json.loads(${python({ id: hook.id, event: hook.event, command: hook.command, timeout: hook.timeoutSeconds })})
@@ -260,9 +271,12 @@ def sanitize(out):
 def main():
     env = {k: v for k, v in os.environ.items() if k in ALLOWED}
     if SKILL is not None:
-        base = env.get(SKILL["base"]) if SKILL["base"] else None
-        base = base or os.path.join(env.get("HOME", "/"), SKILL["fallback"])
-        env["PAWS_SKILL_DIR"] = os.path.join(base, SKILL["path"])
+        if isinstance(SKILL, str):
+            env["PAWS_SKILL_DIR"] = SKILL
+        else:
+            base = env.get(SKILL["base"]) if SKILL["base"] else None
+            base = base or os.path.join(env.get("HOME", "/"), SKILL["fallback"])
+            env["PAWS_SKILL_DIR"] = os.path.join(base, SKILL["path"])
     data = sys.stdin.buffer.read()
     try:
         child = subprocess.Popen(["/bin/sh", "-c", HOOK["command"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=True)

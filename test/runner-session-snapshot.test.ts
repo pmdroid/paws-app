@@ -10,6 +10,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -174,7 +175,7 @@ test.skipIf(!linux)(
     ]);
     expect(Buffer.from(lines[0]!.data, "base64").toString()).toBe('{"type":"user"}\n');
     expect(Buffer.from(lines[1]!.data, "base64").toString()).toBe('{"type":"assistant"}\n');
-    expect(lines[0]!.mode).toBe(0o644 & ~process.umask());
+    expect(lines[0]!.mode).toBe(statSync(join(project, `${SESSION}.jsonl`)).mode & 0o777);
     const bytes = readFileSync(join(output, "session.ndjson.gz"));
     expect(JSON.parse(readFileSync(join(output, "session.json"), "utf8"))).toEqual({
       agent: "claude",

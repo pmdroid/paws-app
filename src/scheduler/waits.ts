@@ -17,6 +17,7 @@ export type ItemWait = {
   version: number;
 } & (
   | { kind: "blocked"; blockers: string[] }
+  | { kind: "overlap"; blocker: string; files: string[] }
   | {
       kind: "runner";
       position: number;
@@ -101,6 +102,8 @@ export function itemWaits(
       const hold = held.get(item.id);
       if (hold?.reason === "blocked")
         return [{ ...base, kind: "blocked", blockers: hold.blockers }];
+      if (hold?.reason === "overlap" && hold.blockers[0])
+        return [{ ...base, kind: "overlap", blocker: hold.blockers[0], files: hold.files ?? [] }];
       const position = positions.get(item.id);
       if ((hold?.reason === "slot" || hold?.reason === "cap") && position !== undefined)
         return [{ ...base, kind: "runner", position, restart: restartReason(db, item.id) }];
@@ -122,7 +125,14 @@ export function itemWaits(
   return waits;
 }
 
+/** `waiting for PAS-1 to merge (both change provider.ts)`, file names without their directories. */
+export function overlapLine(blocker: string, files: readonly string[]): string {
+  const names = [...new Set(files.map((path) => path.slice(path.lastIndexOf("/") + 1)))];
+  return `waiting for ${blocker} to merge${names.length ? ` (both change ${names.join(", ")})` : ""}`;
+}
+
 export function waitingLine(wait: ItemWait): string | null {
+  if (wait.kind === "overlap") return `Still ${overlapLine(wait.blocker, wait.files)}.`;
   if (wait.kind === "blocked")
     return wait.blockers.length
       ? `Still waiting for ${wait.blockers.join(", ")}.`
@@ -132,7 +142,9 @@ export function waitingLine(wait: ItemWait): string | null {
 }
 
 export function postWaitKeepalives(db: Database, waits: readonly ItemWait[], now: number): void {
-  const queued = waits.filter((wait) => wait.kind === "blocked" || wait.kind === "runner");
+  const queued = waits.filter(
+    (wait) => wait.kind === "blocked" || wait.kind === "overlap" || wait.kind === "runner",
+  );
   keepItemWaits(
     db,
     queued.map((wait) => wait.itemId),

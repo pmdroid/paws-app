@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
 
-async function loginCheck(agent: "codex", authenticated: boolean, rateLimits: unknown) {
+async function loginCheck(agent: "claude" | "codex", authenticated: boolean, rateLimits: unknown) {
   const root = mkdtempSync(join(tmpdir(), "paws-agent-usage-"));
   try {
     const home = join(root, "home");
@@ -40,6 +40,11 @@ async function loginCheck(agent: "codex", authenticated: boolean, rateLimits: un
         if (rateLimits instanceof Error) throw rateLimits;
         return rateLimits;
       },
+      async claudeRateLimits(env) {
+        reads.push(env);
+        if (rateLimits instanceof Error) throw rateLimits;
+        return rateLimits;
+      },
     });
     return { result, reads, home };
   } finally {
@@ -68,6 +73,31 @@ test("a signed-out or unreadable Codex check reports no usage and still finishes
   expect(signedOut.reads).toHaveLength(0);
   expect(signedOut.result.run.agentLimits).toBeUndefined();
   const failed = await loginCheck("codex", true, new Error("codex app-server is missing"));
+  expect(failed.result.login?.authenticated).toBe(true);
+  expect(failed.result.run.agentLimits).toBeUndefined();
+}, 20_000);
+
+test("a Claude sign-in check reads the signed-in account's usage", async () => {
+  const { result, reads, home } = await loginCheck("claude", true, {
+    limits: [
+      { kind: "session", percent: 7, resets_at: "2026-10-30T19:09:59Z" },
+      { kind: "weekly_all", percent: 6, resets_at: "2026-11-02T19:59:59Z" },
+    ],
+  });
+  expect(result.login?.authenticated).toBe(true);
+  expect(result.run.agentLimits).toEqual([
+    { window: "5-hour", usedPercent: 7, resetsAt: Date.parse("2026-10-30T19:09:59Z") },
+    { window: "Weekly", usedPercent: 6, resetsAt: Date.parse("2026-11-02T19:59:59Z") },
+  ]);
+  expect(reads).toHaveLength(1);
+  expect(reads[0]!.HOME).toBe(home);
+}, 20_000);
+
+test("a signed-out or unreadable Claude check reports no usage and still finishes", async () => {
+  const signedOut = await loginCheck("claude", false, { limits: [] });
+  expect(signedOut.reads).toHaveLength(0);
+  expect(signedOut.result.run.agentLimits).toBeUndefined();
+  const failed = await loginCheck("claude", true, new Error("claude is missing"));
   expect(failed.result.login?.authenticated).toBe(true);
   expect(failed.result.run.agentLimits).toBeUndefined();
 }, 20_000);

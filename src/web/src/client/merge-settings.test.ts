@@ -193,6 +193,21 @@ describe("Settings → Merging", () => {
     expect(html).toContain("Paws has no copy of this repository yet.");
   });
 
+  test("Pull request comments: the wait is editable and saved; an engine without it leaves it out", () => {
+    const view = { ...data(), commentWait: { quietSeconds: 90, maxWaitSeconds: 600 } };
+    const html = renderMergeSettings({ data: view, busy: null, error: null, saved: false });
+    expect(html).toContain("<h2>Pull request comments</h2>");
+    expect(html).toContain('name="comment-quiet" type="number"');
+    expect(html).toContain('value="90"');
+    expect(html).toContain('name="comment-max" type="number"');
+    expect(html).toContain('value="600"');
+    expect(mergeSettingsBody(view).commentWait).toEqual({ quietSeconds: 90, maxWaitSeconds: 600 });
+
+    const without = renderMergeSettings({ data: data(), busy: null, error: null, saved: false });
+    expect(without).not.toContain("Pull request comments");
+    expect(mergeSettingsBody(data())).not.toHaveProperty("commentWait");
+  });
+
   test("High-risk paths: an engine that does not list them leaves the section and body out", () => {
     const html = renderMergeSettings({ data: data(), busy: null, error: null, saved: false });
     expect(html).not.toContain("High-risk paths");

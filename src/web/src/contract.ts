@@ -267,12 +267,16 @@ export const HELD_REASONS = [
   "cap",
   "slot",
   "workspace",
+  "overlap",
 ] as const;
 export type HeldReason = (typeof HELD_REASONS)[number];
 
 export interface StatusHeld {
   reason: HeldReason;
+  /** The blocking issues, or for `overlap` the item it waits for to merge. */
   blockers: string[];
+  /** For `overlap`: the conflict-prone files both items change. */
+  files?: string[];
 }
 
 export interface StatusActivity {
@@ -519,7 +523,18 @@ export interface StatusReviewFinding {
   blocking: boolean;
   /** Null in a review's first round and in `fixed`. */
   since: ReviewFindingSince | null;
+  /** The Linear issue filed from this pre-existing finding, on any item. */
+  filed?: StatusFiledIssue;
 }
+
+/** A Linear issue filed from a review finding. */
+export interface StatusFiledIssue {
+  identifier: string;
+  url: string | null;
+}
+
+/** `POST` `{ itemId, reviewId, location, explanation }`: file a pre-existing finding in Linear. */
+export const FINDING_ISSUE_PATH = "/api/review-findings/issues";
 
 /** One Closeout run of a candidate (head and policy), oldest first in `StatusVerdict.attempts`. */
 export interface StatusCloseoutAttempt {
@@ -713,6 +728,8 @@ export interface StatusSnapshotBase {
   linearWebhook?: StatusLinearWebhook;
   /** Repositories GitHub refuses pushes from the Paws App for, the oldest outage first. */
   pushOutages?: StatusPushOutage[];
+  /** Repositories whose Closeout policy uses keys the lowest online runner does not know. */
+  policyRunnerWarnings?: StatusPolicyRunnerWarning[];
   /** Only in the list, while an item merged in the last 24 hours. */
   mergedTimes?: StatusMergedTimes;
 }
@@ -743,7 +760,7 @@ export type StatusSlice = (typeof STATUS_SLICES)[number];
 export const STATUS_SLICE_FIELDS = {
   items: ["items", "runs", "verdicts", "agentCloseout", "mergedTimes"],
   questions: ["questions"],
-  mergeQueue: ["mergeQueue", "pushOutages"],
+  mergeQueue: ["mergeQueue", "pushOutages", "policyRunnerWarnings"],
   mergeHistory: ["mergeHistory"],
   evidence: ["evidence"],
   intake: ["intake", "linearBudget", "linearWebhook"],
@@ -1020,6 +1037,20 @@ export interface StatusPushOutage {
   installationUrl: string | null;
 }
 
+/**
+ * `repository`'s Closeout policy uses keys the lowest online runner release does not know. That
+ * runner leaves them out and runs the rest of the policy.
+ */
+export interface StatusPolicyRunnerWarning {
+  repository: string;
+  policyDigest: string;
+  /** The lowest runner release online when Paws checked. */
+  runnerVersion: string;
+  /** Each key that runner does not know, with the first release that does. */
+  keys: Array<{ key: string; needs: string }>;
+  checkedAt: string;
+}
+
 export interface StatusLinearWebhook {
   warning: string;
   fix: string;
@@ -1238,9 +1269,33 @@ function readBase(body: Record<string, unknown>): StatusSnapshotBase {
             readPushOutage(entry, `pushOutages[${index}]`),
           ),
         }),
+    ...(body.policyRunnerWarnings === undefined
+      ? {}
+      : {
+          policyRunnerWarnings: array(body, "policyRunnerWarnings", "status").map((entry, index) =>
+            readPolicyRunnerWarning(entry, `policyRunnerWarnings[${index}]`),
+          ),
+        }),
     ...(body.mergedTimes === undefined
       ? {}
       : { mergedTimes: readMergedTimes(body.mergedTimes, "mergedTimes") }),
+  };
+}
+
+function readPolicyRunnerWarning(input: unknown, path: string): StatusPolicyRunnerWarning {
+  const body = object(input, path);
+  return {
+    repository: text(body, "repository", path),
+    policyDigest: text(body, "policyDigest", path),
+    runnerVersion: text(body, "runnerVersion", path),
+    keys: array(body, "keys", path).map((entry, index) => {
+      const key = object(entry, `${path}.keys[${index}]`);
+      return {
+        key: text(key, "key", `${path}.keys[${index}]`),
+        needs: text(key, "needs", `${path}.keys[${index}]`),
+      };
+    }),
+    checkedAt: dateString(body, "checkedAt", path),
   };
 }
 
@@ -1613,6 +1668,7 @@ function readHeld(input: unknown, path: string): StatusHeld {
   return {
     reason: oneOf(string(body, "reason", path), HELD_REASONS, `${path}.reason`),
     blockers: stringArray(body, "blockers", path),
+    ...(body.files === undefined ? {} : { files: stringArray(body, "files", path) }),
   };
 }
 
@@ -1907,6 +1963,15 @@ function readReviewFinding(input: unknown, path: string): StatusReviewFinding {
       since === null || since === undefined
         ? null
         : oneOf(string(body, "since", path), REVIEW_FINDING_SINCE, `${path}.since`),
+    ...(body.filed === undefined ? {} : { filed: readFiledIssue(body.filed, `${path}.filed`) }),
+  };
+}
+
+function readFiledIssue(input: unknown, path: string): StatusFiledIssue {
+  const body = object(input, path);
+  return {
+    identifier: text(body, "identifier", path),
+    url: body.url === null || body.url === undefined ? null : string(body, "url", path),
   };
 }
 

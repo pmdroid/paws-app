@@ -1,11 +1,14 @@
 import { journalCaught } from "../journal";
 import {
+  DEFAULT_COMMENT_WAIT,
   loadConfigFile,
+  parseCommentWait,
   parseHighRiskPathSettings,
   parseMergePolicy,
   readMergeSettings,
   storedMerge,
   writeMergePolicy,
+  type CommentWait,
   type MergeChoice,
   type MergeOverride,
   type MergePolicy,
@@ -46,6 +49,16 @@ export type MergeSettingsOptions = {
    * mirror, without a network call. Null when Paws has no local copy yet.
    */
   highRiskFile?: (repo: string) => Promise<HighRiskFile | null>;
+  /** The files that caused merge-queue conflicts in the last 7 days, shown read-only. */
+  hotFiles?: () => HotFileView[];
+};
+
+/** One conflict-prone file under Settings › Merging. */
+export type HotFileView = {
+  repository: string;
+  path: string;
+  conflicts: number;
+  items: string[];
 };
 
 /** `paths` is null when the commit has no `.paws/high-risk-paths`. */
@@ -106,6 +119,7 @@ export async function handleMergeSettingsRequest(
     }
     return json({
       ...view(policy),
+      commentWait: policy.commentWait,
       highRiskPaths: highRiskPathsView(policy),
       ...(options.riskGate ? { riskGate: options.riskGate } : {}),
       highRiskRepositories: await highRiskRepositoriesView(
@@ -116,6 +130,7 @@ export async function handleMergeSettingsRequest(
       ...(choicesError ? { choicesError } : {}),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
       ...(options.upToDateRules ? await upToDateRuleView(options.upToDateRules) : {}),
+      ...(options.hotFiles ? hotFileView(options.hotFiles) : {}),
     });
   }
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
@@ -129,12 +144,18 @@ export async function handleMergeSettingsRequest(
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
   let policy: MergePolicy;
-  // Optional, so a page that does not show High-risk paths keeps them.
+  // Optional, so a page that does not show High-risk paths or the comment wait keeps them.
   let highRiskPaths: Record<string, string[]> | undefined;
+  let commentWait: CommentWait | undefined;
   try {
     if (isRecord(body) && "highRiskPaths" in body) {
       const { highRiskPaths: paths, ...rest } = body;
       highRiskPaths = parseHighRiskPathSettings(paths);
+      body = rest;
+    }
+    if (isRecord(body) && "commentWait" in body) {
+      const { commentWait: wait, ...rest } = body;
+      commentWait = parseCommentWait(wait);
       body = rest;
     }
     policy = parseMergePolicy(body);
@@ -172,12 +193,22 @@ export async function handleMergeSettingsRequest(
       );
   }
   try {
-    writeMergePolicy(options.configPath, policy, current, highRiskPaths);
+    writeMergePolicy(options.configPath, policy, current, highRiskPaths, commentWait);
   } catch (caughtError6) {
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
     return json({ error: "Merging settings could not be saved" }, 503);
   }
   for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
+  const waitBefore = before?.commentWait ?? DEFAULT_COMMENT_WAIT;
+  const waitAfter = commentWait ?? waitBefore;
+  if (
+    waitAfter.quietSeconds !== waitBefore.quietSeconds ||
+    waitAfter.maxWaitSeconds !== waitBefore.maxWaitSeconds
+  )
+    options.audit?.(
+      "settings.merging",
+      `Pull request comment wait: ${waitBefore.quietSeconds}s quiet, ${waitBefore.maxWaitSeconds}s at most → ${waitAfter.quietSeconds}s quiet, ${waitAfter.maxWaitSeconds}s at most`,
+    );
   const saved =
     highRiskPaths ??
     Object.fromEntries(highRiskPathsView(before).map((entry) => [entry.repository, entry.paths]));
@@ -185,6 +216,7 @@ export async function handleMergeSettingsRequest(
     options.audit?.("settings.merging", change);
   return json({
     ...view(policy),
+    commentWait: waitAfter,
     highRiskPaths: Object.entries(saved)
       .filter(([, paths]) => paths.length > 0)
       .map(([repository, paths]) => ({ repository, paths })),
@@ -311,6 +343,15 @@ async function upToDateRuleView(
     return [];
   });
   return repositories.length ? { upToDateRule: repositories } : {};
+}
+
+function hotFileView(read: () => HotFileView[]): { hotFiles?: HotFileView[] } {
+  try {
+    return { hotFiles: read() };
+  } catch (caughtError) {
+    journalCaught(caughtError, "merging.hotFileView.read", null);
+    return {};
+  }
 }
 
 /** Whether any level chooses "Add to the GitHub merge queue". */

@@ -3,7 +3,7 @@ import { connect } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startHostToolBridge } from "./ask-team";
+import { startAskTeamBridge } from "./ask-team";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -14,7 +14,7 @@ test("show_preview validates the tool input and forwards only the normalized req
   const root = await mkdtemp(join(tmpdir(), "paws-preview-tool-"));
   roots.push(root);
   const requests: unknown[] = [];
-  const bridge = await startHostToolBridge({
+  const bridge = await startAskTeamBridge({
     socketPath: join(root, "tools.sock"),
     context: { itemId: "item", runId: "run", role: "implementer", worktreePath: root },
     signal: new AbortController().signal,

@@ -381,7 +381,8 @@ test.each([null, "", " \n "])(
     let running: Promise<unknown> | undefined;
     let poller: ReturnType<typeof startCatchUpPoller> | undefined;
     const waitFor = async (condition: () => boolean) => {
-      for (let attempt = 0; attempt < 200 && !condition(); attempt++) await Bun.sleep(5);
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline && !condition()) await Bun.sleep(5);
       expect(condition()).toBe(true);
     };
     try {

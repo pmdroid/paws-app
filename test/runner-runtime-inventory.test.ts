@@ -44,7 +44,7 @@ test("the inventory refuses a malformed report and drops the oldest past its lim
   const root = temporary();
   const inventory = openRunnerRuntimeInventory({ root });
   expect(() =>
-    inventory.record([{ tool: "npm:left-pad", version: "1.0.0", status: "installed" }]),
+    inventory.record([{ tool: "--force", version: "1.0.0", status: "installed" }]),
   ).toThrow();
   expect(() => inventory.record({ runtimes: [] })).toThrow();
   expect(inventory.installed()).toEqual([]);

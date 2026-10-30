@@ -25,6 +25,11 @@ import {
   jobVersionCurrent,
   recordReviewRounds,
   restartLimit,
+  runnerHoldsRunWork,
+  runnerWorkHasResult,
+  parkLeasedJob,
+  replaceLeasedJobPayload,
+  refreshVerificationJobVersion,
 } from "../db";
 import { journalCaught } from "../journal";
 import { confirmDecision, suggestDecisions } from "../decisions";
@@ -71,6 +76,7 @@ import {
   resolveAgentProfiles,
   resolveMergeSettings,
   type AgentProfile,
+  type AgentProfiles,
   type CheckoutExclusions,
 } from "../config";
 import {
@@ -103,7 +109,7 @@ import {
   type ResolvedEvidence,
   type CandidateIdentity,
   type CiResult,
-  candidatePolicyDigest,
+  candidatePolicyDigests,
   ciMappings,
 } from "../closeout";
 import {
@@ -175,6 +181,7 @@ import {
   configureWorkItem,
   enqueueJobOnce,
   recordRebaseReturn,
+  saveCandidatePaths,
   enqueueOutboxOnce,
   lastOutboxSequence,
   attachSessionUpdates,
@@ -280,6 +287,9 @@ import {
   readPullMergeable,
   readReviewThreads,
   readPullCi,
+  commentOnPullRequest,
+  replyToReviewComment,
+  resolveReviewThread,
   mergedPullHeads,
   readPullMerge,
   branchContains,
@@ -305,6 +315,7 @@ import {
   projectLeadId,
   type ItemAdmission,
   type ItemWait,
+  overlapLine,
   openBlockers,
   type SchedulerOptions,
 } from "../scheduler";
@@ -380,14 +391,9 @@ import {
   reverifyBypassed,
   type LinkAskEffects,
 } from "./link-ask";
-import {
-  acceptCloseout,
-  retryMergeLater,
-  waitForMergeTurn,
-  waitForRunnerSlot,
-  type VerificationOwner,
-} from "./merge-jobs";
+import { acceptCloseout, retryMergeLater, waitForMergeTurn, waitForRunnerSlot } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
+import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
 import { ciForRecheck, type CiRecheck } from "./ci-recheck";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
@@ -419,9 +425,11 @@ import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress } from "./closeout-progress";
+import { checkPolicyRunners } from "./policy-runners";
 import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
   closeoutChecksPrompt,
+  createAcpCodexReviewer,
   createReviewCommandReviewer,
   hiddenPathsPrompt,
   implementPrompt,
@@ -454,7 +462,7 @@ import {
   pushRefused,
   pushWorked,
 } from "./push-outage";
-import { classifyCandidateRisk, classifyPathsRisk } from "./candidate-risk";
+import { changedPaths, classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
   postRiskActivity,
@@ -550,6 +558,8 @@ export type OrchestratorOptions = {
   remoteExecution?: {
     cancelItem?(itemId: string): Promise<void>;
     slotFree?(): boolean;
+    /** An importer already owns this run, including backend preparation before attachment. */
+    runInProgress?(runId: string): Promise<boolean>;
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
     /**
@@ -1414,7 +1424,9 @@ export class Orchestrator {
       register: (queue, handler) =>
         loop.register(queue, (job, context) =>
           this.forItem(job.payload, () =>
-            queue === JOB_KIND.command || jobVersionCurrent(this.db, job)
+            queue === JOB_KIND.command ||
+            queue === JOB_KIND.reverify ||
+            jobVersionCurrent(this.db, job)
               ? handler(job, context)
               : Promise.resolve(),
           ),
@@ -1501,14 +1513,52 @@ export class Orchestrator {
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
-      if (this.waitingForRunnerSlot(job)) return;
+      const itemId = readString(job.payload, "itemId");
+      const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      if (
+        !item ||
+        !this.reverifyEligible(item) ||
+        !context.isCurrent() ||
+        !this.reverifyJobCurrent(job, item)
+      )
+        return;
       await this.failOnLastAttempt(job, context, "reverify", async () => {
+        if (this.reverifyHeld(item)) {
+          await this.waitForVerification(job, context, item);
+          return;
+        }
+        const clearWait = () => {
+          const payload = job.payload as Record<string, unknown>;
+          if (!("verificationWaitSince" in payload)) return;
+          const { verificationWaitSince: _since, verificationWaitRunId: _run, ...rest } = payload;
+          if (replaceLeasedJobPayload(this.db, job, rest, this.now()))
+            job = { ...job, payload: rest };
+        };
+        if (
+          this.waitingForRunnerSlot(job, () => {
+            clearWait();
+            return job;
+          })
+        )
+          return;
         try {
           await this.runLeasedJob(job.payload, context, () =>
-            this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
+            this.runOwnedJob(job.payload, () =>
+              this.reverify(job.payload, job.id, () => {
+                const owned = getWorkItem(this.db, item.id);
+                if (owned?.currentRunId && !jobVersionCurrent(this.db, job))
+                  refreshVerificationJobVersion(this.db, job, owned.currentRunId, this.now());
+                clearWait();
+              }),
+            ),
           );
           await this.settleVerifying(job, context);
         } catch (error) {
+          if (error instanceof VerificationHeld && context.isCurrent()) {
+            const held = itemId === null ? null : getWorkItem(this.db, itemId);
+            if (held) await this.waitForVerification(job, context, held);
+            return;
+          }
           const wait = this.nextRunnerWait(job, error);
           if (!wait || !context.isCurrent()) throw error;
           journalCaught(
@@ -1518,6 +1568,7 @@ export class Orchestrator {
             undefined,
             this.options.journal,
           );
+          clearWait();
           waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
@@ -2050,7 +2101,7 @@ export class Orchestrator {
     return placementWaitMs(wait.attempt, this.options.placementPollMs);
   }
 
-  private waitingForRunnerSlot(job: Job): boolean {
+  private waitingForRunnerSlot(job: Job, beforePark?: () => Job): boolean {
     const waited = runnerCapacityWait(job.payload);
     const itemId = readString(job.payload, "itemId");
     const item = itemId === null ? null : getWorkItem(this.db, itemId);
@@ -2066,6 +2117,7 @@ export class Orchestrator {
     )
       return false;
     const next = { ...waited, attempt: waited.attempt + 1 };
+    job = beforePark?.() ?? job;
     waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(next), next);
     return true;
   }
@@ -2801,6 +2853,8 @@ export class Orchestrator {
       if (!artifactPublicationReady(this.db, item.id))
         throw new Error("A requested artifact has not been uploaded successfully");
       saveRunResult(this.db, run.id, activity.resultBody(), this.now());
+      // A fix turn for pull request comments reports a reply for each one it was handed.
+      recordAgentReviewReplies(this.db, item.id, activity.resultBody(), this.now());
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
       this.saveCandidate(run.id, executed.run.identity);
@@ -2808,7 +2862,12 @@ export class Orchestrator {
       const base = (
         await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
       ).trim();
-      saveCheckpoint(this.db, item.id, { phase: "running", baseSha: base, wipCommit: head });
+      saveCheckpoint(this.db, item.id, {
+        ...getWorkItem(this.db, item.id)?.checkpoint,
+        phase: "running",
+        baseSha: base,
+        wipCommit: head,
+      });
       const commits = Number(
         (
           await git(["-C", executed.worktreePath, "rev-list", "--count", `${base}..${head}`])
@@ -2912,8 +2971,42 @@ export class Orchestrator {
     base: string,
     head: string,
     candidate: CandidateIdentity,
-    options: { decide?: boolean; reverifyJobId?: number } = {},
+    options: { decide?: boolean; reverifyJobId?: number; onOwned?: () => void } = {},
   ): Promise<void> {
+    const startRound =
+      options.reverifyJobId !== undefined &&
+      (item.state === "merge_queue" || item.checkpoint?.phase === "merge_queue");
+    await this.withVerificationRun(
+      item,
+      candidate,
+      options.reverifyJobId !== undefined,
+      (owned, assertCurrent, assertOwned) => {
+        options.onOwned?.();
+        return this.evaluateOwnedHead(
+          owned,
+          worktree,
+          base,
+          head,
+          candidate,
+          { ...options, startRound },
+          assertCurrent,
+          assertOwned,
+        );
+      },
+    );
+  }
+
+  private async evaluateOwnedHead(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+    candidate: CandidateIdentity,
+    options: { decide?: boolean; reverifyJobId?: number; startRound: boolean },
+    assertCurrent: () => void,
+    assertOwned: () => void,
+  ): Promise<void> {
+    if (options.startRound) await this.startCloseoutRound(item, head);
     if (
       closeLinkAsksOnHead(
         this.db,
@@ -2934,15 +3027,21 @@ export class Orchestrator {
     const fromCi = ci?.kind === "check" ? ci.fromCi : [];
     let decide = options.decide ?? false;
     for (let pass = 0; ; pass++) {
-      const verdict = await this.runVerification(
+      const before = getWorkItem(this.db, item.id) ?? item;
+      const result = await this.verifyCandidate(
         item,
         worktree,
         base,
         head,
         candidate,
+        assertCurrent,
         decide,
         fromCi,
       );
+      // A finished verdict may decide an aborted but still-owned run (PAS-771).
+      assertOwned();
+      const owner = this.options.remoteExecution ? getWorkItem(this.db, item.id)! : before;
+      const verdict = { ...result, owner: { version: owner.version, runId: owner.currentRunId } };
       await this.recordReviewRounds(item, verdict.owner.runId);
       if (this.closeoutStopped(item.id) !== null) return;
       const after = getWorkItem(this.db, item.id);
@@ -3072,32 +3171,25 @@ export class Orchestrator {
     });
   }
 
-  private async runVerification(
+  private async withVerificationRun(
     item: WorkItemRecord,
-    worktree: string,
-    base: string,
-    head: string,
     candidate: CandidateIdentity,
-    decide = false,
-    fromCi: readonly CiResult[] = [],
-  ): Promise<CloseoutVerdict & { owner: VerificationOwner }> {
+    recheck: boolean,
+    operation: (
+      owned: WorkItemRecord,
+      assertCurrent: () => void,
+      assertOwned: () => void,
+    ) => Promise<void>,
+  ): Promise<void> {
     if (!this.options.remoteExecution) {
-      this.assertJobCurrent(item.id);
-      const owner = getWorkItem(this.db, item.id) ?? item;
-      const verdict = await this.verifyCandidate(
-        item,
-        worktree,
-        base,
-        head,
-        candidate,
-        () => this.assertJobCurrent(item.id),
-        decide,
-        fromCi,
-      );
-      this.assertJobCurrent(item.id);
-      return { ...verdict, owner: { version: owner.version, runId: owner.currentRunId } };
+      const assertCurrent = () => this.assertJobCurrent(item.id);
+      assertCurrent();
+      await operation(item, assertCurrent, assertCurrent);
+      return;
     }
     const priorRunId = item.currentRunId;
+    if (priorRunId && (await this.options.remoteExecution.runInProgress?.(priorRunId)))
+      throw new VerificationHeld();
     let ownedRunId: string | null = null;
     try {
       item = immediate(this.db, () => {
@@ -3111,19 +3203,30 @@ export class Orchestrator {
           throw new Error("Verification belongs to an obsolete task");
         const prior = current.currentRunId ? getRun(this.db, current.currentRunId) : null;
         if (!prior || prior.itemId !== current.id) throw new Error("Verification run is missing");
-        if (prior.status === "active") {
-          if (current.state !== "verifying" || this.live.get(prior.id)?.itemId !== current.id)
-            throw new Error("Verification run is not owned by this operation");
-          return current;
-        }
-        if (prior.status !== "ended" && prior.status !== "lost")
-          throw new Error("Prior verification run is still provisioning");
         const snapshot = this.readProfileSnapshot(prior.id);
         if (
           !snapshot?.candidate ||
           JSON.stringify(snapshot.candidate) !== JSON.stringify(candidate)
         )
           throw new Error("Verification candidate identity changed");
+        if (prior.status === "active") {
+          if (this.verificationHolder(current, false) === "process") {
+            if (recheck || current.state !== "verifying") throw new VerificationHeld();
+            return current;
+          }
+          if (runnerWorkHasResult(this.db, prior.id)) {
+            // Keep the original run so the backend can import its delivered result.
+            if (current.state === "merge_queue")
+              applyWorkItemEvent(this.db, current.id, "reverify_requested");
+            ownedRunId = prior.id;
+            return getWorkItem(this.db, current.id)!;
+          }
+          if (this.verificationHolder(current, false) === "runner") throw new VerificationHeld();
+          // An abandoned run did not finish cleanly. Preserve that in its history.
+          closeActiveRun(this.db, prior.id, this.now(), "lost");
+          releaseRunCapacity(this.db, prior.id, this.now());
+        } else if (prior.status !== "ended" && prior.status !== "lost")
+          throw new Error("Prior verification run is still provisioning");
         if (current.state === "merge_queue")
           applyWorkItemEvent(this.db, current.id, "reverify_requested");
         const run = insertRun(this.db, {
@@ -3138,7 +3241,7 @@ export class Orchestrator {
         setCurrentRun(this.db, current.id, run.id);
         return getWorkItem(this.db, current.id)!;
       });
-      if (ownedRunId) {
+      if (ownedRunId && ownedRunId !== priorRunId) {
         mkdirSync(runDir(this.options.pawsRoot, ownedRunId), { recursive: true, mode: 0o700 });
         writeFileSync(
           join(runDir(this.options.pawsRoot, ownedRunId), "agent-profile.json"),
@@ -3146,6 +3249,8 @@ export class Orchestrator {
           { mode: 0o600 },
         );
       }
+      const operationLive = this.live.get(`operation:${item.id}`);
+      if (ownedRunId && operationLive) this.live.set(ownedRunId, operationLive);
       const runId = item.currentRunId!;
       const assertOwned = () => {
         const current = getWorkItem(this.db, item.id);
@@ -3170,21 +3275,23 @@ export class Orchestrator {
         assertOwned();
       };
       assertCurrent();
-      const verdict = await this.verifyCandidate(
-        item,
-        worktree,
-        base,
-        head,
-        candidate,
-        assertCurrent,
-        decide,
-        fromCi,
-      );
-      // A finished verdict still decides an item this run owns, even after an abort (PAS-771).
-      assertOwned();
-      return { ...verdict, owner: { version: getWorkItem(this.db, item.id)!.version, runId } };
+      await operation(item, assertCurrent, assertOwned);
     } finally {
-      if (ownedRunId) closeActiveRun(this.db, ownedRunId, this.now());
+      if (ownedRunId) {
+        const live = this.live.get(ownedRunId);
+        if (live === this.live.get(`operation:${item.id}`)) this.live.delete(ownedRunId);
+        const current = getWorkItem(this.db, item.id);
+        if (
+          !current ||
+          current.currentRunId !== ownedRunId ||
+          current.cancelRequested ||
+          ["failed", "cancelled", "completed", "merged"].includes(current.state)
+        ) {
+          releaseRunCapacity(this.db, ownedRunId, this.now());
+        } else if (ownedRunId !== priorRunId || !runnerWorkHasResult(this.db, ownedRunId)) {
+          releaseRunCapacity(this.db, ownedRunId, this.now());
+        }
+      }
     }
   }
 
@@ -3299,7 +3406,12 @@ export class Orchestrator {
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
-    const reviewer = createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
+
+    const reviewerAgent = deps.profiles?.reviewer?.agent;
+    const reviewer =
+      reviewerAgent === "grok" || reviewerAgent === "opencode"
+        ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
+        : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,
@@ -3825,11 +3937,125 @@ export class Orchestrator {
     return true;
   }
 
-  private async reverify(payload: unknown, jobId: number): Promise<void> {
+  private async waitForVerification(
+    job: Job,
+    context: JobContext,
+    item: WorkItemRecord,
+  ): Promise<void> {
+    const backendBusy =
+      item.currentRunId !== null &&
+      (await this.options.remoteExecution?.runInProgress?.(item.currentRunId));
+    const current = getWorkItem(this.db, item.id);
+    if (
+      !context.isCurrent() ||
+      !jobVersionCurrent(this.db, job) ||
+      !current ||
+      current.version !== item.version ||
+      !this.reverifyEligible(current)
+    )
+      return;
+    const payload = job.payload as Record<string, unknown>;
+    const since =
+      typeof payload.verificationWaitSince === "number"
+        ? payload.verificationWaitSince
+        : this.now();
+    if (
+      this.now() - since >= VERIFICATION_OWNER_WAIT_MS &&
+      !backendBusy &&
+      this.verificationHolder(current) === "runner"
+    ) {
+      this.options.journal?.(
+        `reverify job ${job.id} stalled for item ${item.id}: ownership held for ${VERIFICATION_OWNER_WAIT_MS / 60_000} minutes`,
+      );
+      if (this.activitySession(current) === null) {
+        this.fail(
+          current,
+          "no_tracker_session",
+          "Cannot request verification help because this item has no tracker session.",
+        );
+        return;
+      }
+      try {
+        await this.askCloseoutHelp(
+          current,
+          undefined,
+          `Closeout: blocked\nVerification has waited ${VERIFICATION_OWNER_WAIT_MS / 60_000} minutes for the runner. Check the runner and retry once it is ready.`,
+        );
+      } catch (error) {
+        const after = getWorkItem(this.db, item.id);
+        if (
+          !context.isCurrent() ||
+          !jobVersionCurrent(this.db, job) ||
+          !after ||
+          !this.reverifyEligible(after)
+        )
+          return;
+        if (job.attempts < job.maxAttempts) throw error;
+        this.fail(
+          after,
+          "closeout_help_failed",
+          `Could not request verification help: ${error instanceof Error ? error.message : String(error)}`,
+          error,
+        );
+      }
+      return;
+    }
+    if (payload.verificationWaitSince === undefined)
+      this.options.journal?.(`reverify job ${job.id} waiting for ownership of item ${item.id}`);
+    parkLeasedJob(this.db, job, {
+      runAt: this.now() + VERIFICATION_OWNER_POLL_MS,
+      payload: {
+        ...payload,
+        verificationWaitSince: since,
+        verificationWaitRunId: current.currentRunId,
+      },
+      attempts: job.attempts - 1,
+      now: this.now(),
+    });
+  }
+
+  private reverifyEligible(item: WorkItemRecord): boolean {
+    return !item.cancelRequested && (item.state === "verifying" || item.state === "merge_queue");
+  }
+
+  private reverifyJobCurrent(job: Job, item: WorkItemRecord): boolean {
+    if (jobVersionCurrent(this.db, job)) return true;
+    const runId = readString(job.payload, "verificationWaitRunId");
+    return (
+      runId !== null &&
+      runId === item.currentRunId &&
+      refreshVerificationJobVersion(this.db, job, runId, this.now())
+    );
+  }
+
+  private verificationHolder(
+    item: WorkItemRecord,
+    includeContext = true,
+  ): "process" | "runner" | null {
+    if (
+      (includeContext && this.jobContexts.has(item.id)) ||
+      (item.currentRunId !== null && this.live.get(item.currentRunId)?.itemId === item.id)
+    )
+      return "process";
+    if (
+      item.currentRunId !== null &&
+      getRun(this.db, item.currentRunId)?.status === "active" &&
+      runnerHoldsRunWork(this.db, item.currentRunId, this.now(), item.cancelRequested) &&
+      !runnerWorkHasResult(this.db, item.currentRunId)
+    )
+      return "runner";
+    return null;
+  }
+
+  private reverifyHeld(item: WorkItemRecord): boolean {
+    return this.verificationHolder(item) !== null;
+  }
+
+  private async reverify(payload: unknown, jobId: number, onOwned: () => void): Promise<void> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
     const item = getWorkItem(this.db, itemId);
-    if (item === null) return;
+    if (item === null || !this.reverifyEligible(item)) return;
     const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
       this.fail(item, "no_repository", "No repository is selected for this item.");
@@ -3872,12 +4098,10 @@ export class Orchestrator {
     if (item.state !== "verifying" && item.state !== "merge_queue") return;
     const candidate = await this.candidateForItem(item);
     if (!candidate) return;
-    // The merge lane moves a rebased item to verifying; its checkpoint is still the merge queue's.
-    if (item.state === "merge_queue" || item.checkpoint?.phase === "merge_queue")
-      await this.startCloseoutRound(item, head);
     await this.evaluateHead(item, worktree, base, head, candidate, {
       decide: readBoolean(payload, "decide") === true,
       reverifyJobId: jobId,
+      onOwned,
     });
   }
 
@@ -3892,9 +4116,9 @@ export class Orchestrator {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
         settings: (item, signal) => this.mergeSettingsFor(item, signal),
-        policyDigest: (item, worktree) => {
+        policyDigests: (item, worktree) => {
           const { home, policyRoot } = this.closeoutHome(item);
-          return candidatePolicyDigest(worktree, home, policyRoot, this.runCheckout(item).checks);
+          return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
         },
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
@@ -4107,6 +4331,7 @@ export class Orchestrator {
       repo: repository.repo,
       title: draft?.title ?? item.title,
       ...(draft ? { description: draft.body } : {}),
+      reviewer: getItemRunCommitPolicy(this.db, item.id)?.credit?.login,
       client: github.client,
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
@@ -4134,6 +4359,7 @@ export class Orchestrator {
       line: openLine,
       now: this.now(),
     });
+    await this.postReviewReplies(item, github, repository, published.pull.number, published.head);
     this.post(
       item,
       "response",
@@ -4203,10 +4429,13 @@ export class Orchestrator {
       candidate?.sha === head
         ? candidate.baseSha
         : (await run(["merge-base", "HEAD", await this.upstreamMainRef(worktree, item.id)])).trim();
-    const risk = await classifyCandidateRisk({
+    const changed = await changedPaths(run, base, head);
+    // Every changed path, so the scheduler can hold work that changes the same hot files.
+    saveCandidatePaths(this.db, { itemId: item.id, head, paths: changed, recordedAt: this.now() });
+    const risk = await classifyPathsRisk({
       git: run,
       base,
-      head,
+      changed,
       settingsGlobs: highRiskPaths(
         readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
         `${repository.owner}/${repository.repo}`,
@@ -4624,6 +4853,7 @@ export class Orchestrator {
           const current = getWorkItem(this.db, item.id);
           if (current?.state === "running") {
             saveCheckpoint(this.db, item.id, {
+              ...current.checkpoint,
               phase: "awaiting_input",
               ...(current.checkpoint?.wipCommit ? { wipCommit: current.checkpoint.wipCommit } : {}),
               ...(current.checkpoint?.baseSha ? { baseSha: current.checkpoint.baseSha } : {}),
@@ -4818,6 +5048,7 @@ export class Orchestrator {
         },
       );
     saveCheckpoint(this.db, itemId, {
+      ...getWorkItem(this.db, itemId)?.checkpoint,
       phase,
       ...(head === "" ? {} : { wipCommit: head }),
       ...(base === "" ? {} : { baseSha: base }),
@@ -5460,6 +5691,11 @@ export class Orchestrator {
       if (wait.kind === "blocked") {
         const blockers = wait.blockers.length ? wait.blockers.join(", ") : "a blocking issue";
         progress.wait(`Wait for ${blockers}`, `${name}: waiting for ${blockers}`);
+      } else if (wait.kind === "overlap") {
+        progress.wait(
+          `Wait for ${wait.blocker} to merge`,
+          `${name} held: ${overlapLine(wait.blocker, wait.files)}`,
+        );
       } else if (wait.kind === "runner" && wait.restart) {
         const limit = this.fixAttemptLimit(item, wait.restart);
         const restarted = this.db
@@ -5602,7 +5838,9 @@ export class Orchestrator {
       current.state === "recovering" ||
       current.state === "merge_queue"
     ) {
-      failWorkItem(this.db, current, reason, text, this.now());
+      const failed = failWorkItem(this.db, current, reason, text, this.now());
+      if (failed && current.currentRunId && runnerWorkHasResult(this.db, current.currentRunId))
+        releaseRunCapacity(this.db, current.currentRunId, this.now());
     } else {
       this.post(current, "error", text, `fail:${current.id}:${current.version}:${reason}`);
     }
@@ -5922,6 +6160,7 @@ export class Orchestrator {
     return createRepositoryGit({
       remoteUrl: repository.remoteUrl,
       signal,
+      ...(access === "write" ? { pushBranch: item.branchName } : {}),
       token: (ownedSignal) => this.options.repositoryToken!(item, repository, ownedSignal, access),
       onCleanupFailure: () => this.blockConversation(item.id),
       assert: async () => {
@@ -6990,6 +7229,45 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * Reply on the pull request to each comment the last fix turn was handed, and resolve the threads
+   * it addressed. The head is on GitHub by now. A failure leaves the rest for the next publication
+   * and does not hold the merge.
+   */
+  private async postReviewReplies(
+    item: WorkItemRecord,
+    github: GitHubBinding,
+    repository: { owner: string; repo: string },
+    pullNumber: number,
+    head: string,
+  ): Promise<void> {
+    const access = {
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      ...this.gitHubCredentials(github),
+    };
+    await postReviewReplies(
+      this.db,
+      { itemId: item.id, pullNumber, head, now: () => this.now() },
+      {
+        replyToReviewComment: (prNumber, commentId, body) =>
+          replyToReviewComment({ ...access, prNumber, commentId, body }),
+        commentOnPullRequest: (prNumber, body) =>
+          commentOnPullRequest({ ...access, prNumber, body }),
+        resolveReviewThread: (threadId) => resolveReviewThread({ ...access, threadId }),
+      },
+    ).catch((error: unknown) =>
+      journalCaught(
+        error,
+        "orchestrator.postReviewReplies",
+        item.id,
+        undefined,
+        this.options.journal,
+      ),
+    );
+  }
+
   private gitHubCredentials(
     github: GitHubBinding,
   ):
@@ -7045,7 +7323,7 @@ export class Orchestrator {
   }
 
   private readProfileSnapshot(runId: string): {
-    profiles: { implementer: AgentProfile; reviewer: AgentProfile };
+    profiles: AgentProfiles;
     candidate?: AgentIdentity;
     settingsSwitch?: { id: string; previousAgent: AgentProfile["agent"] };
   } | null {
@@ -7118,7 +7396,7 @@ export class Orchestrator {
     );
   }
 
-  private profileSnapshot(runId: string): { implementer: AgentProfile; reviewer: AgentProfile } {
+  private profileSnapshot(runId: string): AgentProfiles {
     const saved = this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
@@ -7150,7 +7428,7 @@ export class Orchestrator {
   private async preflight(
     item: WorkItemRecord,
     runId: string,
-    profiles: { implementer: AgentProfile; reviewer: AgentProfile },
+    profiles: AgentProfiles,
     signal: AbortSignal,
     onRemoteEvent: (event: AcpEvent) => void,
   ): Promise<void> {
@@ -7252,7 +7530,8 @@ export class Orchestrator {
     item: WorkItemRecord,
     input: RunAgentOptions,
   ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes"> {
-    if (input.prepareOnly || !this.repositoryForItem(item)) return {};
+    const repository = this.repositoryForItem(item);
+    if (input.prepareOnly || !repository) return {};
     const runtimes = { runtimes: () => this.runtimeList(item, input.worktreePath) };
     if (input.role !== "implementer") return runtimes;
     const { home, policyRoot } = this.closeoutHome(item);
@@ -7260,6 +7539,14 @@ export class Orchestrator {
       ...runtimes,
       closeoutPolicy: async () => {
         const load = trustedPolicyFiles(input.worktreePath, home, policyRoot);
+        // The runner parses the policy with its own release: say which keys it would leave out.
+        if (load.ok && !load.absent)
+          checkPolicyRunners(this.db, {
+            repository: `${repository.owner}/${repository.repo}`,
+            digest: load.digest,
+            files: load.files,
+            now: this.now(),
+          });
         return load.ok && !load.absent
           ? {
               ...load,
@@ -7771,3 +8058,13 @@ function capacityWaitIn(error: unknown): RunnerCapacityWait | null {
   }
   return null;
 }
+
+/** A temporary owner conflict preserves the reverify request without spending attempts. */
+class VerificationHeld extends Error {
+  constructor() {
+    super("Verification is held by another operation or runner lease");
+  }
+}
+
+const VERIFICATION_OWNER_WAIT_MS = 20 * 60_000;
+const VERIFICATION_OWNER_POLL_MS = 5_000;

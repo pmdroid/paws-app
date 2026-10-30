@@ -31,7 +31,7 @@ The equivalent canonical form is `kind: preview` with `gate: beforePR`. A paths 
 
 ## Runner and tailnet setup
 
-Use runner 0.1.49 or later, Tailscale Services, and Linux `ss`. Configure `PAWS_PUBLIC_URL` with the HTTPS dashboard address. Each runner needs its own disjoint set of service names, with one service per execution slot. For example, on the runner create root-owned `/etc/paws/preview-services.json`, readable by `paws-runner`:
+Use runner 0.1.53 or later, Tailscale Services, and Linux `ss`. Configure `PAWS_PUBLIC_URL` with the HTTPS dashboard address. Each runner needs its own disjoint set of service names, with one service per execution slot. For example, on the runner create root-owned `/etc/paws/preview-services.json`, readable by `paws-runner`:
 
 ```json
 ["paws-preview-1", "paws-preview-2"]

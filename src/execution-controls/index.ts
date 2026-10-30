@@ -219,7 +219,7 @@ export function createExecutionControls(input: {
           now: now(),
         });
         return Response.json(
-          { error: "Only a workspace owner or admin can clear a stuck agent." },
+          { error: "Only a workspace admin can clear a stuck agent." },
           { status: 403 },
         );
       }

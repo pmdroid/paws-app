@@ -100,7 +100,7 @@ export function recordRunnerCapacity(
 
 export class RunnerConcurrencyError extends Error {}
 
-/** Stores the concurrency an owner or admin chose, from 1 up to the ceiling the runner reported. */
+/** Stores the concurrency an admin chose, from 1 up to the ceiling the runner reported. */
 export function setRunnerConcurrency(
   db: Database,
   input: {
@@ -212,7 +212,8 @@ export function pinnedSlotsReserved(
 }
 
 export const CANCEL_STILL_PENDING = `(c.expires_at>? OR COALESCE(r.live_reported_at,0)<=c.expires_at
-  OR COALESCE((SELECT MAX(confirmed_at) FROM runner_work x WHERE x.run_id=c.run_id AND x.runner_id=c.runner_id),0)>c.expires_at)`;
+  OR COALESCE((SELECT MAX(confirmed_at) FROM runner_work x WHERE x.run_id=c.run_id AND x.runner_id=c.runner_id
+    AND x.generation=c.generation AND x.ended_at IS NULL),0)>c.expires_at)`;
 
 export function runnerCancelPending(db: Database, runnerId: string, now: number): boolean {
   return (
@@ -227,4 +228,65 @@ export function runnerCancelPending(db: Database, runnerId: string, now: number)
       )
       .get(runnerId, now) !== null
   );
+}
+
+/** Read-only admission check. Helpers share one runtime slot, independently of work capacity.
+ * A foreground helper may replace unfinished grouping, but only its dispatch may fence it. */
+export function runnerHelperAvailability(
+  db: Database,
+  runnerId: string,
+  now: number,
+  foreground: boolean,
+) {
+  const rows = db
+    .query<{ envelope: string; result: string | null }, [string, number]>(
+      "SELECT envelope,result FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
+    )
+    .all(runnerId, now);
+  const maintenance = rows.filter((row) => {
+    const envelope = JSON.parse(row.envelope) as { payload: string };
+    const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")) as {
+      type: string;
+      purpose?: string;
+    };
+    return (
+      foreground &&
+      row.result === null &&
+      command.type === "helper" &&
+      command.purpose === "finding_groups"
+    );
+  }).length;
+  const { occupied, capacity } = runnerOccupancy(db, runnerId, now);
+  return {
+    available: rows.length === maintenance && occupied - maintenance < capacity,
+    preempts: maintenance > 0,
+  };
+}
+
+/** Foreground session helpers fence unfinished maintenance work before taking its slot.
+ * The runner renews helper authority before continuing, so the old turn is stopped before the next helper starts. */
+export function yieldFindingGroupHelpers(db: Database, runnerId: string, now: number): void {
+  immediate(db, () => {
+    const rows = db
+      .query<{ id: string; envelope: string }, [string, number]>(
+        "SELECT id,envelope FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
+      )
+      .all(runnerId, now);
+    for (const row of rows) {
+      const envelope = JSON.parse(row.envelope) as { payload: string };
+      const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")) as {
+        type: string;
+        purpose?: string;
+      };
+      if (command.type !== "helper" || command.purpose !== "finding_groups") continue;
+      db.run(
+        "UPDATE runner_helper SET ended_at=? WHERE id=? AND ended_at IS NULL AND result IS NULL",
+        [now, row.id],
+      );
+      db.run(
+        "UPDATE runner_execution_usage SET ended_at=?,outcome='preempted' WHERE command_id=? AND ended_at IS NULL AND EXISTS(SELECT 1 FROM runner_helper WHERE id=? AND ended_at IS NOT NULL)",
+        [now, row.id, row.id],
+      );
+    }
+  });
 }

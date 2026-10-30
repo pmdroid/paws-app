@@ -21,6 +21,7 @@ const MODULES = [
   "intake",
   "execution-controls",
   "scheduler",
+  "finding-groups",
   "acp",
   "closeout",
   "closeout-spec",
@@ -76,6 +77,7 @@ const MODULES = [
   "provisioning",
   "member-vm",
   "review-score",
+  "finding-issues",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -97,6 +99,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   intake: ["journal", "core", "db", "linear"],
   "execution-controls": ["journal", "core", "db", "workspace"],
   scheduler: ["journal", "core", "db", "intake"],
+  "finding-groups": ["db", "linear"],
   acp: [
     "live-preview",
     "journal",
@@ -114,6 +117,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   decisions: ["db", "scheduler"],
   web: ["db", "core"],
   evidence: ["journal", "db"],
+  "finding-issues": ["journal", "db", "linear", "web", "workspace", "closeout"],
   server: [
     "journal",
     "runner-placement",
@@ -168,7 +172,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "closeout-spec",
   ],
   install: ["journal", "acp", "config"],
-  "install-host": ["config"],
+  "install-host": ["config", "deployment"],
   installer: ["config", "credentials", "doctor", "install-host"],
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
@@ -232,6 +236,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-work": ["journal", "db", "workspace", "runner-protocol", "questions"],
   "runner-placement": ["journal", "db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
+    "finding-groups",
     "journal",
     "core",
     "config",

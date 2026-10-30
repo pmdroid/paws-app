@@ -2,7 +2,12 @@ import { journalCaught, journalRejection } from "../journal";
 import { closeSync, constants, fsyncSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { prepareRepositorySnapshot } from "../acp";
-import { isPushOutage, pushOutageProbeDelayMs, runGitHubGit } from "../github";
+import {
+  isPushOutage,
+  PUBLICATION_STAGING_FAILURE,
+  pushOutageProbeDelayMs,
+  runGitHubGit,
+} from "../github";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import { RUNNER_ARTIFACT_CHUNK_BYTES } from "../runner-artifacts";
@@ -31,7 +36,13 @@ import {
   runnerCheckpointPublishedId,
 } from "../runner-answers";
 import { CandidateRebaseConflict, createRunnerRepositories } from "../runner-repositories";
-import { RUNNER_LEASE_GRACE_MS, RunnerResultSchema, type RunnerResult } from "../runner-protocol";
+import {
+  creditedLeaseUntil,
+  PAWS_ALIVE_LEASE_SKEW_MS,
+  RUNNER_LEASE_GRACE_MS,
+  RunnerResultSchema,
+  type RunnerResult,
+} from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
 import { openRunnerRuntimeInventory } from "./runtimes";
 export {
@@ -95,6 +106,16 @@ type Active = {
   execution: Execution;
   abort: AbortController;
   deadline: number;
+  /** Monotonic time of the heartbeat that reported the server lease and alive mark. */
+  agreedAt?: number;
+  /** Wall time of that heartbeat. */
+  agreedWallAt?: number;
+  /** Paws alive mark from that heartbeat. Absent when Paws did not offer offline credit. */
+  serverAliveAt?: number;
+  /** Lease expiry Paws reported then, before offline credit. */
+  serverLeaseUntil?: number;
+  /** Budget from that heartbeat. */
+  offlineBudgetMs?: number;
   grant?: RunnerGrant;
   /** When `grant` was issued, so it is renewed halfway through its lifetime. */
   grantedAt?: number;
@@ -275,8 +296,40 @@ export async function openRunnerRuntime(options: {
   let pulsing: Promise<void> | undefined;
   let stopping: Promise<void> | undefined;
   const leases = new Map<string, number>();
+  const serverExpiry = new Map<string, number>();
+  let unreachable = false;
+  let advertisedBudget: number | undefined;
+  let advertisedAliveAt: number | undefined;
+  let agreedPulseAt: number | undefined;
+  let agreedWallAt: number | undefined;
   const key = (command: { runId: string; generation: number }) =>
     `${command.runId}:${command.generation}`;
+  /**
+   * While Paws is unreachable, move the deadline with `creditedLeaseUntil` and the alive mark
+   * from the last heartbeat. No credit leaves the clamped deadline from that heartbeat.
+   */
+  function holdOffline(entry: Active) {
+    if (
+      !unreachable ||
+      entry.offlineBudgetMs === undefined ||
+      entry.agreedAt === undefined ||
+      entry.agreedWallAt === undefined ||
+      entry.serverAliveAt === undefined ||
+      entry.serverLeaseUntil === undefined
+    )
+      return;
+    const elapsed = monotonic() - entry.agreedAt;
+    const credited = creditedLeaseUntil({
+      leaseUntil: entry.serverLeaseUntil,
+      expiresAt: entry.execution.command.expiresAt,
+      aliveAt: entry.serverAliveAt,
+      now: entry.agreedWallAt + elapsed,
+      budgetMs: entry.offlineBudgetMs,
+      skewMs: PAWS_ALIVE_LEASE_SKEW_MS,
+    });
+    if (credited === entry.serverLeaseUntil) return;
+    entry.deadline = entry.agreedAt + Math.max(0, credited - entry.agreedWallAt);
+  }
   async function grant(entry: Active) {
     check(entry);
     // Renewed halfway through its lifetime: a busy Paws can take many seconds to answer a
@@ -509,6 +562,7 @@ export async function openRunnerRuntime(options: {
     return entry.quiesced;
   }
   function check(entry: Active) {
+    holdOffline(entry);
     if (closed || monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS) {
       void interrupt(entry, closed ? "runner stopping" : "lease deadline passed", !closed).catch(
         journalRejection("runner-runtime.check.interrupt", report, entry.execution.command.itemId),
@@ -542,66 +596,87 @@ export async function openRunnerRuntime(options: {
     if (closed) return Promise.resolve();
     pulsing = (async () => {
       const started = monotonic();
-      for (const entry of active.values()) collectRuntimes(entry);
-      let agents: ReturnType<RunnerAgents["installed"]>;
       try {
-        agents = options.agents?.installed();
-      } catch (error) {
-        journalCaught(error, "runner-runtime.pulse.installed", null);
-        report(error);
-      }
-      // Paws renews only the work named here, so a restart that lost a command fences it.
-      const response = await options.daemon.heartbeat(
-        options.skills?.installed(),
-        runtimes.installed(),
-        agents,
-        [...active.values()].map(({ execution }) => ({
-          runId: execution.command.runId,
-          generation: execution.command.generation,
-        })),
-      );
-      if (closed) return;
-      if (response.agents && options.agents)
+        for (const entry of active.values()) collectRuntimes(entry);
+        let agents: ReturnType<RunnerAgents["installed"]>;
         try {
-          options.agents.apply(response.agents);
+          agents = options.agents?.installed();
         } catch (error) {
-          journalCaught(error, "runner-runtime.pulse.apply", null);
+          journalCaught(error, "runner-runtime.pulse.installed", null);
           report(error);
         }
-      // Downloads can take longer than a heartbeat, so they run beside the lease renewal.
-      if (response.skills && options.skills)
-        void options.skills
-          .sync(response.skills)
-          .catch(journalRejection("runner-runtime.pulse.sync", report, null));
-      const observed = monotonic();
-      leases.clear();
-      for (const lease of response.leases)
-        leases.set(
-          `${lease.runId}:${lease.generation}`,
-          Math.min(
-            started + 60_000,
-            observed + Math.max(0, Math.min(60_000, lease.expiresAt - now())),
-          ),
+        // Paws renews only the work named here, so a restart that lost a command fences it.
+        const response = await options.daemon.heartbeat(
+          options.skills?.installed(),
+          runtimes.installed(),
+          agents,
+          [...active.values()].map(({ execution }) => ({
+            runId: execution.command.runId,
+            generation: execution.command.generation,
+          })),
         );
-      for (const entry of active.values()) {
-        const deadline = leases.get(key(entry.execution.command));
-        const fenced = response.fenced.some(
-          (value) =>
-            value.runId === entry.execution.command.runId &&
-            value.generation === entry.execution.command.generation,
-        );
-        if (!deadline || fenced)
-          void interrupt(
-            entry,
-            fenced ? "fenced by Paws" : "heartbeat did not renew the lease",
-          ).catch(
-            journalRejection(
-              "runner-runtime.pulse.interrupt",
-              report,
-              entry.execution.command.itemId,
+        if (closed) return;
+        if (response.agents && options.agents)
+          try {
+            options.agents.apply(response.agents);
+          } catch (error) {
+            journalCaught(error, "runner-runtime.pulse.apply", null);
+            report(error);
+          }
+        // Downloads can take longer than a heartbeat, so they run beside the lease renewal.
+        if (response.skills && options.skills)
+          void options.skills
+            .sync(response.skills)
+            .catch(journalRejection("runner-runtime.pulse.sync", report, null));
+        const observed = monotonic();
+        unreachable = false;
+        advertisedBudget = response.offlineBudgetMs;
+        advertisedAliveAt = response.aliveAt;
+        agreedPulseAt = started;
+        agreedWallAt = now();
+        leases.clear();
+        serverExpiry.clear();
+        for (const lease of response.leases) {
+          serverExpiry.set(`${lease.runId}:${lease.generation}`, lease.expiresAt);
+          leases.set(
+            `${lease.runId}:${lease.generation}`,
+            Math.min(
+              started + 60_000,
+              observed + Math.max(0, Math.min(60_000, lease.expiresAt - now())),
             ),
           );
-        else if (!entry.abort.signal.aborted) entry.deadline = deadline;
+        }
+        for (const entry of active.values()) {
+          const deadline = leases.get(key(entry.execution.command));
+          const fenced = response.fenced.some(
+            (value) =>
+              value.runId === entry.execution.command.runId &&
+              value.generation === entry.execution.command.generation,
+          );
+          if (!deadline || fenced)
+            void interrupt(
+              entry,
+              fenced ? "fenced by Paws" : "heartbeat did not renew the lease",
+            ).catch(
+              journalRejection(
+                "runner-runtime.pulse.interrupt",
+                report,
+                entry.execution.command.itemId,
+              ),
+            );
+          else if (!entry.abort.signal.aborted) {
+            entry.agreedAt = started;
+            entry.agreedWallAt = now();
+            entry.serverAliveAt = response.aliveAt;
+            entry.serverLeaseUntil = serverExpiry.get(key(entry.execution.command));
+            entry.offlineBudgetMs = response.offlineBudgetMs;
+            entry.deadline = deadline;
+          }
+        }
+      } catch (error) {
+        unreachable = true;
+        for (const entry of active.values()) holdOffline(entry);
+        throw error;
       }
       const identity = options.daemon.status();
       if (identity.phase === "paired" && identity.expiresAt - now() < 60 * 60_000)
@@ -1158,17 +1233,24 @@ export async function openRunnerRuntime(options: {
         }
         const tries = (entry.pushTries ?? 0) + 1;
         entry.pushTries = tries;
-        const permanent = PERMANENT_PUSH_REJECTION.test(error.message);
+        // Staging fails on the runner before any push, so a retry fails the same way.
+        const staging = error.message.indexOf(PUBLICATION_STAGING_FAILURE);
+        const permanent = staging >= 0 || PERMANENT_PUSH_REJECTION.test(error.message);
         if (!permanent && tries <= CANDIDATE_PUSH_RETRY_MS.length) {
           entry.pushAt = monotonic() + CANDIDATE_PUSH_RETRY_MS[tries - 1]!;
           throw error;
         }
-        const failure = { branch: credential.branch, error: error.message.slice(0, 4096) };
+        const failure = {
+          branch: credential.branch,
+          error: (staging >= 0 ? error.message.slice(staging) : error.message).slice(0, 4096),
+        };
         await interrupt(
           entry,
-          permanent
-            ? `GitHub rejected the candidate push to ${failure.branch}: ${failure.error}`
-            : `the candidate push to ${failure.branch} failed ${tries} times: ${failure.error}`,
+          staging >= 0
+            ? `the candidate for ${failure.branch} could not be staged for the push: ${failure.error}`
+            : permanent
+              ? `GitHub rejected the candidate push to ${failure.branch}: ${failure.error}`
+              : `the candidate push to ${failure.branch} failed ${tries} times: ${failure.error}`,
           true,
           failure,
         );
@@ -1253,7 +1335,24 @@ export async function openRunnerRuntime(options: {
           await options.daemon.acknowledgeCommand(command.id);
           continue;
         }
-        const entry: Active = { execution, abort: new AbortController(), deadline };
+        const entry: Active = {
+          execution,
+          abort: new AbortController(),
+          deadline,
+          ...(advertisedBudget === undefined ||
+          advertisedAliveAt === undefined ||
+          agreedPulseAt === undefined ||
+          agreedWallAt === undefined ||
+          serverExpiry.get(key(command)) === undefined
+            ? {}
+            : {
+                agreedAt: agreedPulseAt,
+                agreedWallAt,
+                serverAliveAt: advertisedAliveAt,
+                serverLeaseUntil: serverExpiry.get(key(command)),
+                offlineBudgetMs: advertisedBudget,
+              }),
+        };
         active.set(key(command), entry);
         prepare(entry);
         await options.daemon
@@ -1313,7 +1412,8 @@ export async function openRunnerRuntime(options: {
     void pulse().catch(journalRejection("runner-runtime.openRunnerRuntime.pulse", report, null));
   }, 15_000);
   const watchdog = setInterval(() => {
-    for (const entry of active.values())
+    for (const entry of active.values()) {
+      holdOffline(entry);
       if (monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS)
         void interrupt(entry, "lease deadline passed", true).catch(
           journalRejection(
@@ -1330,6 +1430,7 @@ export async function openRunnerRuntime(options: {
             entry.execution.command.itemId,
           ),
         );
+    }
   }, 250);
   return {
     status: () => {

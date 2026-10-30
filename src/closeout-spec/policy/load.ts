@@ -17,6 +17,7 @@ import {
   loadMemoryPolicy,
   PUBLIC_POLICY_PATH,
   type TreePolicy,
+  unknownKeysWarning,
 } from "./resolve";
 
 /** Decision message when both the remote entry and the global file are absent. */
@@ -70,6 +71,7 @@ export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
           code: "local-policy",
           message: `Using configured local policy ${join(root, loaded.policy.entryPath)}.`,
         },
+        ...keyWarnings(loaded.policy),
       ],
     };
   }
@@ -78,7 +80,7 @@ export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
   const loaded = loadMemoryPolicy(staged.files);
   if (!loaded.ok) return blocked("repo", loaded.message);
   if (loaded.absent) return loadGlobal(input);
-  return { ok: true, policy: present("repo", loaded.policy), warnings: [] };
+  return { ok: true, policy: present("repo", loaded.policy), warnings: keyWarnings(loaded.policy) };
 }
 
 /** `published` is the task's videos and screenshots, which Paws adds for the agent session. */
@@ -241,6 +243,7 @@ function loadGlobal(input: LoadPolicyInput): PolicyLoadOutcome {
         code: GLOBAL_POLICY_CODE,
         message: `Using ${shown} because origin/main has no closeout policy.`,
       },
+      ...keyWarnings(loaded.policy),
     ],
     policy: present("global", loaded.policy, shown),
   };
@@ -264,6 +267,11 @@ function present(
   if (policy.rules.length > 0) resolved.probeFiles = policy.probeFiles;
   if (policy.retry !== undefined) resolved.retry = policy.retry;
   return resolved;
+}
+
+function keyWarnings(policy: TreePolicy): DecisionWarning[] {
+  const warning = unknownKeysWarning(policy);
+  return warning === undefined ? [] : [warning];
 }
 
 function resolveHome(input: LoadPolicyInput): string | undefined {

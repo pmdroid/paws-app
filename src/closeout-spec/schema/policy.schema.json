@@ -79,7 +79,8 @@
         },
         "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
         "paths": { "$ref": "#/$defs/paths" },
-        "ci": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\r\\n]+$" }
+        "ci": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\r\\n]+$" },
+        "recheck": { "type": "boolean" }
       }
     },
     "review": {
@@ -104,7 +105,8 @@
         "scope": { "enum": ["candidate", "diff"] },
         "parallel": { "type": "boolean" },
         "minChangedLines": { "type": "integer", "minimum": 1, "maximum": 1000000 },
-        "paths": { "$ref": "#/$defs/paths" }
+        "paths": { "$ref": "#/$defs/paths" },
+        "recheck": { "type": "boolean" }
       }
     },
     "evidence": {
@@ -125,7 +127,8 @@
         "minimum": { "type": "integer", "minimum": 1, "maximum": 100 },
         "hint": { "type": "string", "minLength": 1, "maxLength": 500 },
         "approval": { "const": "human" },
-        "paths": { "$ref": "#/$defs/paths" }
+        "paths": { "$ref": "#/$defs/paths" },
+        "recheck": { "type": "boolean" }
       }
     },
     "preview": {
@@ -162,7 +165,8 @@
         "summary": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^\\r\\n]+$" },
         "paths": { "$ref": "#/$defs/paths" },
         "failOn": { "enum": ["P0", "P1", "P2", "P3"] },
-        "onFail": { "enum": ["fix", "approve"] }
+        "onFail": { "enum": ["fix", "approve"] },
+        "recheck": { "type": "boolean" }
       }
     },
     "setupStep": {

@@ -41,7 +41,7 @@ import {
   xaiApiKeyPresent,
   type AgentRole,
 } from "./adapters";
-import { startHostToolBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
+import { startAskTeamBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
 import { installCloseoutStopHook, installCodexSkillsHome } from "./closeout-hook";
 import { watchHookFailures } from "./workspace-hooks";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
@@ -211,6 +211,9 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           socketPath,
           sourceEnv,
           ...(options.workspaceHooks ? { workspaceHooks: options.workspaceHooks } : {}),
+          ...(options.agentSkills && (profile.agent === "claude" || profile.agent === "codex")
+            ? { skillRoot: options.agentSkills[profile.agent] }
+            : {}),
           ...(options.agentSkills ? { codexSkills: options.agentSkills.codex } : {}),
         })
       : undefined;
@@ -378,7 +381,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       options.publishArtifact ||
       options.showPreview
     ) {
-      bridge = await startHostToolBridge({
+      bridge = await startAskTeamBridge({
         socketPath,
         hook: options.askTeam,
         updatePlan: options.updatePlan,
@@ -609,7 +612,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       }),
     ]);
   } catch (error) {
-    journalCaught(error, "run.runAgent.startHostToolBridge", options.itemId);
+    journalCaught(error, "run.runAgent.startAskTeamBridge", options.itemId);
     const message = error instanceof Error ? error.message : String(error);
     const detail = stderr.text().trim();
     const intentional = state.cancelling;
