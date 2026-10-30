@@ -383,6 +383,44 @@ test("a login check readies the runner's agent or marks it signed out", () => {
   expect(policy()).toEqual({ ready: 0, authExpired: 1 });
 });
 
+test("a sign-in check's usage reading replaces a stale usage limit", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  const reset = f.now() + 3 * 86_400_000;
+  f.db.run(
+    "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired,quota_state,resets_at,cooldown_until) VALUES(?,'claude',1,0,'exhausted',?,?)",
+    [runnerId, reset, reset],
+  );
+  const policy = () =>
+    f.db
+      .query<{ quotaState: string; resetsAt: number | null; cooldownUntil: number }, [string]>(
+        "SELECT quota_state AS quotaState,resets_at AS resetsAt,cooldown_until AS cooldownUntil FROM runner_agent_policy WHERE runner_id=? AND agent='claude'",
+      )
+      .get(runnerId);
+  const claude = () => f.checks(runnerId).findLast((command) => command.agent === "claude")!;
+  f.health.refresh();
+  f.answer(claude(), true, [
+    { window: "5-hour", usedPercent: 0, resetsAt: null },
+    { window: "Weekly", usedPercent: 8, resetsAt: reset + 16 * 3_600_000 },
+  ]);
+  expect(policy()).toEqual({ quotaState: "ok", resetsAt: null, cooldownUntil: 0 });
+
+  f.advance(5 * 60_000 + 1);
+  f.seen(runnerId);
+  f.health.refresh();
+  f.answer(claude(), true, [
+    { window: "5-hour", usedPercent: 12, resetsAt: null },
+    { window: "Weekly", usedPercent: 100, resetsAt: reset },
+  ]);
+  expect(policy()).toEqual({ quotaState: "exhausted", resetsAt: reset, cooldownUntil: reset });
+
+  f.advance(5 * 60_000 + 1);
+  f.seen(runnerId);
+  f.health.refresh();
+  f.answer(claude());
+  expect(policy()).toEqual({ quotaState: "exhausted", resetsAt: reset, cooldownUntil: reset });
+});
+
 test("older runners keep their three login checks and reject OpenCode before dispatch", () => {
   const f = fixture();
   const runnerId = f.runner();
