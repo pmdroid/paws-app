@@ -17,7 +17,7 @@ export type TeamAnswer = {
 };
 
 /**
- * How a run asks a human. The quick MVP's only channel is a Linear elicitation.
+ * How a run asks a human. The only channel is a Linear elicitation.
  * The Linear call sits behind `TrackerAdapter`; this module owns the question record.
  */
 export interface QuestionChannel {
