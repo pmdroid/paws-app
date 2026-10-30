@@ -1,6 +1,6 @@
 import { OwnedProcess } from "../process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile, writeFile, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -69,6 +69,13 @@ export function previewEnvironment(
   };
 }
 
+/** Never trust a pre-existing shared directory or follow a planted lock symlink. */
+async function assertPrivateDirectory(folder: string): Promise<void> {
+  const info = await lstat(folder);
+  if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)
+    throw new Error("Preview locks need a runner-owned directory with mode 0700");
+}
+
 async function staleLock(folder: string): Promise<boolean> {
   try {
     const owner = Number(await readFile(join(folder, "owner"), "utf8"));
@@ -81,10 +88,13 @@ async function staleLock(folder: string): Promise<boolean> {
       return (error as NodeJS.ErrnoException).code === "ESRCH";
     }
   } catch (error) {
-    return (
-      (error as NodeJS.ErrnoException).code === "ENOENT" &&
-      Date.now() - (await stat(folder)).mtimeMs > 60000
-    );
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    try {
+      return Date.now() - (await lstat(folder)).mtimeMs > 60000;
+    } catch (missing) {
+      if ((missing as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw missing;
+    }
   }
 }
 
@@ -101,12 +111,19 @@ async function claimService(root: string, name: string, io: PreviewRuntime): Pro
     return true;
   };
   if (await claim()) return true;
+  try {
+    await assertPrivateDirectory(folder);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return await claim();
+    throw error;
+  }
   if (!(await staleLock(folder))) return false;
   const recovery = `${folder}.recovery`;
   try {
     await mkdir(recovery, { mode: 0o700 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    await assertPrivateDirectory(recovery);
     if (!(await staleLock(recovery))) return false;
     await rm(recovery, { recursive: true, force: true });
     try {
@@ -148,6 +165,7 @@ export async function runPreview(input: {
   const expiresAt = Date.now() + timeoutMs;
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)]);
   await mkdir(input.lockRoot, { recursive: true, mode: 0o700 });
+  await assertPrivateDirectory(input.lockRoot);
   let service: string | undefined;
   for (const name of input.services) {
     if (!/^paws-preview-[1-9][0-9]*$/.test(name))

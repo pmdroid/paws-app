@@ -502,6 +502,21 @@ export function createRemoteAgentRunner(options: {
        ORDER BY r.last_seen_at DESC,r.id`,
           )
           .all();
+    if (placement.minimumRunnerVersion) {
+      candidates = candidates.filter((runner) => {
+        const version = db
+          .query<{ version: string | null }, [string]>(
+            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+          )
+          .get(runner.id)?.version;
+        const compatible = versionAtLeast(version, placement.minimumRunnerVersion!);
+        if (!compatible)
+          rejected.push(
+            `${runner.id}: live previews need runner ${placement.minimumRunnerVersion!.join(".")} or later`,
+          );
+        return compatible;
+      });
+    }
     const pinnedOnline = Boolean(
       placement.purpose !== "prepare" &&
       placement.pinnedRunnerId &&
@@ -738,6 +753,9 @@ export function createRemoteAgentRunner(options: {
             : {};
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
+          ...(input.reviewPreview?.required
+            ? { minimumRunnerVersion: LIVE_PREVIEW_RUNNER_VERSION }
+            : {}),
           profile,
           role: input.role,
           purpose: input.prepareOnly ? "prepare" : "work",
@@ -1447,6 +1465,7 @@ export function createRemoteAgentRunner(options: {
           let complete: RunnerResult | null = null;
           let disposition: ReturnType<RunnerPlacement["finished"]> | undefined;
           let unansweredPreview: number | null = null;
+          let previewQuestionId: string | null = null;
           let heardAt = now();
           const liveness = () =>
             db
@@ -1645,7 +1664,7 @@ export function createRemoteAgentRunner(options: {
               if (answered && event.type === "artifact" && event.dropped === undefined)
                 publishedEffects = true;
               if (event.type === "closeout_policy" && !answered) {
-                const policy = input.closeoutPolicy
+                let policy = input.closeoutPolicy
                   ? await input.closeoutPolicy().catch((error: unknown) => {
                       journalCaught(error, "runner-backend.forItem.closeoutPolicy", itemId);
                       return {
@@ -1657,6 +1676,16 @@ export function createRemoteAgentRunner(options: {
                       ok: false as const,
                       message: "Paws has no trusted Closeout policy for this run",
                     };
+                // Use the capability signed into this command, not a later heartbeat
+                // from a runner whose binary may have changed while the worker ran.
+                if (
+                  policy.ok &&
+                  !policy.absent &&
+                  !("livePreview" in assigned && assigned.livePreview)
+                ) {
+                  const { acceptedPreviews: _accepted, ...legacyPolicy } = policy;
+                  policy = legacyPolicy;
+                }
                 signal.throwIfAborted();
                 results.answer({
                   runId: assigned.runId,
@@ -1723,7 +1752,11 @@ export function createRemoteAgentRunner(options: {
                 });
                 signal.throwIfAborted();
               }
-              if (event.type === "preview_stopped") input.reviewPreview?.stopped?.(event.id);
+              if (event.type === "preview_stopped") {
+                input.reviewPreview?.stopped?.(event.id);
+                // Settle the stopped review before the next journal question is admitted.
+                if (previewQuestionId === event.id) await question;
+              }
               if (event.type === "pull_request")
                 await input.pullRequest?.update({ title: event.title, body: event.body });
               if (event.type === "closeout") await input.closeoutProgress?.record(event.progress);
@@ -1753,14 +1786,17 @@ export function createRemoteAgentRunner(options: {
                   results.answered(assigned.runId, assigned.generation, row.sequence) !== null
                 )
               ) {
-                if (event.preview) unansweredPreview = row.sequence;
+                if (event.preview) {
+                  unansweredPreview = row.sequence;
+                  previewQuestionId = event.preview.id;
+                }
                 if (question) throw new Error("Remote runner sent overlapping questions");
                 if (event.preview ? !input.reviewPreview : !input.askTeam)
                   throw new Error("Remote question channel is unavailable");
                 publishedEffects = true;
                 asked = true;
                 await emit({ type: "ask_team", question: event.text, phase: "asked" });
-                const currentCommand = assigned;
+                const currentCommand = { runId: assigned.runId, generation: assigned.generation };
                 question = (async () => {
                   const answer = event.preview
                     ? { answer: await input.reviewPreview!.review(event.preview, { signal }) }
@@ -1777,9 +1813,10 @@ export function createRemoteAgentRunner(options: {
                   });
                   if (event.preview) {
                     unansweredPreview = null;
+                    previewQuestionId = null;
                     db.run(
                       "UPDATE runner_work SET consumed_sequence=? WHERE run_id=? AND generation=?",
-                      [cursor, assigned.runId, assigned.generation],
+                      [cursor, currentCommand.runId, currentCommand.generation],
                     );
                   }
                   await emit({

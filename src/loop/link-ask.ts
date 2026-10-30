@@ -155,6 +155,7 @@ export function remindLinkAsk(db: Database, questionId: string, now: number): bo
       .query<{ id: number }, [string]>("SELECT id FROM outbox WHERE idempotency_key = ?")
       .get(`link-ask-reminder:${questionId}`);
     if (before !== null) return false;
+    const live = linkAsk.kind === "preview" ? livePreviewForQuestion(db, questionId) : null;
     enqueueOutboxOnce(db, {
       target: "linear",
       op: "elicitation",
@@ -165,9 +166,7 @@ export function remindLinkAsk(db: Database, questionId: string, now: number): bo
         sessionId: question.sessionId,
         questionId,
         body:
-          linkAsk.kind === "preview" &&
-          (!livePreviewForQuestion(db, questionId) ||
-            livePreviewForQuestion(db, questionId)!.expiresAt <= now)
+          linkAsk.kind === "preview" && (!live || live.expiresAt <= now)
             ? "The live preview has stopped. Reply with your feedback or ask the agent to restart it. Review in Paws: " +
               linkAsk.link
             : linkAskReminderBody(linkAsk),

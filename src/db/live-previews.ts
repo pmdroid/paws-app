@@ -53,17 +53,14 @@ export function livePreviewApprovals(db: Database, itemId: string, task: string)
       };
     });
 }
-/** Optional show_preview calls gate publication too, including after a later commit. */
+/** The latest optional review gates publication; policy checks independently require their ids. */
 export function unacceptedLivePreview(db: Database, itemId: string, head: string): boolean {
-  const rows = db
+  const row = db
     .query<{ ready: string; decision: string | null }, [string]>(
-      `SELECT p.ready,a.decision FROM live_preview p JOIN link_ask a ON a.question_id=p.question_id WHERE p.item_id=? ORDER BY p.rowid`,
+      `SELECT p.ready,a.decision FROM live_preview p JOIN link_ask a ON a.question_id=p.question_id WHERE p.item_id=? ORDER BY p.rowid DESC LIMIT 1`,
     )
-    .all(itemId);
-  const checks = new Map<string, boolean>();
-  for (const row of rows) {
-    const preview = PreviewReadySchema.parse(JSON.parse(row.ready));
-    checks.set(preview.checkId, row.decision === "approve" && preview.head === head);
-  }
-  return [...checks.values()].some((accepted) => !accepted);
+    .get(itemId);
+  if (!row) return false;
+  const preview = PreviewReadySchema.parse(JSON.parse(row.ready));
+  return row.decision !== "approve" || preview.head !== head;
 }

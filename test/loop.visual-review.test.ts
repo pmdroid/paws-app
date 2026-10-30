@@ -15,6 +15,7 @@ import {
   applyWorkItemEvent,
   enqueueJobOnce,
   getLinkAsk,
+  livePreviewForQuestion,
   OutboxDispatcher,
   getRun,
   getWorkItem,
@@ -124,6 +125,41 @@ test("show_preview on the runner becomes ready, waits for Accept, then opens the
     expect(f.tracker.questions[0]!.body).toContain(
       "[Open preview](https://paws-preview-1.test-tail.ts.net/)",
     );
+  } finally {
+    await f.close();
+  }
+}, 90000);
+
+test("host abort and redelivery preserve the active preview and original deadline", async () => {
+  const f = await pausedForReview({ preview: true, previewReconnect: true });
+  try {
+    await f.until(() => findOpenQuestion(f.db, "ses_1") !== null);
+    // Wait for the simulated reconnect to redeliver after advancing its clock.
+    await f.until(() =>
+      Boolean(f.db.query<{ ready: string }, []>("SELECT ready FROM live_preview").get()),
+    );
+    await Bun.sleep(100);
+    expect(await f.approve()).toBe("answered");
+    await f.turn;
+    await f.driveUntil(() => f.github.opened.length === 1);
+    expect(f.tracker.questions).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+}, 90000);
+
+test("a required preview restarts after verification without a runner row on the current run", async () => {
+  const f = await pausedForReview({ preview: true, previewDeferred: true });
+  try {
+    await f.turn;
+    expect(f.tracker.questions).toHaveLength(0);
+    expect(
+      listJobs(f.db).some(
+        (job) => job.queue === JOB_KIND.resume && job.jobKey?.startsWith("preview-required:"),
+      ),
+    ).toBe(true);
+    const currentRunId = listWorkItems(f.db)[0]!.currentRunId;
+    expect(f.db.query("SELECT 1 FROM runner_work WHERE run_id=?").get(currentRunId!)).toBeNull();
   } finally {
     await f.close();
   }
@@ -1170,6 +1206,8 @@ async function pausedForReview(
     paths?: string[];
     preview?: boolean;
     previewUnavailable?: boolean;
+    previewReconnect?: boolean;
+    previewDeferred?: boolean;
     previewLocal?: boolean;
     implement?: (worktree: string, n: number, prompt: string) => Step[];
     /** The Closeout fake in place of the real gate. A held run returns before the turn ends. */
@@ -1189,6 +1227,7 @@ items:
       : closeoutPolicy(options.paths),
   );
   const previewRuntime = createFakePreviewRuntime();
+  let previewTurns = 0;
   const tracker = createFakeTracker([
     {
       linearIssueId: "issue",
@@ -1334,7 +1373,10 @@ items:
                 "user.email",
                 "paws-test@example.invalid",
               ]);
-              writeFileSync(path.join(input.worktreePath, "README.md"), "Try the live product\n");
+              writeFileSync(
+                path.join(input.worktreePath, "README.md"),
+                `Try the live product ${++previewTurns}\n`,
+              );
               await exec("git", [
                 "-C",
                 input.worktreePath,
@@ -1350,6 +1392,17 @@ items:
                 port: 3123,
                 checklist: ["Try the new screen"],
               });
+              if (options.previewDeferred && previewTurns > 1)
+                expect(input.reviewPreview?.required).toBe(true);
+              if (options.previewDeferred && previewTurns === 1) {
+                db.run("DELETE FROM runner_work WHERE run_id=?", [input.runId!]);
+                db.run(
+                  "INSERT OR REPLACE INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner-1','0.1.53',?)",
+                  [Date.now()],
+                );
+                await input.pullRequest?.update({ title: "Fixture", body: "Pending preview" });
+                return result;
+              }
               if (options.previewUnavailable) {
                 db.run(
                   "INSERT OR REPLACE INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner-1','0.1.48',?)",
@@ -1368,6 +1421,25 @@ items:
                 signal: input.signal!,
                 runtime: previewRuntime.io,
                 ready: async (preview, signal) => {
+                  if (options.previewReconnect) {
+                    const host = new AbortController();
+                    const first = input.reviewPreview!.review(preview, { signal: host.signal });
+                    while (!db.query("SELECT 1 FROM live_preview WHERE id=?").get(preview.id))
+                      await Bun.sleep(10);
+                    const questionId = db
+                      .query<{ id: string }, [string]>(
+                        "SELECT question_id AS id FROM live_preview WHERE id=?",
+                      )
+                      .get(preview.id)!.id;
+                    const deadline = livePreviewForQuestion(db, questionId)!.expiresAt;
+                    host.abort(new Error("Host reconnect"));
+                    await expect(first).rejects.toThrow("Host reconnect");
+                    expect(livePreviewForQuestion(db, questionId)?.expiresAt).toBe(deadline);
+                    offset += 40 * 60000;
+                    const replay = input.reviewPreview!.review(preview, { signal });
+                    expect(livePreviewForQuestion(db, questionId)?.expiresAt).toBe(deadline);
+                    return await replay;
+                  }
                   // A ready event replay after reconnect must reuse the same question.
                   const replies = await Promise.all([
                     input.reviewPreview!.review(

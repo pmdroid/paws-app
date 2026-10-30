@@ -1,4 +1,9 @@
-import type { RunnerProfile, RunnerResult, RunnerHelperResult } from "../runner-protocol";
+import type {
+  RunnerProfile,
+  RunnerResult,
+  RunnerHelperResult,
+  RunnerVersion,
+} from "../runner-protocol";
 
 export { quotaSignal, type QuotaSignal } from "./quota";
 
@@ -65,6 +70,8 @@ export type PlacementProfile = Pick<RunnerProfile, "agent"> & { model?: string |
 export type PlacementRequest = {
   /** Workspace maintenance helpers run only on active admins own runners. */
   findingGroups?: boolean;
+  /** Minimum protocol supported by the selected runner. Enforced by the backend. */
+  minimumRunnerVersion?: RunnerVersion;
   itemId?: string;
   sessionId?: string;
   profile?: PlacementProfile;

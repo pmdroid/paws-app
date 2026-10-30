@@ -1,3 +1,4 @@
+import { LIVE_PREVIEW_RUNNER_VERSION } from "../runner-protocol";
 import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -255,8 +256,7 @@ export function createCloseoutSession(
             (item) => item.kind === "preview" && !prepared.acceptedPreviews.has(item.id),
           )
         ) {
-          report.blocked =
-            "Live previews require a remote runner with preview support (0.1.49 or later). Upgrade the runner and retry; show_preview is unavailable in this session.";
+          report.blocked = `Live previews require a remote runner with preview support (${LIVE_PREVIEW_RUNNER_VERSION.join(".")} or later). Upgrade the runner and retry; show_preview is unavailable in this session.`;
         }
         if (request?.progress && checkedHead !== undefined)
           notifyReport(options, checkedHead, prepared, report);
@@ -509,7 +509,7 @@ async function runId(
   if (item.kind === "preview" && prepared.acceptedPreviews.has(id))
     return `${id} passed. The preview was accepted for the current commit.`;
   if (item.kind === "preview" && !options.previewAvailable)
-    return "show_preview is unavailable. Use a remote runner at 0.1.49 or later.";
+    return `show_preview is unavailable. Use a remote runner at ${LIVE_PREVIEW_RUNNER_VERSION.join(".")} or later.`;
   if (item.kind === "preview")
     return `Call show_preview with checkId "${id}". A person accepts the running product in Paws.`;
   if (item.kind === "review") {

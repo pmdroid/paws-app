@@ -1,3 +1,4 @@
+import { PreviewReadySchema } from "../../src/live-preview";
 import assert from "node:assert/strict";
 import { createAcpActivityReporter } from "../../src/loop";
 import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
@@ -1828,6 +1829,135 @@ export async function probeRunnerBackend(
       role: ready.role,
     });
     await git(["-C", source, "reset", "--hard", base]);
+    const priorPreviewVersion =
+      db
+        .query<{ version: string }, [string]>(
+          "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+        )
+        .get(runnerId)?.version ?? null;
+    for (const version of ["0.1.52", "0.1.53"]) {
+      await git(["-C", source, "reset", "--hard", base]);
+      db.run(
+        "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+        [runnerId, version, now],
+      );
+      const record = item();
+      if (version === "0.1.52") {
+        await assert.rejects(
+          backend.forItem(record.id)(
+            input(record, {
+              reviewPreview: { required: true, review: async () => "unreachable" },
+            }),
+          ),
+          /live previews need runner/,
+        );
+      }
+      let previewStopped: (() => void) | undefined;
+      let nextQuestion = false;
+      const preview = PreviewReadySchema.parse({
+        id: randomUUID(),
+        command: ["bun", "fixtures"],
+        port: 3123,
+        checklist: ["Try save"],
+        head,
+        url: "https://paws-preview-1.tail.ts.net/",
+        expiresAt: now + 3600000,
+        frameable: true,
+      });
+      const previewPending = backend.forItem(record.id)(
+        input(record, {
+          closeoutPolicy: async () => ({
+            ok: true,
+            absent: false,
+            digest: `sha256:${"a".repeat(64)}`,
+            files: new Map([
+              [".agents/closeout.yaml", new TextEncoder().encode('specVersion: "0.1"\n')],
+            ]),
+            acceptedPreviews: [{ checkId: "live-preview", commit: head }],
+          }),
+          reviewPreview: {
+            async review() {
+              await new Promise<void>((resolve) => {
+                previewStopped = resolve;
+              });
+              return "Preview stopped";
+            },
+            stopped() {
+              previewStopped?.();
+            },
+          },
+          askTeam: {
+            async ask() {
+              nextQuestion = true;
+              return { answer: "Restart it" };
+            },
+          },
+          async onEvent(event) {
+            if (
+              event.type === "ask_team" &&
+              event.phase === "answered" &&
+              event.question === "Review preview"
+            )
+              await delay(20);
+          },
+        }),
+      );
+      const cmd = await next();
+      if (cmd.type !== "run") throw new Error("Expected implementation");
+      const previewGrant = work.issueGrant({
+        runnerId,
+        runId: cmd.runId,
+        commandId: cmd.id,
+        generation: cmd.generation,
+      });
+      const send = (eventSequence: number, event: Parameters<typeof work.event>[0]["event"]) =>
+        work.event({
+          runnerId,
+          runId: cmd.runId,
+          generation: cmd.generation,
+          token: previewGrant.token,
+          sequence: eventSequence,
+          event,
+        });
+      send(1, { type: "closeout_policy" });
+      if (version === "0.1.53") {
+        send(2, { type: "question", text: "Review preview", options: [], preview });
+        send(3, { type: "preview_stopped", id: preview.id });
+        send(4, { type: "question", text: "Restart?", options: [] });
+      }
+      for (let attempt = 0; attempt < 1000; attempt++) {
+        if (results.answered(cmd.runId, cmd.generation, version === "0.1.53" ? 4 : 1)) break;
+        await delay(1);
+      }
+      const answer = results.answered(cmd.runId, cmd.generation, 1);
+      assert(answer);
+      const policy = JSON.parse(answer);
+      assert.equal("acceptedPreviews" in policy, version === "0.1.53");
+      if (version === "0.1.53") assert(nextQuestion);
+      results.submit({
+        runnerId,
+        runId: cmd.runId,
+        generation: cmd.generation,
+        token: previewGrant.token,
+        result: { ...result(cmd), candidateSha: head },
+      });
+      await previewPending;
+      observe(
+        version === "0.1.53"
+          ? "a stopped preview settles before the next question in its journal batch"
+          : "legacy runner policy transfer excludes preview approvals",
+        true,
+        {},
+      );
+    }
+    await git(["-C", source, "reset", "--hard", base]);
+    if (priorPreviewVersion === null)
+      db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    else
+      db.run("UPDATE runner_host_status SET runner_version=? WHERE runner_id=?", [
+        priorPreviewVersion,
+        runnerId,
+      ]);
     const asked = item();
     let opened = false;
     let contextBody: string | undefined;

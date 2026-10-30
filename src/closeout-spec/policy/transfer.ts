@@ -53,7 +53,7 @@ export function encodePolicyFiles(load: PolicyFilesLoad, chunked = false): strin
     return JSON.stringify({ error: "The Closeout policy is too large to send to the runner" });
   return JSON.stringify({
     digest: load.digest,
-    ...(load.acceptedPreviews
+    ...(load.acceptedPreviews?.length
       ? { acceptedPreviews: load.acceptedPreviews.slice(-MAX_PUBLISHED) }
       : {}),
     files: [...load.files].map(([path, bytes]) => ({

@@ -28,3 +28,23 @@ test("a bundle larger than the old 45 KB cap is sent instead of refused", () => 
   const decoded = decodePolicyFiles(encoded);
   expect(decoded.ok).toBe(true);
 });
+
+test("an empty preview approval list leaves the legacy strict transfer unchanged", () => {
+  const files = new Map([
+    [".agents/closeout.yaml", new TextEncoder().encode('specVersion: "0.1"\n')],
+  ]);
+  const encoded = encodePolicyFiles({
+    ok: true,
+    absent: false,
+    digest,
+    files,
+    acceptedPreviews: [],
+  });
+  expect(Object.keys(JSON.parse(encoded)).sort()).toEqual(["digest", "files"]);
+  const accepted = [{ checkId: "live-preview", commit: "b".repeat(40) }];
+  expect(
+    JSON.parse(
+      encodePolicyFiles({ ok: true, absent: false, digest, files, acceptedPreviews: accepted }),
+    ).acceptedPreviews,
+  ).toEqual(accepted);
+});

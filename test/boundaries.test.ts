@@ -110,7 +110,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "closeout-spec",
   ],
   closeout: ["journal", "core", "closeout-spec"],
-  "closeout-spec": ["journal", "core", "worktree-checkout"],
+  "closeout-spec": ["journal", "core", "worktree-checkout", "runner-protocol"],
   github: ["journal", "core", "process", "webhook-body"],
   merge: ["journal", "core", "db", "github", "questions"],
   questions: ["core", "db", "workspace"],

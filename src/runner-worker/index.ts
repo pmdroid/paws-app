@@ -1221,7 +1221,7 @@ export async function executeRunnerCommand(
                     head,
                     services,
                     path: agent.env?.PATH ?? process.env.PATH ?? "/usr/bin:/bin",
-                    lockRoot: "/tmp/paws-preview-services",
+                    lockRoot: join(options.home, ".paws-preview-services"),
                     signal: context.signal,
                     stopped(id) {
                       emit({ type: "preview_stopped", id });

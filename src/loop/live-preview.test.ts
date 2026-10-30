@@ -151,3 +151,35 @@ test("an unauthorized Linear reply cannot close or restart a preview", () => {
   expect(getWorkItem(f.db, f.itemId)?.state).toBe("awaiting_input");
   expect(listJobs(f.db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
 });
+
+test("a later accepted preview supersedes an abandoned optional check id", () => {
+  const f = waiting();
+  const abandoned = { ...f.preview, checkId: "old-optional-name" };
+  // Keep an earlier declined preview for a different id in the item's history.
+  f.db.run("UPDATE live_preview SET ready=? WHERE id=?", [JSON.stringify(abandoned), f.preview.id]);
+  expect(unacceptedLivePreview(f.db, f.itemId, HEAD)).toBe(true);
+  expect(
+    decideLinkAsk(f.db, {
+      questionId: f.questionId,
+      decision: "changes",
+      note: "Try the corrected preview",
+      answeredBy: "lead",
+      actor: { workspaceId: "ws", userId: "user", name: "Lead" },
+      now: NOW + 1,
+    }),
+  ).toBe("answered");
+  beginImplementRun(f.db, f.itemId, NOW + 2);
+  const { question } = askWithLink(f.db, {
+    item: getWorkItem(f.db, f.itemId)!,
+    runId: getWorkItem(f.db, f.itemId)!.currentRunId!,
+    kind: "preview",
+    head: HEAD,
+    publicUrl: "https://paws.example",
+    detail: "Try the new preview",
+    now: NOW + 1,
+  });
+  saveLivePreview(f.db, f.itemId, question.id, { ...f.preview, id: randomUUID() });
+  expect(accept({ ...f, questionId: question.id })).toBe("answered");
+  expect(unacceptedLivePreview(f.db, f.itemId, HEAD)).toBe(false);
+  expect(unacceptedLivePreview(f.db, f.itemId, "b".repeat(40))).toBe(true);
+});

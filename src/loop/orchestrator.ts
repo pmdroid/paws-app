@@ -1,3 +1,4 @@
+import { LIVE_PREVIEW_RUNNER_VERSION } from "../runner-protocol";
 import { setTimeout as previewDelay } from "node:timers/promises";
 import {
   PreviewReadySchema,
@@ -3055,11 +3056,11 @@ export class Orchestrator {
       const previewRequired =
         needsPreview ||
         (verdict.decision === "accepted" && unacceptedLivePreview(this.db, item.id, head));
-      if (previewRequired && !this.previewCapable(item)) {
+      if (previewRequired && !this.previewCapable()) {
         await this.askCloseoutHelp(
           after,
           verdict.result,
-          "Live previews require a remote runner at 0.1.49 or later. Upgrade the runner, then reply to retry. show_preview is unavailable on the current execution backend.",
+          `Live previews require a remote runner at ${LIVE_PREVIEW_RUNNER_VERSION.join(".")} or later. Upgrade the runner, then reply to retry. show_preview is unavailable on the current execution backend.`,
         );
         return;
       }
@@ -4684,18 +4685,33 @@ export class Orchestrator {
     return settings;
   }
 
-  private previewCapable(item: WorkItemRecord): boolean {
-    if (!this.options.remoteExecution || !item.currentRunId) return false;
-    const version = this.db
-      .query<{ version: string | null }, [string]>(
-        "SELECT h.runner_version AS version FROM runner_work w JOIN runner_host_status h ON h.runner_id=w.runner_id WHERE w.run_id=?",
+  private previewCapable(): boolean {
+    if (!this.options.remoteExecution) return false;
+    // Verification may own a new run with no runner_work row. Placement checks the
+    // version again for the actual next implementation, including after failover.
+    const versions = this.db
+      .query<{ version: string | null }, []>(
+        "SELECT runner_version AS version FROM runner_host_status",
       )
-      .get(item.currentRunId)?.version;
-    return previewRunnerSupported(version);
+      .all();
+    return versions.some(({ version }) => previewRunnerSupported(version));
   }
 
   private previewHook(item: WorkItemRecord, runId: string): ReviewPreviewHook {
+    const required =
+      Boolean(
+        this.db
+          .query(
+            "SELECT 1 FROM job WHERE json_extract(payload, '$.itemId')=? AND job_key LIKE 'preview-required:%' LIMIT 1",
+          )
+          .get(item.id),
+      ) ||
+      Boolean(
+        item.checkpoint?.wipCommit &&
+        unacceptedLivePreview(this.db, item.id, item.checkpoint.wipCommit),
+      );
     return {
+      required,
       stopped: (id) => {
         const record = getLivePreview(this.db, id);
         if (record?.itemId === item.id) {
@@ -4705,14 +4721,15 @@ export class Orchestrator {
       },
       review: async (ready, context) => {
         const parsedPreview = PreviewReadySchema.parse(ready);
+        const existing = getLivePreview(this.db, parsedPreview.id);
+        const saved = existing ? livePreviewForQuestion(this.db, existing.questionId) : null;
         const preview = {
           ...parsedPreview,
-          expiresAt: this.now() + (parsedPreview.remainingMs ?? 3600000),
+          expiresAt: saved?.expiresAt ?? this.now() + (parsedPreview.remainingMs ?? 3600000),
         };
         this.assertJobCurrent(item.id);
         context.signal.throwIfAborted();
         const current = getWorkItem(this.db, item.id);
-        const existing = getLivePreview(this.db, preview.id);
         if (existing && existing.itemId !== item.id) throw new Error("Preview owner is stale");
         if (
           !current ||
@@ -4788,7 +4805,7 @@ export class Orchestrator {
         } finally {
           if (notify) wakes.delete(notify);
           if (wakes.size === 0) this.previewWaiters.delete(opened.question.id);
-          endLivePreview(this.db, preview.id, this.now());
+          if (!context.signal.aborted) endLivePreview(this.db, preview.id, this.now());
         }
       },
     };
@@ -7551,7 +7568,7 @@ export class Orchestrator {
           ? {
               ...load,
               published: publishedEvidence(this.db, item.id),
-              acceptedPreviews: livePreviewApprovals(this.db, item.id, item.id).map(
+              acceptedPreviews: livePreviewApprovals(this.db, item.id, itemPathId(item)).map(
                 ({ checkId, commit }) => ({ checkId, commit }),
               ),
             }

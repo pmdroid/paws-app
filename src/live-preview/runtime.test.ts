@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, chmod, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -228,9 +228,38 @@ test.each([
   ["0.1.49", false],
   ["0.1.52", false],
   ["0.1.53", true],
+  ["0.1.53-rc.1", true],
+  ["0.1.54+build", true],
   ["0.2.0", true],
   [null, false],
   ["invalid", false],
 ] as const)("preview runner capability for %s is %s", (version, expected) => {
   expect(previewRunnerSupported(version)).toBe(expected);
+});
+
+test("refuses a shared or symlinked lock root before touching Tailscale", async () => {
+  const config = await input();
+  const fake = createFakePreviewRuntime();
+  await chmod(config.lockRoot, 0o777);
+  await expect(
+    runPreview({ ...config, runtime: fake.io, ready: async () => "accepted" }),
+  ).rejects.toThrow("mode 0700");
+  expect(fake.calls).toHaveLength(0);
+  await chmod(config.lockRoot, 0o700);
+  const link = join(config.lockRoot, "link");
+  await symlink(config.lockRoot, link);
+  await expect(
+    runPreview({ ...config, lockRoot: link, runtime: fake.io, ready: async () => "accepted" }),
+  ).rejects.toThrow("mode 0700");
+  expect(fake.calls).toHaveLength(0);
+});
+
+test("refuses a planted service lock symlink", async () => {
+  const config = await input();
+  const fake = createFakePreviewRuntime();
+  await symlink(config.lockRoot, join(config.lockRoot, "paws-preview-1"));
+  await expect(
+    runPreview({ ...config, runtime: fake.io, ready: async () => "accepted" }),
+  ).rejects.toThrow("mode 0700");
+  expect(fake.calls).toHaveLength(0);
 });
