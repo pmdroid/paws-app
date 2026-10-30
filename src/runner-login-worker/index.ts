@@ -40,6 +40,20 @@ export async function runProviderLogin(options: {
   }
 }
 
+export function providerLoginCommand(agent: "claude" | "opencode") {
+  return agent === "claude"
+    ? ["/opt/paws-runner/bin/claude", "auth", "login"]
+    : [
+        resolveOpencodeCommand().command,
+        "auth",
+        "login",
+        "--standalone",
+        "--method",
+        "device",
+        "opencode",
+      ];
+}
+
 async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
   const env = minimalAgentEnv({
     HOME: options.home,
@@ -58,10 +72,6 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
   if (options.agent === "grok") {
     await runGrokLogin({ ...options, env });
   } else if (options.agent === "claude" || options.agent === "opencode") {
-    const fallback =
-      options.agent === "claude"
-        ? ["/opt/paws-runner/bin/claude", "auth", "login"]
-        : [resolveOpencodeCommand().command, "auth", "login"];
     state.state = "waiting";
     state.inputId = randomUUID();
     const decoder = new TextDecoder();
@@ -85,7 +95,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
     const kill = () => child?.kill("SIGKILL");
     signal.addEventListener("abort", kill, { once: true });
     try {
-      child = Bun.spawn(options.command ?? fallback, {
+      child = Bun.spawn(options.command ?? providerLoginCommand(options.agent), {
         cwd: options.home,
         env: { ...env, NO_BROWSER: "1" },
         terminal,
