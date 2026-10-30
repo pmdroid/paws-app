@@ -97,6 +97,7 @@ export interface RunAgentOptions {
   checkoutExclusions?: readonly string[];
   networkGit?: (args: string[]) => Promise<string>;
   profile?: AgentProfile;
+  fallbackProfile?: AgentProfile;
   readOnly?: boolean;
   hostAccess?: boolean;
   prepareOnly?: boolean;

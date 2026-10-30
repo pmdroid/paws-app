@@ -10,7 +10,7 @@ import type {
   PullRequestHook,
   UpdatePlanHook,
 } from "../acp";
-import type { AgentProfile } from "../config";
+import type { AgentProfile, AgentProfiles } from "../config";
 import { git, runAgent } from "../acp";
 import type { Finding, FixRequest, FixResult, FixRunner, ReviewResult } from "../closeout";
 import type { CodexReviewer } from "../closeout";
@@ -51,7 +51,7 @@ export type AcpAgentDeps = {
   updatePlan?: UpdatePlanHook;
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
-  profiles?: { implementer: AgentProfile; reviewer: AgentProfile };
+  profiles?: AgentProfiles;
   onCandidate?: (identity: AgentIdentity) => void;
   home?: string;
   launch: AgentLaunch;
@@ -168,6 +168,9 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
             prepareInputFiles: deps.prepareInputFiles,
             role: "reviewer",
             profile: deps.profiles?.reviewer,
+            ...(deps.profiles?.reviewerFallback
+              ? { fallbackProfile: deps.profiles.reviewerFallback }
+              : {}),
             itemId: request.taskId,
             runId: `rev-${request.taskId}-${seq}`,
             prompt: turnPrompt,
@@ -275,6 +278,9 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
         repository: deps.repository,
         role: "reviewer",
         profile: deps.profiles?.reviewer,
+        ...(deps.profiles?.reviewerFallback
+          ? { fallbackProfile: deps.profiles.reviewerFallback }
+          : {}),
         itemId: request.taskId,
         runId: `rev-${request.taskId}-${seq}`,
         prompt,
