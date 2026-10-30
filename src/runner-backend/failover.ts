@@ -83,13 +83,41 @@ export async function runWithFailover(
   let limit: UsageLimit | undefined;
   let usageLimitEvents = 0;
   const limitedSincePause = new Set<string>();
+  let profile = input.profile;
+  let fallback = input.fallbackProfile;
   for (let index = 0; index < 3;) {
     input.signal?.throwIfAborted();
     try {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) throw new Error("Remote runner request timed out during failover");
-      return await attempt({ ...input, prompt, timeoutMs: remaining }, excluded, limit);
+      return await attempt(
+        { ...input, ...(profile ? { profile } : {}), prompt, timeoutMs: remaining },
+        excluded,
+        limit,
+      );
     } catch (error) {
+      if (
+        error instanceof UsageLimitPause &&
+        fallback &&
+        profile?.agent === error.agent &&
+        fallback.agent !== error.agent
+      ) {
+        await input.onEvent?.({
+          type: "progress",
+          text: `${error.agent} reached its usage limit on every runner. Reviewing with ${fallback.agent}${fallback.model ? ` ${fallback.model}` : ""} instead.`,
+        });
+        journalCaught(
+          error,
+          "failover.runWithFailover.fallback",
+          input.itemId,
+          "moving to the fallback profile",
+        );
+        profile = fallback;
+        fallback = undefined;
+        limit = undefined;
+        limitedSincePause.clear();
+        continue;
+      }
       if (error instanceof UsageLimitPause && usageLimits) {
         if (++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
           throw new UsageLimitExhaustedError(error.runnerId, error);

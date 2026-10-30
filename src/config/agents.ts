@@ -59,7 +59,11 @@ const projectSchema = z.strictObject({
   reviewer: profileSchema.optional(),
 });
 const settingsSchema = z.strictObject({
-  defaults: z.strictObject({ implementer: profileSchema, reviewer: profileSchema }),
+  defaults: z.strictObject({
+    implementer: profileSchema,
+    reviewer: profileSchema,
+    reviewerFallback: profileSchema.optional(),
+  }),
   projects: z.array(projectSchema).max(200),
 });
 
@@ -67,6 +71,8 @@ export function parseAgentSettings(value: unknown): AgentSettings {
   const settings = settingsSchema.parse(value);
   const repos = new Set<string>();
   validateIndependence(settings.defaults);
+  if (settings.defaults.reviewerFallback?.agent === settings.defaults.reviewer.agent)
+    throw new Error("The reviewer fallback must use a different agent than the reviewer");
   for (const project of settings.projects) {
     if (repos.has(project.repo)) throw new Error(`Duplicate project: ${project.repo}`);
     repos.add(project.repo);
@@ -82,6 +88,15 @@ function validateIndependence(profiles: AgentProfiles): void {
   ) {
     throw new Error("Implementer and reviewer must use different agents or different models");
   }
+  const fallback = profiles.reviewerFallback;
+  if (
+    fallback &&
+    fallback.agent === profiles.implementer.agent &&
+    fallback.model === profiles.implementer.model
+  )
+    throw new Error(
+      "Implementer and reviewer fallback must use different agents or different models",
+    );
 }
 
 export function readAgentSettings(config: PawsConfigFile): AgentSettings {
@@ -99,9 +114,12 @@ export function readAgentSettings(config: PawsConfigFile): AgentSettings {
 export function resolveAgentProfiles(config: PawsConfigFile, repo?: string): AgentProfiles {
   const settings = readAgentSettings(config);
   const project = settings.projects.find((entry) => entry.repo === repo?.toLowerCase());
+  const reviewer = project?.reviewer ?? settings.defaults.reviewer;
+  const fallback = settings.defaults.reviewerFallback;
   return {
     implementer: project?.implementer ?? settings.defaults.implementer,
-    reviewer: project?.reviewer ?? settings.defaults.reviewer,
+    reviewer,
+    ...(fallback && fallback.agent !== reviewer.agent ? { reviewerFallback: fallback } : {}),
   };
 }
 
@@ -112,7 +130,11 @@ export function parseAgentSettingsToml(
   if (!/^\s*\[agents\.(defaults|projects)(?:[.\]])/m.test(text)) return null;
   const parsed = Bun.TOML.parse(text) as {
     agents?: {
-      defaults?: { implementer?: Partial<AgentProfile>; reviewer?: Partial<AgentProfile> };
+      defaults?: {
+        implementer?: Partial<AgentProfile>;
+        reviewer?: Partial<AgentProfile>;
+        reviewer_fallback?: Partial<AgentProfile>;
+      };
       projects?: Record<
         string,
         { implementer?: Partial<AgentProfile>; reviewer?: Partial<AgentProfile> }
@@ -124,6 +146,9 @@ export function parseAgentSettingsToml(
     defaults: {
       implementer: { model: null, ...(agents?.defaults?.implementer ?? { agent: implementer }) },
       reviewer: { model: null, ...(agents?.defaults?.reviewer ?? { agent: "codex" }) },
+      ...(agents?.defaults?.reviewer_fallback
+        ? { reviewerFallback: { model: null, ...agents.defaults.reviewer_fallback } }
+        : {}),
     },
     projects: Object.entries(agents?.projects ?? {}).map(([repo, profiles]) => ({
       repo,
@@ -149,6 +174,10 @@ export function renderAgentSettingsText(current: string, input: AgentSettings): 
     renderProfile("agents.defaults.implementer", settings.defaults.implementer),
     renderProfile("agents.defaults.reviewer", settings.defaults.reviewer),
   ];
+  if (settings.defaults.reviewerFallback)
+    sections.push(
+      renderProfile("agents.defaults.reviewer_fallback", settings.defaults.reviewerFallback),
+    );
   for (const project of settings.projects) {
     const prefix = `agents.projects.${JSON.stringify(project.repo)}`;
     if (!project.implementer && !project.reviewer) sections.push(`[${prefix}]`);

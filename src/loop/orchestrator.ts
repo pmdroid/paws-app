@@ -61,6 +61,7 @@ import {
   resolveAgentProfiles,
   resolveMergeSettings,
   type AgentProfile,
+  type AgentProfiles,
   type CheckoutExclusions,
 } from "../config";
 import {
@@ -7146,7 +7147,7 @@ export class Orchestrator {
   }
 
   private readProfileSnapshot(runId: string): {
-    profiles: { implementer: AgentProfile; reviewer: AgentProfile };
+    profiles: AgentProfiles;
     candidate?: AgentIdentity;
     settingsSwitch?: { id: string; previousAgent: AgentProfile["agent"] };
   } | null {
@@ -7219,7 +7220,7 @@ export class Orchestrator {
     );
   }
 
-  private profileSnapshot(runId: string): { implementer: AgentProfile; reviewer: AgentProfile } {
+  private profileSnapshot(runId: string): AgentProfiles {
     const saved = this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
@@ -7251,7 +7252,7 @@ export class Orchestrator {
   private async preflight(
     item: WorkItemRecord,
     runId: string,
-    profiles: { implementer: AgentProfile; reviewer: AgentProfile },
+    profiles: AgentProfiles,
     signal: AbortSignal,
     onRemoteEvent: (event: AcpEvent) => void,
   ): Promise<void> {
