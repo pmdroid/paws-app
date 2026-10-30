@@ -66,7 +66,9 @@ test("A Claude weekly limit names the day it resets on", () => {
   expect(
     quotaSignal("weekly limit reached · resets Jan 3, 9:15pm (Europe/Berlin)", night)?.resetsAt,
   ).toBe(Date.parse("2027-01-03T20:15:00Z"));
-  expect(quotaSignal("weekly limit reached · resets Feb 30, 4am (UTC)", night)?.resetsAt).toBeNull();
+  expect(
+    quotaSignal("weekly limit reached · resets Feb 30, 4am (UTC)", night)?.resetsAt,
+  ).toBeNull();
 });
 test("Quota warning remains usable and ordinary errors cannot invent provider limits", () => {
   expect(quotaSignal("10% remaining", now)).toEqual({
