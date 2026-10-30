@@ -98,13 +98,13 @@ test("a failed preparation releases its reservation and the next recovering item
       random: () => 0,
       lines,
       ready: (started, db) =>
-        started.size === 1 && listWorkItems(db).some((item) => item.state === "failed"),
+        started.size === 1 && listWorkItems(db).some((item) => item.state === "awaiting_input"),
       wrap(placement) {
         return {
           ...placement,
           started(input) {
             placement.started(input);
-            if (failPreparation && input.purpose === "work") {
+            if (failPreparation && input.purpose === "prepare") {
               failPreparation = false;
               throw new Error("preparation blew up");
             }
@@ -114,7 +114,7 @@ test("a failed preparation releases its reservation and the next recovering item
       async assert(started, db) {
         expect(started.size, lines.join("\n")).toBe(1);
         expect(lines.join("\n")).not.toContain("Waiting for a free slot");
-        const failed = listWorkItems(db).filter((item) => item.state === "failed");
+        const failed = listWorkItems(db).filter((item) => item.state === "awaiting_input");
         expect(failed.map((item) => item.linearIdentifier)).toHaveLength(1);
         expect(started.has(failed[0]!.linearIdentifier)).toBe(false);
       },
@@ -124,11 +124,25 @@ test("a failed preparation releases its reservation and the next recovering item
   }
 }, 60_000);
 
+test("reviewer preparation can use another runner before implementation takes its slot", async () => {
+  await runRecovering({
+    count: 1,
+    capacity: 1,
+    reviewerRunner: true,
+    clock: new FakeClock(Date.now()),
+    lines: [],
+    assert(started) {
+      expect(started.size).toBe(1);
+    },
+  });
+}, 60_000);
+
 async function runRecovering(input: {
   count: number;
   capacity: number;
   clock: Clock;
   lines: string[];
+  reviewerRunner?: boolean;
   maxAttempts?: number;
   placementPollMs?: number;
   random?: () => number;
@@ -214,15 +228,51 @@ async function runRecovering(input: {
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
 
+  let reviewerRunnerId = runnerId;
+  if (input.reviewerRunner) {
+    const reviewEnrollment = {
+      name: "reviewbox",
+      csr: (await createRunnerKey(join(root, "reviewbox"))).csr,
+    };
+    reviewerRunnerId = (
+      await control.enroll({
+        ...reviewEnrollment,
+        token: control.createEnrollment(owner, reviewEnrollment).token,
+      })
+    ).runnerId;
+    db.run("UPDATE runner SET status='active', last_seen_at=? WHERE id=?", [
+      Date.now(),
+      reviewerRunnerId,
+    ]);
+    db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [reviewerRunnerId]);
+  }
+  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [
+    reviewerRunnerId,
+  ]);
+
   const work = createRunnerWork({
     db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
   });
   work.heartbeat(runnerId, input.capacity);
+  work.heartbeat(reviewerRunnerId, input.capacity);
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
-  const placement = input.wrap?.(createRunnerPlacement({ db })) ?? createRunnerPlacement({ db });
+  const prepared = new Map<string, Set<string>>();
+  const basePlacement = createRunnerPlacement({ db });
+  const trackedPlacement: RunnerPlacement = {
+    ...basePlacement,
+    started(value) {
+      basePlacement.started(value);
+      if (value.purpose === "prepare" && value.itemId) {
+        const roles = prepared.get(value.itemId) ?? new Set<string>();
+        roles.add(value.role);
+        prepared.set(value.itemId, roles);
+      }
+    },
+  };
+  const placement = input.wrap?.(trackedPlacement) ?? trackedPlacement;
   const backend = createRemoteAgentRunner({
     db,
     work,
@@ -259,6 +309,18 @@ async function runRecovering(input: {
     tracker,
     repositories: [{ owner: "acme", repo: "fixture", remoteUrl: GITHUB_URL }],
     scheduling: () => ({}),
+    reviewRequirements: () => ({
+      ok: true,
+      items: [
+        {
+          id: "review",
+          gate: "beforePR",
+          independence: { differentSession: true, differentModel: false },
+          parallel: false,
+          failOn: "P1",
+        },
+      ],
+    }),
     placementPollMs: input.placementPollMs,
     random: input.random,
     journal: (line) => input.lines.push(line),
@@ -281,30 +343,33 @@ async function runRecovering(input: {
   const started = new Set<string>();
   const sim = { stopped: false };
   const handled = new Set<string>();
+  const runnerIds = [...new Set([runnerId, reviewerRunnerId])];
   const runner = (async () => {
     while (!sim.stopped) {
-      db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now(), runnerId]);
-      work.heartbeat(runnerId, input.capacity);
-      for (const envelope of work.commands(runnerId)) {
-        const command = JSON.parse(
-          Buffer.from(envelope.payload, "base64url").toString(),
-        ) as RunnerCommand;
-        if (handled.has(command.id)) continue;
-        handled.add(command.id);
-        work.acknowledge(runnerId, command.id);
-        if (command.type === "login_check")
-          health.submit(runnerId, {
-            ...receipt(command),
-            login: { agent: command.agent, authenticated: true, method: "subscription" },
-          });
-        if (command.type === "probe")
-          health.submit(runnerId, {
-            ...receipt(command),
-            models: [{ id: "fixture-implement-model", name: "Fixture" }],
-          });
-        if (command.type === "run") {
-          const item = listWorkItems(db).find((row) => row.currentRunId === command.runId);
-          if (item) started.add(item.linearIdentifier);
+      for (const simulatedRunnerId of runnerIds) {
+        db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now(), simulatedRunnerId]);
+        work.heartbeat(simulatedRunnerId, input.capacity);
+        for (const envelope of work.commands(simulatedRunnerId)) {
+          const command = JSON.parse(
+            Buffer.from(envelope.payload, "base64url").toString(),
+          ) as RunnerCommand;
+          if (handled.has(command.id)) continue;
+          handled.add(command.id);
+          work.acknowledge(simulatedRunnerId, command.id);
+          if (command.type === "login_check")
+            health.submit(simulatedRunnerId, {
+              ...receipt(command),
+              login: { agent: command.agent, authenticated: true, method: "subscription" },
+            });
+          if (command.type === "probe")
+            health.submit(simulatedRunnerId, {
+              ...receipt(command),
+              models: [{ id: "fixture-implement-model", name: "Fixture" }],
+            });
+          if (command.type === "run") {
+            const item = listWorkItems(db).find((row) => row.currentRunId === command.runId);
+            if (item) started.add(item.linearIdentifier);
+          }
         }
       }
       await Bun.sleep(5);
@@ -383,6 +448,8 @@ async function runRecovering(input: {
     if (input.clock instanceof FakeClock) {
       expect(parked(), detail).toBe(input.count - input.capacity);
     }
+    for (const item of listWorkItems(db).filter((row) => started.has(row.linearIdentifier)))
+      expect([...(prepared.get(item.id) ?? [])].sort()).toEqual(["implementer", "reviewer"]);
     await input.assert(started, db, backend);
   } finally {
     controller.abort();
