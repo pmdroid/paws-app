@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { briefTemplateProblem, defaultBriefTemplate } from "../core";
+import { briefTemplateProblem } from "../core";
 import { replaceConfigText } from "./agents";
 import type { PawsConfigFile } from "./file";
 
@@ -43,7 +43,6 @@ export function parseBriefTemplates(text: string): BriefTemplates {
 
 function templateText(value: unknown, where: string): string | null {
   if (typeof value !== "string") throw new Error(`${where}.template must be a string`);
-  if (value === defaultBriefTemplate()) return null;
   const problem = briefTemplateProblem(value);
   if (problem) throw new Error(problem);
   return value;
@@ -51,23 +50,21 @@ function templateText(value: unknown, where: string): string | null {
 
 /**
  * The template a repository uses. A repository override wins. Null means the built-in brief.
- * A stored copy of the built-in text is treated as unset.
  */
 export function resolveBriefTemplate(config: PawsConfigFile, repo?: string | null): string | null {
   const project = repo ? config.briefProjects?.[repo.toLowerCase()] : undefined;
-  if (project && project !== defaultBriefTemplate()) return project;
+  if (project !== undefined) return project;
   const workspace = config.briefTemplate;
-  if (workspace && workspace !== defaultBriefTemplate()) return workspace;
-  return null;
+  return workspace ?? null;
 }
 
 export function renderBriefTemplates(templates: BriefTemplates): string {
   const parts: string[] = [];
-  if (templates.template !== null && templates.template !== defaultBriefTemplate())
+  if (templates.template !== null)
     parts.push(`[brief]\ntemplate = ${tomlBasic(templates.template)}`);
   for (const repo of Object.keys(templates.projects).sort()) {
     const template = templates.projects[repo];
-    if (template === undefined || template === defaultBriefTemplate()) continue;
+    if (template === undefined) continue;
     parts.push(`[brief.projects.${JSON.stringify(repo)}]\ntemplate = ${tomlBasic(template)}`);
   }
   return parts.length ? `\n${parts.join("\n\n")}\n` : "";
@@ -105,20 +102,16 @@ function normalizeTemplates(templates: BriefTemplates): BriefTemplates {
   const projects: Record<string, string> = {};
   for (const [repo, template] of Object.entries(templates.projects)) {
     if (!REPO.test(repo)) throw new Error("brief.projects keys must be owner/repo");
-    if (template === defaultBriefTemplate()) continue;
     const problem = briefTemplateProblem(template);
     if (problem) throw new Error(problem);
     projects[repo.toLowerCase()] = template;
   }
-  if (templates.template !== null && templates.template !== defaultBriefTemplate()) {
+  if (templates.template !== null) {
     const problem = briefTemplateProblem(templates.template);
     if (problem) throw new Error(problem);
   }
   return {
-    template:
-      templates.template === null || templates.template === defaultBriefTemplate()
-        ? null
-        : templates.template,
+    template: templates.template,
     projects,
   };
 }

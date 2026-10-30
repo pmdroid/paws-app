@@ -67,7 +67,6 @@ function projectOverview(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (!isRecord(value)) throw new Error("Linear returned an invalid project.");
   const name = readString(value, "name");
-  if (name === null) return "";
-  const content = value["content"];
-  return `Project overview: ${name}\n\n${typeof content === "string" ? content : ""}`;
+  const content = readString(value, "content");
+  return name && content?.trim() ? `Project overview: ${name}\n\n${content}` : "";
 }

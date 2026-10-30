@@ -58,6 +58,11 @@ describe("brief templates", () => {
       writeBriefTemplates(path, { template: "Second", projects: { "a/b": "Override" } });
       expect(resolveBriefTemplate(loadConfigFile(path), "a/b")).toBe("Override");
       expect(resolveBriefTemplate(loadConfigFile(path), "a/c")).toBe("Second");
+      writeBriefTemplates(path, {
+        template: "Second",
+        projects: { "a/b": defaultBriefTemplate() },
+      });
+      expect(resolveBriefTemplate(loadConfigFile(path), "a/b")).toBe(defaultBriefTemplate());
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -65,7 +70,24 @@ describe("brief templates", () => {
   test("preview uses the Linear fake and rejects unknown placeholders", async () => {
     const dir = mkdtempSync(join(tmpdir(), "brief-api-"));
     try {
-      const fake = createFakeTracker();
+      const fake = createFakeTracker([
+        {
+          linearIssueId: "parent",
+          identifier: "PAS-2",
+          title: "Parent",
+          description: "Parent context",
+          subIssues: [
+            {
+              linearIssueId: "child",
+              identifier: "PAS-1",
+              title: "Child",
+              description: "Issue {{conversation}}",
+            },
+          ],
+        },
+      ]);
+      fake.briefParents.set("child", "parent");
+      fake.projectOverviews.set("child", { name: "Project", content: "Project context" });
       const options = {
         configPath: join(dir, "config.toml"),
         csrfToken: "token",
@@ -88,16 +110,78 @@ describe("brief templates", () => {
       );
       expect(invalid?.status).toBe(400);
       expect(await invalid?.text()).toContain("bad");
-      const missing = await handleBriefSettingsRequest(
+      const preview = await handleBriefSettingsRequest(
         request("/api/settings/brief/preview", {
-          template: "{{issue.title}}",
+          template:
+            "{{issue.description}}\n\n{{parent}}\n\n{{project_overview}}\n\n{{user_updates}}",
           repository: "a/b",
           identifier: "PAS-1",
         }),
         options,
       );
+      expect(preview?.status).toBe(200);
+      const result = (await preview!.json()) as {
+        text: string;
+        total: number;
+        sections: { name: string; characters: number }[];
+      };
+      expect(result.text).toContain("Issue {{conversation}}");
+      expect(result.text).toContain("Delegation context: PAS-2: Parent");
+      expect(result.text).toContain("Project overview: Project\n\nProject context");
+      expect(result.text).toContain("[Sample] User update:");
+      expect(result.total).toBe(result.text.length);
+      expect(
+        result.sections.find((section) => section.name === "parent")?.characters,
+      ).toBeGreaterThan(0);
+      const missing = await handleBriefSettingsRequest(
+        request("/api/settings/brief/preview", {
+          template: "{{issue.title}}",
+          repository: "a/b",
+          identifier: "PAS-3",
+        }),
+        options,
+      );
       expect(missing?.status).toBe(404);
-      expect(fake.briefReads).toEqual(["PAS-1"]);
+      expect(fake.briefReads).toEqual(["PAS-1", "PAS-3"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  test("save and reset templates with origin, CSRF and audit guards", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "brief-settings-"));
+    try {
+      const audit: string[] = [];
+      const options = {
+        configPath: join(dir, "config.toml"),
+        csrfToken: "token",
+        repos: ["a/b"],
+        audit: (action: string, subject: string) => audit.push(`${action}: ${subject}`),
+      };
+      const put = (body: unknown, token = "token", origin = "http://localhost") =>
+        handleBriefSettingsRequest(
+          new Request("http://localhost/api/settings/brief", {
+            method: "PUT",
+            headers: { origin, "x-paws-csrf": token, "content-type": "application/json" },
+            body: JSON.stringify(body),
+          }),
+          options,
+        );
+      expect((await put({ template: "Workspace" }, "wrong"))?.status).toBe(403);
+      expect((await put({ template: "Workspace" }, "token", "https://evil.example"))?.status).toBe(
+        403,
+      );
+      expect((await put({ template: "{{unknown}}" }))?.status).toBe(400);
+      expect((await put({ template: "" }))?.status).toBe(400);
+      expect((await put({ template: "Workspace" }))?.status).toBe(200);
+      expect((await put({ repo: "a/b", template: defaultBriefTemplate() }))?.status).toBe(200);
+      expect(resolveBriefTemplate(loadConfigFile(options.configPath), "a/b")).toBe(
+        defaultBriefTemplate(),
+      );
+      expect((await put({ repo: "a/b", template: null }))?.status).toBe(200);
+      expect(resolveBriefTemplate(loadConfigFile(options.configPath), "a/b")).toBe("Workspace");
+      expect((await put({ template: null }))?.status).toBe(200);
+      expect(resolveBriefTemplate(loadConfigFile(options.configPath), "a/b")).toBeNull();
+      expect(audit).toHaveLength(4);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

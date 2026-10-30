@@ -192,9 +192,10 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
       return {
         issue: briefIssueFromSnapshot(found),
         parent: parent === undefined ? null : briefIssueFromSnapshot(parent),
-        projectOverview: overview
-          ? `Project overview: ${overview.name}\n\n${overview.content}`
-          : "",
+        projectOverview:
+          overview?.name && overview.content.trim()
+            ? `Project overview: ${overview.name}\n\n${overview.content}`
+            : "",
       };
     },
     deps,

@@ -76,7 +76,7 @@ async function putBrief(request: Request, options: BriefSettingsOptions): Promis
     return json({ error: "Repository must look like owner/repo." }, 400);
   if (body.template !== null && typeof body.template !== "string")
     return json({ error: "The brief template must be text, or null to reset it." }, 400);
-  const template = body.template === null ? null : normalizeTemplate(body.template as string);
+  const template = body.template as string | null;
   if (typeof template === "string") {
     const problem = briefTemplateProblem(template);
     if (problem) return json({ error: problem }, 400);
@@ -157,10 +157,6 @@ async function previewBrief(request: Request, options: BriefSettingsOptions): Pr
     sections: briefSectionSizes(body.template, values),
     samples: BRIEF_RUN_SAMPLES,
   });
-}
-
-function normalizeTemplate(template: string): string | null {
-  return template === defaultBriefTemplate() ? null : template;
 }
 
 function stored(path: string): BriefTemplates {
