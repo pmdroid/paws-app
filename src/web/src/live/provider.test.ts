@@ -1316,6 +1316,14 @@ describe("live status provider", () => {
     ]);
     eligible = false;
     expect((await live.item(item.id))?.risk?.automaticPass).toBeNull();
+    const failing = createLiveStatusProvider(db, {
+      automaticRisk: async () => {
+        throw new Error("temporary Git failure");
+      },
+    });
+    expect((await failing.item(item.id))?.risk?.tier).toBe("high");
+    expect((await failing.item(item.id))?.risk?.automaticPass).toBeNull();
+
     saveCandidateRisk(db, {
       itemId: item.id,
       head: "e".repeat(40),

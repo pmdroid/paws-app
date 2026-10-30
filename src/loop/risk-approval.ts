@@ -5,13 +5,10 @@ import {
   applyLinearCommand,
   applyWorkItemEvent,
   deleteRiskFix,
-  closeLinkAsk,
   enqueueJobOnce,
   enqueueOutboxOnce,
-  immediate,
   getCandidateRisk,
   listReviewFindings,
-  reviewFindingItems,
   listCloseoutProgress,
   getRiskFix,
   getWorkItem,
@@ -26,7 +23,7 @@ import {
 } from "../db";
 import { journalCaught } from "../journal";
 import type { RiskApproval } from "../merge";
-import { cancelQuestion, removeLinkAskUrl, shortCommit } from "../questions";
+import { shortCommit } from "../questions";
 import { askWithLink, closeLinkAsksOnHead, linkAskAvailable } from "./link-ask";
 
 /** Why Settings › Merging shows the risk gate as off on a Paws without an https dashboard link. */
@@ -63,31 +60,47 @@ export type FixRisk = { changed: string[]; paths: string[] };
  * comparison is recorded for S either way: it names the approved head and why the approval
  * carried over, or the high-risk paths the next ask lists.
  */
-export async function riskApprovalFor(
+type RiskInput = {
+  itemId: string;
+  head: string;
+  publicUrl: string | null | undefined;
+  /** Whether `approved` carries the same patch as S against `base`. */
+  samePatch: (approved: string, base: string) => Promise<boolean>;
+  /** What the fix from `approved` to S changed, against main's `base`. Null when unreadable. */
+  fixRisk?: (approved: string, base: string) => Promise<FixRisk | null>;
+  automatic?: AutomaticRiskChecks;
+  now?: number;
+};
+
+/** Merge reads retain the existing manual fix comparison for the next question. */
+export async function riskApprovalFor(db: Database, input: RiskInput): Promise<RiskApproval> {
+  const result = await riskEligibilityFor(db, input);
+  if (result.fix === null) deleteRiskFix(db, input.itemId, input.head);
+  else if (result.fix !== undefined) saveRiskFix(db, result.fix);
+  return result.approval;
+}
+
+/** Shared, side-effect-free precedence for the merge lane and the Risk card. */
+export async function riskEligibilityFor(
   db: Database,
-  input: {
-    itemId: string;
-    head: string;
-    publicUrl: string | null | undefined;
-    /** Whether `approved` carries the same patch as S against `base`. */
-    samePatch: (approved: string, base: string) => Promise<boolean>;
-    /** What the fix from `approved` to S changed, against main's `base`. Null when unreadable. */
-    fixRisk?: (approved: string, base: string) => Promise<FixRisk | null>;
-    automatic?: AutomaticRiskChecks;
-    now?: number;
-  },
-): Promise<RiskApproval> {
-  if (!riskGateOn(input.publicUrl)) return "not_required";
+  input: RiskInput,
+): Promise<{
+  approval: RiskApproval;
+  evidence?: string[];
+  fix?: RiskFix | null;
+}> {
+  if (!riskGateOn(input.publicUrl)) return { approval: "not_required" };
   const risk = getCandidateRisk(db, input.itemId, input.head);
-  if (risk?.tier === "normal") return "not_required";
+  if (risk?.tier === "normal") return { approval: "not_required" };
   const approvals = riskApprovals(db, input.itemId);
-  if (approvals.some((ask) => ask.headCommit === input.head)) return "approved";
-  if (risk === null) return "missing";
+  if (approvals.some((ask) => ask.headCommit === input.head)) return { approval: "approved" };
+  if (risk === null) return { approval: "missing" };
   for (const ask of approvals.toReversed())
-    if (await input.samePatch(ask.headCommit, risk.base)) return "approved";
+    if (await input.samePatch(ask.headCommit, risk.base)) return { approval: "approved" };
+  let fix: RiskFix | null | undefined;
   const latest = approvals.at(-1);
   if (latest !== undefined && input.fixRisk !== undefined) {
-    const fix = await fixSinceApproval(db, {
+    fix = await fixSinceApproval({
       itemId: input.itemId,
       head: input.head,
       approved: latest,
@@ -95,39 +108,18 @@ export async function riskApprovalFor(
       fixRisk: input.fixRisk,
       now: input.now ?? Date.now(),
     });
-    if (fix !== null && fix.paths.length === 0) return "approved";
+    if (fix !== null && fix.paths.length === 0) return { approval: "approved", fix };
   }
-  if (risk?.tier === "high" && automaticEnabled(input.automatic, input.itemId)) {
-    const evidenceIds = await automaticRiskEvidence(db, risk, input.automatic);
-    if (evidenceIds !== null) {
-      const now = input.now ?? Date.now();
-      immediate(db, () => {
-        const item = getWorkItem(db, input.itemId);
-        const pending = openRiskAsk(db, input.itemId);
-        if (pending?.headCommit === input.head) {
-          if (item !== null) approveRisk(db, pending, item, now);
-          closeLinkAsk(db, pending.questionId, {
-            reason: "cancelled",
-            note: "Passes automatically: both reviews clean",
-            now,
-          });
-          cancelQuestion(db, pending.questionId, now);
-          removeLinkAskUrl(db, pending.questionId, now);
-        }
-        if (item?.sessionKey)
-          postRiskActivity(db, {
-            sessionId: item.sessionKey,
-            item,
-            kind: "response",
-            body: `Passes automatically: both reviews clean. Commit ${shortCommit(input.head)} joins the merge queue.`,
-            key: `automatic:${input.itemId}:${input.head}`,
-            now,
-          });
-      });
-      return "automatic";
+  // Once a question is open its human decision owns the item. A background read must not
+  // answer it, start verification, or let a stale merge job continue in parallel.
+  if (openRiskAsk(db, input.itemId)) return { approval: "missing", fix };
+  if (risk.tier === "high" && input.automatic !== undefined) {
+    const evidence = await automaticRiskEvidence(db, risk, input.automatic);
+    if (evidence) {
+      return { approval: "automatic", evidence, fix };
     }
   }
-  return "missing";
+  return { approval: "missing", fix };
 }
 
 /** Inputs read from the candidate checkout and Closeout's structured evidence store. */
@@ -223,18 +215,9 @@ export async function automaticRiskEvidence(
     const policyPaths = await checks.policyPaths(run.policyDigest);
     if (policyPaths === null || changed.some((path) => policyPaths.includes(path))) return null;
     // Findings can be added or reopened after the accepted review completed.
-    const open = listReviewFindings(db, { status: "open" }).filter(
-      (finding) => finding.severity !== "P3",
-    );
-    const reported = reviewFindingItems(
-      db,
-      open.map((finding) => finding.id),
-    );
     if (
-      open.some((finding) =>
-        reported
-          .get(finding.id)
-          ?.some((item) => item.itemId === risk.itemId && item.head === risk.head),
+      listReviewFindings(db, { status: "open", itemId: risk.itemId, head: risk.head }).some(
+        (finding) => finding.severity !== "P3",
       )
     )
       return null;
@@ -253,24 +236,20 @@ export async function automaticRiskEvidence(
 }
 
 /**
- * Compares S with the approved ask and records the result. It runs on every read: the high-risk
+ * Compares S with the approved ask without writing. It runs on every read: the high-risk
  * paths come from Settings and `.paws/high-risk-paths`, which can change before S merges, so a
  * stored comparison is never trusted. A fix Paws cannot read drops any earlier record of S.
  */
-async function fixSinceApproval(
-  db: Database,
-  input: {
-    itemId: string;
-    head: string;
-    approved: LinkAsk;
-    base: string;
-    fixRisk: (approved: string, base: string) => Promise<FixRisk | null>;
-    now: number;
-  },
-): Promise<RiskFix | null> {
+async function fixSinceApproval(input: {
+  itemId: string;
+  head: string;
+  approved: LinkAsk;
+  base: string;
+  fixRisk: (approved: string, base: string) => Promise<FixRisk | null>;
+  now: number;
+}): Promise<RiskFix | null> {
   const fix = await input.fixRisk(input.approved.headCommit, input.base);
   if (fix === null) {
-    deleteRiskFix(db, input.itemId, input.head);
     return null;
   }
   const row: RiskFix = {
@@ -282,7 +261,6 @@ async function fixSinceApproval(
     paths: [...fix.paths].sort(),
     recordedAt: input.now,
   };
-  saveRiskFix(db, row);
   return row;
 }
 

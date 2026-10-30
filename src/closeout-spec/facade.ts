@@ -530,13 +530,13 @@ export type PolicyDigests = { digest: string; recheck: string };
  * Uses the same exclusion-aware loader as `decision`. Local/home inputs outside the repository
  * cannot be edited by its candidate; inputs inside it are mapped from their policy root.
  */
-export function candidatePolicyInputs(
+export async function candidatePolicyInputs(
   repo: string,
   home?: string,
   policyRoot?: string,
   checkoutExclusions: readonly string[] = [],
-): { digest: string; paths: string[] } | null {
-  const loaded = loadOrigin(repo, home, policyRoot, checkoutExclusions);
+): Promise<{ digest: string; paths: string[] } | null> {
+  const loaded = await loadOriginAsync(repo, home, policyRoot, checkoutExclusions);
   if (!loaded.ok) return null;
   const policy = loaded.policy;
   if (policy.source === "none") return { digest: "", paths: [] };
@@ -996,15 +996,46 @@ async function resolvePair(
   return { ok: true, base, head };
 }
 
+/** Network reads must not block Paws's HTTP server or scheduler. Local object reads keep
+ * the existing bounded policy parser and its import, skill and home-fallback rules. */
+async function loadOriginAsync(
+  repo: string,
+  home: string | undefined,
+  policyRoot: string | undefined,
+  exclusions: readonly string[],
+): Promise<ReturnType<typeof loadPolicy>> {
+  if (policyRoot !== undefined) return loadOrigin(repo, home, policyRoot, exclusions);
+  const env = scrubCommandEnv(process.env);
+  const fetched = await git(repo, ["fetch", "--no-tags", "origin", "refs/heads/main"], env);
+  const head = fetched.ok
+    ? await git(repo, ["rev-parse", "--verify", "--end-of-options", "FETCH_HEAD^{commit}"], env)
+    : fetched;
+  const listed = head.ok
+    ? await git(repo, ["ls-remote", "--exit-code", "origin", "refs/heads/main"], env)
+    : head;
+  return loadOrigin(repo, home, policyRoot, exclusions, {
+    ...gitReader,
+    fetchOriginMain: () =>
+      head.ok
+        ? { ok: true, commit: head.stdout.toString("utf8").trim().toLowerCase() }
+        : { ok: false, stderr: head.stderr },
+    lsRemoteOriginMain: () =>
+      listed.ok
+        ? { ok: true, stdout: listed.stdout.toString("utf8") }
+        : { ok: false, stderr: listed.stderr },
+  });
+}
+
 function loadOrigin(
   repo: string,
   home: string | undefined,
   policyRoot?: string,
   checkoutExclusions: readonly string[] = [],
+  reader: GitReader = gitReader,
 ): ReturnType<typeof loadPolicy> {
   const loaded = loadPolicy({
     repo,
-    git: gitReader,
+    git: reader,
     ...(home !== undefined ? { home } : {}),
     ...(policyRoot !== undefined ? { policyRoot } : {}),
   });

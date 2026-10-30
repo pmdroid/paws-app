@@ -503,7 +503,8 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     });
     expect(queue.isQueued(1)).toBe(true);
     clean = false;
-    expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
+    // Recovery can create a fresh job without the earlier GitHub queue marker.
+    expect(await h.pass("ENG-1", { itemId: "ENG-1" })).toEqual({ kind: "asked" });
     expect(queue.calls).toContain("dequeue");
     expect(queue.isQueued(1)).toBe(false);
     expect(h.github.merged).toEqual([]);
@@ -515,10 +516,25 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     h.state.risk = () => (clean ? "automatic" : "missing");
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait" });
     queue.merge(1, "queue-merge-sha");
+    h.state.handMerged.set(1, "queue-merge-sha");
     clean = false;
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.state.riskAsked).toEqual([]);
     expect(getConfirmedRemoteMerge(h.db, "ENG-1")?.mergeSha).toBe("queue-merge-sha");
+  });
+
+  test("a merge racing risk revocation completes even after settings change to serial", async () => {
+    const { h, queue } = await githubQueue();
+    await h.pass("ENG-1");
+    h.state.orders.set("ENG-1", "queue");
+    h.state.risk = () => {
+      queue.merge(1, "race-merge-sha");
+      h.state.handMerged.set(1, "race-merge-sha");
+      return "missing";
+    };
+    expect(await h.pass("ENG-1", { itemId: "ENG-1" })).toEqual({ kind: "merged" });
+    expect(h.state.riskAsked).toEqual([]);
+    expect(getConfirmedRemoteMerge(h.db, "ENG-1")?.mergeSha).toBe("race-merge-sha");
   });
 
   test("a high-risk pull request that was never queued is asked without a dequeue", async () => {

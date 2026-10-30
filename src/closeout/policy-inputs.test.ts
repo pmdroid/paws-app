@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { candidatePolicyInputs, trustedPolicyFiles } from "./index";
@@ -58,7 +58,7 @@ test("automatic approval policy inputs match the decision digest with checkout e
     checkoutExclusions: exclusions,
   });
   expect(accepted.decision).toBe("accepted");
-  const inputs = candidatePolicyInputs(repo, home, undefined, exclusions);
+  const inputs = await candidatePolicyInputs(repo, home, undefined, exclusions);
   expect(inputs?.digest).toBe(accepted.policy.digest!);
   const plain = trustedPolicyFiles(repo, home);
   if (!plain.ok || plain.absent) throw new Error("policy missing");
@@ -66,23 +66,23 @@ test("automatic approval policy inputs match the decision digest with checkout e
   expect(inputs?.paths).toContain("review/extra.yaml");
 });
 
-test("local policy paths inside the repository include their policy-root prefix", () => {
+test("local policy paths inside the repository include their policy-root prefix", async () => {
   const { repo, home } = fixture();
   const local = join(repo, "rules");
   policy(local);
-  expect(candidatePolicyInputs(repo, home, local)?.paths).toEqual([
+  expect((await candidatePolicyInputs(repo, home, local))?.paths).toEqual([
     "rules/.agents/closeout.yaml",
     "rules/review/extra.yaml",
   ]);
 });
 
-test("external home policies do not confuse home-relative keys with repository paths", () => {
+test("external home policies do not confuse home-relative keys with repository paths", async () => {
   const { repo, home } = fixture(false);
   policy(home);
-  expect(candidatePolicyInputs(repo, home)?.paths).toEqual([]);
+  expect((await candidatePolicyInputs(repo, home))?.paths).toEqual([]);
 });
 
-test("a home policy that references inputs inside the repository maps those inputs back to the diff", () => {
+test("a home policy that references inputs inside the repository maps those inputs back to the diff", async () => {
   const { repo, root } = fixture(false);
   write(
     root,
@@ -90,5 +90,20 @@ test("a home policy that references inputs inside the repository maps those inpu
     'specVersion: "0.1"\nimports:\n  - path: repo/review/extra.yaml\n    as: extra\nitems: []\n',
   );
   write(repo, "review/extra.yaml", 'specVersion: "0.1"\nitems: []\n');
-  expect(candidatePolicyInputs(repo, root)?.paths).toEqual(["review/extra.yaml"]);
+  expect((await candidatePolicyInputs(repo, root))?.paths).toEqual(["review/extra.yaml"]);
+});
+
+test("a slow origin policy read leaves the event loop available", async () => {
+  const { repo, home, root } = fixture();
+  const upload = join(root, "slow-upload-pack");
+  writeFileSync(upload, '#!/bin/sh\nsleep 0.3\nexec git-upload-pack "$@"\n');
+  chmodSync(upload, 0o700);
+  execFileSync("git", ["-C", repo, "config", "remote.origin.uploadpack", upload]);
+  let finished = false;
+  const pending = candidatePolicyInputs(repo, home).finally(() => {
+    finished = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(finished).toBe(false);
+  expect((await pending)?.paths).toContain(".agents/closeout.yaml");
 });

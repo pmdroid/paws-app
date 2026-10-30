@@ -34,7 +34,13 @@ import { deliverLinearOutbox } from "./dispatch";
 import { decideLinkAsk, guideLinkAsk } from "./link-ask";
 import { mergeable } from "../merge";
 import { classifyPathsRisk } from "./candidate-risk";
-import { askRiskApproval, riskApprovalFor, RISK_REPLY_NOTE, riskApprovals } from "./risk-approval";
+import {
+  askRiskApproval,
+  riskApprovalFor,
+  riskEligibilityFor,
+  RISK_REPLY_NOTE,
+  riskApprovals,
+} from "./risk-approval";
 
 const NOW = 1_700_000_000_000;
 const PUBLIC_URL = "https://paws.example/";
@@ -737,7 +743,7 @@ function automatic(
   });
 }
 
-test("clean reviews pass the head with evidence, no question and one Linear activity", async () => {
+test("clean review eligibility is read-only and posts no activity", async () => {
   const { db, itemId } = held();
   try {
     cleanReviews(db);
@@ -746,20 +752,9 @@ test("clean reviews pass the head with evidence, no question and one Linear acti
     expect(findOpenQuestion(db, "ses_1")).toBeNull();
     expectNoAutomaticApproval(db);
     expect(await automatic(db)).toBe("automatic");
-    const tracker = createFakeTracker();
-    for (const row of listOutbox(db))
-      if (row.op === "activity")
-        await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
     expect(
-      tracker.progress.filter((activity) =>
-        activity.body.includes("Passes automatically: both reviews clean"),
-      ),
-    ).toHaveLength(1);
-    expect(
-      activities(db).filter((activity) =>
-        activity.body.includes("Passes automatically: both reviews clean"),
-      ),
-    ).toHaveLength(1);
+      activities(db).filter((activity) => activity.body.includes("Passes automatically")),
+    ).toHaveLength(0);
   } finally {
     db.close();
   }
@@ -970,18 +965,16 @@ for (const patchMatches of [true, false])
     }
   });
 
-test("automatic eligibility closes a pending risk ask and resumes verification", async () => {
+test("an open risk question keeps human ownership when reviews later become clean", async () => {
   const { db, itemId } = asked();
   try {
     const question = findOpenQuestion(db, "ses_1")!;
     cleanReviews(db);
-    expect(await automatic(db)).toBe("automatic");
-    expect(findOpenQuestion(db, "ses_1")).toBeNull();
-    expect(getLinkAsk(db, question.id)?.closedReason).toBe("cancelled");
+    expect(await automatic(db)).toBe("missing");
+    expect(findOpenQuestion(db, "ses_1")?.id).toBe(question.id);
     expect(getLinkAsk(db, question.id)?.decidedBy).toBeNull();
-    expect(getWorkItem(db, itemId)?.state).toBe("verifying");
-    expect(await automatic(db)).toBe("automatic");
-    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toHaveLength(1);
+    expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toHaveLength(0);
   } finally {
     db.close();
   }
@@ -1039,3 +1032,24 @@ function expectNoAutomaticApproval(db: import("bun:sqlite").Database): void {
       .get(),
   ).toBeNull();
 }
+
+test("status uses manual carry-over precedence without saving a fix comparison", async () => {
+  const { db, itemId } = riskApproved();
+  try {
+    fixAccepted(db, heads.ciFix, heads.base);
+    expect(
+      (
+        await riskEligibilityFor(db, {
+          itemId,
+          head: heads.ciFix,
+          publicUrl: PUBLIC_URL,
+          samePatch: async () => false,
+          fixRisk: async () => ({ changed: ["test/x.test.ts"], paths: [] }),
+        })
+      ).approval,
+    ).toBe("approved");
+    expect(getRiskFix(db, itemId, heads.ciFix)).toBeNull();
+  } finally {
+    db.close();
+  }
+});

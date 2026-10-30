@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { getWorkItem, mergeQueuePosition } from "../db";
+import { applyWorkItemEvent, getWorkItem, mergeQueuePosition } from "../db";
 import { mergeHarness, type MergeHarness } from "./advance-harness";
 import { mergeable, type MergeFacts } from "./mergeable";
 
@@ -139,4 +139,16 @@ test("clean high-risk reviews let the current head merge without asking", async 
   expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
   expect(h.state.riskAsked).toEqual([]);
   expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
+});
+
+test("a stale merge job never advances an item owned by an open question", async () => {
+  const h = (harness = await mergeHarness());
+  await h.addItem("ENG-1");
+  applyWorkItemEvent(h.db, "ENG-1", "blocking_question");
+  h.state.risk = () => {
+    throw new Error("must not evaluate or resume a held item");
+  };
+  expect(await h.pass("ENG-1")).toEqual({ kind: "obsolete" });
+  expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
+  expect(h.github.merged).toEqual([]);
 });

@@ -456,8 +456,8 @@ import {
   askRiskApproval,
   postRiskActivity,
   riskApprovalFor,
-  riskApprovals,
-  automaticRiskEvidence,
+  riskGateOn,
+  riskEligibilityFor,
   type AutomaticRiskChecks,
   type FixRisk,
   RISK_ANSWERERS,
@@ -4050,6 +4050,9 @@ export class Orchestrator {
     });
   }
 
+  // Commit-to-commit file lists are immutable. Cache these, never eligibility or policy.
+  private readonly riskChangedPaths = new Map<string, string[]>();
+
   private automaticRiskChecks(
     item: WorkItemRecord,
     worktree: string,
@@ -4061,7 +4064,7 @@ export class Orchestrator {
           .autoApproveHighRisk,
       policyPaths: async (digest) => {
         const { home, policyRoot } = this.closeoutHome(item);
-        const policy = candidatePolicyInputs(
+        const policy = await candidatePolicyInputs(
           worktree,
           home,
           policyRoot,
@@ -4072,11 +4075,17 @@ export class Orchestrator {
       changedPaths: async (base) => {
         // Status reads this. Validate commit ids before passing them as Git revisions.
         if (!gitRevision(base) || !gitRevision(head)) throw new Error("risk diff needs commit ids");
+        const key = JSON.stringify([worktree, base, head]);
+        const cached = this.riskChangedPaths.get(key);
+        if (cached) return cached;
         const names = await git(
           ["-C", worktree, "diff", "--name-only", "--no-renames", "-z", base, head, "--"],
           { env: minimalAgentEnv() },
         );
-        return names.split("\0").filter(Boolean);
+        const paths = names.split("\0").filter(Boolean);
+        if (this.riskChangedPaths.size >= 128) this.riskChangedPaths.clear();
+        this.riskChangedPaths.set(key, paths);
+        return paths;
       },
       reviews: (taskId, reviewedHead, scope) =>
         reviewRecordsAt(taskId, reviewedHead, this.options.pawsRoot, scope),
@@ -4091,30 +4100,33 @@ export class Orchestrator {
       !item ||
       item.checkpoint?.wipCommit !== head ||
       risk?.tier !== "high" ||
-      !this.options.publicUrl?.startsWith("https://")
+      !riskGateOn(this.options.publicUrl)
     )
       return null;
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
-    const approvals = riskApprovals(this.db, itemId);
-    for (const approved of approvals.toReversed())
-      if (
-        approved.headCommit === head ||
-        (await samePatch(worktree, approved.headCommit, head, risk.base))
-      )
-        return null;
-    const latest = approvals.at(-1);
-    if (latest) {
-      const repository = this.repositoryForItem(item);
-      if (!repository) return null;
-      const fix = await this.fixRisk(
-        item,
-        { worktree, head, repository, signal: new AbortController().signal },
-        latest.headCommit,
-        risk.base,
-      );
-      if (fix?.paths.length === 0) return null;
-    }
-    return automaticRiskEvidence(this.db, risk, this.automaticRiskChecks(item, worktree, head));
+    const automatic = this.automaticRiskChecks(item, worktree, head);
+    const eligibility = await riskEligibilityFor(this.db, {
+      itemId,
+      head,
+      publicUrl: this.options.publicUrl,
+      samePatch: (approved, base) => samePatch(worktree, approved, head, base),
+      fixRisk: async (approved, base) => {
+        const repository = this.repositoryForItem(item);
+        return repository
+          ? this.fixRisk(
+              item,
+              { worktree, head, repository, signal: new AbortController().signal },
+              approved,
+              base,
+            )
+          : null;
+      },
+      automatic,
+    }).catch((error: unknown) => {
+      journalCaught(error, "orchestrator.automaticRiskStatus", itemId);
+      return { approval: "missing" as const, evidence: undefined };
+    });
+    return eligibility.approval === "automatic" ? (eligibility.evidence ?? null) : null;
   }
 
   private async merge(payload: unknown, jobId: number): Promise<MergeStep> {
@@ -4373,10 +4385,11 @@ export class Orchestrator {
       now: this.now(),
     });
     await this.postReviewReplies(item, github, repository, published.pull.number, published.head);
+    const automaticPass = await this.automaticRiskStatus(item.id, published.head);
     this.post(
       item,
       "response",
-      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.\n\n${riskLine(risk)}${openLine ? `\n\n${openLine}` : ""}`,
+      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.\n\n${riskLine(risk)}${automaticPass ? "\nPasses automatically: both reviews clean" : ""}${openLine ? `\n\n${openLine}` : ""}`,
       `pull-request-ready:${item.id}:${item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0}`,
       {},
       "ordered",
@@ -7382,7 +7395,6 @@ export class Orchestrator {
         pawsRoot: this.options.pawsRoot,
         ...(this.options.home ? { home: this.options.home } : {}),
         prepareOnly: true,
-        readOnly: true,
         checkpoint: false,
         prompt: "",
         signal,

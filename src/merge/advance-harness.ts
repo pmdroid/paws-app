@@ -175,6 +175,26 @@ export async function mergeHarness(
       if (queued) return queued;
       if (req.path.endsWith("/actions/jobs/77/logs")) return { status: 200, body: `${LOG_TAIL}\n` };
       if (req.path === "/graphql") {
+        if ((req.body as { query?: string }).query?.includes("query MergeQueueEntry")) {
+          return {
+            status: 200,
+            body: {
+              data: {
+                repository: {
+                  pullRequest: {
+                    id: "PR_test",
+                    state: "OPEN",
+                    headRefOid: "a".repeat(40),
+                    baseRefName: "main",
+                    mergeCommit: null,
+                    mergeQueueEntry: null,
+                    timelineItems: { nodes: [] },
+                  },
+                },
+              },
+            },
+          };
+        }
         const variables = (req.body as { variables: { number: number; head?: string } }).variables;
         if (variables.head === undefined)
           return {

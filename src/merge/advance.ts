@@ -58,7 +58,7 @@ import {
   type MergeStep,
   type SerialMergeStep,
 } from "./step";
-import { githubQueueWatch, wakeMergesBehind } from "./wait";
+import { wakeMergesBehind } from "./wait";
 
 export type MergePublication = MergePull & {
   github: GitHubBinding & { gitExec: GitExec };
@@ -111,6 +111,7 @@ export async function advanceMerge(
   const item = getWorkItem(db, input.itemId);
   if (
     item === null ||
+    item.state === "awaiting_input" ||
     item.state === "cancelled" ||
     item.state === "merged" ||
     item.state === "completed"
@@ -137,16 +138,11 @@ export async function advanceMerge(
   // A high-risk head waits for a person in Paws before it joins any merge queue.
   const riskApproval = await caps.riskApproval(item, published);
   if (caps.stopped()) return { kind: "obsolete" };
-  if (riskApproval === "missing") return releaseMissingRisk(merge, caps, input.payload, published);
+  if (riskApproval === "missing") return releaseMissingRisk(merge, caps, published);
   const { repository, github, pull } = published;
   const { voice } = caps;
   const mergeSettings = await caps.settings(item, published.signal);
   if (mergeSettings.order === "github-queue") {
-    // The serial lane rechecks inside its facts callback. This order returns before that, so
-    // read eligibility again here. A revoked automatic pass must leave GitHub's queue first.
-    const again = await caps.riskApproval(item, published);
-    if (caps.stopped()) return { kind: "obsolete" };
-    if (again === "missing") return releaseMissingRisk(merge, caps, input.payload, published);
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
     if (handed !== "no_queue") {
       if (handed.kind === "merged")
@@ -537,32 +533,29 @@ function mergeFacts(
 async function releaseMissingRisk(
   merge: MergeContext,
   caps: MergeCapabilities,
-  payload: unknown,
   published: MergePublication,
 ): Promise<MergeStep> {
   const { db, item } = merge;
-  if (githubQueueWatch(payload)?.queued) {
-    const { github, repository, pull } = published;
-    const left = await leaveGitHubMergeQueue({
-      client: github.client,
-      owner: repository.owner,
-      repo: repository.repo,
-      prNumber: pull.number,
-      ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
-      appId: github.appId,
-      installationId: github.installationId,
-      privateKeyPem: github.privateKeyPem,
-      signal: published.signal,
-    });
-    if (left === "merged") {
-      const handed = await mergeThroughGitHubQueue(merge, payload, published);
-      if (handed !== "no_queue") {
-        if (handed.kind === "merged")
-          checkQueueBehind(db, { repository: queueName(repository), main: null, now: caps.now() });
-        return handed;
-      }
-    }
+  const { github, repository, pull } = published;
+  const left = await leaveGitHubMergeQueue({
+    client: github.client,
+    owner: repository.owner,
+    repo: repository.repo,
+    prNumber: pull.number,
+    ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
+    appId: github.appId,
+    installationId: github.installationId,
+    privateKeyPem: github.privateKeyPem,
+    signal: published.signal,
+  });
+  if (left === "merged") {
+    const completed = await mergedOutsideLane(db, item, caps);
+    // Never ask about a pull request GitHub has confirmed is already on main.
+    if (!completed)
+      throw new Error("GitHub merged the pull request; waiting for its merge details");
+    return completed;
   }
+
   return holdForRisk(db, item, caps, published);
 }
 

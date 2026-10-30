@@ -246,20 +246,27 @@ export function createLiveStatusProvider(
       };
     },
     item(id) {
-      const detail = readItemDetail(db, id, options);
+      const scoped = readScopedSnapshot(db, options, id);
+      const detail = readItemDetail(db, id, options, scoped);
       if (!detail?.risk?.head || !options.automaticRisk) return detail;
-      const itemId = readScopedSnapshot(db, options, id).current?.record.id;
+      const itemId = scoped.current?.record.id;
       if (!itemId) return detail;
-      return options.automaticRisk(itemId, detail.risk.head).then((evidenceIds) => {
-        const ids = evidenceIds?.every(safeEvidenceId) ? evidenceIds : null;
-        return {
-          ...detail,
-          risk: {
-            ...detail.risk!,
-            automaticPass: ids && ids.length > 0 ? { evidenceIds: ids } : null,
-          },
-        };
-      });
+      return Promise.resolve()
+        .then(() => options.automaticRisk!(itemId, detail.risk!.head!))
+        .then((evidenceIds) => {
+          const ids = evidenceIds?.every(safeEvidenceId) ? evidenceIds : null;
+          return {
+            ...detail,
+            risk: {
+              ...detail.risk!,
+              automaticPass: ids && ids.length > 0 ? { evidenceIds: ids } : null,
+            },
+          };
+        })
+        .catch((error: unknown) => {
+          journalCaught(error, "status.automaticRisk", itemId);
+          return detail;
+        });
     },
     checkLog(request) {
       return readCheckLog(db, request, options);
@@ -342,8 +349,9 @@ function readItemDetail(
   db: Database,
   id: string,
   options: LiveStatusOptions,
+  scoped = readScopedSnapshot(db, options, id),
 ): StatusItemDetail | null {
-  const { snapshot, blocks, records, current } = readScopedSnapshot(db, options, id);
+  const { snapshot, blocks, records, current } = scoped;
   if (snapshot.items.length === 0 || current === null) return null;
   const risk = itemRisk(db, current);
   const detail = withoutOutputs(snapshot);
