@@ -15,7 +15,11 @@ import { setMergeSettingsText, type StoredMerge } from "./merge";
 import { setQueueSettingsText, type QueueSettings } from "./queue";
 
 export type AgentProfile = { agent: ImplementerName; model: string | null; effort?: string };
-export type AgentProfiles = { implementer: AgentProfile; reviewer: AgentProfile };
+export type AgentProfiles = {
+  implementer: AgentProfile;
+  reviewer: AgentProfile;
+  reviewerFallback?: AgentProfile;
+};
 export type ProjectAgentProfiles = {
   repo: string;
   implementer?: AgentProfile;
