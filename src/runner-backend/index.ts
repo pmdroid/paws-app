@@ -133,9 +133,8 @@ const RUN_HUNG_THOUGHT = (minutes: number) =>
   `The agent sent nothing for ${minutes} minutes, so Paws stopped it; continuing from the branch.`;
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
-/** A slot taken before placement has chosen a runner. It is not a runner id. */
-const PENDING_RUNNER = "";
-type SlotHold = { runnerId: string; sticky: boolean };
+/** A slot held by one active placement attempt. */
+type SlotHold = { runnerId: string };
 type SessionHolder = { runnerId: string; agent: string; sessionId: string };
 
 function earlierSession(
@@ -308,6 +307,9 @@ export function createRemoteAgentRunner(options: {
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
   const reservations = new Map<string, SlotHold>();
   const readers = new Set<string>();
+  const activeItems = new Set<string>();
+  // Job admission outlives individual attempts and follows the item through run replacement.
+  const admissions = new Map<string, object>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
   function usageLimitReset(agent: string, sessionId: string | null): number | null {
@@ -469,28 +471,14 @@ export function createRemoteAgentRunner(options: {
     );
   }
   /**
-   * Reservations whose run has no runner_work row yet. A hold not bound to a runner counts as
-   * `pending` (one slot, not one per runner). `excludeRunId` is the run asking, so its own hold
-   * does not take a second slot during preparation or work placement.
+   * Count active placement attempts by runner and job admissions not yet backed by work as
+   * pending. The requesting run excludes its own placement and admission from both counts.
    */
   function reservationCounts(excludeRunId = "") {
     const byRunner = new Map<string, number>();
     let pending = 0;
     for (const [runId, hold] of reservations) {
       if (runId === excludeRunId) continue;
-      if (hold.runnerId === PENDING_RUNNER) {
-        // Existing work already occupies a slot, including the hold between commands.
-        // Reserving its resume must not count that same slot a second time.
-        const occupied = db
-          .query<{ held: number }, [string]>(
-            `SELECT 1 AS held FROM runner_work w JOIN run r ON r.id=w.run_id
-             WHERE w.run_id=? AND r.status IN ('active','provisioning')`,
-          )
-          .get(runId);
-        if (occupied) continue;
-        pending += 1;
-        continue;
-      }
       if (
         !db
           .query<{ held: number }, [string, string]>(
@@ -499,6 +487,15 @@ export function createRemoteAgentRunner(options: {
           .get(runId, hold.runnerId)
       )
         byRunner.set(hold.runnerId, (byRunner.get(hold.runnerId) ?? 0) + 1);
+    }
+    for (const itemId of admissions.keys()) {
+      const runId = getWorkItem(db, itemId)?.currentRunId;
+      if (!runId || runId === excludeRunId || reservations.has(runId)) continue;
+      const occupied = db
+        .query(`SELECT 1 FROM runner_work w JOIN run r ON r.id=w.run_id
+        WHERE w.run_id=? AND r.status IN ('active','provisioning')`)
+        .get(runId);
+      if (!occupied) pending += 1;
     }
     return { byRunner, pending };
   }
@@ -531,31 +528,28 @@ export function createRemoteAgentRunner(options: {
    * cannot each pass the capacity check. False when every online runner is already full.
    * A missing run or no paired runner does not block: placement still decides those.
    */
-  function tryReserve(itemId: string): { ok: boolean; held: boolean } {
+  function tryReserve(
+    itemId: string,
+  ): { ok: true; release?: () => void } | { ok: false; runnerIds: string[] } {
     const runId = getWorkItem(db, itemId)?.currentRunId;
-    if (!runId) return { ok: true, held: false };
-    if (reservations.has(runId)) return { ok: true, held: true };
+    if (!runId) return { ok: true };
     const runners = onlineRunnerIds();
-    if (runners.length === 0) return { ok: true, held: false };
+    // A second job cannot acquire or release the first job's admission.
+    if (admissions.has(itemId) || activeItems.has(itemId)) return { ok: false, runnerIds: runners };
+    if (runners.length === 0) return { ok: true };
     const counts = reservationCounts(runId);
     let free = -counts.pending;
     for (const runnerId of runners)
       free += Math.max(0, openSlots(runnerId, runId, counts.byRunner, itemId));
-    if (free <= 0) return { ok: false, held: false };
-    reservations.set(runId, { runnerId: PENDING_RUNNER, sticky: true });
-    return { ok: true, held: true };
-  }
-  function releaseReserve(itemId: string): void {
-    const runId = getWorkItem(db, itemId)?.currentRunId;
-    if (runId) reservations.delete(runId);
-  }
-  /** Keeps a slot when resume replaces a lost run with a new one before placement. */
-  function retargetReserve(fromRunId: string, toRunId: string): void {
-    if (fromRunId === toRunId) return;
-    const hold = reservations.get(fromRunId);
-    if (!hold) return;
-    reservations.delete(fromRunId);
-    if (!reservations.has(toRunId)) reservations.set(toRunId, hold);
+    if (free <= 0) return { ok: false, runnerIds: runners };
+    const owner = {};
+    admissions.set(itemId, owner);
+    return {
+      ok: true,
+      release() {
+        if (admissions.get(itemId) === owner) admissions.delete(itemId);
+      },
+    };
   }
   async function place(
     itemId: string,
@@ -576,7 +570,7 @@ export function createRemoteAgentRunner(options: {
             `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
        WHERE r.status='active' AND r.revoked_at IS NULL AND m.active=1
-       AND r.last_seen_at>${now() - 60_000}
+       AND r.last_seen_at>${now() - RUNNER_ONLINE_MS}
        ORDER BY r.last_seen_at DESC,r.id`,
           )
           .all();
@@ -600,6 +594,15 @@ export function createRemoteAgentRunner(options: {
     placement.signal?.throwIfAborted();
     offered.push(...candidates.map((runner) => runner.id));
     const own = reservations.get(item.currentRunId);
+    const live = reservationCounts(item.currentRunId);
+    const freeByRunner = new Map<string, number>();
+    const capacityRunners = live.pending > 0 ? onlineRunnerIds() : candidates.map((r) => r.id);
+    for (const id of capacityRunners)
+      freeByRunner.set(id, openSlots(id, item.currentRunId, live.byRunner, itemId));
+    const freeAcross = [...freeByRunner.values()].reduce(
+      (total, free) => total + Math.max(0, free),
+      0,
+    );
     for (const runner of candidates) {
       if (runner.id === placement.handedOverFrom) {
         rejected.push(`${runner.id}: handed the session over`);
@@ -615,14 +618,7 @@ export function createRemoteAgentRunner(options: {
         rejected.push(`${runner.id}: the run is already being placed`);
         continue;
       }
-      const live = reservationCounts(item.currentRunId);
-      const freeHere = openSlots(runner.id, item.currentRunId, live.byRunner, itemId);
-      let freeAcross = freeHere;
-      if (live.pending > 0) {
-        freeAcross = 0;
-        for (const runnerId of onlineRunnerIds())
-          freeAcross += Math.max(0, openSlots(runnerId, item.currentRunId, live.byRunner, itemId));
-      }
+      const freeHere = freeByRunner.get(runner.id) ?? 0;
       if (freeHere < 1 || freeAcross - 1 < live.pending) {
         rejected.push(`${runner.id}${NO_FREE_CAPACITY}`);
         continue;
@@ -632,7 +628,7 @@ export function createRemoteAgentRunner(options: {
         if (isResponseTaskMode(mode))
           work.scopeTask(item.currentRunId, runner.workspaceId, work.identity(runner.id).userId);
         else work.scope(item.currentRunId, runner.workspaceId);
-        reservations.set(item.currentRunId, { runnerId: runner.id, sticky: own?.sticky ?? false });
+        reservations.set(item.currentRunId, { runnerId: runner.id });
         try {
           releasePinnedSlot(db, itemId);
         } catch (error) {
@@ -707,7 +703,6 @@ export function createRemoteAgentRunner(options: {
     if (command.type !== type) return undefined;
     reservations.set(runId, {
       runnerId: row.runnerId,
-      sticky: reservations.get(runId)?.sticky ?? false,
     });
     return {
       selected: {
@@ -769,8 +764,6 @@ export function createRemoteAgentRunner(options: {
     handOverItem,
     runInProgress: (runId: string) => readers.has(runId),
     tryReserve,
-    releaseReserve,
-    retargetReserve,
     forItem(itemId: string) {
       const attempt = async (
         input: RunAgentOptions,
@@ -896,7 +889,6 @@ export function createRemoteAgentRunner(options: {
         if (input.signal?.aborted) abort();
         const signal = controller.signal;
         let command: WorkCommand | undefined;
-        let releaseReservation = false;
         let question: Promise<void> | undefined;
         let questionError: unknown;
         let publishedEffects = false;
@@ -2172,8 +2164,7 @@ export function createRemoteAgentRunner(options: {
           return { ...complete, transcriptPath: transcript };
         } catch (error) {
           if (!(error instanceof Error) || error.message !== "cancelled" || !signal.aborted) {
-            // Drop the slot before the finally awaits, so the error returns with it already free.
-            releaseReservation = true;
+            // Release this attempt before cleanup awaits. Its job admission survives retries.
             reservations.delete(selected.runId);
             throw error;
           }
@@ -2236,21 +2227,18 @@ export function createRemoteAgentRunner(options: {
           controller.abort();
           await question;
           input.signal?.removeEventListener("abort", abort);
-          // A sticky hold covers preparation and the later work placement of this same job.
-          // The job releases it when the turn ends. Any other hold ends with the attempt.
-          if (!releaseReservation) {
-            const hold = reservations.get(selected.runId);
-            if (!hold?.sticky) reservations.delete(selected.runId);
-            else if (input.prepareOnly)
-              // Preparation can use a different runner for each role. Keep the job's admission
-              // slot, but let the next preparation or implementation choose its own runner.
-              reservations.set(selected.runId, { runnerId: PENDING_RUNNER, sticky: true });
-          }
+          // Only attempt placement ends here. The owning job releases admission after all
+          // in-process retries, preparation roles and any replacement run have finished.
+          reservations.delete(selected.runId);
         }
       };
       return async (input: RunAgentOptions) => {
         const runId = getWorkItem(db, itemId)?.currentRunId;
-        if (runId && readers.has(runId)) throw new RunnerCapacityWait([]);
+        // Acquire before the first await, including attachment and stale-command cancellation.
+        // Key by item as well as run so replacing current_run_id cannot start a second reader.
+        if (activeItems.has(itemId) || (runId && readers.has(runId)))
+          throw new RunnerCapacityWait([]);
+        activeItems.add(itemId);
         if (runId) readers.add(runId);
         try {
           const move: HandoverMove = {};
@@ -2264,6 +2252,7 @@ export function createRemoteAgentRunner(options: {
           );
         } finally {
           if (runId) readers.delete(runId);
+          activeItems.delete(itemId);
         }
       };
     },

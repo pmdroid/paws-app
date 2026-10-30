@@ -548,12 +548,12 @@ export type OrchestratorOptions = {
     runInProgress?(runId: string): Promise<boolean>;
     /**
      * Claims one in-memory runner slot for this item's current run before the handler awaits.
-     * `ok` false means every online runner is full. `held` means this job must release the slot.
+     * `ok` false means capacity is full or this item already has an owner.
+     * `release` belongs only to the job that acquired the slot.
      */
-    tryReserve?(itemId: string): { ok: boolean; held: boolean };
-    releaseReserve?(itemId: string): void;
-    /** Moves a slot hold when resume replaces a lost run before placement. */
-    retargetReserve?(fromRunId: string, toRunId: string): void;
+    tryReserve?(
+      itemId: string,
+    ): { ok: true; release?: () => void } | { ok: false; runnerIds: string[] };
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
     /**
@@ -1504,19 +1504,19 @@ export class Orchestrator {
         await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
         await this.settleVerifying(job, context);
       } finally {
-        if (held === "held") this.releaseRunnerSlot(job);
+        if (typeof held === "function") held();
       }
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
+      if (await this.mergeInsteadOfTurn(job, context)) return;
       if (this.waitingForRunnerSlot(job)) return;
       const held = this.holdRunnerSlot(job);
       if (held === "parked") return;
       try {
-        if (await this.mergeInsteadOfTurn(job, context)) return;
         await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
         await this.settleVerifying(job, context);
       } finally {
-        if (held === "held") this.releaseRunnerSlot(job);
+        if (typeof held === "function") held();
       }
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
@@ -1580,7 +1580,7 @@ export class Orchestrator {
           clearWait();
           waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
         } finally {
-          if (slot === "held") this.releaseRunnerSlot(job);
+          if (typeof slot === "function") slot();
         }
       });
     });
@@ -2109,8 +2109,7 @@ export class Orchestrator {
   }
 
   private runnerWaitMs(wait: RunnerCapacityWaitState): number {
-    const baseMs = placementWaitMs(wait.attempt, this.options.placementPollMs);
-    return Math.max(1, baseMs - resumeRetrySpreadMs(baseMs, this.random));
+    return placementWaitMs(wait.attempt, this.options.placementPollMs);
   }
 
   /**
@@ -2118,25 +2117,21 @@ export class Orchestrator {
    * "Waiting for a free slot" error, and the resume delay is spread so the crowd does not
    * wake on one tick. `open` means placement itself decides, as when no runner is paired.
    */
-  private holdRunnerSlot(job: Job): "held" | "parked" | "open" {
+  private holdRunnerSlot(job: Job): (() => void) | "parked" | "open" {
     const tryReserve = this.options.remoteExecution?.tryReserve;
     const itemId = readString(job.payload, "itemId");
     if (!tryReserve || itemId === null) return "open";
-    const decision = tryReserve(itemId);
-    if (decision.ok) return decision.held ? "held" : "open";
     const item = getWorkItem(this.db, itemId);
     if (
       !item ||
       item.cancelRequested ||
-      !["recovering", "verifying", "merge_queue", "running"].includes(item.state)
+      (job.queue !== JOB_KIND.reverify && !["queued", "running", "recovering"].includes(item.state))
     )
       return "open";
-    const runnerIds = this.db
-      .query<{ id: string }, [number]>(
-        "SELECT id FROM runner WHERE status='active' AND revoked_at IS NULL AND last_seen_at>?",
-      )
-      .all(this.now() - 60_000)
-      .map((runner) => runner.id);
+    const decision = tryReserve(itemId);
+    if (decision.ok) return decision.release ?? "open";
+    if (!["recovering", "verifying", "merge_queue", "running"].includes(item.state)) return "open";
+    const runnerIds = decision.runnerIds;
     const previous = runnerCapacityWait(job.payload);
     const wait: RunnerCapacityWaitState = {
       since: previous?.since ?? this.now(),
@@ -2144,13 +2139,13 @@ export class Orchestrator {
       runnerIds: runnerIds.length > 0 ? runnerIds : (previous?.runnerIds ?? []),
       ...(previous?.holdMs === undefined ? {} : { holdMs: previous.holdMs }),
     };
-    waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
+    const baseMs = this.runnerWaitMs(wait);
+    const recoveringResume = job.queue === JOB_KIND.resume && item.state === "recovering";
+    const delayMs = recoveringResume
+      ? Math.max(1, baseMs - resumeRetrySpreadMs(baseMs, this.random))
+      : baseMs;
+    waitForRunnerSlot(this.db, job, this.now(), delayMs, wait);
     return "parked";
-  }
-
-  private releaseRunnerSlot(job: Job): void {
-    const itemId = readString(job.payload, "itemId");
-    if (itemId !== null) this.options.remoteExecution?.releaseReserve?.(itemId);
   }
 
   private waitingForRunnerSlot(job: Job, beforePark?: () => Job): boolean {
@@ -2161,7 +2156,8 @@ export class Orchestrator {
       !waited ||
       !item ||
       item.cancelRequested ||
-      !["recovering", "verifying", "merge_queue"].includes(item.state) ||
+      (!["recovering", "verifying"].includes(item.state) &&
+        !(job.queue === JOB_KIND.reverify && item.state === "merge_queue")) ||
       this.shuttingDown ||
       (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
@@ -5707,8 +5703,6 @@ export class Orchestrator {
       );
     }
     setCurrentRun(this.db, item.id, run.id);
-    if (item.currentRunId && item.currentRunId !== run.id)
-      this.options.remoteExecution?.retargetReserve?.(item.currentRunId, run.id);
     return run;
   }
 

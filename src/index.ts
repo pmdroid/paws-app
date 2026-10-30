@@ -875,9 +875,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             .all()
             .some((host) => runnerHasCapacity(db, host.id, Date.now())),
         // Before the runner backend exists, do not block. Once it does, the hold is synchronous.
-        tryReserve: (itemId) => remoteAgents?.tryReserve(itemId) ?? { ok: true, held: false },
-        releaseReserve: (itemId) => remoteAgents?.releaseReserve(itemId),
-        retargetReserve: (fromRunId, toRunId) => remoteAgents?.retargetReserve(fromRunId, toRunId),
+        tryReserve: (itemId) => remoteAgents?.tryReserve(itemId) ?? { ok: true },
         agentForItem: (itemId) => async (input) => {
           input.signal?.throwIfAborted();
           await ready;
