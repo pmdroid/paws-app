@@ -56,7 +56,7 @@ export function placementWaitMs(attempt: number, pollIntervalMs = 250) {
  */
 export function resumeRetrySpreadMs(delayMs: number, random: () => number = Math.random): number {
   if (delayMs <= 1) return 0;
-  return Math.floor(random() * Math.min(delayMs, 5_000));
+  return Math.floor(random() * Math.min(delayMs / 5, 5_000));
 }
 
 export class RunnerCapacityWait extends Error {
