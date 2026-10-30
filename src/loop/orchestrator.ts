@@ -1,6 +1,6 @@
-import { LIVE_PREVIEW_RUNNER_VERSION } from "../runner-protocol";
 import { setTimeout as previewDelay } from "node:timers/promises";
 import {
+  LIVE_PREVIEW_RUNNER_VERSION,
   PreviewReadySchema,
   previewRunnerSupported,
   type ReviewPreviewHook,

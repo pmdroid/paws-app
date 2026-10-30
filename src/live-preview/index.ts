@@ -1,6 +1,7 @@
 import { LIVE_PREVIEW_RUNNER_VERSION, runnerVersionAtLeast } from "../runner-protocol";
 import type { PreviewRequest, PreviewReady } from "../runner-protocol";
 export {
+  LIVE_PREVIEW_RUNNER_VERSION,
   PreviewRequestSchema,
   PreviewReadySchema,
   type PreviewRequest,
