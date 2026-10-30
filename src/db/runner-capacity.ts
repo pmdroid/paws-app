@@ -41,7 +41,7 @@ export function runnerOccupancy(
 /**
  * Closes a run whose runner lease is past the grace and whose work never ended. That row is
  * abandoned, not a slot held between commands, so it stops counting as occupied (PAS-898).
- * A command that finished (`ended_at` set) while the run stays active still holds its slot.
+ * A finished command or a delivered result awaiting import still belongs to the active run.
  */
 export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
   return immediate(db, () => {
@@ -51,7 +51,10 @@ export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
         `SELECT w.run_id AS runId FROM runner_work w
          JOIN run r ON r.id = w.run_id
          WHERE w.ended_at IS NULL AND w.lease_until <= ?
-           AND r.status IN ('active', 'provisioning')`,
+           AND r.status IN ('active', 'provisioning')
+           AND NOT EXISTS (SELECT 1 FROM runner_result result
+             WHERE result.run_id=w.run_id AND result.generation=w.generation
+               AND result.command_id=w.command_id)`,
       )
       .all(cutoff);
     for (const row of rows) {

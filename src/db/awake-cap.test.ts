@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { FakeClock, JOB_KIND } from "../core";
 import {
   accrueAwake,
+  accrueAtJobBoundary,
   applyWorkItemEvent,
   beginImplementRun,
   claimNextJob,
@@ -213,6 +214,46 @@ describe("awake-time cap after Closeout accepted the work", () => {
     await running;
   });
 
+  for (const state of ["running", "recovering"] as const) {
+    test(`a ${state} slot wait settles before claim and bills work after claim`, () => {
+      const clock = new FakeClock(20_000);
+      const db = openDatabase(":memory:");
+      migrate(db);
+      const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
+      const { run } = beginImplementRun(db, item.id, clock.now());
+      if (state === "recovering") applyWorkItemEvent(db, item.id, "lease_expired");
+      accrueAwake(db, item.id, clock.mono(), clock.now());
+      enqueueJob(db, {
+        queue: JOB_KIND.resume,
+        payload: {
+          itemId: item.id,
+          capacityWait: { since: clock.now(), attempt: 0, runnerIds: ["runner"] },
+        },
+        now: clock.now(),
+      });
+      clock.advance(60 * MINUTE);
+      const job = claimNextJob(db, {
+        now: clock.now(),
+        leaseMs: 10 * MINUTE,
+        queues: [JOB_KIND.resume],
+      })!;
+      accrueAtJobBoundary(db, job, "claimed", clock.mono(), clock.now());
+      expect(getWorkItem(db, item.id)).toMatchObject({
+        state,
+        currentRunId: run.id,
+        awakeMs: 0,
+        waitingMs: 60 * MINUTE,
+      });
+      clock.advance(2 * MINUTE);
+      expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item).toMatchObject({
+        awakeMs: 2 * MINUTE,
+        agentMs: 2 * MINUTE,
+        waitingMs: 60 * MINUTE,
+      });
+      db.close();
+    });
+  }
+
   test("a Closeout run waiting on CI does not accrue closeout time", () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
@@ -232,6 +273,13 @@ describe("awake-time cap after Closeout accepted the work", () => {
       awakeMs: 6 * MINUTE,
       agentMs: 6 * MINUTE,
       closeoutMs: 0,
+      waitingMs: 30 * MINUTE,
+    });
+    markCloseoutCiWait(db, item.id, false, clock.mono(), clock.now());
+    clock.advance(2 * MINUTE);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item).toMatchObject({
+      awakeMs: 8 * MINUTE,
+      closeoutMs: 2 * MINUTE,
       waitingMs: 30 * MINUTE,
     });
   });

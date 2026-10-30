@@ -1873,7 +1873,15 @@ export class Orchestrator {
         // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
         // and the item keeps this run (PAS-898).
         this.settleItemAwake(item.id);
-        if (waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait) === "lost")
+        if (
+          waitForRunnerSlot(
+            this.db,
+            job,
+            this.now(),
+            this.runnerWaitMs(wait, job.queue === JOB_KIND.resume),
+            wait,
+          ) === "lost"
+        )
           throw error;
         journalCaught(
           error,
@@ -2676,6 +2684,7 @@ export class Orchestrator {
       },
     );
     let deferred = false;
+    let capacityWaiting = false;
 
     try {
       await this.taskAccess()?.assert(item, controller.signal);
@@ -2901,6 +2910,7 @@ export class Orchestrator {
           );
         else if (isTransient(error)) {
           deferred = true;
+          capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
         } else this.fail(current, "run_error", message, error);
       }
@@ -2919,6 +2929,7 @@ export class Orchestrator {
       this.releaseAskedRun(run.id);
       if (
         this.options.remoteExecution &&
+        !capacityWaiting &&
         !this.shuttingDown &&
         (this.jobContexts.get(item.id)?.isCurrent() ?? true)
       )

@@ -148,6 +148,8 @@ describe("the runner lease grace", () => {
     db.run("UPDATE runner_result SET command_id='command' WHERE run_id=?", [run.id]);
     expect(runnerHoldsRunWork(db, run.id, clock.now())).toBe(true);
     expect(runnerWorkHasResult(db, run.id)).toBe(true);
+    expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(1);
+    expect(getRun(db, run.id)?.status).toBe("active");
     expect(runnerHoldsRunWork(db, run.id, clock.now(), true)).toBe(false);
     expect(recoverOnStartup(db, clock.now())).toMatchObject([{ type: "resume", reattach: true }]);
     expect(getWorkItem(db, item.id)?.state).toBe("running");
