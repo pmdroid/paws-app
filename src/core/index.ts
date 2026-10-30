@@ -133,6 +133,7 @@ export {
   TRANSIENT_RETRY_BASE_MS,
   isTransient,
   placementWaitMs,
+  resumeRetrySpreadMs,
   isTransientGitError,
   retryNote,
   retryAfterMs,
