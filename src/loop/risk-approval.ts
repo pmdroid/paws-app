@@ -108,7 +108,7 @@ export async function riskApprovalFor(
           if (item !== null) approveRisk(db, pending, item, now);
           closeLinkAsk(db, pending.questionId, {
             reason: "cancelled",
-            note: "Approved automatically: both reviews clean",
+            note: "Passes automatically: both reviews clean",
             now,
           });
           cancelQuestion(db, pending.questionId, now);
@@ -119,7 +119,7 @@ export async function riskApprovalFor(
             sessionId: item.sessionKey,
             item,
             kind: "response",
-            body: `Approved automatically: both reviews clean. Commit ${shortCommit(input.head)} joins the merge queue.`,
+            body: `Passes automatically: both reviews clean. Commit ${shortCommit(input.head)} joins the merge queue.`,
             key: `automatic:${input.itemId}:${input.head}`,
             now,
           });

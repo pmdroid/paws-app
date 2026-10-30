@@ -131,3 +131,12 @@ test("under ci, a carried normal-tier head still needs no risk approval", async 
   expect(reads.every((read) => read === item.accepted)).toBe(true);
   expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([head]);
 });
+
+test("clean high-risk reviews let the current head merge without asking", async () => {
+  const h = (harness = await mergeHarness());
+  const item = await h.addItem("ENG-1");
+  h.state.risk = (head) => (head === item.accepted ? "automatic" : "missing");
+  expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+  expect(h.state.riskAsked).toEqual([]);
+  expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
+});

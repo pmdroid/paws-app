@@ -737,14 +737,14 @@ function automatic(
   });
 }
 
-test("clean reviews approve the head with evidence, no question and one Linear activity", async () => {
+test("clean reviews pass the head with evidence, no question and one Linear activity", async () => {
   const { db, itemId } = held();
   try {
     cleanReviews(db);
     expect(await automatic(db)).toBe("automatic");
     expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
     expect(findOpenQuestion(db, "ses_1")).toBeNull();
-    expect(db.query("SELECT * FROM automatic_risk_approval").all()).toEqual([]);
+    expectNoAutomaticApproval(db);
     expect(await automatic(db)).toBe("automatic");
     const tracker = createFakeTracker();
     for (const row of listOutbox(db))
@@ -752,12 +752,12 @@ test("clean reviews approve the head with evidence, no question and one Linear a
         await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
     expect(
       tracker.progress.filter((activity) =>
-        activity.body.includes("Approved automatically: both reviews clean"),
+        activity.body.includes("Passes automatically: both reviews clean"),
       ),
     ).toHaveLength(1);
     expect(
       activities(db).filter((activity) =>
-        activity.body.includes("Approved automatically: both reviews clean"),
+        activity.body.includes("Passes automatically: both reviews clean"),
       ),
     ).toHaveLength(1);
   } finally {
@@ -799,18 +799,14 @@ for (const scenario of [
         }),
       ).toBe("asked");
       expect(findOpenQuestion(db, "ses_1")).not.toBeNull();
-      expect(
-        db
-          .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
-          .get(itemId, heads.s),
-      ).toBeNull();
+      expectNoAutomaticApproval(db);
     } finally {
       db.close();
     }
   });
 
-test("automatic approval never carries to a new head, even with the same patch", async () => {
-  const { db, itemId } = held();
+test("automatic eligibility never carries to a new head, even with the same patch", async () => {
+  const { db } = held();
   try {
     cleanReviews(db);
     expect(await automatic(db)).toBe("automatic");
@@ -818,28 +814,20 @@ test("automatic approval never carries to a new head, even with the same patch",
     expect(await automatic(db, { head: heads.rebased })).toBe("missing");
     cleanReviews(db, heads.rebased);
     expect(await automatic(db, { head: heads.rebased })).toBe("automatic");
-    expect(
-      db
-        .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
-        .get(itemId, heads.rebased),
-    ).toBeNull();
+    expectNoAutomaticApproval(db);
   } finally {
     db.close();
   }
 });
 
-test("turning automatic approval off makes a queued approved head ask a person", async () => {
+test("turning automatic eligibility off makes a queued approved head ask a person", async () => {
   const { db, itemId } = held();
   try {
     cleanReviews(db);
     expect(await automatic(db)).toBe("automatic");
     expect(await automatic(db, { enabled: false })).toBe("missing");
     // No automatic authorization exists to revoke.
-    expect(
-      db
-        .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
-        .get(itemId, heads.s),
-    ).toBeNull();
+    expectNoAutomaticApproval(db);
     expect(
       askRiskApproval(db, {
         item: getWorkItem(db, itemId)!,
@@ -855,7 +843,7 @@ test("turning automatic approval off makes a queued approved head ask a person",
   }
 });
 
-test("normal heads and a disabled risk gate never read the automatic approval setting", async () => {
+test("normal heads and a disabled risk gate never read the automatic eligibility setting", async () => {
   const { db, itemId } = held();
   let reads = 0;
   const checks = {
@@ -898,7 +886,7 @@ test("normal heads and a disabled risk gate never read the automatic approval se
   }
 });
 
-test("a rule skipped because no paths matched still permits clean automatic approval", async () => {
+test("a rule skipped because no paths matched still permits clean automatic eligibility", async () => {
   const { db } = held();
   try {
     cleanReviews(db, heads.s, { skippedProbe: "no changed path matches" });
@@ -914,11 +902,7 @@ test("reviews and the protected-path diff must cover the same base", async () =>
     // The accepted reviews cover heads.base, while risk classification used heads.newMain.
     cleanReviews(db);
     expect(await automatic(db)).toBe("missing");
-    expect(
-      db
-        .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
-        .get(itemId, heads.s),
-    ).toBeNull();
+    expectNoAutomaticApproval(db);
     expect(
       askRiskApproval(db, {
         item: getWorkItem(db, itemId)!,
@@ -943,7 +927,7 @@ test("automatic eligibility changes with the base and current evidence", async (
     cleanReviews(db, heads.s, { base: heads.newMain, at: NOW + 1, attempt: 2 });
     expect(await automatic(db, { attempt: 2, severity: "P2" })).toBe("missing");
     expect(await automatic(db, { attempt: 2 })).toBe("automatic");
-    expect(db.query("SELECT * FROM automatic_risk_approval").all()).toEqual([]);
+    expectNoAutomaticApproval(db);
     cleanReviews(db, heads.s, { base: heads.newMain, at: NOW + 1, attempt: 2, failedProbe: true });
     expect(await automatic(db, { attempt: 2 })).toBe("missing");
   } finally {
@@ -953,23 +937,19 @@ test("automatic eligibility changes with the base and current evidence", async (
 
 for (const duplicateFirst of [true, false])
   test(`ambiguous review attempts fail closed with dirty record first: ${duplicateFirst}`, async () => {
-    const { db, itemId } = held();
+    const { db } = held();
     try {
       cleanReviews(db);
       expect(await automatic(db, { duplicateFirst })).toBe("missing");
-      expect(
-        db
-          .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
-          .get(itemId, heads.s),
-      ).toBeNull();
+      expectNoAutomaticApproval(db);
     } finally {
       db.close();
     }
   });
 
 for (const patchMatches of [true, false])
-  test(`manual carry-over takes precedence over automatic approval, same patch: ${patchMatches}`, async () => {
-    const { db, itemId } = riskApproved();
+  test(`manual carry-over takes precedence over automatic eligibility, same patch: ${patchMatches}`, async () => {
+    const { db } = riskApproved();
     try {
       const head = patchMatches ? heads.rebased : heads.ciFix;
       fixAccepted(db, head, heads.base);
@@ -981,20 +961,16 @@ for (const patchMatches of [true, false])
           fix: { changed: ["test/x.test.ts"], paths: [] },
         }),
       ).toBe("approved");
+      expectNoAutomaticApproval(db);
       expect(
-        db
-          .query("SELECT * FROM automatic_risk_approval WHERE item_id = ? AND head = ?")
-          .get(itemId, head),
-      ).toBeNull();
-      expect(
-        activities(db).filter((activity) => activity.body.includes("Approved automatically")),
+        activities(db).filter((activity) => activity.body.includes("Passes automatically")),
       ).toHaveLength(0);
     } finally {
       db.close();
     }
   });
 
-test("automatic approval closes a pending risk ask and resumes verification", async () => {
+test("automatic eligibility closes a pending risk ask and resumes verification", async () => {
   const { db, itemId } = asked();
   try {
     const question = findOpenQuestion(db, "ses_1")!;
@@ -1048,8 +1024,18 @@ test("a new or reopened finding drops automatic eligibility without invalidation
     setReviewFindingStatus(db, { id: finding.id, status: "open", by: "user", now: NOW + 3 });
     expect(await automatic(db)).toBe("missing");
     expect(await automatic(db, { policyPaths: null })).toBe("missing");
-    expect(db.query("SELECT * FROM automatic_risk_approval").all()).toEqual([]);
+    expectNoAutomaticApproval(db);
   } finally {
     db.close();
   }
 });
+
+function expectNoAutomaticApproval(db: import("bun:sqlite").Database): void {
+  expect(
+    db
+      .query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'automatic_risk_approval'",
+      )
+      .get(),
+  ).toBeNull();
+}

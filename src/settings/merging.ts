@@ -195,7 +195,7 @@ export async function handleMergeSettingsRequest(
   if (autoApproveHighRisk !== undefined && autoApproveHighRisk !== before?.autoApproveHighRisk)
     options.audit?.(
       "settings.merging",
-      `Automatic high-risk approval: ${autoApproveHighRisk ? "on" : "off"}`,
+      `Automatic high-risk pass: ${autoApproveHighRisk ? "on" : "off"}`,
     );
   for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
   const saved =

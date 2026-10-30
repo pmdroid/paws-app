@@ -816,8 +816,7 @@ export interface StatusRiskPath {
  * Closeout has no `security-review` check.
  */
 export interface StatusItemRisk {
-  automaticApproval?: {
-    approvedBy: "paws:clean-reviews";
+  automaticPass?: {
     evidenceIds: string[];
   } | null;
   tier: RiskTier | null;
@@ -959,22 +958,17 @@ function readItemRisk(input: unknown): StatusItemRisk | null {
       head: nullableText(entry, "head", at),
     };
   }
-  let automaticApproval: StatusItemRisk["automaticApproval"];
-  if (body.automaticApproval === null) automaticApproval = null;
-  else if (body.automaticApproval !== undefined) {
-    const at = `${path}.automaticApproval`;
-    const approval = object(body.automaticApproval, at);
-    automaticApproval = {
-      approvedBy: oneOf(
-        string(approval, "approvedBy", at),
-        ["paws:clean-reviews"] as const,
-        `${at}.approvedBy`,
-      ),
-      evidenceIds: array(approval, "evidenceIds", at).map(String),
+  let automaticPass: StatusItemRisk["automaticPass"];
+  if (body.automaticPass === null) automaticPass = null;
+  else if (body.automaticPass !== undefined) {
+    const at = `${path}.automaticPass`;
+    const pass = object(body.automaticPass, at);
+    automaticPass = {
+      evidenceIds: array(pass, "evidenceIds", at).map(String),
     };
   }
   return {
-    ...(automaticApproval === undefined ? {} : { automaticApproval }),
+    ...(automaticPass === undefined ? {} : { automaticPass }),
     tier: body.tier === null ? null : oneOf(string(body, "tier", path), RISK_TIERS, `${path}.tier`),
     head: nullableText(body, "head", path),
     base: nullableText(body, "base", path),

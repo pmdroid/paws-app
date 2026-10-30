@@ -3781,10 +3781,10 @@ export class Orchestrator {
         return policy?.digest === digest ? policy.paths : null;
       },
       changedPaths: async (base) => {
-        // Status reads this. Commit ids only, after `--`, with the agent environment.
+        // Status reads this. Validate commit ids before passing them as Git revisions.
         if (!gitRevision(base) || !gitRevision(head)) throw new Error("risk diff needs commit ids");
         const names = await git(
-          ["-C", worktree, "diff", "--name-only", "--no-renames", "-z", "--", base, head],
+          ["-C", worktree, "diff", "--name-only", "--no-renames", "-z", base, head, "--"],
           { env: minimalAgentEnv() },
         );
         return names.split("\0").filter(Boolean);

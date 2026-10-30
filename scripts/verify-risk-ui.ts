@@ -21,6 +21,7 @@ const full = fullStatusFixture();
 const snapshot = statusList(full);
 const RISKS: Record<string, StatusItemRisk> = {
   "ENG-101": {
+    automaticPass: { evidenceIds: ["security/1.json", "independent/1.json"] },
     tier: "high",
     head: HEAD,
     base: "b".repeat(40),
@@ -100,6 +101,7 @@ try {
       await expect(card).toContainText("changes 2 high-risk paths");
       await expect(card).toContainText("Matched by Settings › Merging and .paws/high-risk-paths");
       await expect(card).toContainText("Security review ran: passed.");
+      await expect(card).toContainText("Passes automatically: both reviews clean");
       await fits(page);
       await card.scrollIntoViewIfNeeded();
       await card.screenshot({ path: join(directory, `risk-high-${scheme}-${width}.png`) });
@@ -113,6 +115,9 @@ try {
 
       await page.goto(`http://127.0.0.1:${server.port}/status/settings/merging`);
       await expect(page.getByRole("heading", { name: "High-risk paths" })).toBeVisible();
+      await expect(
+        page.getByLabel("Let high-risk changes through when both reviews are clean"),
+      ).toBeChecked();
       const platform = page.locator(".settings-project", {
         has: page.getByRole("heading", { name: "acme/platform" }),
       });

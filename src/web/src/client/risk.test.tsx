@@ -127,16 +127,15 @@ describe("Risk card", () => {
   });
 });
 
-test("the Risk card shows an automatic approval after parsing the live payload", () => {
+test("the Risk card shows automatic eligibility after parsing the live payload", () => {
   expect(
     card(
       page({
         ...high,
-        automaticApproval: {
-          approvedBy: "paws:clean-reviews",
+        automaticPass: {
           evidenceIds: ["security/1.json", "independent/1.json"],
         },
       }),
     ),
-  ).toContain("Approved automatically: both reviews clean");
+  ).toContain("Passes automatically: both reviews clean");
 });

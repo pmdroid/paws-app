@@ -254,10 +254,7 @@ export function createLiveStatusProvider(
           ...detail,
           risk: {
             ...detail.risk!,
-            automaticApproval:
-              ids && ids.length > 0
-                ? { approvedBy: "paws:clean-reviews" as const, evidenceIds: ids }
-                : null,
+            automaticPass: ids && ids.length > 0 ? { evidenceIds: ids } : null,
           },
         };
       });
@@ -394,7 +391,7 @@ function itemRisk(db: Database, current: CurrentItem): StatusItemRisk | null {
   if (stored === null && securityReview === null) return null;
   const lists = new Map((stored?.matches ?? []).map((match) => [match.path, match.lists]));
   return {
-    automaticApproval: null,
+    automaticPass: null,
     tier: stored?.tier ?? null,
     head: stored?.head ?? null,
     base: stored?.base ?? null,

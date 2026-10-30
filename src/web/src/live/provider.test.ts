@@ -1267,7 +1267,7 @@ describe("live status provider", () => {
     const high = parseStatusItemDetail(JSON.parse(JSON.stringify(provider.item("ENG-11"))));
     if (!high.ok) throw new Error(high.error);
     expect(high.detail.risk).toEqual({
-      automaticApproval: null,
+      automaticPass: null,
       tier: "high",
       head,
       base,
@@ -1282,11 +1282,12 @@ describe("live status provider", () => {
     const live = createLiveStatusProvider(db, {
       automaticRisk: async () => (eligible ? ["security/1.json", "independent/1.json"] : null),
     });
-    expect((await live.item(item.id))?.risk?.automaticApproval?.approvedBy).toBe(
-      "paws:clean-reviews",
-    );
+    expect((await live.item(item.id))?.risk?.automaticPass?.evidenceIds).toEqual([
+      "security/1.json",
+      "independent/1.json",
+    ]);
     eligible = false;
-    expect((await live.item(item.id))?.risk?.automaticApproval).toBeNull();
+    expect((await live.item(item.id))?.risk?.automaticPass).toBeNull();
     saveCandidateRisk(db, {
       itemId: item.id,
       head: "e".repeat(40),
@@ -1295,7 +1296,7 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts"],
       classifiedAt: now + 1,
     });
-    expect(provider.item(item.id)?.risk?.automaticApproval).toBeNull();
+    expect(provider.item(item.id)?.risk?.automaticPass).toBeNull();
     expect(provider.item("ENG-12")?.risk).toMatchObject({
       tier: "normal",
       paths: [],
