@@ -51,6 +51,23 @@ test("Claude plan limits name the clock time they reset at", () => {
     Date.parse("2026-10-13T13:30:00Z"),
   );
 });
+test("A Claude weekly limit names the day it resets on", () => {
+  const night = Date.parse("2026-10-30T04:10:07Z");
+  expect(
+    quotaSignal(
+      "/opt/paws-runner/bin/claude -p --resume exited 1: You've hit your weekly limit · resets Nov 2, 4am (UTC)",
+      night,
+    ),
+  ).toEqual({
+    state: "exhausted",
+    resetsAt: Date.parse("2026-11-02T04:00:00Z"),
+    cooldownUntil: Date.parse("2026-11-02T04:00:00Z"),
+  });
+  expect(
+    quotaSignal("weekly limit reached · resets Jan 3, 9:15pm (Europe/Berlin)", night)?.resetsAt,
+  ).toBe(Date.parse("2027-01-03T20:15:00Z"));
+  expect(quotaSignal("weekly limit reached · resets Feb 30, 4am (UTC)", night)?.resetsAt).toBeNull();
+});
 test("Quota warning remains usable and ordinary errors cannot invent provider limits", () => {
   expect(quotaSignal("10% remaining", now)).toEqual({
     state: "low",
