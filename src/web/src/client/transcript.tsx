@@ -51,7 +51,7 @@ export function parseTranscript(body: unknown): StatusActivity[] | null {
 
 async function fetchTranscript(runId: string): Promise<StatusActivity[]> {
   const response = await fetch(`/api/runs/transcript?run=${encodeURIComponent(runId)}`, {
-    headers: { Accept: "application/json", "ngrok-skip-browser-warning": "1" },
+    headers: { Accept: "application/json" },
     cache: "no-store",
   });
   if (response.status === 401) throw new Error("Sign in to Paws to read this transcript.");

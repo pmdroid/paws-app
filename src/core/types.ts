@@ -21,7 +21,7 @@ export type WorkItem = {
   version: number;
 };
 
-/** Parent issue delegated to Paws. Sub-issues are human-written in the quick MVP. */
+/** Parent issue delegated to Paws. Its sub-issues run in Linear `blocks` order. */
 export type Delegation = {
   id: DelegationId;
   linearIssueId: string;

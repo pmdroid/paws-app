@@ -1,7 +1,6 @@
 /**
- * Awake-time cap from the Quick MVP plan (45 minutes). Sleep does not count.
- * The turn cap is configurable; 80 is the default because the plan does not
- * fix a number.
+ * Awake-time cap (3 hours). Sleep does not count.
+ * The turn cap is configurable; 80 is the default.
  */
 export const DEFAULT_MAX_TURNS = 80;
 export const DEFAULT_MAX_AWAKE_MS = 3 * 60 * 60 * 1000;
