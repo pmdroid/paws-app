@@ -49,6 +49,13 @@ test("an uninterrupted usage-limit result with a candidate pauses until a resume
   expect(result.head, result.detail).toBe(result.candidateSha);
 }, 60_000);
 
+test("a usage-limit pause ends as soon as the agent is ready on a runner again", async () => {
+  const result = await usageLimitScenario(false, "cooldown");
+  expect(result.paused, result.detail).toEqual({ resetsAt: result.limitedAt + 120_000 });
+  expect(result.finished, result.detail).toMatchObject({ stopReason: "end_turn" });
+  expect(result.head, result.detail).toBe(result.candidateSha);
+}, 20_000);
+
 test("a restart between the usage receipt commit and candidate processing still pauses until a resume", async () => {
   const result = await usageLimitScenario(true);
   expect(result.shutdown, result.detail).toBeInstanceOf(PawsShutdown);
@@ -64,7 +71,7 @@ test("a restart between the usage receipt commit and candidate processing still 
   expect(result.receipts, result.detail).toBe(2);
 }, 60_000);
 
-async function usageLimitScenario(restart: boolean) {
+async function usageLimitScenario(restart: boolean, wake: "resume" | "cooldown" = "resume") {
   const root = mkdtempSync(join(tmpdir(), "paws-usage-restart-"));
   const source = join(root, "source");
   const origin = join(root, "origin.git");
@@ -229,7 +236,12 @@ async function usageLimitScenario(restart: boolean) {
         if (pause && !sim.pause) {
           sim.pause = { resetsAt: pause.resetsAt };
           sim.policyAtPause = policy();
-          resumeUsagePauseNow(db, pause.runId, Date.now());
+          if (wake === "resume") resumeUsagePauseNow(db, pause.runId, Date.now());
+          else
+            db.run(
+              "UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=? AND agent='claude'",
+              [runnerId],
+            );
         }
         for (const envelope of work.commands(runnerId)) {
           const command = JSON.parse(

@@ -18,6 +18,7 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  agentReadyRunners,
   endUsagePause,
   getTaskMode,
   getWorkItem,
@@ -649,6 +650,9 @@ export function createRemoteAgentRunner(options: {
         const runId = getWorkItem(db, itemId)?.currentRunId;
         if (!runId) throw limit;
         const agent = agentName(limit.agent);
+        const readyAtPause = new Set(
+          agentReadyRunners(db, limit.agent, now(), now() - RUNNER_ONLINE_MS),
+        );
         startUsagePause(
           db,
           {
@@ -671,6 +675,12 @@ export function createRemoteAgentRunner(options: {
           for (;;) {
             const wait = (usagePause(db, runId)?.resumeAt ?? 0) - now();
             if (wait <= 0) break;
+            if (
+              agentReadyRunners(db, limit.agent, now(), now() - RUNNER_ONLINE_MS).some(
+                (id) => !readyAtPause.has(id),
+              )
+            )
+              break;
             await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
           }
         } finally {
