@@ -2,7 +2,14 @@ import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, type RestartReason } from "../core";
 import { halt } from "./halt";
-import { applyWorkItemEvent, getWorkItem, saveCheckpoint, type WorkItemRecord } from "./items";
+import {
+  applyWorkItemEvent,
+  configureWorkItem,
+  getWorkItem,
+  resetAwakeTime,
+  saveCheckpoint,
+  type WorkItemRecord,
+} from "./items";
 import { enqueueJobOnce } from "./jobs";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
@@ -14,6 +21,8 @@ export type RestartHandoff = {
   jobKey?: string;
   /** Explicit retry authorized by a person, starting a fresh execution budget. */
   resetExecution?: boolean;
+  /** Current limits to apply when an explicit retry resets execution. */
+  caps?: { maxTurns?: number; maxAwakeMs?: number };
   /** The fix-attempt limit this round's lines name, when it differs from the fix rounds. */
   limit?: number;
 };
@@ -26,17 +35,19 @@ export function restart(
 ): number | null {
   return immediate(db, () => {
     const current = getWorkItem(db, item.id);
-    if (!current || current.version !== item.version) return null;
+    if (!current) return null;
     if ((current.cancelRequested || current.state === "failed") && !handoff.resetExecution)
       return null;
     if (!halt(db, item, handoff.now)) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
-    if (handoff.resetExecution)
+    if (handoff.resetExecution) {
       db.run(
         "UPDATE work_item SET cancel_requested=0, turn_count=0, recovery_attempts=0 WHERE id=?",
         [item.id],
       );
-    else if (handoff.reason === "answer")
+      resetAwakeTime(db, item.id);
+      if (handoff.caps) configureWorkItem(db, item.id, handoff.caps);
+    } else if (handoff.reason === "answer")
       db.run("UPDATE work_item SET turn_count=0 WHERE id=?", [item.id]);
     const record = {
       kind: "restart" as const,

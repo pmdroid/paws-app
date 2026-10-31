@@ -46,7 +46,10 @@ describe("restart and ask", () => {
     "%s restarts preserve the run and session and dispatch their original handoff",
     (reason) => {
       const { db, item } = fixture();
-      db.run("UPDATE work_item SET turn_count=4, recovery_attempts=2 WHERE id=?", [item.id]);
+      db.run(
+        "UPDATE work_item SET turn_count=4, recovery_attempts=2, awake_ms=500, agent_ms=500 WHERE id=?",
+        [item.id],
+      );
       const prior = enqueueJob(db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id },
@@ -60,6 +63,8 @@ describe("restart and ask", () => {
         cancelRequested: false,
         turnCount: reason === "answer" ? 0 : 4,
         recoveryAttempts: 2,
+        awakeMs: 500,
+        agentMs: 500,
         sessionKey: item.sessionKey,
         currentRunId: item.currentRunId,
       });
@@ -84,13 +89,17 @@ describe("restart and ask", () => {
 
   test("an explicit retry of failed work resets execution state and is admitted next tick", () => {
     const { db, item } = fixture();
-    db.run("UPDATE work_item SET turn_count=4, recovery_attempts=2 WHERE id=?", [item.id]);
+    db.run(
+      "UPDATE work_item SET turn_count=4, recovery_attempts=2, awake_ms=500, agent_ms=500 WHERE id=?",
+      [item.id],
+    );
     failWorkItem(db, getWorkItem(db, item.id)!, "auth", "Authentication failed", 2);
     const failed = getWorkItem(db, item.id)!;
     expect(failed).toMatchObject({ state: "failed", cancelRequested: true });
     const job = restart(db, failed, {
       reason: "follow_up",
       resetExecution: true,
+      caps: { maxTurns: 20, maxAwakeMs: 10000 },
       body: "Retry after fixing authentication",
       now: 3,
     });
@@ -99,6 +108,10 @@ describe("restart and ask", () => {
       cancelRequested: false,
       turnCount: 0,
       recoveryAttempts: 0,
+      awakeMs: 0,
+      agentMs: 0,
+      maxTurns: 20,
+      maxAwakeMs: 10000,
     });
     expect(workspaceDispatch(db, { now: 4 })).toEqual([item.id]);
     expect(claimNextJob(db, { now: 4 })?.id).toBe(job!);
@@ -136,22 +149,96 @@ describe("restart and ask", () => {
     db.close();
   });
 
-  test("a failed restart rolls back its fence, cancellations, and capacity release", () => {
-    const { db, item: initial } = fixture();
-    db.run("UPDATE work_item SET turn_count=4, recovery_attempts=2 WHERE id=?", [initial.id]);
-    failWorkItem(db, getWorkItem(db, initial.id)!, "auth", "Authentication failed", 1);
-    const item = getWorkItem(db, initial.id)!;
-    const job = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id } });
-    db.run(
-      "CREATE TRIGGER reject_restart BEFORE INSERT ON work_item_event WHEN NEW.kind='restart' BEGIN SELECT RAISE(ABORT,'injected'); END",
-    );
-    expect(() =>
-      restart(db, item, { reason: "answer", resetExecution: true, body: "fix", now: 2 }),
-    ).toThrow("injected");
-    expect(getWorkItem(db, item.id)).toEqual(item);
-    expect(getJob(db, job)?.status).toBe("pending");
-    expect(getRun(db, item.currentRunId!)?.status).toBe("lost");
+  test.each([false, true])(
+    "restart rollback preserves execution state with resetExecution=%s",
+    (resetExecution) => {
+      const { db, item: initial } = fixture();
+      db.run(
+        "UPDATE work_item SET turn_count=4, recovery_attempts=2, awake_ms=500, agent_ms=500 WHERE id=?",
+        [initial.id],
+      );
+      if (resetExecution)
+        failWorkItem(db, getWorkItem(db, initial.id)!, "auth", "Authentication failed", 1);
+      const item = getWorkItem(db, initial.id)!;
+      const job = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id } });
+      db.run(
+        "CREATE TRIGGER reject_restart BEFORE INSERT ON work_item_event WHEN NEW.kind='restart' BEGIN SELECT RAISE(ABORT,'injected'); END",
+      );
+      expect(() =>
+        restart(db, item, {
+          reason: "findings",
+          resetExecution,
+          caps: { maxTurns: 99, maxAwakeMs: 99999 },
+          body: "fix",
+          now: 2,
+        }),
+      ).toThrow("injected");
+      expect(getWorkItem(db, item.id)).toEqual(item);
+      expect(getJob(db, job)?.status).toBe("pending");
+      expect(getRun(db, item.currentRunId!)?.status).toBe(resetExecution ? "lost" : "active");
+      db.close();
+    },
+  );
+
+  test("a stale explicit retry leaves budgets and caps unchanged", () => {
+    const { db, item } = fixture();
+    db.run("UPDATE work_item SET version=version+1, awake_ms=500, agent_ms=500 WHERE id=?", [
+      item.id,
+    ]);
+    const current = getWorkItem(db, item.id)!;
+    expect(
+      restart(db, item, {
+        reason: "follow_up",
+        resetExecution: true,
+        caps: { maxTurns: 99, maxAwakeMs: 99999 },
+        body: "retry",
+        now: 2,
+      }),
+    ).toBeNull();
+    expect(getWorkItem(db, item.id)).toEqual(current);
     db.close();
+  });
+
+  test("a rejected criteria restart preserves the open question and publishes no promise", async () => {
+    const { db, item } = fixture();
+    ask(
+      db,
+      { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
+      "agent",
+      "Continue?",
+      { now: 2 },
+    );
+    db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [item.id]);
+    const current = getWorkItem(db, item.id)!;
+    const question = findOpenQuestion(db, "session");
+    const outbox = listOutbox(db);
+    const jobs = listJobs(db);
+    const clock = new FakeClock(3);
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs: new JobLoop(db, clock),
+      outbox: new OutboxDispatcher(db, clock),
+      pawsRoot: tempHome(),
+      admission: workspaceAdmission(db),
+    });
+    try {
+      orchestrator.applyDelegationChanges({
+        delegationId: item.delegationId,
+        sessionId: "session",
+        addedItemIds: [],
+        removedItemIds: [],
+        specChangedItemIds: [item.id],
+        canceledItemIds: [],
+        parentCanceled: false,
+      });
+      expect(getWorkItem(db, item.id)).toEqual(current);
+      expect(findOpenQuestion(db, "session")).toEqual(question);
+      expect(listJobs(db)).toEqual(jobs);
+      expect(listOutbox(db)).toEqual(outbox);
+    } finally {
+      await orchestrator.shutdown();
+      db.close();
+    }
   });
 
   test("an old job after restart cannot accept, ask, or execute its handler", async () => {
