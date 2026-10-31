@@ -34,6 +34,7 @@ export class UsageLimitPause extends Error {
     readonly resumeAt: number,
     readonly resetsAt: number | null,
     readonly runnerId: string | null,
+    readonly readyRunners?: () => Promise<readonly string[]>,
   ) {
     super(
       `${agent} reached its usage limit${resetsAt === null ? "" : ` until ${new Date(resetsAt).toISOString()}`}`,
@@ -67,7 +68,7 @@ export type FailoverAttempt = (
 /** Waits out a usage limit. It returns at the resume time or throws when the run stops. */
 export type UsageLimitWait = {
   now(): number;
-  pause(limit: UsageLimitPause): Promise<void>;
+  pause(limit: UsageLimitPause, profilesChanged?: () => boolean): Promise<void>;
 };
 
 export async function runWithFailover(
@@ -85,13 +86,26 @@ export async function runWithFailover(
   const limitedSincePause = new Set<string>();
   let profile = input.profile;
   let fallback = input.fallbackProfile;
+  const profileKey = (profiles: {
+    profile?: RunAgentOptions["profile"];
+    fallbackProfile?: RunAgentOptions["fallbackProfile"];
+  }) =>
+    JSON.stringify(
+      [profiles.profile, profiles.fallbackProfile].map((value) =>
+        value ? [value.agent, value.model, value.effort] : null,
+      ),
+    );
+  let configuredProfilesKey = profileKey(input);
+  const profilesChanged = () =>
+    input.resolveProfiles !== undefined &&
+    profileKey(input.resolveProfiles()) !== configuredProfilesKey;
   for (let index = 0; index < 3;) {
     input.signal?.throwIfAborted();
     try {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) throw new Error("Remote runner request timed out during failover");
       return await attempt(
-        { ...input, ...(profile ? { profile } : {}), prompt, timeoutMs: remaining },
+        { ...input, profile, fallbackProfile: fallback, prompt, timeoutMs: remaining },
         excluded,
         limit,
       );
@@ -123,7 +137,17 @@ export async function runWithFailover(
           throw new UsageLimitExhaustedError(error.runnerId, error);
         // Waiting does not consume execution time, but does consume the usage-limit budget.
         const waitingAt = performance.now();
-        await usageLimits.pause(error);
+        await usageLimits.pause(error, profilesChanged);
+        if (input.resolveProfiles) {
+          const latest = input.resolveProfiles();
+          const latestKey = profileKey(latest);
+          if (latestKey !== configuredProfilesKey) {
+            profile = latest.profile;
+            fallback = latest.fallbackProfile;
+            configuredProfilesKey = latestKey;
+            excluded.length = 0;
+          }
+        }
         limitedSincePause.clear();
         input.signal?.throwIfAborted();
         deadline += performance.now() - waitingAt;

@@ -258,6 +258,8 @@ export function reviewRequirements(
         independence: Independence;
         parallel: boolean;
         failOn: Severity;
+        paths?: string[];
+        minChangedLines?: number;
       }>;
     }
   | { ok: false; message: string } {
@@ -267,12 +269,14 @@ export function reviewRequirements(
     ok: true,
     items: loaded.policy.items
       .filter((item): item is ResolvedReview => item.kind === "review")
-      .map(({ id, gate, independence, parallel, failOn }) => ({
+      .map(({ id, gate, independence, parallel, failOn, paths, minChangedLines }) => ({
         id,
         gate,
         independence,
         parallel: parallel === true,
         failOn,
+        ...(paths !== undefined ? { paths } : {}),
+        ...(minChangedLines !== undefined ? { minChangedLines } : {}),
       })),
   };
 }

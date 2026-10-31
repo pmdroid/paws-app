@@ -670,7 +670,6 @@ export {
 } from "./merge-queue";
 export type { MergeQueuePosition } from "./merge-queue";
 export {
-  agentReadyRunners,
   clearUsagePauses,
   endUsagePause,
   resumeUsagePauseNow,

@@ -40,6 +40,7 @@ import {
   git,
   removeWorktree,
   resolveAdapter,
+  providerFor,
   worktreePath,
   runDir,
   runAgent,
@@ -5940,14 +5941,22 @@ export class Orchestrator {
     if (!runner) return undefined;
     return async (options: RunAgentOptions) => {
       this.assertJobCurrent(itemId);
-      const currentRunId = getWorkItem(this.db, itemId)?.currentRunId;
-      const profile = currentRunId
-        ? this.profileSnapshot(currentRunId)[options.role]
-        : options.profile;
+      const resolveProfiles = () => {
+        const currentRunId = getWorkItem(this.db, itemId)?.currentRunId;
+        if (!currentRunId)
+          return { profile: options.profile, fallbackProfile: options.fallbackProfile };
+        const profiles = this.profileSnapshot(currentRunId);
+        return {
+          profile: profiles[options.role],
+          fallbackProfile: options.role === "reviewer" ? profiles.reviewerFallback : undefined,
+        };
+      };
       const result = await runner({
         ...options,
-        profile,
+        ...resolveProfiles(),
+        resolveProfiles,
         onEvent: async (event, origin) => {
+          const profile = resolveProfiles().profile;
           if (
             !options.prepareOnly &&
             options.role === "implementer" &&
@@ -7358,7 +7367,12 @@ export class Orchestrator {
         isTransientGitError(required.message)
         ? new PolicyFetchError(required.message)
         : new Error(required.message);
-    const requirements = required.items.filter((check) => check.gate === "beforePR");
+    const requirements = required.items.filter(
+      (check) =>
+        check.gate === "beforePR" &&
+        !check.paths?.length &&
+        !(check.minChangedLines !== undefined && check.minChangedLines > 0),
+    );
     if (!requirements.length) return;
     const identities: AgentIdentity[] = [];
     for (const role of ["implementer", "reviewer"] as const) {
@@ -7376,6 +7390,9 @@ export class Orchestrator {
         ...launched,
         ...(remote ? { onEvent: onRemoteEvent } : {}),
         profile,
+        ...(role === "reviewer" && profiles.reviewerFallback
+          ? { fallbackProfile: profiles.reviewerFallback }
+          : {}),
         role,
         itemId: itemPathId(item),
         runId: `${runId}-preflight-${role}`,
@@ -7417,7 +7434,11 @@ export class Orchestrator {
       return;
     }
     profiles.implementer.model ??= identities[0]!.model;
-    profiles.reviewer.model ??= identities[1]!.model;
+    const preparedReviewer =
+      identities[1]!.provider === providerFor(profiles.reviewer.agent)
+        ? profiles.reviewer
+        : profiles.reviewerFallback;
+    if (preparedReviewer) preparedReviewer.model ??= identities[1]!.model;
     writeFileSync(
       join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
       JSON.stringify({ ...this.readProfileSnapshot(runId), profiles }),
