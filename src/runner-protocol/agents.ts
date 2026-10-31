@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /** The coding agents the runner installer installs into `/opt/paws-runner/agents/<agent>`. */
-export const RUNNER_CODING_AGENTS = ["claude", "codex", "grok"] as const;
+export const RUNNER_CODING_AGENTS = ["claude", "codex", "grok", "opencode"] as const;
 export type RunnerCodingAgent = (typeof RUNNER_CODING_AGENTS)[number];
 
 const agent = z.enum(RUNNER_CODING_AGENTS);

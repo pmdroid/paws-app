@@ -23,37 +23,121 @@ import type {
 
 const YAML_OPTIONS = { uniqueKeys: true, version: "1.2" } as const;
 
-const schema = readSchema();
-const ajv = new Ajv2020({ allErrors: true, strict: true });
-ajv.addSchema(schema);
-const validatePolicy = compiled("urn:closeout:policy:0.1");
-const validateCommand = ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/command" });
-const validateReview = ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/review" });
-const validateEvidence = ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/evidence" });
+export type ParsedPolicy =
+  | {
+      ok: true;
+      document: PolicyDocument;
+      /** JSON pointers of the keys the schema does not know, dropped before validation. */
+      unknownKeys: string[];
+    }
+  | { ok: false; message: string };
 
-export type ParsedPolicy = { ok: true; document: PolicyDocument } | { ok: false; message: string };
+export type PolicyParser = (text: string) => ParsedPolicy;
+
+/**
+ * A parser for one edition of `policy.schema.json`. A key the schema does not know is dropped
+ * and named in `unknownKeys`, so a policy written for a newer parser still runs here; the keys it
+ * knows are validated strictly. Tests pass an older schema to stand in for an older runner.
+ */
+export function createPolicyParser(schemaDocument: AnySchema): PolicyParser {
+  const schema = readSchema(schemaDocument);
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  ajv.addSchema(schema);
+  const validators: Validators = {
+    policy: compiled(ajv, "urn:closeout:policy:0.1"),
+    command: ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/command" }),
+    review: ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/review" }),
+    evidence: ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/evidence" }),
+  };
+  return (text) => {
+    let value: unknown;
+    try {
+      value = parse(text, YAML_OPTIONS);
+    } catch (error) {
+      journalCaught(error, "document.parsePolicy.parse", null);
+      if (error instanceof YAMLParseError && error.code === "DUPLICATE_KEY") {
+        return { ok: false, message: "duplicated mapping key" };
+      }
+      return { ok: false, message: "invalid YAML" };
+    }
+    const unknownKeys: string[] = [];
+    const known = knownKeys(value, schema, schema, "", unknownKeys);
+    const schemaError = schemaMessage(validators, known);
+    if (schemaError !== undefined) return { ok: false, message: schemaError };
+    try {
+      return { ok: true, document: decodeDocument(known), unknownKeys };
+    } catch (error) {
+      journalCaught(error, "document.parsePolicy.decodeDocument", null);
+      const message = error instanceof Error ? error.message : "document does not match the schema";
+      return { ok: false, message };
+    }
+  };
+}
+
+type Validators = {
+  policy: ValidateFunction;
+  command: ValidateFunction;
+  review: ValidateFunction;
+  evidence: ValidateFunction;
+};
 
 /** YAML 1.2 parse plus `policy.schema.json`. The message has no file prefix. */
-export function parsePolicy(text: string): ParsedPolicy {
-  let value: unknown;
-  try {
-    value = parse(text, YAML_OPTIONS);
-  } catch (error) {
-    journalCaught(error, "document.parsePolicy.parse", null);
-    if (error instanceof YAMLParseError && error.code === "DUPLICATE_KEY") {
-      return { ok: false, message: "duplicated mapping key" };
+export const parsePolicy: PolicyParser = createPolicyParser(policySchema);
+
+/**
+ * `value` without the object keys `node` does not list under `properties`, each recorded in
+ * `unknown` as a JSON pointer. An `items` entry follows the branch its `kind` names; a value the
+ * schema cannot place is returned as it is, for validation to reject.
+ */
+function knownKeys(
+  value: unknown,
+  node: unknown,
+  root: Record<string, unknown>,
+  path: string,
+  unknown: string[],
+): unknown {
+  const schema = resolveRef(node, root);
+  if (!isRecord(schema)) return value;
+  if (Array.isArray(value)) {
+    if (schema.items === undefined) return value;
+    return value.map((entry, index) =>
+      knownKeys(entry, schema.items, root, `${path}/${index}`, unknown),
+    );
+  }
+  if (!isRecord(value)) return value;
+  if (Array.isArray(schema.oneOf)) {
+    const branch = schema.oneOf.find((option) => {
+      const resolved = resolveRef(option, root);
+      if (!isRecord(resolved) || !isRecord(resolved.properties)) return false;
+      const kind = resolved.properties.kind;
+      return isRecord(kind) && kind.const === value.kind;
+    });
+    return branch === undefined ? value : knownKeys(value, branch, root, path, unknown);
+  }
+  if (!isRecord(schema.properties) || schema.additionalProperties !== false) return value;
+  const properties = schema.properties;
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!(key in properties)) {
+      unknown.push(`${path}/${key}`);
+      continue;
     }
-    return { ok: false, message: "invalid YAML" };
+    out[key] = knownKeys(entry, properties[key], root, `${path}/${key}`, unknown);
   }
-  const schemaError = schemaMessage(value);
-  if (schemaError !== undefined) return { ok: false, message: schemaError };
-  try {
-    return { ok: true, document: decodeDocument(value) };
-  } catch (error) {
-    journalCaught(error, "document.parsePolicy.decodeDocument", null);
-    const message = error instanceof Error ? error.message : "document does not match the schema";
-    return { ok: false, message };
+  return out;
+}
+
+function resolveRef(node: unknown, root: Record<string, unknown>): unknown {
+  let current = node;
+  for (let depth = 0; depth < 8 && isRecord(current) && typeof current.$ref === "string"; depth++) {
+    const ref = current.$ref;
+    if (!ref.startsWith("#/")) return current;
+    let target: unknown = root;
+    for (const part of ref.slice(2).split("/"))
+      target = isRecord(target) ? target[part] : undefined;
+    current = target;
   }
+  return current;
 }
 
 /** Best-effort parse used only to discover import and skill paths. */
@@ -79,15 +163,19 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function schemaMessage(value: unknown): string | undefined {
+function schemaMessage(validators: Validators, value: unknown): string | undefined {
+  const validatePolicy = validators.policy;
   if (validatePolicy(value)) return undefined;
   const errors = validatePolicy.errors ?? [];
   const structural = errors.find((error) => !error.instancePath.startsWith("/items/"));
   if (structural) return formatError(structural);
-  return itemSchemaMessage(value) ?? formatError(errors[0]);
+  return itemSchemaMessage(validators, value) ?? formatError(errors[0]);
 }
 
-function itemSchemaMessage(value: unknown): string | undefined {
+function itemSchemaMessage(
+  { command: validateCommand, review: validateReview, evidence: validateEvidence }: Validators,
+  value: unknown,
+): string | undefined {
   if (!isRecord(value) || !Array.isArray(value.items)) return undefined;
   for (let index = 0; index < value.items.length; index += 1) {
     const item = value.items[index];
@@ -171,6 +259,7 @@ function decodeRules(value: unknown): PolicyRule[] {
     if (entry.exec !== undefined) rule.exec = expectStrings(entry.exec);
     if (entry.paths !== undefined) rule.paths = expectStrings(entry.paths);
     if (entry.onFail !== undefined) rule.onFail = expectOnFail(entry.onFail);
+    if (entry.recheck !== undefined) rule.recheck = expectBoolean(entry.recheck);
     return rule;
   });
 }
@@ -219,6 +308,7 @@ function decodeItem(value: unknown): PolicyItem {
     throw new Error("document does not match the schema");
   }
   const paths = value.paths === undefined ? undefined : expectStrings(value.paths);
+  const recheck = value.recheck === undefined ? undefined : expectBoolean(value.recheck);
   if (value.kind === "command") {
     const item: PolicyCommand = {
       id: value.id,
@@ -229,6 +319,7 @@ function decodeItem(value: unknown): PolicyItem {
     };
     if (paths !== undefined) item.paths = paths;
     if (value.ci !== undefined) item.ci = expectString(value.ci);
+    if (recheck !== undefined) item.recheck = recheck;
     return item;
   }
   if (value.kind === "review") {
@@ -245,6 +336,7 @@ function decodeItem(value: unknown): PolicyItem {
     if (value.minChangedLines !== undefined)
       item.minChangedLines = expectInt(value.minChangedLines);
     if (paths !== undefined) item.paths = paths;
+    if (recheck !== undefined) item.recheck = recheck;
     return item;
   }
   if (value.kind === "evidence") {
@@ -254,6 +346,7 @@ function decodeItem(value: unknown): PolicyItem {
     if (value.hint !== undefined) item.hint = expectString(value.hint);
     if (value.approval !== undefined) item.approval = expectApproval(value.approval);
     if (paths !== undefined) item.paths = paths;
+    if (recheck !== undefined) item.recheck = recheck;
     return item;
   }
   throw new Error("document does not match the schema");
@@ -306,6 +399,11 @@ function expectString(value: unknown): string {
   return value;
 }
 
+function expectBoolean(value: unknown): boolean {
+  if (typeof value !== "boolean") throw new Error("document does not match the schema");
+  return value;
+}
+
 function expectStrings(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
     throw new Error("document does not match the schema");
@@ -330,15 +428,12 @@ function expectSeverity(value: unknown): Severity {
   throw new Error("document does not match the schema");
 }
 
-function readSchema(): AnySchema {
-  const value: unknown = policySchema;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("policy schema is not an object");
-  }
+function readSchema(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error("policy schema is not an object");
   return value;
 }
 
-function compiled(id: string): ValidateFunction {
+function compiled(ajv: Ajv2020, id: string): ValidateFunction {
   const validate = ajv.getSchema(id);
   if (!validate) throw new Error(`policy schema ${id} did not compile`);
   return validate;

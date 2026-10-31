@@ -107,6 +107,38 @@ describe("pull requests", () => {
     expect((bodies[0] as { head: string }).head).toBe("paws/ENG-123");
   });
 
+  test("requests a review from the delegating member on a new pull request", async () => {
+    const requests: { method: string; path: string; body: unknown }[] = [];
+    const client: GitHubClient = {
+      async request(req) {
+        if (req.path.endsWith("/access_tokens")) return { status: 201, body: tokenBody("ghs_1") };
+        requests.push({ method: req.method, path: req.path, body: req.body });
+        if (req.path.endsWith("/requested_reviewers")) return { status: 422, body: {} };
+        return {
+          status: 201,
+          body: { number: 4, html_url: "https://github.com/pmdroid/paws-demo/pull/4" },
+        };
+      },
+    };
+    const pull = await openPullRequest({
+      issue: "ENG-123",
+      owner: "pmdroid",
+      repo: "paws-demo",
+      evidence: "Closeout: accepted",
+      reviewer: "octocat",
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client,
+    });
+    expect(pull.number).toBe(4);
+    expect(requests.at(-1)).toEqual({
+      method: "POST",
+      path: "/repos/pmdroid/paws-demo/pulls/4/requested_reviewers",
+      body: { reviewers: ["octocat"] },
+    });
+  });
+
   test("puts the agent's description before the evidence and updates an existing pull request", async () => {
     const requests: { method: string; body: unknown }[] = [];
     const client: GitHubClient = {

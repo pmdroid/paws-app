@@ -59,8 +59,10 @@ import {
   repositoryPackages,
   readQueueSettings,
   resolveAgentProfiles,
+  resolveBriefTemplate,
   resolveMergeSettings,
   type AgentProfile,
+  type AgentProfiles,
   type CheckoutExclusions,
 } from "../config";
 import {
@@ -93,7 +95,7 @@ import {
   type ResolvedEvidence,
   type CandidateIdentity,
   type CiResult,
-  candidatePolicyDigest,
+  candidatePolicyDigests,
   ciMappings,
 } from "../closeout";
 import {
@@ -132,6 +134,7 @@ import {
   RunnerSetupRequired,
   type RunnerSetupNeed,
   placementWaitMs,
+  resumeRetrySpreadMs,
   retryNote,
   transientRetryDelayMs,
 } from "../core";
@@ -161,6 +164,8 @@ import {
   listArtifacts,
   getTaskClassification,
   resolveTaskClassification,
+  accrueAwake,
+  hasLiveJob,
   applyWorkItemEvent,
   configureWorkItem,
   enqueueJobOnce,
@@ -206,6 +211,7 @@ import {
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   startCloseoutRound,
+  markJobAwakeWait,
   markRun,
   releaseRunCapacity,
   saveCheckpoint,
@@ -271,6 +277,9 @@ import {
   readPullMergeable,
   readReviewThreads,
   readPullCi,
+  commentOnPullRequest,
+  replyToReviewComment,
+  resolveReviewThread,
   mergedPullHeads,
   readPullMerge,
   branchContains,
@@ -374,6 +383,7 @@ import {
 } from "./link-ask";
 import { acceptCloseout, retryMergeLater, waitForMergeTurn, waitForRunnerSlot } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
+import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
 import { ciForRecheck, type CiRecheck } from "./ci-recheck";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
@@ -405,9 +415,11 @@ import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress } from "./closeout-progress";
+import { checkPolicyRunners } from "./policy-runners";
 import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
   closeoutChecksPrompt,
+  createAcpCodexReviewer,
   createReviewCommandReviewer,
   hiddenPathsPrompt,
   implementPrompt,
@@ -418,7 +430,7 @@ import {
 import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
-import { renderWorkBrief } from "./brief";
+import { renderWorkContext } from "../core";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
@@ -581,6 +593,7 @@ export type OrchestratorOptions = {
   caps?: { maxTurns: number; maxAwakeMs: number };
   retryBaseMs?: number;
   placementPollMs?: number;
+  random?: () => number;
   /** Runs publication Git (push, fetch, rebase) in place of the owned Git. Tests pass a wrapper. */
   publicationGitExec?: GitExec;
   /**
@@ -648,6 +661,7 @@ export class Orchestrator {
     string,
     (options: RunAgentOptions) => Promise<RunAgentResult>
   >();
+  private readonly leasedJobs = new Map<string, Job>();
   private readonly jobContexts = new Map<string, JobContext>();
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
@@ -1477,13 +1491,14 @@ export class Orchestrator {
       if (owner !== null) this.checkRunnerSetup(owner);
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
-      await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
+      if (this.waitingForRunnerSlot(job)) return;
+      await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
       if (this.waitingForRunnerSlot(job)) return;
       if (await this.mergeInsteadOfTurn(job, context)) return;
-      await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
+      await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
@@ -1516,7 +1531,7 @@ export class Orchestrator {
         )
           return;
         try {
-          await this.runLeasedJob(job.payload, context, () =>
+          await this.runLeasedJob(job, context, () =>
             this.runOwnedJob(job.payload, () =>
               this.reverify(job.payload, job.id, () => {
                 const owned = getWorkItem(this.db, item.id);
@@ -1543,6 +1558,8 @@ export class Orchestrator {
             this.options.journal,
           );
           clearWait();
+          const waitingId = readString(job.payload, "itemId");
+          if (waitingId) this.settleItemAwake(waitingId);
           waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
@@ -1577,6 +1594,8 @@ export class Orchestrator {
         return;
       }
       if (waiting === undefined) return;
+      const waitingId = readString(job.payload, "itemId");
+      if (waitingId) this.settleItemAwake(waitingId);
       if (parkMerge(this.db, job, this.now(), waiting) !== "expired") return;
       const itemId = readString(job.payload, "itemId");
       const item = itemId ? getWorkItem(this.db, itemId) : null;
@@ -1744,7 +1763,7 @@ export class Orchestrator {
     onWait: (wait: MergeWait | undefined) => void,
   ): Promise<void> {
     await this.failOnLastAttempt(job, context, "merge", () =>
-      this.runLeasedJob(job.payload, context, async () => {
+      this.runLeasedJob(job, context, async () => {
         try {
           await this.runOwnedJob(job.payload, async () => {
             const step = await this.merge(job.payload, job.id);
@@ -1829,11 +1848,15 @@ export class Orchestrator {
   }
 
   private async executeRetried(job: Job, context: JobContext): Promise<void> {
+    let capacityRun: { itemId: string; runId: string } | undefined;
+    let capacityParked = false;
     try {
       await this.executeQueued(job.payload);
     } catch (error) {
       const itemId = readString(job.payload, "itemId");
       const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      if (capacityWaitIn(error) && item?.currentRunId)
+        capacityRun = { itemId: item.id, runId: item.currentRunId };
       if (
         this.shuttingDown ||
         !item ||
@@ -1854,15 +1877,20 @@ export class Orchestrator {
       }
       const wait = this.nextRunnerWait(job, error);
       if (wait) {
-        deferWorkItem(this.db, item, {
-          retry: retryCount(job.payload),
-          delayMs: this.runnerWaitMs(wait),
-          handoff: readString(job.payload, "handoff"),
-          message: null,
-          capacityWait: wait,
-          now: this.now(),
-        });
-
+        // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
+        // and the item keeps this run (PAS-898).
+        this.settleItemAwake(item.id);
+        if (
+          waitForRunnerSlot(
+            this.db,
+            job,
+            this.now(),
+            this.runnerWaitMs(wait, job.queue === JOB_KIND.resume),
+            wait,
+          ) === "lost"
+        )
+          throw error;
+        capacityParked = true;
         journalCaught(
           error,
           "orchestrator.executeRetried.executeQueued",
@@ -1908,6 +1936,7 @@ export class Orchestrator {
         }
         const delayMs = transientRetryDelayMs(retry, error, this.options.retryBaseMs);
 
+        this.settleItemAwake(item.id);
         deferWorkItem(this.db, item, {
           retry,
           delayMs,
@@ -1928,6 +1957,14 @@ export class Orchestrator {
       if (job.attempts >= job.maxAttempts)
         this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
       throw error;
+    } finally {
+      if (
+        capacityRun &&
+        !capacityParked &&
+        getWorkItem(this.db, capacityRun.itemId)?.currentRunId === capacityRun.runId &&
+        !hasLiveJob(this.db, capacityRun.itemId, this.now(), job.id)
+      )
+        closeActiveRun(this.db, capacityRun.runId, this.now(), "lost");
     }
   }
 
@@ -2071,8 +2108,9 @@ export class Orchestrator {
     };
   }
 
-  private runnerWaitMs(wait: RunnerCapacityWaitState): number {
-    return placementWaitMs(wait.attempt, this.options.placementPollMs);
+  private runnerWaitMs(wait: RunnerCapacityWaitState, recoveringResume = false): number {
+    const baseMs = placementWaitMs(wait.attempt, this.options.placementPollMs);
+    return recoveringResume ? baseMs - resumeRetrySpreadMs(baseMs, this.options.random) : baseMs;
   }
 
   private waitingForRunnerSlot(job: Job, beforePark?: () => Job): boolean {
@@ -2083,7 +2121,7 @@ export class Orchestrator {
       !waited ||
       !item ||
       item.cancelRequested ||
-      !["recovering", "verifying", "merge_queue"].includes(item.state) ||
+      !["running", "recovering", "verifying", "merge_queue"].includes(item.state) ||
       this.shuttingDown ||
       (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
@@ -2092,7 +2130,8 @@ export class Orchestrator {
       return false;
     const next = { ...waited, attempt: waited.attempt + 1 };
     job = beforePark?.() ?? job;
-    waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(next), next);
+    const delayMs = this.runnerWaitMs(next, job.queue === JOB_KIND.resume);
+    waitForRunnerSlot(this.db, job, this.now(), delayMs, next);
     return true;
   }
 
@@ -2658,6 +2697,7 @@ export class Orchestrator {
       },
     );
     let deferred = false;
+    let capacityWaiting = false;
 
     try {
       await this.taskAccess()?.assert(item, controller.signal);
@@ -2826,6 +2866,8 @@ export class Orchestrator {
       if (!artifactPublicationReady(this.db, item.id))
         throw new Error("A requested artifact has not been uploaded successfully");
       saveRunResult(this.db, run.id, activity.resultBody(), this.now());
+      // A fix turn for pull request comments reports a reply for each one it was handed.
+      recordAgentReviewReplies(this.db, item.id, activity.resultBody(), this.now());
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
       this.saveCandidate(run.id, executed.run.identity);
@@ -2833,7 +2875,12 @@ export class Orchestrator {
       const base = (
         await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
       ).trim();
-      saveCheckpoint(this.db, item.id, { phase: "running", baseSha: base, wipCommit: head });
+      saveCheckpoint(this.db, item.id, {
+        ...getWorkItem(this.db, item.id)?.checkpoint,
+        phase: "running",
+        baseSha: base,
+        wipCommit: head,
+      });
       const commits = Number(
         (
           await git(["-C", executed.worktreePath, "rev-list", "--count", `${base}..${head}`])
@@ -2876,6 +2923,7 @@ export class Orchestrator {
           );
         else if (isTransient(error)) {
           deferred = true;
+          capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
         } else this.fail(current, "run_error", message, error);
       }
@@ -2894,6 +2942,7 @@ export class Orchestrator {
       this.releaseAskedRun(run.id);
       if (
         this.options.remoteExecution &&
+        !capacityWaiting &&
         !this.shuttingDown &&
         (this.jobContexts.get(item.id)?.isCurrent() ?? true)
       )
@@ -3333,7 +3382,12 @@ export class Orchestrator {
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
-    const reviewer = createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
+
+    const reviewerAgent = deps.profiles?.reviewer?.agent;
+    const reviewer =
+      reviewerAgent === "grok" || reviewerAgent === "opencode"
+        ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
+        : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,
@@ -3417,7 +3471,7 @@ export class Orchestrator {
         input.report(
           `Closeout could not run the checks for ${item.linearIdentifier} on its runner (${reason}). Retrying in ${Math.round(delayMs / 1000)} s.`,
         );
-        await delay(delayMs, undefined, deps.signal ? { signal: deps.signal } : {});
+        await this.waitWithoutAwake(item.id, "backoff", delayMs, deps.signal);
         assertCurrent();
       } else
         input.report(
@@ -3469,12 +3523,13 @@ export class Orchestrator {
           (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(reason)) &&
           this.now() < rateLimitDeadline
         ) {
-          await delay(
+          await this.waitWithoutAwake(
+            item.id,
+            "backoff",
             error instanceof LinearRateLimitError
               ? Math.min(error.retryAfterMs, CHECKS_RATE_LIMIT_WAIT_MS)
               : CHECKS_RATE_LIMIT_RETRY_MS,
-            undefined,
-            deps.signal ? { signal: deps.signal } : {},
+            deps.signal,
           );
           assertCurrent();
           attempt -= 1;
@@ -3510,7 +3565,7 @@ export class Orchestrator {
         return runner;
       },
       now: () => this.now(),
-      sleep: (ms) => delay(ms, undefined, signal ? { signal } : {}),
+      sleep: (ms) => this.waitWithoutAwake(item.id, "runner", ms, signal),
       waiting: (reason) => {
         if (stepId)
           setRunningCloseoutStepDetail(this.db, item.id, head, stepId, reason, this.now());
@@ -3654,7 +3709,7 @@ export class Orchestrator {
           ...this.gitHubCredentials(github),
         });
       },
-      sleep: (ms) => delay(ms, undefined, signal ? { signal } : {}),
+      sleep: (ms) => this.waitWithoutAwake(item.id, "ci", ms, signal),
       now: () => this.now(),
       ...(this.options.ciRecheckWait ?? {}),
       onWait: (message) =>
@@ -4035,9 +4090,9 @@ export class Orchestrator {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
         settings: (item, signal) => this.mergeSettingsFor(item, signal),
-        policyDigest: (item, worktree) => {
+        policyDigests: (item, worktree) => {
           const { home, policyRoot } = this.closeoutHome(item);
-          return candidatePolicyDigest(worktree, home, policyRoot, this.runCheckout(item).checks);
+          return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
         },
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
@@ -4250,6 +4305,7 @@ export class Orchestrator {
       repo: repository.repo,
       title: draft?.title ?? item.title,
       ...(draft ? { description: draft.body } : {}),
+      reviewer: getItemRunCommitPolicy(this.db, item.id)?.credit?.login,
       client: github.client,
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
@@ -4277,6 +4333,7 @@ export class Orchestrator {
       line: openLine,
       now: this.now(),
     });
+    await this.postReviewReplies(item, github, repository, published.pull.number, published.head);
     this.post(
       item,
       "response",
@@ -4660,6 +4717,7 @@ export class Orchestrator {
           const current = getWorkItem(this.db, item.id);
           if (current?.state === "running") {
             saveCheckpoint(this.db, item.id, {
+              ...current.checkpoint,
               phase: "awaiting_input",
               ...(current.checkpoint?.wipCommit ? { wipCommit: current.checkpoint.wipCommit } : {}),
               ...(current.checkpoint?.baseSha ? { baseSha: current.checkpoint.baseSha } : {}),
@@ -4854,6 +4912,7 @@ export class Orchestrator {
         },
       );
     saveCheckpoint(this.db, itemId, {
+      ...getWorkItem(this.db, itemId)?.checkpoint,
       phase,
       ...(head === "" ? {} : { wipCommit: head }),
       ...(base === "" ? {} : { baseSha: base }),
@@ -5871,22 +5930,26 @@ export class Orchestrator {
   }
 
   private async runLeasedJob(
-    payload: unknown,
+    job: Job,
     context: JobContext,
     operation: () => Promise<void>,
   ): Promise<void> {
-    const itemId = readString(payload, "itemId");
+    const itemId = readString(job.payload, "itemId");
     if (!itemId) return;
     if (this.jobContexts.has(itemId)) throw new Error("Task already has an owned job operation");
     if (!context.isCurrent()) throw context.signal.reason;
     this.jobContexts.set(itemId, context);
+    this.leasedJobs.set(itemId, job);
     this.verifyingStops.delete(itemId);
     try {
       await this.loadProjectOverview(itemId, context.signal);
       await operation();
       if (!context.isCurrent()) throw context.signal.reason;
     } finally {
-      if (this.jobContexts.get(itemId) === context) this.jobContexts.delete(itemId);
+      if (this.jobContexts.get(itemId) === context) {
+        this.jobContexts.delete(itemId);
+        this.leasedJobs.delete(itemId);
+      }
     }
   }
 
@@ -5962,6 +6025,7 @@ export class Orchestrator {
     return createRepositoryGit({
       remoteUrl: repository.remoteUrl,
       signal,
+      ...(access === "write" ? { pushBranch: item.branchName } : {}),
       token: (ownedSignal) => this.options.repositoryToken!(item, repository, ownedSignal, access),
       onCleanupFailure: () => this.blockConversation(item.id),
       assert: async () => {
@@ -6533,18 +6597,20 @@ export class Orchestrator {
           .map((snapshot) => JSON.parse(snapshot) as LinearActivitySnapshot)
           .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral)
       : [];
-    return [
-      renderWorkBrief(item.brief),
-      (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
-      ...listLinearTurnsForItem(this.db, item.id).map((turn) => `User update:\n${turn.body}`),
-      classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
-      item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
-      activities.length
-        ? `Immutable Linear conversation history:\n${JSON.stringify(activities)}`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const repository = this.repositoryForItem(item);
+    const template = resolveBriefTemplate(
+      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+      repository ? `${repository.owner}/${repository.repo}` : null,
+    );
+    return renderWorkContext(template, {
+      brief: item.brief,
+      projectOverview:
+        (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
+      userUpdates: listLinearTurnsForItem(this.db, item.id).map((turn) => turn.body),
+      taskContext: classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
+      sessionContext: item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
+      activities,
+    });
   }
 
   private artifactPublisher(item: WorkItemRecord) {
@@ -7029,6 +7095,45 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * Reply on the pull request to each comment the last fix turn was handed, and resolve the threads
+   * it addressed. The head is on GitHub by now. A failure leaves the rest for the next publication
+   * and does not hold the merge.
+   */
+  private async postReviewReplies(
+    item: WorkItemRecord,
+    github: GitHubBinding,
+    repository: { owner: string; repo: string },
+    pullNumber: number,
+    head: string,
+  ): Promise<void> {
+    const access = {
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      ...this.gitHubCredentials(github),
+    };
+    await postReviewReplies(
+      this.db,
+      { itemId: item.id, pullNumber, head, now: () => this.now() },
+      {
+        replyToReviewComment: (prNumber, commentId, body) =>
+          replyToReviewComment({ ...access, prNumber, commentId, body }),
+        commentOnPullRequest: (prNumber, body) =>
+          commentOnPullRequest({ ...access, prNumber, body }),
+        resolveReviewThread: (threadId) => resolveReviewThread({ ...access, threadId }),
+      },
+    ).catch((error: unknown) =>
+      journalCaught(
+        error,
+        "orchestrator.postReviewReplies",
+        item.id,
+        undefined,
+        this.options.journal,
+      ),
+    );
+  }
+
   private gitHubCredentials(
     github: GitHubBinding,
   ):
@@ -7084,7 +7189,7 @@ export class Orchestrator {
   }
 
   private readProfileSnapshot(runId: string): {
-    profiles: { implementer: AgentProfile; reviewer: AgentProfile };
+    profiles: AgentProfiles;
     candidate?: AgentIdentity;
     settingsSwitch?: { id: string; previousAgent: AgentProfile["agent"] };
   } | null {
@@ -7157,7 +7262,7 @@ export class Orchestrator {
     );
   }
 
-  private profileSnapshot(runId: string): { implementer: AgentProfile; reviewer: AgentProfile } {
+  private profileSnapshot(runId: string): AgentProfiles {
     const saved = this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
@@ -7189,7 +7294,7 @@ export class Orchestrator {
   private async preflight(
     item: WorkItemRecord,
     runId: string,
-    profiles: { implementer: AgentProfile; reviewer: AgentProfile },
+    profiles: AgentProfiles,
     signal: AbortSignal,
     onRemoteEvent: (event: AcpEvent) => void,
   ): Promise<void> {
@@ -7291,7 +7396,8 @@ export class Orchestrator {
     item: WorkItemRecord,
     input: RunAgentOptions,
   ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes"> {
-    if (input.prepareOnly || !this.repositoryForItem(item)) return {};
+    const repository = this.repositoryForItem(item);
+    if (input.prepareOnly || !repository) return {};
     const runtimes = { runtimes: () => this.runtimeList(item, input.worktreePath) };
     if (input.role !== "implementer") return runtimes;
     const { home, policyRoot } = this.closeoutHome(item);
@@ -7299,6 +7405,14 @@ export class Orchestrator {
       ...runtimes,
       closeoutPolicy: async () => {
         const load = trustedPolicyFiles(input.worktreePath, home, policyRoot);
+        // The runner parses the policy with its own release: say which keys it would leave out.
+        if (load.ok && !load.absent)
+          checkPolicyRunners(this.db, {
+            repository: `${repository.owner}/${repository.repo}`,
+            digest: load.digest,
+            files: load.files,
+            now: this.now(),
+          });
         return load.ok && !load.absent
           ? { ...load, published: publishedEvidence(this.db, item.id) }
           : load;
@@ -7599,7 +7713,8 @@ export class Orchestrator {
           );
           controller.signal.throwIfAborted();
 
-          if (attempt < 3) await delay(attempt * 500, undefined, { signal: controller.signal });
+          if (attempt < 3)
+            await this.waitWithoutAwake(item.id, "backoff", attempt * 500, controller.signal);
         }
       }
       if (suggested)
@@ -7704,6 +7819,28 @@ export class Orchestrator {
 
   private now(): number {
     return (this.options.clock ?? systemClock).now();
+  }
+
+  private async waitWithoutAwake(
+    itemId: string,
+    reason: "ci" | "runner" | "backoff",
+    ms: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const clock = this.options.clock ?? systemClock;
+    const job = this.leasedJobs.get(itemId);
+    if (job) markJobAwakeWait(this.db, job, true, clock.mono(), clock.now(), reason);
+    try {
+      await delay(ms, undefined, signal ? { signal } : {});
+    } finally {
+      if (job) markJobAwakeWait(this.db, job, false, clock.mono(), clock.now(), reason);
+    }
+  }
+
+  /** Records awake time up to this instant, under the item's category before the next wait. */
+  private settleItemAwake(itemId: string): void {
+    const clock = this.options.clock ?? systemClock;
+    accrueAwake(this.db, itemId, clock.mono(), clock.now());
   }
 }
 

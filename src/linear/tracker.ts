@@ -1,7 +1,9 @@
+import { readLinearBriefIssue } from "./brief-issue";
 import { createIssuePullRequestReads } from "./issue-pulls";
 import { createLinearProjectScopeReads } from "./project-scope";
 import { createLinearAttachmentMethods } from "./attachments";
 import { createLinearSubIssueMethods } from "./sub-issues";
+import { createLinearFindingIssueMethods } from "./finding-issues";
 import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
@@ -67,9 +69,11 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
 };
 
 type LinearTracker = LinearSessionAdapter &
+  Required<Pick<import("./adapter").TrackerAdapter, "readBriefIssue">> &
   ReturnType<typeof createLinearSessionReads> &
   LinearRepositoryAdapter &
   ReturnType<typeof createLinearSubIssueMethods> &
+  ReturnType<typeof createLinearFindingIssueMethods> &
   ReturnType<typeof createLinearMergeReads>;
 
 type TrackerMethod = {
@@ -96,8 +100,10 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   createIssueAttachment: "issue-attachment",
   deleteIssueAttachment: "issue-attachment",
   createSubIssues: "sub-issues",
+  fileFindingIssue: "finding-issue",
   listIssuePullRequests: "issue-pull-requests",
   loadEpic: "issue-snapshot",
+  readBriefIssue: "brief-preview",
   listDeps: "issue-relations",
   postProgress: "activity-post",
   postProgressWithSession: "activity-post",
@@ -118,9 +124,11 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
     ...createLinearProjectScopeReads(client),
     ...repositories,
     ...createLinearSubIssueMethods(client, repositories.addRepositoryLabel),
+    ...createLinearFindingIssueMethods(client),
     ...createLinearMergeReads(client, starts),
     ...createLinearAttachmentMethods(client),
     listIssuePullRequests: createIssuePullRequestReads(client),
+    readBriefIssue: (identifier, options) => readLinearBriefIssue(client, identifier, options),
     async loadEpic(linearIssueId) {
       const children = new Map<string, LinearSubIssue & { sort: number | null }>();
       const cursors = new Set<string>();

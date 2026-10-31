@@ -48,7 +48,7 @@ export function notTeamMemberDenial(team: string): GitHubDenial {
 
 function people(names: readonly string[]): string {
   const unique = [...new Set(names.map((name) => name.trim()).filter(Boolean))];
-  if (unique.length === 0) return "a Paws owner or admin";
+  if (unique.length === 0) return "a Paws admin";
   if (unique.length === 1) return unique[0]!;
   return `${unique.slice(0, -1).join(", ")} or ${unique.at(-1)}`;
 }

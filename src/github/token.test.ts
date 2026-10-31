@@ -119,16 +119,16 @@ describe("GitHub App tokens", () => {
     const body = (repository: { name: string; full_name: string }) =>
       tokenBody("ghs_case", { repositories: [repository] });
     const scoped = assertScopedToken(
-      body({ name: "Monorepo", full_name: "Acme/Monorepo" }),
-      "acme",
+      body({ name: "Monorepo", full_name: "ArcadeAI/Monorepo" }),
+      "arcadeai",
       "monorepo",
       new Date(),
     );
     expect(scoped.token).toBe("ghs_case");
     expect(() =>
       assertScopedToken(
-        body({ name: "other", full_name: "Acme/other" }),
-        "acme",
+        body({ name: "other", full_name: "ArcadeAI/other" }),
+        "arcadeai",
         "monorepo",
         new Date(),
       ),

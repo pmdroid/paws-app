@@ -31,22 +31,6 @@ const RUN_LABEL: Record<RunState, string> = {
   stopped: "Stopped",
 };
 
-const VERDICT_LABEL: Record<VerdictDecision, string> = {
-  accepted: "Accepted",
-  rejected: "Rejected",
-  exhausted: "Exhausted",
-  running: "Verifying…",
-  blocked: "Blocked",
-};
-
-const VERDICT_DETAIL: Record<VerdictDecision, string> = {
-  accepted: "Fresh evidence satisfied the applicable requirements.",
-  rejected: "Findings go back to the implementing agent.",
-  exhausted: "Retry budget for this item is used up.",
-  running: "Closeout is still collecting evidence.",
-  blocked: "Closeout stopped and needs a person.",
-};
-
 export function esc(value: string): string {
   return value.replace(/[&<>"']/g, (char) => {
     switch (char) {
@@ -73,8 +57,6 @@ export function runLabel(state: RunState): string {
 }
 
 export const PHASE_NAMES = ["Implementation", "Closeout", "Waiting to merge", "Complete"] as const;
-
-export const RUN_STATES = Object.keys(RUN_LABEL) as RunState[];
 
 export function taskPhase(
   itemState: ItemState | null,
@@ -147,14 +129,6 @@ export function durationLabel(ms: number): string {
   const rest = seconds % 60;
   if (minutes <= 0) return `${seconds}s`;
   return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
-}
-
-export function verdictLabel(decision: VerdictDecision): string {
-  return VERDICT_LABEL[decision];
-}
-
-export function verdictDetail(decision: VerdictDecision): string {
-  return VERDICT_DETAIL[decision];
 }
 
 export function statePill(state: string, label: string): string {

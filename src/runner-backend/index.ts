@@ -50,12 +50,14 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
   encodePolicyFiles,
+  encodePolicyChunk,
 } from "../acp";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import {
+  SKILL_HOOK_RUNNER_VERSION,
   REBASE_RUNNER_VERSION,
   REVIEW_COMMAND_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
@@ -73,6 +75,7 @@ import { fastForwardToBranchTip } from "./candidate";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
+import { ensureStartOnRemote, lostCommitsNote, RemoteStartUnverified } from "./start-commit";
 import {
   planSessionRestore,
   runnerGoneReason,
@@ -95,6 +98,7 @@ import {
   RunnerCapacityWait,
   RunnerSetupRequired,
   WORKSPACE_HOOK_LIMIT,
+  systemClock,
   type WorkspaceHook,
 } from "../core";
 import {
@@ -287,6 +291,7 @@ export function createRemoteAgentRunner(options: {
     repository: string,
   ) => Promise<NonNullable<Extract<RunnerCommand, { type: "run" }>["checkpointBot"]>>;
   now?: () => number;
+  mono?: () => number;
   pollIntervalMs?: number;
   /** How long a run may go without a runner event before Paws asks whether the runner has it. */
   silentRunMs?: number;
@@ -296,6 +301,7 @@ export function createRemoteAgentRunner(options: {
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
+  const mono = options.mono ?? systemClock.mono;
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
@@ -317,10 +323,21 @@ export function createRemoteAgentRunner(options: {
     );
   }
   /** Workspace hooks for the run's agent, signed into the command with everything else. */
-  function runHooks(agent: string): { hooks?: WorkspaceHook[] } {
+  function runHooks(agent: string, runnerId: string): { hooks?: WorkspaceHook[] } {
     const hooks = listHooks(db).filter((hook) =>
       (hook.agents as readonly string[]).includes(agent),
     );
+    if (hooks.some((hook) => hook.skill !== null)) {
+      const version = db
+        .query<{ version: string | null }, [string]>(
+          "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+        )
+        .get(runnerId)?.version;
+      if (!versionAtLeast(version, SKILL_HOOK_RUNNER_VERSION))
+        throw new Error(
+          `Runner ${runnerId} needs runner ${SKILL_HOOK_RUNNER_VERSION.join(".")} or later to run skill hooks. Upgrade the runner, then run again.`,
+        );
+    }
     return hooks.length ? { hooks: hooks.slice(0, WORKSPACE_HOOK_LIMIT) } : {};
   }
   async function select(
@@ -451,16 +468,19 @@ export function createRemoteAgentRunner(options: {
     );
   }
   /** Reservations per runner whose run has no runner_work row there yet. */
-  function unassigned() {
+  function unassigned(excludeRunId = "") {
     const counts = new Map<string, number>();
+    const assigned = new Map(
+      db
+        .query<{ runId: string; runnerId: string }, [string]>(
+          `SELECT run_id AS runId, runner_id AS runnerId FROM runner_work
+       WHERE run_id IN (SELECT value FROM json_each(?))`,
+        )
+        .all(JSON.stringify([...reservations.keys()]))
+        .map((row) => [row.runId, row.runnerId]),
+    );
     for (const [runId, hostId] of reservations)
-      if (
-        !db
-          .query<{ held: number }, [string, string]>(
-            "SELECT 1 AS held FROM runner_work WHERE run_id=? AND runner_id=?",
-          )
-          .get(runId, hostId)
-      )
+      if (runId !== excludeRunId && assigned.get(runId) !== hostId)
         counts.set(hostId, (counts.get(hostId) ?? 0) + 1);
     return counts;
   }
@@ -475,7 +495,7 @@ export function createRemoteAgentRunner(options: {
     let candidates = options.placement
       ? await options.placement.candidates({
           ...placement,
-          reserved: unassigned(),
+          reserved: unassigned(item.currentRunId),
           onRejected: (id, reason) => rejected.push(`${id}: ${reason}`),
         })
       : db
@@ -506,7 +526,7 @@ export function createRemoteAgentRunner(options: {
       ];
     placement.signal?.throwIfAborted();
     offered.push(...candidates.map((runner) => runner.id));
-    const pending = unassigned();
+    const pending = unassigned(item.currentRunId);
     for (const runner of candidates) {
       if (runner.id === placement.handedOverFrom) {
         rejected.push(`${runner.id}: handed the session over`);
@@ -529,12 +549,14 @@ export function createRemoteAgentRunner(options: {
         continue;
       }
       try {
-        const mode = getTaskMode(db, itemId);
-        if (isResponseTaskMode(mode))
-          work.scopeTask(item.currentRunId, runner.workspaceId, work.identity(runner.id).userId);
-        else work.scope(item.currentRunId, runner.workspaceId);
+        immediate(db, () => {
+          const mode = getTaskMode(db, itemId);
+          if (isResponseTaskMode(mode))
+            work.scopeTask(item.currentRunId!, runner.workspaceId, work.identity(runner.id).userId);
+          else work.scope(item.currentRunId!, runner.workspaceId);
+          releasePinnedSlot(db, itemId);
+        });
         reservations.set(item.currentRunId, runner.id);
-        releasePinnedSlot(db, itemId);
         return { ...runner, runId: item.currentRunId };
       } catch (error) {
         journalCaught(error, "runner-backend.place.getTaskMode", itemId);
@@ -627,15 +649,19 @@ export function createRemoteAgentRunner(options: {
         const runId = getWorkItem(db, itemId)?.currentRunId;
         if (!runId) throw limit;
         const agent = agentName(limit.agent);
-        startUsagePause(db, {
-          runId,
-          itemId,
-          agent: limit.agent,
-          runnerId: limit.runnerId,
-          resetsAt: limit.resetsAt,
-          resumeAt: limit.resumeAt,
-          pausedAt: now(),
-        });
+        startUsagePause(
+          db,
+          {
+            runId,
+            itemId,
+            agent: limit.agent,
+            runnerId: limit.runnerId,
+            resetsAt: limit.resetsAt,
+            resumeAt: limit.resumeAt,
+            pausedAt: now(),
+          },
+          mono(),
+        );
         try {
           await input.onEvent?.({
             type: "progress",
@@ -648,7 +674,7 @@ export function createRemoteAgentRunner(options: {
             await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
           }
         } finally {
-          endUsagePause(db, runId);
+          endUsagePause(db, runId, mono(), now());
         }
         input.signal?.throwIfAborted();
         await input.onEvent?.({
@@ -693,7 +719,12 @@ export function createRemoteAgentRunner(options: {
           (responseTask || input.prepareOnly || input.role !== "reviewer" || !input.readOnly)
         )
           throw new Error("A review command runs only as read-only reviewer work");
-        if (input.reviewCommand && (input.profile.agent === "grok" || !input.profile.model))
+        if (
+          input.reviewCommand &&
+          (input.profile.agent === "grok" ||
+            input.profile.agent === "opencode" ||
+            !input.profile.model)
+        )
           throw new Error(
             "The reviewer profile needs a Claude or Codex model to run the agent's review command",
           );
@@ -939,11 +970,78 @@ export function createRemoteAgentRunner(options: {
               );
             }
           };
+          /** Pushes a head GitHub lacks, else falls back; returns the handoff for lost commits. */
+          const remoteStart = async (
+            scoped: { item: { branchName: string }; repository?: { remoteUrl: string } },
+            networkGit: (args: string[]) => Promise<string>,
+          ) => {
+            const checkpoint = getWorkItem(db, itemId)?.checkpoint;
+            // A handoff saved by an earlier fallback still goes out until a runner receives it.
+            const pending = checkpoint?.lostCommits;
+            if (!scoped.repository || !scoped.item.branchName) return pending;
+            // A first run starts from the mirror's commit, which came from GitHub.
+            if (
+              !checkpoint?.baseSha ||
+              (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim() ===
+                checkpoint.baseSha
+            )
+              return pending;
+            let lostCommits: string | undefined;
+            let repeated = false;
+            const start = await ensureStartOnRemote({
+              worktree: input.worktreePath,
+              branch: scoped.item.branchName,
+              remoteUrl: scoped.repository!.remoteUrl,
+              networkGit,
+              ...(checkpoint?.wipCommit ? { wipCommit: checkpoint.wipCommit } : {}),
+              ...(checkpoint?.baseSha ? { baseSha: checkpoint.baseSha } : {}),
+              persistFallback: (fallback) => {
+                const note = lostCommitsNote(fallback.start, fallback.lost);
+                // A stop after this save but before the reset repeats the same fallback.
+                repeated = pending?.includes(note) === true;
+                lostCommits = repeated ? pending : pending ? `${pending}\n${note}` : note;
+                saveCheckpoint(db, itemId, {
+                  ...checkpoint,
+                  wipCommit: fallback.start,
+                  lostCommits,
+                });
+              },
+              signal,
+            }).catch((error: unknown) => {
+              // No runner gets a commit GitHub may lack; the item retries later.
+              if (error instanceof RemoteStartUnverified)
+                journal(`item ${itemId}: ${error.message}`);
+              throw error;
+            });
+            if (start.status === "remote") return pending;
+            if (start.status === "pushed") {
+              journal(`item ${itemId} pushed ${start.head} to GitHub before the run`);
+              return pending;
+            }
+            journal(
+              `item ${itemId} starts from ${start.start} because ${start.head} is not on GitHub and its push failed: ${start.error}`,
+            );
+            if (!repeated)
+              await emit({
+                type: "progress",
+                text: `Commit ${start.head.slice(0, 8)} never reached GitHub, so this run continues from ${start.start.slice(0, 8)} and the agent redoes the rest.\n`,
+              });
+            return lostCommits;
+          };
           const placed =
             attached ??
             (await (async () => {
+              const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
+              // A runner's saved WIP comes first; then the head it gives must be on GitHub.
+              if (!taskScope && input.role === "implementer" && input.networkGit)
+                await importCheckpoint(input.networkGit);
+              const lostNote =
+                !taskScope && input.role === "implementer" && input.networkGit
+                  ? await remoteStart(scoped, input.networkGit)
+                  : undefined;
               // A runner command does not carry the caller's session, so a resume replays.
-              const prompt = input.resume?.replayPrompt ?? input.prompt;
+              const replayed = input.resume?.replayPrompt ?? input.prompt;
+              const prompt = lostNote ? `${lostNote}\n\n${replayed}` : replayed;
               const prepared = input.prepareInputFiles
                 ? await input.prepareInputFiles({
                     workspace: input.worktreePath,
@@ -951,7 +1049,6 @@ export function createRemoteAgentRunner(options: {
                     signal,
                   })
                 : { prompt, inputFiles: [] };
-              const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
               const files = snapshotAgentInputs(input.worktreePath, [
                 ...suppliedInputs,
                 ...prepared.inputFiles,
@@ -991,7 +1088,7 @@ export function createRemoteAgentRunner(options: {
                   ? options.inputs!.stagePrompt(commandId, prepared.prompt)
                   : undefined;
               // A run that leaves its pinned runner may continue its saved agent session there.
-              const restorePlan: SessionRestorePlan | undefined =
+              let restorePlan: SessionRestorePlan | undefined =
                 !taskScope &&
                 input.role === "implementer" &&
                 input.checkpoint !== false &&
@@ -1003,34 +1100,31 @@ export function createRemoteAgentRunner(options: {
                       targetRunnerId: selected.id,
                     })
                   : undefined;
-              if (!taskScope && input.role === "implementer" && input.networkGit)
-                await importCheckpoint(input.networkGit);
               const head = taskScope
                 ? undefined
                 : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
-              // The checkout holds the snapshot's commit, or the latest pushed commit when newer.
+              // A session snapshot is conversation state, never authority for an unverified start.
+              if (
+                restorePlan?.eligible &&
+                head &&
+                !(await git([
+                  "-C",
+                  input.worktreePath,
+                  "merge-base",
+                  "--is-ancestor",
+                  restorePlan.commitSha,
+                  head,
+                ]).then(
+                  () => true,
+                  () => false,
+                ))
+              )
+                restorePlan = { eligible: false, failure: "no_snapshot" };
               const baseSha = taskScope
                 ? taskScope.repository
                   ? snapshotCommit(input.worktreePath, taskScope.repository)
                   : undefined
-                : restorePlan?.eligible &&
-                    restorePlan.commitSha !== head &&
-                    (await git([
-                      "-C",
-                      input.worktreePath,
-                      "merge-base",
-                      "--is-ancestor",
-                      head!,
-                      restorePlan.commitSha,
-                    ]).then(
-                      () => true,
-                      (caughtError) => {
-                        journalCaught(caughtError, "runner-backend.forItem.restoreCommit", itemId);
-                        return false;
-                      },
-                    ))
-                  ? restorePlan.commitSha
-                  : head;
+                : head;
               if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
                 saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
               const acceptsRebase =
@@ -1123,7 +1217,15 @@ export function createRemoteAgentRunner(options: {
               )
                 throw new Error("Run attribution App bot authority changed");
               if (options.placement) {
-                const admitted = (await options.placement.candidates(placementRequest)).some(
+                const admitted = (
+                  await options.placement.candidates({
+                    ...placementRequest,
+                    // Session grace chooses the initial runner. Recheck the selected runner's
+                    // authority without starting a new grace wait during preparation.
+                    session: undefined,
+                    reserved: unassigned(selected.runId),
+                  })
+                ).some(
                   (runner) =>
                     runner.id === selected.id && runner.workspaceId === selected.workspaceId,
                 );
@@ -1263,7 +1365,7 @@ export function createRemoteAgentRunner(options: {
                         ? { reviewCommand: { base: input.reviewCommand.base } }
                         : {}),
                       ...(skillsInputId !== undefined ? { skillsInputId } : {}),
-                      ...(input.role === "reviewer" ? {} : runHooks(profile.agent)),
+                      ...(input.role === "reviewer" ? {} : runHooks(profile.agent, selected.id)),
                       repository: {
                         ...scoped.repository!,
                         baseSha: baseSha!,
@@ -1595,7 +1697,10 @@ export function createRemoteAgentRunner(options: {
                   runId: assigned.runId,
                   generation: assigned.generation,
                   sequence: row.sequence,
-                  answer: encodePolicyFiles(policy),
+                  answer:
+                    event.offset === undefined
+                      ? encodePolicyFiles(policy)
+                      : encodePolicyChunk(policy, event.offset, event.hash),
                 });
               }
               if (event.type === "artifact" && !answered && event.dropped !== undefined) {
@@ -1890,6 +1995,7 @@ export function createRemoteAgentRunner(options: {
             );
             if (complete.stopReason !== "end_turn" || complete.errorMessage)
               saveCheckpoint(db, itemId, {
+                ...getWorkItem(db, itemId)?.checkpoint,
                 phase: "running",
                 baseSha: getWorkItem(db, itemId)?.checkpoint?.baseSha ?? baseSha!,
                 wipCommit: complete.candidateSha,
@@ -1957,6 +2063,24 @@ export function createRemoteAgentRunner(options: {
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
           }
+          // Keep the handoff through cancellation, lost runners and failed candidate imports.
+          // Only a successfully completed implementer command proves the agent received it.
+          const delivered = getWorkItem(db, itemId)?.checkpoint;
+          if (
+            assigned.type === "run" &&
+            delivered?.lostCommits &&
+            assigned.prompt?.includes(delivered.lostCommits) &&
+            complete.stopReason === "end_turn" &&
+            complete.agentExited &&
+            complete.candidateSha &&
+            !complete.cancelled &&
+            !complete.timedOut &&
+            !complete.authRequired &&
+            !complete.errorMessage
+          ) {
+            const { lostCommits: _sent, ...rest } = delivered;
+            saveCheckpoint(db, itemId, rest);
+          }
           work.finish(assigned.runId, assigned.generation);
           command = undefined;
           await emit({ type: "prompt_complete", stopReason: complete.stopReason });
@@ -1981,50 +2105,61 @@ export function createRemoteAgentRunner(options: {
             transcriptPath: transcript,
           };
         } finally {
-          // A Paws restart leaves implementer work and response tasks running on the runner, and
-          // a verifying item's Closeout review or check run; the startup resume or re-verify
-          // reattaches to them.
-          const state = getWorkItem(db, itemId)?.state;
-          const detached =
-            signal.reason instanceof PawsShutdown &&
-            command !== undefined &&
-            (closeoutWork
-              ? state === "verifying"
-              : ((command.type === "run" && command.checkpoint !== false) ||
-                  command.type === "task") &&
-                state === "running");
-          // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
-          // first, and the next turn starts from it.
-          const saving =
-            command?.type === "run" &&
-            command.checkpoint !== false &&
-            !detached &&
-            signal.aborted &&
-            !(signal.reason instanceof PawsShutdown)
-              ? checkpointBeforeStop(command.runId)
-              : null;
-          if (saving) await saving;
-          if (command && !detached) {
+          try {
+            // A Paws restart leaves implementer work and response tasks running on the runner, and
+            // a verifying item's Closeout review or check run; the startup resume or re-verify
+            // reattaches to them.
+            const state = getWorkItem(db, itemId)?.state;
+            const detached =
+              signal.reason instanceof PawsShutdown &&
+              command !== undefined &&
+              (closeoutWork
+                ? state === "verifying"
+                : ((command.type === "run" && command.checkpoint !== false) ||
+                    command.type === "task") &&
+                  state === "running");
+            // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
+            // first, and the next turn starts from it.
             try {
-              const issuedAt = now();
-              work.enqueue({
-                id: randomUUID(),
-                runnerId: selected.id,
-                workspaceId: selected.workspaceId,
-                issuedAt,
-                expiresAt: issuedAt + 60_000,
-                type: "cancel",
-                runId: command.runId,
-                generation: command.generation,
-              });
-            } catch (caughtError4) {
-              journalCaught(caughtError4, "runner-backend.forItem.now", itemId);
+              if (
+                command?.type === "run" &&
+                command.checkpoint !== false &&
+                !detached &&
+                signal.aborted &&
+                !(signal.reason instanceof PawsShutdown)
+              )
+                await checkpointBeforeStop(command.runId);
+            } catch (error) {
+              journalCaught(error, "runner-backend.cleanup.checkpoint", itemId);
             }
+            if (command && !detached) {
+              try {
+                const issuedAt = now();
+                work.enqueue({
+                  id: randomUUID(),
+                  runnerId: selected.id,
+                  workspaceId: selected.workspaceId,
+                  issuedAt,
+                  expiresAt: issuedAt + 60_000,
+                  type: "cancel",
+                  runId: command.runId,
+                  generation: command.generation,
+                });
+              } catch (caughtError4) {
+                journalCaught(caughtError4, "runner-backend.forItem.now", itemId);
+              }
+            }
+            controller.abort();
+            try {
+              await question;
+            } catch (error) {
+              journalCaught(error, "runner-backend.cleanup.question", itemId);
+            }
+            input.signal?.removeEventListener("abort", abort);
+          } finally {
+            // Keep attachment fenced through cleanup, then free the slot before returning.
+            reservations.delete(selected.runId);
           }
-          controller.abort();
-          await question;
-          input.signal?.removeEventListener("abort", abort);
-          reservations.delete(selected.runId);
         }
       };
       return async (input: RunAgentOptions) => {
@@ -2052,6 +2187,7 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
+export { ensureStartOnRemote, RemoteStartUnverified } from "./start-commit";
 
 export { remoteCommandsGone } from "./released";
 
@@ -2158,3 +2294,4 @@ function clockTime(at: number, now: number): string {
 }
 
 export { UsageLimitExhaustedError } from "./failover";
+export { createFindingGroupHelper } from "./finding-groups";

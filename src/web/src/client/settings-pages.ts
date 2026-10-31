@@ -17,6 +17,16 @@ export const SETTINGS_PAGES = [
       "Choose how accepted pull requests reach main, for the workspace, a Linear project, or a kind of issue.",
   },
   {
+    id: "brief",
+    name: "Agent brief",
+    description: "Customize and preview the instructions given to coding agents.",
+  },
+  {
+    id: "findings",
+    name: "Findings",
+    description: "Choose how Paws groups review findings for your team.",
+  },
+  {
     id: "integrations",
     name: "Integrations",
     description: "Connect the services your workspace uses.",
@@ -42,5 +52,5 @@ export type SettingsPage = (typeof SETTINGS_PAGES)[number]["id"];
 
 export function renderSettingsPage(page: SettingsPage = "agents"): string {
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `<h1 class="sr-only">${current.name}</h1><p class="sub">${current.description}</p>${page === "agents" ? '<div id="checkout-settings" class="skill-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div><div id="agent-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : ""}`;
+  return `<h1 class="sr-only">${current.name}</h1><p class="sub">${current.description}</p>${page === "agents" ? '<div id="checkout-settings" class="skill-settings"></div><div id="skill-settings" class="skill-settings"></div><div id="hook-settings" class="skill-settings"></div><div id="agent-settings" class="agent-settings"></div>' : page === "brief" ? '<div id="brief-settings" class="agent-settings"></div>' : page === "merging" ? '<div id="merge-settings" class="agent-settings"></div>' : page === "findings" ? '<div id="finding-settings" class="skill-settings"></div>' : ""}`;
 }

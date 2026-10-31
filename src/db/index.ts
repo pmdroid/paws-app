@@ -30,6 +30,8 @@ export {
   pendingPullComments,
   PULL_COMMENT_MAX_SETTLE_MS,
   PULL_COMMENT_SETTLE_MS,
+  DEFAULT_PULL_FEEDBACK_WAIT,
+  type PullFeedbackWait,
   recordPullComment,
   settlePullComments,
   type PullCommentOutcome,
@@ -46,6 +48,17 @@ export {
   type ReviewEscapeRecord,
   type ReviewEscapeTrigger,
 } from "./review-escapes";
+export {
+  markReviewReplyPosted,
+  recordReviewReplies,
+  reportReviewReplies,
+  unpostedReviewReplies,
+  unreportedReviewReplies,
+  type NewReviewReply,
+  type ReviewReplyOutcome,
+  type ReviewReplyRecord,
+  type ReviewReplyTarget,
+} from "./review-replies";
 export {
   CANCEL_STILL_PENDING,
   runnerCancelPending,
@@ -101,13 +114,16 @@ export {
   TransitionRejectedError,
   accrueAtJobBoundary,
   accrueAwake,
+  markJobAwakeWait,
   applyWorkItemEvent,
   awakeBreakdown,
   clearProgress,
   configureWorkItem,
   deferWorkItem,
   extendAwakeCap,
+  heldHandoffs,
   markCloseoutAccepted,
+  markHandoffsCarried,
   resetAwakeTime,
   runnerCapacityWait,
   type CapOutcome,
@@ -127,6 +143,7 @@ export {
   setCurrentRun,
   setRecoveryAttempts,
   syncClock,
+  type HeldHandoff,
   type WorkItemRecord,
 } from "./items";
 export {
@@ -139,6 +156,7 @@ export {
   extendJobLease,
   hasLiveJob,
   failJob,
+  actionableDue,
   getJob,
   listJobs,
   mergeLaneSql,
@@ -150,7 +168,13 @@ export {
   type JobStatus,
   type NewJob,
 } from "./jobs";
-export { JobLoop, type JobContext, type JobHandler } from "./loop";
+export {
+  JobLoop,
+  JOB_PROGRESS_STALE_MS,
+  type JobContext,
+  type JobHandler,
+  type JobLoopLiveness,
+} from "./loop";
 export { startLoops } from "./loops";
 export { migrate } from "./migrate";
 export {
@@ -207,6 +231,13 @@ export {
   takePushOutageProbe,
   type PushOutage,
 } from "./push-outage";
+export {
+  clearPolicyRunnerWarning,
+  listPolicyRunnerWarnings,
+  policyKeysLowestRunnerLacks,
+  savePolicyRunnerWarning,
+  type PolicyRunnerWarning,
+} from "./policy-runner-warning";
 export { frozenMigrations } from "./migrations";
 export {
   MIGRATION_DIRECTORY,
@@ -257,13 +288,23 @@ export {
   type DeadDelivery,
   type DeadDeliveryRef,
 } from "./dead-deliveries";
-export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
 export {
-  runnerHoldsRunWork,
-  runnerWorkHasResult,
+  closeExpiredRunnerLeases,
+  prepareShutdown,
+  recoverOnStartup,
+  requeueOrphanedWork,
+} from "./recovery";
+export {
+  markPawsAlive,
+  PAWS_ALIVE_INTERVAL_MS,
+  PAWS_ALIVE_LEASE_SKEW_MS,
+  pawsAliveAt,
   runnerLeaseCutoff,
   runnerLeaseLive,
   runnerWorkSettled,
+  shiftRunnerLeasesForDowntime,
+  runnerHoldsRunWork,
+  runnerWorkHasResult,
 } from "./runner-lease";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {
@@ -339,6 +380,7 @@ export {
   latestCloseoutIdentity,
   closeoutHeadsStarted,
   closeoutPolicyDigest,
+  closeoutPolicyDigests,
   listCloseoutProgress,
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,
@@ -718,3 +760,24 @@ export { restart, fixRounds, restartLimit, type RestartHandoff } from "./restart
 export { jobVersionCurrent } from "./jobs";
 
 export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
+
+export { listFindingGroups, lastFindingGroupRun, findingGroupSources } from "./finding-groups";
+export type { FindingGroup, FindingGroupRun } from "./finding-groups";
+
+export { findingGroupingAdmins, recoverFindingGroupRuns } from "./finding-groups";
+
+export { getFindingGroup, removeFindingFromOpenGroups } from "./finding-groups";
+export { findingGroupingEnabled, setFindingGrouping } from "./finding-groups";
+export { reviewFindingsByIds } from "./review-findings";
+
+export { yieldFindingGroupHelpers, runnerHelperAvailability } from "./runner-capacity";
+
+export {
+  getReviewFindingIssue,
+  reviewFindingIssues,
+  reviewFindingKey,
+  reviewFindingPlace,
+  saveReviewFindingIssue,
+  type ReviewFindingIssue,
+  type ReviewFindingPlace,
+} from "./review-finding-issues";

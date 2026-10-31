@@ -1,4 +1,6 @@
 export { handleAgentSettingsRequest } from "./handler";
+export { BRIEF_SETTINGS_PATH, handleBriefSettingsRequest } from "./brief";
+export type { BriefSettingsOptions } from "./brief";
 export type { AgentSettingsOptions } from "./handler";
 export { SKILL_SETTINGS_PATH, handleSkillSettingsRequest } from "./skills";
 export type { SkillSettingsOptions } from "./skills";
@@ -23,3 +25,5 @@ export type {
   CheckoutSettingsOptions,
   RepositoryCheckoutFacts,
 } from "./checkout";
+export { FINDING_SETTINGS_PATH, handleFindingSettingsRequest } from "./findings";
+export type { FindingSettingsOptions } from "./findings";

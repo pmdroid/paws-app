@@ -1,5 +1,4 @@
 > Keep the PR small and focused. Explain why it matters, what changes, the important choice, the evidence, and how hard a merge is to undo. Write in increasing detail for a customer or PM, a new engineer, then a specialist. Three to five sentences per section is a ceiling; one is fine. The author must explain and defend every line, including AI-assisted work.
->
 
 Closes
 
