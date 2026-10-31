@@ -1,3 +1,4 @@
+import { parseBriefTemplates, renderBriefTemplates } from "./brief";
 import { parseCheckoutProjects, renderCheckoutProjects, type CheckoutProjects } from "./checkout";
 import {
   chmodSync,
@@ -118,6 +119,10 @@ export type PawsConfigFile = {
   checkoutProjects?: CheckoutProjects;
   /** `[member_vm]`: the exe.dev size Create VM asks for. Missing means exe.dev's default. */
   memberVm?: MemberVmSize;
+  /** `[brief] template`. Missing means the built-in brief. */
+  briefTemplate?: string | null;
+  /** `[brief.projects."owner/repo"] template`. */
+  briefProjects?: Record<string, string>;
 };
 
 /**
@@ -179,10 +184,10 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       if (
-        !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm)$/.test(
+        !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief)$/.test(
           section,
         ) &&
-        !/^(closeout|merge|checkout|agents|skills)\./.test(section) &&
+        !/^(closeout|merge|checkout|agents|skills|brief)\./.test(section) &&
         section !== "skills" &&
         section !== RETIRED_UPDATE_SECTION
       )
@@ -192,6 +197,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     const eq = line.indexOf("=");
     if (eq <= 0) throw new Error(`config.toml line ${index + 1} is not a key`);
     if (section === RETIRED_UPDATE_SECTION) continue;
+    if (section === "brief" || section.startsWith("brief.")) continue;
     const key = line.slice(0, eq).trim().toLowerCase();
     const raw = line.slice(eq + 1).trim();
     if (key.length === 0 || raw.length === 0) {
@@ -205,6 +211,9 @@ export function parseConfigToml(text: string): PawsConfigFile {
   if (Object.keys(projects).length) config.checkoutProjects = projects;
   const settings = parseAgentSettingsToml(text, config.agents.implementer);
   if (settings !== null) config.agentSettings = settings;
+  const brief = parseBriefTemplates(text);
+  if (brief.template !== null) config.briefTemplate = brief.template;
+  if (Object.keys(brief.projects).length) config.briefProjects = brief.projects;
   Object.assign(config, parseMergeTables(text));
   return config;
 }
@@ -273,7 +282,8 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
     renderMemberVmSettings(stored.memberVm) +
     (stored.findingsGroupingTime
       ? `\n[findings]\ngrouping_time = ${tomlString(stored.findingsGroupingTime!)}\n`
-      : "");
+      : "") +
+    renderBriefTemplates(parseBriefTemplates(current));
   const next =
     profiles === null
       ? rendered

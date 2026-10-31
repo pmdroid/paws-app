@@ -37,6 +37,8 @@ import {
 } from "../evidence";
 import {
   CHECKOUT_SETTINGS_PATH,
+  BRIEF_SETTINGS_PATH,
+  handleBriefSettingsRequest,
   FINDING_SETTINGS_PATH,
   HOOK_SETTINGS_PATH,
   SKILL_SETTINGS_PATH,
@@ -48,6 +50,7 @@ import {
   handleSkillSettingsRequest,
   MERGE_SETTINGS_PATH,
   type AgentSettingsOptions,
+  type BriefSettingsOptions,
   type HighRiskFile,
   type MergeChoices,
   type RepositoryCheckoutFacts,
@@ -134,6 +137,7 @@ export type ServerOptions = {
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken"> & {
+    readIssue?: BriefSettingsOptions["readIssue"];
     /** Linear projects and labels for Settings → Merging. */
     mergeChoices?: (signal: AbortSignal) => Promise<MergeChoices>;
     /** Configured repositories whose main has a GitHub merge queue, for Settings → Merging. */
@@ -567,6 +571,17 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     };
     const settings =
       (await handleAgentSettingsRequest(request, shared)) ??
+      (await handleBriefSettingsRequest(request, {
+        ...shared,
+        ...(path === BRIEF_SETTINGS_PATH && secrets.db
+          ? {
+              repos: [
+                ...(shared.repos ?? []),
+                ...listWorkspaceRepositoryNames(secrets.db, principal?.workspaceId),
+              ],
+            }
+          : {}),
+      })) ??
       (await handleCheckoutSettingsRequest(request, {
         ...shared,
         ...(path === CHECKOUT_SETTINGS_PATH && secrets.db
