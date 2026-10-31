@@ -41,23 +41,36 @@ test("missing owners and probe worktrees are retained with one info notice per p
   }
 }, 30_000);
 
+test("missing-owner notices are pruned when paths disappear and stay scoped to each root", async () => {
+  const fixture = await setup();
+  const key = "probes-notice";
+  await createWorktree({ ...repository, itemId: key, pawsRoot: fixture.pawsRoot });
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    await sweepWorktrees(fixture.sweep());
+    await removeWorktree({ ...repository, itemId: key, pawsRoot: fixture.pawsRoot });
+    await sweepWorktrees(fixture.sweep());
+    await createWorktree({ ...repository, itemId: key, pawsRoot: fixture.pawsRoot });
+    await sweepWorktrees(fixture.sweep());
+    const another = join(fixture.pawsRoot, "other-root");
+    await mkdir(join(another, "worktrees", key), { recursive: true });
+    await sweepWorktrees(fixture.sweep({ pawsRoot: another }));
+    await sweepWorktrees(fixture.sweep());
+    expect(lines.filter((line) => line.includes('"owner_missing"'))).toHaveLength(3);
+  } finally {
+    restore();
+  }
+}, 30_000);
+
 test("only expired merged, cancelled and failed items are removed", async () => {
   const fixture = await setup();
   for (const state of WORK_ITEM_STATES) await fixture.item(`ENG-${state}`, state, old);
-  let lookups = 0;
-  await sweepWorktrees(
-    fixture.sweep({
-      mergedHeads: async () => {
-        lookups++;
-        throw new Error("unresolvable merged head");
-      },
-    }),
-  );
+  await sweepWorktrees(fixture.sweep());
   for (const state of WORK_ITEM_STATES)
     expect(fixture.present()[`ENG-${state}`]).toBe(
       !["merged", "cancelled", "failed"].includes(state),
     );
-  expect(lookups).toBe(0);
 }, 30_000);
 
 test("terminal transition, run and directory activity each retain worktrees for seven days", async () => {
@@ -190,6 +203,68 @@ test("removal waits on the existing mirror lock and then rechecks the item", asy
   expect(fixture.present()["ENG-1"]).toBe(true);
 }, 30_000);
 
+test("cancelling a queued sweep does not reject the next mirror operation", async () => {
+  const fixture = await setup();
+  await fixture.item("ENG-1", "failed", old);
+  let entered!: () => void;
+  let release!: () => void;
+  const reached = new Promise<void>((done) => {
+    entered = done;
+  });
+  const gate = new Promise<void>((done) => {
+    release = done;
+  });
+  const refresh = ensureBareMirror({
+    ...repository,
+    remoteUrl: fixture.source,
+    pawsRoot: fixture.pawsRoot,
+    networkGit: async (args) => {
+      entered();
+      await gate;
+      return git(args);
+    },
+  });
+  await reached;
+  let held!: () => void;
+  const holding = new Promise<void>((done) => {
+    held = done;
+  });
+  const controller = new AbortController();
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    const sweep = sweepWorktrees(
+      fixture.sweep({
+        signal: controller.signal,
+        hold: async (_ids, operation) => {
+          held();
+          await operation();
+        },
+      }),
+    );
+    const rejection = sweep.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await holding;
+    const following = createWorktree({
+      ...repository,
+      itemId: "ENG-2",
+      pawsRoot: fixture.pawsRoot,
+    });
+    controller.abort(new Error("stop sweep"));
+    release();
+    const [error] = await Promise.all([rejection, refresh, following]);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("stop sweep");
+    expect(fixture.present()["ENG-1"]).toBe(true);
+    expect(lines.some((line) => line.includes("operation=worktree.onMirror"))).toBe(false);
+  } finally {
+    release();
+    restore();
+  }
+}, 30_000);
+
 test("creation queued during removal uses the same mirror lock", async () => {
   const fixture = await setup();
   const key = "ENG-1";
@@ -248,7 +323,6 @@ async function setup() {
         repositoryForItem: () => repository,
         busy: () => false,
         hold: (_itemIds, operation) => operation(),
-        mergedHeads: async () => [],
         ...overrides,
       };
     },

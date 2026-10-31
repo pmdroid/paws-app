@@ -149,7 +149,6 @@ export {
   mirrorFiles,
   removeWorktree,
   resolveStartRef,
-  worktreeMergedInto,
   type Mirror,
   type Worktree,
 } from "./worktree";

@@ -9,7 +9,7 @@ import { itemPathId } from "./sources";
 
 export const RETIRED_WORKTREE_MS = 7 * 24 * 60 * 60 * 1000;
 const RETIRED_STATES: ReadonlySet<WorkItemState> = new Set(["merged", "cancelled", "failed"]);
-const missingOwnerNotices = new Set<string>();
+const missingOwnerNotices = new WeakMap<Database, Map<string, Set<string>>>();
 
 export type WorktreeSweep = {
   db: Database;
@@ -19,7 +19,6 @@ export type WorktreeSweep = {
   repositoryForItem(item: WorkItemRecord): RepositoryBinding | null;
   busy(itemId: string): boolean;
   hold(itemIds: readonly string[], operation: () => Promise<void>): Promise<void>;
-  mergedHeads(item: WorkItemRecord, repository: RepositoryBinding): Promise<string[]>;
 };
 
 export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
@@ -28,31 +27,37 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
   try {
     entries = readdirSync(root, { withFileTypes: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-      journalCaught(error, "worktree-sweep.readdir", null);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      missingOwnerNotices.get(sweep.db)?.delete(root);
+    else journalCaught(error, "worktree-sweep.readdir", null);
     return;
   }
   const byPath = owners(sweep.db);
+  const roots = missingOwnerNotices.get(sweep.db) ?? new Map<string, Set<string>>();
+  missingOwnerNotices.set(sweep.db, roots);
+  const previous = roots.get(root) ?? new Set<string>();
+  const missing = new Set(
+    entries
+      .filter((entry) => entry.isDirectory() && !byPath.has(entry.name))
+      .map((entry) => entry.name),
+  );
+  roots.set(root, missing);
+  for (const name of missing) {
+    if (!previous.has(name))
+      journal(
+        JSON.stringify({
+          level: "info",
+          event: "worktree-sweep.skipped",
+          path: join(root, name),
+          reason: "owner_missing",
+        }),
+      );
+  }
   for (const entry of entries) {
     sweep.signal.throwIfAborted();
     if (!entry.isDirectory()) continue;
     const items = byPath.get(entry.name);
-    if (!items?.length) {
-      const path = join(root, entry.name);
-      if (!missingOwnerNotices.has(path)) {
-        missingOwnerNotices.add(path);
-        journal(
-          JSON.stringify({
-            level: "info",
-            event: "worktree-sweep.skipped",
-            path,
-            reason: "owner_missing",
-          }),
-        );
-      }
-      continue;
-    }
-    if (!items.every((item) => RETIRED_STATES.has(item.state))) continue;
+    if (!items?.length) continue;
     if (items.some((item) => sweep.busy(item.id))) continue;
     try {
       const path = worktreePath(sweep.pawsRoot, entry.name);
@@ -65,18 +70,25 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
           await removeWorktree(
             { ...repository, itemId: entry.name, pawsRoot: sweep.pawsRoot },
             () => {
-              sweep.signal.throwIfAborted();
-              const current = owners(sweep.db).get(entry.name) ?? [];
-              return (
-                current.length === items.length &&
-                current.every((item) => {
-                  const before = items.find((candidate) => candidate.id === item.id);
-                  return before?.state === item.state && before.version === item.version;
-                }) &&
-                expired(sweep, current, path)
-              );
+              if (sweep.signal.aborted) return false;
+              try {
+                const current = owners(sweep.db).get(entry.name) ?? [];
+                return (
+                  current.length === items.length &&
+                  current.every((item) => {
+                    const before = items.find((candidate) => candidate.id === item.id);
+                    return before?.state === item.state && before.version === item.version;
+                  }) &&
+                  expired(sweep, current, path)
+                );
+              } catch (error) {
+                if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? ""))
+                  journalCaught(error, "worktree-sweep.recheck", items[0]!.id);
+                return false;
+              }
             },
           );
+          sweep.signal.throwIfAborted();
         },
       );
     } catch (error) {

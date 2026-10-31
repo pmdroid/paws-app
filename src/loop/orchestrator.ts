@@ -282,7 +282,6 @@ import {
   commentOnPullRequest,
   replyToReviewComment,
   resolveReviewThread,
-  mergedPullHeads,
   readPullMerge,
   branchContains,
   readOpenPullHead,
@@ -5430,18 +5429,6 @@ export class Orchestrator {
           for (const itemId of itemIds)
             if (this.jobContexts.get(itemId) === held) this.jobContexts.delete(itemId);
         }
-      },
-      mergedHeads: async (item, repository) => {
-        const github = this.githubForRepository(repository);
-        if (!github) return [];
-        return mergedPullHeads({
-          client: github.client,
-          owner: repository.owner,
-          repo: repository.repo,
-          branch: worktreeBranch(item),
-          ...this.gitHubCredentials(github),
-          signal,
-        });
       },
     });
   }
