@@ -17,6 +17,7 @@ import {
   runnerHasCapacity,
   runnerLeaseLive,
   runnerOccupancy,
+  runnerSlotFree,
   runnerSlotsHeldBetweenCommands,
   runnerWorkSettled,
   runnerHoldsRunWork,
@@ -216,5 +217,37 @@ describe("the runner lease grace", () => {
     expect(runnerWorkSettled(db, run.id, clock.now())).toBe(false);
     db.run("UPDATE runner_command SET acknowledged_at=? WHERE id='cancel'", [clock.now()]);
     expect(runnerWorkSettled(db, run.id, clock.now())).toBe(true);
+  });
+});
+
+describe("slots held between commands", () => {
+  test("runs holding slots on a full runner compete only with its live commands", () => {
+    const clock = new FakeClock(1_000_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    db.run("PRAGMA foreign_keys=OFF");
+    db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',2)");
+    const runs = [1, 2, 3, 4].map((index) => {
+      const item = insertQueuedItem(db, { id: `item-${index}`, now: clock.now() });
+      const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+      db.run(
+        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,?,?,?,?,?,?,?)",
+        [run.id, "runner", "workspace", 1, 0, `command-${index}`, clock.now(), clock.now()],
+      );
+      return run;
+    });
+    expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), "new-run")).toBe(4);
+    expect(runnerSlotFree(db, ["runner"], clock.now())).toBe(false);
+    for (const run of runs) {
+      expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), run.id)).toBe(0);
+      expect(runnerSlotFree(db, ["runner"], clock.now(), run.id)).toBe(true);
+    }
+    db.run("UPDATE runner_work SET ended_at=NULL,lease_until=? WHERE run_id IN (?,?)", [
+      clock.now() + RENEWAL_MS,
+      runs[0]!.id,
+      runs[1]!.id,
+    ]);
+    expect(runnerSlotFree(db, ["runner"], clock.now(), runs[2]!.id)).toBe(false);
+    db.close();
   });
 });
