@@ -30,6 +30,8 @@ export type CloseoutStepWrite = {
   logPath: string | null;
   evidencePath: string | null;
   findings: string | null;
+  /** Structured severities of this exact review attempt; absent on legacy results. */
+  findingSeverities?: readonly ("P0" | "P1" | "P2" | "P3")[] | null;
   ordinal: number;
   durationMs?: number | null;
   tokens?: number | null;
@@ -259,9 +261,26 @@ function startedAtFor(
 }
 
 function findingsFor(
-  existing: Pick<StepSql, "state" | "findings"> | null,
+  existing: Pick<StepSql, "state" | "findings" | "attempt"> | null,
   step: CloseoutStepWrite,
 ): string | null {
+  // Store typed review evidence in the existing text column, atomically with the step.
+  // mapStep restores the display text for existing consumers. This is never an approval.
+  if (step.findingSeverities !== undefined)
+    return JSON.stringify({
+      reviewSnapshot: 1,
+      attempt: step.attempt,
+      text: step.findings,
+      severities: step.findingSeverities,
+    });
+  if (step.kind === "review" && step.attempt > (existing?.attempt ?? 0)) return step.findings;
+  if (step.kind === "review" && step.state === "passed" && step.findings === null) {
+    // Cached reviews emit no new result. Keep only a known snapshot of this same attempt.
+    return existing &&
+      Array.isArray(reviewSnapshot({ ...existing, kind: "review" }).findingSeverities)
+      ? existing.findings
+      : null;
+  }
   if (step.findings !== null) return step.findings;
   if (step.state === "running" && existing?.state !== "running") return null;
   return existing?.findings ?? null;
@@ -499,7 +518,7 @@ function mapStep(row: StepSql): CloseoutStepRecord {
     truncated: row.truncated === 1,
     logPath: row.log_path,
     evidencePath: row.evidence_path,
-    findings: row.findings,
+    ...reviewSnapshot(row),
     ordinal: row.ordinal,
     durationMs: row.duration_ms,
     tokens: row.tokens,
@@ -508,6 +527,33 @@ function mapStep(row: StepSql): CloseoutStepRecord {
     stdout: row.stdout,
     stderr: row.stderr,
   };
+}
+
+function reviewSnapshot(
+  row: Pick<StepSql, "kind" | "attempt" | "findings">,
+): Pick<CloseoutStepRecord, "findings" | "findingSeverities"> {
+  if (row.kind === "review" && row.findings?.startsWith("{")) {
+    try {
+      const value = JSON.parse(row.findings) as Record<string, unknown> | null;
+      if (
+        value?.reviewSnapshot === 1 &&
+        value.attempt === row.attempt &&
+        (value.text === null || typeof value.text === "string") &&
+        (value.severities === null || Array.isArray(value.severities))
+      )
+        return {
+          findings: value.text,
+          findingSeverities:
+            Array.isArray(value.severities) &&
+            value.severities.every((s) => ["P0", "P1", "P2", "P3"].includes(s))
+              ? value.severities
+              : null,
+        };
+    } catch {
+      /* Unreadable stored evidence is unavailable to the automatic gate. */
+    }
+  }
+  return { findings: row.findings };
 }
 
 function indexes(value: string | null): number[] | null {
