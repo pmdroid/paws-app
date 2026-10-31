@@ -10,6 +10,7 @@ export type RiskAutoContext = {
   policyFiles?: Array<{ path: string; digest: string | null }>;
   /** An earlier human approval whose patch the lane checked against this head. */
   approvedHead?: string;
+  approvalKind?: "exact" | "same_patch" | "fix";
 };
 
 /** Keep only the most recently evaluated head; identical polls make no writes. */
@@ -60,6 +61,10 @@ function contextOf(text: string): RiskAutoContext {
     ) ||
     !(value.settingsKey === undefined || typeof value.settingsKey === "string") ||
     !(value.approvedHead === undefined || typeof value.approvedHead === "string") ||
+    !(
+      value.approvalKind === undefined ||
+      ["exact", "same_patch", "fix"].includes(value.approvalKind)
+    ) ||
     !(
       value.policyFiles === undefined ||
       (Array.isArray(value.policyFiles) &&

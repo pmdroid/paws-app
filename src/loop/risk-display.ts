@@ -166,7 +166,7 @@ export class RiskDisplayReader {
         .sort(([a], [b]) => a.localeCompare(b));
       this.settings = {
         enabled: settings.autoApproveHighRisk,
-        key: JSON.stringify([settings.autoApproveHighRisk, paths]),
+        key: JSON.stringify(paths),
       };
     } catch (error) {
       this.settings = null;
@@ -224,7 +224,8 @@ export class RiskDisplayReader {
         this.settings !== null &&
         context?.settingsKey === this.settings.key &&
         (!context?.policyFiles?.length || (watched?.head === currentHead && !watched.stale));
-      const approvedHead = validContext ? context?.approvedHead : null;
+      const approvedHead =
+        validContext || context?.approvalKind === "same_patch" ? context?.approvedHead : null;
       if (approvedHead && approvals.some((ask) => ask.headCommit === approvedHead))
         return { head: currentHead, detail: "Approved: an earlier human approval carries over" };
       if (!risk || this.settings === null)

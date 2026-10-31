@@ -71,7 +71,7 @@ export async function riskApprovalFor(
     fixRisk?: (approved: string, base: string) => Promise<FixRisk | null>;
     autoApproveHighRisk?: boolean;
     /** Reports the human approval the lane actually matched, for display only. */
-    onHumanApproval?: (head: string) => void;
+    onHumanApproval?: (head: string, kind: "exact" | "same_patch" | "fix") => void;
     /** Current policy digest supplied by the merge caller; unreadable means no automatic approval. */
     policyDigest?: string | null;
     policyPaths?: readonly string[] | null;
@@ -80,9 +80,9 @@ export async function riskApprovalFor(
   },
 ): Promise<RiskApproval> {
   if (!riskGateOn(input.publicUrl)) return "not_required";
-  const humanApproved = (head: string) => {
+  const humanApproved = (head: string, kind: "exact" | "same_patch" | "fix") => {
     try {
-      input.onHumanApproval?.(head);
+      input.onHumanApproval?.(head, kind);
     } catch (error) {
       journalCaught(
         error,
@@ -98,7 +98,7 @@ export async function riskApprovalFor(
   const approvals = riskApprovals(db, input.itemId);
   const exact = approvals.find((ask) => ask.headCommit === input.head);
   if (exact) {
-    humanApproved(exact.headCommit);
+    humanApproved(exact.headCommit, "exact");
     return "approved";
   }
   // Recompute from stored evidence on every read. Never persist an automatic approval.
@@ -118,7 +118,7 @@ export async function riskApprovalFor(
   if (risk === null) return "missing";
   for (const ask of approvals.toReversed())
     if (await input.samePatch(ask.headCommit, risk.base)) {
-      humanApproved(ask.headCommit);
+      humanApproved(ask.headCommit, "same_patch");
       return "approved";
     }
   const latest = approvals.at(-1);
@@ -132,7 +132,7 @@ export async function riskApprovalFor(
     now: input.now ?? Date.now(),
   });
   if (fix !== null && fix.paths.length === 0) {
-    humanApproved(latest.headCommit);
+    humanApproved(latest.headCommit, "fix");
     return "approved";
   }
   return "missing";

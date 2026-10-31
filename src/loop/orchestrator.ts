@@ -4161,12 +4161,14 @@ export class Orchestrator {
           const context = this.riskDisplayInputs(item, published.worktree);
           const { autoApproveHighRisk, policyDigest, policyPaths } = context;
           let approvedHead: string | undefined;
+          let approvalKind: "exact" | "same_patch" | "fix" | undefined;
           return riskApprovalFor(this.db, {
             itemId: item.id,
             head: published.head,
             publicUrl: this.options.publicUrl,
-            onHumanApproval: (head) => {
+            onHumanApproval: (head, kind) => {
               approvedHead = head;
+              approvalKind = kind;
             },
             autoApproveHighRisk,
             policyDigest,
@@ -4179,7 +4181,7 @@ export class Orchestrator {
           }).then((approval) => {
             this.riskDisplayReader.remember(item.id, published.head, {
               ...context,
-              ...(approvedHead ? { approvedHead } : {}),
+              ...(approvedHead ? { approvedHead, approvalKind } : {}),
             });
             return approval;
           });

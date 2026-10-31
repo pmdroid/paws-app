@@ -264,9 +264,11 @@ test("a human approval carried over by the lane is displayed as approved", async
   const f = fixture("off");
   approve(f, "earlier-head");
   let approvedHead: string | undefined;
+  let approvalKind: "exact" | "same_patch" | "fix" | undefined;
   const result = await riskApprovalFor(f.db, {
-    onHumanApproval: (head) => {
+    onHumanApproval: (head, kind) => {
       approvedHead = head;
+      approvalKind = kind;
     },
     itemId: f.item.id,
     head: "head",
@@ -274,7 +276,13 @@ test("a human approval carried over by the lane is displayed as approved", async
     samePatch: async () => true,
   });
   expect(result).toBe("approved");
-  f.reader.remember(f.item.id, "head", { ...f.context, approvedHead });
+  f.reader.remember(f.item.id, "head", { ...f.context, approvedHead, approvalKind });
+  expect(f.provider.item(f.item.id)?.risk?.automaticApproval).toBe(
+    "Approved: an earlier human approval carries over",
+  );
+  f.settings.autoApproveHighRisk = true;
+  f.settings.repositories = { "acme/repo": { packages: [], highRiskPaths: ["different/**"] } };
+  f.reader.refreshSettings();
   expect(f.provider.item(f.item.id)?.risk?.automaticApproval).toBe(
     "Approved: an earlier human approval carries over",
   );
