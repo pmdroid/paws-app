@@ -1,5 +1,4 @@
-import { MAX_ITEM_RESTARTS } from "../../../core";
-import { lifetimeRestarts } from "../../../db";
+import { lifetimeRestartBudget } from "../../../db";
 import { journalCaught } from "../journal";
 /**
  * Live status snapshot.
@@ -876,7 +875,7 @@ function toItem(
     project: itemProject(fact),
     blockers: blockersFor(db, record, itemsByIssue),
     attempts: record.turnCount,
-    restartBudget: { used: lifetimeRestarts(db, record.id), limit: MAX_ITEM_RESTARTS },
+    restartBudget: lifetimeRestartBudget(db, record.id),
     branch: record.branchName.trim() ? record.branchName : null,
     runId,
     pr,
@@ -1675,7 +1674,7 @@ function verdictCandidates(
 
 function toVerdict(record: WorkItemRecord, candidate: VerdictCandidate): StatusVerdict {
   const checks = parseChecks(candidate.summary);
-  const attempt = 1;
+  const attempt = storedEvaluationCount(candidate.summary);
   const failing = checks.find((check) => check.state === "failed");
   return {
     itemId: publicId(record),
@@ -2402,4 +2401,13 @@ function httpUrl(value: string): string | null {
     journalCaught(caughtError3, "provider.httpUrl.toString", null);
     return null;
   }
+}
+
+/** Stored evaluation totals are not lifetime agent turns or per-check fix attempts. */
+function storedEvaluationCount(summary: string): number {
+  for (const label of ["Evaluations", "Caller attempt"]) {
+    const value = Number(lineField(summary, label));
+    if (Number.isInteger(value) && value > 0) return value;
+  }
+  return 1;
 }

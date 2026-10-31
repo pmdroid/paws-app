@@ -713,3 +713,24 @@ describe("live closeout ui", () => {
     expect(html).not.toContain("<script>");
   });
 });
+
+for (const counter of ["Evaluations", "Caller attempt"])
+  test(`a stored ${counter} count survives rendering without using lifetime turns`, () => {
+    const db = database();
+    const id = "ENG-926";
+    insertQueuedItem(db, { id, sessionKey: "session", now: 1 });
+    seedVerifying(db, id, sha("a"), 2);
+    db.run("UPDATE work_item SET turn_count=46 WHERE id=?", [id]);
+    acceptVerdict(
+      db,
+      id,
+      sha("a"),
+      `Closeout: accepted\n${counter}: 3\nItems:\n- unit (command): passed attempt 1`,
+      3,
+    );
+    const snapshot = snapshotOf(db, 4);
+    expect(verdictOf(snapshot, id).attempt).toBe(3);
+    const html = paint(snapshot, id, "unit");
+    expect(html).toContain("Accepted on Closeout evaluation 3");
+    expect(html).not.toContain("attempt 46 of");
+  });

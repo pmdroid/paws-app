@@ -1495,6 +1495,11 @@ function readProject(input: unknown): StatusProject {
   };
 }
 
+function readRestartBudget(input: unknown, path: string): { used: number; limit: number } {
+  const budget = object(input, path);
+  return { used: count(budget, "used", path), limit: count(budget, "limit", path) };
+}
+
 function readItem(input: unknown, index: number): StatusItem {
   const path = `items[${index}]`;
   const body = object(input, path);
@@ -1519,10 +1524,7 @@ function readItem(input: unknown, index: number): StatusItem {
     ...(body.restartBudget === undefined
       ? {}
       : {
-          restartBudget: {
-            used: count(object(body.restartBudget, `${path}.restartBudget`), "used", path),
-            limit: count(object(body.restartBudget, `${path}.restartBudget`), "limit", path),
-          },
+          restartBudget: readRestartBudget(body.restartBudget, `${path}.restartBudget`),
         }),
     branch,
     runId,

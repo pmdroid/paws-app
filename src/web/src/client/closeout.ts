@@ -237,7 +237,8 @@ export function roundAttempt(
   attempts: readonly StatusCloseoutAttempt[],
   attempt: StatusCloseoutAttempt,
 ): number {
-  const round = attempt.round ?? 1;
+  if (attempt.round === undefined) return attempt.number;
+  const round = attempt.round;
   return attempts.filter((entry) => (entry.round ?? 1) === round && entry.number <= attempt.number)
     .length;
 }

@@ -3,6 +3,13 @@ import { describe, expect, test } from "bun:test";
 import { parseStatusItemDetail, parseStatusSnapshot, STATUS_API_VERSION } from "./contract";
 
 describe("status contract", () => {
+  test("restart budget validation names the nested field", () => {
+    const detail = itemDetail(fullStatusFixture(), "ENG-100");
+    detail.items[0]!.restartBudget = { used: -1, limit: 10 };
+    const parsed = parseStatusItemDetail(detail);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.error).toContain("items[0].restartBudget.used");
+  });
   test("rejects a body that is missing the version", () => {
     const parsed = parseStatusSnapshot({ source: "live" });
     expect(parsed.ok).toBe(false);
