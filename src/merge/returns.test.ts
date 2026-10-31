@@ -5,6 +5,9 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   enqueueJob,
+  enqueueOutbox,
+  joinMergeQueue,
+  listOutbox,
   enterMergeQueue,
   getWorkItem,
   insertQueuedItem,
@@ -199,3 +202,37 @@ const ask: typeof rawAsk = (db, asker, ...args) => {
     applyWorkItemEvent(db, asker.itemId, "blocking_question");
   return result;
 };
+
+test("a lost restart fence rolls back announcements and a kept queue position", () => {
+  const db = queued();
+  try {
+    joinMergeQueue(db, { itemId: "eng-1", repository: "o/r", now: 1 });
+    const before = getWorkItem(db, "eng-1")!;
+    expect(
+      restart(db, before, {
+        reason: "conflict",
+        body: "Rebase",
+        keepMergeQueuePlace: true,
+        now: 2,
+        onAdmitted() {
+          enqueueOutbox(db, {
+            target: "linear",
+            op: "activity",
+            orderingKey: "s-1",
+            idempotencyKey: "announce",
+            payload: { sessionId: "s-1", kind: "thought", body: "Sent back" },
+            now: 2,
+          });
+          db.run("UPDATE work_item SET version=version+1 WHERE id=?", [before.id]);
+        },
+      }),
+    ).toBeNull();
+    expect(getWorkItem(db, "eng-1")).toEqual(before);
+    expect(listOutbox(db)).toEqual([]);
+    expect(db.query("SELECT kept FROM merge_queue_entry WHERE item_id=?").get(before.id)).toEqual({
+      kept: 0,
+    });
+  } finally {
+    db.close();
+  }
+});

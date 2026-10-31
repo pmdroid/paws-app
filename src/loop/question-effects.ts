@@ -62,6 +62,7 @@ export function questionEffects(
     jobKey: string,
     /** Handoffs the time limit held back, handed over before the answers. */
     held: readonly HeldHandoff[] = [],
+    renewBudget = false,
   ) => {
     const item = getWorkItem(db, question.itemId);
     if (!item) return;
@@ -87,6 +88,7 @@ export function questionEffects(
     const answers = handoffs.length ? handoffs : [body];
     const restarted = restart(db, item, {
       reason: "answer",
+      renewBudget,
       body: [...held.map((entry) => entry.handoff), ...answers].join("\n\n"),
       jobKey,
       now: input.now,
@@ -98,7 +100,11 @@ export function questionEffects(
         db.run("UPDATE question SET handoff_version=? WHERE id=?", [version, entry.id]);
     }
   };
-  const resume = (question: StoredQuestion, held: readonly HeldHandoff[] = []) => {
+  const resume = (
+    question: StoredQuestion,
+    held: readonly HeldHandoff[] = [],
+    renewBudget = false,
+  ) => {
     if (input.redirect && question.answerEventKey !== null)
       announceLinearTurn(db, question.sessionId, question.answerEventKey, input.now);
     else consumeTurn(question);
@@ -112,6 +118,7 @@ export function questionEffects(
       }),
       `resume:answer:${question.id}`,
       held,
+      renewBudget,
     );
   };
   /** A reply is guidance for the agent. It never bypasses a check: that is decided on the item page. */
@@ -264,26 +271,40 @@ export function questionEffects(
     agent: resume,
     clarification: (question) => {
       if (question.reason !== "restart_budget") return resume(question);
-      const stored = getQuestion(db, question.id);
-      const item = getWorkItem(db, question.itemId);
-      if (!stored || stored.cancelledAt !== null || !item || item.sessionKey !== question.sessionId)
-        return;
       if (
         db
           .query("SELECT 1 FROM question WHERE id=? AND handoff_version IS NOT NULL")
           .get(question.id)
       )
         return;
-      if (!/^\s*stop(?:[.!]|,\s*it['’]?s done[.!]?)?\s*$/i.test(question.answer ?? ""))
-        return resume(question);
+      const stored = getQuestion(db, question.id);
+      if (!stored || stored.status !== "answered") return;
+      const item = getWorkItem(db, question.itemId);
       const active = db
         .query<{ payload_digest: string | null }, [string]>(
           "SELECT payload_digest FROM work_item_event WHERE item_id=? AND event='blocking_question' ORDER BY id DESC LIMIT 1",
         )
-        .get(item.id);
-      if (item.state !== "awaiting_input" || active?.payload_digest !== question.id) return;
+        .get(question.itemId);
+      if (
+        stored.cancelledAt !== null ||
+        !item ||
+        item.sessionKey !== question.sessionId ||
+        item.state !== "awaiting_input" ||
+        active?.payload_digest !== question.id
+      ) {
+        consumeTurn(question);
+        db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
+        return;
+      }
+      const answer = (stored.answer ?? "").trim();
+      if (!/^stop(?:[.!]|,\s*it['’]?s done[.!]?)?$/i.test(answer)) {
+        const approved =
+          /^(?:(?:yes[,!.]?\s*)?(?:please\s+)?(?:continue\b|keep\s+going\b|go\s+on\b)|yes(?:\s+please)?[.!]?$)/i.test(
+            answer,
+          );
+        return resume(stored, [], approved);
+      }
       consumeTurn(question);
-      // Accept Stop with punctuation, without treating "Stop rewriting tests" as cancellation.
       db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
       applyLinearCommand(
         db,

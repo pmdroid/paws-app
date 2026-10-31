@@ -122,34 +122,17 @@ export function restart(...args: Parameters<typeof restartItem>): RestartResult 
     if (jobId === null) return { kind: "skipped" };
     if (source === "agent")
       db.run("UPDATE work_item SET restart_count=restart_count+1 WHERE id=?", [item.id]);
-    else if (source === "human") {
-      // An answer grants more only once it is carried into an admitted human turn.
-      const answers = db
+    else if (source === "human" && handoff.renewBudget) {
+      db.run("UPDATE work_item SET restart_limit=MAX(restart_limit,restart_count)+? WHERE id=?", [
+        MAX_ITEM_RESTARTS,
+        item.id,
+      ]);
+      const waiting = db
         .query<{ id: string }, [string, string | null]>(
-          "SELECT id FROM question WHERE item_id=? AND session_id=? AND reason='restart_budget' AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL",
+          "SELECT id FROM question WHERE item_id=? AND session_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL",
         )
         .all(item.id, current.sessionKey);
-      // Admitting human guidance means continuing. Explicit retries also renew a spent budget.
-      const extensions = answers.length || (current.restartCount >= current.restartLimit ? 1 : 0);
-      if (extensions)
-        db.run("UPDATE work_item SET restart_limit=MAX(restart_limit,restart_count)+? WHERE id=?", [
-          extensions * MAX_ITEM_RESTARTS,
-          item.id,
-        ]);
-      if (extensions) {
-        const waiting = db
-          .query<{ id: string }, [string, string | null]>(
-            "SELECT id FROM question WHERE item_id=? AND session_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL",
-          )
-          .all(item.id, current.sessionKey);
-        for (const question of waiting) cancelQuestion(db, question.id, handoff.now);
-      }
-      for (const answer of answers) {
-        db.run("UPDATE question SET handoff_version=? WHERE id=?", [
-          getWorkItem(db, item.id)!.version,
-          answer.id,
-        ]);
-      }
+      for (const question of waiting) cancelQuestion(db, question.id, handoff.now);
     }
     return { kind: "restarted", jobId };
   });

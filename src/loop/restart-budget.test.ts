@@ -92,44 +92,6 @@ test("ten agent restarts ask once; Continue carries the work and grants ten more
   }
 });
 
-test("human and infrastructure requests do not consume the budget or need new question edges", () => {
-  const db = setup();
-  try {
-    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
-    for (const state of ["queued", "paused", "failed"] as const) {
-      db.run("UPDATE work_item SET state=?,restart_limit=10 WHERE id='budget'", [state]);
-      const current = getWorkItem(db, "budget")!;
-      expect(restart(db, current, { reason: "ci", body: "agent", now: 3 })).toEqual({
-        kind: "skipped",
-      });
-      expect(getWorkItem(db, "budget")?.version).toBe(current.version);
-      expect(
-        restart(db, current, {
-          source: "human",
-          reason: "follow_up",
-          body: "Please retry",
-          now: 4,
-        }),
-      ).toMatchObject({ kind: "restarted" });
-      expect(
-        restart(db, getWorkItem(db, "budget")!, {
-          source: "infrastructure",
-          reason: "follow_up",
-          body: "Retry runner setup",
-          now: 5,
-        }),
-      ).toMatchObject({ kind: "restarted" });
-      expect(
-        restart(db, getWorkItem(db, "budget")!, { reason: "answer", body: "Guidance", now: 6 }),
-      ).toMatchObject({ kind: "restarted" });
-    }
-    expect(getWorkItem(db, "budget")?.restartCount).toBe(10);
-    expect(findOpenQuestion(db, "session")).toBeNull();
-  } finally {
-    db.close();
-  }
-});
-
 test("item counters persist across database reopens", () => {
   const dir = mkdtempSync(join(tmpdir(), "paws-budget-"));
   const path = join(dir, "paws.sqlite");
@@ -148,27 +110,33 @@ test("item counters persist across database reopens", () => {
   }
 });
 
-test("Stop uses the normal cancellation lifecycle", () => {
-  const db = setup();
-  try {
-    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
-    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
-    const question = findOpenQuestion(db, "session")!;
-    const answer = answerQuestion(db, question.id, {
-      answer: "Stop",
-      answeredBy: "human",
-      now: 4,
-    })!;
-    questionEffects(db, { now: 5 }).clarification!(answer);
-    expect(getWorkItem(db, "budget")).toMatchObject({ state: "cancelled", cancelRequested: true });
-    expect(findOpenQuestion(db, "session")).toBeNull();
-    expect(listOutbox(db).some((row) => JSON.stringify(row.payload).includes("Stopped."))).toBe(
-      true,
-    );
-  } finally {
-    db.close();
-  }
-});
+test.each(["Stop", "Stop.", "stop, it's done"])(
+  "%s uses the normal cancellation lifecycle",
+  (answerText) => {
+    const db = setup();
+    try {
+      db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
+      restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
+      const question = findOpenQuestion(db, "session")!;
+      const answer = answerQuestion(db, question.id, {
+        answer: answerText,
+        answeredBy: "human",
+        now: 4,
+      })!;
+      questionEffects(db, { now: 5 }).clarification!(answer);
+      expect(getWorkItem(db, "budget")).toMatchObject({
+        state: "cancelled",
+        cancelRequested: true,
+      });
+      expect(findOpenQuestion(db, "session")).toBeNull();
+      expect(listOutbox(db).some((row) => JSON.stringify(row.payload).includes("Stopped."))).toBe(
+        true,
+      );
+    } finally {
+      db.close();
+    }
+  },
+);
 
 test("a budget hold is re-adopted after an infrastructure retry", () => {
   const db = setup();
@@ -246,64 +214,22 @@ test("sessionless execution ends with an explicit error when it cannot ask", () 
   }
 });
 
-test.each(["Stop.", "stop, it's done"])("%s uses the cancellation lifecycle", (answer) => {
-  const db = setup();
-  try {
-    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
-    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
-    const question = findOpenQuestion(db, "session")!;
-    const answered = answerQuestion(db, question.id, { answer, answeredBy: "human", now: 4 })!;
-    questionEffects(db, { now: 5 }).clarification!(answered);
-    expect(getWorkItem(db, "budget")?.state).toBe("cancelled");
-  } finally {
-    db.close();
-  }
-});
-
-test.each([
-  "Continue.",
-  "yes, continue",
-  "go on",
-  "Yes please keep going",
-  "Stop, then try the other approach",
-  "stop: focus on the API first",
-])("%s grants ten more restarts", (answer) => {
-  const db = setup();
-  try {
-    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
-    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
-    const question = findOpenQuestion(db, "session")!;
-    const answered = answerQuestion(db, question.id, { answer, answeredBy: "human", now: 4 })!;
-    questionEffects(db, { now: 5 }).clarification!(answered);
-    expect(getWorkItem(db, "budget")).toMatchObject({ state: "queued", restartLimit: 20 });
-  } finally {
-    db.close();
-  }
-});
-
-test("a human retry renews a sessionless item's spent budget without resetting its count", () => {
-  const db = setup();
-  try {
-    db.run("UPDATE work_item SET restart_count=10,session_key=NULL WHERE id='budget'");
-    expect(
-      restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 }),
-    ).toEqual({ kind: "failed" });
-    db.run("UPDATE work_item SET session_key='session',cancel_requested=0 WHERE id='budget'");
-    restart(db, getWorkItem(db, "budget")!, {
-      source: "human",
-      reason: "follow_up",
-      body: "Retry",
-      now: 4,
-    });
-    expect(getWorkItem(db, "budget")).toMatchObject({ restartCount: 10, restartLimit: 20 });
-    applyWorkItemEvent(db, "budget", "dispatched");
-    expect(
-      restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 5 }),
-    ).toMatchObject({ kind: "restarted" });
-  } finally {
-    db.close();
-  }
-});
+test.each(["Continue.", "yes, continue", "go on", "Yes please keep going"])(
+  "%s grants ten more restarts",
+  (answer) => {
+    const db = setup();
+    try {
+      db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
+      restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
+      const question = findOpenQuestion(db, "session")!;
+      const answered = answerQuestion(db, question.id, { answer, answeredBy: "human", now: 4 })!;
+      questionEffects(db, { now: 5 }).clarification!(answered);
+      expect(getWorkItem(db, "budget")).toMatchObject({ state: "queued", restartLimit: 20 });
+    } finally {
+      db.close();
+    }
+  },
+);
 
 test("renewal cancels the old question and a late Stop cannot stop the resumed item", () => {
   const db = setup();
@@ -313,6 +239,7 @@ test("renewal cancels the old question and a late Stop cannot stop the resumed i
     const old = findOpenQuestion(db, "session")!;
     restart(db, getWorkItem(db, "budget")!, {
       source: "human",
+      renewBudget: true,
       reason: "follow_up",
       body: "Retry",
       now: 4,
@@ -387,6 +314,62 @@ test("budget questions and grants stay in the current session", () => {
     })!;
     questionEffects(db, { now: 9 }).clarification!(continued);
     expect(getWorkItem(db, "budget")).toMatchObject({ state: "queued", restartLimit: 20 });
+  } finally {
+    db.close();
+  }
+});
+
+test("a stale Stop is consumed and cannot grant restarts to later PR feedback", () => {
+  const db = setup();
+  try {
+    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
+    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
+    const question = findOpenQuestion(db, "session")!;
+    restart(db, getWorkItem(db, "budget")!, {
+      source: "infrastructure",
+      reason: "follow_up",
+      body: "Recover",
+      now: 4,
+    });
+    applyWorkItemEvent(db, "budget", "dispatched");
+    const stopped = answerQuestion(db, question.id, {
+      answer: "Stop",
+      answeredBy: "human",
+      now: 5,
+    })!;
+    questionEffects(db, { now: 6 }).clarification!(stopped);
+    expect(db.query("SELECT handoff_version FROM question WHERE id=?").get(question.id)).toEqual({
+      handoff_version: 0,
+    });
+    restart(db, getWorkItem(db, "budget")!, {
+      source: "human",
+      reason: "review",
+      body: "PR feedback",
+      now: 7,
+    });
+    expect(getWorkItem(db, "budget")).toMatchObject({
+      state: "queued",
+      restartCount: 10,
+      restartLimit: 10,
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test.each([
+  "I need more information first",
+  "Stop, then try the other approach",
+  "stop: focus on the API first",
+])("guidance does not approve a budget extension: %s", (answer) => {
+  const db = setup();
+  try {
+    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
+    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
+    const question = findOpenQuestion(db, "session")!;
+    const answered = answerQuestion(db, question.id, { answer, answeredBy: "human", now: 4 })!;
+    questionEffects(db, { now: 5 }).clarification!(answered);
+    expect(getWorkItem(db, "budget")).toMatchObject({ state: "queued", restartLimit: 10 });
   } finally {
     db.close();
   }

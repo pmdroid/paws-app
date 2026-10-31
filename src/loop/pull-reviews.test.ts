@@ -358,7 +358,7 @@ function laneCapabilities(): MergeCapabilities {
   return caps as MergeCapabilities;
 }
 
-test.each(["cursor[bot]", "rev"])(
+test.each(["cursor[bot]", "rev", "ci-reviewer"])(
   "restart budget classifies PR reviews from %s",
   async (author) => {
     const { db, caps, deliver } = setup();
@@ -368,7 +368,7 @@ test.each(["cursor[bot]", "rev"])(
     expect(await handlePullReview(db, 991, caps)).toBe(bot ? "asked" : "restarted");
     expect(getWorkItem(db, "eng-1")).toMatchObject({
       restartCount: 10,
-      restartLimit: bot ? 10 : 20,
+      restartLimit: 10,
     });
     if (bot) expect(findOpenQuestion(db, "s-1")?.reason).toBe("restart_budget");
     db.close();

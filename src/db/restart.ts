@@ -12,6 +12,8 @@ export type RestartHandoff = {
   reason: RestartReason;
   /** Only agent requests consume the lifetime budget. Answers are human requests by default. */
   source?: "agent" | "infrastructure" | "human";
+  /** Set only by an authorized Continue answer or explicit owner retry. */
+  renewBudget?: boolean;
   body: string;
   now: number;
   jobKey?: string;
@@ -36,37 +38,43 @@ export function restart(
   item: WorkItemRecord,
   handoff: RestartHandoff,
 ): number | null {
-  return immediate(db, () => {
-    if (handoff.jobKey && db.query("SELECT 1 FROM job WHERE job_key=?").get(handoff.jobKey))
-      return null;
-    if (getWorkItem(db, item.id)?.version !== item.version) return null;
-    handoff.onAdmitted?.();
-    if (handoff.keepMergeQueuePlace) keepMergeQueuePlace(db, item.id);
-    if (!halt(db, item, handoff.now)) return null;
-    if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
-    if (handoff.reason === "answer")
-      db.run("UPDATE work_item SET turn_count=0 WHERE id=?", [item.id]);
-    const record = {
-      kind: "restart" as const,
-      reason: handoff.reason,
-      payloadDigest: createHash("sha256").update(handoff.body).digest("hex"),
-      now: handoff.now,
-    };
-    const queued = applyWorkItemEvent(db, item.id, "restart", record);
-    if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "running" });
-    return enqueueJobOnce(db, {
-      queue: JOB_KIND.resume,
-      jobKey: handoff.jobKey ?? `restart:${item.id}:${queued.version}`,
-      payload: {
-        itemId: item.id,
-        runId: item.currentRunId,
-        handoff: handoff.body,
+  const lostFence = new Error("Restart admission lost its version fence");
+  try {
+    return immediate(db, () => {
+      if (handoff.jobKey && db.query("SELECT 1 FROM job WHERE job_key=?").get(handoff.jobKey))
+        return null;
+      if (getWorkItem(db, item.id)?.version !== item.version) return null;
+      handoff.onAdmitted?.();
+      if (handoff.keepMergeQueuePlace) keepMergeQueuePlace(db, item.id);
+      if (!halt(db, item, handoff.now)) throw lostFence;
+      if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
+      if (handoff.reason === "answer")
+        db.run("UPDATE work_item SET turn_count=0 WHERE id=?", [item.id]);
+      const record = {
+        kind: "restart" as const,
         reason: handoff.reason,
-        ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
-      },
-      now: handoff.now,
+        payloadDigest: createHash("sha256").update(handoff.body).digest("hex"),
+        now: handoff.now,
+      };
+      const queued = applyWorkItemEvent(db, item.id, "restart", record);
+      if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "running" });
+      return enqueueJobOnce(db, {
+        queue: JOB_KIND.resume,
+        jobKey: handoff.jobKey ?? `restart:${item.id}:${queued.version}`,
+        payload: {
+          itemId: item.id,
+          runId: item.currentRunId,
+          handoff: handoff.body,
+          reason: handoff.reason,
+          ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
+        },
+        now: handoff.now,
+      });
     });
-  });
+  } catch (error) {
+    if (error === lostFence) return null;
+    throw error;
+  }
 }
 
 /** Fix restarts since the latest human turn, across findings, CI and review. */

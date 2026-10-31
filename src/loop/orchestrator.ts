@@ -5309,6 +5309,7 @@ export class Orchestrator {
         restart(this.db, item, {
           reason: "follow_up",
           source: "human",
+          renewBudget: item.restartCount >= item.restartLimit,
           body: "Continue the task from its branch.",
           now: this.now(),
         }).kind !== "restarted"
@@ -6156,6 +6157,7 @@ export class Orchestrator {
       const restarted = restart(this.db, getWorkItem(this.db, item!.id)!, {
         reason: rebase ? "conflict" : "follow_up",
         source: "human",
+        renewBudget: item!.restartCount >= item!.restartLimit,
         body: rebase ? `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}` : handoff,
         jobKey,
         now: this.now(),
