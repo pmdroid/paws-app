@@ -3726,7 +3726,7 @@ export class Orchestrator {
         body: ciFixHandoff(checks),
         now: this.now(),
         jobKey: `ci-failed:${item.id}:recheck:${head}`,
-      }) !== null
+      }) !== null || getWorkItem(this.db, item.id)?.state === "awaiting_input"
     );
   }
 

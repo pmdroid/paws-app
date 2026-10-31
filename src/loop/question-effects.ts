@@ -4,6 +4,7 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND, TIME_LIMIT_MERGE, continuesRestartBudget } from "../core";
 import {
   immediate,
+  applyLinearCommand,
   grantLifetimeRestarts,
   applyLinearTurns,
   announceLinearTurn,
@@ -267,13 +268,17 @@ export function questionEffects(
         return immediate(db, () => {
           if (grantLifetimeRestarts(db, question.id)) resume(question);
         });
-      if (!/^\s*stop\b/i.test(question.answer ?? "")) return resume(question);
+      if ((question.answer ?? "").trim().toLowerCase() !== "stop") return resume(question);
       consumeTurn(question);
       const item = getWorkItem(db, question.itemId);
       if (!item || item.state !== "awaiting_input") return;
-      // Any response other than the explicit extension ends this budget hold.
+      // Only the exact Stop choice runs the canonical stop lifecycle.
       db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
-      applyWorkItemEvent(db, item.id, "cancel", { now: input.now });
+      applyLinearCommand(
+        db,
+        { type: "stop", source: "linear", itemId: item.id, requestedAt: input.now },
+        input.now,
+      );
     },
     repository: resume,
     "ci-help": resume,

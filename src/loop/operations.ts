@@ -8,6 +8,10 @@ import {
   immediate,
   halt,
   lifetimeRestartBudget,
+  budgetHandoffs,
+  holdBudgetHandoff,
+  restoreBudgetQueue,
+  carryBudgetHandoffs,
   saveCheckpoint,
   type WorkItemRecord,
   restart as restartItem,
@@ -59,7 +63,35 @@ export function restart(...args: Parameters<typeof restartItem>): ReturnType<typ
     let current = getWorkItem(db, item.id);
     if (!current || current.version !== item.version) return null;
     const { used, limit } = lifetimeRestartBudget(db, item.id);
-    if (used < limit) return restartItem(...args);
+    if (used < limit) {
+      const held = budgetHandoffs(db, item.id);
+      if (held.length === 0) return restartItem(...args);
+      const original = held[0]!.handoff;
+      const requestedKey = original.jobKey ?? handoff.jobKey;
+      // A previous attempt can already own that key; enqueueJobOnce must not return its cancelled job.
+      const jobKey =
+        requestedKey && db.query("SELECT 1 FROM job WHERE job_key=?").get(requestedKey)
+          ? `budget-resume:${item.id}:${held[0]!.id}`
+          : requestedKey;
+      restoreBudgetQueue(db, item.id, held);
+      const body = [...new Set([...held.map((entry) => entry.handoff.body), handoff.body])].join(
+        "\n\n",
+      );
+      const jobId = restartItem(db, current, {
+        ...original,
+        // A human answer still resets the per-human turn/fix counters, never the lifetime tally.
+        reason: handoff.reason === "answer" ? "answer" : original.reason,
+        body,
+        now: handoff.now,
+        jobKey,
+        limit: original.limit ?? handoff.limit,
+        keepMergeQueuePlace:
+          handoff.keepMergeQueuePlace || held.some((entry) => entry.handoff.keepMergeQueuePlace),
+      });
+      if (jobId !== null) carryBudgetHandoffs(db, held, getWorkItem(db, item.id)!.version);
+      return jobId;
+    }
+    if (current.cancelRequested) return null;
     if (!transition(current.state, "restart").ok) return null;
     if (!current.sessionKey) {
       const sessions = db
@@ -80,11 +112,9 @@ export function restart(...args: Parameters<typeof restartItem>): ReturnType<typ
         current = getWorkItem(db, item.id)!;
       }
     }
-    // A missing or ambiguous channel is an admission error, never a partially committed halt.
-    if (!current.sessionKey)
-      throw new Error(
-        "The lifetime restart budget is spent, but this item has no Linear session for its budget question. Connect a session before retrying.",
-      );
+    holdBudgetHandoff(db, current.id, handoff);
+    // No channel means no destructive halt and no exception in a caller's shared transaction.
+    if (!current.sessionKey) return null;
     const halted = halt(db, current, handoff.now);
     if (!halted) return null;
     const waiting = db

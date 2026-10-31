@@ -26,7 +26,7 @@ export function restartForPushConflict(
         reason: "conflict",
         body: pushConflictHandoff(input.branch, input.files),
         now: input.now,
-      }) !== null
+      }) !== null || getWorkItem(db, itemId)?.state === "awaiting_input"
     );
   });
 }
