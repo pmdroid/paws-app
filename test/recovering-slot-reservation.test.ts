@@ -14,6 +14,7 @@ import {
   getWorkItem,
   insertRun,
   listJobs,
+  listSystemFaults,
   listWorkItems,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -94,7 +95,9 @@ test("a failed preparation releases its reservation and the next recovering item
       random: () => 0,
       lines,
       ready: (started, db) =>
-        started.size === 1 && listWorkItems(db).some((item) => item.state === "awaiting_input"),
+        started.size === 1 &&
+        (listSystemFaults(db).length > 0 ||
+          listWorkItems(db).some((item) => item.state === "awaiting_input")),
       wrap(placement) {
         return {
           ...placement,
@@ -110,7 +113,10 @@ test("a failed preparation releases its reservation and the next recovering item
       async assert(started, db) {
         expect(started.size, lines.join("\n")).toBe(1);
         expect(lines.join("\n")).not.toContain("Waiting for a free slot");
-        const failed = listWorkItems(db).filter((item) => item.state === "awaiting_input");
+        const heldIds = new Set(listSystemFaults(db).map((hold) => hold.itemId));
+        const failed = listWorkItems(db).filter(
+          (item) => item.state === "awaiting_input" || heldIds.has(item.id),
+        );
         expect(failed.map((item) => item.linearIdentifier)).toHaveLength(1);
         expect(started.has(failed[0]!.linearIdentifier)).toBe(false);
       },
