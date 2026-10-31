@@ -96,6 +96,23 @@ export function openExecutionJournal(root: string) {
     db.run("ALTER TABLE execution ADD COLUMN session_offset INTEGER NOT NULL DEFAULT 0");
   if (!columns.has("session_state"))
     db.run("ALTER TABLE execution ADD COLUMN session_state TEXT NOT NULL DEFAULT ''");
+  if (!columns.has("transcript_sealed"))
+    db.run("ALTER TABLE execution ADD COLUMN transcript_sealed INTEGER NOT NULL DEFAULT 0");
+  db.run(
+    "CREATE INDEX IF NOT EXISTS delivery_waiting ON delivery(execution_id,sequence) WHERE json_extract(payload,'$.type') IN ('question','artifact','closeout_policy')",
+  );
+  function execution(id: string): Execution | undefined {
+    const row = db
+      .query<{ id: string; payload: string; phase: string }, [string]>(
+        "SELECT id,payload,phase FROM execution WHERE id=?",
+      )
+      .get(id);
+    if (!row) return;
+    const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
+    if (command.type !== "run" && command.type !== "review" && command.type !== "task")
+      throw new Error("Invalid persisted work command");
+    return { id: row.id, command, phase: row.phase };
+  }
   function executions(active: boolean): Execution[] {
     return db
       .query<{ id: string; payload: string; phase: string }, [number]>(
@@ -111,6 +128,22 @@ export function openExecutionJournal(root: string) {
   }
   return {
     executions,
+    execution,
+    transcriptSealed(id: string) {
+      return Boolean(
+        db
+          .query<{ sealed: number }, [string]>(
+            "SELECT transcript_sealed AS sealed FROM execution WHERE id=?",
+          )
+          .get(id)?.sealed,
+      );
+    },
+    sealTranscript(id: string) {
+      db.run("UPDATE execution SET transcript_sealed=1 WHERE id=?", [id]);
+    },
+    resultRejected(id: string) {
+      db.run("UPDATE result_delivery SET accepted=2 WHERE execution_id=?", [id]);
+    },
     saveResult(id: string, result: RunnerResult, failure = false) {
       db.run("INSERT OR IGNORE INTO result_delivery(execution_id,payload,failure) VALUES (?,?,?)", [
         id,

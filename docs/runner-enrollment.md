@@ -118,12 +118,16 @@ Paws lease-credit support before upgrading runners. The heartbeat advertises a
 30-minute offline budget, capped by the command's remaining active-work time.
 The runner counts monotonic awake time spent working. Sleep, wall-clock jumps,
 questions waiting for an answer and finished work waiting for delivery do not
-spend that budget. Helper commands retain their signed deadlines.
+spend that budget. Paws's maximum credited lease still caps local authority; if
+that deadline passes while idle, the runner stops and retains a failure for
+delivery. Helper commands retain their signed deadlines.
 
 A heartbeat that answers without the run's lease, or explicitly fences it, stops
 the worker immediately. Connection errors, timeouts and server errors allow work
 to continue within the offline budget. Events remain local until delivery can
 resume. Successful results ready for delivery and failures produced by the runner
 stay in its execution journal until Paws accepts them, including across a runner
-restart. Retries use the same execution and command identifiers, so Paws can
+restart. Pending results remain in heartbeat reports until delivered. A permanent
+403 or 409 refusal ends retries and keeps the result locally for diagnosis.
+Retries use the same execution and command identifiers, so Paws can
 recognize a repeated delivery if its acknowledgement was lost.

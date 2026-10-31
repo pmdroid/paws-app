@@ -27,6 +27,14 @@ async function fixture(
   let missing = false;
   let postFailures = 0;
   let postAttempts = 0;
+  let permanentStatus = 0;
+  let grantAttempts = 0;
+  let serverEnded = false;
+  let seals = 0;
+  let rejectSealed = false;
+  let releasePost: (() => void) | undefined;
+  let postGate: Promise<void> | undefined;
+  const reports: string[][] = [];
   const events: unknown[] = [];
   let down = false;
   let fenced = false;
@@ -104,8 +112,11 @@ async function fixture(
     },
     daemon: {
       status: () => paired,
-      async heartbeat() {
+      async heartbeat(_skills, _runtimes, _agents, live) {
         reachable();
+        reports.push((live ?? []).map((value) => value.runId));
+        if (!pending.length && !posted.length && !live?.some((value) => value.runId === "run"))
+          serverEnded = true;
         const budget =
           options.budget === false
             ? {}
@@ -113,7 +124,7 @@ async function fixture(
                 offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS,
                 aliveAt: wall + (options.aliveOffsetMs ?? 0),
               };
-        return fenced
+        return fenced || serverEnded
           ? { leases: [], fenced: [{ runId: "run", generation: 1 }], ...budget }
           : {
               leases: missing ? [] : [{ runId: "run", generation: 1, expiresAt: wall + 60_000 }],
@@ -131,6 +142,8 @@ async function fixture(
       },
       async issueRunGrant() {
         reachable();
+        grantAttempts++;
+        if (serverEnded) throw new RunnerRequestError(409, "POST", "/grant", 1);
         return { token: "token", expiresAt: now + 60_000 };
       },
       async sendEvent(event) {
@@ -149,6 +162,9 @@ async function fixture(
       async postResult(_runId, _generation, result) {
         reachable();
         postAttempts++;
+        if (postGate) await postGate;
+        if (serverEnded || permanentStatus)
+          throw new RunnerRequestError(permanentStatus || 409, "POST", "/result", 1);
         if (postFailures-- > 0) throw new RunnerRequestError(503, "POST", "/result", 1);
         posted.push(result);
         return { duplicate: false };
@@ -168,6 +184,8 @@ async function fixture(
       },
       async finishTranscript() {
         reachable();
+        if (seals && rejectSealed) throw new RunnerRequestError(409, "POST", "/finish", 1);
+        seals++;
         return { uri: "transcript" };
       },
     },
@@ -183,6 +201,20 @@ async function fixture(
   await tickUntil(() => execution !== "");
   return {
     posted,
+    reports,
+    seals: () => seals,
+    grantAttempts: () => grantAttempts,
+    rejectPermanently: (status: number) => (permanentStatus = status),
+    rejectSealed: () => (rejectSealed = true),
+    holdPost: () => {
+      postGate = new Promise<void>((resolve) => {
+        releasePost = resolve;
+      });
+    },
+    releasePost: () => {
+      releasePost?.();
+      postGate = undefined;
+    },
     rejectResults: (times: number) => {
       postFailures = times;
     },
@@ -482,7 +514,7 @@ test("waiting for a question or finished result does not spend offline budget", 
         });
       else f.finish();
       await Bun.sleep(300);
-      f.advance(2 * RUNNER_OFFLINE_BUDGET_MS);
+      f.advance(20 * 60_000);
       await Bun.sleep(300);
       expect(f.stopped()).toBe(0);
       f.comeBack();
@@ -508,6 +540,123 @@ test("a prepared success survives an unavailable result endpoint and a runner re
     await f.tick();
     expect(f.posted.map((result) => result.stopReason)).toEqual(["end_turn"]);
     expect(f.postAttempts()).toBe(2);
+    expect(f.errors.join("\n")).not.toContain("runner restarted");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("pending failure remains reported after active cleanup until Paws accepts it", async () => {
+  const f = await fixture();
+  try {
+    f.goDown();
+    await f.tick();
+    f.advance(RUNNER_OFFLINE_BUDGET_MS + 6 * 60_000);
+    await Bun.sleep(300);
+    await f.tick();
+    f.comeBack();
+    f.rejectResults(2);
+    await f.tickUntil(() => f.postAttempts() >= 2);
+    await f.tickUntil(() => f.posted.length > 0);
+    expect(f.posted).toHaveLength(1);
+    expect(f.reports.slice(1).every((report) => report.includes("run"))).toBe(true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("permanent result refusals stop retries across runner restarts", async () => {
+  for (const status of [403, 409]) {
+    const f = await fixture();
+    try {
+      f.rejectPermanently(status);
+      f.finish();
+      await f.tickUntil(() => f.postAttempts() > 0);
+      for (let i = 0; i < 3; i++) await f.tick();
+      const attempts = f.grantAttempts();
+      await f.restart();
+      for (let i = 0; i < 3; i++) await f.tick();
+      expect(f.postAttempts()).toBe(1);
+      expect(f.grantAttempts()).toBe(attempts);
+      expect(f.errors.filter((error) => error.includes("refused the stored result"))).toHaveLength(
+        1,
+      );
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test("a failure whose transcript was sealed retries only the result after restart", async () => {
+  const f = await fixture();
+  try {
+    f.rejectSealed();
+    f.refuse(403, 1);
+    f.rejectResults(1);
+    await f.tickUntil(() => f.postAttempts() > 0);
+    expect(f.seals()).toBe(1);
+    await f.restart();
+    await f.tickUntil(() => f.posted.length > 0);
+    expect(f.seals()).toBe(1);
+    expect(f.posted[0]!.stopReason).toBe("error");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("stored success has one delivery in flight while interruption and retry overlap", async () => {
+  const f = await fixture();
+  try {
+    f.rejectResults(1);
+    f.finish();
+    await f.tickUntil(() => f.postAttempts() > 0);
+    f.holdPost();
+    f.missing();
+    await f.tick();
+    await f.tickUntil(() => f.postAttempts() >= 2);
+    await f.tick();
+    expect(f.postAttempts()).toBe(2);
+    f.releasePost();
+    await f.tickUntil(() => f.posted.length > 0);
+    expect(f.posted).toHaveLength(1);
+  } finally {
+    f.releasePost();
+    await f.cleanup();
+  }
+});
+
+test("idle offline time cannot extend the lease beyond Paws's authority ceiling", async () => {
+  const f = await fixture();
+  try {
+    f.goDown();
+    await f.tick();
+    f.event({
+      type: "question",
+      requestId: crypto.randomUUID(),
+      question: "Continue?",
+      options: [],
+    });
+    await Bun.sleep(300);
+    f.advance(2 * RUNNER_OFFLINE_BUDGET_MS);
+    await Bun.sleep(300);
+    expect(f.stopped()).toBe(1);
+    expect(f.posted).toHaveLength(0);
+    f.comeBack();
+    await f.tickUntil(() => f.posted.length > 0);
+    expect(f.posted[0]!.errorMessage).toContain("lease deadline passed");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("an unchanged malformed event journal reports one error while offline", async () => {
+  const f = await fixture();
+  try {
+    f.goDown();
+    await f.tick();
+    f.event({ type: "question" });
+    await Bun.sleep(900);
+    expect(f.errors.filter((error) => error.includes("Invalid runner question"))).toHaveLength(1);
   } finally {
     await f.cleanup();
   }
