@@ -21,25 +21,26 @@ A public dashboard also needs `PAWS_TLS_KEY_PATH` and `PAWS_TLS_CERT_PATH`. When
 
 ## `config.toml`
 
-| Section                            | Keys                                                                                          | Notes                                                                                              |
-| ---------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `[linear]`                         | `team`, `team_id`, `viewer_id`, `secret`, `client_file`, `webhooks`                           | Written by setup. `secret` and `client_file` are paths under `~/.paws`, never the secret itself.   |
-| `[github]`                         | `auth`, `repo`, `repos`                                                                       | `auth` accepts only `"app"`; see [GitHub App](github-app.md).                                      |
-| `[tracker]`                        | `kind`                                                                                        | Only `"linear"`.                                                                                   |
-| `[checkout]`                       | `path`                                                                                        | The repository checkout Paws works from.                                                           |
-| `[checkout.projects."owner/repo"]` | `exclude`                                                                                     | Folders left out of worktrees; see the [README](../README.md).                                     |
-| `[caps]`                           | `max_turns`, `max_awake_ms`                                                                   | Turn and awake-time caps.                                                                          |
-| `[agents]`, `[agents.grok]`        | `implementer`, `path`, `allow_api_key`                                                        | `implementer` is `claude`, `grok` or `codex`. Models and effort are set in Settings, under Agents. |
-| `[closeout.projects."owner/repo"]` | `policy_root`                                                                                 | A [local Closeout policy](local-closeout.md).                                                      |
-| `[skills.projects."owner/repo"]`   | `root`                                                                                        | [Local skills](local-skills.md).                                                                   |
-| `[merge]`                          | `order`, `main_moved`, `ci_fix_attempts`, `comment_quiet_seconds`, `comment_max_wait_seconds` | See [below](#merge).                                                                               |
-| `[queue]`                          | `start_timeout_hours`, `max_running_per_owner`                                                | See [below](#queue).                                                                               |
+| Section                            | Keys                                                                                                                    | Notes                                                                                              |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `[linear]`                         | `team`, `team_id`, `viewer_id`, `secret`, `client_file`, `webhooks`                                                     | Written by setup. `secret` and `client_file` are paths under `~/.paws`, never the secret itself.   |
+| `[github]`                         | `auth`, `repo`, `repos`                                                                                                 | `auth` accepts only `"app"`; see [GitHub App](github-app.md).                                      |
+| `[tracker]`                        | `kind`                                                                                                                  | Only `"linear"`.                                                                                   |
+| `[checkout]`                       | `path`                                                                                                                  | The repository checkout Paws works from.                                                           |
+| `[checkout.projects."owner/repo"]` | `exclude`                                                                                                               | Folders left out of worktrees; see the [README](../README.md).                                     |
+| `[caps]`                           | `max_turns`, `max_awake_ms`                                                                                             | Turn and awake-time caps.                                                                          |
+| `[agents]`, `[agents.grok]`        | `implementer`, `path`, `allow_api_key`                                                                                  | `implementer` is `claude`, `grok` or `codex`. Models and effort are set in Settings, under Agents. |
+| `[closeout.projects."owner/repo"]` | `policy_root`                                                                                                           | A [local Closeout policy](local-closeout.md).                                                      |
+| `[skills.projects."owner/repo"]`   | `root`                                                                                                                  | [Local skills](local-skills.md).                                                                   |
+| `[merge]`                          | `order`, `main_moved`, `ci_fix_attempts`, `comment_quiet_seconds`, `comment_max_wait_seconds`, `auto_approve_high_risk` | See [below](#merge).                                                                               |
+| `[queue]`                          | `start_timeout_hours`, `max_running_per_owner`                                                                          | See [below](#queue).                                                                               |
 
 ### `[merge]`
 
 ```toml
 [merge]
 order = "queue"
+auto_approve_high_risk = false
 
 [merge.projects."<Linear project id>"]
 order = "ci-green"
@@ -56,6 +57,8 @@ order = "ci-green"
   - `"closeout"`: rebase and run Closeout again on the new head before it can merge.
 
   A changed Closeout policy sends a carried head back through Closeout under every value.
+
+- **`auto_approve_high_risk`**: off by default. Settings › Merging offers "Let high-risk changes through when both reviews are clean". When on, a high-risk head needs no manual approval only if Closeout accepted that exact head under the current policy, both `security-review` and `independent-review` passed without P2-or-worse findings, and no rule probe failed. Missing or unreadable evidence asks a person. Changes to `.paws/high-risk-paths` or `.agents/**` always need a person. Automatic approval is never stored and does not carry to a new or rebased head; both named reviews must run on that head. Manual approvals keep their existing carry-over behavior.
 
 - **`comment_quiet_seconds`**: how long Paws waits after the latest pull request comment or changes-requested review before it sends what it collected to the agent in one fix round. Default 60, from 0 to 3600. Settings › Merging › Pull request comments sets it as "Quiet time". A change applies to the next comment, without a restart.
 - **`comment_max_wait_seconds`**: the longest Paws keeps collecting while comments keep arriving, counted from the first one. Default 300, from 0 to 3600, and never below the quiet time. Settings › Merging calls it "Longest wait".

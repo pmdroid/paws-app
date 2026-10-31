@@ -196,7 +196,7 @@ export function renderMergeSettings(view: View): string {
       <div class="settings-add"><label for="merge-rule-project">New rule</label>${ruleProject}${ruleLabel}<div class="row"><button class="btn" type="button" data-merge="add-rule">Add rule</button></div></div></div></section>
       ${data.commentWait ? commentWaitSection(data.commentWait) : ""}
       ${riskGateSection(data.riskGate)}
-      ${data.autoApproveHighRisk === undefined ? "" : `<label><input type="checkbox" name="auto-approve-high-risk"${data.autoApproveHighRisk ? " checked" : ""}> Let high-risk changes through when both reviews are clean</label>`}
+      ${data.autoApproveHighRisk === undefined ? "" : `<section class="settings-section"><div class="settings-label"><h2>High-risk approval</h2><p class="sub" id="auto-approve-high-risk-help">Off by default. When on, a high-risk change can merge without a person only when Closeout accepted the exact commit, both security and independent reviews are clean, and no rule probe failed. A new commit needs its own reviews. Changes to the risk rules or agent instructions still need a person.</p></div><div class="col"><label><input type="checkbox" name="auto-approve-high-risk" aria-describedby="auto-approve-high-risk-help"${data.autoApproveHighRisk ? " checked" : ""}> Let high-risk changes through when both reviews are clean</label></div></section>`}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
       ${data.hotFiles ? hotFileSection(data.hotFiles) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>

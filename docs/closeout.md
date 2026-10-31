@@ -183,11 +183,12 @@ When Closeout accepts head S, it writes an accept row: S, the policy digest it r
 1. The pull request head is still S.
 2. S contains the current `main`. Under `[merge] main_moved = "overlap"`, a head whose files main's new commits do not touch also counts.
 3. An accept row exists for S under the current policy digest. Under `main_moved = "ci"` or `"overlap"`, a head the lane rebased from the accepted head carries that head's row.
-4. CI is green for S.
-5. No review thread is unresolved.
-6. Branch protection is satisfied.
+4. A high-risk head satisfies the risk approval gate: a manual approval, or the opt-in clean-review check described under [`auto_approve_high_risk`](configuration.md#merge). Automatic approval requires both named reviews at exactly S, even after a rebase, and never carries to another head. Changes to the risk rules or agent instructions always need a person.
+5. CI is green for S.
+6. No review thread is unresolved.
+7. Branch protection is satisfied.
 
-Only when all six hold does the lane squash, with GitHub's expected-head guard set to S. A head that changes, or a main that moves between the read and the squash, releases the lane, and the next turn reads again. Paws never merges a head that is neither accepted by Closeout nor rebased by the lane from an accepted head.
+Only when all seven hold does the lane squash, with GitHub's expected-head guard set to S. A head that changes, or a main that moves between the read and the squash, releases the lane, and the next turn reads again. Paws never merges a head that is neither accepted by Closeout nor rebased by the lane from an accepted head.
 
 When `mergeable(S)` is false, the first failing condition decides:
 

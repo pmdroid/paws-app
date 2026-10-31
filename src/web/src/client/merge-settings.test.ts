@@ -252,7 +252,11 @@ test("Merging renders and submits the opt-in high-risk checkbox", () => {
     const view = { ...data(), autoApproveHighRisk: enabled };
     const html = renderMergeSettings({ data: view, busy: null, error: null, saved: false });
     expect(html).toContain("Let high-risk changes through when both reviews are clean");
-    expect(html).toContain(`name="auto-approve-high-risk"${enabled ? " checked" : ""}>`);
+    expect(html).toContain(
+      `aria-describedby="auto-approve-high-risk-help"${enabled ? " checked" : ""}>`,
+    );
+    expect(html).toContain("High-risk approval");
+    expect(html).toContain("Closeout accepted the exact commit");
     expect(mergeSettingsBody(view).autoApproveHighRisk).toBe(enabled);
   }
 });
