@@ -113,6 +113,11 @@ try {
 
       await page.goto(`http://127.0.0.1:${server.port}/status/settings/merging`);
       await expect(page.getByRole("heading", { name: "High-risk paths" })).toBeVisible();
+      const automatic = page.getByRole("checkbox", {
+        name: "Let high-risk changes through when both reviews are clean",
+      });
+      await expect(automatic).not.toBeChecked();
+      await automatic.check();
       const platform = page.locator(".settings-project", {
         has: page.getByRole("heading", { name: "acme/platform" }),
       });
@@ -125,6 +130,8 @@ try {
         ["src/auth/**", ".github/workflows/**"],
       );
       await page.reload();
+      await expect(automatic).toBeChecked();
+      expect(readMergeSettings(loadConfigFile(configPath)).autoApproveHighRisk).toBe(true);
       await expect(platform.locator("textarea")).toHaveValue("src/auth/**\n.github/workflows/**");
       await expect(platform).toContainText("Read-only, from origin/main at 4b317d5.");
       await expect(page.getByText("No file on origin/main at 9f1c2aa.")).toBeVisible();

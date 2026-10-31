@@ -119,6 +119,7 @@ export async function handleMergeSettingsRequest(
     }
     return json({
       ...view(policy),
+      autoApproveHighRisk: policy.autoApproveHighRisk,
       commentWait: policy.commentWait,
       highRiskPaths: highRiskPathsView(policy),
       ...(options.riskGate ? { riskGate: options.riskGate } : {}),
@@ -147,6 +148,7 @@ export async function handleMergeSettingsRequest(
   // Optional, so a page that does not show High-risk paths or the comment wait keeps them.
   let highRiskPaths: Record<string, string[]> | undefined;
   let commentWait: CommentWait | undefined;
+  let autoApproveHighRisk: boolean | undefined;
   try {
     if (isRecord(body) && "highRiskPaths" in body) {
       const { highRiskPaths: paths, ...rest } = body;
@@ -156,6 +158,12 @@ export async function handleMergeSettingsRequest(
     if (isRecord(body) && "commentWait" in body) {
       const { commentWait: wait, ...rest } = body;
       commentWait = parseCommentWait(wait);
+      body = rest;
+    }
+    if (isRecord(body) && "autoApproveHighRisk" in body) {
+      const { autoApproveHighRisk: enabled, ...rest } = body;
+      if (typeof enabled !== "boolean") throw new Error("autoApproveHighRisk must be a boolean");
+      autoApproveHighRisk = enabled;
       body = rest;
     }
     policy = parseMergePolicy(body);
@@ -193,12 +201,29 @@ export async function handleMergeSettingsRequest(
       );
   }
   try {
-    writeMergePolicy(options.configPath, policy, current, highRiskPaths, commentWait);
+    writeMergePolicy(
+      options.configPath,
+      policy,
+      {
+        ...current,
+        ...(autoApproveHighRisk === undefined ? {} : { autoApproveHighRisk }),
+      },
+      highRiskPaths,
+      commentWait,
+    );
   } catch (caughtError6) {
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
     return json({ error: "Merging settings could not be saved" }, 503);
   }
   for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
+  if (
+    autoApproveHighRisk !== undefined &&
+    autoApproveHighRisk !== (before?.autoApproveHighRisk ?? false)
+  )
+    options.audit?.(
+      "settings.merging",
+      `Automatic high-risk approval: ${autoApproveHighRisk ? "on" : "off"}`,
+    );
   const waitBefore = before?.commentWait ?? DEFAULT_COMMENT_WAIT;
   const waitAfter = commentWait ?? waitBefore;
   if (
@@ -216,6 +241,7 @@ export async function handleMergeSettingsRequest(
     options.audit?.("settings.merging", change);
   return json({
     ...view(policy),
+    autoApproveHighRisk: autoApproveHighRisk ?? before?.autoApproveHighRisk ?? false,
     commentWait: waitAfter,
     highRiskPaths: Object.entries(saved)
       .filter(([, paths]) => paths.length > 0)

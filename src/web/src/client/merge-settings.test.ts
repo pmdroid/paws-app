@@ -246,3 +246,13 @@ describe("Settings → Merging", () => {
     expect(html).toContain("Merging settings saved.");
   });
 });
+
+test("Merging renders and submits the opt-in high-risk checkbox", () => {
+  for (const enabled of [false, true]) {
+    const view = { ...data(), autoApproveHighRisk: enabled };
+    const html = renderMergeSettings({ data: view, busy: null, error: null, saved: false });
+    expect(html).toContain("Let high-risk changes through when both reviews are clean");
+    expect(html).toContain(`name="auto-approve-high-risk"${enabled ? " checked" : ""}>`);
+    expect(mergeSettingsBody(view).autoApproveHighRisk).toBe(enabled);
+  }
+});

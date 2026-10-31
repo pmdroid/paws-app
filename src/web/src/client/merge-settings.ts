@@ -196,6 +196,7 @@ export function renderMergeSettings(view: View): string {
       <div class="settings-add"><label for="merge-rule-project">New rule</label>${ruleProject}${ruleLabel}<div class="row"><button class="btn" type="button" data-merge="add-rule">Add rule</button></div></div></div></section>
       ${data.commentWait ? commentWaitSection(data.commentWait) : ""}
       ${riskGateSection(data.riskGate)}
+      ${data.autoApproveHighRisk === undefined ? "" : `<label><input type="checkbox" name="auto-approve-high-risk"${data.autoApproveHighRisk ? " checked" : ""}> Let high-risk changes through when both reviews are clean</label>`}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
       ${data.hotFiles ? hotFileSection(data.hotFiles) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
@@ -248,6 +249,9 @@ function riskGateSection(gate: MergeSettingsView["riskGate"]): string {
  */
 export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
   return {
+    ...(data.autoApproveHighRisk === undefined
+      ? {}
+      : { autoApproveHighRisk: data.autoApproveHighRisk }),
     default: data.default,
     projects: data.projects,
     rules: data.rules,
@@ -336,6 +340,9 @@ export function createMergeSettings(invalidate: () => void): {
       const project = data.projects.find((entry) => entry.id === rule.project);
       return { ...base, ...read(scope, effective(rule, effective(project, data.default))) };
     });
+    if (data.autoApproveHighRisk !== undefined)
+      data.autoApproveHighRisk =
+        root!.querySelector<HTMLInputElement>('[name="auto-approve-high-risk"]')?.checked ?? false;
     if (data.commentWait) {
       const seconds = (name: string, fallback: number) => {
         const text = value(name)?.trim();
