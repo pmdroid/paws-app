@@ -24,7 +24,7 @@ import {
   type WorkItemState,
   type WorkBrief,
 } from "../core";
-import { cancelOpenJobs, enqueueJobOnce, hasLiveJob } from "./jobs";
+import { cancelOpenJobs, enqueueJobOnce, hasLiveJob, type Job } from "./jobs";
 import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
 import { getLinearSessionGeneration } from "./linear-sessions";
@@ -419,11 +419,12 @@ export function accrueAwake(
     // job working on it is idle and does not count toward the cap (PAS-771). Job claims
     // and ends settle the interval before them (accrueAtJobBoundary), so the job status
     // now holds for the whole interval since the last accrual.
-    const live = liveJob ?? hasLiveJob(db, id, now);
+    const activity = awakeJobActivity(db, id, now);
+    const live = liveJob ?? activity.live;
     const idle = counted === "closeout" && !live;
     // A parked slot wait, or Closeout blocked on CI, is waiting. The caller settles the
     // interval before the wait, so this delta is only the wait itself (PAS-898).
-    const hold = forcedHold ?? awakeHold(db, id, now, live);
+    const hold = forcedHold ?? (activity.ci ? "ci" : activity.slot && !live ? "slot" : null);
     let category: AwakeCategory | null = idle ? null : counted;
     if (hold === "slot" && (counted === "agent" || counted === "closeout")) category = "waiting";
     if (hold === "ci" && counted === "closeout") category = "waiting";
@@ -476,61 +477,53 @@ export function accrueAtJobBoundary(
   });
 }
 
-/**
- * Marks or clears Closeout's CI wait on the item's running job, settling the interval
- * that just finished. Setting the mark counts the next interval as waiting, not Closeout.
- */
+/** CI bookkeeping belongs to one claim. A stale finally may clear only its own mark. */
 export function markCloseoutCiWait(
   db: Database,
-  itemId: string,
+  job: Job,
   waiting: boolean,
   mono: number,
   now: number,
 ): void {
+  const itemId = (job.payload as { itemId?: string }).itemId;
+  if (!itemId) return;
   immediate(db, () => {
     accrueAwake(db, itemId, mono, now);
     if (waiting) {
       db.run(
-        `UPDATE job SET payload = json_set(payload, '$.awakeWait', 'ci')
-         WHERE status = 'running' AND json_extract(payload, '$.itemId') = ?`,
-        [itemId],
+        `UPDATE job SET payload = json_set(payload, '$.awakeWait',
+           json_object('kind', 'ci', 'worker', locked_by, 'attempt', attempts))
+         WHERE id=? AND status='running' AND locked_by=? AND attempts=? AND locked_until>?`,
+        [job.id, job.lockedBy, job.attempts, now],
       );
-      return;
+    } else {
+      db.run(
+        `UPDATE job SET payload = json_remove(payload, '$.awakeWait')
+         WHERE id=? AND json_extract(payload, '$.awakeWait.worker')=?
+           AND json_extract(payload, '$.awakeWait.attempt')=?`,
+        [job.id, job.lockedBy, job.attempts],
+      );
     }
-    db.run(
-      `UPDATE job SET payload = json_remove(payload, '$.awakeWait')
-       WHERE status = 'running' AND json_extract(payload, '$.itemId') = ?
-         AND json_extract(payload, '$.awakeWait') IS NOT NULL`,
-      [itemId],
-    );
   });
 }
 
-/**
- * Why the open interval is waiting rather than agent or Closeout time. A slot wait is the
- * parked job; CI is either that mark or a merge parked on checks. A running attempt is not
- * a slot wait, so the placement itself still counts.
- */
-function awakeHold(db: Database, itemId: string, now: number, live: boolean): "slot" | "ci" | null {
+/** Read ownership and wait flags in one scan for each accrual. Pending CI marks are never live. */
+function awakeJobActivity(db: Database, itemId: string, now: number) {
   const row = db
-    .query<{ slot: number; ci: number }, [string, number]>(
+    .query<{ live: number; slot: number; ci: number }, [number, string, string, string, string]>(
       `SELECT
-         COALESCE(MAX(CASE WHEN status = 'pending'
-           AND queue IN ('item.start', 'run.resume', 'run.reverify')
-           AND json_extract(payload, '$.capacityWait') IS NOT NULL THEN 1 ELSE 0 END), 0) AS slot,
-         COALESCE(MAX(CASE WHEN json_extract(payload, '$.awakeWait') = 'ci'
-           OR (status = 'pending' AND json_extract(payload, '$.mergeWait.reason') = 'ci')
-           THEN 1 ELSE 0 END), 0) AS ci
-       FROM job
-       WHERE json_extract(payload, '$.itemId') = ?
-         AND status IN ('pending', 'running')
-         AND (status = 'pending' OR locked_until IS NULL OR locked_until > ?)`,
+       COALESCE(MAX(status='running' AND locked_until>?1), 0) AS live,
+       COALESCE(MAX(status='pending' AND queue IN (?3, ?4, ?5)
+         AND json_extract(payload, '$.capacityWait') IS NOT NULL), 0) AS slot,
+       COALESCE(MAX(status='running' AND locked_until>?1
+         AND json_extract(payload, '$.awakeWait.kind')='ci'
+         AND json_extract(payload, '$.awakeWait.worker')=locked_by
+         AND json_extract(payload, '$.awakeWait.attempt')=attempts), 0) AS ci
+     FROM job WHERE json_extract(payload, '$.itemId')=?2
+       AND status IN ('pending', 'running')`,
     )
-    .get(itemId, now);
-  if (row === null) return null;
-  if (row.ci === 1) return "ci";
-  if (row.slot === 1 && !live) return "slot";
-  return null;
+    .get(now, itemId, JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify)!;
+  return { live: row.live === 1, slot: row.slot === 1, ci: row.ci === 1 };
 }
 
 /**

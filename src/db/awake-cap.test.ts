@@ -10,6 +10,8 @@ import {
   configureWorkItem,
   enqueueJob,
   getRun,
+  getJob,
+  parkLeasedJob,
   JobLoop,
   getWorkItem,
   insertQueuedItem,
@@ -264,8 +266,8 @@ describe("awake-time cap after Closeout accepted the work", () => {
     clock.advance(6 * MINUTE);
     accrueAwake(db, item.id, clock.mono(), clock.now());
     applyWorkItemEvent(db, item.id, "turn_ended");
-    verifyingJob(db, item.id, clock.now());
-    markCloseoutCiWait(db, item.id, true, clock.mono(), clock.now());
+    const job = verifyingJob(db, item.id, clock.now());
+    markCloseoutCiWait(db, job, true, clock.mono(), clock.now());
     clock.advance(30 * MINUTE);
     const result = accrueAwake(db, item.id, clock.mono(), clock.now());
     expect(result.capped).toBe(false);
@@ -275,13 +277,84 @@ describe("awake-time cap after Closeout accepted the work", () => {
       closeoutMs: 0,
       waitingMs: 30 * MINUTE,
     });
-    markCloseoutCiWait(db, item.id, false, clock.mono(), clock.now());
+    markCloseoutCiWait(db, job, false, clock.mono(), clock.now());
     clock.advance(2 * MINUTE);
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item).toMatchObject({
       awakeMs: 8 * MINUTE,
       closeoutMs: 2 * MINUTE,
       waitingMs: 30 * MINUTE,
     });
+  });
+
+  test("a CI wait clears its pending job and cannot leak into a new claim", () => {
+    const clock = new FakeClock(20_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const item = insertQueuedItem(db, { now: clock.now() });
+    beginImplementRun(db, item.id, clock.now());
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    const job = verifyingJob(db, item.id, clock.now());
+    markCloseoutCiWait(db, job, true, clock.mono(), clock.now());
+    parkLeasedJob(db, job, {
+      now: clock.now(),
+      runAt: clock.now(),
+      attempts: job.attempts,
+      payload: getJob(db, job.id)!.payload,
+    });
+    markCloseoutCiWait(db, job, false, clock.mono(), clock.now());
+    expect(getJob(db, job.id)!.payload).not.toHaveProperty("awakeWait");
+    const next = claimNextJob(db, {
+      now: clock.now(),
+      leaseMs: 60 * MINUTE,
+      queues: [JOB_KIND.reverify],
+    })!;
+    // A late old writer cannot start a wait for its replacement.
+    markCloseoutCiWait(db, job, true, clock.mono(), clock.now());
+    clock.advance(MINUTE);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.closeoutMs).toBe(MINUTE);
+    markCloseoutCiWait(db, next, true, clock.mono(), clock.now());
+    markCloseoutCiWait(db, job, false, clock.mono(), clock.now());
+    clock.advance(MINUTE);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item).toMatchObject({
+      closeoutMs: MINUTE,
+      waitingMs: MINUTE,
+    });
+    db.close();
+  });
+
+  test("an expired CI mark is ignored after reclaim and cannot clear a new owner's wait", () => {
+    const clock = new FakeClock(20_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const item = insertQueuedItem(db, { now: clock.now() });
+    beginImplementRun(db, item.id, clock.now());
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    const job = verifyingJob(db, item.id, clock.now());
+    const other = enqueueJob(db, {
+      queue: "notification",
+      payload: { itemId: item.id },
+      now: clock.now(),
+    });
+    db.run("UPDATE job SET status='running', locked_by='other', locked_until=? WHERE id=?", [
+      clock.now() + 60 * MINUTE,
+      other,
+    ]);
+    markCloseoutCiWait(db, job, true, clock.mono(), clock.now());
+    expect(getJob(db, other)!.payload).not.toHaveProperty("awakeWait");
+    db.run("UPDATE job SET locked_until=? WHERE id=?", [clock.now(), job.id]);
+    const next = claimNextJob(db, {
+      now: clock.now(),
+      leaseMs: 60 * MINUTE,
+      queues: [JOB_KIND.reverify],
+    })!;
+    expect(next).not.toBeNull();
+    clock.advance(MINUTE);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.closeoutMs).toBe(MINUTE);
+    markCloseoutCiWait(db, next, true, clock.mono(), clock.now());
+    markCloseoutCiWait(db, job, false, clock.mono(), clock.now());
+    clock.advance(MINUTE);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.waitingMs).toBe(MINUTE);
+    db.close();
   });
 
   test("a task Closeout accepted before the upgrade is still protected after a restart", () => {

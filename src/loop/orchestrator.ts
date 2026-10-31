@@ -164,6 +164,7 @@ import {
   getTaskClassification,
   resolveTaskClassification,
   accrueAwake,
+  hasLiveJob,
   applyWorkItemEvent,
   configureWorkItem,
   enqueueJobOnce,
@@ -659,6 +660,7 @@ export class Orchestrator {
     string,
     (options: RunAgentOptions) => Promise<RunAgentResult>
   >();
+  private readonly leasedJobs = new Map<string, Job>();
   private readonly jobContexts = new Map<string, JobContext>();
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
@@ -1489,13 +1491,13 @@ export class Orchestrator {
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
       if (this.waitingForRunnerSlot(job)) return;
-      await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
+      await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
       if (this.waitingForRunnerSlot(job)) return;
       if (await this.mergeInsteadOfTurn(job, context)) return;
-      await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
+      await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
@@ -1528,7 +1530,7 @@ export class Orchestrator {
         )
           return;
         try {
-          await this.runLeasedJob(job.payload, context, () =>
+          await this.runLeasedJob(job, context, () =>
             this.runOwnedJob(job.payload, () =>
               this.reverify(job.payload, job.id, () => {
                 const owned = getWorkItem(this.db, item.id);
@@ -1760,7 +1762,7 @@ export class Orchestrator {
     onWait: (wait: MergeWait | undefined) => void,
   ): Promise<void> {
     await this.failOnLastAttempt(job, context, "merge", () =>
-      this.runLeasedJob(job.payload, context, async () => {
+      this.runLeasedJob(job, context, async () => {
         try {
           await this.runOwnedJob(job.payload, async () => {
             const step = await this.merge(job.payload, job.id);
@@ -1845,11 +1847,15 @@ export class Orchestrator {
   }
 
   private async executeRetried(job: Job, context: JobContext): Promise<void> {
+    let capacityRun: { itemId: string; runId: string } | undefined;
+    let capacityParked = false;
     try {
       await this.executeQueued(job.payload);
     } catch (error) {
       const itemId = readString(job.payload, "itemId");
       const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      if (capacityWaitIn(error) && item?.currentRunId)
+        capacityRun = { itemId: item.id, runId: item.currentRunId };
       if (
         this.shuttingDown ||
         !item ||
@@ -1883,6 +1889,7 @@ export class Orchestrator {
           ) === "lost"
         )
           throw error;
+        capacityParked = true;
         journalCaught(
           error,
           "orchestrator.executeRetried.executeQueued",
@@ -1948,6 +1955,14 @@ export class Orchestrator {
       if (job.attempts >= job.maxAttempts)
         this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
       throw error;
+    } finally {
+      if (
+        capacityRun &&
+        !capacityParked &&
+        getWorkItem(this.db, capacityRun.itemId)?.currentRunId === capacityRun.runId &&
+        !hasLiveJob(this.db, capacityRun.itemId, this.now(), job.id)
+      )
+        closeActiveRun(this.db, capacityRun.runId, this.now(), "lost");
     }
   }
 
@@ -2113,11 +2128,7 @@ export class Orchestrator {
       return false;
     const next = { ...waited, attempt: waited.attempt + 1 };
     job = beforePark?.() ?? job;
-    const current = itemId === null ? null : getWorkItem(this.db, itemId);
-    const delayMs = this.runnerWaitMs(
-      next,
-      job.queue === JOB_KIND.resume && current?.state === "recovering",
-    );
+    const delayMs = this.runnerWaitMs(next, job.queue === JOB_KIND.resume);
     waitForRunnerSlot(this.db, job, this.now(), delayMs, next);
     return true;
   }
@@ -3697,11 +3708,12 @@ export class Orchestrator {
       },
       sleep: async (ms) => {
         const clock = this.options.clock ?? systemClock;
-        markCloseoutCiWait(this.db, item.id, true, clock.mono(), clock.now());
+        const job = this.leasedJobs.get(item.id);
+        if (job) markCloseoutCiWait(this.db, job, true, clock.mono(), clock.now());
         try {
           await delay(ms, undefined, signal ? { signal } : {});
         } finally {
-          markCloseoutCiWait(this.db, item.id, false, clock.mono(), clock.now());
+          if (job) markCloseoutCiWait(this.db, job, false, clock.mono(), clock.now());
         }
       },
       now: () => this.now(),
@@ -5924,22 +5936,26 @@ export class Orchestrator {
   }
 
   private async runLeasedJob(
-    payload: unknown,
+    job: Job,
     context: JobContext,
     operation: () => Promise<void>,
   ): Promise<void> {
-    const itemId = readString(payload, "itemId");
+    const itemId = readString(job.payload, "itemId");
     if (!itemId) return;
     if (this.jobContexts.has(itemId)) throw new Error("Task already has an owned job operation");
     if (!context.isCurrent()) throw context.signal.reason;
     this.jobContexts.set(itemId, context);
+    this.leasedJobs.set(itemId, job);
     this.verifyingStops.delete(itemId);
     try {
       await this.loadProjectOverview(itemId, context.signal);
       await operation();
       if (!context.isCurrent()) throw context.signal.reason;
     } finally {
-      if (this.jobContexts.get(itemId) === context) this.jobContexts.delete(itemId);
+      if (this.jobContexts.get(itemId) === context) {
+        this.jobContexts.delete(itemId);
+        this.leasedJobs.delete(itemId);
+      }
     }
   }
 

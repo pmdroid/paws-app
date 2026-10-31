@@ -132,10 +132,7 @@ test("waiting eight hours for a slot on a busy runner keeps the task deferred wi
   });
   expect(["running", "recovering"], result.detail).toContain(result.state!);
   // The wait is never counted as a failed attempt.
-  expect(
-    result.retries.every((retry) => retry === 0),
-    result.detail,
-  ).toBe(true);
+  expect(new Set(result.retries), result.detail).toEqual(new Set([0]));
   expect(result.states, result.detail).not.toContain("failed");
   expect(result.events, result.detail).not.toContain("run_failed");
   expect(result.errors, result.detail).toEqual([]);
@@ -163,10 +160,7 @@ test("a busy runner wait wrapped by agent preparation keeps the task deferred wi
     untilMs: 3 * HOUR_MS,
   });
   expect(["running", "recovering"], result.detail).toContain(result.state!);
-  expect(
-    result.retries.every((retry) => retry === 0),
-    result.detail,
-  ).toBe(true);
+  expect(new Set(result.retries), result.detail).toEqual(new Set([0]));
   expect(result.states, result.detail).not.toContain("failed");
   expect(result.states, result.detail).not.toContain("awaiting_input");
   expect(result.errors, result.detail).toEqual([]);
@@ -223,6 +217,18 @@ test("a 60 minute wait for a runner slot accrues no awake time and does not boun
   ).toHaveLength(1);
 }, 90_000);
 
+test("a capacity error after losing the job lease does not leave an active run", async () => {
+  const result = await runWithFault({
+    error: busyRunner,
+    times: 1,
+    clock: new FakeClock(Date.now()),
+    loseJobLease: true,
+  });
+  expect(result.runs, result.detail).toEqual(["implement:lost"]);
+  expect(result.capacityWait, result.detail).toBeUndefined();
+  expect(result.implementations, result.detail).toBe(0);
+}, 60_000);
+
 test("Stop while the task waits for a busy runner cancels it", async () => {
   const clock = new FakeClock(Date.now());
   const result = await runWithFault({
@@ -248,6 +254,7 @@ async function runWithFault(fault: {
   untilMs?: number;
   /** Applies Stop once the fake clock has moved this far. */
   stopAtMs?: number;
+  loseJobLease?: boolean;
 }): Promise<{
   state: string | null;
   states: (string | null)[];
@@ -351,6 +358,7 @@ async function runWithFault(fault: {
   });
   const startCodeIssue = lifecycle.startCodeIssue;
   let remaining = fault.times;
+  let leaseLost = false;
   const states: (string | null)[] = [];
   const listSessionActivities = tracker.listSessionActivities!;
   if (fault.tracker)
@@ -364,6 +372,14 @@ async function runWithFault(fault: {
   lifecycle.startCodeIssue = async (input, options) => {
     if (!fault.tracker && remaining > 0 && stateOf(db, "ENG-7") === "running") {
       remaining -= 1;
+      if (fault.loseJobLease) {
+        db.run("UPDATE job SET locked_until=? WHERE status='running' AND queue IN (?, ?)", [
+          clock.now(),
+          JOB_KIND.start,
+          JOB_KIND.resume,
+        ]);
+        leaseLost = true;
+      }
       throw fault.error();
     }
     return startCodeIssue(input, options);
@@ -393,6 +409,7 @@ async function runWithFault(fault: {
       !["merge_queue", "merged", "failed", "cancelled"].includes(stateOf(db, "ENG-7") ?? "") &&
       (fault.untilMs === undefined || clock.now() - startedAt < fault.untilMs)
     ) {
+      if (leaseLost) break;
       if (!stopped && fault.stopAtMs !== undefined && clock.now() - startedAt >= fault.stopAtMs) {
         const itemId = (
           db.query("SELECT id FROM work_item WHERE linear_identifier='ENG-7'").get() as {
@@ -460,7 +477,11 @@ async function runWithFault(fault: {
       thoughts: progress("thought"),
       errors: progress("error"),
       retries: listJobs(db)
-        .filter((job) => job.queue === JOB_KIND.resume)
+        .filter(
+          (job) =>
+            job.queue === JOB_KIND.resume ||
+            (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
+        )
         .map((job) => (job.payload as { retry?: number }).retry ?? 0),
       runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),
       jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
