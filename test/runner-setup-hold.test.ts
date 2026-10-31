@@ -428,7 +428,14 @@ test("a delegator whose runner is only busy still waits for capacity", async () 
             (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
         )
         .map((job) => (job.payload as { capacityWait?: unknown }).capacityWait),
-    ).toEqual([{ since: expect.any(Number), attempt: 0, runnerIds: [fixture.memberRunner] }]);
+    ).toEqual([
+      {
+        since: expect.any(Number),
+        attempt: 0,
+        runnerIds: [fixture.memberRunner],
+        online: expect.any(Array),
+      },
+    ]);
     expect(fixture.thoughts().join("\n")).not.toContain("runner Paws can use");
   } finally {
     await fixture.close();
@@ -449,7 +456,9 @@ test("a delegator whose own runner is offline waits for it instead of hearing th
             (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
         )
         .map((job) => (job.payload as { capacityWait?: unknown }).capacityWait),
-    ).toEqual([{ since: expect.any(Number), attempt: 0, runnerIds: [] }]);
+    ).toEqual([
+      { since: expect.any(Number), attempt: 0, runnerIds: [], online: expect.any(Array) },
+    ]);
     expect(fixture.thoughts().join("\n")).not.toContain("runner Paws can use");
   } finally {
     await fixture.close();

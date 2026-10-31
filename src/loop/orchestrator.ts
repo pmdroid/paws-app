@@ -261,7 +261,9 @@ import {
   takeRunnerSetupResume,
   runnerAgentName,
   runnerCapacityWait,
+  activeRunnerIds,
   runnerSlotFree,
+  slotWaitRunners,
   getTaskMergeSettings,
   pinRunCheckout,
   getTaskLinearRead,
@@ -2127,6 +2129,7 @@ export class Orchestrator {
       since: waited?.since ?? this.now(),
       attempt: waited ? waited.attempt + 1 : 0,
       runnerIds: error.runnerIds,
+      online: waited?.online ?? activeRunnerIds(this.db, this.now()),
       ...(error.holdMs === undefined ? {} : { holdMs: error.holdMs }),
     };
   }
@@ -2148,7 +2151,12 @@ export class Orchestrator {
       this.shuttingDown ||
       (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
-      runnerSlotFree(this.db, waited.runnerIds, this.now(), item.currentRunId ?? "")
+      runnerSlotFree(
+        this.db,
+        slotWaitRunners(this.db, item.currentRunId ?? "", waited, this.now()),
+        this.now(),
+        item.currentRunId ?? "",
+      )
     )
       return false;
     const next = { ...waited, attempt: waited.attempt + 1 };
