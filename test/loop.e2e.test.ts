@@ -359,7 +359,9 @@ test("a task retried after failing moves its Linear issue to started again", asy
     accrueAwake(db, item.id, 0);
     accrueAwake(db, item.id, 1_000);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
+    db.run("UPDATE work_item SET restart_count=10,restart_limit=10 WHERE id=?", [item.id]);
     await orchestrator.onLinearEvent(linearEvent("prompted", "Try again", null));
+    expect(getWorkItem(db, item.id)).toMatchObject({ restartCount: 10, restartLimit: 20 });
     await running;
     running = tickWithRestarts(jobs, orchestrator, db);
     await waitFor(entered(2));

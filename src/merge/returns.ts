@@ -81,9 +81,10 @@ export function returnToAgent(
       jobKey,
       now: input.now,
       keepMergeQueuePlace: input.keepPlace,
+      onAdmitted: () =>
+        input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`),
     });
     if (restarted.kind !== "restarted") return restarted;
-    input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`);
     // CI failed on a head Closeout accepted: a candidate escape of the independent review.
     if (input.reason === "ci-failed" && current.acceptedHead !== null)
       recordReviewEscape(db, {

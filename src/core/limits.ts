@@ -10,6 +10,3 @@ export const RESUME_AGAIN_AFTER_MS = 30 * 60_000;
 export const MAX_ITEM_RESTARTS = 10;
 
 export const RESTART_BUDGET_CONTINUE = `Continue for ${MAX_ITEM_RESTARTS} more restarts`;
-export function continuesRestartBudget(answer: string | null): boolean {
-  return /^(?:(?:yes[,!]?\s+)?continue(?:\b|$)|go\s+on\b)/i.test((answer ?? "").trim());
-}

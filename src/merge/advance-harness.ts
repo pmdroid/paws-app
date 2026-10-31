@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { FakeClock } from "../core";
 import {
   restart,
+  type RestartOperation,
   applyWorkItemEvent,
   beginImplementRun,
   enterMergeQueue,
@@ -94,7 +95,7 @@ export async function mergeHarness(
   options: {
     settings?: Partial<Pick<TaskMergeSettings, "order" | "mainMoved">>;
     queue?: FakeMergeQueue;
-    restart?: import("../db").RestartOperation;
+    restart?: RestartOperation;
   } = {},
 ) {
   const root = await mkdtemp(path.join(tmpdir(), "paws-advance-"));
@@ -370,18 +371,18 @@ export async function mergeHarness(
     return git(seed, "rev-parse", "HEAD");
   }
 
+  const restartOperation: RestartOperation =
+    options.restart ??
+    ((...args) => {
+      const admittedJob = restart(...args);
+      return admittedJob === null ? { kind: "skipped" } : { kind: "restarted", jobId: admittedJob };
+    });
+
   function capabilities(id: string): MergeCapabilities {
     const item = items.get(id)!;
     return {
       ask,
-      restart:
-        options.restart ??
-        ((...args) => {
-          const restartedJobId = restart(...args);
-          return restartedJobId === null
-            ? { kind: "skipped" }
-            : { kind: "restarted", jobId: restartedJobId };
-        }),
+      restart: restartOperation,
       now: () => clock.now(),
       stopped: () => state.stopped,
       session: (current) => current.sessionKey,
@@ -485,14 +486,7 @@ export async function mergeHarness(
       { repository: "acme/app", main },
       {
         ask,
-        restart:
-          options.restart ??
-          ((...args) => {
-            const restartedJobId = restart(...args);
-            return restartedJobId === null
-              ? { kind: "skipped" }
-              : { kind: "restarted", jobId: restartedJobId };
-          }),
+        restart: restartOperation,
         now: () => clock.now(),
         session: (current) => current.sessionKey,
         voice: {

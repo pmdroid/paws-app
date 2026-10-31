@@ -18,6 +18,7 @@ import {
   type CiRound,
   type CiRoundCheck,
   type WorkItemRecord,
+  type RestartOperation,
 } from "../db";
 import { githubQueueLine, githubQueueMerge, readPullReview, type GitHubBinding } from "../github";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
@@ -71,7 +72,7 @@ export type MergeVoice = {
 
 export type OrderCapabilities = {
   ask: typeof ask;
-  restart: import("../db").RestartOperation;
+  restart: RestartOperation;
   now(): number;
   stopped(): boolean;
   session(item: WorkItemRecord): string | null;

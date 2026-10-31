@@ -97,7 +97,7 @@ test("human and infrastructure requests do not consume the budget or need new qu
   try {
     db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
     for (const state of ["queued", "paused", "failed"] as const) {
-      db.run("UPDATE work_item SET state=? WHERE id='budget'", [state]);
+      db.run("UPDATE work_item SET state=?,restart_limit=10 WHERE id='budget'", [state]);
       const current = getWorkItem(db, "budget")!;
       expect(restart(db, current, { reason: "ci", body: "agent", now: 3 })).toEqual({
         kind: "skipped",
@@ -177,7 +177,7 @@ test("Stop uses the normal cancellation lifecycle", () => {
   }
 });
 
-test("a budget hold is re-adopted after an unrelated human follow-up", () => {
+test("a budget hold is re-adopted after an infrastructure retry", () => {
   const db = setup();
   try {
     db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
@@ -193,7 +193,7 @@ test("a budget hold is re-adopted after an unrelated human follow-up", () => {
     ).toEqual({ ready_at: 2, kept: 1 });
     const question = findOpenQuestion(db, "session")!;
     restart(db, getWorkItem(db, "budget")!, {
-      source: "human",
+      source: "infrastructure",
       reason: "follow_up",
       body: "Look again",
       now: 4,
@@ -267,7 +267,14 @@ test.each(["Stop.", "stop, it's done"])("%s uses the cancellation lifecycle", (a
   }
 });
 
-test.each(["Continue.", "yes, continue", "go on"])("%s grants ten more restarts", (answer) => {
+test.each([
+  "Continue.",
+  "yes, continue",
+  "go on",
+  "Yes please keep going",
+  "Stop, then try the other approach",
+  "stop: focus on the API first",
+])("%s grants ten more restarts", (answer) => {
   const db = setup();
   try {
     db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
@@ -276,6 +283,30 @@ test.each(["Continue.", "yes, continue", "go on"])("%s grants ten more restarts"
     const answered = answerQuestion(db, question.id, { answer, answeredBy: "human", now: 4 })!;
     questionEffects(db, { now: 5 }).clarification!(answered);
     expect(getWorkItem(db, "budget")).toMatchObject({ state: "queued", restartLimit: 20 });
+  } finally {
+    db.close();
+  }
+});
+
+test("a human retry renews a sessionless item's spent budget without resetting its count", () => {
+  const db = setup();
+  try {
+    db.run("UPDATE work_item SET restart_count=10,session_key=NULL WHERE id='budget'");
+    expect(
+      restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 }),
+    ).toEqual({ kind: "failed" });
+    db.run("UPDATE work_item SET session_key='session',cancel_requested=0 WHERE id='budget'");
+    restart(db, getWorkItem(db, "budget")!, {
+      source: "human",
+      reason: "follow_up",
+      body: "Retry",
+      now: 4,
+    });
+    expect(getWorkItem(db, "budget")).toMatchObject({ restartCount: 10, restartLimit: 20 });
+    applyWorkItemEvent(db, "budget", "dispatched");
+    expect(
+      restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 5 }),
+    ).toMatchObject({ kind: "restarted" });
   } finally {
     db.close();
   }

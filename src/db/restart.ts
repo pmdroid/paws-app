@@ -18,6 +18,8 @@ export type RestartHandoff = {
   /** The fix-attempt limit this round's lines name, when it differs from the fix rounds. */
   limit?: number;
   keepMergeQueuePlace?: boolean;
+  /** Transactional writes that need the admitted item and job to remain current. */
+  onAdmitted?: () => void;
 };
 
 /** `failed` means execution was already stopped and reported by the restart owner. */
@@ -38,6 +40,7 @@ export function restart(
     if (handoff.jobKey && db.query("SELECT 1 FROM job WHERE job_key=?").get(handoff.jobKey))
       return null;
     if (getWorkItem(db, item.id)?.version !== item.version) return null;
+    handoff.onAdmitted?.();
     if (handoff.keepMergeQueuePlace) keepMergeQueuePlace(db, item.id);
     if (!halt(db, item, handoff.now)) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);

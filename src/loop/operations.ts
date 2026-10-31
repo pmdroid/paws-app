@@ -1,9 +1,4 @@
-import {
-  MAX_ITEM_RESTARTS,
-  RESTART_BUDGET_CONTINUE,
-  continuesRestartBudget,
-  transition,
-} from "../core";
+import { MAX_ITEM_RESTARTS, RESTART_BUDGET_CONTINUE, transition } from "../core";
 import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
@@ -85,14 +80,17 @@ export function restart(...args: Parameters<typeof restartItem>): RestartResult 
         // There is no channel for an elicitation. End active execution with an explicit error.
         if (current.state !== "awaiting_input") {
           const halted = halt(db, current, handoff.now);
-          if (halted)
-            failWorkItem(
+          if (!halted) return { kind: "skipped" };
+          if (
+            !failWorkItem(
               db,
               halted,
               "restart_budget_no_session",
               "The lifetime restart budget is spent, but this item has no Linear session. Retry from Linear to continue.",
               handoff.now,
-            );
+            )
+          )
+            throw new Error("Failed to commit the restart-budget stop");
         }
         return { kind: current.state === "awaiting_input" ? "skipped" : "failed" };
       }
@@ -130,16 +128,18 @@ export function restart(...args: Parameters<typeof restartItem>): RestartResult 
     else if (source === "human") {
       // An answer grants more only once it is carried into an admitted human turn.
       const answers = db
-        .query<{ id: string; answer: string | null }, [string]>(
-          "SELECT id,answer FROM question WHERE item_id=? AND reason='restart_budget' AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL",
+        .query<{ id: string }, [string]>(
+          "SELECT id FROM question WHERE item_id=? AND reason='restart_budget' AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL",
         )
         .all(item.id);
+      // Admitting human guidance means continuing. Explicit retries also renew a spent budget.
+      const extensions = answers.length || (current.restartCount >= current.restartLimit ? 1 : 0);
+      if (extensions)
+        db.run("UPDATE work_item SET restart_limit=MAX(restart_limit,restart_count)+? WHERE id=?", [
+          extensions * MAX_ITEM_RESTARTS,
+          item.id,
+        ]);
       for (const answer of answers) {
-        if (continuesRestartBudget(answer.answer))
-          db.run("UPDATE work_item SET restart_limit=restart_limit+? WHERE id=?", [
-            MAX_ITEM_RESTARTS,
-            item.id,
-          ]);
         db.run("UPDATE question SET handoff_version=? WHERE id=?", [
           getWorkItem(db, item.id)!.version,
           answer.id,

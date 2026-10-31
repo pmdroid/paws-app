@@ -42,7 +42,13 @@ function sendBack(db: ReturnType<typeof queued>, limit = 3) {
     now: 2,
     record: (jobId) =>
       recordRebaseReturn(db, { itemId: "eng-1", jobId, candidate: "h", reason: "merge" }),
-    announce: (_, attempt, key) => announced.push(`${attempt}:${key}`),
+    announce: (current, attempt, key) => {
+      expect(getWorkItem(db, current.id)).toMatchObject({
+        state: "merge_queue",
+        version: current.version,
+      });
+      announced.push(`${attempt}:${key}`);
+    },
   });
   return { sent: sent.kind === "restarted", announced };
 }

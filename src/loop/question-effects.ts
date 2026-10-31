@@ -269,7 +269,8 @@ export function questionEffects(
           .get(question.id)
       )
         return;
-      if (!/^\s*stop(?:[.!]\s*$|[,;:]|\s*$)/i.test(question.answer ?? "")) return resume(question);
+      if (!/^\s*stop(?:[.!]|,\s*it['’]?s done[.!]?)?\s*$/i.test(question.answer ?? ""))
+        return resume(question);
       consumeTurn(question);
       const item = getWorkItem(db, question.itemId);
       if (!item) return;
