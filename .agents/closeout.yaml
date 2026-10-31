@@ -70,8 +70,6 @@ items:
     failOn: P1
     scope: diff
     parallel: true
-    # The same list as .paws/high-risk-paths, which makes a candidate's risk tier high.
-    # test/closeout-security-review.test.ts fails when the two differ.
     paths:
       - ".agents/**"
       - ".github/workflows/**"
