@@ -2,10 +2,9 @@ import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, type RestartReason } from "../core";
 import { halt } from "./halt";
-import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
+import { applyWorkItemEvent, getWorkItem, saveCheckpoint, type WorkItemRecord } from "./items";
 import { enqueueJobOnce } from "./jobs";
 import { keepMergeQueuePlace } from "./merge-queue";
-import { getWorkItem } from "./items";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
 
@@ -28,6 +27,8 @@ export function restart(
   handoff: RestartHandoff,
 ): number | null {
   return immediate(db, () => {
+    if (handoff.jobKey && db.query("SELECT 1 FROM job WHERE job_key=?").get(handoff.jobKey))
+      return null;
     if (getWorkItem(db, item.id)?.version !== item.version) return null;
     if (handoff.keepMergeQueuePlace) keepMergeQueuePlace(db, item.id);
     if (!halt(db, item, handoff.now)) return null;

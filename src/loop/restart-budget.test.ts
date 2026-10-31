@@ -10,6 +10,7 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
+  joinMergeQueue,
   migrate,
   openDatabase,
 } from "../db";
@@ -162,6 +163,94 @@ test("Stop uses the normal cancellation lifecycle", () => {
     expect(listOutbox(db).some((row) => JSON.stringify(row.payload).includes("Stopped."))).toBe(
       true,
     );
+  } finally {
+    db.close();
+  }
+});
+
+test("a budget hold is re-adopted after an unrelated human follow-up", () => {
+  const db = setup();
+  try {
+    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
+    joinMergeQueue(db, { itemId: "budget", repository: "owner/repo", now: 2 });
+    restart(db, getWorkItem(db, "budget")!, {
+      reason: "ci",
+      body: "First finding",
+      now: 3,
+      keepMergeQueuePlace: true,
+    });
+    expect(
+      db.query("SELECT ready_at,kept FROM merge_queue_entry WHERE item_id='budget'").get(),
+    ).toEqual({ ready_at: 2, kept: 1 });
+    const question = findOpenQuestion(db, "session")!;
+    restart(db, getWorkItem(db, "budget")!, {
+      source: "human",
+      reason: "follow_up",
+      body: "Look again",
+      now: 4,
+    });
+    applyWorkItemEvent(db, "budget", "dispatched");
+    applyWorkItemEvent(db, "budget", "turn_ended");
+    restart(db, getWorkItem(db, "budget")!, { reason: "findings", body: "New finding", now: 5 });
+    expect(getWorkItem(db, "budget")).toMatchObject({ state: "awaiting_input", restartCount: 10 });
+    expect(findOpenQuestion(db, "session")?.id).toBe(question.id);
+    expect(listOutbox(db).filter((row) => row.op === "elicitation")).toHaveLength(1);
+    expect(
+      listJobs(db).filter((job) => job.status === "pending" || job.status === "running"),
+    ).toHaveLength(0);
+    const answered = answerQuestion(db, question.id, {
+      answer: "Continue",
+      answeredBy: "human",
+      now: 6,
+    })!;
+    questionEffects(db, { now: 7 }).clarification!(answered);
+    expect(JSON.stringify(listJobs(db).at(-1)?.payload)).toContain("New finding");
+  } finally {
+    db.close();
+  }
+});
+
+test("deduplicated restart keys preserve the original job and do not charge the budget", () => {
+  const db = setup();
+  try {
+    const handoff = { reason: "ci" as const, jobKey: "same-head", body: "Fix CI", now: 3 };
+    const job = restart(db, getWorkItem(db, "budget")!, handoff)!;
+    const before = getWorkItem(db, "budget")!;
+    expect(restart(db, before, handoff)).toBeNull();
+    expect(getWorkItem(db, "budget")).toEqual(before);
+    expect(listJobs(db).find((row) => row.id === job)?.status).toBe("pending");
+    expect(getWorkItem(db, "budget")?.restartCount).toBe(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("sessionless execution ends with an explicit error when it cannot ask", () => {
+  const db = setup();
+  try {
+    db.run("UPDATE work_item SET restart_count=10, session_key=NULL WHERE id='budget'");
+    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
+    expect(getWorkItem(db, "budget")?.state).toBe("failed");
+    expect(
+      listJobs(db).filter((row) => row.status === "pending" || row.status === "running"),
+    ).toHaveLength(0);
+    expect(
+      listOutbox(db).some((row) => JSON.stringify(row.payload).includes("no Linear session")),
+    ).toBe(true);
+  } finally {
+    db.close();
+  }
+});
+
+test.each(["Stop.", "stop, it's done"])("%s uses the cancellation lifecycle", (answer) => {
+  const db = setup();
+  try {
+    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
+    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
+    const question = findOpenQuestion(db, "session")!;
+    const answered = answerQuestion(db, question.id, { answer, answeredBy: "human", now: 4 })!;
+    questionEffects(db, { now: 5 }).clarification!(answered);
+    expect(getWorkItem(db, "budget")?.state).toBe("cancelled");
   } finally {
     db.close();
   }

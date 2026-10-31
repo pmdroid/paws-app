@@ -1970,7 +1970,7 @@ export class Orchestrator {
           now,
         }) === null
       )
-        return getWorkItem(this.db, item.id)?.state === "awaiting_input";
+        return false;
       this.recordRunnerSetupHold(current, need, now, current.currentRunId);
       return true;
     });

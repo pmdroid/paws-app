@@ -10,6 +10,8 @@ import {
   getWorkItem,
   immediate,
   halt,
+  keepMergeQueuePlace,
+  failWorkItem,
   saveCheckpoint,
   type WorkItemRecord,
   restart as restartItem,
@@ -19,6 +21,7 @@ import {
   type Asked,
   type QuestionAsker,
   type StoredQuestion,
+  getQuestion,
 } from "../questions";
 
 export { halt, type RestartHandoff } from "../db";
@@ -59,25 +62,52 @@ export function restart(...args: Parameters<typeof restartItem>): ReturnType<typ
   return immediate(db, () => {
     const current = getWorkItem(db, item.id);
     if (!current || current.version !== item.version) return null;
+    // A repeated delivery must not cancel the job it is deduplicating against.
+    if (handoff.jobKey && db.query("SELECT 1 FROM job WHERE job_key=?").get(handoff.jobKey))
+      return null;
     const source = handoff.source ?? (handoff.reason === "answer" ? "human" : "agent");
     if (source === "agent" && current.restartCount >= current.restartLimit) {
-      // Ask only where the existing state machine permits it, without destructive fallback edges.
-      if (
-        current.cancelRequested ||
-        !current.sessionKey ||
-        !transition(current.state, "blocking_question").ok
-      )
+      // Queued, paused and failed work cannot ask here. Human retries bypass this guard.
+      if (current.cancelRequested || !transition(current.state, "blocking_question").ok)
         return null;
-      if (
-        db
-          .query(
-            "SELECT 1 FROM question WHERE item_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL",
-          )
-          .get(item.id)
-      )
+      const waiting = db
+        .query<{ id: string }, [string]>(
+          "SELECT id FROM question WHERE item_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL ORDER BY rowid DESC LIMIT 1",
+        )
+        .get(item.id);
+      const question = waiting ? getQuestion(db, waiting.id)! : null;
+      if (!current.sessionKey && question) {
+        db.run("UPDATE work_item SET session_key=? WHERE id=?", [question.sessionId, item.id]);
+        current.sessionKey = question.sessionId;
+      }
+      if (!current.sessionKey) {
+        // There is no channel for an elicitation. End active execution with an explicit error.
+        if (current.state !== "awaiting_input") {
+          const halted = halt(db, current, handoff.now);
+          if (halted)
+            failWorkItem(
+              db,
+              halted,
+              "restart_budget_no_session",
+              "The lifetime restart budget is spent, but this item has no Linear session. Retry from Linear to continue.",
+              handoff.now,
+            );
+        }
         return null;
+      }
+      if (handoff.keepMergeQueuePlace) keepMergeQueuePlace(db, item.id);
       const halted = halt(db, current, handoff.now);
       if (!halted) return null;
+      if (question) {
+        // A human follow-up can leave the original question open while the item runs again.
+        if (!question.body.includes(handoff.body))
+          db.run("UPDATE question SET body=body || ? WHERE id=?", [
+            `\n\nRequested work:\n${handoff.body}`,
+            question.id,
+          ]);
+        awaitQuestion(db, halted, question, handoff.now);
+        return null;
+      }
       ask(
         db,
         {

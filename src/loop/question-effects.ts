@@ -269,11 +269,11 @@ export function questionEffects(
           .get(question.id)
       )
         return;
-      if ((question.answer ?? "").trim().toLowerCase() !== "stop") return resume(question);
+      if (!/^\s*stop(?:[.!]\s*$|[,;:]|\s*$)/i.test(question.answer ?? "")) return resume(question);
       consumeTurn(question);
       const item = getWorkItem(db, question.itemId);
       if (!item || item.state !== "awaiting_input") return;
-      // Only the exact Stop choice runs the canonical stop lifecycle.
+      // Accept Stop with punctuation, without treating "Stop rewriting tests" as cancellation.
       db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
       applyLinearCommand(
         db,
