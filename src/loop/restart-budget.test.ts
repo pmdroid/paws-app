@@ -110,7 +110,7 @@ test("item counters persist across database reopens", () => {
   }
 });
 
-test.each(["Stop", "Stop.", "stop, it's done"])(
+test.each(["Stop", "Stop.", "stop, it's done", "No", "Please stop", "stop it", "Don't continue"])(
   "%s uses the normal cancellation lifecycle",
   (answerText) => {
     const db = setup();
@@ -361,6 +361,8 @@ test.each([
   "I need more information first",
   "Stop, then try the other approach",
   "stop: focus on the API first",
+  "Continue? No, stop the task",
+  "go on and stop",
 ])("guidance does not approve a budget extension: %s", (answer) => {
   const db = setup();
   try {
@@ -369,7 +371,13 @@ test.each([
     const question = findOpenQuestion(db, "session")!;
     const answered = answerQuestion(db, question.id, { answer, answeredBy: "human", now: 4 })!;
     questionEffects(db, { now: 5 }).clarification!(answered);
-    expect(getWorkItem(db, "budget")).toMatchObject({ state: "queued", restartLimit: 10 });
+    expect(getWorkItem(db, "budget")).toMatchObject({ state: "awaiting_input", restartLimit: 10 });
+    const clarification = findOpenQuestion(db, "session")!;
+    expect(clarification.id).not.toBe(question.id);
+    expect(clarification.reason).toBe("restart_budget");
+    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+    questionEffects(db, { now: 6 }).clarification!(answered);
+    expect(findOpenQuestion(db, "session")?.id).toBe(clarification.id);
   } finally {
     db.close();
   }

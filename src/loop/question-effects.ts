@@ -1,7 +1,7 @@
 import { mergeAcceptedWork } from "./accepted-work";
 import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
+import { JOB_KIND, TIME_LIMIT_MERGE, RESTART_BUDGET_CONTINUE } from "../core";
 import {
   applyLinearCommand,
   applyLinearTurns,
@@ -296,16 +296,57 @@ export function questionEffects(
         db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
         return;
       }
-      const answer = (stored.answer ?? "").trim();
-      if (!/^stop(?:[.!]|,\s*it['’]?s done[.!]?)?$/i.test(answer)) {
-        const approved =
-          /^(?:(?:yes[,!.]?\s*)?(?:please\s+)?(?:continue\b|keep\s+going\b|go\s+on\b)|yes(?:\s+please)?[.!]?$)/i.test(
-            answer,
-          );
-        return resume(stored, [], approved);
-      }
+      const answer = (stored.answer ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[.!]+$/, "")
+        .replace(/\s+/g, " ");
+      const approved = [
+        "continue",
+        RESTART_BUDGET_CONTINUE.toLowerCase(),
+        "yes",
+        "yes please",
+        "yes, continue",
+        "go on",
+        "keep going",
+        "yes please keep going",
+      ].includes(answer);
+      if (approved) return resume(stored, [], true);
       consumeTurn(question);
       db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
+      const stopped = [
+        "stop",
+        "please stop",
+        "stop it",
+        "stop the task",
+        "please stop the task",
+        "no",
+        "don't continue",
+        "do not continue",
+        "no, stop",
+        "stop, it's done",
+      ].includes(answer.replace(/’/g, "'"));
+      if (!stopped) {
+        ask(
+          db,
+          {
+            itemId: item.id,
+            runId: item.currentRunId,
+            sessionId: stored.sessionId,
+            version: item.version,
+          },
+          "clarification",
+          stored.body,
+          {
+            reason: "restart_budget",
+            options: [RESTART_BUDGET_CONTINUE, "Stop"],
+            context:
+              "Automatic restarts remain paused. Choose Continue to grant ten more restarts, or Stop to end the task.",
+            now: input.now,
+          },
+        );
+        return;
+      }
       applyLinearCommand(
         db,
         { type: "stop", source: "linear", itemId: item.id, requestedAt: input.now },
