@@ -785,10 +785,8 @@ export {
 } from "./review-finding-issues";
 
 export {
-  automaticRiskApproval,
-  automaticRiskApprovalLine,
   saveRiskAutoContext,
   getRiskAutoContext,
-  clearRiskAutoContexts,
+  listRiskAutoContexts,
   type RiskAutoContext,
 } from "./risk-auto-context";

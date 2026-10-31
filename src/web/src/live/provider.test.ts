@@ -33,9 +33,6 @@ import {
   upsertCloseoutStep,
   type CloseoutStepWrite,
   saveCandidateRisk,
-  saveRiskAutoContext,
-  saveCandidatePaths,
-  clearRiskAutoContexts,
   saveRiskFix,
 } from "../../../db";
 import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
@@ -1796,91 +1793,3 @@ describe("live status provider", () => {
     });
   });
 });
-
-for (const scenario of [
-  "clean",
-  "P2",
-  "missing security",
-  "rules change",
-  "off",
-  "unreadable",
-] as const) {
-  test(`item page reads stored automatic-risk evidence for ${scenario}`, () => {
-    const db = database();
-    const now = 1_700_000_000_000;
-    const item = insertQueuedItem(db, { id: "risk-item", sessionKey: "risk-session", now });
-    const identity = {
-      taskId: item.id,
-      base: "base",
-      head: "head",
-      policyDigest: "policy",
-      policyPath: null,
-    };
-    saveCandidateRisk(db, {
-      itemId: item.id,
-      head: "head",
-      base: "base",
-      tier: "high",
-      paths: ["auth.ts"],
-      classifiedAt: now,
-    });
-    saveCandidatePaths(db, {
-      itemId: item.id,
-      head: "head",
-      paths: scenario === "rules change" ? ["rules.ts"] : ["auth.ts"],
-      recordedAt: now,
-    });
-    saveRiskAutoContext(db, item.id, "head", {
-      autoApproveHighRisk: scenario !== "off",
-      policyDigest: "policy",
-      policyPaths: ["rules.ts"],
-    });
-    for (const id of ["security-review", "independent-review"]) {
-      if (id === "security-review" && scenario === "missing security") continue;
-      upsertCloseoutStep(
-        db,
-        item.id,
-        identity,
-        {
-          id,
-          kind: "review",
-          state: "passed",
-          command: "",
-          detail: null,
-          attempt: 1,
-          timeoutSeconds: null,
-          startedAt: now,
-          finishedAt: now,
-          exitCode: null,
-          timedOut: false,
-          timeoutReason: null,
-          truncated: false,
-          logPath: null,
-          evidencePath: `${id}.json`,
-          findings: null,
-          findingSeverities: scenario === "P2" && id === "security-review" ? ["P2"] : [],
-          ordinal: 0,
-        },
-        now,
-      );
-    }
-    finishCloseoutProgress(db, item.id, identity, "accepted", now);
-    if (scenario === "unreadable")
-      db.run("UPDATE candidate_paths SET paths = '{}' WHERE item_id = ?", [item.id]);
-    const expected = {
-      clean: "Passes automatically: both reviews clean",
-      P2: "Manual approval required: security review has a P2 finding",
-      "missing security": "Manual approval required: security review is missing",
-      "rules change": "Manual approval required: changes the risk rules",
-      off: "Manual approval required: automatic approval is off",
-      unreadable: "Manual approval required",
-    }[scenario];
-    const provider = createLiveStatusProvider(db, { env: {} });
-    const detail = provider.item(item.id)!;
-    const parsed = parseStatusItemDetail(JSON.parse(JSON.stringify(detail)));
-    expect(parsed.ok).toBe(true);
-    expect(detail.risk?.automaticApproval).toBe(expected);
-    clearRiskAutoContexts(db);
-    expect(provider.item(item.id)?.risk?.automaticApproval).toBe("Manual approval required");
-  });
-}

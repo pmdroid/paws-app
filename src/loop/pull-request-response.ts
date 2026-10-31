@@ -1,23 +1,31 @@
-import type { Database } from "bun:sqlite";
 import { riskLine, type RiskClassification } from "../core";
-import { getCandidateRisk, automaticRiskApprovalLine } from "../db";
+import { journalCaught } from "../journal";
 
 /** The single PR response, posted through the usual activity gate. */
-export function pullRequestReadyResponse(
-  db: Database,
-  input: {
-    itemId: string;
-    head: string;
-    pull: { number: number; url?: string | null };
-    risk: RiskClassification | null;
-    openLine: string;
-  },
-): string {
+export function pullRequestReadyResponse(input: {
+  itemId: string;
+  head: string;
+  pull: { number: number; url?: string | null };
+  risk: RiskClassification | null;
+  openLine: string;
+  riskApproval?: () => string;
+  journal?: (line: string) => void;
+}): string {
   const risk = input.risk;
   let automatic = "";
   if (risk?.tier === "high") {
-    const stored = getCandidateRisk(db, input.itemId, input.head);
-    automatic = stored ? automaticRiskApprovalLine(db, stored) : "Manual approval required";
+    automatic = "Manual approval required";
+    try {
+      automatic = input.riskApproval?.() ?? automatic;
+    } catch (error) {
+      journalCaught(
+        error,
+        "pull-request-response.riskApproval",
+        input.itemId,
+        undefined,
+        input.journal,
+      );
+    }
   }
   return [
     `Opened ${input.pull.url ?? `pull request #${input.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.`,

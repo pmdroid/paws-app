@@ -222,7 +222,11 @@ export async function handleMergeSettingsRequest(
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
     return json({ error: "Merging settings could not be saved" }, 503);
   }
-  options.changed?.();
+  try {
+    options.changed?.();
+  } catch (error) {
+    journalCaught(error, "merging.handleMergeSettingsRequest.changed", null);
+  }
   for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
   if (
     autoApproveHighRisk !== undefined &&

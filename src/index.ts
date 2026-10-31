@@ -925,6 +925,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     server = startServer({
       server: options?.server,
       linearUsage: linear === null ? undefined : () => linear.usage(),
+      riskApproval: (itemId) => orchestrator?.riskDisplay(itemId) ?? null,
+      riskSettingsChanged: () => orchestrator?.refreshRiskDisplaySettings(),
       onboarding: async (request, client) =>
         reconnectLinear &&
         !new URL(request.url).pathname.startsWith("/webhooks/") &&

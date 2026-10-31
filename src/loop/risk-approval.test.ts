@@ -1,3 +1,4 @@
+import { RiskDisplayReader } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
@@ -23,8 +24,6 @@ import {
   migrate,
   openDatabase,
   saveCandidateRisk,
-  saveRiskAutoContext,
-  automaticRiskApprovalLine,
   getCandidateRisk,
   saveCandidatePaths,
   getCandidatePaths,
@@ -1108,9 +1107,15 @@ for (const enabled of [undefined, false]) {
 for (const scenario of ["clean", "P2", "missing security", "rules change", "off"] as const) {
   test(`the sole PR response uses the shared risk explanation for ${scenario}`, async () => {
     const f = cleanRiskFixture();
+    const display = new RiskDisplayReader({
+      db: f.db,
+      configPath: "/tmp/pas934-no-config",
+      readSettings: () => ({ autoApproveHighRisk: scenario !== "off", repositories: {} }),
+      publicUrl: PUBLIC_URL,
+    });
     try {
-      saveRiskAutoContext(f.db, f.itemId, heads.s, {
-        autoApproveHighRisk: scenario !== "off",
+      display.remember(f.itemId, heads.s, {
+        ...display.inputs(),
         policyDigest: "policy",
         policyPaths: ["tools/rules.ts"],
       });
@@ -1131,13 +1136,12 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         "rules change": "Manual approval required: changes the risk rules",
         off: "Manual approval required: automatic approval is off",
       }[scenario];
-      expect(automaticRiskApprovalLine(f.db, getCandidateRisk(f.db, f.itemId, heads.s)!)).toBe(
-        expected,
-      );
-      const body = pullRequestReadyResponse(f.db, {
+      expect(display.read(f.itemId)?.detail).toBe(expected);
+      const body = pullRequestReadyResponse({
         itemId: f.itemId,
         head: heads.s,
         pull: { number: 1 },
+        riskApproval: () => display.read(f.itemId, heads.s)!.detail,
         risk: getCandidateRisk(f.db, f.itemId, heads.s),
         openLine: "",
       });
@@ -1174,7 +1178,53 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         scenario === "clean" ? "approved" : "missing",
       );
     } finally {
+      display.close();
       f.db.close();
     }
   });
 }
+
+test("a corrupt risk row cannot prevent the sole pull-request response", () => {
+  const f = cleanRiskFixture();
+  const display = new RiskDisplayReader({
+    db: f.db,
+    configPath: "/tmp/pas934-no-config",
+    publicUrl: PUBLIC_URL,
+    readSettings: () => ({ autoApproveHighRisk: true, repositories: {} }),
+  });
+  try {
+    display.remember(f.itemId, heads.s, {
+      ...display.inputs(),
+      policyDigest: "policy",
+      policyPaths: [],
+    });
+    f.db.run("PRAGMA ignore_check_constraints=ON");
+    f.db.run("PRAGMA ignore_check_constraints=ON");
+    f.db.run("UPDATE candidate_risk SET paths = '{' WHERE item_id = ?", [f.itemId]);
+    const body = pullRequestReadyResponse({
+      itemId: f.itemId,
+      head: heads.s,
+      pull: { number: 1 },
+      risk: { tier: "high", paths: ["session.ts"] },
+      openLine: "",
+      riskApproval: () => display.read(f.itemId, heads.s)!.detail,
+    });
+    expect(body).toStartWith("Opened pull request #1.");
+    expect(body).toContain("Manual approval required");
+    expect(
+      pullRequestReadyResponse({
+        itemId: f.itemId,
+        head: heads.s,
+        pull: { number: 1 },
+        risk: { tier: "high", paths: [] },
+        openLine: "",
+        riskApproval: () => {
+          throw new Error("unreadable display");
+        },
+      }),
+    ).toContain("Manual approval required");
+  } finally {
+    display.close();
+    f.db.close();
+  }
+});

@@ -1,3 +1,4 @@
+import { automaticRiskApproval } from "./automatic-risk-approval";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { JOB_KIND, riskLine } from "../core";
@@ -8,7 +9,6 @@ import {
   enqueueJobOnce,
   enqueueOutboxOnce,
   getCandidateRisk,
-  automaticRiskApproval,
   getRiskFix,
   getWorkItem,
   listLinkAsks,
@@ -70,6 +70,8 @@ export async function riskApprovalFor(
     /** What the fix from `approved` to S changed, against main's `base`. Null when unreadable. */
     fixRisk?: (approved: string, base: string) => Promise<FixRisk | null>;
     autoApproveHighRisk?: boolean;
+    /** Reports the human approval the lane actually matched, for display only. */
+    onHumanApproval?: (head: string) => void;
     /** Current policy digest supplied by the merge caller; unreadable means no automatic approval. */
     policyDigest?: string | null;
     policyPaths?: readonly string[] | null;
@@ -78,10 +80,27 @@ export async function riskApprovalFor(
   },
 ): Promise<RiskApproval> {
   if (!riskGateOn(input.publicUrl)) return "not_required";
+  const humanApproved = (head: string) => {
+    try {
+      input.onHumanApproval?.(head);
+    } catch (error) {
+      journalCaught(
+        error,
+        "risk-approval.humanApprovalDisplay",
+        input.itemId,
+        undefined,
+        input.journal,
+      );
+    }
+  };
   const risk = getCandidateRisk(db, input.itemId, input.head);
   if (risk?.tier === "normal") return "not_required";
   const approvals = riskApprovals(db, input.itemId);
-  if (approvals.some((ask) => ask.headCommit === input.head)) return "approved";
+  const exact = approvals.find((ask) => ask.headCommit === input.head);
+  if (exact) {
+    humanApproved(exact.headCommit);
+    return "approved";
+  }
   // Recompute from stored evidence on every read. Never persist an automatic approval.
   if (input.autoApproveHighRisk === true && risk?.tier === "high") {
     try {
@@ -98,7 +117,10 @@ export async function riskApprovalFor(
   }
   if (risk === null) return "missing";
   for (const ask of approvals.toReversed())
-    if (await input.samePatch(ask.headCommit, risk.base)) return "approved";
+    if (await input.samePatch(ask.headCommit, risk.base)) {
+      humanApproved(ask.headCommit);
+      return "approved";
+    }
   const latest = approvals.at(-1);
   if (latest === undefined || input.fixRisk === undefined) return "missing";
   const fix = await fixSinceApproval(db, {
@@ -109,7 +131,11 @@ export async function riskApprovalFor(
     fixRisk: input.fixRisk,
     now: input.now ?? Date.now(),
   });
-  return fix !== null && fix.paths.length === 0 ? "approved" : "missing";
+  if (fix !== null && fix.paths.length === 0) {
+    humanApproved(latest.headCommit);
+    return "approved";
+  }
+  return "missing";
 }
 
 /**

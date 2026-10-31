@@ -43,7 +43,6 @@ import type {
 } from "../../../db";
 import {
   getCandidateRisk,
-  automaticRiskApprovalLine,
   getRiskFix,
   latestCandidateRisk,
   latestRiskFix,
@@ -177,6 +176,7 @@ const MAX_CLOSEOUT_ATTEMPTS = 3;
 const MERGE_STEPS = ["Rebase onto main", "Re-run Closeout", "Squash merge"] as const;
 
 export type LiveStatusOptions = {
+  riskApproval?: (itemId: string) => { head: string; detail: string } | null;
   sessionIds?: readonly string[];
   now?: () => Date;
   pawsHome?: string;
@@ -303,7 +303,21 @@ function readItemDetail(
 ): StatusItemDetail | null {
   const { snapshot, blocks, records, current } = readScopedSnapshot(db, options, id);
   if (snapshot.items.length === 0 || current === null) return null;
-  const risk = itemRisk(db, current);
+  let risk: StatusItemRisk | null;
+  try {
+    risk = itemRisk(db, current, options);
+  } catch (error) {
+    journalCaught(error, "provider.itemRisk", current.record.id);
+    risk = {
+      tier: null,
+      head: null,
+      base: null,
+      classifiedAt: null,
+      paths: [],
+      securityReview: null,
+      automaticApproval: "Manual approval required",
+    };
+  }
   const detail = withoutOutputs(snapshot);
   const env = options.env ?? process.env;
   const pawsHome = options.pawsHome ?? env.PAWS_HOME;
@@ -331,8 +345,15 @@ const SECURITY_REVIEW_CHECK = "security-review";
  * and lists that matched, and the `security-review` step of its latest Closeout run. The step
  * comes from Closeout's progress because the verdict leaves out skipped checks.
  */
-function itemRisk(db: Database, current: CurrentItem): StatusItemRisk | null {
-  const stored = latestCandidateRisk(db, current.record.id);
+function itemRisk(
+  db: Database,
+  current: CurrentItem,
+  options: LiveStatusOptions,
+): StatusItemRisk | null {
+  const display = options.riskApproval?.(current.record.id);
+  const stored = display
+    ? getCandidateRisk(db, current.record.id, display.head)
+    : latestCandidateRisk(db, current.record.id);
   const step = current.progress?.steps.find((entry) => entry.id === SECURITY_REVIEW_CHECK);
   const check = current.verdict?.checks.find((entry) => entry.id === SECURITY_REVIEW_CHECK);
   const securityReview: StatusItemRisk["securityReview"] = step
@@ -344,24 +365,20 @@ function itemRisk(db: Database, current: CurrentItem): StatusItemRisk | null {
     : check
       ? { state: check.state, detail: check.detail?.trim() || null, head: current.verdict!.headSha }
       : null;
-  if (stored === null && securityReview === null) return null;
+  if (stored === null && securityReview === null && display == null) return null;
   const lists = new Map((stored?.matches ?? []).map((match) => [match.path, match.lists]));
   return {
     tier: stored?.tier ?? null,
-    head: stored?.head ?? null,
+    head: display?.head ?? stored?.head ?? null,
     base: stored?.base ?? null,
     classifiedAt: stored === null ? null : new Date(stored.classifiedAt).toISOString(),
     paths: (stored?.paths ?? []).map((path) => ({ path, lists: lists.get(path) ?? [] })),
     securityReview,
-    ...(stored?.tier === "high"
-      ? {
-          automaticApproval:
-            current.record.checkpoint?.wipCommit &&
-            current.record.checkpoint.wipCommit !== stored.head
-              ? "Manual approval required: current head has no risk evidence"
-              : automaticRiskApprovalLine(db, stored),
-        }
-      : {}),
+    ...(display
+      ? { automaticApproval: display.detail }
+      : stored?.tier === "high"
+        ? { automaticApproval: "Manual approval required" }
+        : {}),
   };
 }
 

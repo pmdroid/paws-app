@@ -1,3 +1,4 @@
+import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
 import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
@@ -142,7 +143,6 @@ import {
 } from "../core";
 import {
   saveCandidateRisk,
-  saveRiskAutoContext,
   listWaitingProfileRuns,
   getTaskMode,
   assertLinearSessionCleanup,
@@ -681,7 +681,25 @@ export class Orchestrator {
   private authRecovery: Promise<void> | null = null;
   private readonly admission: ItemAdmission;
 
+  private readonly riskDisplayReader: RiskDisplayReader;
+
+  /** The dashboard reads through this callback without importing the loop or loading config. */
+  riskDisplay(itemId: string, head?: string): RiskDisplay | null {
+    return this.riskDisplayReader.read(itemId, head);
+  }
+
+  refreshRiskDisplaySettings(): void {
+    this.riskDisplayReader.refreshSettings();
+  }
+
   constructor(private readonly options: OrchestratorOptions) {
+    this.riskDisplayReader = new RiskDisplayReader({
+      db: options.db,
+      configPath: join(options.pawsRoot, "config.toml"),
+      readSettings: () => this.readMergePolicy(),
+      publicUrl: options.publicUrl,
+      journal: options.journal,
+    });
     this.tracker = options.tracker ?? null;
     this.admission = options.admission ?? createAdmission({ db: options.db });
     this.githubAuth = options.githubInstallation
@@ -875,6 +893,7 @@ export class Orchestrator {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.riskDisplayReader.close();
     this.authRecoveryController.abort();
     this.githubAuth?.close();
     const owned = [...this.live.values()];
@@ -4082,6 +4101,41 @@ export class Orchestrator {
     });
   }
 
+  private candidatePolicy(item: WorkItemRecord, worktree: string) {
+    const { home, policyRoot } = this.closeoutHome(item);
+    return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
+  }
+
+  private riskDisplayInputs(item: WorkItemRecord, worktree: string) {
+    const settings = this.riskDisplayReader.inputs();
+    let policyDigest: string | null = null;
+    let policyPaths: readonly string[] | null = null;
+    let policyFiles: ReturnType<RiskDisplayReader["observeFiles"]> = [];
+    try {
+      if (settings.autoApproveHighRisk) {
+        const current = this.candidatePolicy(item, worktree);
+        policyDigest = current?.digest ?? null;
+        policyPaths = current?.paths ?? null;
+        const { home, policyRoot } = this.closeoutHome(item);
+        const roots = [worktree, ...(home ? [home] : []), ...(policyRoot ? [policyRoot] : [])];
+        policyFiles = this.riskDisplayReader.observeFiles(
+          roots.flatMap((root) =>
+            [...(policyPaths ?? []), ".paws/high-risk-paths"].map((path) => join(root, path)),
+          ),
+        );
+      }
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.riskDisplayInputs",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+    }
+    return { ...settings, policyDigest, policyPaths, policyFiles };
+  }
+
   private async merge(payload: unknown, jobId: number): Promise<MergeStep> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return { kind: "obsolete" };
@@ -4090,8 +4144,7 @@ export class Orchestrator {
     const mergePolicy = () => (policy ??= this.readMergePolicy());
     // The lane calls this again after async publication checks, so keep digest reads fresh.
     const policyDigests = (item: WorkItemRecord, worktree: string) => {
-      const { home, policyRoot } = this.closeoutHome(item);
-      return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
+      return this.candidatePolicy(item, worktree);
     };
     return advanceMerge(
       this.db,
@@ -4105,34 +4158,16 @@ export class Orchestrator {
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
         riskApproval: (item, published) => {
-          let autoApproveHighRisk = false;
-          let policyDigest: string | null = null;
-          let policyPaths: readonly string[] | null = null;
-          try {
-            autoApproveHighRisk = mergePolicy().autoApproveHighRisk;
-            if (autoApproveHighRisk) {
-              const current = policyDigests(item, published.worktree);
-              policyDigest = current?.digest ?? null;
-              policyPaths = current?.paths ?? null;
-            }
-          } catch (error) {
-            journalCaught(
-              error,
-              "orchestrator.riskApproval.settings",
-              item.id,
-              undefined,
-              this.options.journal,
-            );
-          }
-          saveRiskAutoContext(this.db, item.id, published.head, {
-            autoApproveHighRisk,
-            policyDigest,
-            policyPaths,
-          });
+          const context = this.riskDisplayInputs(item, published.worktree);
+          const { autoApproveHighRisk, policyDigest, policyPaths } = context;
+          let approvedHead: string | undefined;
           return riskApprovalFor(this.db, {
             itemId: item.id,
             head: published.head,
             publicUrl: this.options.publicUrl,
+            onHumanApproval: (head) => {
+              approvedHead = head;
+            },
             autoApproveHighRisk,
             policyDigest,
             policyPaths,
@@ -4141,6 +4176,12 @@ export class Orchestrator {
               samePatch(published.worktree, approved, published.head, base),
             fixRisk: (approved, base) => this.fixRisk(item, published, approved, base),
             now: this.now(),
+          }).then((approval) => {
+            this.riskDisplayReader.remember(item.id, published.head, {
+              ...context,
+              ...(approvedHead ? { approvedHead } : {}),
+            });
+            return approval;
           });
         },
         askRiskApproval: async (item, published) => {
@@ -4369,43 +4410,25 @@ export class Orchestrator {
       line: openLine,
       now: this.now(),
     });
-    if (risk?.tier === "high") {
-      try {
-        const enabled = this.readMergePolicy().autoApproveHighRisk;
-        const { home, policyRoot } = this.closeoutHome(item);
-        const current = enabled
-          ? candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks)
-          : null;
-        saveRiskAutoContext(this.db, item.id, published.head, {
-          autoApproveHighRisk: enabled,
-          policyDigest: current?.digest ?? null,
-          policyPaths: current?.paths ?? null,
-        });
-      } catch (error) {
-        journalCaught(
-          error,
-          "orchestrator.publishForMerge.riskEvidence",
-          item.id,
-          undefined,
-          this.options.journal,
-        );
-        saveRiskAutoContext(this.db, item.id, published.head, {
-          autoApproveHighRisk: false,
-          policyDigest: null,
-          policyPaths: null,
-        });
-      }
-    }
+    if (risk?.tier === "high")
+      this.riskDisplayReader.remember(
+        item.id,
+        published.head,
+        this.riskDisplayInputs(item, worktree),
+      );
     await this.postReviewReplies(item, github, repository, published.pull.number, published.head);
     this.post(
       item,
       "response",
-      pullRequestReadyResponse(this.db, {
+      pullRequestReadyResponse({
         itemId: item.id,
         head: published.head,
         pull: published.pull,
         risk,
         openLine,
+        riskApproval: () =>
+          this.riskDisplay(item.id, published.head)?.detail ?? "Manual approval required",
+        journal: this.options.journal,
       }),
       `pull-request-ready:${item.id}:${item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0}`,
       {},
