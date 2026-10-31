@@ -1,11 +1,18 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import type { Dirent } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { git, removeWorktree, worktreeMergedInto, worktreePath } from "../acp";
 import type { RepositoryBinding, WorkItemState } from "../core";
-import { listWorkItems, type WorkItemRecord } from "../db";
+import { getWorkItem, listWorkItems, type WorkItemRecord } from "../db";
 import { itemPathId } from "./sources";
 
 export const RETIRED_WORKTREE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -36,6 +43,8 @@ export type WorktreeSweep = {
 };
 
 export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
+  for (const [pathId, items] of owners(sweep.db))
+    for (const item of items) recordWorktreeOwner(sweep.pawsRoot, pathId, item.id);
   await sweepOrphans(sweep);
   for (const [pathId, items] of owners(sweep.db)) {
     sweep.signal.throwIfAborted();
@@ -82,6 +91,24 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
   }
 }
 
+export function recordWorktreeOwner(pawsRoot: string, pathId: string, itemId: string): void {
+  worktreePath(pawsRoot, itemId);
+  try {
+    const gitDir = worktreeGitDirectory(worktreePath(pawsRoot, pathId));
+    const directory = join(gitDir, "paws-item-owners");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    writeFileSync(join(directory, itemId), "", { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if (!["ENOENT", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+  }
+}
+
+function worktreeGitDirectory(path: string): string {
+  const link = readFileSync(join(path, ".git"), "utf8").trim();
+  if (!link.startsWith("gitdir: ")) throw new Error("Expected a linked Git worktree");
+  return realpathSync(resolve(path, link.slice(8)));
+}
+
 async function sweepOrphans(sweep: WorktreeSweep): Promise<void> {
   const root = join(sweep.pawsRoot, "worktrees");
   let entries: Dirent[];
@@ -96,27 +123,30 @@ async function sweepOrphans(sweep: WorktreeSweep): Promise<void> {
     sweep.signal.throwIfAborted();
     if (!entry.isDirectory() || owners(sweep.db).has(entry.name)) continue;
     const path = join(root, entry.name);
-    await sweep.hold([], async () => {
-      if (owners(sweep.db).has(entry.name)) return;
-      try {
-        const link = readFileSync(join(path, ".git"), "utf8").trim();
-        if (!link.startsWith("gitdir: ")) return;
-        const gitDir = realpathSync(resolve(path, link.slice(8)));
-        const mirror = realpathSync(resolve(gitDir, "../.."));
-        const repos = realpathSync(join(sweep.pawsRoot, "repos"));
-        const rel = relative(repos, mirror);
-        if (
-          !rel ||
-          rel.startsWith("..") ||
-          isAbsolute(rel) ||
-          dirname(gitDir) !== join(mirror, "worktrees")
-        )
-          return;
-        await git(["--git-dir", mirror, "worktree", "remove", "--force", path]);
-      } catch (error) {
+    try {
+      const gitDir = worktreeGitDirectory(path);
+      const mirror = realpathSync(resolve(gitDir, "../.."));
+      const repos = realpathSync(join(sweep.pawsRoot, "repos"));
+      const rel = relative(repos, mirror);
+      if (
+        !rel ||
+        rel.startsWith("..") ||
+        isAbsolute(rel) ||
+        dirname(gitDir) !== join(mirror, "worktrees")
+      )
+        continue;
+      const ids = readdirSync(join(gitDir, "paws-item-owners"));
+      if (!ids.length || ids.some((id) => getWorkItem(sweep.db, id) || sweep.busy(id))) continue;
+      await sweep.hold(ids, async () => {
+        if (owners(sweep.db).has(entry.name) || ids.some((id) => getWorkItem(sweep.db, id))) return;
+        const status = await git(["-C", path, "status", "--porcelain"]);
+        if (status.trim()) return;
+        await git(["--git-dir", mirror, "worktree", "remove", path]);
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
         journalCaught(error, "worktree-sweep.sweepOrphans.remove", entry.name);
-      }
-    });
+    }
   }
 }
 

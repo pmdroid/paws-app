@@ -6,7 +6,12 @@ import { afterEach, expect, test } from "bun:test";
 import { createWorktree, ensureBareMirror, git, worktreePath } from "../acp";
 import { insertQueuedItem, insertRun, migrate, openDatabase, type WorkItemRecord } from "../db";
 import { setJournalSink } from "../journal";
-import { RETIRED_WORKTREE_MS, sweepWorktrees, type WorktreeSweep } from "./worktree-sweep";
+import {
+  recordWorktreeOwner,
+  RETIRED_WORKTREE_MS,
+  sweepWorktrees,
+  type WorktreeSweep,
+} from "./worktree-sweep";
 
 const roots: string[] = [];
 const repository = { owner: "acme", repo: "demo", remoteUrl: "" };
@@ -21,11 +26,94 @@ test("removes orphaned worktrees and preserves live worktrees", async () => {
   const fixture = await setup();
   insertQueuedItem(fixture.db, { id: "ENG-orphan" });
   await createWorktree({ ...repository, itemId: "ENG-orphan", pawsRoot: fixture.pawsRoot });
+  recordWorktreeOwner(fixture.pawsRoot, "ENG-orphan", "ENG-orphan");
   fixture.db.run("DELETE FROM work_item WHERE id = 'ENG-orphan'");
   await fixture.item("ENG-live", "running", old);
   await sweepWorktrees(fixture.sweep());
   expect(existsSync(worktreePath(fixture.pawsRoot, "ENG-orphan"))).toBe(false);
   expect(existsSync(worktreePath(fixture.pawsRoot, "ENG-live"))).toBe(true);
+}, 30_000);
+
+test("keeps probe and custom worktrees without recorded item ownership", async () => {
+  const fixture = await setup();
+  for (const key of ["probes-123456", "custom-probes", "ENG-99"]) {
+    await createWorktree({ ...repository, itemId: key, pawsRoot: fixture.pawsRoot });
+  }
+
+  await sweepWorktrees(fixture.sweep());
+
+  for (const key of ["probes-123456", "custom-probes", "ENG-99"])
+    expect(existsSync(worktreePath(fixture.pawsRoot, key))).toBe(true);
+}, 30_000);
+
+test("keeps clean and dirty worktrees belonging to renamed live items", async () => {
+  const fixture = await setup();
+  for (const [id, state] of [
+    ["ENG-10", "paused"],
+    ["ENG-11", "awaiting_input"],
+  ] as const) {
+    await fixture.item(id, state, old);
+  }
+  await sweepWorktrees(fixture.sweep());
+  const dirty = join(worktreePath(fixture.pawsRoot, "ENG-11"), "unfinished.txt");
+  await writeFile(dirty, "unfinished work");
+  fixture.db.run("UPDATE work_item SET linear_identifier = 'MOVED-' || linear_identifier");
+
+  await sweepWorktrees(fixture.sweep());
+
+  expect(fixture.present()).toEqual({ "ENG-10": true, "ENG-11": true });
+  expect(await Bun.file(dirty).text()).toBe("unfinished work");
+}, 30_000);
+
+test("retains dirty orphan worktrees until their changes are saved", async () => {
+  const fixture = await setup();
+  const id = "ENG-12";
+  await createWorktree({ ...repository, itemId: id, pawsRoot: fixture.pawsRoot });
+  recordWorktreeOwner(fixture.pawsRoot, id, id);
+  const dirty = join(worktreePath(fixture.pawsRoot, id), "unfinished.txt");
+  await writeFile(dirty, "unfinished work");
+
+  await sweepWorktrees(fixture.sweep());
+  expect(await Bun.file(dirty).text()).toBe("unfinished work");
+
+  await rm(dirty);
+  await sweepWorktrees(fixture.sweep());
+  expect(existsSync(worktreePath(fixture.pawsRoot, id))).toBe(false);
+}, 30_000);
+
+test("does not inherit ownership when a probe reuses a removed item path", async () => {
+  const fixture = await setup();
+  const key = "ENG-13";
+  await createWorktree({ ...repository, itemId: key, pawsRoot: fixture.pawsRoot });
+  recordWorktreeOwner(fixture.pawsRoot, key, key);
+  await sweepWorktrees(fixture.sweep());
+  expect(existsSync(worktreePath(fixture.pawsRoot, key))).toBe(false);
+
+  await createWorktree({ ...repository, itemId: key, pawsRoot: fixture.pawsRoot });
+  await sweepWorktrees(fixture.sweep());
+  expect(existsSync(worktreePath(fixture.pawsRoot, key))).toBe(true);
+}, 30_000);
+
+test("holds former item IDs and rechecks owners before removing an orphan", async () => {
+  const fixture = await setup();
+  const key = "ENG-14";
+  await createWorktree({ ...repository, itemId: key, pawsRoot: fixture.pawsRoot });
+  recordWorktreeOwner(fixture.pawsRoot, key, key);
+  const held: string[][] = [];
+  await sweepWorktrees(
+    fixture.sweep({
+      hold: async (ids, operation) => {
+        held.push([...ids]);
+        const restored = insertQueuedItem(fixture.db, { id: key });
+        fixture.db.run("UPDATE work_item SET linear_identifier = 'MOVED-14' WHERE id = ?", [
+          restored.id,
+        ]);
+        await operation();
+      },
+    }),
+  );
+  expect(held).toEqual([[key]]);
+  expect(existsSync(worktreePath(fixture.pawsRoot, key))).toBe(true);
 }, 30_000);
 
 test("retires a failed worktree after seven days despite an unresolvable merged head", async () => {

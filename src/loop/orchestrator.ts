@@ -462,7 +462,7 @@ import {
   type FixRisk,
   RISK_ANSWERERS,
 } from "./risk-approval";
-import { sweepWorktrees } from "./worktree-sweep";
+import { recordWorktreeOwner, sweepWorktrees } from "./worktree-sweep";
 import {
   KEEP_WAITING,
   MOVE_TO_ANOTHER_RUNNER,
@@ -7357,6 +7357,7 @@ export class Orchestrator {
       checkoutExclusions: this.runCheckout(item).agent,
       ...(startRef ? { startRef } : {}),
     });
+    recordWorktreeOwner(this.options.pawsRoot, itemPathId(item), item.id);
     const required = (this.options.reviewRequirements ?? reviewRequirements)(
       worktree.path,
       this.options.home,
