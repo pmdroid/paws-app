@@ -75,7 +75,7 @@ describe("closeout checks", () => {
     expect(html).toContain('<span class="attempt-round">Round 1</span>');
     expect(html).toContain('<span class="attempt-round">Round 2 · rebased</span>');
     expect(html).toMatch(/data-attempt="3" aria-pressed="true">.*?Attempt 1<span/);
-    expect(html).toContain("Exhausted after 1 of 3 attempts in round 2");
+    expect(html).toContain("Exhausted after Closeout evaluation 1 in round 2");
     expect(renderCloseoutChecks(base, emptyCloseoutView(), null)).not.toContain("attempt-round");
   });
 

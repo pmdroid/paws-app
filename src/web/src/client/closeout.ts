@@ -180,10 +180,10 @@ export function renderCloseoutChecks(
   const decision = attempt.decision;
   const accepted = decision === "accepted";
   const title = accepted
-    ? `Accepted on attempt ${shown} of ${verdict.maxAttempts}${inRound}`
+    ? `Accepted on Closeout evaluation ${shown}${inRound}`
     : decision === "exhausted"
-      ? `Exhausted after ${shown} of ${verdict.maxAttempts} attempts${inRound}`
-      : `${attemptLabel(attempt)[0]!.toUpperCase()}${attemptLabel(attempt).slice(1)} on attempt ${shown} of ${verdict.maxAttempts}${inRound}`;
+      ? `Exhausted after Closeout evaluation ${shown}${inRound}`
+      : `${attemptLabel(attempt)[0]!.toUpperCase()}${attemptLabel(attempt).slice(1)} on Closeout evaluation ${shown}${inRound}`;
   const head = attempt.headSha ? ` on head ${esc(attempt.headSha.slice(0, 7))}` : "";
   const description = accepted
     ? `All ${checks.length} checks passed${head}.${pr && itemState === "merge_queue" ? ` Pull request <a href="${esc(pr.url)}">#${pr.number}</a> is waiting to merge.` : itemState === "merged" ? " This change has merged." : ""}`

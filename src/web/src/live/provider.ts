@@ -1,3 +1,5 @@
+import { MAX_ITEM_RESTARTS } from "../../../core";
+import { lifetimeRestarts } from "../../../db";
 import { journalCaught } from "../journal";
 /**
  * Live status snapshot.
@@ -874,6 +876,7 @@ function toItem(
     project: itemProject(fact),
     blockers: blockersFor(db, record, itemsByIssue),
     attempts: record.turnCount,
+    restartBudget: { used: lifetimeRestarts(db, record.id), limit: MAX_ITEM_RESTARTS },
     branch: record.branchName.trim() ? record.branchName : null,
     runId,
     pr,
@@ -1423,7 +1426,15 @@ function verdictFor(
   const base = best ? toVerdict(record, best) : impliedVerdict(record);
   if (base === null) return [];
   if (!live) return [base];
-  const verdict = withProgress(base, live, nowMs, env);
+  const evaluations = progress
+    .filter((row) => row.itemId === record.id)
+    .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
+  const verdict = withProgress(
+    { ...base, attempt: evaluations.findIndex((row) => row.id === live.id) + 1 },
+    live,
+    nowMs,
+    env,
+  );
   return [
     { ...verdict, attempts: attemptsFor(record, progress, rounds, live, verdict, nowMs, env) },
   ];
@@ -1664,7 +1675,7 @@ function verdictCandidates(
 
 function toVerdict(record: WorkItemRecord, candidate: VerdictCandidate): StatusVerdict {
   const checks = parseChecks(candidate.summary);
-  const attempt = attemptOf(candidate.summary, record);
+  const attempt = 1;
   const failing = checks.find((check) => check.state === "failed");
   return {
     itemId: publicId(record),
@@ -1687,7 +1698,7 @@ function toVerdict(record: WorkItemRecord, candidate: VerdictCandidate): StatusV
 function impliedVerdict(record: WorkItemRecord): StatusVerdict | null {
   const decision = impliedDecision(record.state);
   if (decision === null) return null;
-  const attempt = Math.max(record.turnCount, 1);
+  const attempt = 1;
   const summary =
     decision === "running"
       ? "Closeout is running."
@@ -2298,24 +2309,6 @@ function decisionFromSummary(summary: string): VerdictDecision | null {
   const line = summary.split("\n").find((entry) => entry.startsWith("Closeout:"));
   if (line === undefined) return null;
   return decisionOf(line.slice("Closeout:".length).trim());
-}
-
-function attemptOf(summary: string, record: WorkItemRecord): number {
-  const caller = intField(summary, "Caller attempt");
-  if (caller !== null) return caller;
-  const evaluations = intField(summary, "Evaluations");
-  if (evaluations !== null) return evaluations;
-  const fixes = intField(summary, "Fix attempts");
-  if (fixes !== null) return fixes + 1;
-  return Math.max(record.turnCount, 1);
-}
-
-function intField(summary: string, label: string): number | null {
-  const value = lineField(summary, label);
-  if (value === null) return null;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) return null;
-  return parsed;
 }
 
 function shaField(summary: string, label: string): string | null {

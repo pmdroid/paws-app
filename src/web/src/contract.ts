@@ -113,6 +113,8 @@ export interface StatusItem {
   /** Unresolved blockers, evaluated by core before rendering. */
   blockers: string[];
   attempts: number;
+  /** Restart admissions across the entire item, separate from Closeout evaluations. */
+  restartBudget?: { used: number; limit: number };
   branch: string | null;
   runId: string | null;
   pr: StatusPullRequest | null;
@@ -1514,6 +1516,14 @@ function readItem(input: unknown, index: number): StatusItem {
     project: readItemProject(body.project, `${path}.project`),
     blockers: stringArray(body, "blockers", path),
     attempts: count(body, "attempts", path),
+    ...(body.restartBudget === undefined
+      ? {}
+      : {
+          restartBudget: {
+            used: count(object(body.restartBudget, `${path}.restartBudget`), "used", path),
+            limit: count(object(body.restartBudget, `${path}.restartBudget`), "limit", path),
+          },
+        }),
     branch,
     runId,
     pr: readPr(body.pr, `${path}.pr`),
