@@ -480,7 +480,7 @@ export function createRunnerRepositories(options: {
                 });
               return sha;
             } catch (error) {
-              if (!candidate.rebase || !branchMoved(error)) throw error;
+              if (!branchMoved(error)) throw error;
               journalCaught(error, "runner-repositories.publish.branchMoved", null);
               // The branch moved on GitHub while the turn ran (PAS-886): the turn's own commits go
               // on top of the branch as it is now, with a lease on that tip, and no new turn.
@@ -531,6 +531,58 @@ export function createRunnerRepositories(options: {
                   ))
                 )
                   throw rejection;
+                const localGit = (args: string[]) => invoke(["--git-dir", mirror, ...args], signal);
+                const tree = (await localGit(["rev-parse", `${sha}^{tree}`])).trim();
+                if (
+                  tree === (await localGit(["rev-parse", `${tip}^{tree}`])).trim() &&
+                  (await localGit(["merge-base", "--is-ancestor", sha, tip]).then(
+                    () => true,
+                    () => false,
+                  ))
+                )
+                  return tip;
+                const remoteMerges = (
+                  await localGit(["rev-list", "--merges", `${sha}..${tip}`])
+                ).trim();
+                const patches = (await localGit(["cherry", sha, tip]))
+                  .trim()
+                  .split("\n")
+                  .filter(Boolean);
+                if (!remoteMerges && patches.every((line) => /^- [a-f0-9]{40}$/.test(line))) {
+                  const metadata = (
+                    await localGit(["show", "-s", "--format=%an%n%ae%n%cn%n%ce%n%B", sha])
+                  ).split("\n");
+                  const [author, authorEmail, committer, committerEmail, ...message] = metadata;
+                  const credits = commitCoauthorTrailers(message.join("\n"));
+                  const merged = await spawnGit(
+                    ["--git-dir", mirror, "commit-tree", tree, "-p", sha, "-p", tip, "-F", "-"],
+                    {
+                      stdin: `Merge patch-equivalent item history\n\n${credits.map((credit) => `Co-authored-by: ${credit}`).join("\n")}\n`,
+                      env: {
+                        GIT_AUTHOR_NAME: author!,
+                        GIT_AUTHOR_EMAIL: authorEmail!,
+                        GIT_COMMITTER_NAME: committer!,
+                        GIT_COMMITTER_EMAIL: committerEmail!,
+                      },
+                      signal,
+                    },
+                  );
+                  if (merged.code !== 0)
+                    throw new Error(`Candidate history merge failed: ${merged.stderr}`, {
+                      cause: error,
+                    });
+                  const joined = merged.stdout.trim();
+                  await localGit(["update-ref", ref, joined]);
+                  try {
+                    await push(joined, tip);
+                    return joined;
+                  } catch (retryError) {
+                    if (!branchMoved(retryError)) throw retryError;
+                    rejection = retryError;
+                    continue;
+                  }
+                }
+                if (!candidate.rebase) throw rejection;
                 const replayed = await replay(mirror, sha, [...excluded, `^${tip}`], tip, signal);
                 if (replayed === tip) return tip;
                 await invoke(["--git-dir", mirror, "update-ref", ref, replayed]);

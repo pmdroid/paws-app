@@ -395,13 +395,28 @@ export async function probeRunnerRepositories(
   const staleSha = (await invoke(["-C", rebaseTree, "rev-parse", "HEAD"])).trim();
   const staleBundle = join(root, "stale.bundle");
   await invoke(["-C", rebaseTree, "bundle", "create", staleBundle, "HEAD", `^${updatedSha}`]);
-  await assert.rejects(
-    repositories.publish(rebase, {
+  const joined = await repositories.publish(rebase, {
+    bundle: readFileSync(staleBundle),
+    sha: staleSha,
+    branch: candidate.branch,
+  });
+  assert.equal(
+    await repositories.publish(rebase, {
       bundle: readFileSync(staleBundle),
       sha: staleSha,
       branch: candidate.branch,
     }),
+    joined,
   );
+  assert.equal(
+    (await invoke(["--git-dir", origin, "show", "-s", "--format=%P", joined])).trim(),
+    `${staleSha} ${rebasedSha}`,
+  );
+  assert.equal(
+    (await invoke(["--git-dir", origin, "rev-parse", `${joined}^{tree}`])).trim(),
+    (await invoke(["-C", rebaseTree, "rev-parse", `${staleSha}^{tree}`])).trim(),
+  );
+
   observe(
     "a candidate rebased onto the assigned main replaces only the branch head it was based on",
     rebasedRemote === rebasedSha,
