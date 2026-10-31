@@ -9,6 +9,8 @@ export type CloseoutProgressIdentity = {
   head: string;
   policyDigest: string;
   policyPath: string | null;
+  /** The digest of the policy's checks marked `recheck: true`, `""` when none is. */
+  recheckDigest?: string;
 };
 
 export type CloseoutStepWrite = {
@@ -28,6 +30,8 @@ export type CloseoutStepWrite = {
   logPath: string | null;
   evidencePath: string | null;
   findings: string | null;
+  /** Structured severities of this exact review attempt; absent on legacy results. */
+  findingSeverities?: readonly ("P0" | "P1" | "P2" | "P3")[] | null;
   ordinal: number;
   durationMs?: number | null;
   tokens?: number | null;
@@ -104,12 +108,13 @@ export function ensureCloseoutProgress(
   immediate(db, () => {
     db.run(
       `INSERT INTO closeout_progress (
-         id, item_id, task_id, base, head, policy_digest, policy_path, decision, started_at, updated_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+         id, item_id, task_id, base, head, policy_digest, policy_path, recheck_digest, decision, started_at, updated_at, finished_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
        ON CONFLICT(id) DO UPDATE SET
          updated_at = excluded.updated_at,
          base = excluded.base,
          policy_path = COALESCE(excluded.policy_path, closeout_progress.policy_path),
+         recheck_digest = COALESCE(excluded.recheck_digest, closeout_progress.recheck_digest),
          decision = CASE WHEN ? = 1 THEN NULL ELSE closeout_progress.decision END,
          finished_at = CASE WHEN ? = 1 THEN NULL ELSE closeout_progress.finished_at END`,
       [
@@ -120,6 +125,7 @@ export function ensureCloseoutProgress(
         identity.head,
         identity.policyDigest,
         identity.policyPath,
+        identity.recheckDigest ?? null,
         now,
         now,
         reset ? 1 : 0,
@@ -255,9 +261,19 @@ function startedAtFor(
 }
 
 function findingsFor(
-  existing: Pick<StepSql, "state" | "findings"> | null,
+  existing: Pick<StepSql, "state" | "findings" | "attempt"> | null,
   step: CloseoutStepWrite,
 ): string | null {
+  // Store typed review evidence in the existing text column, atomically with the step.
+  // mapStep restores the display text for existing consumers. This is never an approval.
+  if (step.findingSeverities !== undefined)
+    return JSON.stringify({
+      reviewSnapshot: 1,
+      attempt: step.attempt > 0 ? step.attempt : (existing?.attempt ?? step.attempt),
+      text: step.findings,
+      severities: step.findingSeverities,
+    });
+  if (step.kind === "review" && step.attempt > (existing?.attempt ?? 0)) return step.findings;
   if (step.findings !== null) return step.findings;
   if (step.state === "running" && existing?.state !== "running") return null;
   return existing?.findings ?? null;
@@ -318,6 +334,23 @@ export function latestCloseoutIdentity(
        WHERE item_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1`,
     )
     .get(itemId);
+}
+
+/**
+ * The policy digest of the latest Closeout run on `head` and the digest of its checks marked
+ * `recheck: true`, or null when no run was recorded. `recheck` is null when the run did not say.
+ */
+export function closeoutPolicyDigests(
+  db: Database,
+  itemId: string,
+  head: string,
+): { digest: string; recheck: string | null } | null {
+  return db
+    .query<{ digest: string; recheck: string | null }, [string, string]>(
+      `SELECT policy_digest AS digest, recheck_digest AS recheck FROM closeout_progress
+       WHERE item_id = ? AND head = ? ORDER BY updated_at DESC, id DESC LIMIT 1`,
+    )
+    .get(itemId, head);
 }
 
 /** The policy digest of the latest Closeout run on `head`, or null when none was recorded. */
@@ -409,6 +442,26 @@ export function closeoutHeadsStarted(db: Database, itemId: string): Map<string, 
   return new Map(rows.map((row) => [row.head, row.startedAt]));
 }
 
+/** Latest stored Closeout results for this exact candidate, using the item index. */
+export function getCloseoutProgress(
+  db: Database,
+  itemId: string,
+  head: string,
+): CloseoutProgressRecord | null {
+  const run = db
+    .query<ProgressSql, [string, string]>(
+      "SELECT * FROM closeout_progress WHERE item_id = ? AND head = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
+    )
+    .get(itemId, head);
+  if (run === null) return null;
+  const steps = db
+    .query<StepSql, [string]>(
+      "SELECT * FROM closeout_step WHERE progress_id = ? ORDER BY ordinal, step_id",
+    )
+    .all(run.id);
+  return progressRecord(run, steps);
+}
+
 export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
   const runs = db
     .query<ProgressSql, []>("SELECT * FROM closeout_progress ORDER BY updated_at, id")
@@ -416,7 +469,16 @@ export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
   const steps = db
     .query<StepSql, []>("SELECT * FROM closeout_step ORDER BY ordinal, step_id")
     .all();
-  return runs.map((run) => ({
+  return runs.map((run) =>
+    progressRecord(
+      run,
+      steps.filter((step) => step.progress_id === run.id),
+    ),
+  );
+}
+
+function progressRecord(run: ProgressSql, steps: StepSql[]): CloseoutProgressRecord {
+  return {
     id: run.id,
     itemId: run.item_id,
     taskId: run.task_id,
@@ -428,8 +490,8 @@ export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
     startedAt: run.started_at,
     updatedAt: run.updated_at,
     finishedAt: run.finished_at,
-    steps: steps.filter((step) => step.progress_id === run.id).map(mapStep),
-  }));
+    steps: steps.map(mapStep),
+  };
 }
 
 function mapStep(row: StepSql): CloseoutStepRecord {
@@ -449,7 +511,7 @@ function mapStep(row: StepSql): CloseoutStepRecord {
     truncated: row.truncated === 1,
     logPath: row.log_path,
     evidencePath: row.evidence_path,
-    findings: row.findings,
+    ...reviewSnapshot(row),
     ordinal: row.ordinal,
     durationMs: row.duration_ms,
     tokens: row.tokens,
@@ -458,6 +520,35 @@ function mapStep(row: StepSql): CloseoutStepRecord {
     stdout: row.stdout,
     stderr: row.stderr,
   };
+}
+
+function reviewSnapshot(
+  row: Pick<StepSql, "kind" | "attempt" | "findings">,
+): Pick<CloseoutStepRecord, "findings" | "findingSeverities"> {
+  if (row.kind === "review" && row.findings?.startsWith("{")) {
+    try {
+      const value = JSON.parse(row.findings) as Record<string, unknown> | null;
+      if (
+        value?.reviewSnapshot === 1 &&
+        value.attempt === row.attempt &&
+        (value.text === null || typeof value.text === "string") &&
+        (value.severities === null || Array.isArray(value.severities))
+      )
+        return {
+          findings: value.text,
+          findingSeverities:
+            Array.isArray(value.severities) &&
+            value.severities.every((s) => ["P0", "P1", "P2", "P3"].includes(s))
+              ? value.severities
+              : null,
+        };
+    } catch {
+      // Preserve legacy text; malformed snapshot envelopes cannot authorize approval.
+      return { findings: row.findings.includes('"reviewSnapshot"') ? null : row.findings };
+    }
+    return { findings: row.findings.includes('"reviewSnapshot"') ? null : row.findings };
+  }
+  return { findings: row.findings };
 }
 
 function indexes(value: string | null): number[] | null {

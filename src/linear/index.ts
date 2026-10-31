@@ -8,7 +8,6 @@ export {
   linearReadRetry,
 } from "./acknowledge";
 export type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
-export { authorizeLinear, LINEAR_REDIRECT_URI } from "./authorize";
 export {
   budgetFromHeaders,
   createLinearLedger,
@@ -51,7 +50,12 @@ export type {
   PreparedLinearUpload,
   UploadedLinearFile,
 } from "./files";
-export { createLinearClient, LinearEntityNotFoundError, LinearHttpError } from "./graphql";
+export {
+  createLinearClient,
+  LinearEntityNotFoundError,
+  LinearHttpError,
+  LinearGraphQLError,
+} from "./graphql";
 export type { LinearClient } from "./graphql";
 export { createLinearRepositoryMethods } from "./repositories";
 export { createLinearMergeReads } from "./merge-context";
@@ -107,6 +111,14 @@ export { linearTokenPath, openLinear, sessionHasItemInFlight } from "./runtime";
 export type { LinearRunning, OpenLinear } from "./runtime";
 export { createLinearTracker } from "./tracker";
 export { subIssueDescription, subIssueId, type SubIssueRequest } from "./sub-issues";
+export {
+  findingIssueId,
+  findingIssueState,
+  REVIEW_FINDING_LABEL,
+  type FiledFindingIssue,
+  type FindingIssueRequest,
+  type FindingIssueTeamState,
+} from "./finding-issues";
 export type { LinearSessionAdapter } from "./sessions";
 export type {
   ActionDetails,
@@ -186,3 +198,5 @@ export { cacheLinearMemberships, createLinearMembershipReads } from "./membershi
 export type { LinearMemberIdentity, LinearMembershipReads } from "./membership";
 
 export { isPawsStop } from "./event-dispatch";
+export { createFindingIssueAdapter, createFakeFindingIssueAdapter } from "./finding-group-issues";
+export type { FindingIssueAdapter, FindingIssueTitle } from "./finding-group-issues";

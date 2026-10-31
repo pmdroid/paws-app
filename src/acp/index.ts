@@ -7,12 +7,16 @@ export {
   CODEX_ACP_PACKAGE,
   GROK_AGENT_ARGS,
   GROK_LOGIN_MESSAGE,
+  OPENCODE_AGENT_ARGS,
+  OPENCODE_LOGIN_MESSAGE,
+  OPENCODE_ACP_BIN,
   pawsPackageRoot,
   pinnedAdapters,
   providerCliPath,
   rejectAutoApprove,
   resolveAdapter,
   resolveGrokCommand,
+  resolveOpencodeCommand,
   selectGrokAuthMethod,
   xaiApiKeyPresent,
   type AdapterCommand,
@@ -20,6 +24,7 @@ export {
   type AdapterVersions,
   type AgentRole,
   type GrokCommand,
+  type OpencodeCommand,
 } from "./adapters";
 export {
   ASK_TEAM_TOOL_NAME,
@@ -33,7 +38,8 @@ export {
   startAskTeamBridge,
   decodePolicyFiles,
   encodePolicyFiles,
-  startHostToolBridge,
+  encodePolicyChunk,
+  decodePolicyChunk,
   type AskTeamBridge,
   type AskTeamContext,
   type AskTeamHook,
@@ -158,3 +164,5 @@ export { validateCandidateAttribution } from "./commit-policy";
 export { assertDescendsFromAny, candidateBases, CHECKPOINT_COMMIT_MESSAGE } from "../core";
 
 export { snapshotImplementationSkills, materializeImplementationSkills } from "./skill-bundle";
+
+export { providerFor } from "./model";

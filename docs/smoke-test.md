@@ -1,6 +1,6 @@
 # Smoke test
 
-Run Paws against a Linear epic with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop, then exercise the merge lane: a rebase after main moved, a changes-requested review and a forced conflict loop. Install Bun 1.4.2 or newer and Git. Enroll a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Enrollment is in [Enroll a remote Linux runner](runner-enrollment.md). GitHub App setup is in [GitHub App](github-app.md).
+Run Paws against a delegated parent issue with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop, then exercise the merge lane: a rebase after main moved, a changes-requested review and a forced conflict loop. Install Bun 1.4.2 or newer and Git. Enroll a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Enrollment is in [Enroll a remote Linux runner](runner-enrollment.md). GitHub App setup is in [GitHub App](github-app.md).
 
 ```sh
 bun install
@@ -45,6 +45,8 @@ Each sub-issue runs in its own Linear agent session and its own run. Paws opens 
 4. ENG-4's session opens after ENG-3 merges. ENG-4 parks on a question in its session. Answer `yes` or `no`, or reply in your own words. The run continues with that answer.
 5. ENG-4 merges.
 
+6. During an active implementer turn or Closeout review, restart Paws with `systemctl --user restart paws.service`, or stop and start `bun run paws` in the foreground. Keep the runner running. Check that the same Linear session continues, the turn finishes, and only one pull request opens for the issue. There is no need to wait for idle work before a deploy.
+
 Each sub-issue's session is one story. Before the pull request, activities tell it and the title names the phase. After the pull request response, only the title and plan move. The face of each state is in [Linear agent sessions](linear-agent-sessions.md#the-face-table). Expect, for each sub-issue:
 
 - Exactly two responses: the pull request response, then the final response "Merged #N into main at <sha>. ENG-n is Done." Nothing appears between them, not even evidence: evidence after the pull request is attached to the issue.
@@ -88,7 +90,7 @@ Expect these results:
 - The changes-requested review restarts the item once (restart reason `review`). The title reads "fixing review findings (1 of 3)". The agent renames the argument and asks in the session about the CSV question; that question is the one activity after the pull request response. Answer it.
 - The two comments restart the item once more, with both comments in the handoff; the title reads "fixing review findings (2 of 3)". A Cloudflare Pages preview comment restarts nothing.
 - Redelivering the changes-requested webhook from the GitHub App's advanced settings restarts nothing.
-- The new head goes through Closeout. Resolve the threads and approve; the pull request merges.
+- The new head goes through Closeout. Paws replies to each comment, and resolves the threads the agent fixed or answered. Resolve any thread left open and approve; the pull request merges.
 
 ### Forced conflict loop
 

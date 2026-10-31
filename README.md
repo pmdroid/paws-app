@@ -2,7 +2,7 @@
 
 Agent workflows for engineering teams. Paws runs on your machine, picks up an issue you hand it, places the work on a paired Linux runner, checks it with Closeout, and merges a pull request.
 
-Linear is the issue tracker. GitHub hosts the repositories and pull requests. This repository is the local process. Planning and the issue list live in [pmdroid/paws-planning](https://github.com/pmdroid/paws-planning) (QM-01 through QM-13 are the quick MVP).
+Linear is the issue tracker. GitHub hosts the repositories and pull requests. This repository is the local process.
 
 ## Setup
 
@@ -14,7 +14,7 @@ bun run build:status
 bun run paws
 ```
 
-Open the configured HTTPS address. A Linear workspace admin signs in and authorizes Paws in the same workspace. Paws saves the app authorization, creates the owner's workspace, and opens Integrations. Connect GitHub, choose repositories and their Linear teams, then [enroll a runner](docs/runner-enrollment.md) and sign in to its agents through Runners.
+Open the configured HTTPS address. A Linear workspace admin signs in and authorizes Paws in the same workspace. Paws saves the app authorization, creates the workspace with that person as its first admin, and opens Integrations. Connect GitHub, choose repositories and their Linear teams, then [enroll a runner](docs/runner-enrollment.md) and sign in to its agents through Runners.
 
 Paws runs work only for a configured Linear workspace. `bun run paws doctor` reports `linear-workspace` as missing until `PAWS_PUBLIC_DASHBOARD=1` is set and a workspace admin has signed in.
 
@@ -26,7 +26,7 @@ Paws requires a configured Linear workspace. An existing install that runs from 
 
 Linear holds delegated work and questions. GitHub hosts repositories and pull requests. Paws checks the repository's Closeout policy before publication.
 
-To start work, delegate an issue to the Paws app in Linear. Delegation is the approval. Delegate a parent issue to run its sub-issues in Linear `blocks` order, each in its own Linear session that opens once its blockers merge. A project is the Linear project the issue belongs to, and Paws has no project start of its own.
+To start work, delegate an issue to the Paws app in Linear. Delegation is the approval. Delegate a parent issue to run its sub-issues in Linear `blocks` order, each in its own Linear session that opens once its blockers merge. A project is the Linear project the issue belongs to, and Paws has no project start of its own. To choose the repository for an issue, see [Repository selection](docs/repository-selection.md).
 
 | Path                          | What it is                                                                                                       |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
@@ -51,6 +51,8 @@ Paws applies these exclusions before checking out files, including in detached C
 
 ## Deploys
 
+A restart is safe while work is running; deploys need no idle wait. Runners keep working while Paws is down and retain their results until it returns. Paws reattaches to the same commands after startup, including in-flight Closeout reviews and answer tasks.
+
 Paws never changes its own checkout or restarts itself. To deploy a new commit, update the checkout Paws runs from and restart the service:
 
 ```sh
@@ -63,11 +65,11 @@ systemctl --user restart paws.service
 
 ## Status dashboard
 
-Shared workspaces use [Linear sign-in and workspace access](docs/workspace-access.md) over HTTPS. Owners manage Paws roles and repository mappings in the dashboard.
+Shared workspaces use [Linear sign-in and workspace access](docs/workspace-access.md) over HTTPS. Admins manage Paws roles and repository mappings in the dashboard.
 
 To connect a Linux VM, follow [Enroll a remote Linux runner](docs/runner-enrollment.md) for package installation, configuration, agent login and enrollment.
 
-The QM-11 status page lives in [`src/web`](src/web/README.md). It is read-only: epics, items, current runs, open questions, Closeout verdicts, and the merge queue. It does not import the rest of the engine.
+The status page lives in [`src/web`](src/web/README.md). It is read-only: items, current runs, open questions, Closeout verdicts, and the merge queue. It does not import the rest of the engine.
 
 The dashboard reads `/api/status` from the Paws process that serves it. Build it with `bun run build:status`, then start Paws with `bun run paws` and open `http://127.0.0.1:8787/status`. An empty database shows no items.
 
@@ -80,7 +82,8 @@ bun run fmt:check     # oxfmt, check only
 bun run typecheck     # tsc --noEmit, plus the browser client
 bun run test          # bun test --parallel=4 --timeout=20000
 bun run build:status  # static dashboard → src/web/dist
-bun run links         # local markdown links in README.md and docs/
+bun run links         # docs links, orphaned docs and dead source paths
+bun run knip          # unused files, dependencies and duplicate exports
 bun run check         # all of the above
 ```
 

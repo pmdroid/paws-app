@@ -10,9 +10,10 @@ export const AFTER_PULL_REQUEST_RESPONSE =
 
 /**
  * Thoughts that may follow the PR response: a change request on the risk approval, from the
- * Risk card or a Linear reply, which sends the item back to the agent.
+ * Risk card or a Linear reply, and a review or comments on the pull request that sent the item
+ * back to the agent (`pull-feedback:`). Each wakes the session, so a person sees the agent work.
  */
-export const AFTER_PULL_REQUEST_THOUGHT = /^risk-approval:/;
+export const AFTER_PULL_REQUEST_THOUGHT = /^(risk-approval:|pull-feedback:)/;
 
 /** The PR response completes this generation; only a terminal response or ask may follow. */
 export function hasPublishedPullRequest(

@@ -15,6 +15,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   resumeUsagePauseNow,
+  syncWorkspaceMember,
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -49,6 +50,13 @@ test("an uninterrupted usage-limit result with a candidate pauses until a resume
   expect(result.head, result.detail).toBe(result.candidateSha);
 }, 60_000);
 
+test("a usage-limit pause ends as soon as the agent is ready on a runner again", async () => {
+  const result = await usageLimitScenario(false, "cooldown");
+  expect(result.paused, result.detail).toEqual({ resetsAt: result.limitedAt + 120_000 });
+  expect(result.finished, result.detail).toMatchObject({ stopReason: "end_turn" });
+  expect(result.head, result.detail).toBe(result.candidateSha);
+}, 20_000);
+
 test("a restart between the usage receipt commit and candidate processing still pauses until a resume", async () => {
   const result = await usageLimitScenario(true);
   expect(result.shutdown, result.detail).toBeInstanceOf(PawsShutdown);
@@ -64,7 +72,44 @@ test("a restart between the usage receipt commit and candidate processing still 
   expect(result.receipts, result.detail).toBe(2);
 }, 60_000);
 
-async function usageLimitScenario(restart: boolean) {
+test("updated agent settings release a quota wait without resuming the exhausted provider", async () => {
+  const result = await usageLimitScenario(false, "profiles");
+  expect(result.paused, result.detail).toEqual({ resetsAt: result.limitedAt + 120_000 });
+  expect(result.agents, result.detail).toEqual(["claude", "codex"]);
+  expect(result.finished, result.detail).toMatchObject({ stopReason: "end_turn" });
+  expect(result.activePauses, result.detail).toBe(0);
+  expect(result.policyAtPause?.cooldown_until).toBeGreaterThan(result.finishedAt);
+}, 60_000);
+
+test("capacity returning between failed placement and pause entry resumes immediately", async () => {
+  const result = await usageLimitScenario(false, "before-pause");
+  expect(result.recoveredBeforePause, result.detail).toBe(true);
+  expect(result.finished, result.detail).toMatchObject({ stopReason: "end_turn" });
+  expect(result.activePauses, result.detail).toBe(0);
+}, 20_000);
+
+for (const wake of ["foreign-workspace", "foreign-owner"] as const) {
+  test(`ready runners from ${wake} do not wake or exhaust another item's quota pause`, async () => {
+    const result = await usageLimitScenario(false, wake);
+    expect(result.foreignReady, result.detail).toBe(2);
+    expect(result.pauseEvents, result.detail).toBe(1);
+    expect(result.agents, result.detail).toEqual(["claude", "claude"]);
+    expect(result.finished, result.detail).toMatchObject({ stopReason: "end_turn" });
+    expect(result.activePauses, result.detail).toBe(0);
+  }, 20_000);
+}
+
+async function usageLimitScenario(
+  restart: boolean,
+  wake:
+    | "resume"
+    | "cooldown"
+    | "profiles"
+    | "foreign-workspace"
+    | "foreign-owner"
+    | "before-pause" = "resume",
+) {
+  const switchProfiles = wake === "profiles";
   const root = mkdtempSync(join(tmpdir(), "paws-usage-restart-"));
   const source = join(root, "source");
   const origin = join(root, "origin.git");
@@ -145,6 +190,48 @@ async function usageLimitScenario(restart: boolean) {
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
+  if (switchProfiles)
+    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [
+      runnerId,
+    ]);
+  const foreignRunnerIds: string[] = [];
+  if (wake === "foreign-workspace" || wake === "foreign-owner") {
+    const otherUser = putWorkspaceUser(db, {
+      id: workspaceId(),
+      linearUserId: "other",
+      name: "Other",
+      email: "other@example.invalid",
+    });
+    const otherWorkspace =
+      wake === "foreign-workspace"
+        ? consumeWorkspaceBootstrap(db, {
+            id: workspaceId(),
+            organizationId: "other-org",
+            name: "Other",
+            userId: otherUser,
+            tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "other-org", now)),
+            now,
+          })
+        : workspace;
+    syncWorkspaceMember(db, {
+      workspaceId: otherWorkspace.id,
+      userId: otherUser,
+      role: "member",
+      active: true,
+      teamIds: ["team"],
+      now,
+    });
+    for (let index = 0; index < 2; index++) {
+      const id = `foreign-${index}`;
+      foreignRunnerIds.push(id);
+      db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
+        [id, otherWorkspace.id, otherUser, id, now, now],
+      );
+      db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [id]);
+      db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',0)", [id]);
+    }
+  }
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now);
   recordLinearInstallation(db, {
@@ -164,6 +251,8 @@ async function usageLimitScenario(restart: boolean) {
   const shutdown = new AbortController();
   let limitedAt = 0;
   let limitedCommand = "";
+  let recoveredBeforePause = false;
+  let limitedPlacementReads = 0;
   function open() {
     const work = createRunnerWork({ db, keyId: "fixture", privateKey: keys.privateKey });
     const results = createRunnerResults({ db, work });
@@ -177,6 +266,17 @@ async function usageLimitScenario(restart: boolean) {
       pollIntervalMs: 5,
       placement: {
         ...placement,
+        async candidates(input) {
+          if (limitedAt) limitedPlacementReads++;
+          if (wake === "before-pause" && limitedPlacementReads === 2 && !recoveredBeforePause) {
+            db.run(
+              "UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=? AND agent='claude'",
+              [runnerId],
+            );
+            recoveredBeforePause = true;
+          }
+          return placement.candidates(input);
+        },
         finished(input) {
           const disposition = placement.finished(input);
           if (input.commandId === limitedCommand && !limitedAt) {
@@ -215,6 +315,11 @@ async function usageLimitScenario(restart: boolean) {
     pause: null as { resetsAt: number } | null,
     policyAtPause: null as Record<string, unknown> | null,
   };
+  let selectedAgent: "claude" | "codex" = "claude";
+  const agents: string[] = [];
+  let pauseEvents = 0;
+  let pauseObservedAt = 0;
+  let foreignReady = 0;
   const handled = new Set<string>();
   const runner = (async () => {
     while (!sim.stopped) {
@@ -229,7 +334,28 @@ async function usageLimitScenario(restart: boolean) {
         if (pause && !sim.pause) {
           sim.pause = { resetsAt: pause.resetsAt };
           sim.policyAtPause = policy();
-          resumeUsagePauseNow(db, pause.runId, Date.now());
+          pauseObservedAt = Date.now();
+          if (switchProfiles) selectedAgent = "codex";
+          else if (wake === "resume") resumeUsagePauseNow(db, pause.runId, Date.now());
+          else if (wake === "cooldown")
+            db.run(
+              "UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=? AND agent='claude'",
+              [runnerId],
+            );
+        }
+        if (foreignRunnerIds.length && pauseObservedAt) {
+          const elapsed = Date.now() - pauseObservedAt;
+          if (foreignReady < 2 && elapsed >= 150 + foreignReady * 300) {
+            db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id=?", [
+              foreignRunnerIds[foreignReady]!,
+            ]);
+            foreignReady++;
+          }
+          if (elapsed >= 900)
+            db.run(
+              "UPDATE runner_agent_policy SET cooldown_until=0 WHERE runner_id=? AND agent='claude'",
+              [runnerId],
+            );
         }
         for (const envelope of work.commands(runnerId)) {
           const command = JSON.parse(
@@ -239,6 +365,7 @@ async function usageLimitScenario(restart: boolean) {
           handled.add(command.id);
           work.acknowledge(runnerId, command.id);
           if (command.type !== "run") continue;
+          agents.push(command.profile.agent);
           const limited = !limitedCommand;
           if (limited) limitedCommand = command.id;
           const grant = work.issueGrant({
@@ -280,7 +407,12 @@ async function usageLimitScenario(restart: boolean) {
     worktreePath: worktree,
     pawsRoot: root,
     profile: { agent: "claude" as const, model: null },
-    networkGit: git,
+    resolveProfiles: () => ({ profile: { agent: selectedAgent, model: null } }),
+    onEvent: (event: { type: string; text?: string }) => {
+      if (event.type === "progress" && event.text?.startsWith("Paused:")) pauseEvents++;
+    },
+    // GitHub, served from the bare origin, so the run never reaches the network.
+    networkGit: (args: string[]) => git(args.map((arg) => (arg === GITHUB_URL ? origin : arg))),
     signal,
   });
   let shutdownError: unknown;
@@ -317,6 +449,14 @@ async function usageLimitScenario(restart: boolean) {
       .get(limitedCommand);
     return {
       candidateSha,
+      pauseEvents,
+      foreignReady,
+      recoveredBeforePause,
+      agents,
+      finishedAt: Date.now(),
+      activePauses: db
+        .query<{ count: number }, []>("SELECT count(*) AS count FROM usage_pause")
+        .get()!.count,
       limitedAt,
       shutdown: shutdownError,
       detachedCancels,

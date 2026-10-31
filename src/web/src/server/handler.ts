@@ -64,6 +64,7 @@ export interface StatusServerOptions {
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   linearUsage?: LiveStatusOptions["linearUsage"];
+  riskApproval?: LiveStatusOptions["riskApproval"];
   /** Where status API response sizes go. Defaults to the process's per-minute journal line. */
   responseSizes?: ResponseSizeJournal;
   /**
@@ -90,7 +91,7 @@ export function fakeStatusProvider(): StatusProvider {
 const CORS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-  "Access-Control-Allow-Headers": "Accept, Content-Type, If-None-Match, ngrok-skip-browser-warning",
+  "Access-Control-Allow-Headers": "Accept, Content-Type, If-None-Match",
   "Access-Control-Expose-Headers": `ETag, ${GENERATED_AT_HEADER}`,
   "Access-Control-Max-Age": "86400",
 };
@@ -198,6 +199,7 @@ function liveProvider(options?: {
   env?: Record<string, string | undefined>;
   closeoutHome?: string;
   linearUsage?: LiveStatusOptions["linearUsage"];
+  riskApproval?: LiveStatusOptions["riskApproval"];
 }): StatusProvider {
   if (options?.provider) return options.provider;
   if (options?.db) {
@@ -206,6 +208,7 @@ function liveProvider(options?: {
       ...(options.env ? { env: options.env } : {}),
       ...(options.closeoutHome ? { pawsHome: options.closeoutHome } : {}),
       ...(options.linearUsage ? { linearUsage: options.linearUsage } : {}),
+      ...(options.riskApproval ? { riskApproval: options.riskApproval } : {}),
     });
   }
   return { snapshot: () => emptyLiveSnapshot(), item: () => null, checkLog: () => null };

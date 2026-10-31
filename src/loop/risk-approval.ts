@@ -1,3 +1,4 @@
+import { automaticRiskApproval } from "./automatic-risk-approval";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { JOB_KIND, riskLine } from "../core";
@@ -19,6 +20,7 @@ import {
   type RiskFix,
   type WorkItemRecord,
 } from "../db";
+import { journalCaught } from "../journal";
 import type { RiskApproval } from "../merge";
 import { shortCommit } from "../questions";
 import { askWithLink, closeLinkAsksOnHead, linkAskAvailable } from "./link-ask";
@@ -47,7 +49,9 @@ export type FixRisk = { changed: string[]; paths: string[] };
  * Whether head S may merge as far as its risk goes. A normal-tier head, or any head on a Paws
  * whose risk gate is off, needs nothing. A high-risk or unclassified head needs a person's
  * approval of S in Paws, or of an earlier head with the same patch against main (`samePatch`),
- * as after a rebase. A Linear reply never approves, so only `approve` decisions count.
+ * as after a rebase. With automatic approval enabled, clean stored reviews of this exact head
+ * and policy can also satisfy the gate. That evidence never carries over to another head.
+ * A Linear reply never approves, so only `approve` decisions count for manual approvals.
  *
  * A fix Paws made after the latest approval (CI, a review, a comment) keeps that approval when
  * none of the files the fix itself changed since the approved head is a high-risk path. A fix
@@ -65,17 +69,58 @@ export async function riskApprovalFor(
     samePatch: (approved: string, base: string) => Promise<boolean>;
     /** What the fix from `approved` to S changed, against main's `base`. Null when unreadable. */
     fixRisk?: (approved: string, base: string) => Promise<FixRisk | null>;
+    autoApproveHighRisk?: boolean;
+    /** Reports the human approval the lane actually matched, for display only. */
+    onHumanApproval?: (head: string, kind: "exact" | "same_patch" | "fix") => void;
+    /** Current policy digest supplied by the merge caller; unreadable means no automatic approval. */
+    policyDigest?: string | null;
+    policyPaths?: readonly string[] | null;
+    journal?: (line: string) => void;
     now?: number;
   },
 ): Promise<RiskApproval> {
   if (!riskGateOn(input.publicUrl)) return "not_required";
+  const humanApproved = (head: string, kind: "exact" | "same_patch" | "fix") => {
+    try {
+      input.onHumanApproval?.(head, kind);
+    } catch (error) {
+      journalCaught(
+        error,
+        "risk-approval.humanApprovalDisplay",
+        input.itemId,
+        undefined,
+        input.journal,
+      );
+    }
+  };
   const risk = getCandidateRisk(db, input.itemId, input.head);
   if (risk?.tier === "normal") return "not_required";
   const approvals = riskApprovals(db, input.itemId);
-  if (approvals.some((ask) => ask.headCommit === input.head)) return "approved";
+  const exact = approvals.find((ask) => ask.headCommit === input.head);
+  if (exact) {
+    humanApproved(exact.headCommit, "exact");
+    return "approved";
+  }
+  // Recompute from stored evidence on every read. Never persist an automatic approval.
+  if (input.autoApproveHighRisk === true && risk?.tier === "high") {
+    try {
+      if (automaticRiskApproval(db, risk, input).eligible) return "approved";
+    } catch (error) {
+      journalCaught(
+        error,
+        "risk-approval.riskApprovalFor.evidence",
+        input.itemId,
+        undefined,
+        input.journal,
+      );
+    }
+  }
   if (risk === null) return "missing";
   for (const ask of approvals.toReversed())
-    if (await input.samePatch(ask.headCommit, risk.base)) return "approved";
+    if (await input.samePatch(ask.headCommit, risk.base)) {
+      humanApproved(ask.headCommit, "same_patch");
+      return "approved";
+    }
   const latest = approvals.at(-1);
   if (latest === undefined || input.fixRisk === undefined) return "missing";
   const fix = await fixSinceApproval(db, {
@@ -86,7 +131,11 @@ export async function riskApprovalFor(
     fixRisk: input.fixRisk,
     now: input.now ?? Date.now(),
   });
-  return fix !== null && fix.paths.length === 0 ? "approved" : "missing";
+  if (fix !== null && fix.paths.length === 0) {
+    humanApproved(latest.headCommit, "fix");
+    return "approved";
+  }
+  return "missing";
 }
 
 /**

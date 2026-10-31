@@ -1,9 +1,11 @@
 import { tickWithRestarts } from "./helpers";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { expect, test } from "bun:test";
-import { runAgent, type RunAgentOptions } from "../src/acp";
+import { runAgent, runDir, type RunAgentOptions } from "../src/acp";
 import { reviewRequirements } from "../src/closeout";
+import { writeAgentSettings } from "../src/config";
 import { JOB_KIND, MAX_TRANSIENT_RETRIES, systemClock } from "../src/core";
 import { JobLoop, OutboxDispatcher, listJobs, listOutbox, migrate, openDatabase } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -57,12 +59,48 @@ test("a policy that does not parse still asks for Closeout help right away", asy
   expect(result.questions[0]).toContain("Closeout: blocked\n.agents/closeout.yaml: invalid YAML");
 }, 90_000);
 
+for (const scope of ["paths: [src/**]", "minChangedLines: 100"] as const) {
+  test(`a conditional review (${scope}) does not probe an unavailable reviewer before implementation`, async () => {
+    const result = await runPreflight({
+      preparation: true,
+      times: 0,
+      scope,
+      unavailableReviewer: true,
+    });
+    expect(result.state, result.detail).toBe("running");
+    expect(result.implemented, result.detail).toBe(true);
+    expect(result.preparations).toEqual([]);
+    expect(result.questions, result.detail).toEqual([]);
+  }, 90_000);
+}
+
+test("an unconditional review still requires its reviewer to prepare", async () => {
+  const result = await runPreflight({ preparation: true, times: 0, unavailableReviewer: true });
+  expect(result.state, result.detail).toBe("awaiting_input");
+  expect(result.implemented, result.detail).toBe(false);
+  expect(result.preparations.map((input) => input.role)).toEqual(["implementer", "reviewer"]);
+  expect(result.questions.join("\n")).toContain("reviewer preparation failed");
+}, 90_000);
+
+test("reviewer preparation receives the configured fallback without adding one to implementation", async () => {
+  const result = await runPreflight({ preparation: true, times: 0, reviewerFallback: true });
+  expect(result.implemented, result.detail).toBe(true);
+  expect(result.snapshot?.profiles.reviewer.model).toBeNull();
+  expect(result.preparations).toEqual([
+    { role: "implementer", fallbackProfile: undefined },
+    { role: "reviewer", fallbackProfile: { agent: "codex", model: "fallback-review" } },
+  ]);
+}, 90_000);
+
 async function runPreflight(fault: {
   /** The policy read fails with this message. */
   policy?: string;
   /** Remote agent preparation times out. */
   preparation?: boolean;
   times: number;
+  scope?: string;
+  unavailableReviewer?: boolean;
+  reviewerFallback?: boolean;
 }): Promise<{
   state: string | null;
   /** The implementer turn started. Remote runs stop here, since Closeout would also run remotely. */
@@ -70,8 +108,37 @@ async function runPreflight(fault: {
   retries: number[];
   questions: string[];
   detail: string;
+  preparations: Array<Pick<RunAgentOptions, "role" | "fallbackProfile">>;
+  snapshot?: { profiles: { reviewer: { model?: string | null } } };
 }> {
   const layout = await repoLayout("paws-preflight-");
+  if (fault.scope) {
+    const seed = path.join(layout.root, "seed");
+    const policyFile = path.join(seed, ".agents", "closeout.yaml");
+    writeFileSync(
+      policyFile,
+      readFileSync(policyFile, "utf8").replace("    skill:", `    ${fault.scope}\n    skill:`),
+    );
+    execFileSync("git", ["-C", seed, "add", "."]);
+    execFileSync("git", ["-C", seed, "commit", "-m", "scope review"]);
+    execFileSync("git", ["-C", seed, "push", "origin", "HEAD:main"], { stdio: "pipe" });
+    const requirements = reviewRequirements(seed, layout.home);
+    expect(requirements.ok).toBe(true);
+    if (requirements.ok)
+      expect(requirements.items[0]).toMatchObject(
+        fault.scope.startsWith("paths") ? { paths: ["src/**"] } : { minChangedLines: 100 },
+      );
+  }
+  if (fault.reviewerFallback)
+    writeAgentSettings(path.join(layout.pawsRoot, "config.toml"), {
+      defaults: {
+        implementer: { agent: "codex", model: "test-claude-model" },
+        reviewer: { agent: "claude", model: null },
+        reviewerFallback: { agent: "codex", model: "fallback-review" },
+      },
+      projects: [],
+    });
+  const preparations: Array<Pick<RunAgentOptions, "role" | "fallbackProfile">> = [];
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
   const tracker = createFakeTracker([
@@ -119,7 +186,25 @@ async function runPreflight(fault: {
                   remaining -= 1;
                   throw new RemotePreparationTimeout();
                 }
-                if (options.prepareOnly) return runAgent(options);
+                if (options.prepareOnly) {
+                  preparations.push({
+                    role: options.role,
+                    fallbackProfile: options.fallbackProfile,
+                  });
+                  if (fault.unavailableReviewer && options.role === "reviewer")
+                    throw new Error("Claude quota exhausted");
+                  const prepared = await runAgent(options);
+                  return fault.reviewerFallback && options.role === "reviewer"
+                    ? {
+                        ...prepared,
+                        identity: {
+                          session: "fallback-session",
+                          provider: "openai",
+                          model: "fallback-review",
+                        },
+                      }
+                    : prepared;
+                }
                 // The implementer turn started, so preflight passed. Hold the turn until
                 // shutdown, since Closeout would also run on the runner.
                 implemented = true;
@@ -175,9 +260,25 @@ async function runPreflight(fault: {
       await outbox.idle();
       await Bun.sleep(10);
     }
+    const run = db
+      .query<{ id: string }, []>(
+        "SELECT current_run_id AS id FROM work_item WHERE linear_identifier = 'ENG-7'",
+      )
+      .get();
     return {
+      ...(run?.id
+        ? {
+            snapshot: JSON.parse(
+              readFileSync(
+                path.join(runDir(layout.pawsRoot, run.id), "agent-profile.json"),
+                "utf8",
+              ),
+            ),
+          }
+        : {}),
       state: stateOf(db, "ENG-7"),
       implemented,
+      preparations,
       retries: listJobs(db)
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { retry?: number }).retry ?? 0)

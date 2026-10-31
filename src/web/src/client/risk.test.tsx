@@ -126,3 +126,16 @@ describe("Risk card", () => {
     expect(html).not.toMatch(/style="[^"]*width:\s*\d{3,}px/);
   });
 });
+
+for (const automaticApproval of [
+  "Passes automatically: both reviews clean",
+  "Manual approval required: security review has a P2 finding",
+  "Manual approval required: security review is missing",
+  "Manual approval required: changes the risk rules",
+  "Manual approval required: automatic approval is off",
+  "Manual approval required",
+]) {
+  test(`the card preserves the shared gate explanation: ${automaticApproval}`, () => {
+    expect(card(page({ ...high, automaticApproval }))).toContain(automaticApproval);
+  });
+}

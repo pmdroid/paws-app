@@ -41,7 +41,7 @@ export function riskCard(risk: StatusItemRisk | null | undefined): string {
         )
         .join("")}</ul>`
     : "";
-  return `<section id="risk-tier" class="card risk-card" aria-labelledby="risk-heading"><div class="row wrap"><h2 id="risk-heading">Risk</h2>${tier}</div><p>${summary}</p>${paths}<p class="risk-review">${securityReviewLine(risk)}</p><p class="muted">A path is high-risk when a glob in ${LISTS.settings} or in the repository's ${LISTS.file} matches it.</p></section>`;
+  return `<section id="risk-tier" class="card risk-card" aria-labelledby="risk-heading"><div class="row wrap"><h2 id="risk-heading">Risk</h2>${tier}</div><p>${summary}</p>${paths}${risk.automaticApproval || risk.tier === "high" ? `<p>${esc(risk.automaticApproval ?? "Manual approval required")}</p>` : ""}<p class="risk-review">${securityReviewLine(risk)}</p><p class="muted">A path is high-risk when a glob in ${LISTS.settings} or in the repository's ${LISTS.file} matches it.</p></section>`;
 }
 
 /** "Security review skipped: no high-risk path", or what the review did. */

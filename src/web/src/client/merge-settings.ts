@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import type {
+  CommentWait,
   HighRiskRepository,
   HotFile,
   MainMoved,
@@ -193,7 +194,9 @@ export function renderMergeSettings(view: View): string {
           : '<p class="sub">No issue rules.</p>'
       }
       <div class="settings-add"><label for="merge-rule-project">New rule</label>${ruleProject}${ruleLabel}<div class="row"><button class="btn" type="button" data-merge="add-rule">Add rule</button></div></div></div></section>
+      ${data.commentWait ? commentWaitSection(data.commentWait) : ""}
       ${riskGateSection(data.riskGate)}
+      ${data.autoApproveHighRisk === undefined ? "" : `<section class="settings-section"><div class="settings-label"><h2>High-risk approval</h2><p class="sub" id="auto-approve-high-risk-help">Off by default. When on, a high-risk change can merge without a person only when Closeout accepted the exact commit, neither security nor independent review has a P2-or-worse finding, including in pre-existing code, and no rule probe failed. A new commit needs its own reviews. Changes to the risk rules or agent instructions still need a person.${data.riskGate?.on === true ? "" : " Turn on the risk gate before changing this setting."}</p></div><div class="col"><label><input type="checkbox" name="auto-approve-high-risk" aria-describedby="auto-approve-high-risk-help"${data.autoApproveHighRisk ? " checked" : ""}${data.riskGate?.on === true ? "" : " disabled"}> Let high-risk changes through when both reviews are clean</label></div></section>`}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
       ${data.hotFiles ? hotFileSection(data.hotFiles) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
@@ -214,6 +217,24 @@ function hotFileSection(files: readonly HotFile[]): string {
 }
 
 /** Whether high-risk pull requests wait for an approval in Paws, and why not. */
+function commentWaitSection(wait: CommentWait): string {
+  const field = (name: string, id: string, title: string, value: number, help: string) =>
+    `<div class="settings-field"><label for="${id}">${title}</label><input id="${id}" name="${name}" type="number" inputmode="numeric" min="0" max="3600" step="1" value="${value}" aria-describedby="${id}-help"><small class="sub" id="${id}-help">${help}</small></div>`;
+  return `<section class="settings-section" id="merge-comment-wait"><div class="settings-label"><h2>Pull request comments</h2><p class="sub">How long Paws collects review comments, changes-requested reviews and bot reviews on a pull request before it sends them to the agent in one fix round. Applies to the next comment.</p></div><div class="col"><div class="settings-controls">${field(
+    "comment-quiet",
+    "merge-comment-quiet",
+    "Quiet time (seconds)",
+    wait.quietSeconds,
+    "Wait this long after the latest comment or review.",
+  )}${field(
+    "comment-max",
+    "merge-comment-max",
+    "Longest wait (seconds)",
+    wait.maxWaitSeconds,
+    "Send them anyway this long after the first one, even while comments keep coming.",
+  )}</div></div></section>`;
+}
+
 function riskGateSection(gate: MergeSettingsView["riskGate"]): string {
   if (!gate) return "";
   const body = gate.on
@@ -228,9 +249,13 @@ function riskGateSection(gate: MergeSettingsView["riskGate"]): string {
  */
 export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
   return {
+    ...(data.autoApproveHighRisk === undefined
+      ? {}
+      : { autoApproveHighRisk: data.autoApproveHighRisk }),
     default: data.default,
     projects: data.projects,
     rules: data.rules,
+    ...(data.commentWait ? { commentWait: data.commentWait } : {}),
     ...(data.highRiskRepositories
       ? {
           highRiskPaths: data.highRiskRepositories.map((entry) => ({
@@ -315,6 +340,19 @@ export function createMergeSettings(invalidate: () => void): {
       const project = data.projects.find((entry) => entry.id === rule.project);
       return { ...base, ...read(scope, effective(rule, effective(project, data.default))) };
     });
+    if (data.autoApproveHighRisk !== undefined)
+      data.autoApproveHighRisk =
+        root!.querySelector<HTMLInputElement>('[name="auto-approve-high-risk"]')?.checked ?? false;
+    if (data.commentWait) {
+      const seconds = (name: string, fallback: number) => {
+        const text = value(name)?.trim();
+        return text === undefined || text === "" ? fallback : Number(text);
+      };
+      data.commentWait = {
+        quietSeconds: seconds("comment-quiet", data.commentWait.quietSeconds),
+        maxWaitSeconds: seconds("comment-max", data.commentWait.maxWaitSeconds),
+      };
+    }
     data.highRiskRepositories = data.highRiskRepositories?.map((entry, index) => {
       const text = form.querySelector<HTMLTextAreaElement>(`[name="risk-${index}"]`)?.value;
       return text === undefined ? entry : { ...entry, paths: riskGlobs(text) };

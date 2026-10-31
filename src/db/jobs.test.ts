@@ -7,6 +7,7 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   bindWorkItemRepository,
+  actionableDue,
   claimJobSql,
   claimNextJob,
   completeJob,
@@ -69,6 +70,21 @@ describe("job queue", () => {
     expect(claim(db, clock, ["tick"])).toBeNull();
     clock.advance(5_000);
     expect(claim(db, clock, ["tick"])?.queue).toBe("tick");
+  });
+
+  test("actionable due work matches what a claim can take", () => {
+    const { db, clock } = queue();
+    const due = enqueueJob(db, { queue: "tick", runAt: clock.now() - 1_000, now: clock.now() });
+    enqueueJob(db, { queue: "tick", runAt: clock.now() + 5_000, now: clock.now() });
+    enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: { itemId: "unreserved" },
+      runAt: clock.now() - 60_000,
+      now: clock.now(),
+    });
+    expect(actionableDue(db, clock.now())).toEqual({ count: 1, oldestRunAt: clock.now() - 1_000 });
+    expect(claim(db, clock, ["tick"])?.id).toBe(due);
+    expect(actionableDue(db, clock.now())).toEqual({ count: 0, oldestRunAt: null });
   });
 
   test("an unregistered queue does not block a job this process can run", () => {
@@ -217,6 +233,41 @@ describe("job queue", () => {
       ["eng-1", id, clock.now()],
     );
     expect(claim(db, clock, [JOB_KIND.start])?.id).toBe(id);
+  });
+
+  test("a queued start with old capacity bookkeeping still needs admission", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: {
+        itemId: "eng-1",
+        capacityWait: { since: clock.now(), attempt: 0, runnerIds: ["busy"] },
+      },
+      now: clock.now(),
+    });
+    expect(claim(db, clock, [JOB_KIND.start])).toBeNull();
+    db.run(
+      "INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,paths,hot,created_at) VALUES(?,?,'*','repo','[]',0,?)",
+      ["eng-1", id, clock.now()],
+    );
+    expect(claim(db, clock, [JOB_KIND.start])?.id).toBe(id);
+    db.close();
+  });
+
+  test("a start parked for a runner slot is claimed again after the item is running", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    beginImplementRun(db, "eng-1", clock.now());
+    const parked = enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: {
+        itemId: "eng-1",
+        capacityWait: { since: clock.now(), attempt: 0, runnerIds: ["runner-1"] },
+      },
+      now: clock.now(),
+    });
+    expect(claim(db, clock, [JOB_KIND.start])?.id).toBe(parked);
   });
 
   test("the in-flight item can resume while another start waits", () => {

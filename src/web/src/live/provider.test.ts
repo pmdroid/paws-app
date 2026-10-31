@@ -14,6 +14,8 @@ import {
   finishCloseoutProgress,
   insertLinkAsk,
   insertQueuedItem,
+  reviewFindingKey,
+  saveReviewFindingIssue,
   LINEAR_WEBHOOK_FIX,
   joinMergeQueue,
   keepTaskMergeSettings,
@@ -1080,6 +1082,28 @@ describe("live status provider", () => {
       );
       finishCloseoutProgress(db, item.id, { ...identity, policyPath: null }, "rejected", at);
     }
+    // An issue was filed from the pre-existing finding, on this item or another one.
+    bindWorkItemRepository(db, item.id, {
+      owner: "acme",
+      repo: "widgets",
+      remoteUrl: "https://github.com/acme/widgets.git",
+    });
+    saveReviewFindingIssue(db, {
+      key: reviewFindingKey({
+        repository: "acme/widgets",
+        location: "src/legacy.ts:3",
+        text: "old code",
+      })!,
+      repository: "acme/widgets",
+      path: "src/legacy.ts",
+      lines: "3",
+      linearIssueId: "issue-uuid",
+      identifier: "PAS-123",
+      url: "https://linear.app/kyku/issue/PAS-123",
+      itemId: "ENG-other",
+      filedBy: null,
+      filedAt: now,
+    });
     const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000), pawsHome });
     // Findings are only in the item detail, never in the list.
     expect(JSON.stringify(provider.snapshot())).not.toContain("token leaks");
@@ -1102,6 +1126,10 @@ describe("live status provider", () => {
       ["src/legacy.ts:3", true, false, "new"],
     ]);
     expect(latest.fixed.map((finding) => finding.explanation)).toEqual(["<b>stale</b>"]);
+    expect(latest.findings.map((finding) => finding.filed)).toEqual([
+      undefined,
+      { identifier: "PAS-123", url: "https://linear.app/kyku/issue/PAS-123" },
+    ]);
   });
 
   test("the item detail carries one issue's Closeout attempts without check logs", async () => {
@@ -1276,6 +1304,7 @@ describe("live status provider", () => {
         { path: "src/auth/session.ts", lists: ["settings", "file"] },
       ],
       securityReview: { state: "passed", detail: null, head },
+      automaticApproval: "Manual approval required",
     });
     expect(provider.item("ENG-12")?.risk).toMatchObject({
       tier: "normal",

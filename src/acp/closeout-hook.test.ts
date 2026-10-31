@@ -13,7 +13,7 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
-import { startHostToolBridge } from "./ask-team";
+import { startAskTeamBridge } from "./ask-team";
 import {
   CLOSEOUT_FINISH_UNAVAILABLE,
   CLOSEOUT_STOP_TIMEOUT_SECONDS,
@@ -230,7 +230,7 @@ async function hookAgainst(
   const runDirectory = join(root, "run");
   const socketPath = join(runDirectory, "ask-team.sock");
   const controller = new AbortController();
-  const bridge = await startHostToolBridge({
+  const bridge = await startAskTeamBridge({
     socketPath,
     context: { itemId: "ENG-1", runId: name, role: "implementer", worktreePath: worktree },
     signal: controller.signal,
@@ -287,7 +287,7 @@ async function finishTwice(root: string, openFirst: boolean): Promise<string[]> 
   const runDirectory = join(root, "run");
   const socketPath = join(runDirectory, "ask-team.sock");
   const controller = new AbortController();
-  const bridge = await startHostToolBridge({
+  const bridge = await startAskTeamBridge({
     socketPath,
     context: { itemId: "ENG-1", runId: "pr", role: "implementer", worktreePath: worktree },
     pullRequest: { async update() {} },

@@ -9,6 +9,7 @@ import {
   finishCloseoutProgress,
   insertQueuedItem,
   listReviewFindings,
+  recordReviewFindings,
   markReviewFindingFiled,
   reviewFindingItems,
   setReviewFindingStatus,
@@ -424,6 +425,40 @@ test("the migration enqueues the backfill job only where Closeout accepted somet
     expect(
       db.query("SELECT COUNT(*) AS n FROM job WHERE queue = 'review-findings.backfill'").get(),
     ).toEqual({ n: 0 });
+  } finally {
+    db.close();
+  }
+});
+
+test("finding report filters work by head alone and item", () => {
+  const db = tempDb();
+  try {
+    for (const [id, head, at] of [
+      ["item-a", "head-a", 10],
+      ["item-b", "head-b", 20],
+    ] as const) {
+      item(db, id);
+      recordReviewFindings(db, {
+        itemId: id,
+        repository: "acme/platform",
+        head,
+        seenAt: at,
+        findings: [
+          {
+            severity: "P2",
+            review: "security-review",
+            location: `${id}.ts:1`,
+            text: id,
+            bugClass: "guard",
+            why: "below failOn",
+          },
+        ],
+        reviewed: [],
+      });
+    }
+    expect(listReviewFindings(db, { head: "head-a" }).map((f) => f.text)).toEqual(["item-a"]);
+    expect(listReviewFindings(db, { itemId: "item-b" }).map((f) => f.text)).toEqual(["item-b"]);
+    expect(listReviewFindings(db, { itemId: "item-a", head: "head-b" })).toEqual([]);
   } finally {
     db.close();
   }

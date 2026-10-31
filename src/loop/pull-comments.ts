@@ -5,20 +5,29 @@ import {
   getPullReview,
   getWorkItem,
   immediate,
+  pendingChangeRequests,
   pendingPullComments,
   recordPullComment,
   recordReviewEscape,
   settlePullComments,
   type PullCommentRecord,
+  type PullFeedbackWait,
   type WorkItemRecord,
 } from "../db";
 import type { ReviewThread } from "../github";
 import { ask, restart } from "./operations";
 import {
-  REVIEW_FIX_INSTRUCTION,
+  REVIEW_REPLY_MARKER,
+  recordReplyTargets,
+  replyListSection,
+  replyTargets,
+} from "./review-replies";
+import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
+import {
   clip,
   closeoutFindingsNote,
   itemForBranch,
+  postPullFeedback,
   threadLines,
   type PullReviewCapabilities,
   type PullReviewStep,
@@ -27,7 +36,7 @@ import {
 const ENDED = new Set(["cancelled", "merged", "completed", "failed", "manual"]);
 const DIGEST_CHARS = 12_000;
 
-export const COMMENT_FIX_INSTRUCTION = `A comment can be a question, a note or a status line rather than a request; answer nothing and change nothing for those. ${REVIEW_FIX_INSTRUCTION}`;
+export const COMMENT_FIX_INSTRUCTION = `A comment can be a question, a note or a status line rather than a request; change nothing for those and answer them in the reply list. ${REVIEW_FIX_INSTRUCTION}`;
 
 /** Which comments never reach the agent. */
 export type PullCommentFilter = {
@@ -37,6 +46,8 @@ export type PullCommentFilter = {
   appLogin(repository: string): string | null;
   /** Lowercased bot logins whose comments only report status on `owner/repo`. */
   ignoredBots(repository: string): readonly string[];
+  /** How long comments and reviews are collected before one restart; the defaults when missing. */
+  commentWait?(): PullFeedbackWait;
 };
 
 const NO_FILTER: PullCommentFilter = {
@@ -92,6 +103,8 @@ export function recordCommentDelivery(
     if (filter.ignoredBots(name).includes(login)) return false;
   }
   const text = typeof comment.body === "string" ? comment.body : "";
+  // Paws' own replies to handed-off comments, posted with a token that is not the App's.
+  if (text.includes(REVIEW_REPLY_MARKER)) return false;
   if (event === "issue_comment") {
     const issue = record(payload.issue);
     if (typeof issue.number !== "number" || issue.pull_request === undefined) return false;
@@ -101,18 +114,22 @@ export function recordCommentDelivery(
       // which also leaves out every fork.
       const item = itemForPull(db, owner, repo, pullNumber);
       if (item === null) return false;
-      return recordPullComment(db, {
-        source: "conversation",
-        commentId,
-        itemId: item.id,
-        pullNumber,
-        reviewId: null,
-        author,
-        body: text,
-        path: null,
-        line: null,
-        receivedAt: now,
-      });
+      return recordPullComment(
+        db,
+        {
+          source: "conversation",
+          commentId,
+          itemId: item.id,
+          pullNumber,
+          reviewId: null,
+          author,
+          body: text,
+          path: null,
+          line: null,
+          receivedAt: now,
+        },
+        filter.commentWait?.(),
+      );
     });
   }
   const pull = record(payload.pull_request);
@@ -135,18 +152,22 @@ export function recordCommentDelivery(
     if (opened !== null && opened.pullNumber !== pullNumber) return false;
     const reviewId = inline ? comment.pull_request_review_id : commentId;
     const line = comment.line ?? comment.original_line;
-    return recordPullComment(db, {
-      source: inline ? "inline" : "review",
-      commentId,
-      itemId: item.id,
-      pullNumber,
-      reviewId: typeof reviewId === "number" ? reviewId : null,
-      author,
-      body: text,
-      path: inline && typeof comment.path === "string" ? comment.path : null,
-      line: inline && typeof line === "number" ? line : null,
-      receivedAt: now,
-    });
+    return recordPullComment(
+      db,
+      {
+        source: inline ? "inline" : "review",
+        commentId,
+        itemId: item.id,
+        pullNumber,
+        reviewId: typeof reviewId === "number" ? reviewId : null,
+        author,
+        body: text,
+        path: inline && typeof comment.path === "string" ? comment.path : null,
+        line: inline && typeof line === "number" ? line : null,
+        receivedAt: now,
+      },
+      filter.commentWait?.(),
+    );
   });
 }
 
@@ -188,6 +209,8 @@ export async function handlePullComments(
     return "dropped";
   }
   if (settleCovered(db, open, caps.now()) === open.length) return "done";
+  // A changes-requested review still waiting takes these comments with it.
+  if (pendingChangeRequests(db, itemId).length > 0) return "wait";
   const pullNumber = open.at(-1)!.pullNumber;
   if (item.state === "merge_queue") {
     // Before waiting on anything: GitHub's own merge queue does not wait for Paws.
@@ -218,15 +241,29 @@ export async function handlePullComments(
     if (rounds < limit) {
       const first = batch[0]!;
       const jobKey = `review:${current.id}:${first.source}:${first.commentId}`;
+      const targets = replyTargets({ pullNumber, threads, reviews: [], comments: batch });
       const jobId = restart(db, current, {
         reason: "review",
-        body: [digest, closeoutFindingsNote(findings, batch), COMMENT_FIX_INSTRUCTION]
+        body: [
+          digest,
+          closeoutFindingsNote(findings, batch),
+          COMMENT_FIX_INSTRUCTION,
+          replyListSection(targets),
+        ]
           .filter((part) => part !== "")
           .join("\n\n"),
         jobKey,
         now,
       });
       if (jobId === null) return "wait";
+      postPullFeedback(db, {
+        sessionId: caps.session(current),
+        item: current,
+        key: jobKey,
+        body: `${authors(batch)} commented on pull request #${pullNumber}. The agent is working on the comments.`,
+        now,
+      });
+      recordReplyTargets(db, current.id, jobKey, targets, now);
       if (current.acceptedHead !== null)
         recordReviewEscape(db, {
           triggerKey: jobKey,

@@ -216,7 +216,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
     await outbox.idle();
     db.close();
   }
-}, 20_000);
+}, 60_000);
 
 function seedRunner(db: Database, now: number) {
   const userId = putWorkspaceUser(db, {

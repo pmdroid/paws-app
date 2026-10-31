@@ -5,12 +5,20 @@ export type MergeChoice = { order: MergeOrder; mainMoved: MainMoved };
 export type MergeProject = Partial<MergeChoice> & { id: string };
 export type MergeRule = Partial<MergeChoice> & { project?: string; label: string };
 export type MergeSettings = {
+  autoApproveHighRisk?: boolean;
   default: MergeChoice;
   projects: MergeProject[];
   rules: MergeRule[];
   /** Replaces every repository's high-risk globs; a repository left out has none. */
   highRiskPaths?: { repository: string; paths: string[] }[];
+  /**
+   * How long Paws collects pull request comments and changes-requested reviews before it hands
+   * them to the agent together. Missing from an engine without the setting; the page then leaves
+   * it alone.
+   */
+  commentWait?: CommentWait;
 };
+export type CommentWait = { quietSeconds: number; maxWaitSeconds: number };
 
 /**
  * One repository under High-risk paths: `paths` from Paws settings, and its own

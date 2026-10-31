@@ -28,7 +28,8 @@ import {
   type RootFilesLoad,
 } from "./policy/load";
 import type { GitBlob, GitReader } from "./policy/git";
-import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
+import { recheckDigest } from "./policy/canonical";
+import { loadHomePolicy, unknownKeysWarning, type TreePolicy } from "./policy/resolve";
 import { isPreExisting, type ChangedLines } from "./review/changed";
 import { earlierFindings } from "./review/earlier";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
@@ -257,6 +258,8 @@ export function reviewRequirements(
         independence: Independence;
         parallel: boolean;
         failOn: Severity;
+        paths?: string[];
+        minChangedLines?: number;
       }>;
     }
   | { ok: false; message: string } {
@@ -266,12 +269,14 @@ export function reviewRequirements(
     ok: true,
     items: loaded.policy.items
       .filter((item): item is ResolvedReview => item.kind === "review")
-      .map(({ id, gate, independence, parallel, failOn }) => ({
+      .map(({ id, gate, independence, parallel, failOn, paths, minChangedLines }) => ({
         id,
         gate,
         independence,
         parallel: parallel === true,
         failOn,
+        ...(paths !== undefined ? { paths } : {}),
+        ...(minChangedLines !== undefined ? { minChangedLines } : {}),
       })),
   };
 }
@@ -504,6 +509,29 @@ export function candidatePolicyDigest(
   const loaded = loadOrigin(repo, home, policyRoot, checkoutExclusions);
   return loaded.ok ? (loaded.policy.digest ?? "") : null;
 }
+
+/**
+ * {@link candidatePolicyDigest} with the digest of the checks marked `recheck: true` under it:
+ * `""` when none is. Null when the policy cannot be read.
+ */
+export function candidatePolicyDigests(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+  checkoutExclusions: readonly string[] = [],
+): PolicyDigests | null {
+  const loaded = loadOrigin(repo, home, policyRoot, checkoutExclusions);
+  if (!loaded.ok) return null;
+  if (loaded.policy.source === "none") return { digest: "", recheck: "", paths: [] };
+  return {
+    digest: loaded.policy.digest,
+    recheck: recheckDigest(loaded.policy),
+    paths: loaded.policy.files.map((file) => file.path),
+  };
+}
+
+/** A policy's digest and the digest of its checks marked `recheck: true`. */
+export type PolicyDigests = { digest: string; recheck: string; paths?: readonly string[] };
 
 /** Judge the evidence already stored for this candidate. Does not run commands. */
 export async function decision(input: DecisionInput): Promise<DecisionDocument> {
@@ -980,7 +1008,12 @@ function loadTree(repo: string): ReturnType<typeof loadPolicy> {
   const loaded = loadHomePolicy(repo);
   if (!loaded.ok) return { ok: false, source: "repo", message: loaded.message };
   if (loaded.absent) return { ok: true, policy: ABSENT, warnings: [] };
-  return { ok: true, policy: treePresent(loaded.policy), warnings: [] };
+  const warning = unknownKeysWarning(loaded.policy);
+  return {
+    ok: true,
+    policy: treePresent(loaded.policy),
+    warnings: warning === undefined ? [] : [warning],
+  };
 }
 
 function treePresent(policy: TreePolicy): ResolvedPolicy {

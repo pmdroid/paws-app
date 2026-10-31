@@ -980,7 +980,7 @@ function noteReview(
   attempt: number | null,
   reviewEvidencePath: string | null = null,
   measured?: { durationMs: number; tokens: number | null },
-  marks?: Pick<CloseoutProgressStep, "failOn" | "preExisting">,
+  marks?: Pick<CloseoutProgressStep, "failOn" | "preExisting" | "findingSeverities">,
 ): void {
   const running = state === "running" || state === "pending";
   input.progress?.step(identity, {
@@ -1041,6 +1041,7 @@ function publishReviews(
       reviewEvidencePath,
       metrics.get(item.id),
       {
+        ...(found ? { findingSeverities: found.findings.map((finding) => finding.severity) } : {}),
         failOn: failOn.get(item.id) ?? null,
         preExisting: found ? preExistingIndexes(found) : null,
       },

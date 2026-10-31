@@ -6,7 +6,7 @@ To have Paws make and enroll an exe.dev VM for you, including on a Paws reachabl
 
 ## Prepare Paws and the host
 
-Set up [HTTPS workspace access](workspace-access.md) on the Paws machine and sign in as a workspace owner or administrator. The first workspace is created when a Linear workspace administrator authorizes Paws.
+Set up [HTTPS workspace access](workspace-access.md) on the Paws machine and sign in as a workspace admin. The first workspace is created when a Linear workspace administrator authorizes Paws.
 
 Initialize the runner authority once on the Paws machine, using the same Paws home as its service:
 
@@ -34,7 +34,7 @@ The installer selects the AMD64 or ARM64 package from the latest GitHub release,
 curl -fsSL https://get.paws.boo | sudo sh -s -- 1.2.3
 ```
 
-Package contents and upgrade behavior are in [Install a signed release](implementation/remote-hosts.md#install-a-signed-release).
+Package contents and upgrade behavior are in `deploy/linux`: the release manifest, the signed package builder, and the installer.
 
 ## Configure the runner
 
@@ -53,7 +53,7 @@ JSON
 
 `controlPlaneUrl` is the dashboard's HTTPS origin. `runnerApiUrl` is the same control plane's runner listener. Each URL contains only the scheme, hostname and optional port. `allowedRepositories` lists the exact GitHub `owner/repository` names this host may execute.
 
-`concurrency` sets the most simultaneous tasks this host accepts, from 1 to 16, and defaults to 2. Each task has its own private workspace. The value is the host's ceiling: change it in `/etc/paws-runner/config.json` and restart `paws-runner.service` to apply it. Below that ceiling, workspace owners and admins set the runner's concurrency on its runner page. Paws returns that value in the heartbeat reply and the runner applies it to new work right away, with no restart. Lowering it does not stop running work; the runner takes no new work until it is under the new limit. The runner reports its ceiling and its applied value with each authenticated heartbeat. Runner releases from before this change ignore the setting and keep their config value. Pull request merges remain serialized.
+`concurrency` sets the most simultaneous tasks this host accepts, from 1 to 16, and defaults to 2. Each task has its own private workspace. The value is the host's ceiling: change it in `/etc/paws-runner/config.json` and restart `paws-runner.service` to apply it. Below that ceiling, workspace admins set the runner's concurrency on its runner page. Paws returns that value in the heartbeat reply and the runner applies it to new work right away, with no restart. Lowering it does not stop running work; the runner takes no new work until it is under the new limit. The runner reports its ceiling and its applied value with each authenticated heartbeat. Runner releases from before this change ignore the setting and keep their config value. Pull request merges remain serialized.
 
 For a private server certificate authority, add `serverCa` containing its PEM certificate text as a JSON string. Certificates issued by a publicly trusted authority use the default trust store.
 
@@ -78,7 +78,7 @@ Follow the provider's browser instructions. Provider credentials stay in `/var/l
 
 ## Add the host
 
-1. Open your Paws dashboard at `https://paws.example.com:8787/status/runners` and sign in. Any workspace member who is not an observer can add a host and owns the runner it adds.
+1. Open your Paws dashboard at `https://paws.example.com:8787/status/runners` and sign in. Any workspace member can add a host and owns the runner it adds.
 2. Select **Add a runner**, enter the name you want to see in Paws, and select **Create command**.
 3. Copy the command and run it on the VM. It installs the runner, writes `/etc/paws-runner/config.json` for this Paws, stores a single-use enrollment token in a root-owned mode 0600 file, enrolls, and starts `paws-runner.service`.
 
@@ -110,3 +110,18 @@ For daemon errors, inspect its journal on the VM:
 ```sh
 sudo journalctl -u paws-runner.service -n 100 --no-pager
 ```
+
+## Working through a Paws outage
+
+Runner 0.1.55 keeps working while Paws cannot be reached. Deploy Paws's lease-credit
+support before upgrading runners. The 30-minute budget counts monotonic awake work;
+sleep, wall-clock jumps and idle waits do not spend it. The stop deadline remains
+capped by 30 minutes and command expiry. Helpers retain their signed deadlines.
+
+A missing lease or fence stops the worker immediately. Network failures use the
+offline budget. Events and results remain local until accepted, including across
+runner restarts. Pending results remain in heartbeats until delivered. Only a
+fence refusal or HTTP 409 ends retries; other 4xx and parse errors stay retryable.
+Transcript replay validates the consumed bytes. Optional session uploads have a
+five-attempt bound. Result retries renew grants, back off up to one minute, and
+reuse the execution and command identifiers so Paws recognizes repeated delivery.

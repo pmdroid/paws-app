@@ -6,8 +6,10 @@ import {
   getLinearSession,
   immediate,
   runnerCancelPending,
-  runnerHasCapacity,
+  runnerHelperAvailability,
+  yieldFindingGroupHelpers,
   workspaceSessionIds,
+  workspaceMember,
 } from "../db";
 import {
   RunnerCommandSchema,
@@ -49,7 +51,12 @@ export function createRunnerHelpers(options: {
     if (!row) throw new HelperFencedError("Runner helper identity is unavailable");
     return row;
   }
-  function scope(runnerId: string, sessionId: string, generation: number) {
+  function scope(
+    runnerId: string,
+    sessionId: string,
+    generation: number,
+    purpose?: HelperCommand["purpose"],
+  ) {
     const runner = identity(runnerId);
     const session = getLinearSession(db, sessionId);
     const installation = db
@@ -57,9 +64,12 @@ export function createRunnerHelpers(options: {
         "SELECT oauth_client_id AS clientId FROM linear_session WHERE session_id=?",
       )
       .get(sessionId);
+    const grouping = purpose === "finding_groups";
+    const member = grouping ? workspaceMember(db, runner.workspaceId, runner.userId) : null;
     if (
+      (grouping && (!member?.active || !["admin", "owner"].includes(member.role))) ||
       !session ||
-      session.stoppedAt !== null ||
+      (!grouping && session.stoppedAt !== null) ||
       session.generation !== generation ||
       !installation?.clientId ||
       !workspaceSessionIds(db, runner.workspaceId, runner.userId, installation.clientId).includes(
@@ -90,7 +100,12 @@ export function createRunnerHelpers(options: {
       command.expiresAt <= now()
     )
       throw new HelperFencedError("Runner helper command is obsolete");
-    const runner = scope(row.runnerId, command.sessionId, command.sessionGeneration);
+    const runner = scope(
+      row.runnerId,
+      command.sessionId,
+      command.sessionGeneration,
+      command.purpose,
+    );
     if (runner.fence !== row.runnerFence || runner.workspaceId !== row.workspaceId)
       throw new HelperFencedError("Runner helper identity changed");
     return { row, command, envelope };
@@ -106,17 +121,13 @@ export function createRunnerHelpers(options: {
       return immediate(db, () => {
         const session = getLinearSession(db, input.sessionId);
         if (!session) throw new HelperFencedError("Linear helper session is unavailable");
-        const runner = scope(input.runnerId, input.sessionId, session.generation);
+        const runner = scope(input.runnerId, input.sessionId, session.generation, input.purpose);
         if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
         if (runnerCancelPending(db, input.runnerId, now()))
           throw new Error("Runner cancellation teardown is still pending");
         if (
-          db
-            .query(
-              "SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>? LIMIT 1",
-            )
-            .get(input.runnerId, now()) ||
-          !runnerHasCapacity(db, input.runnerId, now())
+          !runnerHelperAvailability(db, input.runnerId, now(), input.purpose !== "finding_groups")
+            .available
         )
           throw new Error("Runner is busy");
         const at = now();
@@ -127,13 +138,15 @@ export function createRunnerHelpers(options: {
           workspaceId: runner.workspaceId,
           sessionGeneration: session.generation,
           issuedAt: at,
-          expiresAt: at + 60_000,
+          expiresAt: at + (input.purpose === "finding_groups" ? 600_000 : 60_000),
         }) as HelperCommand;
         const envelope = signRunnerCommand({
           keyId: options.keyId,
           privateKey: options.privateKey,
           command,
         });
+        // Validate and sign first. Fencing and admission commit together, only on this runner.
+        if (input.purpose !== "finding_groups") yieldFindingGroupHelpers(db, input.runnerId, at);
         db.run(
           "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES(?,?,?,?,?,?,?,?)",
           [

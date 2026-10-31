@@ -300,7 +300,8 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     if (getRunnerSetupHold(db, item.id) && current.state === "queued") return true;
     return listJobs(db).some(
       (job) =>
-        job.queue === JOB_KIND.resume &&
+        (job.queue === JOB_KIND.resume ||
+          (job.payload as { capacityWait?: unknown }).capacityWait !== undefined) &&
         job.status === "pending" &&
         (job.payload as { itemId?: string }).itemId === item.id,
     );
@@ -421,9 +422,20 @@ test("a delegator whose runner is only busy still waits for capacity", async () 
     expect(
       fixture
         .itemJobs()
-        .filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
+        .filter(
+          (job) =>
+            job.status === "pending" &&
+            (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
+        )
         .map((job) => (job.payload as { capacityWait?: unknown }).capacityWait),
-    ).toEqual([{ since: expect.any(Number), attempt: 0, runnerIds: [fixture.memberRunner] }]);
+    ).toEqual([
+      {
+        since: expect.any(Number),
+        attempt: 0,
+        runnerIds: [fixture.memberRunner],
+        online: expect.any(Array),
+      },
+    ]);
     expect(fixture.thoughts().join("\n")).not.toContain("runner Paws can use");
   } finally {
     await fixture.close();
@@ -438,9 +450,15 @@ test("a delegator whose own runner is offline waits for it instead of hearing th
     expect(
       fixture
         .itemJobs()
-        .filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
+        .filter(
+          (job) =>
+            job.status === "pending" &&
+            (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
+        )
         .map((job) => (job.payload as { capacityWait?: unknown }).capacityWait),
-    ).toEqual([{ since: expect.any(Number), attempt: 0, runnerIds: [] }]);
+    ).toEqual([
+      { since: expect.any(Number), attempt: 0, runnerIds: [], online: expect.any(Array) },
+    ]);
     expect(fixture.thoughts().join("\n")).not.toContain("runner Paws can use");
   } finally {
     await fixture.close();

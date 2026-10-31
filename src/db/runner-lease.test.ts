@@ -3,6 +3,10 @@ import { FakeClock, type Checkpoint } from "../core";
 import { RUNNER_LEASE_GRACE_MS } from "../runner-protocol";
 import {
   beginImplementRun,
+  applyWorkItemEvent,
+  closeExpiredRunnerLeases,
+  enqueueJob,
+  claimNextJob,
   halt,
   getRun,
   getWorkItem,
@@ -13,6 +17,8 @@ import {
   runnerHasCapacity,
   runnerLeaseLive,
   runnerOccupancy,
+  runnerSlotFree,
+  slotWaitRunners,
   runnerSlotsHeldBetweenCommands,
   runnerWorkSettled,
   runnerHoldsRunWork,
@@ -87,11 +93,69 @@ describe("the runner lease grace", () => {
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
   });
 
-  test("capacity frees the lease past the grace and holds the slot for the active run", () => {
-    const { clock, db } = leased();
+  test("capacity frees the lease past the grace and closes the run that never ended", () => {
+    const { clock, db, run, item } = leased();
     clock.advance(PAST);
     expect(runnerOccupancy(db, "runner", clock.now())).toEqual({ capacity: 1, occupied: 0 });
+    expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(0);
+    // Counting is read-only, including the caller's excluded run.
+    expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), run.id)).toBe(0);
+    expect(getRun(db, run.id)?.status).toBe("active");
+    expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([run.id]);
+    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect(getWorkItem(db, item.id)?.state).toBe("recovering");
+    expect(
+      db
+        .query<{ endedAt: number | null }, [string]>(
+          "SELECT ended_at AS endedAt FROM runner_work WHERE run_id=?",
+        )
+        .get(run.id)?.endedAt,
+    ).toBe(clock.now());
+  });
+
+  test("the sweep leaves expired work to its live placement owner", () => {
+    const { db, clock, run } = leased();
+    const item = getRun(db, run.id)!;
+    enqueueJob(db, { queue: "run.resume", payload: { itemId: item.itemId }, now: clock.now() });
+    const job = claimNextJob(db, {
+      now: clock.now(),
+      leaseMs: PAST + 60_000,
+      queues: ["run.resume"],
+    })!;
+    expect(job).not.toBeNull();
+    clock.advance(PAST);
+    expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
+    expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), run.id)).toBe(0);
+    expect(getRun(db, run.id)?.status).toBe("active");
+    expect(db.query("SELECT ended_at FROM runner_work WHERE run_id=?").get(run.id)).toEqual({
+      ended_at: null,
+    });
+    db.close();
+  });
+
+  for (const state of ["verifying", "merge_queue"] as const) {
+    test(`expired abandoned ${state} work transitions with its lost run`, () => {
+      const { db, clock, run, item } = leased();
+      applyWorkItemEvent(db, item.id, "turn_ended");
+      if (state === "merge_queue") applyWorkItemEvent(db, item.id, "closeout_accepted");
+      clock.advance(PAST);
+      expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([run.id]);
+      expect(getRun(db, run.id)?.status).toBe("lost");
+      expect(getWorkItem(db, item.id)?.state).toBe(
+        state === "merge_queue" ? "verifying" : "recovering",
+      );
+      expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(0);
+      expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
+      db.close();
+    });
+  }
+
+  test("a finished command still holds its slot after the lease grace", () => {
+    const { clock, db, run } = leased();
+    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [clock.now(), run.id]);
+    clock.advance(PAST);
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(1);
+    expect(getRun(db, run.id)?.status).toBe("active");
   });
 
   test("halt keeps an unsettled runner occupied through the grace", () => {
@@ -132,6 +196,9 @@ describe("the runner lease grace", () => {
     db.run("UPDATE runner_result SET command_id='command' WHERE run_id=?", [run.id]);
     expect(runnerHoldsRunWork(db, run.id, clock.now())).toBe(true);
     expect(runnerWorkHasResult(db, run.id)).toBe(true);
+    expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
+    expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(1);
+    expect(getRun(db, run.id)?.status).toBe("active");
     expect(runnerHoldsRunWork(db, run.id, clock.now(), true)).toBe(false);
     expect(recoverOnStartup(db, clock.now())).toMatchObject([{ type: "resume", reattach: true }]);
     expect(getWorkItem(db, item.id)?.state).toBe("running");
@@ -151,5 +218,81 @@ describe("the runner lease grace", () => {
     expect(runnerWorkSettled(db, run.id, clock.now())).toBe(false);
     db.run("UPDATE runner_command SET acknowledged_at=? WHERE id='cancel'", [clock.now()]);
     expect(runnerWorkSettled(db, run.id, clock.now())).toBe(true);
+  });
+});
+
+describe("slots held between commands", () => {
+  test("runs holding slots on a full runner compete only with its live commands", () => {
+    const clock = new FakeClock(1_000_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    db.run("PRAGMA foreign_keys=OFF");
+    db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',2)");
+    const runs = [1, 2, 3, 4].map((index) => {
+      const item = insertQueuedItem(db, { id: `item-${index}`, now: clock.now() });
+      const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+      db.run(
+        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,?,?,?,?,?,?,?)",
+        [run.id, "runner", "workspace", 1, 0, `command-${index}`, clock.now(), clock.now()],
+      );
+      return run;
+    });
+    expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), "new-run")).toBe(4);
+    expect(runnerSlotFree(db, ["runner"], clock.now())).toBe(false);
+    for (const run of runs) {
+      expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), run.id)).toBe(0);
+      expect(runnerSlotFree(db, ["runner"], clock.now(), run.id)).toBe(true);
+    }
+    db.run("UPDATE runner_work SET ended_at=NULL,lease_until=? WHERE run_id IN (?,?)", [
+      clock.now() + RENEWAL_MS,
+      runs[0]!.id,
+      runs[1]!.id,
+    ]);
+    expect(runnerSlotFree(db, ["runner"], clock.now(), runs[2]!.id)).toBe(false);
+    db.close();
+  });
+
+  test("a run never placed also wakes for a runner that came online during its wait", () => {
+    const clock = new FakeClock(1_000_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    db.run("PRAGMA foreign_keys=OFF");
+    for (const id of ["busy", "free"]) {
+      db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'workspace','owner',?,'active',?,?)",
+        [id, id, clock.now(), clock.now()],
+      );
+      db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", [id]);
+    }
+    const [busy, fresh, tied] = ["busy", "fresh", "tied"].map(
+      (id) =>
+        beginImplementRun(
+          db,
+          insertQueuedItem(db, { id, now: clock.now() }).id,
+          clock.now(),
+          checkpoint,
+        ).run,
+    );
+    db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'busy','workspace',1,0,'busy',?)",
+      [busy!.id, clock.now() + RENEWAL_MS],
+    );
+    db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,'busy','workspace',1,0,'tied',?,?)",
+      [tied!.id, clock.now(), clock.now()],
+    );
+    const wait = { since: clock.now(), attempt: 0, runnerIds: ["busy"] };
+    const free = (runId: string, online?: string[]) =>
+      runnerSlotFree(
+        db,
+        slotWaitRunners(db, runId, online ? { ...wait, online } : wait, clock.now()),
+        clock.now(),
+        runId,
+      );
+    expect(free(fresh!.id, ["busy"])).toBe(true);
+    expect(free(fresh!.id, ["busy", "free"])).toBe(false);
+    expect(free(fresh!.id)).toBe(true);
+    expect(free(tied!.id, ["busy"])).toBe(false);
+    db.close();
   });
 });

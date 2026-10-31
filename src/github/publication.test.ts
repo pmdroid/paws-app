@@ -93,6 +93,41 @@ for (const hookMode of ["default", "include"]) {
   });
 }
 
+test("publication pushes HEAD when the repository has a branch named HEAD", async () => {
+  const f = await fixture();
+  const base = await f.git("rev-parse", "HEAD~1");
+  await f.git("update-ref", "refs/heads/HEAD", base);
+  const candidate = await f.git("rev-parse", "refs/heads/main");
+  const result = await pushBranch({
+    worktree: f.worktree,
+    issue: "ENG-38",
+    owner: "synthetic",
+    repo: "repo",
+    remoteUrl: f.remote,
+    tokenProvider,
+  });
+  expect(result.head).toBe(candidate);
+  expect(await f.git("--git-dir", f.remote, "rev-parse", "refs/heads/paws/ENG-38")).toBe(candidate);
+  expect(await f.git("--git-dir", f.remote, "for-each-ref", "refs/heads/HEAD")).toBe("");
+});
+
+test("publication pushes a detached HEAD that no branch contains", async () => {
+  const f = await fixture();
+  await f.git("checkout", "--detach");
+  await writeFile(path.join(f.worktree, "file"), "detached\n");
+  await f.git("commit", "-am", "detached");
+  const detached = await f.git("rev-parse", "HEAD");
+  await pushBranch({
+    worktree: f.worktree,
+    issue: "ENG-38",
+    owner: "synthetic",
+    repo: "repo",
+    remoteUrl: f.remote,
+    tokenProvider,
+  });
+  expect(await f.git("--git-dir", f.remote, "rev-parse", "refs/heads/paws/ENG-38")).toBe(detached);
+});
+
 test("candidate URL rewriting and external transports never receive a publication token", async () => {
   const f = await fixture();
   await f.git("config", "protocol.ext.allow", "always");

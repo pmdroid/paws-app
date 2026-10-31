@@ -1,0 +1,22 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/runner-cli/main.ts",
+    "src/web/src/client/main.ts",
+    "src/db/migrations/*.ts",
+    "scripts/*.ts",
+    "test/**/*.test.ts",
+    "test/local/*.ts",
+    ".agents/probes/*.ts"
+  ],
+  "project": ["src/**/*.{ts,tsx}", "scripts/**/*.ts", "test/**/*.ts"],
+  "ignore": ["test/fixtures/**"],
+  "ignoreDependencies": [
+    "@agentclientprotocol/claude-agent-acp",
+    "@agentclientprotocol/codex-acp",
+    "@xai-official/grok",
+    "@opencode/cli",
+    "@tailwindcss/cli"
+  ],
+  "ignoreExportsUsedInFile": true
+}

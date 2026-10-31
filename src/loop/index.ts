@@ -117,3 +117,5 @@ export {
   RISK_GATE_NEEDS_PUBLIC_URL,
   RISK_REPLY_NOTE,
 } from "./risk-approval";
+
+export { RiskDisplayReader } from "./risk-display";

@@ -20,6 +20,8 @@ export type CloseoutProgressIdentity = {
   head: string;
   policyDigest: string;
   policyPath: string | null;
+  /** The digest of the policy's checks marked `recheck: true`, `""` when none is. */
+  recheckDigest?: string;
 };
 
 export type CloseoutProgressStep = {
@@ -39,6 +41,8 @@ export type CloseoutProgressStep = {
   logPath: string | null;
   evidencePath: string | null;
   findings: string | null;
+  /** Structured severities of this exact review attempt; absent on legacy results. */
+  findingSeverities?: readonly ("P0" | "P1" | "P2" | "P3")[] | null;
   ordinal: number;
   durationMs?: number | null;
   tokens?: number | null;

@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { systemClock } from "../core";
+import { accrueAwake } from "./items";
+import { immediate } from "./tx";
 
 /** A run waiting for its agent's usage limit to reset. */
 export type UsagePause = {
@@ -14,21 +17,24 @@ export type UsagePause = {
 const COLUMNS =
   "run_id AS runId,item_id AS itemId,agent,runner_id AS runnerId,resets_at AS resetsAt,resume_at AS resumeAt,paused_at AS pausedAt";
 
-export function startUsagePause(db: Database, pause: UsagePause): void {
-  db.run(
-    `INSERT INTO usage_pause(run_id,item_id,agent,runner_id,resets_at,resume_at,paused_at) VALUES(?,?,?,?,?,?,?)
+export function startUsagePause(db: Database, pause: UsagePause, mono = systemClock.mono()): void {
+  immediate(db, () => {
+    accrueAwake(db, pause.itemId, mono, pause.pausedAt);
+    db.run(
+      `INSERT INTO usage_pause(run_id,item_id,agent,runner_id,resets_at,resume_at,paused_at) VALUES(?,?,?,?,?,?,?)
      ON CONFLICT(run_id) DO UPDATE SET agent=excluded.agent,runner_id=excluded.runner_id,
      resets_at=excluded.resets_at,resume_at=excluded.resume_at,paused_at=excluded.paused_at`,
-    [
-      pause.runId,
-      pause.itemId,
-      pause.agent,
-      pause.runnerId,
-      pause.resetsAt,
-      pause.resumeAt,
-      pause.pausedAt,
-    ],
-  );
+      [
+        pause.runId,
+        pause.itemId,
+        pause.agent,
+        pause.runnerId,
+        pause.resetsAt,
+        pause.resumeAt,
+        pause.pausedAt,
+      ],
+    );
+  });
 }
 
 export function usagePause(db: Database, runId: string): UsagePause | null {
@@ -37,8 +43,17 @@ export function usagePause(db: Database, runId: string): UsagePause | null {
     .get(runId);
 }
 
-export function endUsagePause(db: Database, runId: string): void {
-  db.run("DELETE FROM usage_pause WHERE run_id=?", [runId]);
+export function endUsagePause(
+  db: Database,
+  runId: string,
+  mono = systemClock.mono(),
+  now = systemClock.now(),
+): void {
+  immediate(db, () => {
+    const pause = usagePause(db, runId);
+    if (pause) accrueAwake(db, pause.itemId, mono, now);
+    db.run("DELETE FROM usage_pause WHERE run_id=?", [runId]);
+  });
 }
 
 /** Resume now: end the wait and lift the agent's cooldown so placement can try it again. */

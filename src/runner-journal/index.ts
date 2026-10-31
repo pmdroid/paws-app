@@ -9,6 +9,8 @@ import {
   RunnerPermissionSchema,
   RunnerCommandSchema,
   RunnerEventSchema,
+  RunnerResultSchema,
+  type RunnerResult,
   type RunnerCommand,
 } from "../runner-protocol";
 
@@ -37,7 +39,20 @@ const question = z.strictObject({
     .max(16),
 });
 
-const policyRequest = z.strictObject({ type: z.literal("closeout_policy"), requestId: z.uuid() });
+const policyRequest = z.strictObject({
+  type: z.literal("closeout_policy"),
+  requestId: z.uuid(),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .max(8 * 1024 * 1024)
+    .optional(),
+  hash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+});
 
 function executionId(now: number): string {
   const bytes = randomBytes(16);
@@ -65,6 +80,9 @@ export function openExecutionJournal(root: string) {
   db.run(
     "CREATE TABLE IF NOT EXISTS delivery (execution_id TEXT NOT NULL REFERENCES execution(id), sequence INTEGER NOT NULL, payload TEXT NOT NULL, request_id TEXT, sent INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(execution_id,sequence)) STRICT",
   );
+  db.run(
+    "CREATE TABLE IF NOT EXISTS result_delivery (execution_id TEXT PRIMARY KEY REFERENCES execution(id), payload TEXT NOT NULL, failure INTEGER NOT NULL, accepted INTEGER NOT NULL DEFAULT 0) STRICT",
+  );
   const columns = new Set(
     db
       .query<{ name: string }, []>("PRAGMA table_info(execution)")
@@ -78,21 +96,102 @@ export function openExecutionJournal(root: string) {
     db.run("ALTER TABLE execution ADD COLUMN session_offset INTEGER NOT NULL DEFAULT 0");
   if (!columns.has("session_state"))
     db.run("ALTER TABLE execution ADD COLUMN session_state TEXT NOT NULL DEFAULT ''");
+  if (!columns.has("transcript_sealed"))
+    db.run("ALTER TABLE execution ADD COLUMN transcript_sealed INTEGER NOT NULL DEFAULT 0");
+  db.run(
+    "CREATE INDEX IF NOT EXISTS delivery_waiting ON delivery(execution_id,sequence) WHERE json_extract(payload,'$.type') IN ('question','artifact','closeout_policy')",
+  );
+  // Recover a crash between recording Paws's decision and changing the execution phase.
+  db.run(
+    "UPDATE execution SET phase=(SELECT CASE WHEN accepted=1 AND failure=0 THEN 'complete' ELSE 'interrupted' END FROM result_delivery WHERE execution_id=execution.id) WHERE phase NOT IN ('complete','interrupted') AND id IN (SELECT execution_id FROM result_delivery WHERE accepted<>0)",
+  );
+  function parseExecution(row: { id: string; payload: string; phase: string }): Execution {
+    const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
+    if (command.type !== "run" && command.type !== "review" && command.type !== "task")
+      throw new Error("Invalid persisted work command");
+    return { id: row.id, command, phase: row.phase };
+  }
+  function execution(id: string): Execution | undefined {
+    const row = db
+      .query<{ id: string; payload: string; phase: string }, [string]>(
+        "SELECT id,payload,phase FROM execution WHERE id=?",
+      )
+      .get(id);
+    return row ? parseExecution(row) : undefined;
+  }
   function executions(active: boolean): Execution[] {
     return db
       .query<{ id: string; payload: string; phase: string }, [number]>(
         "SELECT id,payload,phase FROM execution WHERE (phase NOT IN ('complete','interrupted'))=? ORDER BY rowid",
       )
       .all(Number(active))
-      .map((row) => {
-        const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
-        if (command.type !== "run" && command.type !== "review" && command.type !== "task")
-          throw new Error("Invalid persisted work command");
-        return { id: row.id, command, phase: row.phase };
-      });
+      .map(parseExecution);
   }
   return {
     executions,
+    execution,
+    transcriptSealed(id: string) {
+      return Boolean(
+        db
+          .query<{ sealed: number }, [string]>(
+            "SELECT transcript_sealed AS sealed FROM execution WHERE id=?",
+          )
+          .get(id)?.sealed,
+      );
+    },
+    sealTranscript(id: string) {
+      db.run("UPDATE execution SET transcript_sealed=1 WHERE id=?", [id]);
+    },
+    resultRejected(id: string) {
+      db.run("UPDATE result_delivery SET accepted=2 WHERE execution_id=?", [id]);
+    },
+    saveResult(id: string, result: RunnerResult, failure = false) {
+      db.run("INSERT OR IGNORE INTO result_delivery(execution_id,payload,failure) VALUES (?,?,?)", [
+        id,
+        JSON.stringify(RunnerResultSchema.parse(result)),
+        Number(failure),
+      ]);
+    },
+    pendingResults() {
+      return db
+        .query<{ id: string; runId: string; generation: number }, []>(
+          "SELECT r.execution_id AS id,json_extract(e.payload,'$.runId') AS runId,json_extract(e.payload,'$.generation') AS generation FROM result_delivery r JOIN execution e ON e.id=r.execution_id WHERE r.accepted=0 ORDER BY r.rowid",
+        )
+        .all();
+    },
+    pendingResult(id: string) {
+      const row = db
+        .query<{ payload: string; failure: number }, [string]>(
+          "SELECT payload,failure FROM result_delivery WHERE execution_id=? AND accepted=0",
+        )
+        .get(id);
+      return (
+        row && {
+          result: RunnerResultSchema.parse(JSON.parse(row.payload)),
+          failure: Boolean(row.failure),
+        }
+      );
+    },
+    resultPending(id: string) {
+      return Boolean(
+        db.query("SELECT 1 FROM result_delivery WHERE execution_id=? AND accepted=0").get(id),
+      );
+    },
+    resultAccepted(id: string) {
+      db.run("UPDATE result_delivery SET accepted=1 WHERE execution_id=?", [id]);
+    },
+    hasResult(id: string) {
+      return Boolean(db.query("SELECT 1 FROM result_delivery WHERE execution_id=?").get(id));
+    },
+    waiting(id: string) {
+      return Boolean(
+        db
+          .query(
+            "SELECT 1 FROM delivery d JOIN execution e ON e.id=d.execution_id WHERE e.id=? AND d.sequence>e.answer_cursor AND json_extract(d.payload,'$.type') IN ('question','artifact','closeout_policy') LIMIT 1",
+          )
+          .get(id),
+      );
+    },
     admit(command: WorkCommand, now: number): Execution | null {
       const parsed = RunnerCommandSchema.parse(command);
       if (parsed.type !== "run" && parsed.type !== "review" && parsed.type !== "task")
@@ -129,7 +228,8 @@ export function openExecutionJournal(root: string) {
           )
           .get(id);
         if (!row) throw new Error("Unknown execution journal");
-        if (row.phase === "complete" || row.phase === "interrupted")
+        const terminal = row.phase === "complete" || row.phase === "interrupted";
+        if (terminal && (bytes.length < row.consumed || bytes.indexOf(10, row.consumed) !== -1))
           throw new Error("Execution journal is terminal");
         if (
           bytes.length < row.consumed ||
@@ -138,6 +238,8 @@ export function openExecutionJournal(root: string) {
               row.prefix_hash)
         )
           throw new Error("Runner event journal was rewritten");
+        // Result replay still validates the consumed prefix of a terminal execution.
+        if (terminal) return;
         let offset = row.consumed;
         let sequence = db
           .query<{ sequence: number }, [string]>(
@@ -173,7 +275,11 @@ export function openExecutionJournal(root: string) {
           const publication = artifact.safeParse(raw);
           const policy = policyRequest.safeParse(raw);
           if (policy.success) {
-            event = { type: "closeout_policy" };
+            event = {
+              type: "closeout_policy",
+              ...(policy.data.offset === undefined ? {} : { offset: policy.data.offset }),
+              ...(policy.data.hash === undefined ? {} : { hash: policy.data.hash }),
+            };
             requestId = policy.data.requestId;
           } else if (publication.success) {
             if (publication.data.requestId !== publication.data.artifact.id)

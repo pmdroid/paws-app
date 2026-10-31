@@ -23,6 +23,7 @@ import {
   saveCheckpoint,
 } from "../src/db";
 import { acceptCloseout, ask, attachOrchestrator, questionEffects, restart } from "../src/loop";
+import { itemReadiness } from "../src/intake";
 import { answer, findOpenQuestion } from "../src/questions";
 import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
@@ -41,6 +42,28 @@ function fixture() {
 }
 
 describe("restart and ask", () => {
+  test("a failed item restarted with a stale cancel request is queued ready to start", () => {
+    const { db } = fixture();
+    db.run(
+      "UPDATE work_item SET state='failed',cancel_requested=1,turn_count=5,recovery_attempts=2 WHERE id='item'",
+    );
+    restart(db, getWorkItem(db, "item")!, { reason: "answer", body: "Try again.", now: 2 });
+    expect(getWorkItem(db, "item")).toMatchObject({
+      state: "queued",
+      cancelRequested: false,
+      turnCount: 0,
+      recoveryAttempts: 0,
+    });
+    expect(itemReadiness(db, "item", "start")).not.toBe("cancelled");
+  });
+
+  test("a restart keeps the cancel request of an item a person is stopping", () => {
+    const { db } = fixture();
+    db.run("UPDATE work_item SET cancel_requested=1 WHERE id='item'");
+    restart(db, getWorkItem(db, "item")!, { reason: "findings", body: "Fix this.", now: 2 });
+    expect(getWorkItem(db, "item")?.cancelRequested).toBe(true);
+  });
+
   test.each(["findings", "ci", "review", "conflict", "follow_up", "answer"] as const)(
     "%s restarts preserve the run and session and dispatch their original handoff",
     (reason) => {

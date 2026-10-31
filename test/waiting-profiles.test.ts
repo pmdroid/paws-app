@@ -234,3 +234,35 @@ test("model-only changes preserve candidate and do not announce an agent switch"
     candidate: waiting.candidate,
   });
 });
+
+test("an existing remote invocation resolves updated waiting profiles and role-specific fallback", async () => {
+  const f = fixture();
+  const waiting = f.seed("running");
+  const internal = f.orchestrator as unknown as {
+    remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
+  };
+  for (const role of ["implementer", "reviewer"] as const)
+    await internal.remoteAgentForItem(waiting.item.id)({
+      role,
+      runId: waiting.run.id,
+      itemId: waiting.item.id,
+      pawsRoot: f.root,
+      worktreePath: f.root,
+      prompt: "Continue",
+    });
+  expect(f.calls[0]!.resolveProfiles!().profile).toEqual(oldProfiles.implementer);
+  const reviewerFallback = { agent: "codex", model: "fallback-review" } as const;
+  writeAgentSettings(join(f.root, "config.toml"), {
+    defaults: { ...profiles, reviewerFallback },
+    projects: [],
+  });
+  expect(f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
+  expect(f.calls[0]!.resolveProfiles!()).toEqual({
+    profile: profiles.implementer,
+    fallbackProfile: undefined,
+  });
+  expect(f.calls[1]!.resolveProfiles!()).toEqual({
+    profile: profiles.reviewer,
+    fallbackProfile: reviewerFallback,
+  });
+});

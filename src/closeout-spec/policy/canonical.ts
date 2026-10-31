@@ -57,6 +57,36 @@ export function policyCanonicalJson(policy: {
   return canonicalJson(body);
 }
 
+/**
+ * `sha256:` plus the SHA-256 of the canonical checks marked `recheck: true`, with the files of
+ * each such review's skill; `""` when no check is marked. A commit Closeout accepted stays
+ * accepted through a policy change unless this changes.
+ */
+export function recheckDigest(policy: {
+  files: readonly PolicyFile[];
+  items: readonly ResolvedRequirement[];
+  rules?: readonly ResolvedRule[];
+}): string {
+  const items = policy.items.filter((item) => "recheck" in item && item.recheck === true);
+  const rules = (policy.rules ?? []).filter((rule) => rule.recheck === true);
+  if (items.length === 0 && rules.length === 0) return "";
+  const body = {
+    items: items.map((item) => {
+      const json = requirementJson(item);
+      if (item.kind !== "review" || "supported" in item) return json;
+      const dir = item.skill.slice(0, item.skill.lastIndexOf("/") + 1);
+      return {
+        ...json,
+        skillFiles: sortPolicyFiles(policy.files.filter((file) => file.path.startsWith(dir))).map(
+          (file) => ({ path: file.path, sha256: file.sha256 }),
+        ),
+      };
+    }),
+    rules: rules.map(ruleJson),
+  };
+  return `sha256:${sha256Text(canonicalJson(body))}`;
+}
+
 function ruleJson(rule: ResolvedRule): Record<string, unknown> {
   return withPaths(
     {
@@ -67,6 +97,7 @@ function ruleJson(rule: ResolvedRule): Record<string, unknown> {
       summary: rule.summary,
       failOn: rule.failOn,
       onFail: rule.onFail,
+      ...(rule.recheck === true ? { recheck: true } : {}),
     },
     rule.paths,
   );
@@ -100,6 +131,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
         exec: item.exec,
         timeoutSeconds: item.timeoutSeconds,
         ...(item.ci !== undefined ? { ci: item.ci } : {}),
+        ...(item.recheck === true ? { recheck: true } : {}),
       },
       item.paths,
     );
@@ -114,6 +146,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
         minimum: item.minimum,
         ...(item.hint !== undefined ? { hint: item.hint } : {}),
         ...(item.approval !== undefined ? { approval: item.approval } : {}),
+        ...(item.recheck === true ? { recheck: true } : {}),
       },
       item.paths,
     );
@@ -132,6 +165,7 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
       ...(item.scope !== undefined ? { scope: item.scope } : {}),
       ...(item.parallel !== undefined ? { parallel: item.parallel } : {}),
       ...(item.minChangedLines !== undefined ? { minChangedLines: item.minChangedLines } : {}),
+      ...(item.recheck === true ? { recheck: true } : {}),
     },
     item.paths,
   );

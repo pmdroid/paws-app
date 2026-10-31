@@ -17,7 +17,7 @@ import {
   type RunnerLoginUpdate,
 } from "../runner-protocol";
 
-type Agent = "claude" | "codex" | "grok";
+type Agent = "claude" | "codex" | "grok" | "opencode";
 type Row = {
   id: string;
   runnerId: string;
@@ -119,8 +119,11 @@ export function createRunnerLogin(options: {
     },
     list(principal: WorkspacePrincipal, runnerId: string) {
       access(principal.workspaceId, principal.userId, runnerId);
+      const agents = (["claude", "codex", "grok", "opencode"] as const).filter((agent) =>
+        work.supportsAgent(runnerId, agent),
+      );
       return {
-        accounts: (["claude", "codex", "grok"] as const).map((agent) => {
+        accounts: agents.map((agent) => {
           const account = db
             .query<{ connected: number }, [string, string]>(
               "SELECT ready=1 AND auth_expired=0 AS connected FROM runner_agent_policy WHERE runner_id=? AND agent=?",
@@ -217,7 +220,9 @@ export function createRunnerLogin(options: {
         if (!pending(row)) return { cancelled: row.state !== "connected", input: null };
         if (row.agent === "claude" && update.authorization)
           throw new Error("Claude login requires its terminal");
-        if (row.agent !== "claude" && update.authorization) {
+        if (row.agent === "opencode" && update.authorization)
+          throw new Error("OpenCode login requires its terminal");
+        if (row.agent !== "claude" && row.agent !== "opencode" && update.authorization) {
           const url = new URL(update.authorization.url);
           const allowedHost =
             row.agent === "grok"
@@ -267,7 +272,7 @@ export function createRunnerLogin(options: {
     },
     async browser(request: Request, principal: WorkspacePrincipal): Promise<Response | null> {
       const match =
-        /^\/api\/runners\/([0-7][0-9A-HJKMNP-TV-Z]{25})\/accounts(?:\/(claude|codex|grok)\/login(?:\/([a-f0-9-]{36})(\/input)?)?)?$/.exec(
+        /^\/api\/runners\/([0-7][0-9A-HJKMNP-TV-Z]{25})\/accounts(?:\/(claude|codex|grok|opencode)\/login(?:\/([a-f0-9-]{36})(\/input)?)?)?$/.exec(
           new URL(request.url).pathname,
         );
       if (!match) return null;
@@ -297,7 +302,7 @@ export function createRunnerLogin(options: {
             !pending(current) ||
             !current.inputId ||
             current.inputId !== row.inputId ||
-            (agent === "claude") !== "text" in value
+            (agent === "claude" || agent === "opencode") !== "text" in value
           )
             throw new Error("Login input is unavailable");
           if (inputs.has(id)) throw new Error("Previous login input is still pending");

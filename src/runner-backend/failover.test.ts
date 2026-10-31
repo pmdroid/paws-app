@@ -226,3 +226,166 @@ describe("usage limits pause the task instead of failing it", () => {
     expect(runners.calls[1]!.excluded).toEqual(["agentbox"]);
   });
 });
+
+describe("a review whose agent is limited everywhere moves to the fallback profile", () => {
+  const claude = { agent: "claude" as const, model: "opus" };
+  const codex = { agent: "codex" as const, model: "gpt-6-sol" };
+  function review(fallbackProfile?: typeof codex): RunAgentOptions {
+    return {
+      ...input(),
+      role: "reviewer",
+      profile: claude,
+      ...(fallbackProfile ? { fallbackProfile } : {}),
+    };
+  }
+  function reviewers() {
+    const profiles: (string | null)[] = [];
+    const progress: string[] = [];
+    let first = true;
+    const attempt: FailoverAttempt = async (options, _excluded, limit) => {
+      if (options.profile?.agent === "claude" && limit && limit.resumeAt > RESET - 3_600_000)
+        throw new UsageLimitPause("claude", limit.resumeAt, limit.resetsAt, limit.runnerId);
+      profiles.push(options.profile ? `${options.profile.agent}/${options.profile.model}` : null);
+      if (first) {
+        first = false;
+        throw limited("agentbox", RESET);
+      }
+      return { ...done(), role: "reviewer" };
+    };
+    const pauses: number[] = [];
+    const wait = {
+      now: () => RESET - 3 * 3_600_000,
+      async pause(limit: UsageLimitPause) {
+        pauses.push(limit.resumeAt);
+      },
+    };
+    const onEvent: RunAgentOptions["onEvent"] = (event) => {
+      if (event.type === "progress") progress.push(event.text);
+    };
+    return { profiles, progress, pauses, attempt, wait, onEvent };
+  }
+
+  test("Claude at its weekly limit on every runner reviews with Codex instead of waiting", async () => {
+    const runners = reviewers();
+    const result = await runWithFailover(
+      { ...review(codex), onEvent: runners.onEvent },
+      runners.attempt,
+      async () => undefined,
+      runners.wait,
+    );
+    expect(result.stopReason).toBe("end_turn");
+    expect(runners.profiles).toEqual(["claude/opus", "codex/gpt-6-sol"]);
+    expect(runners.pauses).toEqual([]);
+    expect(runners.progress).toEqual([
+      "claude reached its usage limit on every runner. Reviewing with codex gpt-6-sol instead.",
+    ]);
+  });
+
+  test("without a fallback profile the review waits for the reset as before", async () => {
+    const runners = reviewers();
+    await runWithFailover(review(), runners.attempt, async () => undefined, runners.wait);
+    expect(runners.profiles).toEqual(["claude/opus", "claude/opus"]);
+    expect(runners.pauses).toEqual([RESET + 60_000]);
+  });
+});
+
+describe("agent settings changed during a quota wait", () => {
+  const claude = { agent: "claude" as const, model: "opus" };
+  const codex = { agent: "codex" as const, model: "gpt-6-sol" };
+
+  test("retries the same invocation using the changed profile without its stale quota", async () => {
+    let profiles: ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>> = { profile: claude };
+    const attempted: string[] = [];
+    await runWithFailover(
+      { ...input(), ...profiles, resolveProfiles: () => profiles },
+      async (options, excluded, limit) => {
+        attempted.push(options.profile!.agent);
+        if (attempted.length === 1) throw new UsageLimitPause("claude", RESET, RESET, null);
+        expect(excluded).toEqual([]);
+        expect(limit).toBeUndefined();
+        return done();
+      },
+      async () => undefined,
+      {
+        now: () => RESET - 60_000,
+        async pause(_limit, changed) {
+          expect(changed?.()).toBe(false);
+          profiles = { profile: codex };
+          expect(changed?.()).toBe(true);
+        },
+      },
+    );
+    expect(attempted).toEqual(["claude", "codex"]);
+  });
+
+  test("unchanged settings preserve the active fallback after its own quota pause", async () => {
+    const profiles = { profile: claude, fallbackProfile: codex };
+    const attempted: string[] = [];
+    await runWithFailover(
+      { ...input(), ...profiles, role: "reviewer", resolveProfiles: () => ({ ...profiles }) },
+      async (options) => {
+        attempted.push(options.profile!.agent);
+        if (attempted.length < 3)
+          throw new UsageLimitPause(options.profile!.agent, RESET, RESET, null);
+        return done();
+      },
+      async () => undefined,
+      {
+        now: () => RESET - 60_000,
+        async pause(_limit, changed) {
+          expect(changed?.()).toBe(false);
+        },
+      },
+    );
+    expect(attempted).toEqual(["claude", "codex", "codex"]);
+  });
+
+  test("settings changes do not reset the usage retry budget", async () => {
+    let profiles = { profile: claude as RunAgentOptions["profile"] };
+    let attempts = 0;
+    let waits = 0;
+    await expect(
+      runWithFailover(
+        { ...input(), ...profiles, resolveProfiles: () => profiles },
+        async (options) => {
+          attempts++;
+          throw new UsageLimitPause(options.profile!.agent, RESET, RESET, null);
+        },
+        async () => undefined,
+        {
+          now: () => RESET - 60_000,
+          async pause(_limit, changed) {
+            waits++;
+            profiles = { profile: profiles.profile!.agent === "claude" ? codex : claude };
+            expect(changed?.()).toBe(true);
+          },
+        },
+      ),
+    ).rejects.toBeInstanceOf(UsageLimitExhaustedError);
+    expect(attempts).toBe(MAX_USAGE_LIMIT_EVENTS);
+    expect(waits).toBe(MAX_USAGE_LIMIT_EVENTS - 1);
+  });
+
+  test("a fallback added while waiting is used", async () => {
+    let profiles: ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>> = { profile: claude };
+    const attempted: string[] = [];
+    await runWithFailover(
+      { ...input(), ...profiles, role: "reviewer", resolveProfiles: () => profiles },
+      async (options) => {
+        attempted.push(options.profile!.agent);
+        if (options.profile!.agent === "claude")
+          throw new UsageLimitPause("claude", RESET, RESET, null);
+        return done();
+      },
+      async () => undefined,
+      {
+        now: () => RESET - 60_000,
+        async pause(_limit, changed) {
+          profiles = { profile: claude, fallbackProfile: codex };
+          expect(changed?.()).toBe(true);
+        },
+      },
+    );
+    expect(attempted).toEqual(["claude", "claude", "codex"]);
+  });
+});

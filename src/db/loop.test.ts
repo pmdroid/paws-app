@@ -1,5 +1,6 @@
 import { cancelOpenJobs } from "./jobs";
 import { describe, expect, test } from "bun:test";
+import type { Database } from "bun:sqlite";
 import { FakeClock, systemClock } from "../core";
 import {
   enqueueJob,
@@ -11,6 +12,41 @@ import {
   openDatabase,
   setJournalSink,
 } from "./index";
+
+/** The next claim statement throws once. Later claims use the real database. */
+function failNextClaim(db: Database): { db: Database; failNext(): void } {
+  let fail = false;
+  const wrapped = new Proxy(db, {
+    get(target, property, receiver) {
+      if (property === "query") {
+        return (sql: string) => {
+          const statement = target.query(sql);
+          if (!fail || !sql.startsWith("UPDATE job SET status = 'running'")) return statement;
+          return new Proxy(statement, {
+            get(statementTarget, statementProperty, statementReceiver) {
+              if (statementProperty === "get") {
+                return () => {
+                  fail = false;
+                  throw new Error("SQLITE_BUSY: database is locked");
+                };
+              }
+              const value = Reflect.get(statementTarget, statementProperty, statementReceiver);
+              return typeof value === "function" ? value.bind(statementTarget) : value;
+            },
+          });
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return {
+    db: wrapped,
+    failNext() {
+      fail = true;
+    },
+  };
+}
 
 describe("job loop", () => {
   test("a claimed unknown queue is cancelled once, including recurring jobs", async () => {
@@ -267,4 +303,76 @@ test("a job enqueued while the loop sleeps starts within 50ms", async () => {
   controller.abort();
   await running;
   db.close();
+});
+
+test("a claim failure keeps the worker polling and runs the job once", async () => {
+  const clock = new FakeClock(1_000);
+  const real = openDatabase(":memory:");
+  migrate(real);
+  const gate = failNextClaim(real);
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  const loop = new JobLoop(gate.db, clock, { pollMs: 10 });
+  let runs = 0;
+  loop.register("work", () => {
+    runs += 1;
+  });
+  const id = enqueueJob(real, { queue: "work", now: clock.now() });
+  gate.failNext();
+  const controller = new AbortController();
+  let polls = 0;
+  try {
+    await loop.run(controller.signal, async () => {
+      polls += 1;
+      if (runs > 0 || polls > 5) controller.abort();
+    });
+    expect(lines.join("\n")).toContain("operation=loop.tick.claimNextJob");
+    expect(lines.join("\n")).toContain("SQLITE_BUSY");
+    expect(runs).toBe(1);
+    expect(polls).toBeGreaterThan(0);
+    expect(getJob(real, id)).toMatchObject({ status: "done", attempts: 1 });
+    expect(loop.liveness()).toMatchObject({ polling: true, inFlight: 0, workerCount: 1 });
+  } finally {
+    restore();
+    real.close();
+  }
+});
+
+test("a claim failure does not cancel or repeat an in-flight handler", async () => {
+  const clock = new FakeClock(1_000);
+  const real = openDatabase(":memory:");
+  migrate(real);
+  const gate = failNextClaim(real);
+  const loop = new JobLoop(gate.db, clock);
+  let runs = 0;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => (entered = resolve));
+  let finish!: () => void;
+  const blocked = new Promise<void>((resolve) => (finish = resolve));
+  let context!: import("./loop").JobContext;
+  loop.register("work", async (_job, authority) => {
+    runs += 1;
+    context = authority;
+    entered();
+    await blocked;
+    authority.signal.throwIfAborted();
+  });
+  const runningId = enqueueJob(real, { queue: "work", now: clock.now() });
+  const running = loop.tick();
+  await started;
+  expect(loop.liveness().inFlight).toBe(1);
+  const waitingId = enqueueJob(real, { queue: "work", now: clock.now() });
+  gate.failNext();
+  expect(await loop.tick()).toBeNull();
+  expect(context.signal.aborted).toBe(false);
+  expect(getJob(real, runningId)).toMatchObject({ status: "running", attempts: 1 });
+  expect(getJob(real, waitingId)).toMatchObject({ status: "pending", attempts: 0 });
+  expect(loop.liveness().inFlight).toBe(1);
+  finish();
+  await running;
+  expect(runs).toBe(1);
+  expect(getJob(real, runningId)).toMatchObject({ status: "done", attempts: 1 });
+  await loop.tick();
+  expect(getJob(real, waitingId)).toMatchObject({ status: "done", attempts: 1 });
+  real.close();
 });

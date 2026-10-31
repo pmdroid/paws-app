@@ -1,4 +1,5 @@
 import { createHealthReport } from "./health";
+import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
@@ -6,7 +7,7 @@ import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
 import type { PublicTls } from "../deployment";
 import { createGitHubInstallationCheck, createWorkspaceGitHubActivation } from "../auth";
-import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime } from "../config";
+import { DEFAULT_HOST, DEFAULT_PORT, loadConfigFile, loadRuntime } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import {
   handleLinearWebhook,
@@ -15,9 +16,13 @@ import {
   type LinearWebhookDeps,
 } from "../linear";
 import {
+  FINDING_ISSUE_PATH,
   fakeStatusProvider,
   FINDINGS_API_PATH,
   handleFindingsRequest,
+  handleFindingGroupsRequest,
+  FINDING_GROUPS_API_PATH,
+  type FindingGroupServices,
   handleStatusRequest,
   statusSnapshots,
   type ReadLinearArtifact,
@@ -32,15 +37,20 @@ import {
 } from "../evidence";
 import {
   CHECKOUT_SETTINGS_PATH,
+  BRIEF_SETTINGS_PATH,
+  handleBriefSettingsRequest,
+  FINDING_SETTINGS_PATH,
   HOOK_SETTINGS_PATH,
   SKILL_SETTINGS_PATH,
   handleAgentSettingsRequest,
   handleCheckoutSettingsRequest,
   handleMergeSettingsRequest,
+  handleFindingSettingsRequest,
   handleHookSettingsRequest,
   handleSkillSettingsRequest,
   MERGE_SETTINGS_PATH,
   type AgentSettingsOptions,
+  type BriefSettingsOptions,
   type HighRiskFile,
   type MergeChoices,
   type RepositoryCheckoutFacts,
@@ -63,8 +73,10 @@ import {
   type WorkspaceClient,
   type WorkspacePrincipal,
 } from "../workspace";
+import type { WorkspaceSession } from "../db";
 
 export type ServerOptions = {
+  findingGroups?: FindingGroupServices;
   server?: Bun.Server<undefined>;
   onboarding?: (request: Request, client: WorkspaceClient) => Promise<Response | null>;
   tls?: PublicTls;
@@ -83,6 +95,21 @@ export type ServerOptions = {
     principal: WorkspacePrincipal | undefined,
     sessionIds: readonly string[] | undefined,
   ) => Promise<Response | null>;
+  /**
+   * `POST /api/review-findings/issues`: file a pre-existing review finding in Linear. The
+   * server checked the origin and the CSRF token; the handler checks them again with `access`.
+   */
+  findingIssues?: (
+    request: Request,
+    access:
+      | {
+          principal: WorkspacePrincipal;
+          session: WorkspaceSession;
+          origin: string;
+          sessionIds: readonly string[];
+        }
+      | undefined,
+  ) => Promise<Response | null>;
   hostname?: string;
   port?: number;
   linearWebhookSecret?: string | null;
@@ -91,6 +118,8 @@ export type ServerOptions = {
   slackSigningSecret?: string | null;
   linearWebhook?: LinearWebhookDeps;
   linearUsage?: () => LinearUsage;
+  riskApproval?: (itemId: string) => { head: string; detail: string } | null;
+  riskSettingsChanged?: () => void;
   /**
    * Webhook routes. Default follows `LINEAR_WEBHOOKS` via `webhookChecksNeeded`.
    * Off, every `/webhooks/*` path is 404.
@@ -100,6 +129,8 @@ export type ServerOptions = {
   db?: Database;
   /** Clock for local health checks. */
   healthNow?: () => number;
+  /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
+  jobLoop?: () => JobLoopLiveness | null;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
@@ -108,6 +139,7 @@ export type ServerOptions = {
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken"> & {
+    readIssue?: BriefSettingsOptions["readIssue"];
     /** Linear projects and labels for Settings → Merging. */
     mergeChoices?: (signal: AbortSignal) => Promise<MergeChoices>;
     /** Configured repositories whose main has a GitHub merge queue, for Settings → Merging. */
@@ -144,6 +176,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     linearWebhook: webhooks && Boolean(linearWebhookSecret),
     githubWebhook: webhooks && Boolean(githubWebhookSecret),
     now: options.healthNow,
+    ...(options.jobLoop === undefined ? {} : { jobLoop: options.jobLoop }),
   });
   const statusEnv = options.statusEnv;
   const closeoutHome = options.closeoutHome;
@@ -179,6 +212,8 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           githubWebhookSecret,
           linearWebhook,
           linearUsage: options.linearUsage,
+          riskApproval: options.riskApproval,
+          riskSettingsChanged: options.riskSettingsChanged,
           webhooks,
           csrfToken,
           ip,
@@ -188,7 +223,9 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             : {}),
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
+          ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
           ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
+          ...(options.findingIssues ? { findingIssues: options.findingIssues } : {}),
           ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
           ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
           ...(options.agentSettings
@@ -220,6 +257,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
 }
 
 type Secrets = {
+  findingGroups?: FindingGroupServices;
   health: ReturnType<typeof createHealthReport>;
   /** The socket peer address, for the sign-in rate limits. */
   ip?: string | null;
@@ -228,12 +266,15 @@ type Secrets = {
   runnerControl?: ServerOptions["runnerControl"];
   executionControls?: ServerOptions["executionControls"];
   linkAsks?: ServerOptions["linkAsks"];
+  findingIssues?: ServerOptions["findingIssues"];
   slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
   githubWebhook: GitHubWebhook | undefined;
   linearWebhook: LinearWebhookDeps | undefined;
   linearUsage?: (() => LinearUsage) | undefined;
+  riskApproval?: ServerOptions["riskApproval"];
+  riskSettingsChanged?: ServerOptions["riskSettingsChanged"];
   webhooks: boolean;
   csrfToken: string;
   readLinearArtifact?: ReadLinearArtifact;
@@ -389,6 +430,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         const response = await secrets.runnerControl(request, access.principal);
         if (response !== null) return response;
       }
+      if (path === FINDING_ISSUE_PATH && secrets.findingIssues !== undefined) {
+        const response = await secrets.findingIssues(request, {
+          principal: access.principal,
+          session: access.session,
+          origin: workspace.origin,
+          sessionIds,
+        });
+        if (response !== null) return response;
+      }
     }
   }
   if (path === "/api/link-asks" && secrets.linkAsks !== undefined) {
@@ -404,6 +454,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       principal,
       sessionIds,
       submit: secrets.visualReviewChanges,
+    }))!;
+  }
+  if (path === FINDING_GROUPS_API_PATH) {
+    if (!secrets.db) return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleFindingGroupsRequest(request, {
+      db: secrets.db,
+      ...(principal ? { principal } : {}),
+      ...(sessionIds ? { sessionIds } : {}),
+      ...(secrets.findingGroups ? { services: secrets.findingGroups } : {}),
     }))!;
   }
   if (path === FINDINGS_API_PATH) {
@@ -447,9 +506,34 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     }))!;
   }
+  if (path === FINDING_SETTINGS_PATH && secrets.db) {
+    const db = secrets.db;
+    const workspaceId =
+      principal?.workspaceId ??
+      db.query<{ id: string }, []>("SELECT id FROM workspace ORDER BY id LIMIT 1").get()?.id;
+    if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
+    const configPath = secrets.agentSettings?.configPath;
+    return (await handleFindingSettingsRequest(request, {
+      db,
+      csrfToken,
+      workspaceId,
+      groupingTime: (configPath && loadConfigFile(configPath).findingsGroupingTime) || "06:00",
+      ...(principal === undefined ? {} : { role: principal.role }),
+      audit: (action, subject) =>
+        auditWorkspaceAccess(db, {
+          workspaceId: principal?.workspaceId ?? null,
+          userId: principal?.userId ?? null,
+          action,
+          subject,
+          now: Date.now(),
+        }),
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    }))!;
+  }
   if (path === HOOK_SETTINGS_PATH && secrets.db) {
     const db = secrets.db;
     return (await handleHookSettingsRequest(request, {
+      ...secrets.skillSettings,
       db,
       csrfToken,
       ...(principal === undefined ? {} : { role: principal.role }),
@@ -493,6 +577,17 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     };
     const settings =
       (await handleAgentSettingsRequest(request, shared)) ??
+      (await handleBriefSettingsRequest(request, {
+        ...shared,
+        ...(path === BRIEF_SETTINGS_PATH && secrets.db
+          ? {
+              repos: [
+                ...(shared.repos ?? []),
+                ...listWorkspaceRepositoryNames(secrets.db, principal?.workspaceId),
+              ],
+            }
+          : {}),
+      })) ??
       (await handleCheckoutSettingsRequest(request, {
         ...shared,
         ...(path === CHECKOUT_SETTINGS_PATH && secrets.db
@@ -508,6 +603,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       })) ??
       (await handleMergeSettingsRequest(request, {
         ...shared,
+        ...(secrets.riskSettingsChanged ? { changed: secrets.riskSettingsChanged } : {}),
         ...(path === MERGE_SETTINGS_PATH && secrets.db
           ? {
               // The stored GitHub connection and team mappings, not a GitHub call.
@@ -548,6 +644,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ? {
           db: secrets.db,
           ...(secrets.linearUsage ? { linearUsage: secrets.linearUsage } : {}),
+          ...(secrets.riskApproval ? { riskApproval: secrets.riskApproval } : {}),
           ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
           ...(secrets.closeoutHome ? { closeoutHome: secrets.closeoutHome } : {}),
           ...(secrets.evidenceRoot ? { evidenceRoot: secrets.evidenceRoot } : {}),
