@@ -24,7 +24,7 @@ import {
   type WorkItemState,
   type WorkBrief,
 } from "../core";
-import { cancelOpenJobs, enqueueJobOnce, hasLiveJob, type Job } from "./jobs";
+import { cancelOpenJobs, enqueueJobOnce, type Job } from "./jobs";
 import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
 import { getLinearSessionGeneration } from "./linear-sessions";
@@ -415,19 +415,18 @@ export function accrueAwake(
     const baseline = sinceMono ?? current.lastMonoMs;
     const delta = baseline === null ? 0 : Math.max(0, mono - baseline);
     const counted = awakeCategory(current.state, current.checkpoint, current.acceptedHead);
-    // Closeout time is time a job spends verifying. An item left in `verifying` with no
-    // job working on it is idle and does not count toward the cap (PAS-771). Job claims
+    // Only an execution job doing agent or Closeout work spends the budget. Idle running,
+    // recovering and verifying items are waiting. Job claims
     // and ends settle the interval before them (accrueAtJobBoundary), so the job status
     // now holds for the whole interval since the last accrual.
     const activity = awakeJobActivity(db, id, now);
     const live = liveJob ?? activity.live;
-    const idle = counted === "closeout" && !live;
+    const idle = (counted === "agent" || counted === "closeout") && !live;
     // A parked slot wait, or Closeout blocked on CI, is waiting. The caller settles the
     // interval before the wait, so this delta is only the wait itself (PAS-898).
-    const hold = forcedHold ?? (activity.ci ? "ci" : activity.slot && !live ? "slot" : null);
-    let category: AwakeCategory | null = idle ? null : counted;
-    if (hold === "slot" && (counted === "agent" || counted === "closeout")) category = "waiting";
-    if (hold === "ci" && counted === "closeout") category = "waiting";
+    const hold = forcedHold !== undefined || activity.waiting || activity.usage;
+    const category: AwakeCategory | null =
+      (idle || hold) && (counted === "agent" || counted === "closeout") ? "waiting" : counted;
     const awake = category === "agent" || category === "closeout";
     const awakeMs = current.awakeMs + (awake ? delta : 0);
     if (delta > 0 || (current.lastMonoMs === null && sinceMono === undefined)) {
@@ -450,9 +449,8 @@ export function accrueAwake(
 }
 
 /**
- * Settles a verifying item's awake time when a job claims it or ends, so the interval
- * before the boundary counts by whether a job worked on the item then (PAS-771): idle time
- * before a claim stays idle, and the last stretch of a job still counts as Closeout.
+ * Settle active time at every execution claim and end. The interval before a claim
+ * stays waiting; the final stretch before an execution job ends still counts as work.
  */
 export function accrueAtJobBoundary(
   db: Database,
@@ -471,19 +469,20 @@ export function accrueAtJobBoundary(
       accrueAwake(db, itemId, mono, now, undefined, false, "slot");
       return;
     }
-    if (item.state !== "verifying") return;
-    const liveJob = boundary === "ending" || hasLiveJob(db, itemId, now, job.id);
+    if (!isAwakeItemState(item.state) && boundary !== "claimed") return;
+    const liveJob = awakeJobActivity(db, itemId, now, boundary === "claimed" ? job.id : -1).live;
     accrueAwake(db, itemId, mono, now, undefined, liveJob);
   });
 }
 
-/** CI bookkeeping belongs to one claim. A stale finally may clear only its own mark. */
-export function markCloseoutCiWait(
+/** Wait bookkeeping belongs to one claim. A stale finally may clear only its own mark. */
+export function markJobAwakeWait(
   db: Database,
   job: Job,
   waiting: boolean,
   mono: number,
   now: number,
+  reason: "ci" | "runner" | "backoff" = "ci",
 ): void {
   const itemId = (job.payload as { itemId?: string }).itemId;
   if (!itemId) return;
@@ -492,9 +491,9 @@ export function markCloseoutCiWait(
     if (waiting) {
       db.run(
         `UPDATE job SET payload = json_set(payload, '$.awakeWait',
-           json_object('kind', 'ci', 'worker', locked_by, 'attempt', attempts))
-         WHERE id=? AND status='running' AND locked_by=? AND attempts=? AND locked_until>?`,
-        [job.id, job.lockedBy, job.attempts, now],
+           json_object('kind', ?1, 'worker', locked_by, 'attempt', attempts))
+         WHERE id=?2 AND status='running' AND locked_by=?3 AND attempts=?4 AND locked_until>?5`,
+        [reason, job.id, job.lockedBy, job.attempts, now],
       );
     } else {
       db.run(
@@ -508,22 +507,33 @@ export function markCloseoutCiWait(
 }
 
 /** Read ownership and wait flags in one scan for each accrual. Pending CI marks are never live. */
-function awakeJobActivity(db: Database, itemId: string, now: number) {
+function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId = -1) {
   const row = db
-    .query<{ live: number; slot: number; ci: number }, [number, string, string, string, string]>(
-      `SELECT
-       COALESCE(MAX(status='running' AND locked_until>?1), 0) AS live,
-       COALESCE(MAX(status='pending' AND queue IN (?3, ?4, ?5)
-         AND json_extract(payload, '$.capacityWait') IS NOT NULL), 0) AS slot,
+    .query<
+      { live: number; waiting: number; usage: number },
+      [number, string, string, string, string, string, number]
+    >(
+      `SELECT COALESCE(MAX(status='running' AND locked_until>?1), 0) AS live,
        COALESCE(MAX(status='running' AND locked_until>?1
-         AND json_extract(payload, '$.awakeWait.kind')='ci'
+         AND json_extract(payload, '$.awakeWait.kind') IN ('ci', 'runner', 'backoff')
          AND json_extract(payload, '$.awakeWait.worker')=locked_by
-         AND json_extract(payload, '$.awakeWait.attempt')=attempts), 0) AS ci
+         AND json_extract(payload, '$.awakeWait.attempt')=attempts), 0) AS waiting,
+       EXISTS(SELECT 1 FROM usage_pause p JOIN work_item i ON i.current_run_id=p.run_id
+         WHERE i.id=?2) AS usage
      FROM job WHERE json_extract(payload, '$.itemId')=?2
-       AND status IN ('pending', 'running')`,
+       AND status IN ('pending', 'running') AND id<>?7
+       AND (queue IN (?3, ?4, ?5, ?6) OR queue LIKE (?6 || '.%'))`,
     )
-    .get(now, itemId, JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify)!;
-  return { live: row.live === 1, slot: row.slot === 1, ci: row.ci === 1 };
+    .get(
+      now,
+      itemId,
+      JOB_KIND.start,
+      JOB_KIND.resume,
+      JOB_KIND.reverify,
+      JOB_KIND.merge,
+      exceptJobId,
+    )!;
+  return { live: row.live === 1, waiting: row.waiting === 1, usage: row.usage === 1 };
 }
 
 /**

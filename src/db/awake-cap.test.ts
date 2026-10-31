@@ -12,13 +12,15 @@ import {
   getRun,
   getJob,
   parkLeasedJob,
+  startUsagePause,
+  endUsagePause,
   JobLoop,
   getWorkItem,
   insertQueuedItem,
   listJobs,
   listOutbox,
   markCloseoutAccepted,
-  markCloseoutCiWait,
+  markJobAwakeWait,
   migrate,
   openDatabase,
   recoverOnStartup,
@@ -53,19 +55,141 @@ function acceptedItem(maxAwakeMs: number) {
     now: clock.now(),
   });
   const { run } = beginImplementRun(db, item.id, clock.now());
-  accrueAwake(db, item.id, clock.mono(), clock.now());
+  accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
   clock.advance(10 * MINUTE);
-  accrueAwake(db, item.id, clock.mono(), clock.now());
+  accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
   applyWorkItemEvent(db, item.id, "turn_ended");
   const verifying = verifyingJob(db, item.id, clock.now());
   clock.advance(5 * MINUTE);
-  accrueAwake(db, item.id, clock.mono(), clock.now());
+  accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
   completeJob(db, verifying, clock.now());
   applyWorkItemEvent(db, item.id, "closeout_accepted");
   markCloseoutAccepted(db, item.id, "accepted");
   saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "accepted" });
   return { clock, db, item, run };
 }
+
+test("the job loop bills only active agent and Closeout work across every waiting stage", async () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const clock = new FakeClock(20_000);
+  const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
+  const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * MINUTE });
+  const accrue = () => accrueAwake(db, item.id, clock.mono(), clock.now()).item;
+  accrue();
+  clock.advance(60 * MINUTE);
+  expect(accrue().awakeMs).toBe(0); // queued
+  jobs.register(JOB_KIND.start, (job) => {
+    const { run } = beginImplementRun(db, item.id, clock.now());
+    expect(accrue().awakeMs).toBe(0);
+    clock.advance(5 * MINUTE);
+    expect(accrue().awakeMs).toBe(5 * MINUTE);
+    startUsagePause(
+      db,
+      {
+        itemId: item.id,
+        runId: run.id,
+        agent: "codex",
+        runnerId: null,
+        resetsAt: null,
+        resumeAt: clock.now() + 120 * MINUTE,
+        pausedAt: clock.now(),
+      },
+      clock.mono(),
+    );
+    clock.advance(120 * MINUTE);
+    expect(accrue().awakeMs).toBe(5 * MINUTE);
+    endUsagePause(db, run.id, clock.mono(), clock.now());
+    for (const [enter, leave] of [
+      ["blocking_question", "answer_received"],
+      ["pause", "resume"],
+    ] as const) {
+      applyWorkItemEvent(db, item.id, enter);
+      clock.advance(60 * MINUTE);
+      expect(accrue().awakeMs).toBe(5 * MINUTE);
+      applyWorkItemEvent(db, item.id, leave);
+    }
+    for (const reason of ["runner", "backoff"] as const) {
+      markJobAwakeWait(db, job, true, clock.mono(), clock.now(), reason);
+      clock.advance(60 * MINUTE);
+      expect(accrue().awakeMs).toBe(5 * MINUTE);
+      markJobAwakeWait(db, job, false, clock.mono(), clock.now(), reason);
+    }
+    clock.advance(3 * MINUTE);
+    expect(accrue().awakeMs).toBe(8 * MINUTE);
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    for (const reason of ["ci", "runner", "backoff"] as const) {
+      markJobAwakeWait(db, job, true, clock.mono(), clock.now(), reason);
+      clock.advance(60 * MINUTE);
+      expect(accrue().awakeMs).toBe(8 * MINUTE);
+      markJobAwakeWait(db, job, false, clock.mono(), clock.now(), reason);
+    }
+    clock.advance(2 * MINUTE);
+    expect(accrue()).toMatchObject({
+      awakeMs: 10 * MINUTE,
+      agentMs: 8 * MINUTE,
+      closeoutMs: 2 * MINUTE,
+    });
+    applyWorkItemEvent(db, item.id, "closeout_accepted");
+    clock.advance(60 * MINUTE);
+    expect(accrue().awakeMs).toBe(10 * MINUTE); // merge queue, even while the job is held
+  });
+  const id = enqueueJob(db, {
+    queue: JOB_KIND.start,
+    payload: { itemId: item.id },
+    now: clock.now(),
+  });
+  db.run(
+    "INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,paths,hot,created_at) VALUES(?,?,'*','fixture','[]',0,?)",
+    [item.id, id, clock.now()],
+  );
+  clock.advance(60 * MINUTE); // The claim must settle queued time even without a supervisor tick.
+  expect(await jobs.tick([JOB_KIND.start])).not.toBeNull();
+  expect(getWorkItem(db, item.id)).toMatchObject({ state: "merge_queue", awakeMs: 10 * MINUTE });
+  db.close();
+});
+
+test("an idle running item and a control job do not spend the awake budget", () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const clock = new FakeClock(20_000);
+  const item = insertQueuedItem(db, { maxAwakeMs: MINUTE, now: clock.now() });
+  beginImplementRun(db, item.id, clock.now());
+  accrueAwake(db, item.id, clock.mono(), clock.now());
+  clock.advance(60 * MINUTE);
+  expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.awakeMs).toBe(0);
+  enqueueJob(db, { queue: "fixture.control", payload: { itemId: item.id }, now: clock.now() });
+  claimNextJob(db, { queues: ["fixture.control"], now: clock.now(), leaseMs: 120 * MINUTE });
+  clock.advance(60 * MINUTE);
+  expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item).toMatchObject({
+    awakeMs: 0,
+    waitingMs: 120 * MINUTE,
+  });
+  db.close();
+});
+
+test("a job retry backoff in running counts nothing and work resumes at the next claim", async () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const clock = new FakeClock(20_000);
+  const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
+  beginImplementRun(db, item.id, clock.now());
+  const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * MINUTE, backoffBaseMs: 60 * MINUTE });
+  let attempts = 0;
+  jobs.register(JOB_KIND.resume, () => {
+    clock.advance(2 * MINUTE);
+    if (++attempts === 1) throw new Error("temporary fixture failure");
+  });
+  enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: clock.now() });
+  await jobs.tick([JOB_KIND.resume]);
+  expect(getWorkItem(db, item.id)?.awakeMs).toBe(2 * MINUTE);
+  clock.advance(120 * MINUTE);
+  expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.awakeMs).toBe(2 * MINUTE);
+  await jobs.tick([JOB_KIND.resume]);
+  expect(attempts).toBe(2);
+  expect(getWorkItem(db, item.id)?.awakeMs).toBe(4 * MINUTE);
+  db.close();
+});
 
 describe("awake-time cap after Closeout accepted the work", () => {
   test("re-verification after a restart doesn't add awake time", () => {
@@ -115,12 +239,12 @@ describe("awake-time cap after Closeout accepted the work", () => {
     const { clock, db, item, run } = acceptedItem(30 * MINUTE);
     applyWorkItemEvent(db, item.id, "ejected");
     saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(20 * MINUTE);
 
     enqueueJob(db, { queue: "run.resume", payload: { itemId: item.id }, now: clock.now() });
     enqueueJob(db, { queue: "github.merge", payload: { itemId: item.id }, now: clock.now() });
-    const result = accrueAwake(db, item.id, clock.mono(), clock.now());
+    const result = accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     expect(result).toMatchObject({ capped: false, asked: true, stopAgent: true });
     expect(jobStatuses(db)).toEqual({
       "github.merge": "pending",
@@ -146,16 +270,16 @@ describe("awake-time cap after Closeout accepted the work", () => {
     migrate(db);
     const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 30 * MINUTE, now: 0 });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "blocking_question");
     clock.advance(90 * MINUTE);
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "answer_received");
     clock.advance(30 * MINUTE);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).capped).toBe(true);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).capped).toBe(true);
     expect(listOutbox(db).at(-1)?.payload).toMatchObject({
       kind: "error",
-      body: "Run hit the awake time cap (30 min). Counted: agent turns 30 min, Closeout 0 min. Not counted: waiting for answers 1 h 30 min.",
+      body: "Run hit the awake time cap (30 min). Counted: agent turns 30 min, Closeout 0 min. Not counted: waiting 1 h 30 min.",
     });
   });
 
@@ -178,7 +302,15 @@ describe("awake-time cap after Closeout accepted the work", () => {
       // The claim is synchronous; the handler then holds the job until finish().
       return jobs.tick([JOB_KIND.reverify]);
     };
-    const accrue = () => accrueAwake(db, item.id, clock.mono(), clock.now());
+    const accrue = () =>
+      accrueAwake(
+        db,
+        item.id,
+        clock.mono(),
+        clock.now(),
+        undefined,
+        getWorkItem(db, item.id)?.state === "running" ? true : undefined,
+      );
     beginImplementRun(db, item.id, clock.now());
     accrue();
     clock.advance(41 * MINUTE);
@@ -210,7 +342,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(accrue().capped).toBe(true);
     expect(listOutbox(db).at(-1)?.payload).toMatchObject({
       kind: "error",
-      body: "Run hit the awake time cap (60 min). Counted: agent turns 41 min, Closeout 19 min.",
+      body: "Run hit the awake time cap (60 min). Counted: agent turns 41 min, Closeout 19 min. Not counted: waiting 4 h.",
     });
     finish();
     await running;
@@ -262,12 +394,12 @@ describe("awake-time cap after Closeout accepted the work", () => {
     migrate(db);
     const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 60 * MINUTE, now: 0 });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(6 * MINUTE);
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "turn_ended");
     const job = verifyingJob(db, item.id, clock.now());
-    markCloseoutCiWait(db, job, true, clock.mono(), clock.now());
+    markJobAwakeWait(db, job, true, clock.mono(), clock.now());
     clock.advance(30 * MINUTE);
     const result = accrueAwake(db, item.id, clock.mono(), clock.now());
     expect(result.capped).toBe(false);
@@ -277,7 +409,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       closeoutMs: 0,
       waitingMs: 30 * MINUTE,
     });
-    markCloseoutCiWait(db, job, false, clock.mono(), clock.now());
+    markJobAwakeWait(db, job, false, clock.mono(), clock.now());
     clock.advance(2 * MINUTE);
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item).toMatchObject({
       awakeMs: 8 * MINUTE,
@@ -294,14 +426,14 @@ describe("awake-time cap after Closeout accepted the work", () => {
     beginImplementRun(db, item.id, clock.now());
     applyWorkItemEvent(db, item.id, "turn_ended");
     const job = verifyingJob(db, item.id, clock.now());
-    markCloseoutCiWait(db, job, true, clock.mono(), clock.now());
+    markJobAwakeWait(db, job, true, clock.mono(), clock.now());
     parkLeasedJob(db, job, {
       now: clock.now(),
       runAt: clock.now(),
       attempts: job.attempts,
       payload: getJob(db, job.id)!.payload,
     });
-    markCloseoutCiWait(db, job, false, clock.mono(), clock.now());
+    markJobAwakeWait(db, job, false, clock.mono(), clock.now());
     expect(getJob(db, job.id)!.payload).not.toHaveProperty("awakeWait");
     const next = claimNextJob(db, {
       now: clock.now(),
@@ -309,11 +441,11 @@ describe("awake-time cap after Closeout accepted the work", () => {
       queues: [JOB_KIND.reverify],
     })!;
     // A late old writer cannot start a wait for its replacement.
-    markCloseoutCiWait(db, job, true, clock.mono(), clock.now());
+    markJobAwakeWait(db, job, true, clock.mono(), clock.now());
     clock.advance(MINUTE);
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.closeoutMs).toBe(MINUTE);
-    markCloseoutCiWait(db, next, true, clock.mono(), clock.now());
-    markCloseoutCiWait(db, job, false, clock.mono(), clock.now());
+    markJobAwakeWait(db, next, true, clock.mono(), clock.now());
+    markJobAwakeWait(db, job, false, clock.mono(), clock.now());
     clock.advance(MINUTE);
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item).toMatchObject({
       closeoutMs: MINUTE,
@@ -339,7 +471,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       clock.now() + 60 * MINUTE,
       other,
     ]);
-    markCloseoutCiWait(db, job, true, clock.mono(), clock.now());
+    markJobAwakeWait(db, job, true, clock.mono(), clock.now());
     expect(getJob(db, other)!.payload).not.toHaveProperty("awakeWait");
     db.run("UPDATE job SET locked_until=? WHERE id=?", [clock.now(), job.id]);
     const next = claimNextJob(db, {
@@ -350,8 +482,8 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(next).not.toBeNull();
     clock.advance(MINUTE);
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.closeoutMs).toBe(MINUTE);
-    markCloseoutCiWait(db, next, true, clock.mono(), clock.now());
-    markCloseoutCiWait(db, job, false, clock.mono(), clock.now());
+    markJobAwakeWait(db, next, true, clock.mono(), clock.now());
+    markJobAwakeWait(db, job, false, clock.mono(), clock.now());
     clock.advance(MINUTE);
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.waitingMs).toBe(MINUTE);
     db.close();
@@ -438,12 +570,12 @@ describe("awake-time cap after Closeout accepted the work", () => {
     applyWorkItemEvent(db, item.id, "ejected");
     setCurrentRun(db, item.id, run.id);
     saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(20 * MINUTE);
     enqueueJob(db, { queue: "run.resume", payload: { itemId: item.id }, now: clock.now() });
     enqueueJob(db, { queue: "github.merge", payload: { itemId: item.id }, now: clock.now() });
 
-    const result = accrueAwake(db, item.id, clock.mono(), clock.now());
+    const result = accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     expect(result).toMatchObject({ capped: false, stopAgent: true });
     expect(jobStatuses(db)).toEqual({ "github.merge": "pending", "run.resume": "cancelled" });
     expect(result.item).toMatchObject({

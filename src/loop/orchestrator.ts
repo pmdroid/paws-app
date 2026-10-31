@@ -210,7 +210,7 @@ import {
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   startCloseoutRound,
-  markCloseoutCiWait,
+  markJobAwakeWait,
   markRun,
   releaseRunCapacity,
   saveCheckpoint,
@@ -1935,6 +1935,7 @@ export class Orchestrator {
         }
         const delayMs = transientRetryDelayMs(retry, error, this.options.retryBaseMs);
 
+        this.settleItemAwake(item.id);
         deferWorkItem(this.db, item, {
           retry,
           delayMs,
@@ -3469,7 +3470,7 @@ export class Orchestrator {
         input.report(
           `Closeout could not run the checks for ${item.linearIdentifier} on its runner (${reason}). Retrying in ${Math.round(delayMs / 1000)} s.`,
         );
-        await delay(delayMs, undefined, deps.signal ? { signal: deps.signal } : {});
+        await this.waitWithoutAwake(item.id, "backoff", delayMs, deps.signal);
         assertCurrent();
       } else
         input.report(
@@ -3521,12 +3522,13 @@ export class Orchestrator {
           (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(reason)) &&
           this.now() < rateLimitDeadline
         ) {
-          await delay(
+          await this.waitWithoutAwake(
+            item.id,
+            "backoff",
             error instanceof LinearRateLimitError
               ? Math.min(error.retryAfterMs, CHECKS_RATE_LIMIT_WAIT_MS)
               : CHECKS_RATE_LIMIT_RETRY_MS,
-            undefined,
-            deps.signal ? { signal: deps.signal } : {},
+            deps.signal,
           );
           assertCurrent();
           attempt -= 1;
@@ -3562,7 +3564,7 @@ export class Orchestrator {
         return runner;
       },
       now: () => this.now(),
-      sleep: (ms) => delay(ms, undefined, signal ? { signal } : {}),
+      sleep: (ms) => this.waitWithoutAwake(item.id, "runner", ms, signal),
       waiting: (reason) => {
         if (stepId)
           setRunningCloseoutStepDetail(this.db, item.id, head, stepId, reason, this.now());
@@ -3706,16 +3708,7 @@ export class Orchestrator {
           ...this.gitHubCredentials(github),
         });
       },
-      sleep: async (ms) => {
-        const clock = this.options.clock ?? systemClock;
-        const job = this.leasedJobs.get(item.id);
-        if (job) markCloseoutCiWait(this.db, job, true, clock.mono(), clock.now());
-        try {
-          await delay(ms, undefined, signal ? { signal } : {});
-        } finally {
-          if (job) markCloseoutCiWait(this.db, job, false, clock.mono(), clock.now());
-        }
-      },
+      sleep: (ms) => this.waitWithoutAwake(item.id, "ci", ms, signal),
       now: () => this.now(),
       ...(this.options.ciRecheckWait ?? {}),
       onWait: (message) =>
@@ -7717,7 +7710,8 @@ export class Orchestrator {
           );
           controller.signal.throwIfAborted();
 
-          if (attempt < 3) await delay(attempt * 500, undefined, { signal: controller.signal });
+          if (attempt < 3)
+            await this.waitWithoutAwake(item.id, "backoff", attempt * 500, controller.signal);
         }
       }
       if (suggested)
@@ -7822,6 +7816,22 @@ export class Orchestrator {
 
   private now(): number {
     return (this.options.clock ?? systemClock).now();
+  }
+
+  private async waitWithoutAwake(
+    itemId: string,
+    reason: "ci" | "runner" | "backoff",
+    ms: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const clock = this.options.clock ?? systemClock;
+    const job = this.leasedJobs.get(itemId);
+    if (job) markJobAwakeWait(this.db, job, true, clock.mono(), clock.now(), reason);
+    try {
+      await delay(ms, undefined, signal ? { signal } : {});
+    } finally {
+      if (job) markJobAwakeWait(this.db, job, false, clock.mono(), clock.now(), reason);
+    }
   }
 
   /** Records awake time up to this instant, under the item's category before the next wait. */

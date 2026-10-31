@@ -114,7 +114,7 @@ export {
   TransitionRejectedError,
   accrueAtJobBoundary,
   accrueAwake,
-  markCloseoutCiWait,
+  markJobAwakeWait,
   applyWorkItemEvent,
   awakeBreakdown,
   clearProgress,

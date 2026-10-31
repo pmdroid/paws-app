@@ -512,13 +512,15 @@ describe("hard caps", () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     clock.sleep(3 * 60 * 60_000);
     clock.advance(400);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.awakeMs).toBe(400);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).item.awakeMs).toBe(
+      400,
+    );
     expect(getWorkItem(db, item.id)?.state).toBe("running");
     clock.advance(600);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).capped).toBe(true);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).capped).toBe(true);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
     expect(listOutbox(db)[0]?.payload).toEqual({
       sessionId: item.sessionKey ?? item.id,
@@ -531,24 +533,26 @@ describe("hard caps", () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 50_000, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "blocking_question");
     clock.advance(10_000);
     syncClock(db, item.id, clock.mono());
     applyWorkItemEvent(db, item.id, "answer_received");
     clock.advance(100);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.awakeMs).toBe(100);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).item.awakeMs).toBe(
+      100,
+    );
   });
 
   test("time waiting in the merge queue is not awake time", () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "turn_ended");
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     clock.advance(4 * 60 * 60_000);
-    const result = accrueAwake(db, item.id, clock.mono(), clock.now());
+    const result = accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     expect(result.capped).toBe(false);
     expect(result.item.awakeMs).toBe(0);
     expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
@@ -558,13 +562,13 @@ describe("hard caps", () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "turn_ended");
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
     applyWorkItemEvent(db, item.id, "reverify_requested");
     clock.advance(4 * 60 * 60_000);
-    const result = accrueAwake(db, item.id, clock.mono(), clock.now());
+    const result = accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     expect(result.capped).toBe(false);
     expect(result.item.awakeMs).toBe(0);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
@@ -574,15 +578,15 @@ describe("hard caps", () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "turn_ended");
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
     applyWorkItemEvent(db, item.id, "ejected");
     // The merge queue dropped the baseline; the supervisor's next tick starts the clock again.
-    accrueAwake(db, item.id, clock.mono(), clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(2_000);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).capped).toBe(true);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).capped).toBe(true);
   });
 });
 
