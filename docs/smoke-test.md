@@ -45,6 +45,8 @@ Each sub-issue runs in its own Linear agent session and its own run. Paws opens 
 4. ENG-4's session opens after ENG-3 merges. ENG-4 parks on a question in its session. Answer `yes` or `no`, or reply in your own words. The run continues with that answer.
 5. ENG-4 merges.
 
+6. During an active implementer turn or Closeout review, restart Paws with `systemctl --user restart paws.service`, or stop and start `bun run paws` in the foreground. Keep the runner running. Check that the same Linear session continues, the turn finishes, and only one pull request opens for the issue. There is no need to wait for idle work before a deploy.
+
 Each sub-issue's session is one story. Before the pull request, activities tell it and the title names the phase. After the pull request response, only the title and plan move. The face of each state is in [Linear agent sessions](linear-agent-sessions.md#the-face-table). Expect, for each sub-issue:
 
 - Exactly two responses: the pull request response, then the final response "Merged #N into main at <sha>. ENG-n is Done." Nothing appears between them, not even evidence: evidence after the pull request is attached to the issue.
