@@ -108,7 +108,8 @@ export function mergeLaneSql(alias: string): string {
 const EXECUTION_SQL = `(candidate.queue IN (${EXCLUSIVE_QUEUES.map(sqlLiteral).join(", ")}))`;
 const ITEM_ID = "COALESCE(json_extract(candidate.payload, '$.itemId'), '')";
 const NEEDS_RESERVATION = `((candidate.queue = ${sqlLiteral(JOB_KIND.start)}
-  AND json_extract(candidate.payload, '$.capacityWait') IS NULL) OR
+  AND (json_extract(candidate.payload, '$.capacityWait') IS NULL OR EXISTS
+    (SELECT 1 FROM work_item mine WHERE mine.id=${ITEM_ID} AND mine.state='queued'))) OR
   (candidate.queue = ${sqlLiteral(JOB_KIND.resume)} AND EXISTS
     (SELECT 1 FROM work_item mine WHERE mine.id=${ITEM_ID} AND mine.state='queued')))`;
 const RESERVATION = `EXISTS (SELECT 1 FROM scheduler_admission a JOIN work_item mine ON mine.id=a.item_id

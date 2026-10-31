@@ -1,6 +1,5 @@
 import type { Database } from "bun:sqlite";
 import { runnerLeaseCutoff } from "./runner-lease";
-import { markRun } from "./runs";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 
@@ -38,48 +37,18 @@ export function runnerOccupancy(
     .get(runnerId, runnerId, runnerLeaseCutoff(now), excludeRunId, runnerId, now)!;
 }
 
-/**
- * Closes a run whose runner lease is past the grace and whose work never ended. That row is
- * abandoned, not a slot held between commands, so it stops counting as occupied (PAS-898).
- * A finished command or a delivered result awaiting import still belongs to the active run.
- */
-export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
-  return immediate(db, () => {
-    const cutoff = runnerLeaseCutoff(now);
-    const rows = db
-      .query<{ runId: string }, [number]>(
-        `SELECT w.run_id AS runId FROM runner_work w
-         JOIN run r ON r.id = w.run_id
-         WHERE w.ended_at IS NULL AND w.lease_until <= ?
-           AND r.status IN ('active', 'provisioning')
-           AND NOT EXISTS (SELECT 1 FROM runner_result result
-             WHERE result.run_id=w.run_id AND result.generation=w.generation
-               AND result.command_id=w.command_id)`,
-      )
-      .all(cutoff);
-    for (const row of rows) {
-      markRun(db, row.runId, "lost", now);
-      db.run("UPDATE runner_work SET ended_at = ? WHERE run_id = ? AND ended_at IS NULL", [
-        now,
-        row.runId,
-      ]);
-      db.run("DELETE FROM runner_work_grant WHERE run_id = ?", [row.runId]);
-    }
-    return rows.map((row) => row.runId);
-  });
-}
-
 export function runnerSlotsHeldBetweenCommands(
   db: Database,
   runnerId: string,
   now: number,
   excludeRunId = "",
 ): number {
-  closeExpiredRunnerLeases(db, now);
   return db
     .query<{ held: number }, [string, string, number]>(
       `SELECT count(*) AS held FROM runner_work w JOIN run r ON r.id=w.run_id
-       WHERE w.runner_id=? AND w.run_id<>? AND (w.ended_at IS NOT NULL OR w.lease_until<=?)
+       WHERE w.runner_id=? AND w.run_id<>? AND (w.ended_at IS NOT NULL OR (w.lease_until<=? AND EXISTS (
+         SELECT 1 FROM runner_result result WHERE result.run_id=w.run_id
+           AND result.generation=w.generation AND result.command_id=w.command_id)))
        AND r.status IN ('active','provisioning')`,
     )
     .get(runnerId, excludeRunId, runnerLeaseCutoff(now))!.held;

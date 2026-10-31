@@ -235,6 +235,26 @@ describe("job queue", () => {
     expect(claim(db, clock, [JOB_KIND.start])?.id).toBe(id);
   });
 
+  test("a queued start with old capacity bookkeeping still needs admission", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: {
+        itemId: "eng-1",
+        capacityWait: { since: clock.now(), attempt: 0, runnerIds: ["busy"] },
+      },
+      now: clock.now(),
+    });
+    expect(claim(db, clock, [JOB_KIND.start])).toBeNull();
+    db.run(
+      "INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,paths,hot,created_at) VALUES(?,?,'*','repo','[]',0,?)",
+      ["eng-1", id, clock.now()],
+    );
+    expect(claim(db, clock, [JOB_KIND.start])?.id).toBe(id);
+    db.close();
+  });
+
   test("a start parked for a runner slot is claimed again after the item is running", () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });

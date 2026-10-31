@@ -63,7 +63,6 @@ export {
   CANCEL_STILL_PENDING,
   runnerCancelPending,
   recordRunnerCapacity,
-  closeExpiredRunnerLeases,
   runnerHasCapacity,
   runnerOccupancy,
   runnerSlotFree,
@@ -289,7 +288,12 @@ export {
   type DeadDelivery,
   type DeadDeliveryRef,
 } from "./dead-deliveries";
-export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
+export {
+  closeExpiredRunnerLeases,
+  prepareShutdown,
+  recoverOnStartup,
+  requeueOrphanedWork,
+} from "./recovery";
 export {
   markPawsAlive,
   PAWS_ALIVE_INTERVAL_MS,

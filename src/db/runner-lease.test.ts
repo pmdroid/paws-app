@@ -3,6 +3,10 @@ import { FakeClock, type Checkpoint } from "../core";
 import { RUNNER_LEASE_GRACE_MS } from "../runner-protocol";
 import {
   beginImplementRun,
+  applyWorkItemEvent,
+  closeExpiredRunnerLeases,
+  enqueueJob,
+  claimNextJob,
   halt,
   getRun,
   getWorkItem,
@@ -88,11 +92,16 @@ describe("the runner lease grace", () => {
   });
 
   test("capacity frees the lease past the grace and closes the run that never ended", () => {
-    const { clock, db, run } = leased();
+    const { clock, db, run, item } = leased();
     clock.advance(PAST);
     expect(runnerOccupancy(db, "runner", clock.now())).toEqual({ capacity: 1, occupied: 0 });
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(0);
+    // Counting is read-only, including the caller's excluded run.
+    expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), run.id)).toBe(0);
+    expect(getRun(db, run.id)?.status).toBe("active");
+    expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([run.id]);
     expect(getRun(db, run.id)?.status).toBe("lost");
+    expect(getWorkItem(db, item.id)?.state).toBe("recovering");
     expect(
       db
         .query<{ endedAt: number | null }, [string]>(
@@ -101,6 +110,43 @@ describe("the runner lease grace", () => {
         .get(run.id)?.endedAt,
     ).toBe(clock.now());
   });
+
+  test("the sweep leaves expired work to its live placement owner", () => {
+    const { db, clock, run } = leased();
+    const item = getRun(db, run.id)!;
+    enqueueJob(db, { queue: "run.resume", payload: { itemId: item.itemId }, now: clock.now() });
+    const job = claimNextJob(db, {
+      now: clock.now(),
+      leaseMs: PAST + 60_000,
+      queues: ["run.resume"],
+    })!;
+    expect(job).not.toBeNull();
+    clock.advance(PAST);
+    expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
+    expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), run.id)).toBe(0);
+    expect(getRun(db, run.id)?.status).toBe("active");
+    expect(db.query("SELECT ended_at FROM runner_work WHERE run_id=?").get(run.id)).toEqual({
+      ended_at: null,
+    });
+    db.close();
+  });
+
+  for (const state of ["verifying", "merge_queue"] as const) {
+    test(`expired abandoned ${state} work transitions with its lost run`, () => {
+      const { db, clock, run, item } = leased();
+      applyWorkItemEvent(db, item.id, "turn_ended");
+      if (state === "merge_queue") applyWorkItemEvent(db, item.id, "closeout_accepted");
+      clock.advance(PAST);
+      expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([run.id]);
+      expect(getRun(db, run.id)?.status).toBe("lost");
+      expect(getWorkItem(db, item.id)?.state).toBe(
+        state === "merge_queue" ? "verifying" : "recovering",
+      );
+      expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(0);
+      expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
+      db.close();
+    });
+  }
 
   test("a finished command still holds its slot after the lease grace", () => {
     const { clock, db, run } = leased();
@@ -148,6 +194,7 @@ describe("the runner lease grace", () => {
     db.run("UPDATE runner_result SET command_id='command' WHERE run_id=?", [run.id]);
     expect(runnerHoldsRunWork(db, run.id, clock.now())).toBe(true);
     expect(runnerWorkHasResult(db, run.id)).toBe(true);
+    expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(1);
     expect(getRun(db, run.id)?.status).toBe("active");
     expect(runnerHoldsRunWork(db, run.id, clock.now(), true)).toBe(false);
