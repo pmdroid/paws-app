@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { createWorktree, ensureBareMirror, git, worktreePath } from "../acp";
 import { insertQueuedItem, insertRun, migrate, openDatabase, type WorkItemRecord } from "../db";
+import { setJournalSink } from "../journal";
 import { RETIRED_WORKTREE_MS, sweepWorktrees, type WorktreeSweep } from "./worktree-sweep";
 
 const roots: string[] = [];
@@ -18,21 +19,56 @@ afterEach(async () => {
 
 test("removes orphaned worktrees and preserves live worktrees", async () => {
   const fixture = await setup();
+  insertQueuedItem(fixture.db, { id: "ENG-orphan" });
   await createWorktree({ ...repository, itemId: "ENG-orphan", pawsRoot: fixture.pawsRoot });
+  fixture.db.run("DELETE FROM work_item WHERE id = 'ENG-orphan'");
   await fixture.item("ENG-live", "running", old);
   await sweepWorktrees(fixture.sweep());
   expect(existsSync(worktreePath(fixture.pawsRoot, "ENG-orphan"))).toBe(false);
   expect(existsSync(worktreePath(fixture.pawsRoot, "ENG-live"))).toBe(true);
 }, 30_000);
 
-test("retains a terminal worktree for seven days even if its merged head cannot be resolved", async () => {
+test("retires a failed worktree after seven days despite an unresolvable merged head", async () => {
+  const fixture = await setup();
+  await fixture.item("ENG-1", "failed", old);
+  fixture.db.run(
+    "INSERT INTO work_item_event (item_id, version, at, from_state, to_state, event) VALUES (?, 1, ?, 'running', 'failed', 'fail')",
+    ["ENG-1", now - 60_000],
+  );
+  let lookups = 0;
+  const sweep = fixture.sweep({
+    mergedHeads: async () => {
+      lookups++;
+      return ["missing-commit"];
+    },
+  });
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    await sweepWorktrees(sweep);
+    expect(fixture.present()["ENG-1"]).toBe(true);
+    expect(lookups).toBe(1);
+    expect(lines.join("\n")).toContain("operation=worktree.worktreeMergedInto.git");
+    expect(lines.join("\n")).toContain("missing-commit");
+    await sweepWorktrees({ ...sweep, now: now + RETIRED_WORKTREE_MS });
+    expect(fixture.present()["ENG-1"]).toBe(false);
+    expect(lookups).toBe(1);
+  } finally {
+    restore();
+  }
+}, 30_000);
+
+test("keeps a cancelled worktree for seven days even when its head was merged", async () => {
   const fixture = await setup();
   await fixture.item("ENG-1", "cancelled", old);
   fixture.db.run(
     "INSERT INTO work_item_event (item_id, version, at, from_state, to_state, event) VALUES (?, 1, ?, 'running', 'cancelled', 'cancel')",
     ["ENG-1", now - 60_000],
   );
-  const sweep = fixture.sweep({ mergedHeads: async () => ["missing-commit"] });
+  const head = (
+    await git(["-C", worktreePath(fixture.pawsRoot, "ENG-1"), "rev-parse", "HEAD"])
+  ).trim();
+  const sweep = fixture.sweep({ mergedHeads: async () => [head] });
   await sweepWorktrees(sweep);
   expect(fixture.present()["ENG-1"]).toBe(true);
   await sweepWorktrees({ ...sweep, now: now + RETIRED_WORKTREE_MS });
