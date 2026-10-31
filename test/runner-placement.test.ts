@@ -7,6 +7,7 @@ import {
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   insertRun,
+  enqueueJob,
   migrate,
   openDatabase,
   putWorkspaceUser,
@@ -247,7 +248,57 @@ test("a continuing task lands on the runner of its last session, or elsewhere af
     expect(await placed.ids(session)).toEqual(["own", "second"]);
 
     placed.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [Date.now(), run.id]);
+    // An active run retains its slot between commands until its lifetime ends.
+    expect(await placed.ids(session)).toEqual(["own", "second"]);
+    placed.db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
     expect(await placed.ids(session)).toEqual(["second", "own"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("session affinity waits for other runs' held slots and unassigned reservations", async () => {
+  const placed = await placeItem();
+  try {
+    const { db } = placed;
+    db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('second',2)");
+    const own = insertRun(db, { itemId: "item", now: placed.now(), status: "active" });
+    db.run("UPDATE work_item SET current_run_id=? WHERE id='item'", [own.id]);
+    const other = insertRun(db, { itemId: "item", now: placed.now(), status: "active" });
+    for (const [runId, ended] of [
+      [own.id, null],
+      [other.id, placed.now()],
+    ] as const)
+      db.run(
+        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence,ended_at) VALUES(?,'second',?,1,0,?,?,0,?)",
+        [runId, placed.workspaceId, `work-${runId}`, placed.now() + 3_600_000, ended],
+      );
+    const session = { session: { runnerId: "second" } };
+    // One held slot and one in-flight reservation fill the holder, excluding our own work.
+    expect(await placed.ids({ ...session, reserved: new Map([["second", 1]]) })).toEqual([
+      "second",
+    ]);
+    insertQueuedItem(db, { id: "pinned", now: placed.now() });
+    const pin = enqueueJob(db, {
+      queue: "run.resume",
+      now: placed.now(),
+      payload: {
+        itemId: "pinned",
+        pinnedSlot: { runnerId: "second", order: 0 },
+      },
+    });
+    expect(await placed.ids(session)).toEqual(["second"]);
+    // A post-preparation authority recheck must not restart session selection or grace.
+    expect(await placed.ids({ session: undefined })).toEqual(["own", "second"]);
+    db.run("UPDATE job SET status='cancelled' WHERE id=?", [pin]);
+    // The held slot alone leaves room for this run to keep its session.
+    expect(await placed.ids(session)).toEqual(["second", "own"]);
+    db.run("UPDATE run SET status='ended' WHERE id=?", [other.id]);
+    expect(await placed.ids({ ...session, reserved: new Map([["second", 1]]) })).toEqual([
+      "second",
+      "own",
+    ]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });

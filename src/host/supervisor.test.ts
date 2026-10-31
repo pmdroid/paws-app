@@ -8,17 +8,17 @@ import {
   type Checkpoint,
 } from "../core";
 import {
-  applyWorkItemEvent,
-  beginImplementRun,
+  applyWorkItemEvent as applyEvent,
+  beginImplementRun as beginRun,
   claimNextJob,
   completeJob,
   enqueueJob,
-  enterMergeQueue,
+  enterMergeQueue as enterQueue,
   getRun,
   getWorkItem,
   insertQueuedItem,
   JobLoop,
-  listJobs,
+  listJobs as storedJobs,
   listOutbox,
   markCloseoutAccepted,
   migrate,
@@ -29,6 +29,44 @@ import {
 import { startHost } from "./index";
 import { HostSupervisor } from "./supervisor";
 import { WakeDetector } from "./wake";
+
+/** The unit fixture holds a real job while its simulated agent is running. */
+function agentJob(db: Parameters<typeof beginRun>[0], itemId: string, now: number) {
+  const id = enqueueJob(db, {
+    queue: JOB_KIND.resume,
+    jobKey: `fixture-agent:${itemId}:${getWorkItem(db, itemId)!.version}`,
+    payload: { itemId },
+    now,
+  });
+  db.run("UPDATE job SET status='running', locked_by='fixture', locked_until=? WHERE id=?", [
+    now + 24 * 60 * 60_000,
+    id,
+  ]);
+}
+function endAgentJob(db: Parameters<typeof beginRun>[0], itemId: string) {
+  db.run(
+    "UPDATE job SET status='done', locked_until=NULL, locked_by=NULL WHERE job_key LIKE 'fixture-agent:%' AND json_extract(payload,'$.itemId')=?",
+    [itemId],
+  );
+}
+function beginImplementRun(...args: Parameters<typeof beginRun>) {
+  const result = beginRun(...args);
+  agentJob(args[0], args[1], args[2]);
+  return result;
+}
+function applyWorkItemEvent(...args: Parameters<typeof applyEvent>) {
+  const before = getWorkItem(args[0], args[1])!.state;
+  const result = applyEvent(...args);
+  if (before === "running" && result.state !== "running") endAgentJob(args[0], args[1]);
+  if (before !== "running" && result.state === "running") agentJob(args[0], args[1], 1_000_000);
+  return result;
+}
+function enterMergeQueue(...args: Parameters<typeof enterQueue>) {
+  endAgentJob(args[0], args[1]);
+  return enterQueue(...args);
+}
+const listJobs = (db: Parameters<typeof storedJobs>[0]) =>
+  storedJobs(db).filter((job) => !job.jobKey?.startsWith("fixture-agent:"));
 
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 3, baseSha: "main" };
 

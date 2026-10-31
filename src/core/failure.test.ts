@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isTransient } from "./failure";
+import { isTransient, resumeRetrySpreadMs } from "./failure";
 import { PawsShutdown, RunnerSlotsBusyError } from "./user-facing-error";
 
 function named(name: string, message = name): Error {
@@ -103,4 +103,11 @@ describe("HTTP statuses and rate-limit bodies", () => {
       ),
     ).toBe(true);
   });
+});
+
+test("resume retry spread keeps at least eighty percent of the delay and caps spread at five seconds", () => {
+  expect(resumeRetrySpreadMs(1, () => 0.99)).toBe(0);
+  expect(resumeRetrySpreadMs(5_000, () => 0)).toBe(0);
+  expect(resumeRetrySpreadMs(5_000, () => 0.99)).toBe(990);
+  expect(resumeRetrySpreadMs(60_000, () => 0.99)).toBe(4_950);
 });

@@ -133,6 +133,7 @@ export {
   TRANSIENT_RETRY_BASE_MS,
   isTransient,
   placementWaitMs,
+  resumeRetrySpreadMs,
   isTransientGitError,
   retryNote,
   retryAfterMs,
@@ -177,3 +178,15 @@ export {
   type FindingPlace,
   type ReviewFindingStatus,
 } from "./review-finding";
+
+export {
+  BRIEF_PLACEHOLDERS,
+  BRIEF_RUN_SAMPLES,
+  briefSectionSizes,
+  briefTemplateProblem,
+  defaultBriefTemplate,
+  previewBriefValues,
+  renderBriefTemplate,
+  renderWorkContext,
+  type BriefValues,
+} from "./brief-template";

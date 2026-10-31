@@ -78,10 +78,12 @@ import {
   repositoryPackages,
   readQueueSettings,
   resolveAgentProfiles,
+  resolveBriefTemplate,
   resolveMergeSettings,
   type AgentProfile,
   type AgentProfiles,
   type CheckoutExclusions,
+  type MergeSettings,
 } from "../config";
 import {
   fixAttemptLimit,
@@ -152,6 +154,7 @@ import {
   RunnerSetupRequired,
   type RunnerSetupNeed,
   placementWaitMs,
+  resumeRetrySpreadMs,
   retryNote,
   transientRetryDelayMs,
 } from "../core";
@@ -181,6 +184,8 @@ import {
   listArtifacts,
   getTaskClassification,
   resolveTaskClassification,
+  accrueAwake,
+  hasLiveJob,
   applyWorkItemEvent,
   configureWorkItem,
   enqueueJobOnce,
@@ -226,6 +231,7 @@ import {
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   startCloseoutRound,
+  markJobAwakeWait,
   markRun,
   releaseRunCapacity,
   saveCheckpoint,
@@ -444,7 +450,7 @@ import {
 import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
-import { renderWorkBrief } from "./brief";
+import { renderWorkContext } from "../core";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
@@ -607,6 +613,7 @@ export type OrchestratorOptions = {
   caps?: { maxTurns: number; maxAwakeMs: number };
   retryBaseMs?: number;
   placementPollMs?: number;
+  random?: () => number;
   /** Runs publication Git (push, fetch, rebase) in place of the owned Git. Tests pass a wrapper. */
   publicationGitExec?: GitExec;
   /**
@@ -679,6 +686,7 @@ export class Orchestrator {
     string,
     (options: RunAgentOptions) => Promise<RunAgentResult>
   >();
+  private readonly leasedJobs = new Map<string, Job>();
   private readonly jobContexts = new Map<string, JobContext>();
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
@@ -1509,13 +1517,14 @@ export class Orchestrator {
       if (owner !== null) this.checkRunnerSetup(owner);
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
-      await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
+      if (this.waitingForRunnerSlot(job)) return;
+      await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
       if (this.waitingForRunnerSlot(job)) return;
       if (await this.mergeInsteadOfTurn(job, context)) return;
-      await this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context));
+      await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
@@ -1548,7 +1557,7 @@ export class Orchestrator {
         )
           return;
         try {
-          await this.runLeasedJob(job.payload, context, () =>
+          await this.runLeasedJob(job, context, () =>
             this.runOwnedJob(job.payload, () =>
               this.reverify(job.payload, job.id, () => {
                 const owned = getWorkItem(this.db, item.id);
@@ -1575,6 +1584,8 @@ export class Orchestrator {
             this.options.journal,
           );
           clearWait();
+          const waitingId = readString(job.payload, "itemId");
+          if (waitingId) this.settleItemAwake(waitingId);
           waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
@@ -1609,6 +1620,8 @@ export class Orchestrator {
         return;
       }
       if (waiting === undefined) return;
+      const waitingId = readString(job.payload, "itemId");
+      if (waitingId) this.settleItemAwake(waitingId);
       if (parkMerge(this.db, job, this.now(), waiting) !== "expired") return;
       const itemId = readString(job.payload, "itemId");
       const item = itemId ? getWorkItem(this.db, itemId) : null;
@@ -1776,7 +1789,7 @@ export class Orchestrator {
     onWait: (wait: MergeWait | undefined) => void,
   ): Promise<void> {
     await this.failOnLastAttempt(job, context, "merge", () =>
-      this.runLeasedJob(job.payload, context, async () => {
+      this.runLeasedJob(job, context, async () => {
         try {
           await this.runOwnedJob(job.payload, async () => {
             const step = await this.merge(job.payload, job.id);
@@ -1861,11 +1874,15 @@ export class Orchestrator {
   }
 
   private async executeRetried(job: Job, context: JobContext): Promise<void> {
+    let capacityRun: { itemId: string; runId: string } | undefined;
+    let capacityParked = false;
     try {
       await this.executeQueued(job.payload);
     } catch (error) {
       const itemId = readString(job.payload, "itemId");
       const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      if (capacityWaitIn(error) && item?.currentRunId)
+        capacityRun = { itemId: item.id, runId: item.currentRunId };
       if (
         this.shuttingDown ||
         !item ||
@@ -1886,15 +1903,20 @@ export class Orchestrator {
       }
       const wait = this.nextRunnerWait(job, error);
       if (wait) {
-        deferWorkItem(this.db, item, {
-          retry: retryCount(job.payload),
-          delayMs: this.runnerWaitMs(wait),
-          handoff: readString(job.payload, "handoff"),
-          message: null,
-          capacityWait: wait,
-          now: this.now(),
-        });
-
+        // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
+        // and the item keeps this run (PAS-898).
+        this.settleItemAwake(item.id);
+        if (
+          waitForRunnerSlot(
+            this.db,
+            job,
+            this.now(),
+            this.runnerWaitMs(wait, job.queue === JOB_KIND.resume),
+            wait,
+          ) === "lost"
+        )
+          throw error;
+        capacityParked = true;
         journalCaught(
           error,
           "orchestrator.executeRetried.executeQueued",
@@ -1940,6 +1962,7 @@ export class Orchestrator {
         }
         const delayMs = transientRetryDelayMs(retry, error, this.options.retryBaseMs);
 
+        this.settleItemAwake(item.id);
         deferWorkItem(this.db, item, {
           retry,
           delayMs,
@@ -1960,6 +1983,14 @@ export class Orchestrator {
       if (job.attempts >= job.maxAttempts)
         this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
       throw error;
+    } finally {
+      if (
+        capacityRun &&
+        !capacityParked &&
+        getWorkItem(this.db, capacityRun.itemId)?.currentRunId === capacityRun.runId &&
+        !hasLiveJob(this.db, capacityRun.itemId, this.now(), job.id)
+      )
+        closeActiveRun(this.db, capacityRun.runId, this.now(), "lost");
     }
   }
 
@@ -2103,8 +2134,9 @@ export class Orchestrator {
     };
   }
 
-  private runnerWaitMs(wait: RunnerCapacityWaitState): number {
-    return placementWaitMs(wait.attempt, this.options.placementPollMs);
+  private runnerWaitMs(wait: RunnerCapacityWaitState, recoveringResume = false): number {
+    const baseMs = placementWaitMs(wait.attempt, this.options.placementPollMs);
+    return recoveringResume ? baseMs - resumeRetrySpreadMs(baseMs, this.options.random) : baseMs;
   }
 
   private waitingForRunnerSlot(job: Job, beforePark?: () => Job): boolean {
@@ -2115,16 +2147,17 @@ export class Orchestrator {
       !waited ||
       !item ||
       item.cancelRequested ||
-      !["recovering", "verifying", "merge_queue"].includes(item.state) ||
+      !["running", "recovering", "verifying", "merge_queue"].includes(item.state) ||
       this.shuttingDown ||
       (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
-      runnerSlotFree(this.db, waited.runnerIds, this.now())
+      runnerSlotFree(this.db, waited.runnerIds, this.now(), item.currentRunId ?? "")
     )
       return false;
     const next = { ...waited, attempt: waited.attempt + 1 };
     job = beforePark?.() ?? job;
-    waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(next), next);
+    const delayMs = this.runnerWaitMs(next, job.queue === JOB_KIND.resume);
+    waitForRunnerSlot(this.db, job, this.now(), delayMs, next);
     return true;
   }
 
@@ -2690,6 +2723,7 @@ export class Orchestrator {
       },
     );
     let deferred = false;
+    let capacityWaiting = false;
 
     try {
       await this.taskAccess()?.assert(item, controller.signal);
@@ -2916,6 +2950,7 @@ export class Orchestrator {
           );
         else if (isTransient(error)) {
           deferred = true;
+          capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
         } else this.fail(current, "run_error", message, error);
       }
@@ -2934,6 +2969,7 @@ export class Orchestrator {
       this.releaseAskedRun(run.id);
       if (
         this.options.remoteExecution &&
+        !capacityWaiting &&
         !this.shuttingDown &&
         (this.jobContexts.get(item.id)?.isCurrent() ?? true)
       )
@@ -3504,7 +3540,7 @@ export class Orchestrator {
         input.report(
           `Closeout could not run the checks for ${item.linearIdentifier} on its runner (${reason}). Retrying in ${Math.round(delayMs / 1000)} s.`,
         );
-        await delay(delayMs, undefined, deps.signal ? { signal: deps.signal } : {});
+        await this.waitWithoutAwake(item.id, "backoff", delayMs, deps.signal);
         assertCurrent();
       } else
         input.report(
@@ -3556,12 +3592,13 @@ export class Orchestrator {
           (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(reason)) &&
           this.now() < rateLimitDeadline
         ) {
-          await delay(
+          await this.waitWithoutAwake(
+            item.id,
+            "backoff",
             error instanceof LinearRateLimitError
               ? Math.min(error.retryAfterMs, CHECKS_RATE_LIMIT_WAIT_MS)
               : CHECKS_RATE_LIMIT_RETRY_MS,
-            undefined,
-            deps.signal ? { signal: deps.signal } : {},
+            deps.signal,
           );
           assertCurrent();
           attempt -= 1;
@@ -3597,7 +3634,7 @@ export class Orchestrator {
         return runner;
       },
       now: () => this.now(),
-      sleep: (ms) => delay(ms, undefined, signal ? { signal } : {}),
+      sleep: (ms) => this.waitWithoutAwake(item.id, "runner", ms, signal),
       waiting: (reason) => {
         if (stepId)
           setRunningCloseoutStepDetail(this.db, item.id, head, stepId, reason, this.now());
@@ -3741,7 +3778,7 @@ export class Orchestrator {
           ...this.gitHubCredentials(github),
         });
       },
-      sleep: (ms) => delay(ms, undefined, signal ? { signal } : {}),
+      sleep: (ms) => this.waitWithoutAwake(item.id, "ci", ms, signal),
       now: () => this.now(),
       ...(this.options.ciRecheckWait ?? {}),
       onWait: (message) =>
@@ -4115,30 +4152,58 @@ export class Orchestrator {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return { kind: "obsolete" };
     const run: MergeRun = { payload, jobId };
+    let policy: MergeSettings | undefined;
+    const mergePolicy = () => (policy ??= this.readMergePolicy());
+    // The lane calls this again after async publication checks, so keep digest reads fresh.
+    const policyDigests = (item: WorkItemRecord, worktree: string) => {
+      const { home, policyRoot } = this.closeoutHome(item);
+      return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
+    };
     return advanceMerge(
       this.db,
       { itemId, payload, jobId },
       {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
-        settings: (item, signal) => this.mergeSettingsFor(item, signal),
-        policyDigests: (item, worktree) => {
-          const { home, policyRoot } = this.closeoutHome(item);
-          return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
-        },
+        settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
+        policyDigests,
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
-        riskApproval: (item, published) =>
-          riskApprovalFor(this.db, {
+        riskApproval: (item, published) => {
+          let autoApproveHighRisk = false;
+          let policyDigest: string | null = null;
+          let policyPaths: readonly string[] | null = null;
+          try {
+            autoApproveHighRisk = mergePolicy().autoApproveHighRisk;
+            if (autoApproveHighRisk) {
+              const current = policyDigests(item, published.worktree);
+              policyDigest = current?.digest ?? null;
+              policyPaths = current?.paths ?? null;
+            }
+          } catch (error) {
+            journalCaught(
+              error,
+              "orchestrator.riskApproval.settings",
+              item.id,
+              undefined,
+              this.options.journal,
+            );
+          }
+          return riskApprovalFor(this.db, {
             itemId: item.id,
             head: published.head,
             publicUrl: this.options.publicUrl,
+            autoApproveHighRisk,
+            policyDigest,
+            policyPaths,
+            journal: this.options.journal,
             samePatch: (approved, base) =>
               samePatch(published.worktree, approved, published.head, base),
             fixRisk: (approved, base) => this.fixRisk(item, published, approved, base),
             now: this.now(),
-          }),
+          });
+        },
         askRiskApproval: async (item, published) => {
           const asked = askRiskApproval(this.db, {
             item,
@@ -4637,6 +4702,10 @@ export class Orchestrator {
     return Math.min(rounds, restartLimit(this.db, item.id) ?? rounds);
   }
 
+  private readMergePolicy(): MergeSettings {
+    return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+  }
+
   /**
    * Settings → Merging for this task: an issue rule, then the Linear project, then the workspace
    * default. Resolved from the issue's project and labels once, then kept with the task. A failed
@@ -4645,10 +4714,11 @@ export class Orchestrator {
   private async mergeSettingsFor(
     item: WorkItemRecord,
     signal?: AbortSignal,
+    readPolicy = () => this.readMergePolicy(),
   ): Promise<TaskMergeSettings> {
     const kept = getTaskMergeSettings(this.db, item.id);
     if (kept) return kept;
-    const policy = readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+    const policy = readPolicy();
     let context: LinearMergeContext | null = { projectId: null, labels: [] };
     if (this.tracker?.issueMergeContext) {
       try {
@@ -6118,22 +6188,26 @@ export class Orchestrator {
   }
 
   private async runLeasedJob(
-    payload: unknown,
+    job: Job,
     context: JobContext,
     operation: () => Promise<void>,
   ): Promise<void> {
-    const itemId = readString(payload, "itemId");
+    const itemId = readString(job.payload, "itemId");
     if (!itemId) return;
     if (this.jobContexts.has(itemId)) throw new Error("Task already has an owned job operation");
     if (!context.isCurrent()) throw context.signal.reason;
     this.jobContexts.set(itemId, context);
+    this.leasedJobs.set(itemId, job);
     this.verifyingStops.delete(itemId);
     try {
       await this.loadProjectOverview(itemId, context.signal);
       await operation();
       if (!context.isCurrent()) throw context.signal.reason;
     } finally {
-      if (this.jobContexts.get(itemId) === context) this.jobContexts.delete(itemId);
+      if (this.jobContexts.get(itemId) === context) {
+        this.jobContexts.delete(itemId);
+        this.leasedJobs.delete(itemId);
+      }
     }
   }
 
@@ -6782,18 +6856,20 @@ export class Orchestrator {
           .map((snapshot) => JSON.parse(snapshot) as LinearActivitySnapshot)
           .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral)
       : [];
-    return [
-      renderWorkBrief(item.brief),
-      (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
-      ...listLinearTurnsForItem(this.db, item.id).map((turn) => `User update:\n${turn.body}`),
-      classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
-      item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
-      activities.length
-        ? `Immutable Linear conversation history:\n${JSON.stringify(activities)}`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const repository = this.repositoryForItem(item);
+    const template = resolveBriefTemplate(
+      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+      repository ? `${repository.owner}/${repository.repo}` : null,
+    );
+    return renderWorkContext(template, {
+      brief: item.brief,
+      projectOverview:
+        (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
+      userUpdates: listLinearTurnsForItem(this.db, item.id).map((turn) => turn.body),
+      taskContext: classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
+      sessionContext: item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
+      activities,
+    });
   }
 
   private artifactPublisher(item: WorkItemRecord) {
@@ -7904,7 +7980,8 @@ export class Orchestrator {
           );
           controller.signal.throwIfAborted();
 
-          if (attempt < 3) await delay(attempt * 500, undefined, { signal: controller.signal });
+          if (attempt < 3)
+            await this.waitWithoutAwake(item.id, "backoff", attempt * 500, controller.signal);
         }
       }
       if (suggested)
@@ -8009,6 +8086,28 @@ export class Orchestrator {
 
   private now(): number {
     return (this.options.clock ?? systemClock).now();
+  }
+
+  private async waitWithoutAwake(
+    itemId: string,
+    reason: "ci" | "runner" | "backoff",
+    ms: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const clock = this.options.clock ?? systemClock;
+    const job = this.leasedJobs.get(itemId);
+    if (job) markJobAwakeWait(this.db, job, true, clock.mono(), clock.now(), reason);
+    try {
+      await delay(ms, undefined, signal ? { signal } : {});
+    } finally {
+      if (job) markJobAwakeWait(this.db, job, false, clock.mono(), clock.now(), reason);
+    }
+  }
+
+  /** Records awake time up to this instant, under the item's category before the next wait. */
+  private settleItemAwake(itemId: string): void {
+    const clock = this.options.clock ?? systemClock;
+    accrueAwake(this.db, itemId, clock.mono(), clock.now());
   }
 }
 

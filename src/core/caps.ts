@@ -49,11 +49,11 @@ export function capActivityText(
   return tracked ? `${cap} ${formatAwakeBreakdown(breakdown)}` : cap;
 }
 
-/** "Counted: agent turns 120 min, Closeout 60 min. Not counted: waiting for answers 90 min." */
+/** "Counted: agent turns 120 min, Closeout 60 min. Not counted: waiting 90 min." */
 export function formatAwakeBreakdown(breakdown: AwakeBreakdown): string {
   const counted = `Counted: agent turns ${minutes(breakdown.agentMs)}, Closeout ${minutes(breakdown.closeoutMs)}.`;
   const skipped = [
-    breakdown.waitingMs > 0 ? `waiting for answers ${minutes(breakdown.waitingMs)}` : null,
+    breakdown.waitingMs > 0 ? `waiting ${minutes(breakdown.waitingMs)}` : null,
     breakdown.recheckMs > 0 ? `re-checking accepted work ${minutes(breakdown.recheckMs)}` : null,
   ].filter((part) => part !== null);
   return skipped.length === 0 ? counted : `${counted} Not counted: ${skipped.join(", ")}.`;

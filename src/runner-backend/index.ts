@@ -18,6 +18,7 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  agentReadyRunners,
   endUsagePause,
   getTaskMode,
   getWorkItem,
@@ -99,6 +100,7 @@ import {
   RunnerCapacityWait,
   RunnerSetupRequired,
   WORKSPACE_HOOK_LIMIT,
+  systemClock,
   type WorkspaceHook,
 } from "../core";
 import {
@@ -292,6 +294,7 @@ export function createRemoteAgentRunner(options: {
     repository: string,
   ) => Promise<NonNullable<Extract<RunnerCommand, { type: "run" }>["checkpointBot"]>>;
   now?: () => number;
+  mono?: () => number;
   pollIntervalMs?: number;
   /** How long a run may go without a runner event before Paws asks whether the runner has it. */
   silentRunMs?: number;
@@ -301,6 +304,7 @@ export function createRemoteAgentRunner(options: {
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
+  const mono = options.mono ?? systemClock.mono;
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
@@ -467,16 +471,19 @@ export function createRemoteAgentRunner(options: {
     );
   }
   /** Reservations per runner whose run has no runner_work row there yet. */
-  function unassigned() {
+  function unassigned(excludeRunId = "") {
     const counts = new Map<string, number>();
+    const assigned = new Map(
+      db
+        .query<{ runId: string; runnerId: string }, [string]>(
+          `SELECT run_id AS runId, runner_id AS runnerId FROM runner_work
+       WHERE run_id IN (SELECT value FROM json_each(?))`,
+        )
+        .all(JSON.stringify([...reservations.keys()]))
+        .map((row) => [row.runId, row.runnerId]),
+    );
     for (const [runId, hostId] of reservations)
-      if (
-        !db
-          .query<{ held: number }, [string, string]>(
-            "SELECT 1 AS held FROM runner_work WHERE run_id=? AND runner_id=?",
-          )
-          .get(runId, hostId)
-      )
+      if (runId !== excludeRunId && assigned.get(runId) !== hostId)
         counts.set(hostId, (counts.get(hostId) ?? 0) + 1);
     return counts;
   }
@@ -491,7 +498,7 @@ export function createRemoteAgentRunner(options: {
     let candidates = options.placement
       ? await options.placement.candidates({
           ...placement,
-          reserved: unassigned(),
+          reserved: unassigned(item.currentRunId),
           onRejected: (id, reason) => rejected.push(`${id}: ${reason}`),
         })
       : db
@@ -537,7 +544,7 @@ export function createRemoteAgentRunner(options: {
       ];
     placement.signal?.throwIfAborted();
     offered.push(...candidates.map((runner) => runner.id));
-    const pending = unassigned();
+    const pending = unassigned(item.currentRunId);
     for (const runner of candidates) {
       if (runner.id === placement.handedOverFrom) {
         rejected.push(`${runner.id}: handed the session over`);
@@ -560,12 +567,14 @@ export function createRemoteAgentRunner(options: {
         continue;
       }
       try {
-        const mode = getTaskMode(db, itemId);
-        if (isResponseTaskMode(mode))
-          work.scopeTask(item.currentRunId, runner.workspaceId, work.identity(runner.id).userId);
-        else work.scope(item.currentRunId, runner.workspaceId);
+        immediate(db, () => {
+          const mode = getTaskMode(db, itemId);
+          if (isResponseTaskMode(mode))
+            work.scopeTask(item.currentRunId!, runner.workspaceId, work.identity(runner.id).userId);
+          else work.scope(item.currentRunId!, runner.workspaceId);
+          releasePinnedSlot(db, itemId);
+        });
         reservations.set(item.currentRunId, runner.id);
-        releasePinnedSlot(db, itemId);
         return { ...runner, runId: item.currentRunId };
       } catch (error) {
         journalCaught(error, "runner-backend.place.getTaskMode", itemId);
@@ -658,15 +667,22 @@ export function createRemoteAgentRunner(options: {
         const runId = getWorkItem(db, itemId)?.currentRunId;
         if (!runId) throw limit;
         const agent = agentName(limit.agent);
-        startUsagePause(db, {
-          runId,
-          itemId,
-          agent: limit.agent,
-          runnerId: limit.runnerId,
-          resetsAt: limit.resetsAt,
-          resumeAt: limit.resumeAt,
-          pausedAt: now(),
-        });
+        const readyAtPause = new Set(
+          agentReadyRunners(db, limit.agent, now(), now() - RUNNER_ONLINE_MS),
+        );
+        startUsagePause(
+          db,
+          {
+            runId,
+            itemId,
+            agent: limit.agent,
+            runnerId: limit.runnerId,
+            resetsAt: limit.resetsAt,
+            resumeAt: limit.resumeAt,
+            pausedAt: now(),
+          },
+          mono(),
+        );
         try {
           await input.onEvent?.({
             type: "progress",
@@ -676,10 +692,16 @@ export function createRemoteAgentRunner(options: {
           for (;;) {
             const wait = (usagePause(db, runId)?.resumeAt ?? 0) - now();
             if (wait <= 0) break;
+            if (
+              agentReadyRunners(db, limit.agent, now(), now() - RUNNER_ONLINE_MS).some(
+                (id) => !readyAtPause.has(id),
+              )
+            )
+              break;
             await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
           }
         } finally {
-          endUsagePause(db, runId);
+          endUsagePause(db, runId, mono(), now());
         }
         input.signal?.throwIfAborted();
         await input.onEvent?.({
@@ -1222,7 +1244,15 @@ export function createRemoteAgentRunner(options: {
               )
                 throw new Error("Run attribution App bot authority changed");
               if (options.placement) {
-                const admitted = (await options.placement.candidates(placementRequest)).some(
+                const admitted = (
+                  await options.placement.candidates({
+                    ...placementRequest,
+                    // Session grace chooses the initial runner. Recheck the selected runner's
+                    // authority without starting a new grace wait during preparation.
+                    session: undefined,
+                    reserved: unassigned(selected.runId),
+                  })
+                ).some(
                   (runner) =>
                     runner.id === selected.id && runner.workspaceId === selected.workspaceId,
                 );
@@ -2156,50 +2186,61 @@ export function createRemoteAgentRunner(options: {
             transcriptPath: transcript,
           };
         } finally {
-          // A Paws restart leaves implementer work and response tasks running on the runner, and
-          // a verifying item's Closeout review or check run; the startup resume or re-verify
-          // reattaches to them.
-          const state = getWorkItem(db, itemId)?.state;
-          const detached =
-            signal.reason instanceof PawsShutdown &&
-            command !== undefined &&
-            (closeoutWork
-              ? state === "verifying"
-              : ((command.type === "run" && command.checkpoint !== false) ||
-                  command.type === "task") &&
-                state === "running");
-          // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
-          // first, and the next turn starts from it.
-          const saving =
-            command?.type === "run" &&
-            command.checkpoint !== false &&
-            !detached &&
-            signal.aborted &&
-            !(signal.reason instanceof PawsShutdown)
-              ? checkpointBeforeStop(command.runId)
-              : null;
-          if (saving) await saving;
-          if (command && !detached) {
+          try {
+            // A Paws restart leaves implementer work and response tasks running on the runner, and
+            // a verifying item's Closeout review or check run; the startup resume or re-verify
+            // reattaches to them.
+            const state = getWorkItem(db, itemId)?.state;
+            const detached =
+              signal.reason instanceof PawsShutdown &&
+              command !== undefined &&
+              (closeoutWork
+                ? state === "verifying"
+                : ((command.type === "run" && command.checkpoint !== false) ||
+                    command.type === "task") &&
+                  state === "running");
+            // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
+            // first, and the next turn starts from it.
             try {
-              const issuedAt = now();
-              work.enqueue({
-                id: randomUUID(),
-                runnerId: selected.id,
-                workspaceId: selected.workspaceId,
-                issuedAt,
-                expiresAt: issuedAt + 60_000,
-                type: "cancel",
-                runId: command.runId,
-                generation: command.generation,
-              });
-            } catch (caughtError4) {
-              journalCaught(caughtError4, "runner-backend.forItem.now", itemId);
+              if (
+                command?.type === "run" &&
+                command.checkpoint !== false &&
+                !detached &&
+                signal.aborted &&
+                !(signal.reason instanceof PawsShutdown)
+              )
+                await checkpointBeforeStop(command.runId);
+            } catch (error) {
+              journalCaught(error, "runner-backend.cleanup.checkpoint", itemId);
             }
+            if (command && !detached) {
+              try {
+                const issuedAt = now();
+                work.enqueue({
+                  id: randomUUID(),
+                  runnerId: selected.id,
+                  workspaceId: selected.workspaceId,
+                  issuedAt,
+                  expiresAt: issuedAt + 60_000,
+                  type: "cancel",
+                  runId: command.runId,
+                  generation: command.generation,
+                });
+              } catch (caughtError4) {
+                journalCaught(caughtError4, "runner-backend.forItem.now", itemId);
+              }
+            }
+            controller.abort();
+            try {
+              await question;
+            } catch (error) {
+              journalCaught(error, "runner-backend.cleanup.question", itemId);
+            }
+            input.signal?.removeEventListener("abort", abort);
+          } finally {
+            // Keep attachment fenced through cleanup, then free the slot before returning.
+            reservations.delete(selected.runId);
           }
-          controller.abort();
-          await question;
-          input.signal?.removeEventListener("abort", abort);
-          reservations.delete(selected.runId);
         }
       };
       return async (input: RunAgentOptions) => {

@@ -1,4 +1,4 @@
-import type { IssueBrief, WorkBrief } from "../core";
+import type { IssueBrief, WorkBrief } from "./brief";
 
 export function renderWorkBrief(brief: WorkBrief | null): string {
   if (brief === null) return "";
@@ -10,6 +10,16 @@ export function renderWorkBrief(brief: WorkBrief | null): string {
   ].join("\n\n");
 }
 
+/** The acceptance-criteria block, or nothing when the issue has none. */
+export function acceptanceCriteriaSection(value: string | null): string {
+  return value === null ? "" : `Acceptance criteria:\n${value}`;
+}
+
+/** The parent issue, rendered the way the brief has always shown it. Empty when there is none. */
+export function renderParentBrief(epic: IssueBrief | null): string {
+  return epic === null ? "" : renderIssue("Delegation context", epic);
+}
+
 function renderIssue(label: string, issue: IssueBrief): string {
   return [
     `${label}: ${issue.identifier}: ${issue.title}`,
@@ -17,6 +27,6 @@ function renderIssue(label: string, issue: IssueBrief): string {
     `Description (including acceptance criteria in the source body):\n${issue.description ?? ""}`,
     ...(issue.acceptanceCriteria === null
       ? []
-      : [`Acceptance criteria:\n${issue.acceptanceCriteria}`]),
+      : [acceptanceCriteriaSection(issue.acceptanceCriteria)]),
   ].join("\n\n");
 }

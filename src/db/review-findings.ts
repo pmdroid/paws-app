@@ -54,6 +54,9 @@ export type ReviewFindingItem = {
 };
 
 export type ReviewFindingFilter = {
+  /** Findings reported by this item, optionally at one exact head. */
+  itemId?: string;
+  head?: string;
   repository?: string;
   severity?: ReviewFindingSeverity;
   review?: string;
@@ -243,6 +246,19 @@ export function listReviewFindings(
 ): ReviewFindingRecord[] {
   const where: string[] = [];
   const params: string[] = [];
+  const reports: string[] = [];
+  if (filter.itemId) {
+    reports.push("l.item_id = ?");
+    params.push(filter.itemId);
+  }
+  if (filter.head) {
+    reports.push("l.head_sha = ?");
+    params.push(filter.head);
+  }
+  if (reports.length)
+    where.push(
+      `id IN (SELECT l.finding_id FROM review_finding_item l WHERE ${reports.join(" AND ")})`,
+    );
   if (filter.repository) {
     where.push("repository = ?");
     params.push(filter.repository);

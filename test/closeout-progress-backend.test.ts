@@ -476,6 +476,9 @@ describe("closeout progress backend", () => {
       expect(sealed).toHaveLength(1);
       expect(sealed[0]?.decision).toBe("accepted");
       expect(sealed[0]?.steps.find((entry) => entry.kind === "review")?.state).toBe("passed");
+      expect(sealed[0]?.steps.find((entry) => entry.kind === "review")?.findingSeverities).toEqual(
+        [],
+      );
     } finally {
       await repo.cleanup();
     }
@@ -520,6 +523,7 @@ describe("closeout progress backend", () => {
       expect(row?.decision).toBe("rejected");
       expect(step).toMatchObject({ state: "failed", attempt: 1 });
       expect(step?.findings).toContain("header row is missing");
+      expect(step?.findingSeverities).toEqual(["P0"]);
       expect(step?.evidencePath).toContain("/adversarial-review/1.json");
       expect(
         await readFile(evidenceFile(repo.pawsHome, step?.evidencePath ?? ""), "utf8"),

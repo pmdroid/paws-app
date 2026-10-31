@@ -130,6 +130,7 @@ function fixture(
   const chunks: AgentSessionChunk[] = [];
   const finishes: AgentSessionFinish[] = [];
   const failAt = new Set<number>();
+  let uploadOutages = 0;
   const paired = {
     phase: "paired" as const,
     runnerId: "runner",
@@ -234,7 +235,8 @@ function fixture(
         },
         async uploadSession(runId, chunk, token) {
           chunks.push(chunk);
-          if (failAt.delete(chunk.offset)) throw new RunnerRequestError(503, "POST", "/session");
+          if (uploadOutages-- > 0 || failAt.delete(chunk.offset))
+            throw new RunnerRequestError(503, "POST", "/session");
           return http(() => sessions.upload({ ...access, runId, token }, chunk));
         },
         async finishSession(runId, finish, token) {
@@ -333,6 +335,7 @@ function fixture(
     chunks,
     finishes,
     failAt,
+    failUploads: (count: number) => (uploadOutages = count),
     posted,
     errors,
     open,
@@ -454,7 +457,7 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
-  "after a restart the runner resumes the session upload at the offset in its journal and retries an outage",
+  "restart recovery validates the session cursor and bounds failure uploads",
   async () => {
     const context = fixture({ claudeVersion: "2.1.7" });
     const bundle = randomBytes(1_200_000);
@@ -474,13 +477,13 @@ test.skipIf(!linux)(
     journal.sessionUploaded(id, 0, 524_288);
     journal.close();
     context.finishWorker(id, bundle);
-    // The connection drops during recovery too; the retry resumes there instead of skipping.
-    context.failAt.add(1_048_576);
+    // An optional snapshot must not delay failure delivery beyond five upload attempts.
+    context.failUploads(6);
     const runtime = await context.open();
     try {
-      expect(context.chunks.map((chunk) => chunk.offset)).toEqual([524_288, 1_048_576, 1_048_576]);
-      expect(context.finishes).toHaveLength(1);
-      expect((await context.read(3)).equals(bundle)).toBe(true);
+      await context.drive(runtime, () => context.posted.length > 0);
+      expect(context.chunks.filter((chunk) => chunk.offset === 524_288)).toHaveLength(5);
+      expect(context.finishes).toHaveLength(0);
       expect(context.posted).toHaveLength(1);
     } finally {
       await runtime.stop();

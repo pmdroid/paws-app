@@ -58,3 +58,6 @@ export const CLOSEOUT_CI_KEY_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
 export const CLOSEOUT_POLICY_KEYS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
 /** First runner release that requests Closeout policies in bounded chunks. */
 export const CLOSEOUT_POLICY_CHUNKS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
+
+/** First runner release retaining results across outages and counting only active awake work. */
+export const DURABLE_RESULTS_RUNNER_VERSION: RunnerVersion = [0, 1, 55];

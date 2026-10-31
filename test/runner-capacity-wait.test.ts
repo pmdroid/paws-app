@@ -288,8 +288,11 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
     const parked = () =>
-      listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
-        .length;
+      listJobs(db).filter(
+        (job) =>
+          job.status === "pending" &&
+          (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
+      ).length;
     while (Date.now() < deadline && !(started.has("ENG-5") && parked() === 4)) await Bun.sleep(10);
     const itemJob = (job: Job) =>
       getWorkItem(db, (job.payload as { itemId: string }).itemId)?.linearIdentifier ?? "";
@@ -310,7 +313,11 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     ).toEqual([]);
     expect(
       executions
-        .filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
+        .filter(
+          (job) =>
+            job.status === "pending" &&
+            (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
+        )
         .map((job) => [itemJob(job), (job.payload as { capacityWait?: unknown }).capacityWait])
         .sort(),
       detail,
