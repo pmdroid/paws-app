@@ -2126,7 +2126,7 @@ export class Orchestrator {
       this.shuttingDown ||
       (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
       this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
-      runnerSlotFree(this.db, waited.runnerIds, this.now())
+      runnerSlotFree(this.db, waited.runnerIds, this.now(), item.currentRunId ?? "")
     )
       return false;
     const next = { ...waited, attempt: waited.attempt + 1 };
