@@ -74,6 +74,22 @@ export function resumeUsagePauseNow(db: Database, runId: string, now: number): b
     .immediate();
 }
 
+export function agentReadyRunners(
+  db: Database,
+  agent: string,
+  now: number,
+  onlineSince: number,
+): string[] {
+  return db
+    .query<{ id: string }, [string, number, number]>(
+      `SELECT p.runner_id AS id FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
+       WHERE p.agent=? AND p.ready=1 AND p.auth_expired=0 AND r.status='active'
+       AND r.revoked_at IS NULL AND r.last_seen_at>? AND p.cooldown_until<=?`,
+    )
+    .all(agent, onlineSince, now)
+    .map((row) => row.id);
+}
+
 /** A pause lives in the process that waits for it; a restart starts from no waits. */
 export function clearUsagePauses(db: Database): void {
   db.run("DELETE FROM usage_pause");
