@@ -102,9 +102,9 @@ export function replyTargets(input: {
 export function replyListSection(targets: readonly NewReviewReply[]): string {
   if (targets.length === 0) return "";
   return [
-    "Reply list. Paws replies to each entry on the pull request after Closeout accepts your fix, and resolves the threads you fixed or answered. Do not reply or resolve on GitHub yourself. End your final message with a `Review replies` section that has one line for every entry, in this form:",
+    "Reply list. Paws replies to each entry on the pull request after Closeout accepts your fix, and resolves only the threads you fixed. Threads answered without a code change stay open for the reviewer. Do not reply or resolve on GitHub yourself. End your final message with a `Review replies` section that has one line for every entry, in this form:",
     "R1 fixed: what you changed",
-    "R2 answered: your answer to a question or note",
+    "R2 not changed: your answer to a question or note",
     "R3 not changed: why you left it, for the reviewer to decide",
     "",
     ...targets.map(
@@ -169,7 +169,8 @@ export type ReviewReplyGitHub = {
 
 /**
  * Post every reported reply on pull request `pullNumber`, once each, and resolve the threads the
- * fix addressed. A reply that fails stays unposted for the next publication. The number posted.
+ * agent fixed. Failed replies stay unposted; failed resolutions leave threads open.
+ * Process every row before reporting errors. Return the number of replies posted.
  */
 export async function postReviewReplies(
   db: Database,
@@ -177,19 +178,24 @@ export async function postReviewReplies(
   github: ReviewReplyGitHub,
 ): Promise<number> {
   let posted = 0;
+  const errors: unknown[] = [];
   for (const reply of unpostedReviewReplies(db, input.itemId, input.pullNumber)) {
-    const body = replyBody(reply, input.head);
-    if (reply.target === "thread" && reply.commentId !== null)
-      await github.replyToReviewComment(input.pullNumber, reply.commentId, body);
-    else await github.commentOnPullRequest(input.pullNumber, quoted(reply, body));
-    const resolve =
-      reply.target === "thread" &&
-      reply.threadId !== null &&
-      (reply.outcome === "fixed" || reply.outcome === "answered");
-    if (resolve) await github.resolveReviewThread(reply.threadId!);
-    markReviewReplyPosted(db, reply.id, input.now(), resolve);
-    posted += 1;
+    try {
+      const body = replyBody(reply, input.head);
+      if (reply.target === "thread" && reply.commentId !== null)
+        await github.replyToReviewComment(input.pullNumber, reply.commentId, body);
+      else await github.commentOnPullRequest(input.pullNumber, quoted(reply, body));
+      markReviewReplyPosted(db, reply.id, input.now(), false);
+      posted += 1;
+      if (reply.target === "thread" && reply.threadId !== null && reply.outcome === "fixed") {
+        await github.resolveReviewThread(reply.threadId);
+        markReviewReplyPosted(db, reply.id, input.now(), true);
+      }
+    } catch (error) {
+      errors.push(error);
+    }
   }
+  if (errors.length > 0) throw new AggregateError(errors, "GitHub review replies failed");
   return posted;
 }
 
@@ -199,7 +205,7 @@ function replyBody(reply: ReviewReplyRecord, head: string): string {
     reply.outcome === "fixed"
       ? `**Fixed** in ${head.slice(0, 7)}. ${text}`
       : reply.outcome === "answered"
-        ? text
+        ? `**Answered.** ${text}`
         : reply.outcome === "not_changed"
           ? `**Not changed.** ${text}`
           : "Paws gave this comment to the agent, but the agent did not report on it. Leaving it open for a reviewer.";

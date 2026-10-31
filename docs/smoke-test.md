@@ -90,7 +90,7 @@ Expect these results:
 - The changes-requested review restarts the item once (restart reason `review`). The title reads "fixing review findings (1 of 3)". The agent renames the argument and asks in the session about the CSV question; that question is the one activity after the pull request response. Answer it.
 - The two comments restart the item once more, with both comments in the handoff; the title reads "fixing review findings (2 of 3)". A Cloudflare Pages preview comment restarts nothing.
 - Redelivering the changes-requested webhook from the GitHub App's advanced settings restarts nothing.
-- The new head goes through Closeout. Paws replies to each comment, and resolves the threads the agent fixed or answered. Resolve any thread left open and approve; the pull request merges.
+- The new head goes through Closeout. Paws replies to each comment, and resolves only the threads the agent fixed. Resolve any thread left open and approve; the pull request merges.
 
 ### Forced conflict loop
 

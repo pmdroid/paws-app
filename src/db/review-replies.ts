@@ -139,11 +139,10 @@ export function markReviewReplyPosted(
   now: number,
   resolved: boolean,
 ): void {
-  db.run(`UPDATE review_reply SET replied_at = ?, resolved_at = ? WHERE id = ?`, [
-    now,
-    resolved ? now : null,
-    id,
-  ]);
+  db.run(
+    `UPDATE review_reply SET replied_at = COALESCE(replied_at, ?), resolved_at = ? WHERE id = ?`,
+    [now, resolved ? now : null, id],
+  );
 }
 
 function mapRow(row: Row): ReviewReplyRecord {
