@@ -1,5 +1,5 @@
 import { journalCaught, journalRejection } from "../journal";
-import { closeSync, constants, fsyncSync, openSync, rmSync, statSync } from "node:fs";
+import { closeSync, constants, fsyncSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { prepareRepositorySnapshot } from "../acp";
 import {
@@ -108,8 +108,6 @@ type Active = {
   abort: AbortController;
   deadline: number;
   accountedAt: number;
-  eventSize?: number;
-  ingestError?: string;
   idleMs: number;
   workMs: number;
   workLimitMs: number;
@@ -319,44 +317,23 @@ export async function openRunnerRuntime(options: {
    * While Paws is unreachable, move the deadline with `creditedLeaseUntil` and the alive mark
    * from the last heartbeat. No credit leaves the clamped deadline from that heartbeat.
    */
-  function accountWork(entry: Active, sample = false) {
+  function accountWork(entry: Active) {
     const at = monotonic();
     const elapsed = Math.max(0, at - entry.accountedAt);
     entry.accountedAt = at;
-    // Read locally even when command polling cannot reach Paws. A question waits on Paws,
-    // and a finished worker waits on delivery; neither spends active-work time.
-    if (sample && entry.execution.phase === "running" && !entry.abort.signal.aborted) {
-      try {
-        const size = statSync(join(options.results.root, entry.execution.id, "events.jsonl")).size;
-        if (size !== entry.eventSize) {
-          entry.eventSize = size;
-          journal.ingest(
-            entry.execution.id,
-            readRunnerResultFile(options.results, entry.execution.id, "events.jsonl"),
-          );
-          entry.ingestError = undefined;
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT" && entry.ingestError !== message) {
-          entry.ingestError = message;
-          report(error);
-        }
-      }
-    }
     const working =
       entry.execution.phase === "running" &&
       !entry.abort.signal.aborted &&
       broker.alive?.(entry.execution.id) !== false &&
       !journal.waiting(entry.execution.id);
     if (working) entry.workMs += elapsed;
-    else if (entry.execution.phase !== "preparing" || entry.offlineBudgetMs !== undefined) {
+    else if (entry.offlineBudgetMs !== undefined) {
       entry.idleMs += elapsed;
       entry.deadline += elapsed;
     }
   }
-  function holdOffline(entry: Active, sample = false) {
-    accountWork(entry, sample);
+  function holdOffline(entry: Active) {
+    accountWork(entry);
     if (
       !unreachable ||
       entry.offlineBudgetMs === undefined ||
@@ -449,14 +426,6 @@ export async function openRunnerRuntime(options: {
     const tail = (broker.log?.(execution.id) ?? "")
       .replace(/gh[opsu]_[A-Za-z0-9]{10,}/g, "[redacted]")
       .replace(/:\/\/[^\s/@]+@/g, "://[redacted]@");
-    try {
-      journal.ingest(
-        execution.id,
-        readRunnerResultFile(options.results, execution.id, "events.jsonl"),
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") report(error);
-    }
     journal.saveResult(
       execution.id,
       RunnerResultSchema.parse({
@@ -1481,7 +1450,10 @@ export async function openRunnerRuntime(options: {
       const execution = journal.execution(pending.id);
       if (execution) void deliverResult(execution);
     }
-    const polled = await options.daemon.pollCommands();
+    const polled = await options.daemon.pollCommands().catch((error) => {
+      report(error);
+      return { commands: [], rejected: [], deniedRepositories: [] };
+    });
     for (const repository of polled.deniedRepositories) {
       if (deniedReported.has(repository)) continue;
       deniedReported.add(repository);
@@ -1524,7 +1496,7 @@ export async function openRunnerRuntime(options: {
         if (!entry.task) prepare(entry);
       }
     }
-    if (active.size < concurrency()) {
+    if (!unreachable && active.size < concurrency()) {
       for (const command of commands) {
         if (command.type !== "run" && command.type !== "review" && command.type !== "task")
           continue;
@@ -1628,7 +1600,7 @@ export async function openRunnerRuntime(options: {
   }, 15_000);
   const watchdog = setInterval(() => {
     for (const entry of active.values()) {
-      holdOffline(entry, true);
+      holdOffline(entry);
       if (expired(entry))
         void interrupt(entry, "lease deadline passed", true).catch(
           journalRejection(

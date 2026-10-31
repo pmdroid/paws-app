@@ -388,10 +388,11 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
 );
 
 test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
-  "a runner without the offline budget still stops at its lease plus the grace",
+  "an idle runner without offline credit still stops at its lease plus the grace",
   async () => {
     const f = await fixture({ budget: false });
     try {
+      f.finish();
       f.goDown();
       await f.tick();
       f.advance(20 * 60_000);
@@ -533,6 +534,7 @@ test("waiting for a question or finished result does not spend offline budget", 
           options: [],
         });
       else f.finish();
+      await f.tick();
       await Bun.sleep(300);
       f.advance(20 * 60_000);
       await Bun.sleep(300);
