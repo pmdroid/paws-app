@@ -267,6 +267,7 @@ import {
   keepTaskMergeSettings,
   type TaskMergeSettings,
   delegatedLinearUserId,
+  resetAwakeTime,
 } from "../db";
 import {
   publishAccepted,
@@ -499,8 +500,6 @@ export type OrchestratorOptions = {
   closeoutGate?: (options: CloseoutGateOptions) => CloseoutGate;
   /** Reads the review requirements from the trusted Closeout policy. Tests pass a fake. */
   reviewRequirements?: typeof reviewRequirements;
-  /** Reads persisted retry evidence. Tests can pause the read to exercise concurrent failure. */
-  snapshotRetryBaseline?: typeof snapshotRetryBaseline;
   /** How often a merge-queue re-check reads CI while it waits for it, and for how long. */
   ciRecheckWait?: { pollMs: number; maxWaitMs: number };
   tracker?: TrackerAdapter | null;
@@ -678,11 +677,9 @@ export class Orchestrator {
   private readonly authRecoveryController = new AbortController();
   private authRecovery: Promise<void> | null = null;
   private readonly admission: ItemAdmission;
-  private readonly snapshotRetryBaseline: typeof snapshotRetryBaseline;
 
   constructor(private readonly options: OrchestratorOptions) {
     this.tracker = options.tracker ?? null;
-    this.snapshotRetryBaseline = options.snapshotRetryBaseline ?? snapshotRetryBaseline;
     this.admission = options.admission ?? createAdmission({ db: options.db });
     this.githubAuth = options.githubInstallation
       ? new GitHubInstallationCheck(
@@ -3651,7 +3648,7 @@ export class Orchestrator {
     if (listCloseoutRounds(this.db, item.id).some((round) => round.head === head)) return;
     let retryBaseline: string[];
     try {
-      retryBaseline = await this.snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
+      retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
     } catch (caughtError6) {
       journalCaught(
         caughtError6,
@@ -3786,7 +3783,7 @@ export class Orchestrator {
     if (sessionId === null) throw new Error("Closeout recovery has no tracker session");
     let retryBaseline: string[] = [];
     try {
-      retryBaseline = await this.snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
+      retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
     } catch (caughtError7) {
       journalCaught(
         caughtError7,
@@ -5241,20 +5238,24 @@ export class Orchestrator {
             });
           continue;
         }
+        cancelItemQuestions(this.db, itemId, this.now());
+        if (item.state === "failed") {
+          this.db.run(
+            "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
+            [itemId],
+          );
+          resetAwakeTime(this.db, itemId);
+        }
         if (item.state === "paused") {
-          cancelItemQuestions(this.db, itemId, this.now());
           cancelOpenJobs(this.db, { itemId, reason: "Linear criteria changed", now: this.now() });
           this.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [itemId]);
           continue;
         }
-        const restarted = restart(this.db, item, {
+        restart(this.db, item, {
           reason: "follow_up",
           body: "The task criteria changed in Linear. Read the updated issue and finish the work from its branch.",
-          resetExecution: item.state === "failed",
           now: this.now(),
         });
-        if (restarted === null) continue;
-        cancelItemQuestions(this.db, itemId, this.now());
         enqueueOutboxOnce(this.db, {
           target: "linear",
           op: "activity",
@@ -6153,17 +6154,19 @@ export class Orchestrator {
       upstream !== null && rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed;
     const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
-    const retryBaseline = await this.snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
+    const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
     immediate(this.db, () => {
-      const current = getWorkItem(this.db, item!.id);
-      if (!current) return;
-      const resetExecution = current.cancelRequested || current.state === "failed";
-      const expected = current.state === "failed" ? current : item!;
-      const jobId = restart(this.db, expected, {
+      if (item!.cancelRequested || item!.state === "failed") {
+        this.db.run(
+          "UPDATE work_item SET cancel_requested = 0, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
+          [item!.id],
+        );
+        resetAwakeTime(this.db, item!.id);
+        if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
+      }
+      const jobId = restart(this.db, getWorkItem(this.db, item!.id)!, {
         reason: rebase ? "conflict" : "follow_up",
-        resetExecution,
-        caps: this.options.caps,
         body: rebase ? `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}` : handoff,
         jobKey,
         now: this.now(),

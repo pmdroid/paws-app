@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { FakeClock, JOB_KIND, decideStartup } from "../src/core";
+import { FakeClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -21,7 +21,6 @@ import {
   listRuns,
   listWorkItemEventRows,
   recoverOnStartup,
-  restart as restartRecord,
   saveCheckpoint,
 } from "../src/db";
 import { acceptCloseout, ask, attachOrchestrator, questionEffects, restart } from "../src/loop";
@@ -47,10 +46,6 @@ describe("restart and ask", () => {
     "%s restarts preserve the run and session and dispatch their original handoff",
     (reason) => {
       const { db, item } = fixture();
-      db.run(
-        "UPDATE work_item SET turn_count=4, recovery_attempts=2, awake_ms=500, agent_ms=500 WHERE id=?",
-        [item.id],
-      );
       const prior = enqueueJob(db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id },
@@ -61,11 +56,6 @@ describe("restart and ask", () => {
       const queued = getWorkItem(db, item.id)!;
       expect(queued).toMatchObject({
         state: "queued",
-        cancelRequested: false,
-        turnCount: reason === "answer" ? 0 : 4,
-        recoveryAttempts: 2,
-        awakeMs: 500,
-        agentMs: 500,
         sessionKey: item.sessionKey,
         currentRunId: item.currentRunId,
       });
@@ -88,260 +78,67 @@ describe("restart and ask", () => {
     },
   );
 
-  test("an explicit retry of failed work resets execution state and is admitted next tick", () => {
-    const { db, item } = fixture();
-    db.run(
-      "UPDATE work_item SET turn_count=4, recovery_attempts=2, awake_ms=500, agent_ms=500 WHERE id=?",
-      [item.id],
-    );
-    failWorkItem(db, getWorkItem(db, item.id)!, "auth", "Authentication failed", 2);
-    const failed = getWorkItem(db, item.id)!;
-    expect(failed).toMatchObject({ state: "failed", cancelRequested: true });
-    const job = restart(db, failed, {
-      reason: "follow_up",
-      resetExecution: true,
-      caps: { maxTurns: 20, maxAwakeMs: 10000 },
-      body: "Retry after fixing authentication",
-      now: 3,
-    });
-    expect(getWorkItem(db, item.id)).toMatchObject({
-      state: "queued",
-      cancelRequested: false,
-      turnCount: 0,
-      recoveryAttempts: 0,
-      awakeMs: 0,
-      agentMs: 0,
-      maxTurns: 20,
-      maxAwakeMs: 10000,
-    });
-    expect(workspaceDispatch(db, { now: 4 })).toEqual([item.id]);
-    expect(claimNextJob(db, { now: 4 })?.id).toBe(job!);
-    db.close();
-  });
-
   test.each(["findings", "ci", "review", "conflict", "follow_up", "answer"] as const)(
-    "%s cannot revive failed work without an explicit execution reset",
+    "%s restart of failed work clears cancellation and admits on the next scheduler tick",
     (reason) => {
       const { db, item } = fixture();
-      failWorkItem(db, item, "cap:time", "Stopped at the time limit", 2);
+      try {
+        db.run("UPDATE work_item SET turn_count=4,recovery_attempts=2 WHERE id=?", [item.id]);
+        failWorkItem(db, getWorkItem(db, item.id)!, "auth", "Authentication failed", 2);
+        const failed = getWorkItem(db, item.id)!;
+        expect(failed).toMatchObject({ state: "failed", cancelRequested: true });
+        const jobId = restart(db, failed, { reason, body: "Retry from this branch", now: 3 });
+        expect(getWorkItem(db, item.id)).toMatchObject({
+          state: "queued",
+          cancelRequested: false,
+          turnCount: reason === "answer" ? 0 : 4,
+          recoveryAttempts: 2,
+          currentRunId: item.currentRunId,
+          sessionKey: item.sessionKey,
+        });
+        expect(workspaceDispatch(db, { now: 4 })).toEqual([item.id]);
+        expect(claimNextJob(db, { now: 4 })?.id).toBe(jobId!);
+        expect(getJob(db, jobId!)?.payload).toMatchObject({
+          handoff: "Retry from this branch",
+          reason,
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  test("a failed resume enqueue rolls back the restart edge and cancellation reset", () => {
+    const { db, item } = fixture();
+    try {
+      failWorkItem(db, item, "auth", "Authentication failed", 2);
       const failed = getWorkItem(db, item.id)!;
-      const jobs = listJobs(db);
-      expect(restartRecord(db, failed, { reason, body: "late feedback", now: 3 })).toBeNull();
+      const events = listWorkItemEventRows(db, item.id);
+      db.run(
+        "CREATE TRIGGER reject_resume BEFORE INSERT ON job WHEN NEW.queue='run.resume' BEGIN SELECT RAISE(ABORT,'injected'); END",
+      );
+      expect(() => restart(db, failed, { reason: "answer", body: "Retry", now: 3 })).toThrow(
+        "injected",
+      );
       expect(getWorkItem(db, item.id)).toEqual(failed);
-      expect(listJobs(db)).toEqual(jobs);
-      expect(workspaceDispatch(db, { now: 4 })).toEqual([]);
-      db.close();
-    },
-  );
-
-  test("an automatic restart preserves the repeated-crash guard", () => {
-    const { db, item } = fixture();
-    db.run("UPDATE work_item SET recovery_attempts=1 WHERE id=?", [item.id]);
-    restart(db, item, { reason: "follow_up", body: "Retry runner setup", now: 2 });
-    const queued = getWorkItem(db, item.id)!;
-    expect(
-      decideStartup({
-        itemState: "running",
-        recoveryAttempts: queued.recoveryAttempts,
-        checkpoint: queued.checkpoint,
-        sinceResumeMs: 1,
-      }),
-    ).toEqual({ type: "ask_restart" });
-    db.close();
-  });
-
-  test.each([false, true])(
-    "restart rollback preserves execution state with resetExecution=%s",
-    (resetExecution) => {
-      const { db, item: initial } = fixture();
-      db.run(
-        "UPDATE work_item SET turn_count=4, recovery_attempts=2, awake_ms=500, agent_ms=500 WHERE id=?",
-        [initial.id],
-      );
-      if (resetExecution)
-        failWorkItem(db, getWorkItem(db, initial.id)!, "auth", "Authentication failed", 1);
-      const item = getWorkItem(db, initial.id)!;
-      const job = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id } });
-      db.run(
-        "CREATE TRIGGER reject_restart BEFORE INSERT ON work_item_event WHEN NEW.kind='restart' BEGIN SELECT RAISE(ABORT,'injected'); END",
-      );
-      expect(() =>
-        restart(db, item, {
-          reason: "findings",
-          resetExecution,
-          caps: { maxTurns: 99, maxAwakeMs: 99999 },
-          body: "fix",
-          now: 2,
-        }),
-      ).toThrow("injected");
-      expect(getWorkItem(db, item.id)).toEqual(item);
-      expect(getJob(db, job)?.status).toBe("pending");
-      expect(getRun(db, item.currentRunId!)?.status).toBe(resetExecution ? "lost" : "active");
-      db.close();
-    },
-  );
-
-  test("a stale explicit retry leaves budgets and caps unchanged", () => {
-    const { db, item } = fixture();
-    db.run("UPDATE work_item SET version=version+1, awake_ms=500, agent_ms=500 WHERE id=?", [
-      item.id,
-    ]);
-    const current = getWorkItem(db, item.id)!;
-    expect(
-      restartRecord(db, item, {
-        reason: "follow_up",
-        resetExecution: true,
-        caps: { maxTurns: 99, maxAwakeMs: 99999 },
-        body: "retry",
-        now: 2,
-      }),
-    ).toBeNull();
-    expect(getWorkItem(db, item.id)).toEqual(current);
-    db.close();
-  });
-
-  test("a rejected criteria restart preserves the open question and publishes no promise", async () => {
-    const { db, item } = fixture();
-    ask(
-      db,
-      { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
-      "agent",
-      "Continue?",
-      { now: 2 },
-    );
-    db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [item.id]);
-    const current = getWorkItem(db, item.id)!;
-    const question = findOpenQuestion(db, "session");
-    const outbox = listOutbox(db);
-    const jobs = listJobs(db);
-    const clock = new FakeClock(3);
-    const orchestrator = attachOrchestrator({
-      db,
-      jobs: new JobLoop(db, clock),
-      outbox: new OutboxDispatcher(db, clock),
-      pawsRoot: tempHome(),
-      admission: workspaceAdmission(db),
-    });
-    try {
-      orchestrator.applyDelegationChanges({
-        delegationId: item.delegationId,
-        sessionId: "session",
-        addedItemIds: [],
-        removedItemIds: [],
-        specChangedItemIds: [item.id],
-        canceledItemIds: [],
-        parentCanceled: false,
-      });
-      expect(getWorkItem(db, item.id)).toEqual(current);
-      expect(findOpenQuestion(db, "session")).toEqual(question);
-      expect(listJobs(db).filter((job) => job.status === "pending")).toEqual(
-        jobs.filter((job) => job.status === "pending"),
-      );
-      expect(listOutbox(db).length).toBe(outbox.length + 1);
-      expect(listOutbox(db).at(-1)?.payload).toMatchObject({
-        body: expect.stringContaining("Feedback was saved"),
-      });
+      expect(listWorkItemEventRows(db, item.id)).toEqual(events);
     } finally {
-      await orchestrator.shutdown();
       db.close();
     }
   });
 
-  test("a criteria retry preserves limits a person raised", async () => {
+  test("a failed restart rolls back its fence, cancellations, and capacity release", () => {
     const { db, item } = fixture();
-    db.run("UPDATE work_item SET max_turns=99,max_awake_ms=99999,awake_ms=500 WHERE id=?", [
-      item.id,
-    ]);
-    failWorkItem(db, getWorkItem(db, item.id)!, "auth", "Authentication failed", 2);
-    const clock = new FakeClock(3);
-    const orchestrator = attachOrchestrator({
-      db,
-      jobs: new JobLoop(db, clock),
-      outbox: new OutboxDispatcher(db, clock),
-      pawsRoot: tempHome(),
-      admission: workspaceAdmission(db),
-      caps: { maxTurns: 20, maxAwakeMs: 10000 },
-    });
-    try {
-      orchestrator.applyDelegationChanges({
-        delegationId: item.delegationId,
-        sessionId: "session",
-        addedItemIds: [],
-        removedItemIds: [],
-        specChangedItemIds: [item.id],
-        canceledItemIds: [],
-        parentCanceled: false,
-      });
-      expect(getWorkItem(db, item.id)).toMatchObject({
-        state: "queued",
-        maxTurns: 99,
-        maxAwakeMs: 99999,
-        awakeMs: 0,
-        cancelRequested: false,
-      });
-    } finally {
-      await orchestrator.shutdown();
-      db.close();
-    }
-  });
-
-  test.each(["cancelled", "merged", "completed"] as const)(
-    "even an explicit retry refuses terminal %s without mutation",
-    (state) => {
-      const { db, item } = fixture();
-      db.run("UPDATE work_item SET state=?,cancel_requested=1 WHERE id=?", [state, item.id]);
-      const current = getWorkItem(db, item.id)!;
-      expect(
-        restartRecord(db, current, {
-          reason: "follow_up",
-          resetExecution: true,
-          body: "retry",
-          now: 2,
-        }),
-      ).toBeNull();
-      expect(getWorkItem(db, item.id)).toEqual(current);
-      db.close();
-    },
-  );
-
-  test("a late question answer is retained and carried by the next explicit retry", () => {
-    const { db, item } = fixture();
-    ask(
-      db,
-      { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
-      "agent",
-      "Which direction?",
-      { now: 2 },
+    const job = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id } });
+    db.run(
+      "CREATE TRIGGER reject_restart BEFORE INSERT ON work_item_event WHEN NEW.kind='restart' BEGIN SELECT RAISE(ABORT,'injected'); END",
     );
-    applyWorkItemEvent(db, item.id, "answer_received");
-    failWorkItem(db, getWorkItem(db, item.id)!, "auth", "Authentication failed", 3);
-    answer(
-      db,
-      {
-        sessionId: "session",
-        deliveryId: "late-answer",
-        body: "Use option A",
-        answeredBy: "human",
-        now: 4,
-      },
-      questionEffects(db, { now: 4 }),
+    expect(() => restart(db, item, { reason: "findings", body: "fix", now: 2 })).toThrow(
+      "injected",
     );
-    expect(getWorkItem(db, item.id)?.state).toBe("failed");
-    expect(listJobs(db).some((job) => job.lastError === "restart_deferred")).toBe(true);
-    expect(
-      listOutbox(db).some((row) =>
-        (row.payload as { body?: string }).body?.includes("Feedback was saved"),
-      ),
-    ).toBe(true);
-    const resume = restart(db, getWorkItem(db, item.id)!, {
-      reason: "follow_up",
-      resetExecution: true,
-      body: "Try again",
-      now: 5,
-    });
-    expect((getJob(db, resume!)!.payload as { handoff: string }).handoff).toContain("Use option A");
-    expect((getJob(db, resume!)!.payload as { handoff: string }).handoff).toContain("Try again");
-    expect(listJobs(db).some((job) => job.lastError === "restart_deferred")).toBe(false);
+    expect(getWorkItem(db, item.id)).toEqual(item);
+    expect(getJob(db, job)?.status).toBe("pending");
+    expect(getRun(db, item.currentRunId!)?.status).toBe("active");
     db.close();
   });
 

@@ -1,15 +1,8 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, isTerminalWorkItemState, type RestartReason } from "../core";
+import { JOB_KIND, type RestartReason } from "../core";
 import { halt } from "./halt";
-import {
-  applyWorkItemEvent,
-  configureWorkItem,
-  getWorkItem,
-  resetAwakeTime,
-  saveCheckpoint,
-  type WorkItemRecord,
-} from "./items";
+import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
 import { enqueueJobOnce } from "./jobs";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
@@ -19,10 +12,6 @@ export type RestartHandoff = {
   body: string;
   now: number;
   jobKey?: string;
-  /** Explicit retry authorized by a person, starting a fresh execution budget. */
-  resetExecution?: boolean;
-  /** Current limits to apply when an explicit retry resets execution. */
-  caps?: { maxTurns?: number; maxAwakeMs?: number };
   /** The fix-attempt limit this round's lines name, when it differs from the fix rounds. */
   limit?: number;
 };
@@ -34,51 +23,32 @@ export function restart(
   handoff: RestartHandoff,
 ): number | null {
   return immediate(db, () => {
-    const current = getWorkItem(db, item.id);
-    if (!current || isTerminalWorkItemState(current.state)) return null;
-    if ((current.cancelRequested || current.state === "failed") && !handoff.resetExecution)
-      return null;
     if (!halt(db, item, handoff.now)) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
-    if (handoff.resetExecution) {
-      db.run(
-        "UPDATE work_item SET cancel_requested=0, turn_count=0, recovery_attempts=0 WHERE id=?",
-        [item.id],
-      );
-      resetAwakeTime(db, item.id);
-      if (handoff.caps) configureWorkItem(db, item.id, handoff.caps);
-    } else if (handoff.reason === "answer")
+    if (handoff.reason === "answer")
       db.run("UPDATE work_item SET turn_count=0 WHERE id=?", [item.id]);
-    // The loop retains refused guidance as cancelled jobs so it survives a later explicit retry.
-    const deferred = db
-      .query<{ id: number; handoff: string }, [string]>(
-        "SELECT id,json_extract(payload,'$.handoff') AS handoff FROM job WHERE queue='run.resume' AND status='cancelled' AND last_error='restart_deferred' AND json_extract(payload,'$.itemId')=? ORDER BY id",
-      )
-      .all(item.id);
-    const body = [...deferred.map((entry) => entry.handoff), handoff.body].join("\n\n");
     const record = {
       kind: "restart" as const,
       reason: handoff.reason,
-      payloadDigest: createHash("sha256").update(body).digest("hex"),
+      payloadDigest: createHash("sha256").update(handoff.body).digest("hex"),
       now: handoff.now,
     };
     const queued = applyWorkItemEvent(db, item.id, "restart", record);
+    // Re-entering the queue lifts the cancellation fence left by a failed run.
+    db.run("UPDATE work_item SET cancel_requested=0 WHERE id=?", [item.id]);
     if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "running" });
-    const jobId = enqueueJobOnce(db, {
+    return enqueueJobOnce(db, {
       queue: JOB_KIND.resume,
       jobKey: handoff.jobKey ?? `restart:${item.id}:${queued.version}`,
       payload: {
         itemId: item.id,
         runId: item.currentRunId,
-        handoff: body,
+        handoff: handoff.body,
         reason: handoff.reason,
         ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
       },
       now: handoff.now,
     });
-    for (const entry of deferred)
-      db.run("UPDATE job SET last_error='restart_carried' WHERE id=?", [entry.id]);
-    return jobId;
   });
 }
 
