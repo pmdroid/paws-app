@@ -138,8 +138,21 @@ function cleanRiskEvidence(
         path === HIGH_RISK_PATHS_FILE ||
         policyPaths.includes(path) ||
         path
+          .toLowerCase()
           .split("/")
-          .some((part) => [".agents", ".claude", "AGENTS.md", "CLAUDE.md"].includes(part)),
+          .some((part) =>
+            [
+              ".agents",
+              ".claude",
+              ".codex",
+              ".cursor",
+              "agents.md",
+              "claude.md",
+              "claude.local.md",
+              "gemini.md",
+              "copilot-instructions.md",
+            ].includes(part),
+          ),
     )
   )
     return false;
@@ -163,10 +176,7 @@ function cleanRiskEvidence(
       return false;
   }
   return !listReviewFindings(db, { itemId: risk.itemId, head: risk.head, status: "open" }).some(
-    (finding) =>
-      finding.last.itemId === risk.itemId &&
-      finding.last.head === risk.head &&
-      finding.severity !== "P3",
+    (finding) => finding.severity !== "P3",
   );
 }
 

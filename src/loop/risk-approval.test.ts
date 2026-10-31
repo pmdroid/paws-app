@@ -784,6 +784,13 @@ for (const policyPath of [
   "CLAUDE.md",
   "src/auth/CLAUDE.md",
   ".claude/rules/auth.md",
+  "agents.md",
+  "Agents.md",
+  "CLAUDE.local.md",
+  "GEMINI.md",
+  ".codex/config.toml",
+  ".cursor/rules/auth.mdc",
+  ".github/copilot-instructions.md",
   "tools/rules.ts",
 ]) {
   test(`changing ${policyPath} always asks`, async () => {
@@ -861,6 +868,35 @@ test("legacy, malformed and wrong-attempt review snapshots fail closed", async (
   f.db.close();
 });
 
+test("review snapshots use the row's resolved attempt and hide invalid envelopes", async () => {
+  const f = cleanRiskFixture();
+  const step = getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find(
+    (s) => s.id === "security-review",
+  )!;
+  f.progress.step(f.identity, {
+    ...step,
+    attempt: 0,
+    findings: "Current notes",
+    findingSeverities: ["P3"],
+  });
+  expect(
+    getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find((s) => s.id === "security-review"),
+  ).toMatchObject({ attempt: 1, findings: "Current notes", findingSeverities: ["P3"] });
+  for (const findings of [
+    "{broken",
+    JSON.stringify({ reviewSnapshot: 2 }),
+    JSON.stringify({ reviewSnapshot: 1, attempt: 9, text: "Stale", severities: [] }),
+  ]) {
+    f.db.run("UPDATE closeout_step SET findings = ? WHERE step_id = 'security-review'", [findings]);
+    expect(
+      getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find((s) => s.id === "security-review")!
+        .findings,
+    ).toBeNull();
+    expect(await f.read()).toBe("missing");
+  }
+  f.db.close();
+});
+
 test("a later clean attempt clears prior findings even without a running update", async () => {
   const f = cleanRiskFixture();
   f.step("security-review", "Old P2", ["P2"]);
@@ -902,7 +938,7 @@ test("a cached review keeps only the snapshot of its unchanged attempt", async (
 });
 
 for (const severity of ["P2", "P3"] as const) {
-  test(`another item's report cannot change this head's ${severity} review result`, async () => {
+  test(`shared reports can veto but cannot authorize this head's ${severity} review`, async () => {
     const f = cleanRiskFixture();
     f.step("security-review", "Original report", [severity]);
     f.report("security-review", severity, "Same finding");
@@ -925,7 +961,7 @@ for (const severity of ["P2", "P3"] as const) {
       reviewed: [],
     });
     expect(listReviewFindings(f.db)[0]?.severity).toBe(severity === "P2" ? "P3" : "P2");
-    expect(await f.read()).toBe(severity === "P2" ? "missing" : "approved");
+    expect(await f.read()).toBe("missing");
     f.db.close();
   });
 }

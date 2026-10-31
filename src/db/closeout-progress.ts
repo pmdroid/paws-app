@@ -269,7 +269,7 @@ function findingsFor(
   if (step.findingSeverities !== undefined)
     return JSON.stringify({
       reviewSnapshot: 1,
-      attempt: step.attempt,
+      attempt: step.attempt > 0 ? step.attempt : (existing?.attempt ?? step.attempt),
       text: step.findings,
       severities: step.findingSeverities,
     });
@@ -550,9 +550,10 @@ function reviewSnapshot(
               : null,
         };
     } catch {
-      // Legacy display text or unreadable evidence cannot authorize an automatic approval.
-      return { findings: row.findings };
+      // Unreadable snapshot data is unavailable both to display and to the automatic gate.
+      return { findings: null };
     }
+    return { findings: null };
   }
   return { findings: row.findings };
 }
