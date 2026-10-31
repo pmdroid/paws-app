@@ -84,6 +84,15 @@ export async function handleAgentSettingsRequest(
       throw new Error("applyToWaiting must be a boolean");
     applyToWaiting = apply === true;
     settings = parseAgentSettings(isRecord(body) ? agents : body);
+    const reviewers = [
+      settings.defaults.reviewer,
+      settings.defaults.reviewerFallback,
+      ...settings.projects.map((project) => project.reviewer),
+    ].filter((profile) => profile !== undefined);
+    if (reviewers.some((profile) => profile.agent !== "codex" && profile.agent !== "claude"))
+      throw new Error(
+        "Closeout review commands require a Codex or Claude reviewer. Choose a supported reviewer profile before saving.",
+      );
     mergeBody = merge;
     queueBody = queue;
   } catch (error) {

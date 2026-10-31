@@ -792,3 +792,9 @@ export {
   listRiskAutoContexts,
   type RiskAutoContext,
 } from "./risk-auto-context";
+export {
+  listSystemFaults,
+  saveSystemFault,
+  clearSystemFault,
+  type SystemFaultHold,
+} from "./system-fault";

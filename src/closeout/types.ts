@@ -97,6 +97,7 @@ export type DecisionDocument = {
 export type GateOutcome = "accepted" | "exhausted" | "blocked" | "invalid" | "fix_failed";
 
 export type GateResult = {
+  systemFault?: { faultClass: import("../core").SystemFaultClass; reason: string };
   outcome: GateOutcome;
   taskId: string;
   base: string;

@@ -12,7 +12,6 @@ import type {
 import { evaluateCandidate, runCloseoutGate } from "../src/closeout";
 import type { FixRunner } from "../src/closeout/fixer";
 import { credentialSecrets } from "../src/closeout-spec";
-import { isTransient } from "../src/core";
 import { createStreamScrubber } from "../src/closeout-spec/run/scrub";
 import {
   applyWorkItemEvent,
@@ -381,7 +380,7 @@ describe("closeout progress backend", () => {
     }
   });
 
-  test("a policy fetch that fails on the network is retried, not blocked", async () => {
+  test("a policy fetch that fails on the network is classified for automatic retry", async () => {
     const repo = await originRepo({ ".agents/closeout.yaml": policy([]) });
     const db = openDatabase(":memory:");
     migrate(db);
@@ -396,9 +395,9 @@ describe("closeout progress backend", () => {
       ]);
       const thrown = await evaluateCandidate(
         evalInput(repo, createDbCloseoutProgress(db, "item-1")),
-      ).catch((error: unknown) => error);
-      expect(isTransient(thrown)).toBe(true);
-      expect(String(thrown)).toContain("origin/main is unavailable");
+      );
+      expect(thrown.systemFault?.faultClass).toBe("closeout-policy");
+      expect(thrown.systemFault?.reason).toContain("origin/main is unavailable");
       await exec("git", [
         "-C",
         repo.dir,
@@ -417,7 +416,7 @@ describe("closeout progress backend", () => {
     }
   });
 
-  test("a temporary error puts its running step back as retrying, not blocked, and the retry starts clean", async () => {
+  test("a reviewer infrastructure fault records the reason and the retry starts clean", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 3),
       ".agents/skills/adversarial-review/SKILL.md": SKILL,
@@ -443,22 +442,21 @@ describe("closeout progress backend", () => {
             throw outage;
           },
         },
-      }).catch((error: unknown) => error);
-      expect(thrown).toBe(outage);
+      });
+      expect(thrown.systemFault?.faultClass).toBe("reviewer-profile");
       const stopped = listCloseoutProgress(db)[0];
       const step = stopped?.steps.find((entry) => entry.kind === "review");
       expect(stopped?.steps.some((entry) => entry.state === "running")).toBe(false);
       expect(stopped?.finishedAt).not.toBeNull();
       expect(stopped?.decision).toBe("running");
-      expect(step?.state).toBe("pending");
-      expect(step?.detail).toBe("Retrying: 503 Service Unavailable");
+      expect(step?.state).toBe("blocked");
+      expect(step?.detail).toContain("503 Service Unavailable");
       const provider = createLiveStatusProvider(db);
       const verdict = provider.item(provider.snapshot().items[0]!.id)?.verdicts[0];
       const check = verdict?.checks.find((entry) => entry.id === "adversarial-review");
-      expect(verdict?.summary).toBe("Closeout is running.");
       expect(check?.active).toBe(false);
-      expect(check?.state).toBe("pending");
-      expect(check?.detail).toBe("Retrying: 503 Service Unavailable");
+      expect(check?.state).toBe("blocked");
+      expect(check?.detail).toContain("503 Service Unavailable");
 
       const retried = await evaluateCandidate({
         ...evalInput(repo, progress),

@@ -1,3 +1,4 @@
+import { SystemFault } from "../core";
 import { describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -650,6 +651,7 @@ describe("closeout gate", () => {
         fixer: committingFixer(repo.dir, [], "ok.txt", "ok\n"),
       });
       expect(result.outcome).toBe(outcome);
+      if (outcome === "blocked") expect(result.systemFault?.faultClass).toBe("reviewer-profile");
       expect(reviews).toBe(calls);
       await repo.cleanup();
     });
@@ -1240,6 +1242,41 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
+  test("a transfer fault records no failed check and retries the same candidate", async () => {
+    const repo = await originRepo({ ".agents/closeout.yaml": policy([alwaysPass("test")], 1) });
+    const input = {
+      worktree: repo.dir,
+      taskId: TASK,
+      base: repo.head,
+      head: repo.head,
+      candidate: candidate(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: throwingReviewer(),
+      fixer: committingFixer(repo.dir, [], "ok.txt", "ok\n"),
+    };
+    try {
+      const held = await runCloseoutGate({
+        ...input,
+        commandRunner: {
+          async runLogged() {
+            throw new SystemFault("closeout-transfer", "policy bundle unavailable");
+          },
+        },
+      });
+      expect(held.systemFault).toEqual({
+        faultClass: "closeout-transfer",
+        reason: "policy bundle unavailable",
+      });
+      expect(held.fixAttempts).toBe(0);
+      const recovered = await runCloseoutGate(input);
+      expect(recovered.outcome).toBe("accepted");
+      expect(recovered.decision?.items[0]?.attempt).toBe(1);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("blocks a malformed policy and does not ask for a fix", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": 'specVersion: "0.1"\nitems: [\n',
@@ -1264,6 +1301,7 @@ describe("closeout gate", () => {
     expect(result.outcome).toBe("blocked");
     expect(fixes).toBe(0);
     expect(result.summary).toContain("closeout.yaml");
+    expect(result.systemFault?.faultClass).toBe("closeout-policy");
     await repo.cleanup();
   });
 

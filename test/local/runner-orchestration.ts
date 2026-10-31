@@ -12,6 +12,7 @@ import {
   getRun,
   enqueueJob,
   listJobs,
+  listSystemFaults,
   listRuns,
   applyWorkItemEvent,
   insertRun,
@@ -927,7 +928,13 @@ export async function probeRunnerOrchestration(
           );
           for (let idle = 0, turns = 0; turns < 40 && idle < 400;) {
             const state = getWorkItem(db, item.id)?.state;
-            if (state === "merged" || state === "awaiting_input" || state === "failed") break;
+            if (
+              state === "merged" ||
+              state === "awaiting_input" ||
+              state === "failed" ||
+              listSystemFaults(db).length > 0
+            )
+              break;
             if (await tickWithRestarts(jobs, orchestrator, db)) {
               turns++;
               idle = 0;
@@ -943,21 +950,19 @@ export async function probeRunnerOrchestration(
           const question = findOpenQuestion(db, "session");
           const rebased = checkedHeads.at(-1);
           if (scenario === "rebase-unreachable" || scenario === "rebase-empty-report") {
-            assert.equal(verified.state, "awaiting_input");
+            assert.equal(verified.state, "verifying");
             assert.equal(reverifyChecks.length, 2);
             assert.equal(reviewRunId, "");
-            assert(question);
-            assert(question.body.includes("The Closeout checks could not run on the runner"));
+            assert.equal(question, null);
+            const fault = listSystemFaults(db).find((hold) => hold.itemId === item.id);
+            assert.equal(fault?.faultClass, "closeout-transfer");
             assert(
-              question.body.includes(
+              fault?.reason.includes(
                 scenario === "rebase-unreachable"
                   ? "fixture runner is offline"
                   : "the runner's Closeout listed no checks",
               ),
-              question.body,
             );
-            assert(!question.body.includes("Checks you can bypass"), question.body);
-            assert(!question.body.includes("output is missing"), question.body);
           } else {
             assert.equal(verified.state, "merged", question?.body ?? "no question");
             assert.equal(question, null);
@@ -1078,8 +1083,11 @@ export async function probeRunnerOrchestration(
               readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
               originalProfile,
             );
-          } else if (scenario === "error") assert.equal(verified.state, "awaiting_input");
-          else if (scenario === "cancelled") assert.equal(verified.state, "cancelled");
+          } else if (scenario === "error") {
+            assert.equal(verified.state, "verifying");
+            assert.equal(findOpenQuestion(db, "session"), null);
+            assert.equal(listSystemFaults(db)[0]?.faultClass, "reviewer-profile");
+          } else if (scenario === "cancelled") assert.equal(verified.state, "cancelled");
           else {
             assert.equal(verified.state, "verifying");
             if (scenario === "reassigned") {

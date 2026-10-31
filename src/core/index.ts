@@ -190,3 +190,4 @@ export {
   renderWorkContext,
   type BriefValues,
 } from "./brief-template";
+export { SystemFault, type SystemFaultClass } from "./system-fault";

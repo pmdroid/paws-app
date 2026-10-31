@@ -32,6 +32,7 @@ import {
   recoverOnStartup,
   listJobs,
   listCloseoutRecoveries,
+  listSystemFaults,
   listCloseoutRounds,
   listRuns,
   listArtifacts,
@@ -1292,17 +1293,15 @@ test("a missing reviewer blocks the item and needs a person", async () => {
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-7"));
     const deadline = Date.now() + 40_000;
-    while (Date.now() < deadline && stateOf(db, "ENG-7") !== "awaiting_input") {
+    while (Date.now() < deadline && listSystemFaults(db).length === 0) {
       const job = await tickWithRestarts(jobs, orchestrator, db);
       if (job === null) await Bun.sleep(20);
     }
-    expect(stateOf(db, "ENG-7"), debug(layout, db)).toBe("awaiting_input");
+    expect(stateOf(db, "ENG-7"), debug(layout, db)).toBe("running");
     expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
-    expect(tracker.questions).toHaveLength(1);
+    expect(tracker.questions).toHaveLength(0);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
-    const questionBody = tracker.questions[0]?.body;
-    expect(questionBody).toContain("Closeout: blocked");
-    expect(questionBody).toContain("reviewer preparation failed");
+    expect(listSystemFaults(db)[0]?.faultClass).toBe("reviewer-profile");
   } finally {
     db.close();
     await layout.cleanup();

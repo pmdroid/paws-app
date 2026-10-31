@@ -110,7 +110,7 @@ Paws Closeout judges the check from an approval record: the task, the check id, 
 
 When the turn ends, the item moves to `verifying` and Paws runs the policy against the candidate commit:
 
-- **Command checks.** On a local runner, Paws runs them against the candidate checkout. On a remote runner, Paws uses the agent Closeout result for the same commit. A check passes when that result has nothing pending and nothing blocked. When a commit has no result, for example after a rebase, Paws runs the checks on the item's runner against that commit, the same way `run_closeout` does, and judges those results. A missing result never counts as a failed check. If the runner cannot run them, Paws retries, and then asks in Linear, saying that the checks could not run.
+- **Command checks.** On a local runner, Paws runs them against the candidate checkout. On a remote runner, Paws uses the agent Closeout result for the same commit. A check passes when that result has nothing pending and nothing blocked. When a commit has no result, for example after a rebase, Paws runs the checks on the item's runner against that commit, the same way `run_closeout` does, and judges those results. A missing result never counts as a failed check. If transfer or policy loading fails, Paws holds the item with the fault reason and retries with backoff from 30 seconds to ten minutes. Waiting spends no task or review budget. One Linear activity per fault class names the held items; no question opens.
 - **Independent review.** The reviewer profile's agent runs its own review command on the item's runner, in the run's checkout at the candidate commit, with the runner's login: Codex runs `codex exec review --base <base>`, and Claude runs `claude -p --permission-mode plan "/code-review <base>..<head>"`. The command's read-only review is the sandbox. Paws sends no prompt with it: the review skill, the diff and the task brief stay out, and the policy digest still records the skill. Codex follows its own rubric and `AGENTS.md`; Claude follows `CLAUDE.md`. The final message is the findings array, with one re-ask in the same review when it does not parse. A finding at or above the policy's `failOn` severity fails the review. The runner must be 0.1.47 or later. Three optional settings on the review item make it faster:
   - `scope: diff` is accepted, but the review command has no slot for it, so the review reads what the command reads.
   - `parallel: true` starts the review alongside the command checks instead of after them.
@@ -119,7 +119,7 @@ When the turn ends, the item moves to `verifying` and Paws runs the policy again
 
 The run page shows these steps and their output while they run. A review row shows how long the reviewer took and how many tokens it reported.
 
-The reviewer's model and effort are set in Settings, under Agents.
+The reviewer's model and effort are set in Settings, under Agents. Settings refuses reviewers without a native Closeout review command. An unavailable reviewer holds its items without questions. Each retry reads the current reviewer settings while preserving the candidate identity.
 
 When the reviewer's agent is at its usage limit on every runner, a review waits for the reset Paws read from the limit message. With `[agents.defaults.reviewer_fallback]` in `config.toml` (an `agent`, `model` and optional `effort`), it runs on that profile instead and says so in the item's activity. The fallback uses a different agent than the reviewer and a different model than the implementer. A project whose reviewer already uses the fallback's agent gets no fallback.
 
@@ -152,7 +152,7 @@ Paws asks through `ask(item, question)`, the one operation that asks a person. I
 - a check is exhausted (`attempts_per_check` spent),
 - the fix rounds are spent, whether by findings, red CI or a changes-requested review,
 - the rebase returns are spent (see [After acceptance](#after-acceptance)),
-- the policy blocks the candidate or cannot be read, or
+- the policy blocks the candidate on a requirement needing a person, or
 - a setup fault fails again after one retry.
 
 A spent budget is always a question, never a state of its own. `failed` means execution stopped with nothing to ask: a crash budget, a run failure or a start timeout.

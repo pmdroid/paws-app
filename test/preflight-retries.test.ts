@@ -7,7 +7,15 @@ import { runAgent, runDir, type RunAgentOptions } from "../src/acp";
 import { reviewRequirements } from "../src/closeout";
 import { writeAgentSettings } from "../src/config";
 import { JOB_KIND, MAX_TRANSIENT_RETRIES, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listJobs, listOutbox, migrate, openDatabase } from "../src/db";
+import {
+  JobLoop,
+  OutboxDispatcher,
+  listJobs,
+  listOutbox,
+  listSystemFaults,
+  migrate,
+  openDatabase,
+} from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { RemotePreparationTimeout } from "../src/runner-backend";
@@ -16,13 +24,13 @@ import { workspaceAdmission } from "./fake-workspace";
 
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 
-test("a policy read that times out in git retries with backoff and asks no question", async () => {
+test("a policy read that times out parks with backoff and asks no question", async () => {
   const result = await runPreflight({
     policy: "origin/main is unavailable: spawnSync git ETIMEDOUT",
     times: 2,
   });
-  expect(result.state, result.detail).toBe("merge_queue");
-  expect(result.retries, result.detail).toEqual([1, 2]);
+  expect(result.state, result.detail).toBe("running");
+  expect(result.holds[0]?.faultClass).toBe("closeout-policy");
   expect(result.questions, result.detail).toEqual([]);
 }, 90_000);
 
@@ -47,16 +55,14 @@ test("a remote preparation that keeps timing out asks once, naming preparation, 
   expect(question).not.toContain("Base: .");
 }, 90_000);
 
-test("a policy that does not parse still asks for Closeout help right away", async () => {
+test("a policy that does not parse waits without a question", async () => {
   const result = await runPreflight({
     policy: ".agents/closeout.yaml: invalid YAML",
     times: Infinity,
   });
-  expect(result.state, result.detail).toBe("awaiting_input");
-  expect(result.retries, result.detail).toEqual([]);
-  expect(result.questions, result.detail).toHaveLength(1);
-  expect(result.questions[0]).toStartWith("Closeout needs your help.");
-  expect(result.questions[0]).toContain("Closeout: blocked\n.agents/closeout.yaml: invalid YAML");
+  expect(result.state, result.detail).toBe("running");
+  expect(result.questions).toEqual([]);
+  expect(result.holds[0]?.faultClass).toBe("closeout-policy");
 }, 90_000);
 
 for (const scope of ["paths: [src/**]", "minChangedLines: 100"] as const) {
@@ -76,10 +82,10 @@ for (const scope of ["paths: [src/**]", "minChangedLines: 100"] as const) {
 
 test("an unconditional review still requires its reviewer to prepare", async () => {
   const result = await runPreflight({ preparation: true, times: 0, unavailableReviewer: true });
-  expect(result.state, result.detail).toBe("awaiting_input");
-  expect(result.implemented, result.detail).toBe(false);
-  expect(result.preparations.map((input) => input.role)).toEqual(["implementer", "reviewer"]);
-  expect(result.questions.join("\n")).toContain("reviewer preparation failed");
+  expect(result.state, result.detail).toBe("running");
+  expect(result.implemented).toBe(false);
+  expect(result.questions).toEqual([]);
+  expect(result.holds[0]?.faultClass).toBe("reviewer-profile");
 }, 90_000);
 
 test("reviewer preparation receives the configured fallback without adding one to implementation", async () => {
@@ -103,6 +109,7 @@ async function runPreflight(fault: {
   reviewerFallback?: boolean;
 }): Promise<{
   state: string | null;
+  holds: ReturnType<typeof listSystemFaults>;
   /** The implementer turn started. Remote runs stop here, since Closeout would also run remotely. */
   implemented: boolean;
   retries: number[];
@@ -247,7 +254,7 @@ async function runPreflight(fault: {
     ) {
       ticking = tickWithRestarts(jobs, orchestrator, db);
       const job = await Promise.race([ticking, started]);
-      if (implemented) break;
+      if (implemented || listSystemFaults(db).length > 0) break;
       ticking = undefined;
       if (job === null) {
         outbox.tick();
@@ -276,6 +283,7 @@ async function runPreflight(fault: {
             ),
           }
         : {}),
+      holds: listSystemFaults(db),
       state: stateOf(db, "ENG-7"),
       implemented,
       preparations,

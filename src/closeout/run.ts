@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { isTransient, isTransientGitError } from "../core";
+import { SystemFault, isTransient } from "../core";
 import { applyBypasses, bypassSummary, type CloseoutBypass } from "./bypass";
 import type { FixRequest, FixRunner } from "./fixer";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
@@ -77,6 +77,7 @@ export type EvaluateInput = {
 };
 
 export type Evaluation = {
+  systemFault?: GateResult["systemFault"];
   outcome: "accepted" | "rejected" | "exhausted" | "blocked" | "invalid";
   exitCode: number | null;
   decision: DecisionDocument | null;
@@ -139,6 +140,11 @@ export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluatio
     const retrying = isTransient(error);
     stopRunning(input.progress, running, error, retrying);
     seal(input.progress, retrying ? "running" : "blocked");
+    if (error instanceof SystemFault)
+      return {
+        ...failure("blocked", null, scrub(error.message), input.head),
+        systemFault: { faultClass: error.faultClass, reason: scrub(error.message) },
+      };
     throw error;
   }
   const evaluation = applyBypasses(native, input.bypasses ?? []);
@@ -248,21 +254,20 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       journalCaught(caughtError1, "run.evaluateUnsealed", input.taskId);
       return null;
     });
-    if (isTransient(error)) throw error;
+    if (error instanceof SystemFault || isTransient(error)) throw error;
     journalCaught(error, "run.evaluateUnsealed.run", input.taskId);
     const message = error instanceof Error ? error.message : String(error);
     return failure("blocked", null, message, input.head);
   }
   const filledEarly = await early?.done;
   if (filledEarly) return filledEarly;
-  const unreadable = ran.message;
   if (
     ran.decision === "blocked" &&
+    ran.policy.digest === null &&
     ran.items.length === 0 &&
-    unreadable?.startsWith("origin/main is unavailable") &&
-    isTransientGitError(unreadable)
+    ran.message
   )
-    throw new PolicyFetchError(unreadable);
+    throw new SystemFault("closeout-policy", ran.message);
   const moved = await headUnmoved(input.worktree, input.head);
   if (moved) return failure("blocked", exitOf(ran.decision), moved, input.head);
   if (ran.gate !== CLOSEOUT_GATE) {
@@ -517,7 +522,7 @@ async function decideRecorded(input: EvaluateInput): Promise<Evaluation> {
       ...publishedOf(input),
     });
   } catch (error) {
-    if (isTransient(error)) throw error;
+    if (error instanceof SystemFault || isTransient(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     return failure("blocked", null, scrub(message), input.head);
   }
@@ -899,7 +904,7 @@ async function addReviewEvidence(
         },
       });
     } catch (error) {
-      if (isTransient(error)) throw error;
+      if (error instanceof SystemFault) throw error;
       journalCaught(error, "run.addReviewEvidence.addReview", input.taskId);
       const message = error instanceof Error ? error.message : String(error);
       const detail = scrub(`reviewer failed for ${item.id}: ${message}`);
@@ -907,7 +912,7 @@ async function addReviewEvidence(
         durationMs: Date.now() - started,
         tokens,
       });
-      return failure("blocked", null, detail, input.head);
+      throw new SystemFault("reviewer-profile", detail, { cause: error });
     }
     metrics.set(item.id, { durationMs: Date.now() - started, tokens });
     if (!added.ok) {
@@ -1269,6 +1274,7 @@ async function finalResult(
   const approvals = evaluation && held.size > 0 ? await ruleApprovals(input, evaluation, held) : [];
   const left = handoff === undefined ? null : await fixesLeft(input, head, decision);
   const result: GateResult = {
+    ...(evaluation?.systemFault ? { systemFault: evaluation.systemFault } : {}),
     ...(handoff ? { handoff } : {}),
     ...(left !== null ? { fixesLeft: left } : {}),
     outcome,

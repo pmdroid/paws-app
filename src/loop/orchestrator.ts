@@ -1,3 +1,6 @@
+import { SystemFault } from "../core";
+import { clearSystemFault, listSystemFaults } from "../db";
+import { holdSystemFault } from "./system-fault";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
 import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity-policy";
@@ -77,7 +80,6 @@ import {
   createCloseoutGate,
   fixChangedPaths,
   samePatch,
-  PolicyFetchError,
   reviewRequirements,
   trustedPolicyFiles,
   trustedRootFiles,
@@ -131,7 +133,6 @@ import {
   systemClock,
   parseLinearCommand,
   isTransient,
-  isTransientGitError,
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
@@ -1445,6 +1446,24 @@ export class Orchestrator {
           ),
         ),
     };
+    jobs.register("system.fault-alert", async (job) => {
+      const holds = listSystemFaults(this.db).filter(
+        (hold) => hold.faultClass === readString(job.payload, "faultClass"),
+      );
+      const item = holds[0] ? getWorkItem(this.db, holds[0].itemId) : null;
+      if (!item) return;
+      this.post(
+        item,
+        "thought",
+        `Infrastructure fault (${holds[0]!.faultClass}): ${holds[0]!.reason}
+
+Held items: ${holds.map((hold) => hold.identifier).join(", ")}. Paws retries automatically without spending task or review budgets.`,
+        `system-fault-alert:${job.id}`,
+        {},
+        "critical",
+      );
+      await this.flush();
+    });
     jobs.register("item.ask", async (job, context) => {
       if (!context.isCurrent()) return;
       const id = readString(job.payload, "itemId");
@@ -2791,6 +2810,7 @@ export class Orchestrator {
       } catch (error) {
         if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
           return;
+        if (error instanceof SystemFault) throw error;
         if (isTransient(error)) {
           // A temporary failure before the agent starts retries with backoff. A person is asked
           // only once the retries are spent.
@@ -2810,6 +2830,7 @@ export class Orchestrator {
         await this.askCloseoutHelp(item, undefined, summary);
         return;
       }
+      clearSystemFault(this.db, item.id);
       if (returned !== null)
         await this.fetchUpstreamMain(item).catch((caughtError) =>
           journalCaught(
@@ -2952,7 +2973,9 @@ export class Orchestrator {
             current,
             error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
           );
-        else if (isTransient(error)) {
+        else if (error instanceof SystemFault) {
+          this.parkSystemFault(current, error);
+        } else if (isTransient(error)) {
           deferred = true;
           capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
@@ -3019,6 +3042,7 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     options: { decide?: boolean; reverifyJobId?: number; onOwned?: () => void } = {},
   ): Promise<void> {
+    this.refreshFaultReviewer(item);
     const startRound =
       options.reverifyJobId !== undefined &&
       (item.state === "merge_queue" || item.checkpoint?.phase === "merge_queue");
@@ -3084,6 +3108,16 @@ export class Orchestrator {
         decide,
         fromCi,
       );
+      if (result.result?.systemFault) {
+        assertCurrent();
+        const fault = result.result.systemFault;
+        this.parkSystemFault(
+          getWorkItem(this.db, item.id) ?? item,
+          new SystemFault(fault.faultClass, fault.reason),
+        );
+        return;
+      }
+      clearSystemFault(this.db, item.id);
       // A finished verdict may decide an aborted but still-owned run (PAS-771).
       assertOwned();
       const owner = this.options.remoteExecution ? getWorkItem(this.db, item.id)! : before;
@@ -3564,11 +3598,13 @@ export class Orchestrator {
           );
           assertCurrent();
           attempt -= 1;
-        } else if (isTransient(error)) throw error;
+        } else if (isTransient(error))
+          throw new SystemFault("closeout-transfer", reason, { cause: error });
       }
     }
-    throw new Error(
-      `The Closeout checks could not run on the runner for commit ${short}: ${reason}. No check failed; they have no result for this commit. Reply once the runner is back to try again.`,
+    throw new SystemFault(
+      "closeout-transfer",
+      `The Closeout checks could not run on the runner for commit ${short}: ${reason}. No check failed.`,
     );
   }
 
@@ -3780,6 +3816,39 @@ export class Orchestrator {
         now: this.now(),
         jobKey: `ci-failed:${item.id}:recheck:${head}`,
       }) !== null
+    );
+  }
+
+  private parkSystemFault(item: WorkItemRecord, fault: SystemFault): void {
+    this.settleItemAwake(item.id);
+    if (holdSystemFault(this.db, item.id, fault, this.now()) && item.currentRunId) {
+      closeActiveRun(this.db, item.currentRunId, this.now());
+      releaseRunCapacity(this.db, item.currentRunId, this.now());
+    }
+  }
+
+  private refreshFaultReviewer(item: WorkItemRecord): void {
+    if (
+      !listSystemFaults(this.db).some(
+        (hold) => hold.itemId === item.id && hold.faultClass === "reviewer-profile",
+      )
+    )
+      return;
+    const runId = item.currentRunId;
+    const saved = runId ? this.readProfileSnapshot(runId) : null;
+    if (!saved || !runId) return;
+    const repository = this.repositoryForItem(item);
+    const current = resolveAgentProfiles(
+      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+      repository ? `${repository.owner}/${repository.repo}` : undefined,
+    );
+    const profiles = { ...saved.profiles, reviewer: current.reviewer };
+    if (current.reviewerFallback) profiles.reviewerFallback = current.reviewerFallback;
+    else delete profiles.reviewerFallback;
+    writeFileSync(
+      join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
+      JSON.stringify({ ...saved, profiles }),
+      { mode: 0o600 },
     );
   }
 
@@ -7414,6 +7483,8 @@ export class Orchestrator {
     signal: AbortSignal,
     onRemoteEvent: (event: AcpEvent) => void,
   ): Promise<void> {
+    this.refreshFaultReviewer(item);
+    Object.assign(profiles, this.profileSnapshot(runId));
     const originalProfiles = JSON.stringify(profiles);
     const repository = this.repositoryForItem(item);
     if (repository === null) throw new Error("The work item has no repository");
@@ -7435,11 +7506,7 @@ export class Orchestrator {
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
     );
-    if (!required.ok)
-      throw required.message.startsWith("origin/main is unavailable") &&
-        isTransientGitError(required.message)
-        ? new PolicyFetchError(required.message)
-        : new Error(required.message);
+    if (!required.ok) throw new SystemFault("closeout-policy", required.message);
     const requirements = required.items.filter(
       (check) =>
         check.gate === "beforePR" &&
@@ -7478,26 +7545,33 @@ export class Orchestrator {
         prompt: "",
         signal,
       }).catch((error: unknown) => {
+        const message = `${role} preparation failed: ${error instanceof Error ? error.message : String(error)}`;
+        if (role === "reviewer")
+          throw new SystemFault("reviewer-profile", message, { cause: error });
         throw new Error(
           `${role} preparation failed: ${error instanceof Error ? error.message : String(error)}`,
           { cause: error },
         );
       });
       if (!result.agentExited) this.blockConversation(item.id);
-      if (!result.identity || result.errorMessage)
-        throw new Error(
-          `${role} preparation failed: ${result.errorMessage ?? "it did not report a concrete session model"}`,
-        );
+      if (!result.identity || result.errorMessage) {
+        const message = `${role} preparation failed: ${result.errorMessage ?? "it did not report a concrete session model"}`;
+        throw role === "reviewer"
+          ? new SystemFault("reviewer-profile", message)
+          : new Error(message);
+      }
       identities.push(result.identity);
     }
     for (const check of requirements) {
       const [implementer, reviewer] = identities;
       if (check.independence.differentSession && implementer!.session === reviewer!.session)
-        throw new Error(
+        throw new SystemFault(
+          "reviewer-profile",
           `reviewer preparation failed: Closeout ${check.id} requires a different reviewer session`,
         );
       if (check.independence.differentModel && implementer!.model === reviewer!.model)
-        throw new Error(
+        throw new SystemFault(
+          "reviewer-profile",
           `reviewer preparation failed: Closeout ${check.id} requires a different reviewer model; choose another reviewer profile`,
         );
     }

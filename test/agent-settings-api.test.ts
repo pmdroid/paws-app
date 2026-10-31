@@ -40,6 +40,28 @@ function request(
 }
 
 describe("local agent settings API", () => {
+  for (const agent of ["grok", "opencode"] as const) {
+    test(`refuses ${agent} reviewer profiles before saving`, async () => {
+      const { options } = fixture();
+      const proposed = {
+        ...settings,
+        defaults: {
+          implementer: { agent: "codex", model: "implementer" },
+          reviewer: { agent, model: null },
+        },
+      };
+      const response = await handleAgentSettingsRequest(
+        request(undefined, "PUT", proposed),
+        options,
+      );
+      expect(response?.status).toBe(400);
+      expect(((await response!.json()) as { error: string }).error).toContain(
+        "Closeout review commands require",
+      );
+      expect(existsSync(options.configPath)).toBe(false);
+    });
+  }
+
   test("GET returns profiles and inherited configured projects without any vendor settings", async () => {
     const { options } = fixture();
     writeFileSync(
