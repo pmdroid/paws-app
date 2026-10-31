@@ -550,7 +550,8 @@ function reviewSnapshot(
               : null,
         };
     } catch {
-      /* Unreadable stored evidence is unavailable to the automatic gate. */
+      // Legacy display text or unreadable evidence cannot authorize an automatic approval.
+      return { findings: row.findings };
     }
   }
   return { findings: row.findings };
