@@ -101,6 +101,10 @@ export function openExecutionJournal(root: string) {
   db.run(
     "CREATE INDEX IF NOT EXISTS delivery_waiting ON delivery(execution_id,sequence) WHERE json_extract(payload,'$.type') IN ('question','artifact','closeout_policy')",
   );
+  // Recover a crash between recording Paws's decision and changing the execution phase.
+  db.run(
+    "UPDATE execution SET phase=(SELECT CASE WHEN accepted=1 AND failure=0 THEN 'complete' ELSE 'interrupted' END FROM result_delivery WHERE execution_id=execution.id) WHERE phase NOT IN ('complete','interrupted') AND id IN (SELECT execution_id FROM result_delivery WHERE accepted<>0)",
+  );
   function parseExecution(row: { id: string; payload: string; phase: string }): Execution {
     const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
     if (command.type !== "run" && command.type !== "review" && command.type !== "task")
@@ -150,8 +154,8 @@ export function openExecutionJournal(root: string) {
     },
     pendingResults() {
       return db
-        .query<{ id: string }, []>(
-          "SELECT execution_id AS id FROM result_delivery WHERE accepted=0 ORDER BY rowid",
+        .query<{ id: string; runId: string; generation: number }, []>(
+          "SELECT r.execution_id AS id,json_extract(e.payload,'$.runId') AS runId,json_extract(e.payload,'$.generation') AS generation FROM result_delivery r JOIN execution e ON e.id=r.execution_id WHERE r.accepted=0 ORDER BY r.rowid",
         )
         .all();
     },

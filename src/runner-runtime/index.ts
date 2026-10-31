@@ -272,7 +272,7 @@ export async function openRunnerRuntime(options: {
   try {
     for (const previous of journal.executions(true)) {
       await broker.stop(previous.id);
-      if (journal.hasResult(previous.id)) continue;
+      if (journal.resultPending(previous.id)) continue;
       report(
         new Error(
           `Runner interrupted execution ${previous.id} for run ${previous.command.runId}: runner restarted`,
@@ -488,7 +488,9 @@ export async function openRunnerRuntime(options: {
         const sent = await token();
         if (closed) throw new RemoteFailure("Runner stopping");
         try {
-          return await operation(sent);
+          const value = await operation(sent);
+          if (closed) throw new RemoteFailure("Runner stopping");
+          return value;
         } catch (error) {
           if (!(error instanceof RunnerRequestError) || error.status !== 403) throw error;
           const grantExpired =
@@ -774,22 +776,15 @@ export async function openRunnerRuntime(options: {
           runtimes.installed(),
           agents,
           [
-            ...new Map([
-              ...[...active.values()].map(
-                ({ execution }) =>
-                  [
-                    key(execution.command),
-                    { runId: execution.command.runId, generation: execution.command.generation },
-                  ] as const,
-              ),
-              ...journal.pendingResults().map(({ id }) => {
-                const execution = journal.execution(id)!;
-                return [
-                  key(execution.command),
-                  { runId: execution.command.runId, generation: execution.command.generation },
-                ] as const;
-              }),
-            ]).values(),
+            ...new Map(
+              [
+                ...[...active.values()].map(({ execution }) => execution.command),
+                ...journal.pendingResults(),
+              ].map((command) => [
+                key(command),
+                { runId: command.runId, generation: command.generation },
+              ]),
+            ).values(),
           ],
         );
         if (closed) return;
@@ -1577,8 +1572,8 @@ export async function openRunnerRuntime(options: {
   async function advance(entry: Active) {
     try {
       if (journal.hasResult(entry.execution.id)) {
+        active.delete(key(entry.execution.command));
         await deliverResult(entry.execution);
-        if (!journal.resultPending(entry.execution.id)) active.delete(key(entry.execution.command));
         return;
       }
       await deliver(entry);
@@ -1645,7 +1640,7 @@ export async function openRunnerRuntime(options: {
         clearInterval(heartbeat);
         clearInterval(watchdog);
         await Promise.all([...active.values()].map((entry) => interrupt(entry, "runner stopping")));
-        await Promise.allSettled([
+        await settle([
           ticking,
           pulsing,
           ...resultDeliveries.values(),

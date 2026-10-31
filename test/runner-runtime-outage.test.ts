@@ -19,6 +19,7 @@ async function fixture(
     connectionError?: boolean;
     expiresMs?: number;
     retryMs?: number;
+    stopWaitMs?: number;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-outage-"));
@@ -91,6 +92,7 @@ async function fixture(
   };
   const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     root,
+    stopWaitMs: options.stopWaitMs,
     resultRetryMs: options.retryMs ?? 0,
     spool,
     results,
@@ -745,5 +747,26 @@ test("transient result retries back off and report one repeated failure", async 
     } finally {
       await f.cleanup();
     }
+  }
+});
+
+test("shutdown bounds an in-flight result and ignores its late response", async () => {
+  const f = await fixture({ stopWaitMs: 10 });
+  try {
+    f.holdPost();
+    f.finish();
+    await f.tickUntil(() => f.postAttempts() > 0);
+    await Promise.race([
+      f.stop(),
+      Bun.sleep(1000).then(() => {
+        throw new Error("Shutdown hung");
+      }),
+    ]);
+    f.releasePost();
+    await Bun.sleep(20);
+    expect(f.errors.join("\n")).not.toContain("closed");
+  } finally {
+    f.releasePost();
+    await f.cleanup();
   }
 });
