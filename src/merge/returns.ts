@@ -37,9 +37,8 @@ export function rebaseBudgetFor(
   db: Database,
   itemId: string,
   conflict: RebaseConflict,
-  now: number,
 ): RebaseBudget {
-  return rebaseBudget(listRebaseReturns(db, itemId, latestUserTurn(db, itemId)), conflict, now);
+  return rebaseBudget(listRebaseReturns(db, itemId, latestUserTurn(db, itemId)), conflict);
 }
 
 export function ciFixes(db: Database, itemId: string): number {

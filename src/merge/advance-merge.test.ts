@@ -9,6 +9,8 @@ import {
   getWorkItem,
   listJobs,
   listRebaseReturns,
+  joinMergeQueue,
+  listMergeQueues,
   recordPullReview,
 } from "../db";
 import {
@@ -293,12 +295,18 @@ describe("advanceMerge on a rebase conflict", () => {
     expect(await onMovedMain(h, h.github.merged[0]!.expectedHeadSha, main)).toBe(true);
   });
 
-  test("after three returns for the same main the task asks and names the commit and files", async () => {
-    const { h, main } = await conflicting();
+  test("a conflict parks after three returns, asks once, and releases the repository lane", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    await h.addItem("ENG-1", { file: "ok.txt", content: "agent\n" });
+    const main = await h.moveMain("ok.txt", "from-main\n");
     for (let attempt = 0; attempt < 3; attempt++) {
       expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
       await backInQueue(h, "ENG-1");
     }
+    const next = await h.addItem("ENG-2");
+    for (const id of ["ENG-1", "ENG-2"])
+      joinMergeQueue(h.db, { itemId: id, repository: "acme/app", now: h.clock.now() });
+    expect(await h.pass("ENG-2")).toMatchObject({ kind: "wait", reason: "ahead" });
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
     expect(findOpenQuestion(h.db, "ses-ENG-1")).toMatchObject({
@@ -307,6 +315,18 @@ describe("advanceMerge on a rebase conflict", () => {
         `Main commits: ${main.slice(0, 7)}. Conflicting files: ok.txt.`,
       ),
     });
+    expect(findOpenQuestion(h.db, "ses-ENG-1")?.body).toContain(
+      "after 3 attempts to resolve the conflict",
+    );
+    const question = findOpenQuestion(h.db, "ses-ENG-1")!;
+    const published = h.published.length;
+    expect(await h.pass("ENG-1")).toEqual({ kind: "obsolete" });
+    expect(h.published).toHaveLength(published);
+    expect(findOpenQuestion(h.db, "ses-ENG-1")?.id).toBe(question.id);
+    expect(h.db.query("SELECT id FROM question WHERE item_id = ?").all("ENG-1")).toHaveLength(1);
+    expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(["ENG-2"]);
+    expect(await h.pass("ENG-2")).toEqual({ kind: "merged" });
+    expect(h.github.merged.map((merge) => merge.number)).toEqual([next.pull]);
     expect(resumes(h).map((payload) => payload.handoff)).toEqual([
       REBASE_CONFLICT_INSTRUCTION,
       REBASE_CONFLICT_INSTRUCTION,

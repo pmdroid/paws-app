@@ -6109,8 +6109,7 @@ export class Orchestrator {
         ? await this.fetchUpstreamMain(item)
         : null;
     const conflict: RebaseConflict = { base: upstream, files: null };
-    const rebase =
-      upstream !== null && rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed;
+    const rebase = upstream !== null && rebaseBudgetFor(this.db, item.id, conflict).allowed;
     const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
     const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);

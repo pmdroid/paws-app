@@ -119,6 +119,8 @@ export async function advanceMerge(
     if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
     return { kind: "obsolete" };
   }
+  // A redelivered job must not publish or retry an item parked for a person.
+  if (item.state !== "merge_queue") return { kind: "obsolete" };
   // A pull request merged by hand on GitHub merges the item: publishing again would open another.
   const outside = await mergedOutsideLane(db, item, caps);
   if (outside) return outside;
@@ -231,7 +233,7 @@ export async function advanceMerge(
     turn,
     queued,
     mainMoved: mergeSettings.mainMoved,
-    rebaseBudget: rebaseBudgetFor(db, item.id, conflict, caps.now()),
+    rebaseBudget: rebaseBudgetFor(db, item.id, conflict),
     ciFixes: ciFixes(db, item.id),
     ciFixLimit,
   });
@@ -310,7 +312,7 @@ export async function advanceMerge(
     sendBack(
       merge,
       "rebase-conflict",
-      () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+      () => rebaseBudgetFor(db, item.id, conflict).allowed,
       REBASE_CONFLICT_INSTRUCTION,
       {
         thought: () => REBASE_CONFLICT_THOUGHT,

@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   MAX_REBASE_RETURNS,
-  MAX_REBASE_RETURNS_PER_HOUR,
-  REBASE_RETURN_WINDOW_MS,
   rebaseBudget,
   type RebaseBudget,
   type RebaseConflict,
@@ -17,7 +15,7 @@ function play(conflicts: readonly RebaseConflict[], spacing = 30 * MINUTE): Reba
   const spent: SpentRebaseReturn[] = [];
   return conflicts.map((conflict, index) => {
     const now = index * spacing;
-    const budget = rebaseBudget(spent, conflict, now);
+    const budget = rebaseBudget(spent, conflict);
     if (budget.allowed) spent.push({ ...conflict, recordedAt: now });
     return budget;
   });
@@ -47,36 +45,26 @@ describe("rebase budget", () => {
     expect(results.at(-1)?.allowed).toBe(false);
   });
 
-  test("without a main commit, files do not count toward the consecutive limit", () => {
-    const same = { base: null, files: ["a.ts"] };
-    expect(play([same, same, same, same]).at(-1)?.allowed).toBe(true);
-    const moving = ["a.ts", "b.ts", "c.ts", "d.ts"].map((file) => ({ base: null, files: [file] }));
-    expect(play(moving).every((result) => result.allowed)).toBe(true);
+  test("unknown main and missing timestamps cannot refill the per-item budget", () => {
+    const unknown = { base: null, files: null, recordedAt: null };
+    expect(rebaseBudget(Array(MAX_REBASE_RETURNS).fill(unknown), unknown)).toEqual({
+      allowed: false,
+      message: `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts to resolve the conflict.`,
+    });
   });
 
-  test("unknown main returns count only toward the hour", () => {
-    const unknown = { base: null, files: null };
-    expect(play([unknown, unknown, unknown, unknown]).at(-1)?.allowed).toBe(true);
-  });
-
-  test("an hourly cap stops a busy main from looping forever", () => {
-    const spacing = REBASE_RETURN_WINDOW_MS / (MAX_REBASE_RETURNS_PER_HOUR + 1);
-    const conflicts = Array.from({ length: MAX_REBASE_RETURNS_PER_HOUR + 1 }, (_, n) => ({
-      base: null,
-      files: [`f${n}.ts`],
-    }));
-    const results = play(conflicts, spacing);
-    expect(results.slice(0, -1).every((result) => result.allowed)).toBe(true);
-    const last = results.at(-1)!;
-    expect(last.allowed).toBe(false);
-    if (!last.allowed) {
-      expect(last.message).toStartWith(
-        `The branch conflicted with main ${MAX_REBASE_RETURNS_PER_HOUR + 1} times within an hour.`,
-      );
-      expect(last.message).toContain("f6.ts");
-    }
-    expect(play(conflicts, REBASE_RETURN_WINDOW_MS / 2).every((result) => result.allowed)).toBe(
+  test("mixed known and unknown main returns share the limit even days apart", () => {
+    const conflicts = [
+      { base: null, files: ["a.ts"] },
+      { base: sha(1), files: ["b.ts"] },
+      { base: null, files: null },
+      { base: sha(2), files: ["c.ts"] },
+    ];
+    expect(play(conflicts, 24 * 60 * MINUTE).map((result) => result.allowed)).toEqual([
       true,
-    );
+      true,
+      true,
+      false,
+    ]);
   });
 });

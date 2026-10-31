@@ -307,13 +307,13 @@ export async function mergeThroughGitHubQueue(
           return null;
         });
         const conflict: RebaseConflict = { base, files: null };
-        const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
+        const budget = rebaseBudgetFor(db, item.id, conflict);
         if (
           base !== null &&
           sendBack(
             merge,
             "rebase-conflict",
-            () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+            () => rebaseBudgetFor(db, item.id, conflict).allowed,
             REBASE_CONFLICT_INSTRUCTION,
             {
               thought: () =>

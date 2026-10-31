@@ -95,7 +95,7 @@ function returnConflict(
   return returnToAgent(db, {
     itemId: item.id,
     reason: "rebase-conflict",
-    admit: () => owned() && rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+    admit: () => owned() && rebaseBudgetFor(db, item.id, conflict).allowed,
     handoff: REBASE_CONFLICT_INSTRUCTION,
     now: caps.now(),
     keepPlace: true,
@@ -121,7 +121,7 @@ function askSpentBudget(
 ): boolean {
   return immediate(db, () => {
     if (!owned()) return false;
-    const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
+    const budget = rebaseBudgetFor(db, item.id, conflict);
     return (
       !budget.allowed &&
       askMergeHelp(db, {

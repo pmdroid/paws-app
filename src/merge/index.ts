@@ -36,8 +36,6 @@ export {
 } from "./returns";
 export {
   MAX_REBASE_RETURNS,
-  MAX_REBASE_RETURNS_PER_HOUR,
-  REBASE_RETURN_WINDOW_MS,
   rebaseBudget,
   type RebaseBudget,
   type RebaseConflict,

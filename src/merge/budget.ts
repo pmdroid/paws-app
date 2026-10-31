@@ -1,8 +1,5 @@
-/** Returns allowed in a row for conflicts with the known main commits. */
+/** Agent returns allowed per item until a person replies, including unknown-main conflicts. */
 export const MAX_REBASE_RETURNS = 3;
-/** Returns allowed in any hour, whatever caused them, so a busy main cannot loop forever. */
-export const MAX_REBASE_RETURNS_PER_HOUR = 6;
-export const REBASE_RETURN_WINDOW_MS = 60 * 60 * 1000;
 
 /** A conflict with main: the main commit and files, when known. */
 export type RebaseConflict = {
@@ -15,28 +12,17 @@ export type SpentRebaseReturn = RebaseConflict & { recordedAt: number | null };
 
 export type RebaseBudget = { allowed: true; spent: number } | { allowed: false; message: string };
 
-/** Known-main returns share one consecutive budget until a person replies.
- * Unknown-main returns count only toward the rolling hour. */
+/** Every conflict return spends the item's budget until a person replies. */
 export function rebaseBudget(
   spent: readonly SpentRebaseReturn[],
   conflict: RebaseConflict,
-  now: number,
 ): RebaseBudget {
-  const streak = spent.filter((row) => row.base !== null);
-  if (conflict.base !== null && streak.length >= MAX_REBASE_RETURNS)
+  if (spent.length >= MAX_REBASE_RETURNS)
     return {
       allowed: false,
-      message: `The branch still conflicts with main after ${MAX_REBASE_RETURNS} attempts to resolve the conflict.${describe([...streak, conflict])}`,
+      message: `The branch still conflicts with main after ${spent.length} attempts to resolve the conflict.${describe([...spent, conflict])}`,
     };
-  const recent = spent.filter(
-    (row) => row.recordedAt !== null && row.recordedAt > now - REBASE_RETURN_WINDOW_MS,
-  );
-  if (recent.length >= MAX_REBASE_RETURNS_PER_HOUR)
-    return {
-      allowed: false,
-      message: `The branch conflicted with main ${recent.length + 1} times within an hour.${describe([...recent, conflict])}`,
-    };
-  return { allowed: true, spent: streak.length };
+  return { allowed: true, spent: spent.length };
 }
 
 function describe(conflicts: readonly RebaseConflict[]): string {
