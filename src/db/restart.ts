@@ -1,8 +1,14 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, type RestartReason } from "../core";
+import { JOB_KIND, isTerminalWorkItemState, type RestartReason } from "../core";
 import { halt } from "./halt";
-import { applyWorkItemEvent, resetAwakeTime, saveCheckpoint, type WorkItemRecord } from "./items";
+import {
+  applyWorkItemEvent,
+  getWorkItem,
+  resetAwakeTime,
+  saveCheckpoint,
+  type WorkItemRecord,
+} from "./items";
 import { enqueueJobOnce } from "./jobs";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
@@ -23,6 +29,12 @@ export function restart(
   handoff: RestartHandoff,
 ): number | null {
   return immediate(db, () => {
+    const current = getWorkItem(db, item.id);
+    if (!current || isTerminalWorkItemState(current.state)) return null;
+    // Answers authorize a retry. Explicit Linear retry paths already lift this fence.
+    // Automatic handoffs must leave failure-fenced work untouched, including its jobs.
+    if (current.state === "failed" && current.cancelRequested && handoff.reason !== "answer")
+      return null;
     const halted = halt(db, item, handoff.now);
     if (!halted) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);

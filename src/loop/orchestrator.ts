@@ -6157,7 +6157,9 @@ export class Orchestrator {
     const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
     immediate(this.db, () => {
-      if (item!.cancelRequested || item!.state === "failed") {
+      const current = getWorkItem(this.db, item!.id);
+      if (!current || isTerminalWorkItemState(current.state)) return;
+      if (current.cancelRequested || current.state === "failed") {
         this.db.run(
           "UPDATE work_item SET cancel_requested = 0, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
           [item!.id],

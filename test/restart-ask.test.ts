@@ -86,8 +86,8 @@ describe("restart and ask", () => {
     },
   );
 
-  test.each(["findings", "ci", "review", "conflict", "follow_up", "answer"] as const)(
-    "%s restart of failed work clears cancellation and admits on the next scheduler tick",
+  test.each(["answer", "follow_up", "conflict"] as const)(
+    "%s authorized restart of failed work clears cancellation and admits on the next scheduler tick",
     (reason) => {
       const { db, item } = fixture();
       try {
@@ -98,6 +98,10 @@ describe("restart and ask", () => {
         expect(recordTurn(db, item.id, 2).capped).toBe(true);
         const failed = getWorkItem(db, item.id)!;
         expect(failed).toMatchObject({ state: "failed", cancelRequested: true });
+        // Both existing explicit Linear retry paths clear the fence before calling restart.
+        // Keep the old item snapshot to cover the criteria-change caller's stale flag.
+        if (reason !== "answer")
+          db.run("UPDATE work_item SET cancel_requested=0 WHERE id=?", [item.id]);
         db.run(
           "CREATE TRIGGER queue_requires_clear_fence BEFORE UPDATE OF state ON work_item WHEN NEW.state='queued' AND NEW.cancel_requested=1 BEGIN SELECT RAISE(ABORT,'queue edge still cancelled'); END",
         );
@@ -122,6 +126,56 @@ describe("restart and ask", () => {
         });
         expect(recordTurn(db, item.id, 5).capped).toBe(false);
         expect(getWorkItem(db, item.id)?.turnCount).toBe(1);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  test.each(["findings", "ci", "review", "conflict", "follow_up"] as const)(
+    "%s cannot automatically restart failure-fenced work or mutate its jobs",
+    (reason) => {
+      const { db, item } = fixture();
+      try {
+        db.run(
+          "UPDATE work_item SET turn_count=4,recovery_attempts=2,awake_ms=500,agent_ms=500 WHERE id=?",
+          [item.id],
+        );
+        failWorkItem(db, getWorkItem(db, item.id)!, "cap:turns", "Turn limit reached", 2);
+        enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id }, now: 2 });
+        const before = {
+          item: getWorkItem(db, item.id),
+          run: getRun(db, item.currentRunId!),
+          jobs: listJobs(db),
+          events: listWorkItemEventRows(db, item.id),
+          outbox: listOutbox(db),
+        };
+        expect(
+          restart(db, before.item!, { reason, body: "Automatic feedback", now: 3 }),
+        ).toBeNull();
+        expect({
+          item: getWorkItem(db, item.id),
+          run: getRun(db, item.currentRunId!),
+          jobs: listJobs(db),
+          events: listWorkItemEventRows(db, item.id),
+          outbox: listOutbox(db),
+        }).toEqual(before);
+        expect(workspaceDispatch(db, { now: 4 })).toEqual([]);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  test.each(["cancelled", "merged", "completed"] as const)(
+    "%s work cannot be restarted even by an answer",
+    (state) => {
+      const { db, item } = fixture();
+      try {
+        db.run("UPDATE work_item SET state=?,cancel_requested=1 WHERE id=?", [state, item.id]);
+        const current = getWorkItem(db, item.id)!;
+        expect(restart(db, current, { reason: "answer", body: "Reply", now: 2 })).toBeNull();
+        expect(getWorkItem(db, item.id)).toEqual(current);
       } finally {
         db.close();
       }
