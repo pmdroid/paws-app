@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, type RestartReason } from "../core";
+import { JOB_KIND, isTerminalWorkItemState, type RestartReason } from "../core";
 import { halt } from "./halt";
 import {
   applyWorkItemEvent,
@@ -35,7 +35,7 @@ export function restart(
 ): number | null {
   return immediate(db, () => {
     const current = getWorkItem(db, item.id);
-    if (!current) return null;
+    if (!current || isTerminalWorkItemState(current.state)) return null;
     if ((current.cancelRequested || current.state === "failed") && !handoff.resetExecution)
       return null;
     if (!halt(db, item, handoff.now)) return null;
@@ -49,26 +49,36 @@ export function restart(
       if (handoff.caps) configureWorkItem(db, item.id, handoff.caps);
     } else if (handoff.reason === "answer")
       db.run("UPDATE work_item SET turn_count=0 WHERE id=?", [item.id]);
+    // The loop retains refused guidance as cancelled jobs so it survives a later explicit retry.
+    const deferred = db
+      .query<{ id: number; handoff: string }, [string]>(
+        "SELECT id,json_extract(payload,'$.handoff') AS handoff FROM job WHERE queue='run.resume' AND status='cancelled' AND last_error='restart_deferred' AND json_extract(payload,'$.itemId')=? ORDER BY id",
+      )
+      .all(item.id);
+    const body = [...deferred.map((entry) => entry.handoff), handoff.body].join("\n\n");
     const record = {
       kind: "restart" as const,
       reason: handoff.reason,
-      payloadDigest: createHash("sha256").update(handoff.body).digest("hex"),
+      payloadDigest: createHash("sha256").update(body).digest("hex"),
       now: handoff.now,
     };
     const queued = applyWorkItemEvent(db, item.id, "restart", record);
     if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "running" });
-    return enqueueJobOnce(db, {
+    const jobId = enqueueJobOnce(db, {
       queue: JOB_KIND.resume,
       jobKey: handoff.jobKey ?? `restart:${item.id}:${queued.version}`,
       payload: {
         itemId: item.id,
         runId: item.currentRunId,
-        handoff: handoff.body,
+        handoff: body,
         reason: handoff.reason,
         ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
       },
       now: handoff.now,
     });
+    for (const entry of deferred)
+      db.run("UPDATE job SET last_error='restart_carried' WHERE id=?", [entry.id]);
+    return jobId;
   });
 }
 

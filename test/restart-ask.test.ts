@@ -21,6 +21,7 @@ import {
   listRuns,
   listWorkItemEventRows,
   recoverOnStartup,
+  restart as restartRecord,
   saveCheckpoint,
 } from "../src/db";
 import { acceptCloseout, ask, attachOrchestrator, questionEffects, restart } from "../src/loop";
@@ -125,7 +126,7 @@ describe("restart and ask", () => {
       failWorkItem(db, item, "cap:time", "Stopped at the time limit", 2);
       const failed = getWorkItem(db, item.id)!;
       const jobs = listJobs(db);
-      expect(restart(db, failed, { reason, body: "late feedback", now: 3 })).toBeNull();
+      expect(restartRecord(db, failed, { reason, body: "late feedback", now: 3 })).toBeNull();
       expect(getWorkItem(db, item.id)).toEqual(failed);
       expect(listJobs(db)).toEqual(jobs);
       expect(workspaceDispatch(db, { now: 4 })).toEqual([]);
@@ -187,7 +188,7 @@ describe("restart and ask", () => {
     ]);
     const current = getWorkItem(db, item.id)!;
     expect(
-      restart(db, item, {
+      restartRecord(db, item, {
         reason: "follow_up",
         resetExecution: true,
         caps: { maxTurns: 99, maxAwakeMs: 99999 },
@@ -233,12 +234,115 @@ describe("restart and ask", () => {
       });
       expect(getWorkItem(db, item.id)).toEqual(current);
       expect(findOpenQuestion(db, "session")).toEqual(question);
-      expect(listJobs(db)).toEqual(jobs);
-      expect(listOutbox(db)).toEqual(outbox);
+      expect(listJobs(db).filter((job) => job.status === "pending")).toEqual(
+        jobs.filter((job) => job.status === "pending"),
+      );
+      expect(listOutbox(db).length).toBe(outbox.length + 1);
+      expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+        body: expect.stringContaining("Feedback was saved"),
+      });
     } finally {
       await orchestrator.shutdown();
       db.close();
     }
+  });
+
+  test("a criteria retry preserves limits a person raised", async () => {
+    const { db, item } = fixture();
+    db.run("UPDATE work_item SET max_turns=99,max_awake_ms=99999,awake_ms=500 WHERE id=?", [
+      item.id,
+    ]);
+    failWorkItem(db, getWorkItem(db, item.id)!, "auth", "Authentication failed", 2);
+    const clock = new FakeClock(3);
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs: new JobLoop(db, clock),
+      outbox: new OutboxDispatcher(db, clock),
+      pawsRoot: tempHome(),
+      admission: workspaceAdmission(db),
+      caps: { maxTurns: 20, maxAwakeMs: 10000 },
+    });
+    try {
+      orchestrator.applyDelegationChanges({
+        delegationId: item.delegationId,
+        sessionId: "session",
+        addedItemIds: [],
+        removedItemIds: [],
+        specChangedItemIds: [item.id],
+        canceledItemIds: [],
+        parentCanceled: false,
+      });
+      expect(getWorkItem(db, item.id)).toMatchObject({
+        state: "queued",
+        maxTurns: 99,
+        maxAwakeMs: 99999,
+        awakeMs: 0,
+        cancelRequested: false,
+      });
+    } finally {
+      await orchestrator.shutdown();
+      db.close();
+    }
+  });
+
+  test.each(["cancelled", "merged", "completed"] as const)(
+    "even an explicit retry refuses terminal %s without mutation",
+    (state) => {
+      const { db, item } = fixture();
+      db.run("UPDATE work_item SET state=?,cancel_requested=1 WHERE id=?", [state, item.id]);
+      const current = getWorkItem(db, item.id)!;
+      expect(
+        restartRecord(db, current, {
+          reason: "follow_up",
+          resetExecution: true,
+          body: "retry",
+          now: 2,
+        }),
+      ).toBeNull();
+      expect(getWorkItem(db, item.id)).toEqual(current);
+      db.close();
+    },
+  );
+
+  test("a late question answer is retained and carried by the next explicit retry", () => {
+    const { db, item } = fixture();
+    ask(
+      db,
+      { itemId: item.id, runId: item.currentRunId, sessionId: "session" },
+      "agent",
+      "Which direction?",
+      { now: 2 },
+    );
+    applyWorkItemEvent(db, item.id, "answer_received");
+    failWorkItem(db, getWorkItem(db, item.id)!, "auth", "Authentication failed", 3);
+    answer(
+      db,
+      {
+        sessionId: "session",
+        deliveryId: "late-answer",
+        body: "Use option A",
+        answeredBy: "human",
+        now: 4,
+      },
+      questionEffects(db, { now: 4 }),
+    );
+    expect(getWorkItem(db, item.id)?.state).toBe("failed");
+    expect(listJobs(db).some((job) => job.lastError === "restart_deferred")).toBe(true);
+    expect(
+      listOutbox(db).some((row) =>
+        (row.payload as { body?: string }).body?.includes("Feedback was saved"),
+      ),
+    ).toBe(true);
+    const resume = restart(db, getWorkItem(db, item.id)!, {
+      reason: "follow_up",
+      resetExecution: true,
+      body: "Try again",
+      now: 5,
+    });
+    expect((getJob(db, resume!)!.payload as { handoff: string }).handoff).toContain("Use option A");
+    expect((getJob(db, resume!)!.payload as { handoff: string }).handoff).toContain("Try again");
+    expect(listJobs(db).some((job) => job.lastError === "restart_deferred")).toBe(false);
+    db.close();
   });
 
   test("an old job after restart cannot accept, ask, or execute its handler", async () => {

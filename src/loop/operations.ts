@@ -1,6 +1,10 @@
+import { createHash } from "node:crypto";
+import { isTerminalWorkItemState } from "../core";
 import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
+  enqueueJobOnce,
+  enqueueOutboxOnce,
   getWorkItem,
   immediate,
   saveCheckpoint,
@@ -47,8 +51,61 @@ export function ask(
   });
 }
 
+/**
+ * Deliver guidance without overriding a newer question or restart. Refused handoffs are
+ * durable cancelled jobs, carried by the next accepted restart, with a Linear receipt.
+ */
 export function restart(...args: Parameters<typeof restartItem>): ReturnType<typeof restartItem> {
-  return restartItem(...args);
+  const [db, item, handoff] = args;
+  return immediate(db, () => {
+    const jobId = restartItem(...args);
+    if (jobId !== null) return jobId;
+    const current = getWorkItem(db, item.id);
+    if (!current) return null;
+    const digest = createHash("sha256").update(handoff.body).digest("hex");
+    if (current.state === "queued" && !current.cancelRequested) {
+      const pending = db
+        .query<{ id: number; handoff: string | null }, [string, number]>(
+          "SELECT id,json_extract(payload,'$.handoff') AS handoff FROM job WHERE queue='run.resume' AND status='pending' AND json_extract(payload,'$.itemId')=? AND item_version=? ORDER BY id DESC LIMIT 1",
+        )
+        .get(item.id, current.version);
+      if (pending) {
+        db.run("UPDATE job SET payload=json_set(payload,'$.handoff',?) WHERE id=?", [
+          [pending.handoff, handoff.body].filter(Boolean).join("\n\n"),
+          pending.id,
+        ]);
+        return pending.id;
+      }
+    }
+    if (!isTerminalWorkItemState(current.state)) {
+      const deferred = enqueueJobOnce(db, {
+        queue: "run.resume",
+        jobKey: `deferred:${item.id}:${current.version}:${digest}`,
+        payload: { itemId: item.id, handoff: handoff.body, deferredReason: handoff.reason },
+        now: handoff.now,
+      });
+      db.run(
+        "UPDATE job SET status='cancelled',last_error='restart_deferred',finished_at=? WHERE id=? AND status='pending'",
+        [handoff.now, deferred],
+      );
+    }
+    if (current.sessionKey)
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: current.sessionKey,
+        idempotencyKey: `restart-deferred:${item.id}:${current.version}:${digest}`,
+        payload: {
+          sessionId: current.sessionKey,
+          kind: "response",
+          body: isTerminalWorkItemState(current.state)
+            ? `Feedback was saved, but ${current.linearIdentifier} is ${current.state} and was not restarted.\n\n${handoff.body}`
+            : `Feedback was saved for ${current.linearIdentifier}'s next restart. The task remains ${current.state}; reply in Linear to retry stopped work.\n\n${handoff.body}`,
+        },
+        now: handoff.now,
+      });
+    return null;
+  });
 }
 
 /** Adopt an already stored question when recovering older in-flight work. */

@@ -678,9 +678,11 @@ export class Orchestrator {
   private readonly authRecoveryController = new AbortController();
   private authRecovery: Promise<void> | null = null;
   private readonly admission: ItemAdmission;
+  private readonly snapshotRetryBaseline: typeof snapshotRetryBaseline;
 
   constructor(private readonly options: OrchestratorOptions) {
     this.tracker = options.tracker ?? null;
+    this.snapshotRetryBaseline = options.snapshotRetryBaseline ?? snapshotRetryBaseline;
     this.admission = options.admission ?? createAdmission({ db: options.db });
     this.githubAuth = options.githubInstallation
       ? new GitHubInstallationCheck(
@@ -3649,10 +3651,7 @@ export class Orchestrator {
     if (listCloseoutRounds(this.db, item.id).some((round) => round.head === head)) return;
     let retryBaseline: string[];
     try {
-      retryBaseline = await (this.options.snapshotRetryBaseline ?? snapshotRetryBaseline)(
-        itemPathId(item),
-        this.options.pawsRoot,
-      );
+      retryBaseline = await this.snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
     } catch (caughtError6) {
       journalCaught(
         caughtError6,
@@ -3787,10 +3786,7 @@ export class Orchestrator {
     if (sessionId === null) throw new Error("Closeout recovery has no tracker session");
     let retryBaseline: string[] = [];
     try {
-      retryBaseline = await (this.options.snapshotRetryBaseline ?? snapshotRetryBaseline)(
-        itemPathId(item),
-        this.options.pawsRoot,
-      );
+      retryBaseline = await this.snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
     } catch (caughtError7) {
       journalCaught(
         caughtError7,
@@ -5255,7 +5251,6 @@ export class Orchestrator {
           reason: "follow_up",
           body: "The task criteria changed in Linear. Read the updated issue and finish the work from its branch.",
           resetExecution: item.state === "failed",
-          caps: this.options.caps,
           now: this.now(),
         });
         if (restarted === null) continue;
@@ -6158,16 +6153,14 @@ export class Orchestrator {
       upstream !== null && rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed;
     const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
-    const retryBaseline = await (this.options.snapshotRetryBaseline ?? snapshotRetryBaseline)(
-      itemPathId(item),
-      this.options.pawsRoot,
-    );
+    const retryBaseline = await this.snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
     immediate(this.db, () => {
       const current = getWorkItem(this.db, item!.id);
       if (!current) return;
       const resetExecution = current.cancelRequested || current.state === "failed";
-      const jobId = restart(this.db, current, {
+      const expected = current.state === "failed" ? current : item!;
+      const jobId = restart(this.db, expected, {
         reason: rebase ? "conflict" : "follow_up",
         resetExecution,
         caps: this.options.caps,
