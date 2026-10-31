@@ -648,14 +648,19 @@ function cleanRiskFixture() {
   };
   const progress = createDbCloseoutProgress(db, itemId, () => NOW);
   progress.begin(identity);
-  const step = (id: string, findings: string | null = null) =>
+  const step = (
+    id: string,
+    findings: string | null = null,
+    findingSeverities: ("P0" | "P1" | "P2" | "P3")[] | null = [],
+    attempt = 1,
+  ) =>
     progress.step(identity, {
       id,
       kind: "review",
       state: "passed",
       command: "",
       detail: "review passed",
-      attempt: 1,
+      attempt,
       timeoutSeconds: null,
       startedAt: NOW - 2,
       finishedAt: NOW - 1,
@@ -666,6 +671,7 @@ function cleanRiskFixture() {
       logPath: null,
       evidencePath: `${id}.json`,
       findings,
+      findingSeverities,
       ordinal: 0,
     });
   step("security-review");
@@ -678,6 +684,7 @@ function cleanRiskFixture() {
       publicUrl: PUBLIC_URL,
       autoApproveHighRisk: true,
       policyDigest: "policy",
+      policyPaths: [".agents/closeout.yaml", "tools/rules.ts"],
       samePatch: async () => {
         throw new Error("automatic approval must not compare patches");
       },
@@ -755,7 +762,7 @@ test("opt-in clean reviews at S pass mergeable without a question, writes or app
 for (const review of ["security-review", "independent-review"]) {
   test(`a P2 finding in ${review} asks even when Closeout passed it`, async () => {
     const f = cleanRiskFixture();
-    f.step(review, "Display text is not a severity source");
+    f.step(review, "Display text is not a severity source", ["P2"]);
     f.report(review, "P2");
     expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
     f.db.close();
@@ -772,6 +779,12 @@ for (const policyPath of [
   ".paws/high-risk-paths",
   ".agents/closeout.yaml",
   ".agents/skills/review/SKILL.md",
+  "AGENTS.md",
+  "src/auth/AGENTS.md",
+  "CLAUDE.md",
+  "src/auth/CLAUDE.md",
+  ".claude/rules/auth.md",
+  "tools/rules.ts",
 ]) {
   test(`changing ${policyPath} always asks`, async () => {
     const f = cleanRiskFixture();
@@ -794,6 +807,7 @@ test("a new head, policy, base or unfinished run loses automatic eligibility", a
   expect(await f.read({ head: heads.changed })).toBe("missing");
   expect(await f.read({ policyDigest: "new-policy" })).toBe("missing");
   expect(await f.read({ policyDigest: null })).toBe("missing");
+  expect(await f.read({ policyPaths: null })).toBe("missing");
   saveCandidateRisk(f.db, {
     itemId: f.itemId,
     head: heads.s,
@@ -819,38 +833,107 @@ test("a failed rule probe asks even if the run was accepted", async () => {
   f.db.close();
 });
 
-test("structured P3 findings pass regardless of how the display text is formatted", async () => {
+test("P3 snapshots pass before the shared finding import, regardless of display text", async () => {
   const f = cleanRiskFixture();
-  f.step(
-    "security-review",
-    "P3 session.ts:12: Explanation\nP1 is a term in this explanation\nP10 too",
-  );
-  f.report("security-review", "P3", "Explanation\nP1 is a term in this explanation\nP10 too");
+  f.step("security-review", "P3 session.ts:12: Notes\nP1 and P10 are terms in the explanation", [
+    "P3",
+  ]);
+  expect(listReviewFindings(f.db)).toEqual([]);
   expect(await f.read()).toBe("approved");
-  f.step("security-review", "Completely different display format");
+  f.step("security-review", "A completely different display format", ["P3"]);
   expect(await f.read()).toBe("approved");
   f.db.close();
 });
 
-test("findings displays without fresh structured reports fail closed", async () => {
+test("legacy, malformed and wrong-attempt review snapshots fail closed", async () => {
   const f = cleanRiskFixture();
-  f.step("security-review", "Display with findings");
-  expect(await f.read()).toBe("missing");
-  f.report("security-review", "P3", "An older report", NOW - 1);
-  expect(await f.read()).toBe("missing");
-  f.report("independent-review", "P3");
-  expect(await f.read()).toBe("missing");
-  f.report("security-review", "P3");
-  expect(await f.read()).toBe("approved");
+  for (const findings of [
+    null,
+    "P3 legacy text",
+    "{bad",
+    JSON.stringify({ reviewSnapshot: 1, attempt: 2, text: null, severities: [] }),
+  ]) {
+    f.db.run("UPDATE closeout_step SET findings = ? WHERE step_id = 'security-review'", [findings]);
+    expect(await f.read()).toBe("missing");
+  }
   f.db.run("DROP TABLE closeout_step");
   expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
   f.db.close();
 });
 
+test("a later clean attempt clears prior findings even without a running update", async () => {
+  const f = cleanRiskFixture();
+  f.step("security-review", "Old P2", ["P2"]);
+  expect(await f.read()).toBe("missing");
+  f.step("security-review", null, [], 2);
+  expect(
+    getCloseoutProgress(f.db, f.itemId, heads.s)?.steps.find((s) => s.id === "security-review"),
+  ).toMatchObject({ attempt: 2, findings: null, findingSeverities: [] });
+  expect(await f.read()).toBe("approved");
+  f.db.close();
+});
+
+test("a cached review keeps only the snapshot of its unchanged attempt", async () => {
+  const f = cleanRiskFixture();
+  f.step("security-review", "P3 notes", ["P3"]);
+  const cached = getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find(
+    (s) => s.id === "security-review",
+  )!;
+  f.progress.begin(f.identity);
+  f.progress.step(f.identity, {
+    ...cached,
+    state: "pending",
+    attempt: 0,
+    findings: null,
+    findingSeverities: undefined,
+  });
+  expect(await f.read()).toBe("missing");
+  f.progress.step(f.identity, { ...cached, findings: null, findingSeverities: undefined });
+  f.progress.finish(f.identity, "accepted");
+  expect(await f.read()).toBe("approved");
+  f.progress.step(f.identity, {
+    ...cached,
+    attempt: 2,
+    findings: null,
+    findingSeverities: undefined,
+  });
+  expect(await f.read()).toBe("missing");
+  f.db.close();
+});
+
+for (const severity of ["P2", "P3"] as const) {
+  test(`another item's report cannot change this head's ${severity} review result`, async () => {
+    const f = cleanRiskFixture();
+    f.step("security-review", "Original report", [severity]);
+    f.report("security-review", severity, "Same finding");
+    insertQueuedItem(f.db, { id: "other-item", sessionKey: "other-session", title: "Other" });
+    recordReviewFindings(f.db, {
+      itemId: "other-item",
+      repository: "acme/repo",
+      head: heads.changed,
+      seenAt: NOW + 1,
+      findings: [
+        {
+          severity: severity === "P2" ? "P3" : "P2",
+          review: "independent-review",
+          location: "session.ts:12",
+          text: "Same finding",
+          bugClass: "review",
+          why: "below failOn",
+        },
+      ],
+      reviewed: [],
+    });
+    expect(listReviewFindings(f.db)[0]?.severity).toBe(severity === "P2" ? "P3" : "P2");
+    expect(await f.read()).toBe(severity === "P2" ? "missing" : "approved");
+    f.db.close();
+  });
+}
+
 for (const severity of ["P0", "P1", "P2"] as const) {
   test(`structured ${severity} in a passed review blocks regardless of display format or dismissal`, async () => {
     const f = cleanRiskFixture();
-    f.step("independent-review", "P3 misleading display text");
+    f.step("independent-review", "P3 misleading display text", [severity]);
     f.report("independent-review", severity);
     expect(await f.read()).toBe("missing");
     const finding = listReviewFindings(f.db)[0]!;
@@ -884,7 +967,9 @@ test("unknown or malformed candidate paths never reuse another head's path list"
     recordedAt: NOW,
   });
   f.db.run("UPDATE candidate_paths SET paths = '{}' WHERE head_sha = ?", [heads.s]);
-  expect(await f.read()).toBe("missing");
+  const lines: string[] = [];
+  expect(await f.read({ journal: (line) => lines.push(line) })).toBe("missing");
+  expect(lines.some((line) => line.includes("Invalid stored candidate paths"))).toBe(true);
   f.db.close();
 });
 
@@ -938,23 +1023,7 @@ test("the exact-head progress reader selects the latest run and preserves the un
 test("a new or reopened finding at S revokes automatic eligibility", async () => {
   const f = cleanRiskFixture();
   expect(await f.read()).toBe("approved");
-  recordReviewFindings(f.db, {
-    itemId: f.itemId,
-    repository: "acme/repo",
-    head: heads.s,
-    seenAt: NOW,
-    findings: [
-      {
-        severity: "P2",
-        review: "security-review",
-        location: "session.ts:12",
-        text: "Unsafe reuse",
-        bugClass: "reuse",
-        why: "pre-existing",
-      },
-    ],
-    reviewed: [],
-  });
+  f.report("security-review", "P2", "Unsafe reuse");
   expect(await f.read()).toBe("missing");
   const finding = listReviewFindings(f.db)[0]!;
   setReviewFindingStatus(f.db, {

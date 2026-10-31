@@ -430,7 +430,7 @@ test("the migration enqueues the backfill job only where Closeout accepted somet
   }
 });
 
-test("finding report filters work by head alone, item, and report time", () => {
+test("finding report filters work by head alone and item", () => {
   const db = tempDb();
   try {
     for (const [id, head, at] of [
@@ -459,8 +459,6 @@ test("finding report filters work by head alone, item, and report time", () => {
     expect(listReviewFindings(db, { head: "head-a" }).map((f) => f.text)).toEqual(["item-a"]);
     expect(listReviewFindings(db, { itemId: "item-b" }).map((f) => f.text)).toEqual(["item-b"]);
     expect(listReviewFindings(db, { itemId: "item-a", head: "head-b" })).toEqual([]);
-    expect(listReviewFindings(db, { head: "head-a", reportedSince: 11 })).toEqual([]);
-    expect(listReviewFindings(db, { reportedSince: 20 }).map((f) => f.text)).toEqual(["item-b"]);
   } finally {
     db.close();
   }

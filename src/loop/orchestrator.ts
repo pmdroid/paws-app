@@ -4079,10 +4079,14 @@ export class Orchestrator {
         riskApproval: (item, published) => {
           let autoApproveHighRisk = false;
           let policyDigest: string | null = null;
+          let policyPaths: readonly string[] | null = null;
           try {
             autoApproveHighRisk = mergePolicy().autoApproveHighRisk;
-            if (autoApproveHighRisk)
-              policyDigest = policyDigests(item, published.worktree)?.digest ?? null;
+            if (autoApproveHighRisk) {
+              const current = policyDigests(item, published.worktree);
+              policyDigest = current?.digest ?? null;
+              policyPaths = current?.paths ?? null;
+            }
           } catch (error) {
             journalCaught(
               error,
@@ -4098,6 +4102,8 @@ export class Orchestrator {
             publicUrl: this.options.publicUrl,
             autoApproveHighRisk,
             policyDigest,
+            policyPaths,
+            journal: this.options.journal,
             samePatch: (approved, base) =>
               samePatch(published.worktree, approved, published.head, base),
             fixRisk: (approved, base) => this.fixRisk(item, published, approved, base),

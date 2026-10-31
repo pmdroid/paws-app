@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { JOB_KIND, riskLine } from "../core";
+import { HIGH_RISK_PATHS_FILE, JOB_KIND, riskLine } from "../core";
 import {
   applyLinearCommand,
   applyWorkItemEvent,
@@ -74,6 +74,8 @@ export async function riskApprovalFor(
     autoApproveHighRisk?: boolean;
     /** Current policy digest supplied by the merge caller; unreadable means no automatic approval. */
     policyDigest?: string | null;
+    policyPaths?: readonly string[] | null;
+    journal?: (line: string) => void;
     now?: number;
   },
 ): Promise<RiskApproval> {
@@ -85,56 +87,15 @@ export async function riskApprovalFor(
   // Recompute from stored evidence on every read. Never persist an automatic approval.
   if (input.autoApproveHighRisk === true && risk?.tier === "high") {
     try {
-      const run = getCloseoutProgress(db, input.itemId, input.head);
-      const paths = getCandidatePaths(db, input.itemId, input.head);
-      const reviews = ["security-review", "independent-review"].map((id) =>
-        run?.steps.find((step) => step.id === id && step.kind === "review"),
-      );
-      const findings = listReviewFindings(db, {
-        itemId: input.itemId,
-        head: input.head,
-      });
-      // A nonempty findings display needs current structured reports. The display text
-      // is never parsed for severity, and older reports cannot fill a missing import.
-      const reported =
-        run?.finishedAt == null
-          ? []
-          : listReviewFindings(db, {
-              itemId: input.itemId,
-              head: input.head,
-              reportedSince: run.finishedAt,
-            });
-      if (
-        paths !== null &&
-        !paths.some(
-          (path) =>
-            path === ".paws/high-risk-paths" || path === ".agents" || path.startsWith(".agents/"),
-        ) &&
-        run?.decision === "accepted" &&
-        run.finishedAt !== null &&
-        run.base === risk.base &&
-        run.policyDigest === input.policyDigest &&
-        run.steps.every(
-          (step) =>
-            step.state === "passed" ||
-            (step.state === "skipped" && step.detail === "no changed path matches"),
-        ) &&
-        reviews.every(
-          (step) =>
-            step?.state === "passed" &&
-            step.attempt > 0 &&
-            step.evidencePath &&
-            (step.findings === null ||
-              (reported.some((finding) => finding.review === step.id) &&
-                reported
-                  .filter((finding) => finding.review === step.id)
-                  .every((finding) => finding.severity === "P3"))),
-        ) &&
-        !findings.some((finding) => finding.status === "open" && finding.severity !== "P3")
-      )
-        return "approved";
+      if (cleanRiskEvidence(db, risk, input.policyDigest, input.policyPaths)) return "approved";
     } catch (error) {
-      journalCaught(error, "risk-approval.riskApprovalFor.evidence", input.itemId);
+      journalCaught(
+        error,
+        "risk-approval.riskApprovalFor.evidence",
+        input.itemId,
+        undefined,
+        input.journal,
+      );
     }
   }
   if (risk === null) return "missing";
@@ -151,6 +112,62 @@ export async function riskApprovalFor(
     now: input.now ?? Date.now(),
   });
   return fix !== null && fix.paths.length === 0 ? "approved" : "missing";
+}
+
+/** Exact-head evidence only. Shared finding rows can revoke eligibility, never grant it. */
+function cleanRiskEvidence(
+  db: Database,
+  risk: CandidateRisk,
+  policyDigest: string | null | undefined,
+  policyPaths: readonly string[] | null | undefined,
+): boolean {
+  if (policyDigest == null || policyPaths == null) return false;
+  const run = getCloseoutProgress(db, risk.itemId, risk.head);
+  if (
+    run?.decision !== "accepted" ||
+    run.finishedAt === null ||
+    run.base !== risk.base ||
+    run.policyDigest !== policyDigest
+  )
+    return false;
+  const paths = getCandidatePaths(db, risk.itemId, risk.head);
+  if (
+    paths === null ||
+    paths.some(
+      (path) =>
+        path === HIGH_RISK_PATHS_FILE ||
+        policyPaths.includes(path) ||
+        path
+          .split("/")
+          .some((part) => [".agents", ".claude", "AGENTS.md", "CLAUDE.md"].includes(part)),
+    )
+  )
+    return false;
+  if (
+    run.steps.some(
+      (step) =>
+        step.state !== "passed" &&
+        !(step.state === "skipped" && step.detail === "no changed path matches"),
+    )
+  )
+    return false;
+  for (const id of ["security-review", "independent-review"]) {
+    const review = run.steps.find((step) => step.id === id && step.kind === "review");
+    if (
+      review?.state !== "passed" ||
+      review.attempt < 1 ||
+      !review.evidencePath ||
+      !Array.isArray(review.findingSeverities) ||
+      review.findingSeverities.some((severity) => severity !== "P3")
+    )
+      return false;
+  }
+  return !listReviewFindings(db, { itemId: risk.itemId, head: risk.head, status: "open" }).some(
+    (finding) =>
+      finding.last.itemId === risk.itemId &&
+      finding.last.head === risk.head &&
+      finding.severity !== "P3",
+  );
 }
 
 /**

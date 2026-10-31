@@ -57,8 +57,6 @@ export type ReviewFindingFilter = {
   /** Findings reported by this item, optionally at one exact head. */
   itemId?: string;
   head?: string;
-  /** Only reports written at or after this time, scoped by item/head when given. */
-  reportedSince?: number;
   repository?: string;
   severity?: ReviewFindingSeverity;
   review?: string;
@@ -247,7 +245,7 @@ export function listReviewFindings(
   filter: ReviewFindingFilter = {},
 ): ReviewFindingRecord[] {
   const where: string[] = [];
-  const params: (string | number)[] = [];
+  const params: string[] = [];
   const reports: string[] = [];
   if (filter.itemId) {
     reports.push("l.item_id = ?");
@@ -257,13 +255,9 @@ export function listReviewFindings(
     reports.push("l.head_sha = ?");
     params.push(filter.head);
   }
-  if (filter.reportedSince !== undefined) {
-    reports.push("l.seen_at >= ?");
-    params.push(filter.reportedSince);
-  }
   if (reports.length)
     where.push(
-      `EXISTS (SELECT 1 FROM review_finding_item l WHERE l.finding_id = review_finding.id AND ${reports.join(" AND ")})`,
+      `id IN (SELECT l.finding_id FROM review_finding_item l WHERE ${reports.join(" AND ")})`,
     );
   if (filter.repository) {
     where.push("repository = ?");
@@ -286,7 +280,7 @@ export function listReviewFindings(
     params.push(filter.pathPrefix, filter.pathPrefix);
   }
   return db
-    .query<Row, (string | number)[]>(
+    .query<Row, string[]>(
       `SELECT * FROM review_finding ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
        ORDER BY last_seen_at DESC, id DESC`,
     )
