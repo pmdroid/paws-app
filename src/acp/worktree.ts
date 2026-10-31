@@ -232,16 +232,21 @@ async function addWorktree(
   return { path, branch, mirrorPath: gitDir, itemId: options.itemId, startRef };
 }
 
-export async function removeWorktree(options: {
-  owner: string;
-  repo: string;
-  itemId: string;
-  pawsRoot: string;
-}): Promise<void> {
+export async function removeWorktree(
+  options: {
+    owner: string;
+    repo: string;
+    itemId: string;
+    pawsRoot: string;
+  },
+  mayRemove: () => boolean = () => true,
+): Promise<void> {
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
   const path = worktreePath(options.pawsRoot, options.itemId);
-  if (!(await exists(gitDir)) || !(await exists(path))) return;
-  await git(["--git-dir", gitDir, "worktree", "remove", "--force", path]);
+  await onMirror(gitDir, async () => {
+    if (!(await exists(gitDir)) || !(await exists(path)) || !mayRemove()) return;
+    await git(["--git-dir", gitDir, "worktree", "remove", "--force", path]);
+  });
 }
 
 export async function worktreeMergedInto(path: string, heads: readonly string[]): Promise<boolean> {

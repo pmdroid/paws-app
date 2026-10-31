@@ -462,7 +462,7 @@ import {
   type FixRisk,
   RISK_ANSWERERS,
 } from "./risk-approval";
-import { recordWorktreeOwner, sweepWorktrees, withWorktreePath } from "./worktree-sweep";
+import { sweepWorktrees } from "./worktree-sweep";
 import {
   KEEP_WAITING,
   MOVE_TO_ANOTHER_RUNNER,
@@ -7350,17 +7350,12 @@ export class Orchestrator {
       networkGit: this.repositoryGit(item, repository, signal, "write"),
     });
     const startRef = worktreeStartRef(item);
-    const worktree = await withWorktreePath(this.options.pawsRoot, itemPathId(item), async () => {
-      signal.throwIfAborted();
-      const prepared = await createWorktree({
-        ...repository,
-        itemId: itemPathId(item),
-        pawsRoot: this.options.pawsRoot,
-        checkoutExclusions: this.runCheckout(item).agent,
-        ...(startRef ? { startRef } : {}),
-      });
-      recordWorktreeOwner(this.options.pawsRoot, itemPathId(item), item.id);
-      return prepared;
+    const worktree = await createWorktree({
+      ...repository,
+      itemId: itemPathId(item),
+      pawsRoot: this.options.pawsRoot,
+      checkoutExclusions: this.runCheckout(item).agent,
+      ...(startRef ? { startRef } : {}),
     });
     const required = (this.options.reviewRequirements ?? reviewRequirements)(
       worktree.path,
