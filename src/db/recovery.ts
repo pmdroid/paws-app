@@ -52,6 +52,7 @@ export function recoverOnStartup(
     let resumes = 0;
     const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
     for (const item of items) {
+      if (hasParkedCapacityWait(db, item)) continue;
       if (hasPendingAnswerResume(db, item.id)) continue;
       if (hasPendingResume(db, item.id, "transient_failure")) continue;
       const holds = runnerHoldsWork(db, item, now);
@@ -90,6 +91,19 @@ export function recoverOnStartup(
       });
     return decisions;
   });
+}
+
+/** A capacity wait already has its next attempt; restarting neither spends recovery nor adds a job. */
+function hasParkedCapacityWait(db: Database, item: WorkItemRecord): boolean {
+  if (item.cancelRequested || !["running", "recovering", "verifying"].includes(item.state))
+    return false;
+  return (
+    db
+      .query(`SELECT 1 FROM job WHERE status='pending' AND queue IN (?, ?, ?)
+    AND json_extract(payload, '$.itemId')=? AND json_extract(payload, '$.capacityWait') IS NOT NULL
+    AND (item_version IS NULL OR item_version=?)`)
+      .get(JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify, item.id, item.version) !== null
+  );
 }
 
 function hasPendingAnswerResume(db: Database, itemId: string): boolean {
@@ -152,7 +166,7 @@ export function prepareShutdown(
     markPawsAlive(db, now);
     const running = listWorkItemsByStates(db, ["running", "verifying"]);
     for (const item of running) {
-      if (runnerHoldsWork(db, item, now)) continue;
+      if (hasParkedCapacityWait(db, item) || runnerHoldsWork(db, item, now)) continue;
       if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
       applyWorkItemEvent(db, item.id, "lease_expired");
     }
@@ -233,4 +247,44 @@ export function requeueOrphanedWork(db: Database, now: number): string[] {
     requeued.push(item.id);
   }
   return requeued;
+}
+
+/**
+ * Close abandoned runner work once per scheduler dispatch. Live job owners handle their own
+ * runner failures; delivered results remain available for import. The item follows its existing
+ * lease-expiry transition atomically with the run and slot cleanup.
+ */
+export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
+  return immediate(db, () => {
+    const cutoff = runnerLeaseCutoff(now);
+    const rows = db
+      .query<{ runId: string }, [number, number]>(
+        `SELECT w.run_id AS runId FROM runner_work w
+         JOIN run r ON r.id = w.run_id
+         WHERE w.ended_at IS NULL AND w.lease_until <= ?
+           AND NOT EXISTS (SELECT 1 FROM job j WHERE json_extract(j.payload, '$.itemId')=r.item_id
+             AND j.status='running' AND (j.locked_until IS NULL OR j.locked_until> ?2))
+           AND r.status IN ('active', 'provisioning')
+           AND NOT EXISTS (SELECT 1 FROM runner_result result
+             WHERE result.run_id=w.run_id AND result.generation=w.generation
+               AND result.command_id=w.command_id)`,
+      )
+      .all(cutoff, now);
+    for (const row of rows) {
+      const run = getRun(db, row.runId)!;
+      const item = getWorkItem(db, run.itemId);
+      if (
+        item?.currentRunId === row.runId &&
+        ["running", "verifying", "merge_queue"].includes(item.state)
+      )
+        applyWorkItemEvent(db, item.id, "lease_expired");
+      markRun(db, row.runId, "lost", now);
+      db.run("UPDATE runner_work SET ended_at = ? WHERE run_id = ? AND ended_at IS NULL", [
+        now,
+        row.runId,
+      ]);
+      db.run("DELETE FROM runner_work_grant WHERE run_id = ?", [row.runId]);
+    }
+    return rows.map((row) => row.runId);
+  });
 }

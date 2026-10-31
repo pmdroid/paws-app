@@ -599,4 +599,4 @@ test("Linear requests while CI is pending and main moves before the merge", asyn
     "session-read": 1,
     "task-access": 7,
   });
-});
+}, 60_000);

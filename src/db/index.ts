@@ -114,6 +114,7 @@ export {
   TransitionRejectedError,
   accrueAtJobBoundary,
   accrueAwake,
+  markJobAwakeWait,
   applyWorkItemEvent,
   awakeBreakdown,
   clearProgress,
@@ -287,7 +288,12 @@ export {
   type DeadDelivery,
   type DeadDeliveryRef,
 } from "./dead-deliveries";
-export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
+export {
+  closeExpiredRunnerLeases,
+  prepareShutdown,
+  recoverOnStartup,
+  requeueOrphanedWork,
+} from "./recovery";
 export {
   markPawsAlive,
   PAWS_ALIVE_INTERVAL_MS,

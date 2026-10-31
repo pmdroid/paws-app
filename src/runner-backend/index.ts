@@ -98,6 +98,7 @@ import {
   RunnerCapacityWait,
   RunnerSetupRequired,
   WORKSPACE_HOOK_LIMIT,
+  systemClock,
   type WorkspaceHook,
 } from "../core";
 import {
@@ -290,6 +291,7 @@ export function createRemoteAgentRunner(options: {
     repository: string,
   ) => Promise<NonNullable<Extract<RunnerCommand, { type: "run" }>["checkpointBot"]>>;
   now?: () => number;
+  mono?: () => number;
   pollIntervalMs?: number;
   /** How long a run may go without a runner event before Paws asks whether the runner has it. */
   silentRunMs?: number;
@@ -299,6 +301,7 @@ export function createRemoteAgentRunner(options: {
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
+  const mono = options.mono ?? systemClock.mono;
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
@@ -646,15 +649,19 @@ export function createRemoteAgentRunner(options: {
         const runId = getWorkItem(db, itemId)?.currentRunId;
         if (!runId) throw limit;
         const agent = agentName(limit.agent);
-        startUsagePause(db, {
-          runId,
-          itemId,
-          agent: limit.agent,
-          runnerId: limit.runnerId,
-          resetsAt: limit.resetsAt,
-          resumeAt: limit.resumeAt,
-          pausedAt: now(),
-        });
+        startUsagePause(
+          db,
+          {
+            runId,
+            itemId,
+            agent: limit.agent,
+            runnerId: limit.runnerId,
+            resetsAt: limit.resetsAt,
+            resumeAt: limit.resumeAt,
+            pausedAt: now(),
+          },
+          mono(),
+        );
         try {
           await input.onEvent?.({
             type: "progress",
@@ -667,7 +674,7 @@ export function createRemoteAgentRunner(options: {
             await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
           }
         } finally {
-          endUsagePause(db, runId);
+          endUsagePause(db, runId, mono(), now());
         }
         input.signal?.throwIfAborted();
         await input.onEvent?.({

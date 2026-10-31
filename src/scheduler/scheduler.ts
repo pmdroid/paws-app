@@ -11,6 +11,7 @@ import {
   type WorkItemState,
 } from "../core";
 import {
+  closeExpiredRunnerLeases,
   enqueueJob,
   enqueueJobOnce,
   enqueueOutboxOnce,
@@ -556,6 +557,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
   const now = options.now ?? Date.now();
   const admission = options.admission ?? createAdmission({ db });
   const result = immediate(db, () => {
+    closeExpiredRunnerLeases(db, now);
     requeueOrphanedWork(db, now);
     const items = allItems(db, now);
     const byId = new Map(items.map((item) => [item.id, item]));

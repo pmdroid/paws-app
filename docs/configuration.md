@@ -35,6 +35,8 @@ A public dashboard also needs `PAWS_TLS_KEY_PATH` and `PAWS_TLS_CERT_PATH`. When
 | `[merge]`                          | `order`, `main_moved`, `ci_fix_attempts`, `comment_quiet_seconds`, `comment_max_wait_seconds` | See [below](#merge).                                                                               |
 | `[queue]`                          | `start_timeout_hours`, `max_running_per_owner`                                                | See [below](#queue).                                                                               |
 
+The awake-time cap counts active agent turns and Closeout checks. Waiting does not spend it: queued items, runner capacity waits, questions, pauses, usage limits, retry backoff, Closeout waiting on CI or a runner, and the merge queue all count zero. Time-limit messages report active agent and Closeout time separately from waiting.
+
 ### `[merge]`
 
 ```toml

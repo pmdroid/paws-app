@@ -14,12 +14,15 @@ import {
   JobLoop,
   OutboxDispatcher,
   applyLinearCommand,
+  getWorkItem,
   listJobs,
   listOutbox,
   listRuns,
   migrate,
   openDatabase,
 } from "../src/db";
+import { HostSupervisor } from "../src/host/supervisor";
+import { WakeDetector } from "../src/host/wake";
 import {
   LinearRateLimitError,
   LinearHttpError,
@@ -195,6 +198,37 @@ test("a busy runner wait that outlasts the hour, then loses its runners, gets a 
   expect(result.capacityWait, result.detail).toMatchObject({ runnerIds: [] });
 }, 90_000);
 
+test("a 60 minute wait for a runner slot accrues no awake time and does not bounce", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({
+    error: busyRunner,
+    times: Infinity,
+    clock,
+    untilMs: 60 * 60_000,
+  });
+  expect(result.awakeMs, result.detail).toBe(0);
+  expect(result.waitingMs, result.detail).toBeGreaterThanOrEqual(60 * 60_000);
+  expect(result.events, result.detail).not.toContain("lease_expired");
+  expect(result.events, result.detail).not.toContain("recovered");
+  expect(result.states, result.detail).not.toContain("recovering");
+  expect(
+    result.runs.filter((run) => run.startsWith("implement:")),
+    result.detail,
+  ).toHaveLength(1);
+}, 90_000);
+
+test("a capacity error after losing the job lease does not leave an active run", async () => {
+  const result = await runWithFault({
+    error: busyRunner,
+    times: 1,
+    clock: new FakeClock(Date.now()),
+    loseJobLease: true,
+  });
+  expect(result.runs, result.detail).toEqual(["implement:lost"]);
+  expect(result.capacityWait, result.detail).toBeUndefined();
+  expect(result.implementations, result.detail).toBe(0);
+}, 60_000);
+
 test("Stop while the task waits for a busy runner cancels it", async () => {
   const clock = new FakeClock(Date.now());
   const result = await runWithFault({
@@ -220,6 +254,7 @@ async function runWithFault(fault: {
   untilMs?: number;
   /** Applies Stop once the fake clock has moved this far. */
   stopAtMs?: number;
+  loseJobLease?: boolean;
 }): Promise<{
   state: string | null;
   states: (string | null)[];
@@ -233,6 +268,8 @@ async function runWithFault(fault: {
   events: string[];
   capacityWait: unknown;
   elapsedMs: number;
+  awakeMs: number;
+  waitingMs: number;
   detail: string;
 }> {
   const layout = await repoLayout("paws-faults-");
@@ -262,6 +299,7 @@ async function runWithFault(fault: {
   });
   const clock = fault.clock ?? systemClock;
   const jobs = new JobLoop(db, clock);
+  const host = new HostSupervisor(db, clock, new WakeDetector(clock));
   const outbox = new OutboxDispatcher(db, clock);
   const waits: { delayMs: number; runningJobs: number }[] = [];
   let implementations = 0;
@@ -320,6 +358,7 @@ async function runWithFault(fault: {
   });
   const startCodeIssue = lifecycle.startCodeIssue;
   let remaining = fault.times;
+  let leaseLost = false;
   const states: (string | null)[] = [];
   const listSessionActivities = tracker.listSessionActivities!;
   if (fault.tracker)
@@ -333,6 +372,14 @@ async function runWithFault(fault: {
   lifecycle.startCodeIssue = async (input, options) => {
     if (!fault.tracker && remaining > 0 && stateOf(db, "ENG-7") === "running") {
       remaining -= 1;
+      if (fault.loseJobLease) {
+        db.run("UPDATE job SET locked_until=? WHERE status='running' AND queue IN (?, ?)", [
+          clock.now(),
+          JOB_KIND.start,
+          JOB_KIND.resume,
+        ]);
+        leaseLost = true;
+      }
       throw fault.error();
     }
     return startCodeIssue(input, options);
@@ -362,6 +409,7 @@ async function runWithFault(fault: {
       !["merge_queue", "merged", "failed", "cancelled"].includes(stateOf(db, "ENG-7") ?? "") &&
       (fault.untilMs === undefined || clock.now() - startedAt < fault.untilMs)
     ) {
+      if (leaseLost) break;
       if (!stopped && fault.stopAtMs !== undefined && clock.now() - startedAt >= fault.stopAtMs) {
         const itemId = (
           db.query("SELECT id FROM work_item WHERE linear_identifier='ENG-7'").get() as {
@@ -381,9 +429,12 @@ async function runWithFault(fault: {
         outbox.tick();
         await Bun.sleep(25);
         const delayed = listJobs(db).find(
-          (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+          (job) =>
+            (job.queue === JOB_KIND.resume || job.queue === JOB_KIND.start) &&
+            job.status === "pending" &&
+            job.runAt > clock.now(),
         );
-        if (fault.clock && delayed && delayed.runAt > clock.now()) {
+        if (fault.clock && delayed) {
           waits.push({
             delayMs: delayed.runAt - clock.now(),
             runningJobs: listJobs(db).filter((job) => job.status === "running").length,
@@ -391,6 +442,7 @@ async function runWithFault(fault: {
           fault.clock.advance(delayed.runAt - clock.now());
         }
       }
+      if (fault.clock) host.tick();
     }
     const drainBy = Date.now() + 10_000;
     while (Date.now() < drainBy && listOutbox(db).some((row) => row.status === "pending")) {
@@ -400,9 +452,15 @@ async function runWithFault(fault: {
     }
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
-    const pendingResume = listJobs(db).find(
-      (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+    const pendingWait = listJobs(db).find(
+      (job) =>
+        job.status === "pending" &&
+        (job.payload as { capacityWait?: unknown } | null)?.capacityWait !== undefined,
     );
+    const item = db
+      .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_identifier='ENG-7'")
+      .get();
+    const recorded = item ? getWorkItem(db, item.id) : null;
     return {
       events: db
         .query(
@@ -410,15 +468,20 @@ async function runWithFault(fault: {
         )
         .all()
         .map((row) => (row as { event: string }).event),
-      capacityWait: (pendingResume?.payload as { capacityWait?: unknown } | undefined)
-        ?.capacityWait,
+      capacityWait: (pendingWait?.payload as { capacityWait?: unknown } | undefined)?.capacityWait,
       elapsedMs: clock.now() - startedAt,
+      awakeMs: recorded?.awakeMs ?? 0,
+      waitingMs: recorded?.waitingMs ?? 0,
       state: stateOf(db, "ENG-7"),
       states,
       thoughts: progress("thought"),
       errors: progress("error"),
       retries: listJobs(db)
-        .filter((job) => job.queue === JOB_KIND.resume)
+        .filter(
+          (job) =>
+            job.queue === JOB_KIND.resume ||
+            (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
+        )
         .map((job) => (job.payload as { retry?: number }).retry ?? 0),
       runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),
       jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
