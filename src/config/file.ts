@@ -105,6 +105,7 @@ export type PawsConfigFile = {
   mergeRepositories?: MergeRepositories;
   /** `[merge] ci_fix_attempts`. Missing means the default of 3. */
   ciFixAttempts?: number;
+  autoApproveHighRisk?: boolean;
   /** `[merge] comment_quiet_seconds`. Missing means the default of 60. */
   commentQuietSeconds?: number;
   /** `[merge] comment_max_wait_seconds`. Missing means the default of 300. */
@@ -536,7 +537,8 @@ function assignConfig(
     return;
   }
   if (section === "merge") {
-    if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
+    if (key === "auto_approve_high_risk") config.autoApproveHighRisk = asBoolean(value, line);
+    else if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
     else if (key === "comment_quiet_seconds") config.commentQuietSeconds = asInt(value, line);
     else if (key === "comment_max_wait_seconds") config.commentMaxWaitSeconds = asInt(value, line);
     else if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, line, "merge.order");

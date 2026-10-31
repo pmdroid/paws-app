@@ -64,6 +64,7 @@ import {
   type AgentProfile,
   type AgentProfiles,
   type CheckoutExclusions,
+  type MergeSettings,
 } from "../config";
 import {
   fixAttemptLimit,
@@ -4083,30 +4084,58 @@ export class Orchestrator {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return { kind: "obsolete" };
     const run: MergeRun = { payload, jobId };
+    let policy: MergeSettings | undefined;
+    const mergePolicy = () => (policy ??= this.readMergePolicy());
+    // The lane calls this again after async publication checks, so keep digest reads fresh.
+    const policyDigests = (item: WorkItemRecord, worktree: string) => {
+      const { home, policyRoot } = this.closeoutHome(item);
+      return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
+    };
     return advanceMerge(
       this.db,
       { itemId, payload, jobId },
       {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
-        settings: (item, signal) => this.mergeSettingsFor(item, signal),
-        policyDigests: (item, worktree) => {
-          const { home, policyRoot } = this.closeoutHome(item);
-          return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
-        },
+        settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
+        policyDigests,
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
-        riskApproval: (item, published) =>
-          riskApprovalFor(this.db, {
+        riskApproval: (item, published) => {
+          let autoApproveHighRisk = false;
+          let policyDigest: string | null = null;
+          let policyPaths: readonly string[] | null = null;
+          try {
+            autoApproveHighRisk = mergePolicy().autoApproveHighRisk;
+            if (autoApproveHighRisk) {
+              const current = policyDigests(item, published.worktree);
+              policyDigest = current?.digest ?? null;
+              policyPaths = current?.paths ?? null;
+            }
+          } catch (error) {
+            journalCaught(
+              error,
+              "orchestrator.riskApproval.settings",
+              item.id,
+              undefined,
+              this.options.journal,
+            );
+          }
+          return riskApprovalFor(this.db, {
             itemId: item.id,
             head: published.head,
             publicUrl: this.options.publicUrl,
+            autoApproveHighRisk,
+            policyDigest,
+            policyPaths,
+            journal: this.options.journal,
             samePatch: (approved, base) =>
               samePatch(published.worktree, approved, published.head, base),
             fixRisk: (approved, base) => this.fixRisk(item, published, approved, base),
             now: this.now(),
-          }),
+          });
+        },
         askRiskApproval: async (item, published) => {
           const asked = askRiskApproval(this.db, {
             item,
@@ -4605,6 +4634,10 @@ export class Orchestrator {
     return Math.min(rounds, restartLimit(this.db, item.id) ?? rounds);
   }
 
+  private readMergePolicy(): MergeSettings {
+    return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+  }
+
   /**
    * Settings → Merging for this task: an issue rule, then the Linear project, then the workspace
    * default. Resolved from the issue's project and labels once, then kept with the task. A failed
@@ -4613,10 +4646,11 @@ export class Orchestrator {
   private async mergeSettingsFor(
     item: WorkItemRecord,
     signal?: AbortSignal,
+    readPolicy = () => this.readMergePolicy(),
   ): Promise<TaskMergeSettings> {
     const kept = getTaskMergeSettings(this.db, item.id);
     if (kept) return kept;
-    const policy = readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+    const policy = readPolicy();
     let context: LinearMergeContext | null = { projectId: null, labels: [] };
     if (this.tracker?.issueMergeContext) {
       try {

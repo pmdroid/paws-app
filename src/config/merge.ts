@@ -48,12 +48,14 @@ export type MergeRepositories = Record<
   { packages: string[]; ignoreCommentBots?: string[]; highRiskPaths?: string[] }
 >;
 export type MergeSettings = MergePolicy & {
+  autoApproveHighRisk: boolean;
   ciFixAttempts: number;
   repositories: MergeRepositories;
   commentWait: CommentWait;
 };
 /** The `[merge]` tables as written. Missing keys are not rendered. */
 export type StoredMerge = Partial<MergeChoice> & {
+  autoApproveHighRisk?: boolean;
   ciFixAttempts?: number;
   commentQuietSeconds?: number;
   commentMaxWaitSeconds?: number;
@@ -178,6 +180,9 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
   return {
     ...(config.mergeOrder === undefined ? {} : { order: config.mergeOrder }),
     ...(mainMoved === undefined ? {} : { mainMoved }),
+    ...(config.autoApproveHighRisk === undefined
+      ? {}
+      : { autoApproveHighRisk: config.autoApproveHighRisk }),
     ...(config.ciFixAttempts === undefined ? {} : { ciFixAttempts: config.ciFixAttempts }),
     ...(config.commentQuietSeconds === undefined
       ? {}
@@ -201,6 +206,7 @@ export function readMergeSettings(config: PawsConfigFile): MergeSettings {
     projects: stored.projects,
     rules: stored.rules,
     repositories: stored.repositories ?? {},
+    autoApproveHighRisk: stored.autoApproveHighRisk ?? false,
     ciFixAttempts: Math.min(stored.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS),
     commentWait: commentWait(stored),
   };
@@ -463,6 +469,9 @@ function choiceLines(value: MergeOverride): string[] {
 export function renderMergeSettings(settings: StoredMerge): string {
   const lines = [
     ...choiceLines(settings),
+    ...(settings.autoApproveHighRisk === undefined
+      ? []
+      : [`auto_approve_high_risk = ${settings.autoApproveHighRisk}`]),
     ...(settings.ciFixAttempts === undefined
       ? []
       : [`ci_fix_attempts = ${settings.ciFixAttempts}`]),
@@ -543,6 +552,9 @@ export function writeMergePolicy(
     path,
     setMergeSettingsText(text, {
       ...policy.default,
+      ...(current.autoApproveHighRisk === undefined
+        ? {}
+        : { autoApproveHighRisk: current.autoApproveHighRisk }),
       ...(current.ciFixAttempts === undefined ? {} : { ciFixAttempts: current.ciFixAttempts }),
       ...(wait
         ? { commentQuietSeconds: wait.quietSeconds, commentMaxWaitSeconds: wait.maxWaitSeconds }

@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { JOB_KIND, riskLine } from "../core";
+import { HIGH_RISK_PATHS_FILE, JOB_KIND, riskLine } from "../core";
 import {
   applyLinearCommand,
   applyWorkItemEvent,
@@ -8,6 +8,9 @@ import {
   enqueueJobOnce,
   enqueueOutboxOnce,
   getCandidateRisk,
+  getCloseoutProgress,
+  getCandidatePaths,
+  listReviewFindings,
   getRiskFix,
   getWorkItem,
   listLinkAsks,
@@ -19,6 +22,7 @@ import {
   type RiskFix,
   type WorkItemRecord,
 } from "../db";
+import { journalCaught } from "../journal";
 import type { RiskApproval } from "../merge";
 import { shortCommit } from "../questions";
 import { askWithLink, closeLinkAsksOnHead, linkAskAvailable } from "./link-ask";
@@ -47,7 +51,9 @@ export type FixRisk = { changed: string[]; paths: string[] };
  * Whether head S may merge as far as its risk goes. A normal-tier head, or any head on a Paws
  * whose risk gate is off, needs nothing. A high-risk or unclassified head needs a person's
  * approval of S in Paws, or of an earlier head with the same patch against main (`samePatch`),
- * as after a rebase. A Linear reply never approves, so only `approve` decisions count.
+ * as after a rebase. With automatic approval enabled, clean stored reviews of this exact head
+ * and policy can also satisfy the gate. That evidence never carries over to another head.
+ * A Linear reply never approves, so only `approve` decisions count for manual approvals.
  *
  * A fix Paws made after the latest approval (CI, a review, a comment) keeps that approval when
  * none of the files the fix itself changed since the approved head is a high-risk path. A fix
@@ -65,6 +71,11 @@ export async function riskApprovalFor(
     samePatch: (approved: string, base: string) => Promise<boolean>;
     /** What the fix from `approved` to S changed, against main's `base`. Null when unreadable. */
     fixRisk?: (approved: string, base: string) => Promise<FixRisk | null>;
+    autoApproveHighRisk?: boolean;
+    /** Current policy digest supplied by the merge caller; unreadable means no automatic approval. */
+    policyDigest?: string | null;
+    policyPaths?: readonly string[] | null;
+    journal?: (line: string) => void;
     now?: number;
   },
 ): Promise<RiskApproval> {
@@ -73,6 +84,20 @@ export async function riskApprovalFor(
   if (risk?.tier === "normal") return "not_required";
   const approvals = riskApprovals(db, input.itemId);
   if (approvals.some((ask) => ask.headCommit === input.head)) return "approved";
+  // Recompute from stored evidence on every read. Never persist an automatic approval.
+  if (input.autoApproveHighRisk === true && risk?.tier === "high") {
+    try {
+      if (cleanRiskEvidence(db, risk, input.policyDigest, input.policyPaths)) return "approved";
+    } catch (error) {
+      journalCaught(
+        error,
+        "risk-approval.riskApprovalFor.evidence",
+        input.itemId,
+        undefined,
+        input.journal,
+      );
+    }
+  }
   if (risk === null) return "missing";
   for (const ask of approvals.toReversed())
     if (await input.samePatch(ask.headCommit, risk.base)) return "approved";
@@ -87,6 +112,72 @@ export async function riskApprovalFor(
     now: input.now ?? Date.now(),
   });
   return fix !== null && fix.paths.length === 0 ? "approved" : "missing";
+}
+
+/** Exact-head evidence only. Shared finding rows can revoke eligibility, never grant it. */
+function cleanRiskEvidence(
+  db: Database,
+  risk: CandidateRisk,
+  policyDigest: string | null | undefined,
+  policyPaths: readonly string[] | null | undefined,
+): boolean {
+  if (policyDigest == null || policyPaths == null) return false;
+  const run = getCloseoutProgress(db, risk.itemId, risk.head);
+  if (
+    run?.decision !== "accepted" ||
+    run.finishedAt === null ||
+    run.base !== risk.base ||
+    run.policyDigest !== policyDigest
+  )
+    return false;
+  const paths = getCandidatePaths(db, risk.itemId, risk.head);
+  if (
+    paths === null ||
+    paths.some(
+      (path) =>
+        path === HIGH_RISK_PATHS_FILE ||
+        policyPaths.includes(path) ||
+        path
+          .toLowerCase()
+          .split("/")
+          .some((part) =>
+            [
+              ".agents",
+              ".claude",
+              ".codex",
+              ".cursor",
+              "agents.md",
+              "claude.md",
+              "claude.local.md",
+              "gemini.md",
+              "copilot-instructions.md",
+            ].includes(part),
+          ),
+    )
+  )
+    return false;
+  if (
+    run.steps.some(
+      (step) =>
+        step.state !== "passed" &&
+        !(step.state === "skipped" && step.detail === "no changed path matches"),
+    )
+  )
+    return false;
+  for (const id of ["security-review", "independent-review"]) {
+    const review = run.steps.find((step) => step.id === id && step.kind === "review");
+    if (
+      review?.state !== "passed" ||
+      review.attempt < 1 ||
+      !review.evidencePath ||
+      !Array.isArray(review.findingSeverities) ||
+      review.findingSeverities.some((severity) => severity !== "P3")
+    )
+      return false;
+  }
+  return !listReviewFindings(db, { itemId: risk.itemId, head: risk.head, status: "open" }).some(
+    (finding) => finding.severity !== "P3",
+  );
 }
 
 /**
