@@ -40,6 +40,8 @@ import { githubClient } from "../e2e-harness";
 import { workspaceAdmission } from "../fake-workspace";
 
 setJournalSink(() => {});
+// Match CI even when the parent runner has a restrictive umask.
+process.umask(0o022);
 const root = process.argv[2]!;
 const home = join(root, "paws");
 const source = join(root, "source");
@@ -242,7 +244,7 @@ const finished = new Set<string>();
 let stops = 0;
 const errors: string[] = [];
 const runnerRoot = join(root, "runner");
-mkdirSync(runnerRoot);
+mkdirSync(runnerRoot, { mode: 0o700 });
 const spool = {
   root: join(runnerRoot, "spool"),
   runnerUid: process.getuid!(),
