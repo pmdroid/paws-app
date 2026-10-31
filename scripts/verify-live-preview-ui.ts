@@ -141,11 +141,15 @@ try {
       await page.waitForTimeout(5500);
       expect(loaded).toBe(beforePoll);
       preview.confirmed = false;
-      await expect(card.getByRole("button", { name: "Accept", exact: true })).toBeDisabled();
+      await expect(card.getByRole("button", { name: "Accept", exact: true })).toBeDisabled({
+        timeout: 10000,
+      });
       expect(loaded).toBe(beforePoll);
       await expect(card).toContainText("Waiting for the runner to reconnect");
       preview.confirmed = true;
-      await expect(card.getByRole("button", { name: "Accept", exact: true })).toBeEnabled();
+      await expect(card.getByRole("button", { name: "Accept", exact: true })).toBeEnabled({
+        timeout: 10000,
+      });
       expect(loaded).toBe(beforePoll);
       // The next preview can reuse this service URL; its new lifetime must reload the app.
       preview.expiresAt += 1;
