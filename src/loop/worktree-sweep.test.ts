@@ -11,6 +11,7 @@ import {
   RETIRED_WORKTREE_MS,
   sweepWorktrees,
   type WorktreeSweep,
+  withWorktreePath,
 } from "./worktree-sweep";
 
 const roots: string[] = [];
@@ -114,6 +115,107 @@ test("holds former item IDs and rechecks owners before removing an orphan", asyn
   );
   expect(held).toEqual([[key]]);
   expect(existsSync(worktreePath(fixture.pawsRoot, key))).toBe(true);
+}, 30_000);
+
+test("retires renamed terminal paths with and without ownership metadata", async () => {
+  const fixture = await setup();
+  const states = ["merged", "completed", "cancelled", "failed"] as const;
+  for (const [n, state] of states.entries()) {
+    const key = `ENG-${20 + n}`;
+    await fixture.item(key, state, old);
+    if (n % 2) recordWorktreeOwner(fixture.pawsRoot, key, key);
+  }
+  fixture.db.run("UPDATE work_item SET linear_identifier = 'MOVED-' || linear_identifier");
+  await sweepWorktrees(fixture.sweep());
+  expect(fixture.present()).toEqual({
+    "ENG-20": false,
+    "ENG-21": false,
+    "ENG-22": false,
+    "ENG-23": false,
+  });
+}, 30_000);
+
+test("keeps renamed terminal paths for the full retention window", async () => {
+  const fixture = await setup();
+  await fixture.item("ENG-24", "cancelled", old);
+  fixture.db.run(
+    "INSERT INTO work_item_event (item_id, version, at, from_state, to_state, event) VALUES (?, 1, ?, 'running', 'cancelled', 'cancel')",
+    ["ENG-24", now - 60_000],
+  );
+  fixture.db.run("UPDATE work_item SET linear_identifier = 'MOVED-24'");
+  await sweepWorktrees(fixture.sweep());
+  expect(fixture.present()["ENG-24"]).toBe(true);
+  await sweepWorktrees(fixture.sweep({ now: now + RETIRED_WORKTREE_MS }));
+  expect(fixture.present()["ENG-24"]).toBe(false);
+}, 30_000);
+
+test("bookkeeping and malformed worktrees do not abort other cleanup", async () => {
+  const fixture = await setup();
+  await mkdir(join(fixture.pawsRoot, "worktrees", "bad name"), { recursive: true });
+  await fixture.item("ENG-30", "running", old);
+  await fixture.item("ENG-31", "cancelled", old);
+  const path = worktreePath(fixture.pawsRoot, "ENG-30");
+  const gitDir = (await git(["-C", path, "rev-parse", "--absolute-git-dir"])).trim();
+  await writeFile(join(gitDir, "paws-item-owners"), "not a directory");
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    expect(() => recordWorktreeOwner(fixture.pawsRoot, "ENG-30", "ENG-30")).not.toThrow();
+    expect(lines.some((line) => line.includes("recordOwner"))).toBe(true);
+    await writeFile(join(path, ".git"), "malformed");
+    expect(() => recordWorktreeOwner(fixture.pawsRoot, "ENG-30", "ENG-30")).not.toThrow();
+    await sweepWorktrees(fixture.sweep());
+    expect(fixture.present()).toEqual({ "ENG-30": true, "ENG-31": false });
+    expect(lines.some((line) => line.includes("Expected a linked Git worktree"))).toBe(true);
+  } finally {
+    restore();
+  }
+}, 30_000);
+
+test("reports retained legacy worktrees whose ownership cannot be established", async () => {
+  const fixture = await setup();
+  await createWorktree({ ...repository, itemId: "unknown", pawsRoot: fixture.pawsRoot });
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    await sweepWorktrees(fixture.sweep());
+    expect(lines.join("\n")).toContain("worktree-sweep.unidentified");
+    expect(existsSync(worktreePath(fixture.pawsRoot, "unknown"))).toBe(true);
+  } finally {
+    restore();
+  }
+}, 30_000);
+
+test("a newly delegated owner cannot prepare a path while its removal is held", async () => {
+  const fixture = await setup();
+  const key = "ENG-40";
+  await createWorktree({ ...repository, itemId: key, pawsRoot: fixture.pawsRoot });
+  recordWorktreeOwner(fixture.pawsRoot, key, "old-owner");
+  let preparation: Promise<void> | undefined;
+  let prepared = false;
+  await sweepWorktrees(
+    fixture.sweep({
+      hold: async (_ids, operation) => {
+        const item = insertQueuedItem(fixture.db, { id: "new-owner" });
+        fixture.db.run(
+          "UPDATE work_item SET linear_identifier = ?, state = 'running' WHERE id = ?",
+          [key, item.id],
+        );
+        preparation = withWorktreePath(fixture.pawsRoot, key, async () => {
+          await createWorktree({ ...repository, itemId: key, pawsRoot: fixture.pawsRoot });
+          recordWorktreeOwner(fixture.pawsRoot, key, item.id);
+          await writeFile(join(worktreePath(fixture.pawsRoot, key), "live.txt"), "live");
+          prepared = true;
+        });
+        await Promise.resolve();
+        expect(prepared).toBe(false);
+        await operation();
+      },
+    }),
+  );
+  await preparation;
+  expect(prepared).toBe(true);
+  expect(await Bun.file(join(worktreePath(fixture.pawsRoot, key), "live.txt")).text()).toBe("live");
 }, 30_000);
 
 test("retires a failed worktree after seven days despite an unresolvable merged head", async () => {
