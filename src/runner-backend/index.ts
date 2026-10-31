@@ -18,7 +18,6 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
-  agentReadyRunners,
   endUsagePause,
   getTaskMode,
   getWorkItem,
@@ -393,13 +392,50 @@ export function createRemoteAgentRunner(options: {
             .get() !== null))
     )
       throw new RunnerCapacityWait(busy, heldForSession ? SESSION_GRACE_MS : undefined, details);
+    const readyRunners = options.placement
+      ? async () => {
+          const runId = getWorkItem(db, itemId)?.currentRunId;
+          const candidates = await options.placement!.candidates({
+            ...placement,
+            reserved: unassigned(runId ?? undefined),
+          });
+          if (!runId || reservations.has(runId)) return [];
+          const pending = unassigned(runId);
+          return candidates
+            .filter((runner) => {
+              const held =
+                runnerSlotsHeldBetweenCommands(db, runner.id, now(), runId) +
+                pinnedSlotsReserved(db, runner.id, itemId, now());
+              return runnerHasCapacity(
+                db,
+                runner.id,
+                now(),
+                runId,
+                (pending.get(runner.id) ?? 0) + held,
+              );
+            })
+            .map((runner) => runner.id);
+        }
+      : undefined;
     if (agent && limit && limit.resumeAt > now())
-      throw new UsageLimitPause(agent, limit.resumeAt, limit.resetsAt, limit.runnerId);
+      throw new UsageLimitPause(
+        agent,
+        limit.resumeAt,
+        limit.resetsAt,
+        limit.runnerId,
+        readyRunners,
+      );
     if (!agent || resetsAt === null)
       throw new RunnerUnavailableError(
         `No available paired runner can access this Linear task repository (${details.join("; ")})`,
       );
-    throw new UsageLimitPause(agent, resetsAt + USAGE_LIMIT_RESUME_SLACK_MS, resetsAt, null);
+    throw new UsageLimitPause(
+      agent,
+      resetsAt + USAGE_LIMIT_RESUME_SLACK_MS,
+      resetsAt,
+      null,
+      readyRunners,
+    );
   }
   /**
    * Places a handed-over run. With no eligible runner the run waits where it is, keeping its
@@ -646,13 +682,10 @@ export function createRemoteAgentRunner(options: {
   function usageLimitWait(itemId: string, input: RunAgentOptions): UsageLimitWait {
     return {
       now,
-      async pause(limit) {
+      async pause(limit, profilesChanged) {
         const runId = getWorkItem(db, itemId)?.currentRunId;
         if (!runId) throw limit;
         const agent = agentName(limit.agent);
-        const readyAtPause = new Set(
-          agentReadyRunners(db, limit.agent, now(), now() - RUNNER_ONLINE_MS),
-        );
         startUsagePause(
           db,
           {
@@ -666,6 +699,7 @@ export function createRemoteAgentRunner(options: {
           },
           mono(),
         );
+        let changed = false;
         try {
           await input.onEvent?.({
             type: "progress",
@@ -674,13 +708,9 @@ export function createRemoteAgentRunner(options: {
           // Resume now moves resume_at forward; Stop aborts the signal.
           for (;;) {
             const wait = (usagePause(db, runId)?.resumeAt ?? 0) - now();
-            if (wait <= 0) break;
-            if (
-              agentReadyRunners(db, limit.agent, now(), now() - RUNNER_ONLINE_MS).some(
-                (id) => !readyAtPause.has(id),
-              )
-            )
-              break;
+            changed = profilesChanged?.() ?? false;
+            if (wait <= 0 || changed) break;
+            if ((await limit.readyRunners?.())?.length) break;
             await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
           }
         } finally {
@@ -689,7 +719,9 @@ export function createRemoteAgentRunner(options: {
         input.signal?.throwIfAborted();
         await input.onEvent?.({
           type: "progress",
-          text: `Continuing: Paws is trying ${agent} again after its usage limit.`,
+          text: changed
+            ? "Continuing: Paws is trying the updated agent settings."
+            : `Continuing: Paws is trying ${agent} again after its usage limit.`,
         });
       },
     };
