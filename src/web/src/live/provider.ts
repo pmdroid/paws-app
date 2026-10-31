@@ -1,4 +1,3 @@
-import { livePreviewForQuestion } from "../../../db";
 import { journalCaught } from "../journal";
 /**
  * Live status snapshot.
@@ -43,6 +42,7 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
+  livePreviewForQuestion,
   getCandidateRisk,
   getRiskFix,
   latestCandidateRisk,

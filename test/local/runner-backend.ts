@@ -1849,7 +1849,7 @@ export async function probeRunnerBackend(
               reviewPreview: { required: true, review: async () => "unreachable" },
             }),
           ),
-          /live previews need runner/,
+          /requires runner/,
         );
       }
       let previewStopped: (() => void) | undefined;

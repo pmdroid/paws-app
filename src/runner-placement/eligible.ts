@@ -1,3 +1,4 @@
+import { runnerVersionAtLeast, type RunnerVersion } from "../runner-protocol";
 import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
 import { CANCEL_STILL_PENDING, delegatedLinearUserId, workspaceMember } from "../db";
@@ -218,4 +219,35 @@ export function itemOwnerEligibleRunner(
     }))
     .sort((a, b) => Number(b.own) - Number(a.own) || a.name.localeCompare(b.name));
   return named[0] ? { id: named[0].id, name: named[0].name } : null;
+}
+
+/** Use the same ownership, membership, online and agent checks as placement. */
+export function itemOwnerHasCompatibleRunner(
+  db: Database,
+  input: {
+    itemId: string;
+    agent: string;
+    minimum: RunnerVersion;
+    now: number;
+  },
+): boolean {
+  const scope = itemOwnerScope(db, input.itemId);
+  if (!scope) return false;
+  const versions = new Map(
+    db
+      .query<{ id: string; version: string | null }, []>(
+        "SELECT runner_id AS id, runner_version AS version FROM runner_host_status",
+      )
+      .all()
+      .map((row) => [row.id, row.version]),
+  );
+  return eligibleRunners(db, {
+    ...scope,
+    agent: input.agent,
+    purpose: "work",
+    now: input.now,
+  }).some(
+    (runner) =>
+      runner.eligible && runnerVersionAtLeast(versions.get(runner.id) ?? "", input.minimum),
+  );
 }

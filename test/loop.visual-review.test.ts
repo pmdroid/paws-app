@@ -148,6 +148,37 @@ test("host abort and redelivery preserve the active preview and original deadlin
   }
 }, 90000);
 
+test("loss of the preview execution rejects Accept immediately", async () => {
+  const f = await pausedForReview({ preview: true });
+  try {
+    await f.until(() => findOpenQuestion(f.db, "ses_1") !== null);
+    f.losePreviewRunner();
+    expect(await f.approve()).toBe("rejected");
+    expect(livePreviewForQuestion(f.db, findOpenQuestion(f.db, "ses_1")!.id)).toBeNull();
+    expect(f.github.opened).toHaveLength(0);
+    await f.turn;
+  } finally {
+    await f.close();
+  }
+}, 90000);
+
+test.each(["offline", "revoked", "other-owner"] as const)(
+  "an %s runner cannot satisfy preview capability",
+  async (previewIneligible) => {
+    const f = await pausedForReview({ preview: true, previewUnavailable: true, previewIneligible });
+    try {
+      await f.turn;
+      await f.until(() => f.tracker.questions.length > 0);
+      expect(f.tracker.questions[0]!.body).toContain("Upgrade the runner");
+      expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(0);
+      expect(f.github.opened).toHaveLength(0);
+    } finally {
+      await f.close();
+    }
+  },
+  90000,
+);
+
 test("a required preview restarts after verification without a runner row on the current run", async () => {
   const f = await pausedForReview({ preview: true, previewDeferred: true });
   try {
@@ -1206,6 +1237,7 @@ async function pausedForReview(
     paths?: string[];
     preview?: boolean;
     previewUnavailable?: boolean;
+    previewIneligible?: "offline" | "revoked" | "other-owner";
     previewReconnect?: boolean;
     previewDeferred?: boolean;
     previewLocal?: boolean;
@@ -1216,6 +1248,7 @@ async function pausedForReview(
     publicUrl?: string;
   } = {},
 ) {
+  let previewRunning = true;
   const layout = await repoLayout(
     options.preview
       ? `specVersion: "0.1"
@@ -1396,6 +1429,9 @@ items:
                 expect(input.reviewPreview?.required).toBe(true);
               if (options.previewDeferred && previewTurns === 1) {
                 db.run("DELETE FROM runner_work WHERE run_id=?", [input.runId!]);
+                db.run("UPDATE linear_session SET organization_id='org-1',team_id='team-1'");
+                db.run("UPDATE workspace_user SET linear_user_id='delegator-1' WHERE id='user-1'");
+                db.run("DELETE FROM runner_work WHERE run_id=?", [input.runId]);
                 db.run(
                   "INSERT OR REPLACE INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner-1','0.1.53',?)",
                   [Date.now()],
@@ -1404,6 +1440,48 @@ items:
                 return result;
               }
               if (options.previewUnavailable) {
+                if (options.previewIneligible) {
+                  db.run("UPDATE linear_session SET organization_id='org-1',team_id='team-1'");
+                  db.run(
+                    "UPDATE workspace_user SET linear_user_id='delegator-1' WHERE id='user-1'",
+                  );
+                  const owner =
+                    options.previewIneligible === "other-owner"
+                      ? putWorkspaceUser(db, {
+                          id: "other-owner",
+                          linearUserId: "other-owner",
+                          name: "Other",
+                          email: "other@example.invalid",
+                        })
+                      : "user-1";
+                  if (options.previewIneligible === "other-owner")
+                    syncWorkspaceMember(db, {
+                      workspaceId: "ws-1",
+                      userId: owner,
+                      role: "admin",
+                      active: true,
+                      teamIds: [],
+                      now: Date.now(),
+                    });
+                  db.run(
+                    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at,revoked_at) VALUES('ineligible','ws-1',?,'Ineligible','active',?,?,?)",
+                    [
+                      owner,
+                      Date.now(),
+                      options.previewIneligible === "offline" ? 0 : Date.now(),
+                      options.previewIneligible === "revoked" ? Date.now() : null,
+                    ],
+                  );
+                  for (const agent of ["codex", "claude", "grok", "opencode"])
+                    db.run(
+                      "INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('ineligible',?,1)",
+                      [agent],
+                    );
+                  db.run(
+                    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('ineligible','0.1.53',?)",
+                    [Date.now()],
+                  );
+                }
                 db.run(
                   "INSERT OR REPLACE INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner-1','0.1.48',?)",
                   [Date.now()],
@@ -1417,13 +1495,16 @@ items:
                 head,
                 services: ["paws-preview-1"],
                 path: "/usr/bin",
-                lockRoot: path.join(layout.root, "preview-locks"),
+                lockNamespace: path.join(layout.root, "preview-locks"),
                 signal: input.signal!,
                 runtime: previewRuntime.io,
                 ready: async (preview, signal) => {
                   if (options.previewReconnect) {
                     const host = new AbortController();
-                    const first = input.reviewPreview!.review(preview, { signal: host.signal });
+                    const first = input.reviewPreview!.review(preview, {
+                      signal: host.signal,
+                      isRunning: () => previewRunning,
+                    });
                     while (!db.query("SELECT 1 FROM live_preview WHERE id=?").get(preview.id))
                       await Bun.sleep(10);
                     const questionId = db
@@ -1434,9 +1515,12 @@ items:
                     const deadline = livePreviewForQuestion(db, questionId)!.expiresAt;
                     host.abort(new Error("Host reconnect"));
                     await expect(first).rejects.toThrow("Host reconnect");
-                    expect(livePreviewForQuestion(db, questionId)?.expiresAt).toBe(deadline);
+                    expect(livePreviewForQuestion(db, questionId)).toBeNull();
                     offset += 40 * 60000;
-                    const replay = input.reviewPreview!.review(preview, { signal });
+                    const replay = input.reviewPreview!.review(preview, {
+                      signal,
+                      isRunning: () => previewRunning,
+                    });
                     expect(livePreviewForQuestion(db, questionId)?.expiresAt).toBe(deadline);
                     return await replay;
                   }
@@ -1444,11 +1528,11 @@ items:
                   const replies = await Promise.all([
                     input.reviewPreview!.review(
                       { ...preview, expiresAt: 1, remainingMs: 3600000 },
-                      { signal },
+                      { signal, isRunning: () => previewRunning },
                     ),
                     input.reviewPreview!.review(
                       { ...preview, expiresAt: 1, remainingMs: 3600000 },
-                      { signal },
+                      { signal, isRunning: () => previewRunning },
                     ),
                   ]);
                   return replies[0]!;
@@ -1483,6 +1567,9 @@ items:
   return {
     db,
     previewRuntime,
+    losePreviewRunner() {
+      previewRunning = false;
+    },
     turn: running,
     bare: layout.bare,
     root: layout.root,
@@ -1621,6 +1708,12 @@ function attachLease(db: Database, runId: string): string {
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
     ["runner-1", "ws-1", userId, "Runner", now, now],
   );
+  for (const agent of ["codex", "claude", "grok", "opencode"]) {
+    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1)", [
+      "runner-1",
+      agent,
+    ]);
+  }
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", ["runner-1"]);
   db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,?,?,1,0,?,?,0)",

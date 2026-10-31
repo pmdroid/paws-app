@@ -14,6 +14,8 @@ import {
   openDatabase,
   saveCheckpoint,
   saveLivePreview,
+  confirmLivePreview,
+  detachLivePreview,
   unacceptedLivePreview,
 } from "../db";
 import { PreviewReadySchema } from "../live-preview";
@@ -59,6 +61,7 @@ function waiting() {
     frameable: true,
   });
   saveLivePreview(db, item.id, question.id, preview);
+  confirmLivePreview(db, preview.id, preview.expiresAt);
   return { db, itemId: item.id, questionId: question.id, preview };
 }
 function accept(f: ReturnType<typeof waiting>, answeredBy = "lead", now = NOW + 10) {
@@ -178,8 +181,20 @@ test("a later accepted preview supersedes an abandoned optional check id", () =>
     detail: "Try the new preview",
     now: NOW + 1,
   });
-  saveLivePreview(f.db, f.itemId, question.id, { ...f.preview, id: randomUUID() });
+  const replacement = { ...f.preview, id: randomUUID() };
+  saveLivePreview(f.db, f.itemId, question.id, replacement);
+  confirmLivePreview(f.db, replacement.id, replacement.expiresAt);
   expect(accept({ ...f, questionId: question.id })).toBe("answered");
   expect(unacceptedLivePreview(f.db, f.itemId, HEAD)).toBe(false);
   expect(unacceptedLivePreview(f.db, f.itemId, "b".repeat(40))).toBe(true);
+});
+
+test("detached and expired execution confirmations reject acceptance until reattached", () => {
+  const f = waiting();
+  detachLivePreview(f.db, f.preview.id);
+  expect(accept(f)).toBe("rejected");
+  confirmLivePreview(f.db, f.preview.id, NOW + 5);
+  expect(accept(f)).toBe("rejected");
+  confirmLivePreview(f.db, f.preview.id, NOW + 100);
+  expect(accept(f)).toBe("answered");
 });

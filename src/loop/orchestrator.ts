@@ -1,13 +1,16 @@
+import { itemOwnerHasCompatibleRunner } from "../runner-placement";
 import { setTimeout as previewDelay } from "node:timers/promises";
 import {
   LIVE_PREVIEW_RUNNER_VERSION,
   PreviewReadySchema,
-  previewRunnerSupported,
   type ReviewPreviewHook,
 } from "../live-preview";
 import { askWithLink } from "./link-ask";
 import {
   livePreviewForQuestion,
+  confirmLivePreview,
+  detachLivePreview,
+  detachAllLivePreviews,
   getLivePreview,
   saveLivePreview,
   endLivePreview,
@@ -661,6 +664,7 @@ export class Orchestrator {
       finish(): void;
     }
   >();
+  private readonly previewChecks = new Map<string, () => boolean>();
   private readonly previewWaiters = new Map<string, Set<() => void>>();
   private wakePreview(questionId: string): void {
     for (const wake of this.previewWaiters.get(questionId) ?? []) wake();
@@ -692,6 +696,7 @@ export class Orchestrator {
   private readonly admission: ItemAdmission;
 
   constructor(private readonly options: OrchestratorOptions) {
+    detachAllLivePreviews(options.db);
     this.tracker = options.tracker ?? null;
     this.admission = options.admission ?? createAdmission({ db: options.db });
     this.githubAuth = options.githubInstallation
@@ -3056,7 +3061,7 @@ export class Orchestrator {
       const previewRequired =
         needsPreview ||
         (verdict.decision === "accepted" && unacceptedLivePreview(this.db, item.id, head));
-      if (previewRequired && !this.previewCapable()) {
+      if (previewRequired && !this.previewCapable(after)) {
         await this.askCloseoutHelp(
           after,
           verdict.result,
@@ -4685,16 +4690,19 @@ export class Orchestrator {
     return settings;
   }
 
-  private previewCapable(): boolean {
-    if (!this.options.remoteExecution) return false;
-    // Verification may own a new run with no runner_work row. Placement checks the
-    // version again for the actual next implementation, including after failover.
-    const versions = this.db
-      .query<{ version: string | null }, []>(
-        "SELECT runner_version AS version FROM runner_host_status",
-      )
-      .all();
-    return versions.some(({ version }) => previewRunnerSupported(version));
+  private previewCapable(item: WorkItemRecord): boolean {
+    return (
+      Boolean(this.options.remoteExecution) &&
+      itemOwnerHasCompatibleRunner(this.db, {
+        itemId: item.id,
+        agent: this.implementerAgent(
+          item,
+          loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+        ),
+        minimum: LIVE_PREVIEW_RUNNER_VERSION,
+        now: this.now(),
+      })
+    );
   }
 
   private previewHook(item: WorkItemRecord, runId: string): ReviewPreviewHook {
@@ -4702,9 +4710,9 @@ export class Orchestrator {
       Boolean(
         this.db
           .query(
-            "SELECT 1 FROM job WHERE json_extract(payload, '$.itemId')=? AND job_key LIKE 'preview-required:%' LIMIT 1",
+            "SELECT 1 FROM job WHERE job_key GLOB ? AND status IN ('pending','running') LIMIT 1",
           )
-          .get(item.id),
+          .get(`preview-required:${item.id}:*`),
       ) ||
       Boolean(
         item.checkpoint?.wipCommit &&
@@ -4722,7 +4730,7 @@ export class Orchestrator {
       review: async (ready, context) => {
         const parsedPreview = PreviewReadySchema.parse(ready);
         const existing = getLivePreview(this.db, parsedPreview.id);
-        const saved = existing ? livePreviewForQuestion(this.db, existing.questionId) : null;
+        const saved = existing?.ready;
         const preview = {
           ...parsedPreview,
           expiresAt: saved?.expiresAt ?? this.now() + (parsedPreview.remainingMs ?? 3600000),
@@ -4759,23 +4767,28 @@ export class Orchestrator {
               saveLivePreview(this.db, item.id, asked.question.id, preview);
               return asked;
             });
-        await this.flush();
+        const check = () => !context.signal.aborted && context.isRunning();
+        this.previewChecks.set(opened.question.id, check);
+        if (check()) confirmLivePreview(this.db, preview.id, this.now() + 10000);
         let notify: (() => void) | undefined;
         const wakes = this.previewWaiters.get(opened.question.id) ?? new Set<() => void>();
         this.previewWaiters.set(opened.question.id, wakes);
         try {
+          await this.flush();
           while (true) {
             const changed = new Promise<void>((resolve) => {
               notify = resolve;
               wakes.add(resolve);
             });
             context.signal.throwIfAborted();
+            if (check()) confirmLivePreview(this.db, preview.id, this.now() + 10000);
+            else detachLivePreview(this.db, preview.id);
             const previewAsk = getLinkAsk(this.db, opened.question.id);
             if (previewAsk?.decision === "approve")
               return `Live preview accepted for ${preview.head}. End your turn without further changes. Any new commit requires another preview.`;
             if (
               preview.expiresAt <= this.now() ||
-              livePreviewForQuestion(this.db, opened.question.id) === null
+              livePreviewForQuestion(this.db, opened.question.id, this.now()) === null
             ) {
               this.askedRuns.add(runId);
               return "Preview stopped or expired. End your turn now. A reply in Linear or Request changes in Paws restarts it.";
@@ -4805,6 +4818,10 @@ export class Orchestrator {
         } finally {
           if (notify) wakes.delete(notify);
           if (wakes.size === 0) this.previewWaiters.delete(opened.question.id);
+          if (this.previewChecks.get(opened.question.id) === check) {
+            this.previewChecks.delete(opened.question.id);
+            detachLivePreview(this.db, preview.id);
+          }
           if (!context.signal.aborted) endLivePreview(this.db, preview.id, this.now());
         }
       },
@@ -6969,6 +6986,9 @@ export class Orchestrator {
     effects: LinkAskEffects = {},
   ): Promise<"answered" | "forbidden" | "rejected"> {
     const itemId = getQuestion(this.db, input.questionId)?.itemId;
+    const live = livePreviewForQuestion(this.db, input.questionId, this.now());
+    if (live && this.previewChecks.get(input.questionId)?.() !== true)
+      detachLivePreview(this.db, live.id);
     const outcome = decideLinkAsk(
       this.db,
       { ...input, now: this.now() },

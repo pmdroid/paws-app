@@ -17,20 +17,50 @@ export function saveLivePreview(
 export function getLivePreview(
   db: Database,
   id: string,
-): { itemId: string; questionId: string; endedAt: number | null } | null {
-  return db
-    .query<{ itemId: string; questionId: string; endedAt: number | null }, [string]>(
-      "SELECT item_id AS itemId, question_id AS questionId, ended_at AS endedAt FROM live_preview WHERE id=?",
+): {
+  itemId: string;
+  questionId: string;
+  endedAt: number | null;
+  ready: PreviewReady;
+} | null {
+  const row = db
+    .query<{ itemId: string; questionId: string; endedAt: number | null; ready: string }, [string]>(
+      "SELECT item_id AS itemId, question_id AS questionId, ended_at AS endedAt, ready FROM live_preview WHERE id=?",
     )
     .get(id);
+  return row ? { ...row, ready: PreviewReadySchema.parse(JSON.parse(row.ready)) } : null;
 }
-export function livePreviewForQuestion(db: Database, questionId: string): PreviewReady | null {
+export function livePreviewForQuestion(
+  db: Database,
+  questionId: string,
+  now = Date.now(),
+): PreviewReady | null {
   const row = db
-    .query<{ ready: string }, [string]>(
-      "SELECT ready FROM live_preview WHERE question_id=? AND ended_at IS NULL",
+    .query<{ ready: string }, [string, number]>(
+      `SELECT p.ready FROM live_preview p JOIN live_preview_confirmation c ON c.question_id=p.question_id
+     WHERE p.question_id=? AND p.ended_at IS NULL AND c.confirmed_until>?`,
     )
-    .get(questionId);
+    .get(questionId, now);
   return row ? PreviewReadySchema.parse(JSON.parse(row.ready)) : null;
+}
+/** A short lease from the attached, confirmed execution, bounded by the original deadline. */
+export function confirmLivePreview(db: Database, id: string, until: number): void {
+  db.run(
+    `INSERT INTO live_preview_confirmation(question_id,confirmed_until)
+    SELECT question_id,MIN(?1,json_extract(ready,'$.expiresAt')) FROM live_preview
+    WHERE id=?2 AND ended_at IS NULL
+    ON CONFLICT(question_id) DO UPDATE SET confirmed_until=excluded.confirmed_until`,
+    [until, id],
+  );
+}
+export function detachLivePreview(db: Database, id: string): void {
+  db.run(
+    "DELETE FROM live_preview_confirmation WHERE question_id IN (SELECT question_id FROM live_preview WHERE id=?)",
+    [id],
+  );
+}
+export function detachAllLivePreviews(db: Database): void {
+  db.run("DELETE FROM live_preview_confirmation");
 }
 export function endLivePreview(db: Database, id: string, now: number): void {
   db.run("UPDATE live_preview SET ended_at=COALESCE(ended_at,?) WHERE id=?", [now, id]);

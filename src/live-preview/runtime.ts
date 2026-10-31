@@ -1,6 +1,8 @@
 import { OwnedProcess } from "../process";
-import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, readFile, writeFile, lstat } from "node:fs/promises";
+import { createServer } from "node:net";
+import { journalCaught } from "../journal";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -28,7 +30,9 @@ const runtime: PreviewRuntime = {
     clearTimeout(timer);
     if ((await child.exited) !== 0)
       throw new Error(
-        "Tailscale preview command failed. Check services, runner tags and operator permission.",
+        argv[0] === "ss"
+          ? "Preview port probe failed. Install iproute2 and check ss permissions."
+          : "Tailscale preview command failed. Check services, runner tags and operator permission.",
       );
     return output;
   },
@@ -69,80 +73,29 @@ export function previewEnvironment(
   };
 }
 
-/** Never trust a pre-existing shared directory or follow a planted lock symlink. */
-async function assertPrivateDirectory(folder: string): Promise<void> {
-  const info = await lstat(folder);
-  if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)
-    throw new Error("Preview locks need a runner-owned directory with mode 0700");
-}
-
-async function staleLock(folder: string): Promise<boolean> {
-  try {
-    const owner = Number(await readFile(join(folder, "owner"), "utf8"));
-    if (owner === 0) return true;
-    if (!Number.isSafeInteger(owner) || owner < 0) return false;
-    try {
-      process.kill(owner, 0);
-      return false;
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "ESRCH";
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    try {
-      return Date.now() - (await lstat(folder)).mtimeMs > 60000;
-    } catch (missing) {
-      if ((missing as NodeJS.ErrnoException).code === "ENOENT") return true;
-      throw missing;
-    }
-  }
-}
-
-async function claimService(root: string, name: string, io: PreviewRuntime): Promise<boolean> {
-  const folder = join(root, name);
-  const claim = async () => {
-    try {
-      await mkdir(folder, { mode: 0o700 });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-      throw error;
-    }
-    await writeFile(join(folder, "owner"), String(process.pid), { mode: 0o600 });
-    return true;
-  };
-  if (await claim()) return true;
-  try {
-    await assertPrivateDirectory(folder);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return await claim();
-    throw error;
-  }
-  if (!(await staleLock(folder))) return false;
-  const recovery = `${folder}.recovery`;
-  try {
-    await mkdir(recovery, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    await assertPrivateDirectory(recovery);
-    if (!(await staleLock(recovery))) return false;
-    await rm(recovery, { recursive: true, force: true });
-    try {
-      await mkdir(recovery, { mode: 0o700 });
-    } catch (retryError) {
-      if ((retryError as NodeJS.ErrnoException).code === "EEXIST") return false;
-      throw retryError;
-    }
-  }
-  await writeFile(join(recovery, "owner"), String(process.pid), { mode: 0o600 });
-  try {
-    if (!(await staleLock(folder))) return false;
-    // A worker may have died before clearing Serve. Clear before recycling its name.
-    await io.command(["tailscale", "serve", "clear", `svc:${name}`]);
-    await rm(folder, { recursive: true, force: true });
-    return await claim();
-  } finally {
-    await rm(recovery, { recursive: true, force: true });
-  }
+/** Kernel ownership cannot be rewritten through an agent's writable home. Linux
+ * releases abstract sockets when the worker exits, including after SIGKILL. */
+async function claimService(
+  namespace: string,
+  name: string,
+): Promise<(() => Promise<void>) | null> {
+  const address =
+    "\0paws-preview-" +
+    createHash("sha256").update(`${namespace}:${name}`).digest("hex").slice(0, 48);
+  const lock = createServer((socket) => socket.destroy());
+  lock.unref();
+  const claimed = await new Promise<boolean>((resolve, reject) => {
+    lock.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "EADDRINUSE") resolve(false);
+      else reject(error);
+    });
+    lock.listen(address, () => resolve(true));
+  });
+  if (!claimed) return null;
+  return () =>
+    new Promise<void>((resolve, reject) => {
+      lock.close((error) => (error ? reject(error) : resolve()));
+    });
 }
 
 /** Own the service and process until the review, cancellation, or the one-hour limit. */
@@ -152,7 +105,7 @@ export async function runPreview(input: {
   head: string;
   services: readonly string[];
   path: string;
-  lockRoot: string;
+  lockNamespace: string;
   signal: AbortSignal;
   ready(preview: PreviewReady, signal: AbortSignal): Promise<string>;
   stopped?(id: string): void;
@@ -164,13 +117,13 @@ export async function runPreview(input: {
   const timeoutMs = Math.min(input.timeoutMs ?? 3600000, 3600000);
   const expiresAt = Date.now() + timeoutMs;
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)]);
-  await mkdir(input.lockRoot, { recursive: true, mode: 0o700 });
-  await assertPrivateDirectory(input.lockRoot);
+  let releaseService: (() => Promise<void>) | null = null;
   let service: string | undefined;
   for (const name of input.services) {
     if (!/^paws-preview-[1-9][0-9]*$/.test(name))
       throw new Error("Invalid preview service configuration");
-    if (await claimService(input.lockRoot, name, io)) {
+    releaseService = await claimService(input.lockNamespace, name);
+    if (releaseService) {
       service = name;
       break;
     }
@@ -185,6 +138,8 @@ export async function runPreview(input: {
   let published: PreviewReady | undefined;
   try {
     signal.throwIfAborted();
+    // A dead worker can leave Serve configured. Clear only after owning its name.
+    await io.command(["tailscale", "serve", "clear", `svc:${service}`]);
     const status = JSON.parse(await io.command(["tailscale", "status", "--json"])) as {
       CurrentTailnet?: { MagicDNSSuffix?: string };
       Self?: { Tags?: string[] };
@@ -307,24 +262,34 @@ export async function runPreview(input: {
     });
     return await Promise.race([input.ready(preview, signal), died, expired]);
   } finally {
-    if (published) input.stopped?.(published.id);
-    let cleared = !serving;
+    try {
+      if (published) input.stopped?.(published.id);
+    } catch (error) {
+      journalCaught(error, "live-preview.stopped", null);
+    }
     try {
       if (serving) await io.command(["tailscale", "serve", "clear", `svc:${service}`]);
-      cleared = true;
-    } finally {
-      let stopped = false;
+    } catch (error) {
+      journalCaught(error, "live-preview.clear", null);
+    }
+    let stopped = false;
+    try {
+      await child?.stop();
+      stopped = true;
+    } catch (error) {
+      journalCaught(error, "live-preview.stop", null);
+    }
+    // An unconfirmed process keeps its service lease until this worker exits.
+    if (stopped) {
       try {
-        await child?.stop();
-        stopped = true;
-      } finally {
-        if (cleared && stopped) {
-          if (home) await rm(home, { recursive: true, force: true });
-          await rm(join(input.lockRoot, service), { recursive: true, force: true });
-        } else {
-          // Retry cleanup on the next claim even if this worker remains alive.
-          await writeFile(join(input.lockRoot, service, "owner"), "0", { mode: 0o600 });
-        }
+        if (home) await rm(home, { recursive: true, force: true });
+      } catch (error) {
+        journalCaught(error, "live-preview.remove-home", null);
+      }
+      try {
+        await releaseService?.();
+      } catch (error) {
+        journalCaught(error, "live-preview.release", null);
       }
     }
   }

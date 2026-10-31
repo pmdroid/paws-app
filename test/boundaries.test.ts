@@ -93,7 +93,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   credentials: ["journal", "db"],
   slack: ["journal", "config", "credentials", "webhook-body"],
   core: [],
-  "live-preview": ["process", "runner-protocol"],
+  "live-preview": ["process", "runner-protocol", "journal"],
   db: ["journal", "core", "runner-protocol"],
   linear: ["journal", "core", "credentials", "webhook-body"],
   intake: ["journal", "core", "db", "linear"],
@@ -141,6 +141,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "agent-catalog": ["journal", "db"],
   host: ["journal", "core", "db"],
   loop: [
+    "runner-placement",
     "live-preview",
     "journal",
     "workspace",

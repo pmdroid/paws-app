@@ -757,6 +757,9 @@ export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
 
 export {
   saveLivePreview,
+  confirmLivePreview,
+  detachLivePreview,
+  detachAllLivePreviews,
   getLivePreview,
   livePreviewForQuestion,
   endLivePreview,

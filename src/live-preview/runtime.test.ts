@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile, chmod, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,15 +20,15 @@ const request = PreviewRequestSchema.parse({
   checklist: ["Create a fixture account"],
 });
 async function input() {
-  const lockRoot = await mkdtemp(join(tmpdir(), "preview-test-"));
-  roots.push(lockRoot);
+  const lockNamespace = await mkdtemp(join(tmpdir(), "preview-test-"));
+  roots.push(lockNamespace);
   return {
     request,
     worktree: "/fixture/worktree",
     head: "b".repeat(40),
     services: ["paws-preview-1"],
     path: "/fixture/bin:/usr/bin",
-    lockRoot,
+    lockNamespace,
     signal: new AbortController().signal,
   };
 }
@@ -110,7 +110,7 @@ test.each([{ tagged: false }, { occupied: true }, { wildcard: true }])(
         },
       }),
     ).rejects.toThrow();
-    expect(fake.calls.some((argv) => argv[1] === "serve")).toBe(false);
+    expect(fake.calls.some((argv) => argv[1] === "serve" && argv[2] !== "clear")).toBe(false);
   },
 );
 
@@ -133,6 +133,10 @@ test("a slot cannot be shared by concurrent previews and is reusable after stop"
     },
   });
   await ready;
+  const planted = join(config.lockNamespace, "paws-preview-1");
+  await mkdir(planted);
+  await writeFile(join(planted, "owner"), "0");
+  await rm(planted, { recursive: true });
   await expect(
     runPreview({
       ...config,
@@ -152,29 +156,6 @@ test("a slot cannot be shared by concurrent previews and is reusable after stop"
     },
   });
 });
-
-test.each([false, true])(
-  "reclaims a dead worker slot with abandoned recovery=%s",
-  async (abandonedRecovery) => {
-    const config = await input();
-    const folder = join(config.lockRoot, "paws-preview-1");
-    await mkdir(folder);
-    await writeFile(join(folder, "owner"), "2147483647");
-    if (abandonedRecovery) {
-      await mkdir(`${folder}.recovery`);
-      await writeFile(join(`${folder}.recovery`, "owner"), "2147483647");
-    }
-    const fake = createFakePreviewRuntime();
-    await runPreview({
-      ...config,
-      runtime: fake.io,
-      async ready() {
-        return "accepted";
-      },
-    });
-    expect(fake.calls[0]).toEqual(["tailscale", "serve", "clear", "svc:paws-preview-1"]);
-  },
-);
 
 test("cancellation stops the app even if the review callback does not observe its signal", async () => {
   const config = await input();
@@ -199,18 +180,12 @@ test("a failed Serve clear stops the product and retries cleanup before reusing 
   const fake = createFakePreviewRuntime();
   const command = fake.io.command;
   fake.io.command = async (argv) => {
-    if (argv[2] === "clear") throw new Error("Serve clear failed");
+    if (argv[2] === "clear" && fake.starts.length > 0) throw new Error("Serve clear failed");
     return command(argv);
   };
-  await expect(
-    runPreview({
-      ...config,
-      runtime: fake.io,
-      async ready() {
-        return "accepted";
-      },
-    }),
-  ).rejects.toThrow("Serve clear failed");
+  expect(await runPreview({ ...config, runtime: fake.io, ready: async () => "accepted" })).toBe(
+    "accepted",
+  );
   expect(fake.stopped).toBe(true);
   const retry = createFakePreviewRuntime();
   await runPreview({
@@ -237,29 +212,61 @@ test.each([
   expect(previewRunnerSupported(version)).toBe(expected);
 });
 
-test("refuses a shared or symlinked lock root before touching Tailscale", async () => {
+test("unconfirmed process cleanup retains its lease without replacing acceptance", async () => {
   const config = await input();
   const fake = createFakePreviewRuntime();
-  await chmod(config.lockRoot, 0o777);
+  const start = fake.io.start;
+  fake.io.start = (...args) => ({
+    ...start(...args),
+    stop: async () => {
+      throw new Error("unconfirmed");
+    },
+  });
+  expect(await runPreview({ ...config, runtime: fake.io, ready: async () => "accepted" })).toBe(
+    "accepted",
+  );
   await expect(
-    runPreview({ ...config, runtime: fake.io, ready: async () => "accepted" }),
-  ).rejects.toThrow("mode 0700");
-  expect(fake.calls).toHaveLength(0);
-  await chmod(config.lockRoot, 0o700);
-  const link = join(config.lockRoot, "link");
-  await symlink(config.lockRoot, link);
-  await expect(
-    runPreview({ ...config, lockRoot: link, runtime: fake.io, ready: async () => "accepted" }),
-  ).rejects.toThrow("mode 0700");
-  expect(fake.calls).toHaveLength(0);
+    runPreview({
+      ...config,
+      runtime: createFakePreviewRuntime().io,
+      ready: async () => "accepted",
+    }),
+  ).rejects.toThrow("No preview service is free");
 });
 
-test("refuses a planted service lock symlink", async () => {
+test("a killed worker releases its kernel lease and the next worker clears Serve", async () => {
   const config = await input();
-  const fake = createFakePreviewRuntime();
-  await symlink(config.lockRoot, join(config.lockRoot, "paws-preview-1"));
-  await expect(
-    runPreview({ ...config, runtime: fake.io, ready: async () => "accepted" }),
-  ).rejects.toThrow("mode 0700");
-  expect(fake.calls).toHaveLength(0);
+  const module = new URL("./index.ts", import.meta.url).pathname;
+  const script = `import {runPreview,createFakePreviewRuntime} from ${JSON.stringify(module)};
+    await runPreview({...${JSON.stringify({ ...config, signal: undefined })}, signal:new AbortController().signal,
+      runtime:createFakePreviewRuntime().io, ready:async()=>{
+        console.log("ready"); setInterval(()=>{},1000); return new Promise(()=>{});
+      }});`;
+  const child = Bun.spawn([process.execPath, "--no-env-file", "-e", script], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  try {
+    const reader = child.stdout.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain("ready");
+    reader.releaseLock();
+    await expect(
+      runPreview({
+        ...config,
+        runtime: createFakePreviewRuntime().io,
+        ready: async () => "accepted",
+      }),
+    ).rejects.toThrow("No preview service is free");
+    child.kill("SIGKILL");
+    await child.exited;
+    const next = createFakePreviewRuntime();
+    expect(await runPreview({ ...config, runtime: next.io, ready: async () => "accepted" })).toBe(
+      "accepted",
+    );
+    expect(next.calls[0]).toEqual(["tailscale", "serve", "clear", "svc:paws-preview-1"]);
+  } finally {
+    child.kill();
+    await child.exited;
+  }
 });

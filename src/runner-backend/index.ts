@@ -503,17 +503,19 @@ export function createRemoteAgentRunner(options: {
           )
           .all();
     if (placement.minimumRunnerVersion) {
-      candidates = candidates.filter((runner) => {
-        const version = db
-          .query<{ version: string | null }, [string]>(
-            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+      const minimum = placement.minimumRunnerVersion;
+      const versions = new Map(
+        db
+          .query<{ id: string; version: string | null }, []>(
+            "SELECT runner_id AS id, runner_version AS version FROM runner_host_status",
           )
-          .get(runner.id)?.version;
-        const compatible = versionAtLeast(version, placement.minimumRunnerVersion!);
+          .all()
+          .map((row) => [row.id, row.version]),
+      );
+      candidates = candidates.filter((runner) => {
+        const compatible = versionAtLeast(versions.get(runner.id), minimum);
         if (!compatible)
-          rejected.push(
-            `${runner.id}: live previews need runner ${placement.minimumRunnerVersion!.join(".")} or later`,
-          );
+          rejected.push(`${runner.id}: requires runner ${minimum.join(".")} or later`);
         return compatible;
       });
     }
@@ -1796,10 +1798,36 @@ export function createRemoteAgentRunner(options: {
                 publishedEffects = true;
                 asked = true;
                 await emit({ type: "ask_team", question: event.text, phase: "asked" });
-                const currentCommand = { runId: assigned.runId, generation: assigned.generation };
+                const currentCommand = {
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  commandId: assigned.id,
+                };
                 question = (async () => {
                   const answer = event.preview
-                    ? { answer: await input.reviewPreview!.review(event.preview, { signal }) }
+                    ? {
+                        answer: await input.reviewPreview!.review(event.preview, {
+                          signal,
+                          isRunning: () =>
+                            !signal.aborted &&
+                            Boolean(
+                              db
+                                .query(
+                                  `SELECT 1 FROM runner_work w JOIN runner r ON r.id=w.runner_id
+                       WHERE w.run_id=?1 AND w.generation=?2 AND w.command_id=?3
+                       AND w.ended_at IS NULL AND w.lost_at IS NULL AND w.confirmed_at>?4
+                       AND r.status='active' AND r.revoked_at IS NULL AND r.fence=w.runner_fence
+                       AND NOT EXISTS(SELECT 1 FROM runner_result s WHERE s.run_id=w.run_id AND s.generation=w.generation AND s.command_id=w.command_id)`,
+                                )
+                                .get(
+                                  currentCommand.runId,
+                                  currentCommand.generation,
+                                  currentCommand.commandId,
+                                  now() - RUN_CONFIRMATION_MS,
+                                ),
+                            ),
+                        }),
+                      }
                     : await input.askTeam!.ask(
                         { question: event.text, options: event.options, context: event.context },
                         { itemId: input.itemId, runId: selected.runId, role: input.role, signal },

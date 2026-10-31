@@ -73,3 +73,15 @@ Confirm the policy with a member browser and with a device outside the tailnet: 
 ## Tailscale API credentials
 
 Service definitions and tailnet ACL grants currently use the manual setup above. [Tailscale Services](https://tailscale.com/docs/features/tailscale-services) documents API operations for listing, updating and deleting services and for host approval. [Trust credentials](https://tailscale.com/docs/reference/trust-credentials) documents scoped credentials; [OAuth clients](https://tailscale.com/docs/features/oauth-clients) describes the client-credentials flow. A future reconciler should use service, auth-key and policy scopes only as needed, keep its OAuth client secret under `~/.paws/secrets`, and never distribute it to agents or runners. The current feature does not consume an OAuth credential or change the tailnet policy automatically.
+
+Accept also requires a confirmation from the attached execution. Paws renews this
+confirmation for ten seconds while the runner still confirms that command. A host
+abort or startup withdraws it immediately. Reconnection restores the review with
+its original deadline. A known stopped, lost or fenced command cannot accept.
+
+Runner workers hold each service name through a Linux abstract Unix socket. Agent
+home files cannot alter that ownership. The kernel releases it when the worker
+exits, including after SIGKILL. A new owner clears any abandoned Tailscale Serve
+configuration before starting. Cleanup failures are logged separately from the
+human decision. If process termination is unconfirmed, the worker retains the
+service until it exits.

@@ -14,7 +14,10 @@ export interface ShowPreviewHook {
 export interface ReviewPreviewHook {
   /** Require a preview-capable runner for this resumed implementation. */
   required?: boolean;
-  review(preview: PreviewReady, context: { signal: AbortSignal }): Promise<string>;
+  review(
+    preview: PreviewReady,
+    context: { signal: AbortSignal; isRunning(): boolean },
+  ): Promise<string>;
   stopped?(id: string): void;
 }
 export { runPreview, type PreviewRuntime, type PreviewProcess } from "./runtime";

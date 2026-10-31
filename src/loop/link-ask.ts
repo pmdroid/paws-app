@@ -155,7 +155,7 @@ export function remindLinkAsk(db: Database, questionId: string, now: number): bo
       .query<{ id: number }, [string]>("SELECT id FROM outbox WHERE idempotency_key = ?")
       .get(`link-ask-reminder:${questionId}`);
     if (before !== null) return false;
-    const live = linkAsk.kind === "preview" ? livePreviewForQuestion(db, questionId) : null;
+    const live = linkAsk.kind === "preview" ? livePreviewForQuestion(db, questionId, now) : null;
     enqueueOutboxOnce(db, {
       target: "linear",
       op: "elicitation",
@@ -232,7 +232,7 @@ export function decideLinkAsk(
     if (input.decision === "stop" && linkAsk.kind === "risk")
       return stopRiskAsk(db, linkAsk, item, input);
     if (linkAsk.kind === "preview" && input.decision === "approve") {
-      const preview = livePreviewForQuestion(db, question.id);
+      const preview = livePreviewForQuestion(db, question.id, now);
       if (!preview || preview.expiresAt <= now || preview.head !== item.checkpoint?.wipCommit)
         return "rejected";
     }
