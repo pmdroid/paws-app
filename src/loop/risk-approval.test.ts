@@ -7,6 +7,9 @@ import { fixChangedPaths, samePatch } from "../closeout";
 import { JOB_KIND, riskCarryOverReason } from "../core";
 import {
   applyWorkItemEvent,
+  recordReviewFindings,
+  listReviewFindings,
+  setReviewFindingStatus,
   beginImplementRun,
   enqueueJob,
   enqueueOutboxOnce,
@@ -29,6 +32,8 @@ import { decideLinkAsk, guideLinkAsk } from "./link-ask";
 import { mergeable } from "../merge";
 import { classifyPathsRisk } from "./candidate-risk";
 import { askRiskApproval, riskApprovalFor, RISK_REPLY_NOTE, riskApprovals } from "./risk-approval";
+
+import { createDbCloseoutProgress } from "./closeout-progress";
 
 const NOW = 1_700_000_000_000;
 const PUBLIC_URL = "https://paws.example/";
@@ -624,3 +629,221 @@ test("a rebase that changed the patch asks again, even when the change is only a
   expect(await approvalWithFixes(db, heads.absorbed)).toBe("missing");
   expect(getRiskFix(db, itemId, heads.absorbed)).toBeNull();
 });
+
+/** Stored results, as reported through Closeout's real progress adapter. */
+function cleanRiskFixture() {
+  const fixture = held();
+  const { db, itemId } = fixture;
+  const identity = {
+    taskId: itemId,
+    head: heads.s,
+    base: heads.base,
+    policyDigest: "policy",
+    policyPath: null,
+  };
+  const progress = createDbCloseoutProgress(db, itemId, () => NOW);
+  progress.begin(identity);
+  const step = (id: string, findings: string | null = null) =>
+    progress.step(identity, {
+      id,
+      kind: "review",
+      state: "passed",
+      command: "",
+      detail: "review passed",
+      attempt: 1,
+      timeoutSeconds: null,
+      startedAt: NOW - 2,
+      finishedAt: NOW - 1,
+      exitCode: null,
+      timedOut: false,
+      timeoutReason: null,
+      truncated: false,
+      logPath: null,
+      evidencePath: `${id}.json`,
+      findings,
+      ordinal: 0,
+    });
+  step("security-review");
+  step("independent-review");
+  progress.finish(identity, "accepted");
+  const read = (overrides: Partial<Parameters<typeof riskApprovalFor>[1]> = {}) =>
+    riskApprovalFor(db, {
+      itemId,
+      head: heads.s,
+      publicUrl: PUBLIC_URL,
+      autoApproveHighRisk: true,
+      policyDigest: "policy",
+      samePatch: async () => {
+        throw new Error("automatic approval must not compare patches");
+      },
+      fixRisk: async () => {
+        throw new Error("automatic approval must not compare fixes");
+      },
+      ...overrides,
+    });
+  return { ...fixture, identity, progress, step, read };
+}
+
+async function automaticMerge(f: ReturnType<typeof cleanRiskFixture>) {
+  const riskApproval = await f.read();
+  const verdict = mergeable({
+    head: heads.s,
+    headMoved: false,
+    accept: { head: heads.s, policyDigest: "policy" },
+    policyDigest: "policy",
+    containsMain: true,
+    ci: "green",
+    unresolvedThreads: 0,
+    protection: "satisfied",
+    riskApproval,
+  });
+  if (!verdict.ok && verdict.block === "risk_approval") {
+    expect(
+      askRiskApproval(f.db, {
+        item: getWorkItem(f.db, f.itemId)!,
+        head: heads.s,
+        publicUrl: PUBLIC_URL,
+        now: NOW,
+      }),
+    ).toBe("asked");
+    expect(findOpenQuestion(f.db, "ses_1")).not.toBeNull();
+  }
+  return verdict;
+}
+
+test("opt-in clean reviews at S pass mergeable without a question, writes or approval", async () => {
+  const f = cleanRiskFixture();
+  const before = f.db.query<{ total: number }, []>("SELECT total_changes() AS total").get()!.total;
+  expect(await automaticMerge(f)).toEqual({ ok: true });
+  expect(f.db.query<{ total: number }, []>("SELECT total_changes() AS total").get()!.total).toBe(
+    before,
+  );
+  expect(riskApprovals(f.db, f.itemId)).toEqual([]);
+  expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+  f.db.close();
+});
+
+for (const review of ["security-review", "independent-review"]) {
+  test(`a P2 finding in ${review} asks even when Closeout passed it`, async () => {
+    const f = cleanRiskFixture();
+    f.step(review, "P2 src/auth/session.ts:12: Unsafe token reuse (pre-existing, does not block)");
+    expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
+    f.db.close();
+  });
+  test(`missing ${review} asks`, async () => {
+    const f = cleanRiskFixture();
+    f.db.run("DELETE FROM closeout_step WHERE step_id = ?", [review]);
+    expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
+    f.db.close();
+  });
+}
+
+for (const policyPath of [".paws/high-risk-paths", ".agents/closeout.yaml"]) {
+  test(`changing ${policyPath} always asks`, async () => {
+    const f = cleanRiskFixture();
+    saveCandidateRisk(f.db, {
+      itemId: f.itemId,
+      head: heads.s,
+      base: heads.base,
+      tier: "high",
+      paths: [policyPath],
+      classifiedAt: NOW,
+    });
+    expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
+    f.db.close();
+  });
+}
+
+test("a new head, policy, base or unfinished run loses automatic eligibility", async () => {
+  const f = cleanRiskFixture();
+  expect(await f.read()).toBe("approved");
+  classify(f.db, heads.changed, heads.base);
+  expect(await f.read({ head: heads.changed })).toBe("missing");
+  expect(await f.read({ policyDigest: "new-policy" })).toBe("missing");
+  expect(await f.read({ policyDigest: null })).toBe("missing");
+  saveCandidateRisk(f.db, {
+    itemId: f.itemId,
+    head: heads.s,
+    base: heads.newMain,
+    tier: "high",
+    paths: ["session.ts"],
+    classifiedAt: NOW,
+  });
+  expect(await f.read()).toBe("missing");
+  classify(f.db, heads.s, heads.base);
+  f.progress.begin(f.identity);
+  expect(await f.read()).toBe("missing");
+  f.db.close();
+});
+
+test("a failed rule probe asks even if the run was accepted", async () => {
+  const f = cleanRiskFixture();
+  f.step("rule-probe");
+  f.db.run(
+    "UPDATE closeout_step SET kind = 'command', state = 'failed' WHERE step_id = 'rule-probe'",
+  );
+  expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
+  f.db.close();
+});
+
+test("P3 findings may pass; malformed stored review text and unreadable results ask", async () => {
+  const f = cleanRiskFixture();
+  f.step("security-review", "P3 src/auth/session.ts:12: Rename the local");
+  expect(await f.read()).toBe("approved");
+  f.step("security-review", "unreadable findings");
+  expect(await f.read()).toBe("missing");
+  f.db.run("DROP TABLE closeout_step");
+  expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
+  f.db.close();
+});
+
+test("a new or reopened finding at S revokes automatic eligibility", async () => {
+  const f = cleanRiskFixture();
+  expect(await f.read()).toBe("approved");
+  recordReviewFindings(f.db, {
+    itemId: f.itemId,
+    repository: "acme/repo",
+    head: heads.s,
+    seenAt: NOW,
+    findings: [
+      {
+        severity: "P2",
+        review: "security-review",
+        location: "session.ts:12",
+        text: "Unsafe reuse",
+        bugClass: "reuse",
+        why: "pre-existing",
+      },
+    ],
+    reviewed: [],
+  });
+  expect(await f.read()).toBe("missing");
+  const finding = listReviewFindings(f.db)[0]!;
+  setReviewFindingStatus(f.db, {
+    id: finding.id,
+    status: "dismissed",
+    reason: "Reviewed",
+    by: "user-lead",
+    now: NOW,
+  });
+  expect(await f.read()).toBe("approved");
+  setReviewFindingStatus(f.db, { id: finding.id, status: "open", by: "user-lead", now: NOW + 1 });
+  expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
+  f.db.close();
+});
+
+for (const enabled of [undefined, false]) {
+  test(`automatic approval ${enabled === undefined ? "defaults to off" : "off"} asks with clean evidence`, async () => {
+    const f = cleanRiskFixture();
+    expect(await f.read({ autoApproveHighRisk: enabled })).toBe("missing");
+    expect(
+      askRiskApproval(f.db, {
+        item: getWorkItem(f.db, f.itemId)!,
+        head: heads.s,
+        publicUrl: PUBLIC_URL,
+        now: NOW,
+      }),
+    ).toBe("asked");
+    f.db.close();
+  });
+}

@@ -54,6 +54,9 @@ export type ReviewFindingItem = {
 };
 
 export type ReviewFindingFilter = {
+  /** Findings reported by this item, optionally at one exact head. */
+  itemId?: string;
+  head?: string;
   repository?: string;
   severity?: ReviewFindingSeverity;
   review?: string;
@@ -243,6 +246,15 @@ export function listReviewFindings(
 ): ReviewFindingRecord[] {
   const where: string[] = [];
   const params: string[] = [];
+  if (filter.itemId) {
+    where.push(
+      "EXISTS (SELECT 1 FROM review_finding_item l WHERE l.finding_id = review_finding.id AND l.item_id = ?" +
+        (filter.head ? " AND l.head_sha = ?" : "") +
+        ")",
+    );
+    params.push(filter.itemId);
+    if (filter.head) params.push(filter.head);
+  }
   if (filter.repository) {
     where.push("repository = ?");
     params.push(filter.repository);

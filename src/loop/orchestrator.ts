@@ -4070,16 +4070,38 @@ export class Orchestrator {
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
-        riskApproval: (item, published) =>
-          riskApprovalFor(this.db, {
+        riskApproval: (item, published) => {
+          let autoApproveHighRisk = false;
+          let policyDigest: string | null = null;
+          try {
+            autoApproveHighRisk = readMergeSettings(
+              loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+            ).autoApproveHighRisk;
+            if (autoApproveHighRisk) {
+              const { home, policyRoot } = this.closeoutHome(item);
+              policyDigest =
+                candidatePolicyDigests(
+                  published.worktree,
+                  home,
+                  policyRoot,
+                  this.runCheckout(item).checks,
+                )?.digest ?? null;
+            }
+          } catch (error) {
+            journalCaught(error, "orchestrator.riskApproval.settings", item.id);
+          }
+          return riskApprovalFor(this.db, {
             itemId: item.id,
             head: published.head,
             publicUrl: this.options.publicUrl,
+            autoApproveHighRisk,
+            policyDigest,
             samePatch: (approved, base) =>
               samePatch(published.worktree, approved, published.head, base),
             fixRisk: (approved, base) => this.fixRisk(item, published, approved, base),
             now: this.now(),
-          }),
+          });
+        },
         askRiskApproval: async (item, published) => {
           const asked = askRiskApproval(this.db, {
             item,

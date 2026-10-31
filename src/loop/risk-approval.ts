@@ -8,6 +8,8 @@ import {
   enqueueJobOnce,
   enqueueOutboxOnce,
   getCandidateRisk,
+  listCloseoutProgress,
+  listReviewFindings,
   getRiskFix,
   getWorkItem,
   listLinkAsks,
@@ -19,6 +21,7 @@ import {
   type RiskFix,
   type WorkItemRecord,
 } from "../db";
+import { journalCaught } from "../journal";
 import type { RiskApproval } from "../merge";
 import { shortCommit } from "../questions";
 import { askWithLink, closeLinkAsksOnHead, linkAskAvailable } from "./link-ask";
@@ -65,6 +68,9 @@ export async function riskApprovalFor(
     samePatch: (approved: string, base: string) => Promise<boolean>;
     /** What the fix from `approved` to S changed, against main's `base`. Null when unreadable. */
     fixRisk?: (approved: string, base: string) => Promise<FixRisk | null>;
+    autoApproveHighRisk?: boolean;
+    /** Current policy digest supplied by the merge caller; unreadable means no automatic approval. */
+    policyDigest?: string | null;
     now?: number;
   },
 ): Promise<RiskApproval> {
@@ -73,6 +79,46 @@ export async function riskApprovalFor(
   if (risk?.tier === "normal") return "not_required";
   const approvals = riskApprovals(db, input.itemId);
   if (approvals.some((ask) => ask.headCommit === input.head)) return "approved";
+  // Recompute from stored evidence on every read. Never persist an automatic approval.
+  if (input.autoApproveHighRisk === true && risk?.tier === "high") {
+    try {
+      const run = listCloseoutProgress(db, input.itemId, input.head).at(-1);
+      const reviews = ["security-review", "independent-review"].map((id) =>
+        run?.steps.find((step) => step.id === id && step.kind === "review"),
+      );
+      const findings = listReviewFindings(db, {
+        status: "open",
+        itemId: input.itemId,
+        head: input.head,
+      });
+      if (
+        !risk.paths.some(
+          (path) =>
+            path === ".paws/high-risk-paths" || path === ".agents" || path.startsWith(".agents/"),
+        ) &&
+        run?.decision === "accepted" &&
+        run.base === risk.base &&
+        run.policyDigest === input.policyDigest &&
+        run.steps.every(
+          (step) =>
+            step.state === "passed" ||
+            (step.state === "skipped" && step.detail === "no changed path matches"),
+        ) &&
+        reviews.every(
+          (step) =>
+            step?.state === "passed" &&
+            step.attempt > 0 &&
+            step.evidencePath &&
+            (step.findings === null ||
+              (/^P3 \S.*: /.test(step.findings) && !/^P(?:[012]|[4-9]\d*) /m.test(step.findings))),
+        ) &&
+        !findings.some((finding) => finding.severity !== "P3")
+      )
+        return "approved";
+    } catch (error) {
+      journalCaught(error, "risk-approval.riskApprovalFor.evidence", input.itemId);
+    }
+  }
   if (risk === null) return "missing";
   for (const ask of approvals.toReversed())
     if (await input.samePatch(ask.headCommit, risk.base)) return "approved";
