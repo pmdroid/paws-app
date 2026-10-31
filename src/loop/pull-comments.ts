@@ -242,7 +242,7 @@ export async function handlePullComments(
       const first = batch[0]!;
       const jobKey = `review:${current.id}:${first.source}:${first.commentId}`;
       const targets = replyTargets({ pullNumber, threads, reviews: [], comments: batch });
-      const jobId = restart(db, current, {
+      const restarted = restart(db, current, {
         source: "human",
         reason: "review",
         body: [
@@ -256,7 +256,7 @@ export async function handlePullComments(
         jobKey,
         now,
       });
-      if (jobId === null) return "wait";
+      if (restarted.kind !== "restarted") return "wait";
       postPullFeedback(db, {
         sessionId: caps.session(current),
         item: current,

@@ -88,9 +88,9 @@ async function accepted() {
 describe("review escapes found after the pull request", () => {
   test("a CI fix after an accepted head records one candidate, and a docs-only fix is not an escape", async () => {
     const { db, head, ciFailed, commit, settle } = await accepted();
-    expect(ciFailed([{ name: "test", url: null }])).toBe("restarted");
+    expect(ciFailed([{ name: "test", url: null }])).toMatchObject({ kind: "restarted" });
     // The item is back with the agent; the same failure read again starts no second round.
-    expect(ciFailed([{ name: "test", url: null }])).toBe("skipped");
+    expect(ciFailed([{ name: "test", url: null }])).toMatchObject({ kind: "skipped" });
     const [candidate, ...rest] = listReviewEscapes(db);
     expect(rest).toEqual([]);
     expect(candidate).toMatchObject({
@@ -159,7 +159,7 @@ describe("review escapes found after the pull request", () => {
   test("no candidate when Closeout has not accepted a head", async () => {
     const { db, ciFailed } = await accepted();
     db.run("UPDATE work_item SET accepted_head = NULL");
-    expect(ciFailed([{ name: "test", url: null }])).toBe("restarted");
+    expect(ciFailed([{ name: "test", url: null }])).toMatchObject({ kind: "restarted" });
     expect(listReviewEscapes(db)).toEqual([]);
   });
 });

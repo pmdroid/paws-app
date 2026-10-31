@@ -457,14 +457,14 @@ export function decideVisualReview(
   }
   const item = getWorkItem(db, review.itemId);
   if (item === null) return true;
-  const jobId = restart(db, item, {
+  const restarted = restart(db, item, {
     source: "human",
     reason: "review",
     body: visualReviewHandoff(db, review.questionId) ?? "",
     jobKey: `resume:answer:${review.questionId}`,
     now,
   });
-  if (jobId !== null)
+  if (restarted.kind === "restarted")
     db.run("UPDATE question SET handoff_version = ? WHERE id = ?", [
       getWorkItem(db, item.id)!.version,
       review.questionId,

@@ -1968,7 +1968,7 @@ export class Orchestrator {
           source: "infrastructure",
           body: "Retry runner setup.",
           now,
-        }) === null
+        }).kind !== "restarted"
       )
         return false;
       this.recordRunnerSetupHold(current, need, now, current.currentRunId);
@@ -3731,7 +3731,7 @@ export class Orchestrator {
         body: ciFixHandoff(checks),
         now: this.now(),
         jobKey: `ci-failed:${item.id}:recheck:${head}`,
-      }) !== null || getWorkItem(this.db, item.id)?.state === "awaiting_input"
+      }).kind !== "skipped"
     );
   }
 
@@ -5241,7 +5241,7 @@ export class Orchestrator {
             source: "human",
             body: "The task criteria changed in Linear. Read the updated issue and finish the work from its branch.",
             now: this.now(),
-          }) === null
+          }).kind !== "restarted"
         )
           continue;
         enqueueOutboxOnce(this.db, {
@@ -5311,7 +5311,7 @@ export class Orchestrator {
           source: "human",
           body: "Continue the task from its branch.",
           now: this.now(),
-        }) === null
+        }).kind !== "restarted"
       )
         return false;
       onCommitted?.();
@@ -6153,18 +6153,19 @@ export class Orchestrator {
         resetAwakeTime(this.db, item!.id);
         if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
       }
-      const jobId = restart(this.db, getWorkItem(this.db, item!.id)!, {
+      const restarted = restart(this.db, getWorkItem(this.db, item!.id)!, {
         reason: rebase ? "conflict" : "follow_up",
         source: "human",
         body: rebase ? `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}` : handoff,
         jobKey,
         now: this.now(),
       });
-      if (jobId !== null) saveHumanRetryWindow(this.db, item!.id, jobId, retryBaseline);
-      if (rebase && jobId !== null)
+      if (restarted.kind === "restarted")
+        saveHumanRetryWindow(this.db, item!.id, restarted.jobId, retryBaseline);
+      if (rebase && restarted.kind === "restarted")
         recordRebaseReturn(this.db, {
           itemId: item!.id,
-          jobId,
+          jobId: restarted.jobId,
           candidate: null,
           reason: "linear",
           ...conflict,

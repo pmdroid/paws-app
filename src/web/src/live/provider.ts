@@ -1428,7 +1428,7 @@ function verdictFor(
     .filter((row) => row.itemId === record.id)
     .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   const verdict = withProgress(
-    { ...base, attempt: evaluations.findIndex((row) => row.id === live.id) + 1 },
+    { ...base, attempt: Math.max(1, evaluations.findIndex((row) => row.id === live.id) + 1) },
     live,
     nowMs,
     env,

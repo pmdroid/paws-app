@@ -29,7 +29,10 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
   };
   const caps: MergeCapabilities = {
     ask,
-    restart,
+    restart: (...args) => {
+      const jobId = restart(...args);
+      return jobId === null ? { kind: "skipped" } : { kind: "restarted", jobId };
+    },
     now: () => 10,
     stopped: () => false,
     publish: unused("publish"),

@@ -71,7 +71,7 @@ export type MergeVoice = {
 
 export type OrderCapabilities = {
   ask: typeof ask;
-  restart: typeof import("../db").restart;
+  restart: import("../db").RestartOperation;
   now(): number;
   stopped(): boolean;
   session(item: WorkItemRecord): string | null;
@@ -100,7 +100,7 @@ export type MergePull = {
   signal: AbortSignal;
 };
 
-export function sendBack(
+export async function sendBack(
   { db, item, caps }: MergeContext,
   reason: MergeReturnReason,
   admit: (returns: number) => boolean,
@@ -108,27 +108,31 @@ export function sendBack(
   report: {
     thought: (attempt: number) => string;
     record: (jobId: number, attempt: number) => void;
+    asked?: () => void;
     failedChecks?: readonly FailedCiCheck[];
     pullNumber?: number | null;
   },
-): boolean {
-  return (
-    returnToAgent(db, {
-      itemId: item.id,
-      restart: caps.restart,
-      reason,
-      admit,
-      handoff,
-      now: caps.now(),
-      record: report.record,
-      ...(report.failedChecks ? { failedChecks: report.failedChecks } : {}),
-      ...(report.pullNumber !== undefined ? { pullNumber: report.pullNumber } : {}),
-      announce: (running, attempt, key) => {
-        if (reason === "ci-failed") caps.voice.status(running, report.thought(attempt), key);
-        else caps.voice.thought(running, report.thought(attempt), key);
-      },
-    }) !== "skipped"
-  );
+): Promise<MergeStep | null> {
+  const result = returnToAgent(db, {
+    itemId: item.id,
+    restart: caps.restart,
+    reason,
+    admit,
+    handoff,
+    now: caps.now(),
+    record: report.record,
+    ...(report.failedChecks ? { failedChecks: report.failedChecks } : {}),
+    ...(report.pullNumber !== undefined ? { pullNumber: report.pullNumber } : {}),
+    announce: (running, attempt, key) => {
+      if (reason === "ci-failed") caps.voice.status(running, report.thought(attempt), key);
+      else caps.voice.thought(running, report.thought(attempt), key);
+    },
+  });
+  if (result.kind === "skipped") return null;
+  if (result.kind === "asked") report.asked?.();
+  await caps.voice.flush();
+  if (result.kind === "failed") return { kind: "obsolete" };
+  return { kind: result.kind === "asked" ? "asked" : "returned" };
 }
 
 export function askHelp(
@@ -312,31 +316,29 @@ export async function mergeThroughGitHubQueue(
         });
         const conflict: RebaseConflict = { base, files: null };
         const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
-        if (
-          base !== null &&
-          sendBack(
-            merge,
-            "rebase-conflict",
-            () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
-            REBASE_CONFLICT_INSTRUCTION,
-            {
-              thought: () =>
-                `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
-              record: (jobId) =>
-                recordRebaseReturn(db, {
-                  itemId: item.id,
-                  jobId,
-                  candidate: head,
-                  reason: "github_queue",
-                  ...conflict,
-                  recordedAt: caps.now(),
-                }),
-            },
-          )
-        )
-          return {
-            kind: getWorkItem(db, item.id)?.state === "awaiting_input" ? "asked" : "returned",
-          };
+        const conflictReturn =
+          base !== null
+            ? await sendBack(
+                merge,
+                "rebase-conflict",
+                () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+                REBASE_CONFLICT_INSTRUCTION,
+                {
+                  thought: () =>
+                    `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
+                  record: (jobId) =>
+                    recordRebaseReturn(db, {
+                      itemId: item.id,
+                      jobId,
+                      candidate: head,
+                      reason: "github_queue",
+                      ...conflict,
+                      recordedAt: caps.now(),
+                    }),
+                },
+              )
+            : null;
+        if (conflictReturn) return conflictReturn;
         const message = `GitHub's merge queue removed the pull request for a conflict${why}.${budget.allowed ? "" : ` ${budget.message}`}`;
         if (
           askHelp(
@@ -383,17 +385,20 @@ async function githubQueueCiFailed(
     logTail: check.logTail ?? null,
     logSource: null,
   }));
-  if (
-    sendBack(merge, "ci-failed", (fixes) => fixes < limit, `${source}\n\n${ciFixHandoff(checks)}`, {
+  const ciReturn = await sendBack(
+    merge,
+    "ci-failed",
+    (fixes) => fixes < limit,
+    `${source}\n\n${ciFixHandoff(checks)}`,
+    {
       thought: (attempt) => ciFixRoundLine(checks, attempt, limit),
       record: (_, attempt) => ciRound(merge, head, failed, "agent", limit, attempt),
+      asked: () => ciRound(merge, head, failed, "asked", limit, null),
       failedChecks: checks,
       pullNumber: pull.number,
-    })
-  )
-    return {
-      kind: getWorkItem(merge.db, merge.item.id)?.state === "awaiting_input" ? "asked" : "returned",
-    };
+    },
+  );
+  if (ciReturn) return ciReturn;
   if (askHelp(merge, ciFixQuestion(checks, limit, pull.url), "budget_spent")) {
     await merge.caps.voice.flush();
     return { kind: "asked" };

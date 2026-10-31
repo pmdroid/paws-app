@@ -11,7 +11,5 @@ export const MAX_ITEM_RESTARTS = 10;
 
 export const RESTART_BUDGET_CONTINUE = `Continue for ${MAX_ITEM_RESTARTS} more restarts`;
 export function continuesRestartBudget(answer: string | null): boolean {
-  return ["continue", RESTART_BUDGET_CONTINUE.toLowerCase()].includes(
-    (answer ?? "").trim().toLowerCase(),
-  );
+  return /^(?:(?:yes[,!]?\s+)?continue(?:\b|$)|go\s+on\b)/i.test((answer ?? "").trim());
 }

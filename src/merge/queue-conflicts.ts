@@ -114,7 +114,7 @@ function returnConflict(
           ...conflict,
           recordedAt: caps.now(),
         }),
-    }) !== "skipped"
+    }).kind !== "skipped"
   );
 }
 

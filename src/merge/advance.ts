@@ -304,44 +304,44 @@ export async function advanceMerge(
     }
     return { kind: "failed", reason: "merge", message: step.message };
   }
-  if (
-    step.kind === "return" &&
-    step.reason === "rebase-conflict" &&
-    sendBack(
-      merge,
-      "rebase-conflict",
-      () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
-      REBASE_CONFLICT_INSTRUCTION,
-      {
-        thought: () => REBASE_CONFLICT_THOUGHT,
-        record: (jobId) =>
-          recordRebaseReturn(db, {
-            itemId: item.id,
-            jobId,
-            candidate: result?.head ?? null,
-            reason: "merge",
-            ...conflict,
-            recordedAt: caps.now(),
-          }),
-      },
-    )
-  )
-    return { kind: getWorkItem(db, item.id)?.state === "awaiting_input" ? "asked" : "returned" };
+  const conflictReturn =
+    step.kind === "return" && step.reason === "rebase-conflict"
+      ? await sendBack(
+          merge,
+          "rebase-conflict",
+          () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+          REBASE_CONFLICT_INSTRUCTION,
+          {
+            thought: () => REBASE_CONFLICT_THOUGHT,
+            record: (jobId) =>
+              recordRebaseReturn(db, {
+                itemId: item.id,
+                jobId,
+                candidate: result?.head ?? null,
+                reason: "merge",
+                ...conflict,
+                recordedAt: caps.now(),
+              }),
+          },
+        )
+      : null;
+  if (conflictReturn) return conflictReturn;
   if (turn.kind === "blocked" && turn.block === "ci_failed") {
     const { readiness, head } = turn.pull;
     const checks = readiness.failedChecks ?? [];
     const round = (next: CiRound["next"], fix: number | null = null) =>
       ciRound(merge, head, readiness.checks, next, ciFixLimit, fix);
-    if (
-      step.kind === "return" &&
-      sendBack(merge, "ci-failed", (fixes) => fixes < ciFixLimit, ciFixHandoff(checks), {
-        thought: (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
-        record: (_, attempt) => round("agent", attempt),
-        failedChecks: checks,
-        pullNumber: pull.number,
-      })
-    )
-      return { kind: getWorkItem(db, item.id)?.state === "awaiting_input" ? "asked" : "returned" };
+    const ciReturn =
+      step.kind === "return"
+        ? await sendBack(merge, "ci-failed", (fixes) => fixes < ciFixLimit, ciFixHandoff(checks), {
+            thought: (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
+            record: (_, attempt) => round("agent", attempt),
+            asked: () => round("asked"),
+            failedChecks: checks,
+            pullNumber: pull.number,
+          })
+        : null;
+    if (ciReturn) return ciReturn;
     if (askHelp(merge, ciFixQuestion(checks, ciFixLimit, pull.url), "budget_spent")) {
       round("asked");
       await voice.flush();

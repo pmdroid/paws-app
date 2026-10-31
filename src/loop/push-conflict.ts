@@ -24,9 +24,10 @@ export function restartForPushConflict(
     return (
       restart(db, item, {
         reason: "conflict",
+        source: "infrastructure",
         body: pushConflictHandoff(input.branch, input.files),
         now: input.now,
-      }) !== null || getWorkItem(db, itemId)?.state === "awaiting_input"
+      }).kind !== "skipped"
     );
   });
 }

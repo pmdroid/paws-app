@@ -628,14 +628,14 @@ function handBack(
   /** A risk change request restarts the item as a changes-requested review does. */
   reason: "answer" | "review" = "answer",
 ): void {
-  const jobId = restart(db, item, {
+  const restarted = restart(db, item, {
     source: "human",
     reason,
     body,
     jobKey: `resume:link-ask:${question.id}`,
     now,
   });
-  if (jobId !== null)
+  if (restarted.kind === "restarted")
     db.run("UPDATE question SET handoff_version = ? WHERE id = ?", [
       getWorkItem(db, item.id)!.version,
       question.id,

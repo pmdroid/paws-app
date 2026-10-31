@@ -94,7 +94,7 @@ export async function mergeHarness(
   options: {
     settings?: Partial<Pick<TaskMergeSettings, "order" | "mainMoved">>;
     queue?: FakeMergeQueue;
-    restart?: typeof restart;
+    restart?: import("../db").RestartOperation;
   } = {},
 ) {
   const root = await mkdtemp(path.join(tmpdir(), "paws-advance-"));
@@ -374,7 +374,14 @@ export async function mergeHarness(
     const item = items.get(id)!;
     return {
       ask,
-      restart: options.restart ?? restart,
+      restart:
+        options.restart ??
+        ((...args) => {
+          const restartedJobId = restart(...args);
+          return restartedJobId === null
+            ? { kind: "skipped" }
+            : { kind: "restarted", jobId: restartedJobId };
+        }),
       now: () => clock.now(),
       stopped: () => state.stopped,
       session: (current) => current.sessionKey,
@@ -478,7 +485,14 @@ export async function mergeHarness(
       { repository: "acme/app", main },
       {
         ask,
-        restart: options.restart ?? restart,
+        restart:
+          options.restart ??
+          ((...args) => {
+            const restartedJobId = restart(...args);
+            return restartedJobId === null
+              ? { kind: "skipped" }
+              : { kind: "restarted", jobId: restartedJobId };
+          }),
         now: () => clock.now(),
         session: (current) => current.sessionKey,
         voice: {

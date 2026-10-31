@@ -51,7 +51,9 @@ describe("restart and ask", () => {
         now: 1,
       });
       joinMergeQueue(db, { itemId: item.id, repository: "owner/repo", now: 1 });
-      const jobId = restart(db, item, { reason, body: "Keep the branch and fix this.", now: 2 });
+      const result = restart(db, item, { reason, body: "Keep the branch and fix this.", now: 2 });
+      if (result.kind !== "restarted") throw new Error("Expected a restart");
+      const jobId = result.jobId;
       const queued = getWorkItem(db, item.id)!;
       expect(queued).toMatchObject({
         state: "queued",

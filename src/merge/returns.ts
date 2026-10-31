@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
-  type restart,
+  type RestartOperation,
+  type RestartResult,
   fixRounds,
   countRebaseReturns,
   listRebaseReturns,
@@ -49,7 +50,7 @@ export function returnToAgent(
   db: Database,
   input: {
     itemId: string;
-    restart: typeof restart;
+    restart: RestartOperation;
     reason: MergeReturnReason;
     /** Whether one more return is allowed, given the returns already spent. */
     admit: (returns: number) => boolean;
@@ -63,24 +64,25 @@ export function returnToAgent(
     failedChecks?: readonly FailedCiCheck[];
     pullNumber?: number | null;
   },
-): "restarted" | "asked" | "skipped" {
+): RestartResult {
   return immediate(db, () => {
     const current = getWorkItem(db, input.itemId);
-    if (!current || current.state !== "merge_queue" || current.cancelRequested) return "skipped";
+    if (!current || current.state !== "merge_queue" || current.cancelRequested)
+      return { kind: "skipped" };
     const returns =
       input.reason === "rebase-conflict" ? rebaseReturns(db, current.id) : ciFixes(db, current.id);
-    if (!input.admit(returns)) return "skipped";
+    if (!input.admit(returns)) return { kind: "skipped" };
     const round = `${latestUserTurn(db, current.id)}:${returns}`;
     const jobKey = `${input.reason}:${current.id}:${round}`;
-    const jobId = input.restart(db, current, {
+    const restarted = input.restart(db, current, {
       reason: input.reason === "rebase-conflict" ? "conflict" : "ci",
+      source: input.reason === "rebase-conflict" ? "infrastructure" : "agent",
       body: input.handoff,
       jobKey,
       now: input.now,
       keepMergeQueuePlace: input.keepPlace,
     });
-    if (jobId === null)
-      return getWorkItem(db, current.id)?.state === "awaiting_input" ? "asked" : "skipped";
+    if (restarted.kind !== "restarted") return restarted;
     input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`);
     // CI failed on a head Closeout accepted: a candidate escape of the independent review.
     if (input.reason === "ci-failed" && current.acceptedHead !== null)
@@ -98,8 +100,8 @@ export function returnToAgent(
         },
         recordedAt: input.now,
       });
-    input.record(jobId, returns + 1);
-    return "restarted";
+    input.record(restarted.jobId, returns + 1);
+    return restarted;
   });
 }
 

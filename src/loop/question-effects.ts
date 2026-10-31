@@ -84,13 +84,13 @@ export function questionEffects(
           }),
     );
     const answers = handoffs.length ? handoffs : [body];
-    const jobId = restart(db, item, {
+    const restarted = restart(db, item, {
       reason: "answer",
       body: [...held.map((entry) => entry.handoff), ...answers].join("\n\n"),
       jobKey,
       now: input.now,
     });
-    if (jobId !== null) {
+    if (restarted.kind === "restarted") {
       markHandoffsCarried(db, held);
       const version = getWorkItem(db, item.id)!.version;
       for (const entry of pending)
@@ -272,7 +272,7 @@ export function questionEffects(
       if (!/^\s*stop(?:[.!]\s*$|[,;:]|\s*$)/i.test(question.answer ?? "")) return resume(question);
       consumeTurn(question);
       const item = getWorkItem(db, question.itemId);
-      if (!item || item.state !== "awaiting_input") return;
+      if (!item) return;
       // Accept Stop with punctuation, without treating "Stop rewriting tests" as cancellation.
       db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
       applyLinearCommand(

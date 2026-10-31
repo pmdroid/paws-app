@@ -32,7 +32,10 @@ function sendBack(db: ReturnType<typeof queued>, limit = 3) {
   const announced: string[] = [];
   const sent = returnToAgent(db, {
     itemId: "eng-1",
-    restart,
+    restart: (...args) => {
+      const jobId = restart(...args);
+      return jobId === null ? { kind: "skipped" } : { kind: "restarted", jobId };
+    },
     reason: "rebase-conflict",
     admit: (returns) => returns < limit,
     handoff: "rebase",
@@ -41,7 +44,7 @@ function sendBack(db: ReturnType<typeof queued>, limit = 3) {
       recordRebaseReturn(db, { itemId: "eng-1", jobId, candidate: "h", reason: "merge" }),
     announce: (_, attempt, key) => announced.push(`${attempt}:${key}`),
   });
-  return { sent: sent === "restarted", announced };
+  return { sent: sent.kind === "restarted", announced };
 }
 
 describe("merge returns", () => {

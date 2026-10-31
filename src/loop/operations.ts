@@ -14,6 +14,7 @@ import {
   failWorkItem,
   saveCheckpoint,
   type WorkItemRecord,
+  type RestartResult,
   restart as restartItem,
 } from "../db";
 import {
@@ -57,19 +58,19 @@ export function ask(
   });
 }
 
-export function restart(...args: Parameters<typeof restartItem>): ReturnType<typeof restartItem> {
+export function restart(...args: Parameters<typeof restartItem>): RestartResult {
   const [db, item, handoff] = args;
   return immediate(db, () => {
     const current = getWorkItem(db, item.id);
-    if (!current || current.version !== item.version) return null;
+    if (!current || current.version !== item.version) return { kind: "skipped" };
     // A repeated delivery must not cancel the job it is deduplicating against.
     if (handoff.jobKey && db.query("SELECT 1 FROM job WHERE job_key=?").get(handoff.jobKey))
-      return null;
+      return { kind: "skipped" };
     const source = handoff.source ?? (handoff.reason === "answer" ? "human" : "agent");
     if (source === "agent" && current.restartCount >= current.restartLimit) {
       // Queued, paused and failed work cannot ask here. Human retries bypass this guard.
       if (current.cancelRequested || !transition(current.state, "blocking_question").ok)
-        return null;
+        return { kind: "skipped" };
       const waiting = db
         .query<{ id: string }, [string]>(
           "SELECT id FROM question WHERE item_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL ORDER BY rowid DESC LIMIT 1",
@@ -93,11 +94,11 @@ export function restart(...args: Parameters<typeof restartItem>): ReturnType<typ
               handoff.now,
             );
         }
-        return null;
+        return { kind: current.state === "awaiting_input" ? "skipped" : "failed" };
       }
       if (handoff.keepMergeQueuePlace) keepMergeQueuePlace(db, item.id);
       const halted = halt(db, current, handoff.now);
-      if (!halted) return null;
+      if (!halted) return { kind: "skipped" };
       if (question) {
         // A human follow-up can leave the original question open while the item runs again.
         if (!question.body.includes(handoff.body))
@@ -106,7 +107,7 @@ export function restart(...args: Parameters<typeof restartItem>): ReturnType<typ
             question.id,
           ]);
         awaitQuestion(db, halted, question, handoff.now);
-        return null;
+        return { kind: "asked" };
       }
       ask(
         db,
@@ -120,10 +121,10 @@ export function restart(...args: Parameters<typeof restartItem>): ReturnType<typ
         `Paws used ${current.restartCount} of ${current.restartLimit} lifetime agent restarts. Continue grants ${MAX_ITEM_RESTARTS} more; Stop ends the task.\n\nRequested work:\n${handoff.body}`,
         { reason: "restart_budget", options: [RESTART_BUDGET_CONTINUE, "Stop"], now: handoff.now },
       );
-      return null;
+      return { kind: "asked" };
     }
     const jobId = restartItem(...args);
-    if (jobId === null) return null;
+    if (jobId === null) return { kind: "skipped" };
     if (source === "agent")
       db.run("UPDATE work_item SET restart_count=restart_count+1 WHERE id=?", [item.id]);
     else if (source === "human") {
@@ -145,7 +146,7 @@ export function restart(...args: Parameters<typeof restartItem>): ReturnType<typ
         ]);
       }
     }
-    return jobId;
+    return { kind: "restarted", jobId };
   });
 }
 

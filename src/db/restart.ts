@@ -20,6 +20,14 @@ export type RestartHandoff = {
   keepMergeQueuePlace?: boolean;
 };
 
+/** `failed` means execution was already stopped and reported by the restart owner. */
+export type RestartResult =
+  | { kind: "restarted"; jobId: number }
+  | { kind: "asked" }
+  | { kind: "failed" }
+  | { kind: "skipped" };
+export type RestartOperation = (...args: Parameters<typeof restart>) => RestartResult;
+
 /** Persist a restart admitted by src/loop. Keeps the run, branch and Linear session. */
 export function restart(
   db: Database,
