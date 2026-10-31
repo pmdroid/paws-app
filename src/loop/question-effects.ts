@@ -13,12 +13,9 @@ import {
   failWorkItem,
   getPlanProposal,
   getWorkItem,
-  heldHandoffs,
   listCloseoutRecoveries,
-  markHandoffsCarried,
   savePlanProposal,
   saveVisualReviewMarks,
-  type HeldHandoff,
   type VisualReviewMark,
 } from "../db";
 import {
@@ -54,13 +51,7 @@ export function questionEffects(
     )
       applyLinearTurns(db, question.sessionId, [question.answerEventKey], question.itemId);
   };
-  const restartWithAnswers = (
-    question: StoredQuestion,
-    body: string,
-    jobKey: string,
-    /** Handoffs the time limit held back, handed over before the answers. */
-    held: readonly HeldHandoff[] = [],
-  ) => {
+  const restartWithAnswers = (question: StoredQuestion, body: string, jobKey: string) => {
     const item = getWorkItem(db, question.itemId);
     if (!item) return;
     const pending = db
@@ -82,21 +73,19 @@ export function questionEffects(
             answer: entry.answer,
           }),
     );
-    const answers = handoffs.length ? handoffs : [body];
     const jobId = restart(db, item, {
       reason: "answer",
-      body: [...held.map((entry) => entry.handoff), ...answers].join("\n\n"),
+      body: handoffs.length ? handoffs.join("\n\n") : body,
       jobKey,
       now: input.now,
     });
     if (jobId !== null) {
-      markHandoffsCarried(db, held);
       const version = getWorkItem(db, item.id)!.version;
       for (const entry of pending)
         db.run("UPDATE question SET handoff_version=? WHERE id=?", [version, entry.id]);
     }
   };
-  const resume = (question: StoredQuestion, held: readonly HeldHandoff[] = []) => {
+  const resume = (question: StoredQuestion) => {
     if (input.redirect && question.answerEventKey !== null)
       announceLinearTurn(db, question.sessionId, question.answerEventKey, input.now);
     else consumeTurn(question);
@@ -109,7 +98,6 @@ export function questionEffects(
         answer: question.answer ?? "",
       }),
       `resume:answer:${question.id}`,
-      held,
     );
   };
   /** A reply is guidance for the agent. It never bypasses a check: that is decided on the item page. */
@@ -138,8 +126,7 @@ export function questionEffects(
     }
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {
       extendAwakeCap(db, question.itemId);
-      // A review or comment restart the time limit cut off reaches the agent with the answer.
-      resume(question, heldHandoffs(db, question.itemId));
+      resume(question);
       return;
     }
     consumeTurn(question);
