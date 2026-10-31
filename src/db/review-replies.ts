@@ -127,7 +127,8 @@ export function unpostedReviewReplies(
   return db
     .query<Row, [string, number]>(
       `SELECT * FROM review_reply WHERE item_id = ? AND pull_number = ? AND outcome IS NOT NULL
-         AND replied_at IS NULL ORDER BY recorded_at, number`,
+         AND (replied_at IS NULL OR (target = 'thread' AND thread_id IS NOT NULL
+           AND outcome = 'fixed' AND resolved_at IS NULL)) ORDER BY recorded_at, number`,
     )
     .all(itemId, pullNumber)
     .map(mapRow);
@@ -139,11 +140,10 @@ export function markReviewReplyPosted(
   now: number,
   resolved: boolean,
 ): void {
-  db.run(`UPDATE review_reply SET replied_at = ?, resolved_at = ? WHERE id = ?`, [
-    now,
-    resolved ? now : null,
-    id,
-  ]);
+  db.run(
+    `UPDATE review_reply SET replied_at = COALESCE(replied_at, ?), resolved_at = ? WHERE id = ?`,
+    [now, resolved ? now : null, id],
+  );
 }
 
 function mapRow(row: Row): ReviewReplyRecord {

@@ -36,6 +36,7 @@ import {
   parseReviewReplies,
   postReviewReplies,
   recordAgentReviewReplies,
+  recordReplyTargets,
   type ReviewReplyGitHub,
 } from "./review-replies";
 import { worktreeBranch } from "./sources";
@@ -328,7 +329,7 @@ describe("Paws replies to every handed-off comment", () => {
     ]);
   });
 
-  test("replies are posted once after the fix is published; addressed threads are resolved", async () => {
+  test("replies are posted once after the fix is published; only fixed threads are resolved", async () => {
     const { db, caps, github, replies, review, inline, conversation } = setup();
     inline({
       id: 9001,
@@ -354,6 +355,7 @@ describe("Paws replies to every handed-off comment", () => {
       "## Review replies",
       "R1 fixed: Sort descending by score, with a test.",
       "R2 not changed: The tenant is already part of the key prefix.",
+      "R3 not changed: The cache is bypassed for a fresh read.",
     ].join("\n");
     expect(recordAgentReviewReplies(db, "eng-1", final, 2_000)).toBe(3);
 
@@ -369,7 +371,7 @@ describe("Paws replies to every handed-off comment", () => {
       {
         prNumber: 7,
         commentId: 9001,
-        body: `**Fixed** in abcdef1. Sort descending by score, with a test.\n\n${REVIEW_REPLY_MARKER}`,
+        body: `**Fixed** in abcdef1234567890. Sort descending by score, with a test.\n\n${REVIEW_REPLY_MARKER}`,
       },
       {
         prNumber: 7,
@@ -379,10 +381,11 @@ describe("Paws replies to every handed-off comment", () => {
     ]);
     // The fixed thread is resolved; the one left unchanged stays open for the reviewer.
     expect(replies.resolved).toEqual(["RT_0"]);
-    // R3 had no report: it still gets a reply, quoting the comment, and nothing is resolved.
     expect(replies.comments).toHaveLength(1);
     expect(replies.comments[0]!.body).toStartWith("> @pascal: Why does this skip the cache?");
-    expect(replies.comments[0]!.body).toContain("did not report on it");
+    expect(replies.comments[0]!.body).toContain(
+      "**Not changed.** The cache is bypassed for a fresh read.",
+    );
 
     expect(unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
     expect(
@@ -394,12 +397,84 @@ describe("Paws replies to every handed-off comment", () => {
     ).toBe(0);
   });
 
+  test("answered and unreported threads stay open", async () => {
+    const { db, github, replies } = setup();
+    recordReplyTargets(
+      db,
+      "eng-1",
+      "restart-answers",
+      [1, 2].map((number) => ({
+        number,
+        pullNumber: 7,
+        target: "thread" as const,
+        commentId: 9000 + number,
+        threadId: `RT_${number}`,
+        author: "pascal",
+        excerpt: "Why bypass the cache?",
+      })),
+      1_000,
+    );
+    recordAgentReviewReplies(db, "eng-1", "R1 answered: A fresh read is required.", 2_000);
+    await postReviewReplies(
+      db,
+      {
+        itemId: "eng-1",
+        pullNumber: 7,
+        head: "abcdef1234567890",
+        now: () => 3_000,
+      },
+      github,
+    );
+    expect(replies.replies[0]!.body).toContain("**Not changed.** A fresh read is required.");
+    expect(replies.replies[1]!.body).toContain("did not report on it");
+    expect(replies.resolved).toEqual([]);
+    expect(unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
+  });
+
+  test("a failed resolution retries without posting the reply twice", async () => {
+    const { db, github, replies } = setup();
+    recordReplyTargets(
+      db,
+      "eng-1",
+      "restart-fix",
+      [
+        {
+          number: 1,
+          pullNumber: 7,
+          target: "thread",
+          commentId: 9001,
+          threadId: "RT_0",
+          author: "pascal",
+          excerpt: "Fix the sorting.",
+        },
+      ],
+      1_000,
+    );
+    recordAgentReviewReplies(db, "eng-1", "R1 fixed: Sort descending.", 2_000);
+    const input = { itemId: "eng-1", pullNumber: 7, head: "abcdef1234567890", now: () => 3_000 };
+    await expect(
+      postReviewReplies(db, input, {
+        ...github,
+        resolveReviewThread: async () => {
+          throw new Error("GitHub unavailable");
+        },
+      }),
+    ).rejects.toThrow("GitHub unavailable");
+    expect(replies.replies).toHaveLength(1);
+    expect(unpostedReviewReplies(db, "eng-1", 7)[0]!.repliedAt).toBe(3_000);
+    expect(await postReviewReplies(db, input, github)).toBe(0);
+    expect(replies.replies).toHaveLength(1);
+    expect(replies.resolved).toEqual(["RT_0"]);
+    expect(unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
+    expect(await postReviewReplies(db, input, github)).toBe(0);
+  });
+
   test("Paws' own replies never come back as new comments", () => {
     const { db, conversation } = setup();
     conversation({
       id: 3002,
-      author: "pascal",
-      body: `**Fixed** in abcdef1.\n\n${REVIEW_REPLY_MARKER}`,
+      author: "paws-test[bot]",
+      body: `**Fixed** in abcdef1234567890.\n\n${REVIEW_REPLY_MARKER}`,
     });
     expect(getPullComment(db, "conversation", 3002)).toBeNull();
   });
