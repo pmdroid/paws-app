@@ -872,6 +872,7 @@ export type RunnerCapacityWaitState = {
   since: number;
   attempt: number;
   runnerIds: readonly string[];
+  online?: readonly string[];
   holdMs?: number;
 };
 
@@ -885,6 +886,7 @@ export function runnerCapacityWait(payload: unknown): RunnerCapacityWaitState | 
         since: wait.since,
         attempt: wait.attempt,
         runnerIds: wait.runnerIds,
+        ...(Array.isArray(wait.online) ? { online: wait.online } : {}),
         ...(typeof wait.holdMs === "number" ? { holdMs: wait.holdMs } : {}),
       }
     : null;

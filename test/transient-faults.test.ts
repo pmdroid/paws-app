@@ -144,6 +144,7 @@ test("waiting eight hours for a slot on a busy runner keeps the task deferred wi
     since: expect.any(Number),
     attempt: expect.any(Number),
     runnerIds: ["runner-1"],
+    online: [],
   });
   expect(result.implementations, result.detail).toBe(0);
 }, 90_000);

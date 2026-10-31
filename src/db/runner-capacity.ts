@@ -1,3 +1,4 @@
+import type { RunnerCapacityWaitState } from "./items";
 import type { Database } from "bun:sqlite";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
@@ -56,20 +57,37 @@ export function runnerSlotsHeldBetweenCommands(
   return holders.includes(excludeRunId) ? 0 : holders.length;
 }
 
+export function activeRunnerIds(db: Database, now: number): string[] {
+  return db
+    .query<{ id: string }, [number]>(
+      "SELECT id FROM runner WHERE status='active' AND revoked_at IS NULL AND last_seen_at>?",
+    )
+    .all(now - 60_000)
+    .map((runner) => runner.id);
+}
+
+export function slotWaitRunners(
+  db: Database,
+  runId: string,
+  wait: RunnerCapacityWaitState,
+  now: number,
+): readonly string[] {
+  if (
+    wait.runnerIds.length === 0 ||
+    db.query("SELECT 1 FROM runner_work WHERE run_id=? LIMIT 1").get(runId)
+  )
+    return wait.runnerIds;
+  const known = new Set([...wait.runnerIds, ...(wait.online ?? [])]);
+  return [...wait.runnerIds, ...activeRunnerIds(db, now).filter((id) => !known.has(id))];
+}
+
 export function runnerSlotFree(
   db: Database,
   runnerIds: readonly string[],
   now: number,
   runId = "",
 ): boolean {
-  const ids = runnerIds.length
-    ? runnerIds
-    : db
-        .query<{ id: string }, [number]>(
-          "SELECT id FROM runner WHERE status='active' AND revoked_at IS NULL AND last_seen_at>?",
-        )
-        .all(now - 60_000)
-        .map((runner) => runner.id);
+  const ids = runnerIds.length ? runnerIds : activeRunnerIds(db, now);
   return ids.some((id) =>
     runnerHasCapacity(db, id, now, runId, runnerSlotsHeldBetweenCommands(db, id, now, runId)),
   );
