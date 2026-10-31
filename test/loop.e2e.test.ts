@@ -2123,10 +2123,11 @@ for (const sameModel of [true, false]) {
       for (let tick = 0; tick < 20; tick += 1)
         if ((await tickWithRestarts(jobs, orchestrator, db)) === null) break;
       if (sameModel) {
-        expect(stateOf(db, "ENG-20"), debug(layout, db)).toBe("awaiting_input");
+        expect(stateOf(db, "ENG-20"), debug(layout, db)).toBe("running");
         expect(launches.every((launch) => launch.purpose === "prepare")).toBe(true);
         expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
-        expect(tracker.questions[0]?.body).toContain("different reviewer model");
+        expect(tracker.questions).toHaveLength(0);
+        expect(listSystemFaults(db)[0]?.reason).toContain("different reviewer model");
         expect(github.opened).toHaveLength(0);
       } else {
         expect(stateOf(db, "ENG-20"), debug(layout, db)).toBe("merged");
