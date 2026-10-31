@@ -69,7 +69,7 @@ export function renderMarkup(root: globalThis.Element, html: string): void {
 }
 
 export function themedMarkup(html: string, renderRevision = 0): ReactNode {
-  return parse(html, markupOptions(renderRevision));
+  return parse(html, markupOptions(renderRevision, html.includes("data-live-preview=")));
 }
 
 function ViewTabs({ node, options }: { node: Element; options: HTMLReactParserOptions }) {
@@ -657,7 +657,7 @@ function inRow(node: Element): boolean {
 
 /** Only preview panels and their ancestors survive a poll. Other subtrees keep
  * the dashboard's existing remount behavior, including uncontrolled forms. */
-function markupOptions(renderRevision: number): HTMLReactParserOptions {
+function markupOptions(renderRevision: number, preservePreviews: boolean): HTMLReactParserOptions {
   const containsPreview = (node: DOMNode): boolean =>
     node instanceof Element &&
     ("data-live-preview" in node.attribs ||
@@ -682,5 +682,6 @@ function markupOptions(renderRevision: number): HTMLReactParserOptions {
       return cloneElement(element, { key });
     },
   };
+  if (!preservePreviews) delete options.transform;
   return options;
 }
