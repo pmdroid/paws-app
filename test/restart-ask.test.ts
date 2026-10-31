@@ -21,6 +21,7 @@ import {
   listRuns,
   listWorkItemEventRows,
   recoverOnStartup,
+  recordTurn,
   saveCheckpoint,
 } from "../src/db";
 import { acceptCloseout, ask, attachOrchestrator, questionEffects, restart } from "../src/loop";
@@ -46,6 +47,10 @@ describe("restart and ask", () => {
     "%s restarts preserve the run and session and dispatch their original handoff",
     (reason) => {
       const { db, item } = fixture();
+      db.run(
+        "UPDATE work_item SET turn_count=4,recovery_attempts=2,awake_ms=500,agent_ms=500 WHERE id=?",
+        [item.id],
+      );
       const prior = enqueueJob(db, {
         queue: JOB_KIND.reverify,
         payload: { itemId: item.id },
@@ -56,6 +61,9 @@ describe("restart and ask", () => {
       const queued = getWorkItem(db, item.id)!;
       expect(queued).toMatchObject({
         state: "queued",
+        turnCount: reason === "answer" ? 0 : 4,
+        recoveryAttempts: 2,
+        awakeMs: 500,
         sessionKey: item.sessionKey,
         currentRunId: item.currentRunId,
       });
@@ -83,16 +91,26 @@ describe("restart and ask", () => {
     (reason) => {
       const { db, item } = fixture();
       try {
-        db.run("UPDATE work_item SET turn_count=4,recovery_attempts=2 WHERE id=?", [item.id]);
-        failWorkItem(db, getWorkItem(db, item.id)!, "auth", "Authentication failed", 2);
+        db.run(
+          "UPDATE work_item SET turn_count=3,max_turns=4,recovery_attempts=2,awake_ms=1000,max_awake_ms=1000,agent_ms=1000 WHERE id=?",
+          [item.id],
+        );
+        expect(recordTurn(db, item.id, 2).capped).toBe(true);
         const failed = getWorkItem(db, item.id)!;
         expect(failed).toMatchObject({ state: "failed", cancelRequested: true });
+        db.run(
+          "CREATE TRIGGER queue_requires_clear_fence BEFORE UPDATE OF state ON work_item WHEN NEW.state='queued' AND NEW.cancel_requested=1 BEGIN SELECT RAISE(ABORT,'queue edge still cancelled'); END",
+        );
         const jobId = restart(db, failed, { reason, body: "Retry from this branch", now: 3 });
         expect(getWorkItem(db, item.id)).toMatchObject({
           state: "queued",
           cancelRequested: false,
-          turnCount: reason === "answer" ? 0 : 4,
-          recoveryAttempts: 2,
+          turnCount: 0,
+          recoveryAttempts: 0,
+          awakeMs: 0,
+          agentMs: 0,
+          maxTurns: 4,
+          maxAwakeMs: 1000,
           currentRunId: item.currentRunId,
           sessionKey: item.sessionKey,
         });
@@ -102,16 +120,34 @@ describe("restart and ask", () => {
           handoff: "Retry from this branch",
           reason,
         });
+        expect(recordTurn(db, item.id, 5).capped).toBe(false);
+        expect(getWorkItem(db, item.id)?.turnCount).toBe(1);
       } finally {
         db.close();
       }
     },
   );
 
+  test("a restart of live work preserves its cancellation request", () => {
+    const { db, item } = fixture();
+    try {
+      db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [item.id]);
+      restart(db, getWorkItem(db, item.id)!, { reason: "findings", body: "Fix findings", now: 2 });
+      expect(getWorkItem(db, item.id)).toMatchObject({ state: "queued", cancelRequested: true });
+      expect(workspaceDispatch(db, { now: 3 })).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   test("a failed resume enqueue rolls back the restart edge and cancellation reset", () => {
     const { db, item } = fixture();
     try {
-      failWorkItem(db, item, "auth", "Authentication failed", 2);
+      db.run(
+        "UPDATE work_item SET turn_count=4,recovery_attempts=2,awake_ms=500,agent_ms=500 WHERE id=?",
+        [item.id],
+      );
+      failWorkItem(db, getWorkItem(db, item.id)!, "auth", "Authentication failed", 2);
       const failed = getWorkItem(db, item.id)!;
       const events = listWorkItemEventRows(db, item.id);
       db.run(

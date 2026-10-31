@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, type RestartReason } from "../core";
 import { halt } from "./halt";
-import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
+import { applyWorkItemEvent, resetAwakeTime, saveCheckpoint, type WorkItemRecord } from "./items";
 import { enqueueJobOnce } from "./jobs";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
@@ -23,9 +23,17 @@ export function restart(
   handoff: RestartHandoff,
 ): number | null {
   return immediate(db, () => {
-    if (!halt(db, item, handoff.now)) return null;
+    const halted = halt(db, item, handoff.now);
+    if (!halted) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
-    if (handoff.reason === "answer")
+    if (halted.state === "failed") {
+      // Reset the failed run before the queue edge so state triggers see a runnable item.
+      db.run(
+        "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
+        [item.id],
+      );
+      resetAwakeTime(db, item.id);
+    } else if (handoff.reason === "answer")
       db.run("UPDATE work_item SET turn_count=0 WHERE id=?", [item.id]);
     const record = {
       kind: "restart" as const,
@@ -34,8 +42,6 @@ export function restart(
       now: handoff.now,
     };
     const queued = applyWorkItemEvent(db, item.id, "restart", record);
-    // Re-entering the queue lifts the cancellation fence left by a failed run.
-    db.run("UPDATE work_item SET cancel_requested=0 WHERE id=?", [item.id]);
     if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "running" });
     return enqueueJobOnce(db, {
       queue: JOB_KIND.resume,
