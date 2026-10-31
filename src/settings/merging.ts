@@ -26,6 +26,8 @@ export type MergeChoices = {
 
 export type MergeSettingsOptions = {
   trustedOrigin?: string;
+  /** Invalidate cached risk policy inputs after a settings write. */
+  changed?: () => void;
   configPath: string;
   csrfToken: string;
   /** Records each change in the audit history. */
@@ -220,6 +222,7 @@ export async function handleMergeSettingsRequest(
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
     return json({ error: "Merging settings could not be saved" }, 503);
   }
+  options.changed?.();
   for (const change of mergeChanges(before, policy)) options.audit?.("settings.merging", change);
   if (
     autoApproveHighRisk !== undefined &&

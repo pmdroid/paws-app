@@ -1,3 +1,4 @@
+import { pullRequestReadyResponse } from "./pull-request-response";
 import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
@@ -141,6 +142,7 @@ import {
 } from "../core";
 import {
   saveCandidateRisk,
+  saveRiskAutoContext,
   listWaitingProfileRuns,
   getTaskMode,
   assertLinearSessionCleanup,
@@ -4122,6 +4124,11 @@ export class Orchestrator {
               this.options.journal,
             );
           }
+          saveRiskAutoContext(this.db, item.id, published.head, {
+            autoApproveHighRisk,
+            policyDigest,
+            policyPaths,
+          });
           return riskApprovalFor(this.db, {
             itemId: item.id,
             head: published.head,
@@ -4362,11 +4369,44 @@ export class Orchestrator {
       line: openLine,
       now: this.now(),
     });
+    if (risk?.tier === "high") {
+      try {
+        const enabled = this.readMergePolicy().autoApproveHighRisk;
+        const { home, policyRoot } = this.closeoutHome(item);
+        const current = enabled
+          ? candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks)
+          : null;
+        saveRiskAutoContext(this.db, item.id, published.head, {
+          autoApproveHighRisk: enabled,
+          policyDigest: current?.digest ?? null,
+          policyPaths: current?.paths ?? null,
+        });
+      } catch (error) {
+        journalCaught(
+          error,
+          "orchestrator.publishForMerge.riskEvidence",
+          item.id,
+          undefined,
+          this.options.journal,
+        );
+        saveRiskAutoContext(this.db, item.id, published.head, {
+          autoApproveHighRisk: false,
+          policyDigest: null,
+          policyPaths: null,
+        });
+      }
+    }
     await this.postReviewReplies(item, github, repository, published.pull.number, published.head);
     this.post(
       item,
       "response",
-      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.\n\n${riskLine(risk)}${openLine ? `\n\n${openLine}` : ""}`,
+      pullRequestReadyResponse(this.db, {
+        itemId: item.id,
+        head: published.head,
+        pull: published.pull,
+        risk,
+        openLine,
+      }),
       `pull-request-ready:${item.id}:${item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0}`,
       {},
       "ordered",

@@ -1,3 +1,4 @@
+import { pullRequestReadyResponse } from "./pull-request-response";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -22,6 +23,9 @@ import {
   migrate,
   openDatabase,
   saveCandidateRisk,
+  saveRiskAutoContext,
+  automaticRiskApprovalLine,
+  getCandidateRisk,
   saveCandidatePaths,
   getCandidatePaths,
   getCloseoutProgress,
@@ -1098,5 +1102,79 @@ for (const enabled of [undefined, false]) {
       }),
     ).toBe("asked");
     f.db.close();
+  });
+}
+
+for (const scenario of ["clean", "P2", "missing security", "rules change", "off"] as const) {
+  test(`the sole PR response uses the shared risk explanation for ${scenario}`, async () => {
+    const f = cleanRiskFixture();
+    try {
+      saveRiskAutoContext(f.db, f.itemId, heads.s, {
+        autoApproveHighRisk: scenario !== "off",
+        policyDigest: "policy",
+        policyPaths: ["tools/rules.ts"],
+      });
+      if (scenario === "P2") f.step("security-review", "Unsafe access", ["P2"]);
+      if (scenario === "missing security")
+        f.db.run("DELETE FROM closeout_step WHERE step_id = 'security-review'");
+      if (scenario === "rules change")
+        saveCandidatePaths(f.db, {
+          itemId: f.itemId,
+          head: heads.s,
+          paths: ["tools/rules.ts"],
+          recordedAt: NOW,
+        });
+      const expected = {
+        clean: "Passes automatically: both reviews clean",
+        P2: "Manual approval required: security review has a P2 finding",
+        "missing security": "Manual approval required: security review is missing",
+        "rules change": "Manual approval required: changes the risk rules",
+        off: "Manual approval required: automatic approval is off",
+      }[scenario];
+      expect(automaticRiskApprovalLine(f.db, getCandidateRisk(f.db, f.itemId, heads.s)!)).toBe(
+        expected,
+      );
+      const body = pullRequestReadyResponse(f.db, {
+        itemId: f.itemId,
+        head: heads.s,
+        pull: { number: 1 },
+        risk: getCandidateRisk(f.db, f.itemId, heads.s),
+        openLine: "",
+      });
+      expect(body).toContain(expected);
+      // Deliver the production PR response through canReportProgress, then try a later thought.
+      f.db.run("UPDATE outbox SET payload = ? WHERE idempotency_key LIKE 'pull-request-ready:%'", [
+        JSON.stringify({
+          id: crypto.randomUUID(),
+          sessionId: "ses_1",
+          itemId: f.itemId,
+          kind: "response",
+          body,
+        }),
+      ]);
+      enqueueOutboxOnce(f.db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: "ses_1",
+        idempotencyKey: "late-risk-status",
+        payload: {
+          id: crypto.randomUUID(),
+          sessionId: "ses_1",
+          kind: "thought",
+          body: "Later risk update",
+        },
+        now: NOW,
+      });
+      const tracker = createFakeTracker();
+      for (const row of listOutbox(f.db, "ses_1"))
+        await deliverLinearOutbox(row, tracker, async () => {}, undefined, f.db);
+      expect(tracker.progress).toHaveLength(1);
+      expect(tracker.progress[0]?.body).toBe(body);
+      expect(await f.read({ autoApproveHighRisk: scenario !== "off" })).toBe(
+        scenario === "clean" ? "approved" : "missing",
+      );
+    } finally {
+      f.db.close();
+    }
   });
 }

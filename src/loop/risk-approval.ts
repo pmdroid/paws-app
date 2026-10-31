@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { HIGH_RISK_PATHS_FILE, JOB_KIND, riskLine } from "../core";
+import { JOB_KIND, riskLine } from "../core";
 import {
   applyLinearCommand,
   applyWorkItemEvent,
@@ -8,9 +8,7 @@ import {
   enqueueJobOnce,
   enqueueOutboxOnce,
   getCandidateRisk,
-  getCloseoutProgress,
-  getCandidatePaths,
-  listReviewFindings,
+  automaticRiskApproval,
   getRiskFix,
   getWorkItem,
   listLinkAsks,
@@ -87,7 +85,7 @@ export async function riskApprovalFor(
   // Recompute from stored evidence on every read. Never persist an automatic approval.
   if (input.autoApproveHighRisk === true && risk?.tier === "high") {
     try {
-      if (cleanRiskEvidence(db, risk, input.policyDigest, input.policyPaths)) return "approved";
+      if (automaticRiskApproval(db, risk, input).eligible) return "approved";
     } catch (error) {
       journalCaught(
         error,
@@ -112,72 +110,6 @@ export async function riskApprovalFor(
     now: input.now ?? Date.now(),
   });
   return fix !== null && fix.paths.length === 0 ? "approved" : "missing";
-}
-
-/** Exact-head evidence only. Shared finding rows can revoke eligibility, never grant it. */
-function cleanRiskEvidence(
-  db: Database,
-  risk: CandidateRisk,
-  policyDigest: string | null | undefined,
-  policyPaths: readonly string[] | null | undefined,
-): boolean {
-  if (policyDigest == null || policyPaths == null) return false;
-  const run = getCloseoutProgress(db, risk.itemId, risk.head);
-  if (
-    run?.decision !== "accepted" ||
-    run.finishedAt === null ||
-    run.base !== risk.base ||
-    run.policyDigest !== policyDigest
-  )
-    return false;
-  const paths = getCandidatePaths(db, risk.itemId, risk.head);
-  if (
-    paths === null ||
-    paths.some(
-      (path) =>
-        path === HIGH_RISK_PATHS_FILE ||
-        policyPaths.includes(path) ||
-        path
-          .toLowerCase()
-          .split("/")
-          .some((part) =>
-            [
-              ".agents",
-              ".claude",
-              ".codex",
-              ".cursor",
-              "agents.md",
-              "claude.md",
-              "claude.local.md",
-              "gemini.md",
-              "copilot-instructions.md",
-            ].includes(part),
-          ),
-    )
-  )
-    return false;
-  if (
-    run.steps.some(
-      (step) =>
-        step.state !== "passed" &&
-        !(step.state === "skipped" && step.detail === "no changed path matches"),
-    )
-  )
-    return false;
-  for (const id of ["security-review", "independent-review"]) {
-    const review = run.steps.find((step) => step.id === id && step.kind === "review");
-    if (
-      review?.state !== "passed" ||
-      review.attempt < 1 ||
-      !review.evidencePath ||
-      !Array.isArray(review.findingSeverities) ||
-      review.findingSeverities.some((severity) => severity !== "P3")
-    )
-      return false;
-  }
-  return !listReviewFindings(db, { itemId: risk.itemId, head: risk.head, status: "open" }).some(
-    (finding) => finding.severity !== "P3",
-  );
 }
 
 /**

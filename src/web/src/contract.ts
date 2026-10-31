@@ -833,6 +833,8 @@ export interface StatusRiskPath {
  * Closeout has no `security-review` check.
  */
 export interface StatusItemRisk {
+  /** Shared merge-gate explanation for the classified head. */
+  automaticApproval?: string;
   tier: RiskTier | null;
   head: string | null;
   base: string | null;
@@ -988,6 +990,9 @@ function readItemRisk(input: unknown): StatusItemRisk | null {
       };
     }),
     securityReview,
+    ...(typeof body.automaticApproval === "string"
+      ? { automaticApproval: body.automaticApproval }
+      : {}),
   };
 }
 

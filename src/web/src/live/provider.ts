@@ -43,6 +43,7 @@ import type {
 } from "../../../db";
 import {
   getCandidateRisk,
+  automaticRiskApprovalLine,
   getRiskFix,
   latestCandidateRisk,
   latestRiskFix,
@@ -352,6 +353,15 @@ function itemRisk(db: Database, current: CurrentItem): StatusItemRisk | null {
     classifiedAt: stored === null ? null : new Date(stored.classifiedAt).toISOString(),
     paths: (stored?.paths ?? []).map((path) => ({ path, lists: lists.get(path) ?? [] })),
     securityReview,
+    ...(stored?.tier === "high"
+      ? {
+          automaticApproval:
+            current.record.checkpoint?.wipCommit &&
+            current.record.checkpoint.wipCommit !== stored.head
+              ? "Manual approval required: current head has no risk evidence"
+              : automaticRiskApprovalLine(db, stored),
+        }
+      : {}),
   };
 }
 

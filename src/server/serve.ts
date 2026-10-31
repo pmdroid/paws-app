@@ -61,6 +61,7 @@ import {
   getArtifact,
   getWorkItem,
   hotFiles,
+  clearRiskAutoContexts,
   listWorkspaceRepositoryNames,
   workspaceSessionIds,
 } from "../db";
@@ -597,6 +598,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       })) ??
       (await handleMergeSettingsRequest(request, {
         ...shared,
+        ...(secrets.db ? { changed: () => clearRiskAutoContexts(secrets.db!) } : {}),
         ...(path === MERGE_SETTINGS_PATH && secrets.db
           ? {
               // The stored GitHub connection and team mappings, not a GitHub call.
