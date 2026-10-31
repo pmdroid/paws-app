@@ -586,6 +586,7 @@ export async function openRunnerRuntime(options: {
           journalCaught(caughtError2, "runner-runtime.fail.readRunnerResultFile", command.itemId);
         }
 
+        journal.ingest(execution.id, raw);
         let { offset, consumed } = journal.transcriptCursor(execution.id);
         while (offset < consumed) {
           const bytes = raw.subarray(
@@ -633,16 +634,19 @@ export async function openRunnerRuntime(options: {
         throw error;
       // Artifact refusal is not result refusal. Paws still needs the run's failure result.
     }
-    try {
-      await uploadSession(execution, token, undefined, request);
-    } catch (error) {
-      if (
-        error instanceof RemoteFailure ||
-        (error instanceof RunnerRequestError &&
-          /grant.*(invalid|expired)/i.test(error.reason ?? ""))
-      )
-        throw error;
-      skipSession(execution, error);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await uploadSession(execution, token, undefined, request);
+        break;
+      } catch (error) {
+        if (!(error instanceof RemoteFailure) || attempt >= SESSION_UPLOAD_TRIES) {
+          skipSession(execution, error);
+          break;
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, (options.sessionRetryMs ?? 1000) * 2 ** (attempt - 1)),
+        );
+      }
     }
   }
   /**

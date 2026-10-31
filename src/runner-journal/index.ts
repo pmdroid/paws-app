@@ -224,7 +224,8 @@ export function openExecutionJournal(root: string) {
           )
           .get(id);
         if (!row) throw new Error("Unknown execution journal");
-        if (row.phase === "complete" || row.phase === "interrupted")
+        const terminal = row.phase === "complete" || row.phase === "interrupted";
+        if (terminal && bytes.length !== row.consumed)
           throw new Error("Execution journal is terminal");
         if (
           bytes.length < row.consumed ||
@@ -233,6 +234,8 @@ export function openExecutionJournal(root: string) {
               row.prefix_hash)
         )
           throw new Error("Runner event journal was rewritten");
+        // Result replay still validates the consumed prefix of a terminal execution.
+        if (terminal) return;
         let offset = row.consumed;
         let sequence = db
           .query<{ sequence: number }, [string]>(

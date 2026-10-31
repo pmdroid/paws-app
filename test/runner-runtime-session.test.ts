@@ -457,7 +457,7 @@ test.skipIf(!linux)(
 );
 
 test.skipIf(!linux)(
-  "after a restart the runner resumes the session upload at the offset in its journal and retries an outage",
+  "restart recovery validates the session cursor and bounds failure uploads",
   async () => {
     const context = fixture({ claudeVersion: "2.1.7" });
     const bundle = randomBytes(1_200_000);
@@ -477,16 +477,13 @@ test.skipIf(!linux)(
     journal.sessionUploaded(id, 0, 524_288);
     journal.close();
     context.finishWorker(id, bundle);
-    // The connection drops during recovery too; the retry resumes there instead of skipping.
-    context.failAt.add(1_048_576);
+    // An optional snapshot must not delay failure delivery beyond five upload attempts.
     context.failUploads(6);
     const runtime = await context.open();
     try {
       await context.drive(runtime, () => context.posted.length > 0);
-      expect(context.chunks.filter((chunk) => chunk.offset === 524_288)).toHaveLength(7);
-      expect(context.chunks.filter((chunk) => chunk.offset === 1_048_576)).toHaveLength(2);
-      expect(context.finishes).toHaveLength(1);
-      expect((await context.read(3)).equals(bundle)).toBe(true);
+      expect(context.chunks.filter((chunk) => chunk.offset === 524_288)).toHaveLength(5);
+      expect(context.finishes).toHaveLength(0);
       expect(context.posted).toHaveLength(1);
     } finally {
       await runtime.stop();
