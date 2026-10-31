@@ -274,13 +274,6 @@ function findingsFor(
       severities: step.findingSeverities,
     });
   if (step.kind === "review" && step.attempt > (existing?.attempt ?? 0)) return step.findings;
-  if (step.kind === "review" && step.state === "passed" && step.findings === null) {
-    // Cached reviews emit no new result. Keep only a known snapshot of this same attempt.
-    return existing &&
-      Array.isArray(reviewSnapshot({ ...existing, kind: "review" }).findingSeverities)
-      ? existing.findings
-      : null;
-  }
   if (step.findings !== null) return step.findings;
   if (step.state === "running" && existing?.state !== "running") return null;
   return existing?.findings ?? null;
@@ -550,10 +543,10 @@ function reviewSnapshot(
               : null,
         };
     } catch {
-      // Unreadable snapshot data is unavailable both to display and to the automatic gate.
-      return { findings: null };
+      // Preserve legacy text; malformed snapshot envelopes cannot authorize approval.
+      return { findings: row.findings.includes('"reviewSnapshot"') ? null : row.findings };
     }
-    return { findings: null };
+    return { findings: row.findings.includes('"reviewSnapshot"') ? null : row.findings };
   }
   return { findings: row.findings };
 }

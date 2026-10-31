@@ -184,6 +184,11 @@ export async function handleMergeSettingsRequest(
   } catch (caughtError4) {
     journalCaught(caughtError4, "merging.handleMergeSettingsRequest.loadConfigFile", null);
   }
+  if (autoApproveHighRisk === true && !before?.autoApproveHighRisk && !options.riskGate?.on)
+    return json(
+      { error: "Turn on the risk gate before enabling automatic high-risk approval." },
+      400,
+    );
   if (options.githubQueues && usesGitHubQueue(policy) && !(before && usesGitHubQueue(before))) {
     let repositories: string[] | null = null;
     try {

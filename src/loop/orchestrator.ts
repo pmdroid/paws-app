@@ -4058,8 +4058,7 @@ export class Orchestrator {
     if (itemId === null) return { kind: "obsolete" };
     const run: MergeRun = { payload, jobId };
     let policy: MergeSettings | undefined;
-    const mergePolicy = () =>
-      (policy ??= readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))));
+    const mergePolicy = () => (policy ??= this.readMergePolicy());
     // The lane calls this again after async publication checks, so keep digest reads fresh.
     const policyDigests = (item: WorkItemRecord, worktree: string) => {
       const { home, policyRoot } = this.closeoutHome(item);
@@ -4608,6 +4607,10 @@ export class Orchestrator {
     return Math.min(rounds, restartLimit(this.db, item.id) ?? rounds);
   }
 
+  private readMergePolicy(): MergeSettings {
+    return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+  }
+
   /**
    * Settings → Merging for this task: an issue rule, then the Linear project, then the workspace
    * default. Resolved from the issue's project and labels once, then kept with the task. A failed
@@ -4616,8 +4619,7 @@ export class Orchestrator {
   private async mergeSettingsFor(
     item: WorkItemRecord,
     signal?: AbortSignal,
-    readPolicy = () =>
-      readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+    readPolicy = () => this.readMergePolicy(),
   ): Promise<TaskMergeSettings> {
     const kept = getTaskMergeSettings(this.db, item.id);
     if (kept) return kept;

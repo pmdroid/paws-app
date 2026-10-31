@@ -654,6 +654,7 @@ describe("Merging settings API", () => {
 
 test("automatic high-risk approval defaults off, round-trips, and old clients preserve it", async () => {
   const { options, audits } = fixture();
+  options.riskGate = { on: true };
   expect(readMergeSettings(parseConfigToml("")).autoApproveHighRisk).toBe(false);
   const body = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] };
   for (const enabled of [true, false]) {
@@ -678,6 +679,18 @@ test("automatic high-risk approval defaults off, round-trips, and old clients pr
       ).autoApproveHighRisk,
     ).toBe(enabled);
   }
+  options.riskGate = { on: false };
+  const put = (enabled: boolean) =>
+    handleMergeSettingsRequest(request("PUT", { ...body, autoApproveHighRisk: enabled }), options);
+  const saved = readFileSync(options.configPath, "utf8");
+  const auditCount = audits.length;
+  expect((await put(true))?.status).toBe(400);
+  expect(readFileSync(options.configPath, "utf8")).toBe(saved);
+  expect(audits).toHaveLength(auditCount);
+  writeFileSync(options.configPath, "[merge]\nauto_approve_high_risk = true\n");
+  expect((await put(true))?.status).toBe(200);
+  expect((await put(false))?.status).toBe(200);
+  expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(false);
   expect(audits.map(([, text]) => text)).toContain("Automatic high-risk approval: on");
   expect(audits.map(([, text]) => text)).toContain("Automatic high-risk approval: off");
   for (const invalid of ["true", 1, null]) {

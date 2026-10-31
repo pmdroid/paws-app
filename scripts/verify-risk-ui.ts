@@ -46,7 +46,6 @@ const detail = (id: string): StatusItemDetail | null =>
     : null;
 
 const configPath = join(mkdtempSync(join(tmpdir(), "paws-risk-")), "config.toml");
-let riskGateOn = true;
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -58,7 +57,6 @@ const server = Bun.serve({
     return (
       (await handleMergeSettingsRequest(request, {
         configPath,
-        riskGate: { on: riskGateOn, reason: "The risk gate needs an HTTPS public URL." },
         csrfToken: "ui-fixture",
         repos: ["acme/platform", "acme/web", "acme/docs"],
         highRiskFile: async (repo) =>
@@ -90,7 +88,6 @@ const fits = (page: import("@playwright/test").Page) =>
 try {
   for (const scheme of ["light", "dark"] as const)
     for (const width of [1440, 390]) {
-      riskGateOn = true;
       writeFileSync(configPath, '[merge]\norder = "queue"\nmain_moved = "closeout"\n');
       const page = await browser.newPage({ viewport: { width, height: 1000 } });
       page.on("pageerror", (error) => errors.push(error.message));
@@ -116,11 +113,6 @@ try {
 
       await page.goto(`http://127.0.0.1:${server.port}/status/settings/merging`);
       await expect(page.getByRole("heading", { name: "High-risk paths" })).toBeVisible();
-      const automatic = page.getByRole("checkbox", {
-        name: "Let high-risk changes through when both reviews are clean",
-      });
-      await expect(automatic).not.toBeChecked();
-      await automatic.check();
       const platform = page.locator(".settings-project", {
         has: page.getByRole("heading", { name: "acme/platform" }),
       });
@@ -133,8 +125,6 @@ try {
         ["src/auth/**", ".github/workflows/**"],
       );
       await page.reload();
-      await expect(automatic).toBeChecked();
-      expect(readMergeSettings(loadConfigFile(configPath)).autoApproveHighRisk).toBe(true);
       await expect(platform.locator("textarea")).toHaveValue("src/auth/**\n.github/workflows/**");
       await expect(platform).toContainText("Read-only, from origin/main at 4b317d5.");
       await expect(page.getByText("No file on origin/main at 9f1c2aa.")).toBeVisible();
@@ -143,17 +133,6 @@ try {
       await page.evaluate(() => scrollTo(0, 0));
       await page.screenshot({
         path: join(directory, `high-risk-paths-${scheme}-${width}.png`),
-        fullPage: true,
-      });
-      riskGateOn = false;
-      await page.reload();
-      await expect(automatic).toBeDisabled();
-      await expect(
-        page.getByText("Turn on the risk gate before changing this setting.", { exact: false }),
-      ).toBeVisible();
-      await fits(page);
-      await page.screenshot({
-        path: join(directory, `risk-gate-off-${scheme}-${width}.png`),
         fullPage: true,
       });
       await page.close();
