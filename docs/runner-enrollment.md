@@ -128,6 +128,8 @@ to continue within the offline budget. Events remain local until delivery can
 resume. Successful results ready for delivery and failures produced by the runner
 stay in its execution journal until Paws accepts them, including across a runner
 restart. Pending results remain in heartbeat reports until delivered. A permanent
-403 or 409 refusal ends retries and keeps the result locally for diagnosis.
+result or grant refusal ends retries and keeps the result locally for diagnosis.
+Uploads cannot reject a result. Delivery renews expiring grants, retains transient
+session-upload progress, and backs off repeated failures up to one minute.
 Retries use the same execution and command identifiers, so Paws can
 recognize a repeated delivery if its acknowledgement was lost.

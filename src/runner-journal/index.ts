@@ -101,17 +101,19 @@ export function openExecutionJournal(root: string) {
   db.run(
     "CREATE INDEX IF NOT EXISTS delivery_waiting ON delivery(execution_id,sequence) WHERE json_extract(payload,'$.type') IN ('question','artifact','closeout_policy')",
   );
+  function parseExecution(row: { id: string; payload: string; phase: string }): Execution {
+    const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
+    if (command.type !== "run" && command.type !== "review" && command.type !== "task")
+      throw new Error("Invalid persisted work command");
+    return { id: row.id, command, phase: row.phase };
+  }
   function execution(id: string): Execution | undefined {
     const row = db
       .query<{ id: string; payload: string; phase: string }, [string]>(
         "SELECT id,payload,phase FROM execution WHERE id=?",
       )
       .get(id);
-    if (!row) return;
-    const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
-    if (command.type !== "run" && command.type !== "review" && command.type !== "task")
-      throw new Error("Invalid persisted work command");
-    return { id: row.id, command, phase: row.phase };
+    return row ? parseExecution(row) : undefined;
   }
   function executions(active: boolean): Execution[] {
     return db
@@ -119,12 +121,7 @@ export function openExecutionJournal(root: string) {
         "SELECT id,payload,phase FROM execution WHERE (phase NOT IN ('complete','interrupted'))=? ORDER BY rowid",
       )
       .all(Number(active))
-      .map((row) => {
-        const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
-        if (command.type !== "run" && command.type !== "review" && command.type !== "task")
-          throw new Error("Invalid persisted work command");
-        return { id: row.id, command, phase: row.phase };
-      });
+      .map(parseExecution);
   }
   return {
     executions,
@@ -153,15 +150,28 @@ export function openExecutionJournal(root: string) {
     },
     pendingResults() {
       return db
-        .query<{ id: string; payload: string; failure: number }, []>(
-          "SELECT execution_id AS id,payload,failure FROM result_delivery WHERE accepted=0 ORDER BY rowid",
+        .query<{ id: string }, []>(
+          "SELECT execution_id AS id FROM result_delivery WHERE accepted=0 ORDER BY rowid",
         )
-        .all()
-        .map((row) => ({
-          id: row.id,
+        .all();
+    },
+    pendingResult(id: string) {
+      const row = db
+        .query<{ payload: string; failure: number }, [string]>(
+          "SELECT payload,failure FROM result_delivery WHERE execution_id=? AND accepted=0",
+        )
+        .get(id);
+      return (
+        row && {
           result: RunnerResultSchema.parse(JSON.parse(row.payload)),
           failure: Boolean(row.failure),
-        }));
+        }
+      );
+    },
+    resultPending(id: string) {
+      return Boolean(
+        db.query("SELECT 1 FROM result_delivery WHERE execution_id=? AND accepted=0").get(id),
+      );
     },
     resultAccepted(id: string) {
       db.run("UPDATE result_delivery SET accepted=1 WHERE execution_id=?", [id]);

@@ -17,6 +17,7 @@ async function fixture(
     aliveOffsetMs?: number;
     connectionError?: boolean;
     expiresMs?: number;
+    retryMs?: number;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-outage-"));
@@ -88,6 +89,7 @@ async function fixture(
   };
   const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     root,
+    resultRetryMs: options.retryMs ?? 0,
     spool,
     results,
     repositoryRoot: join(root, "repositories"),
@@ -201,6 +203,9 @@ async function fixture(
   await tickUntil(() => execution !== "");
   return {
     posted,
+    daemon: runtimeOptions.daemon,
+    wall: () => wall,
+    status: () => runtime.status(),
     reports,
     seals: () => seals,
     grantAttempts: () => grantAttempts,
@@ -566,7 +571,7 @@ test("pending failure remains reported after active cleanup until Paws accepts i
 });
 
 test("permanent result refusals stop retries across runner restarts", async () => {
-  for (const status of [403, 409]) {
+  for (const status of [400, 403, 404, 409, 410]) {
     const f = await fixture();
     try {
       f.rejectPermanently(status);
@@ -576,7 +581,7 @@ test("permanent result refusals stop retries across runner restarts", async () =
       const attempts = f.grantAttempts();
       await f.restart();
       for (let i = 0; i < 3; i++) await f.tick();
-      expect(f.postAttempts()).toBe(1);
+      expect(f.postAttempts()).toBe(status === 403 ? 2 : 1);
       expect(f.grantAttempts()).toBe(attempts);
       expect(f.errors.filter((error) => error.includes("refused the stored result"))).toHaveLength(
         1,
@@ -657,6 +662,77 @@ test("an unchanged malformed event journal reports one error while offline", asy
     f.event({ type: "question" });
     await Bun.sleep(900);
     expect(f.errors.filter((error) => error.includes("Invalid runner question"))).toHaveLength(1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("an expired upload grant is renewed without rejecting the failure result", async () => {
+  const f = await fixture();
+  try {
+    let grants = 0;
+    f.daemon.issueRunGrant = async () => ({
+      token: String(++grants),
+      expiresAt: f.wall() + 60_000,
+    });
+    const finish = f.daemon.finishTranscript;
+    let expired = false;
+    f.daemon.finishTranscript = async (...args) => {
+      if (!expired) {
+        expired = true;
+        f.jumpWall(70_000);
+        throw new RunnerRequestError(403, "POST", "/finish", 1, "Run grant is invalid or expired.");
+      }
+      return finish(...args);
+    };
+    f.refuse(403, 1);
+    await f.tickUntil(() => f.posted.length > 0);
+    expect(f.posted).toHaveLength(1);
+    expect(grants).toBeGreaterThanOrEqual(2);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a lost transcript seal acknowledgement cannot reject the failure result", async () => {
+  const f = await fixture();
+  try {
+    const finish = f.daemon.finishTranscript;
+    let lost = false;
+    f.rejectSealed();
+    f.daemon.finishTranscript = async (...args) => {
+      const result = await finish(...args);
+      if (!lost) {
+        lost = true;
+        throw new RunnerRequestError(503, "POST", "/finish", 1);
+      }
+      return result;
+    };
+    f.refuse(403, 1);
+    await f.tickUntil(() => f.posted.length > 0);
+    expect(f.seals()).toBe(1);
+    expect(f.posted).toHaveLength(1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("transient result retries back off and report one repeated failure", async () => {
+  const f = await fixture({ retryMs: 1000 });
+  try {
+    f.rejectResults(100);
+    f.finish();
+    await f.tickUntil(() => f.postAttempts() > 0);
+    for (let i = 0; i < 4; i++) await f.tick();
+    expect(f.postAttempts()).toBe(1);
+    f.advance(1000);
+    await f.tickUntil(() => f.postAttempts() > 1);
+    expect(f.postAttempts()).toBe(2);
+    expect(f.errors.filter((error) => error.includes("/result"))).toHaveLength(1);
+    expect(f.status().active).toBeNull();
+    f.advance(2 * RUNNER_OFFLINE_BUDGET_MS);
+    await Bun.sleep(300);
+    expect(f.errors.join("\n")).not.toContain("Runner interrupted");
   } finally {
     await f.cleanup();
   }

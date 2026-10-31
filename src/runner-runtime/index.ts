@@ -101,6 +101,7 @@ const workerResult = z.object({
   candidateSha: RunnerResultSchema.shape.candidateSha,
   reviewText: RunnerResultSchema.shape.reviewText,
 });
+type AuthorizedRequest = <T>(operation: (token: string) => Promise<T>) => Promise<T>;
 type PushFailure = NonNullable<RunnerResult["pushFailure"]>;
 type Active = {
   execution: Execution;
@@ -131,7 +132,6 @@ type Active = {
   quiesced?: Promise<void>;
   publicationBranch?: string;
   followUps?: number;
-  transcriptSealed?: boolean;
   restarts?: number;
   pushTries?: number;
   pushAt?: number;
@@ -207,11 +207,14 @@ export async function openRunnerRuntime(options: {
   deliveryWaitMs?: number;
   /** The first wait before a session upload is retried during restart recovery; it doubles. */
   sessionRetryMs?: number;
+  /** First delay between stored-result attempts, doubling up to one minute. */
+  resultRetryMs?: number;
 }) {
   if (options.daemon.status().phase !== "paired")
     throw new Error("Runner must be paired before execution");
   const journal = openExecutionJournal(options.root);
   const resultDeliveries = new Map<string, Promise<void>>();
+  const resultRetries = new Map<string, { tries: number; at: number; message: string }>();
   const broker =
     options.broker ??
     createDirectWorkerSupervisor({
@@ -413,6 +416,10 @@ export async function openRunnerRuntime(options: {
     notify = false,
     pushFailure?: PushFailure,
   ) {
+    if (journal.hasResult(entry.execution.id)) {
+      active.delete(key(entry.execution.command));
+      return deliverResult(entry.execution);
+    }
     const first = !entry.abort.signal.aborted;
     entry.abort.abort();
     if (first)
@@ -423,18 +430,13 @@ export async function openRunnerRuntime(options: {
       );
     entry.stopped ??= (async () => {
       await quiesce(entry);
-      if (notify) await fail(entry.execution, reason, entry.transcriptSealed, pushFailure);
+      if (notify) await fail(entry.execution, reason, pushFailure);
       journal.phase(entry.execution.id, "interrupted");
       entry.execution.phase = "interrupted";
     })();
     await entry.stopped;
   }
-  async function fail(
-    execution: Execution,
-    reason: string,
-    sealed = false,
-    pushFailure?: PushFailure,
-  ) {
+  async function fail(execution: Execution, reason: string, pushFailure?: PushFailure) {
     const { command } = execution;
     if (journal.hasResult(execution.id)) return deliverResult(execution);
     if (command.type !== "run" && command.type !== "review" && command.type !== "task") return;
@@ -469,10 +471,10 @@ export async function openRunnerRuntime(options: {
       }),
       true,
     );
-    if (sealed) journal.sealTranscript(execution.id);
     await deliverResult(execution);
   }
   function deliverResult(execution: Execution): Promise<void> {
+    if ((resultRetries.get(execution.id)?.at ?? 0) > monotonic()) return Promise.resolve();
     const current = resultDeliveries.get(execution.id);
     if (current) return current;
     const delivery = sendResult(execution).finally(() => resultDeliveries.delete(execution.id));
@@ -481,86 +483,166 @@ export async function openRunnerRuntime(options: {
   }
   async function sendResult(execution: Execution) {
     const { command } = execution;
-    const pending = journal.pendingResults().find((row) => row.id === execution.id);
+    const pending = journal.pendingResult(execution.id);
     if (!pending) return;
+    let credential: RunnerGrant | undefined;
+    let issuedAt = 0;
+    let granting = false;
+    let posting = false;
+    const token = async () => {
+      const at = now();
+      if (
+        !credential ||
+        credential.expiresAt <= at + 5000 ||
+        at >= issuedAt + (credential.expiresAt - issuedAt) / 2
+      ) {
+        granting = true;
+        credential = await options.daemon.issueRunGrant(command.runId, {
+          commandId: command.id,
+          generation: command.generation,
+        });
+        granting = false;
+        issuedAt = at;
+      }
+      return credential.token;
+    };
+    const request: AuthorizedRequest = async (operation) => {
+      for (let attempt = 0; ; attempt++) {
+        const sent = await token();
+        try {
+          return await operation(sent);
+        } catch (error) {
+          if (!(error instanceof RunnerRequestError) || error.status !== 403) throw error;
+          const grantExpired =
+            now() >= credential!.expiresAt || /grant.*(invalid|expired)/i.test(error.reason ?? "");
+          credential = undefined;
+          if (attempt) {
+            if (grantExpired) throw new RemoteFailure("Delivery grant expired");
+            throw error;
+          }
+        }
+      }
+    };
     try {
-      const { token } = await options.daemon.issueRunGrant(command.runId, {
-        commandId: command.id,
-        generation: command.generation,
-      });
-      if (pending.failure) await prepareFailure(execution, token);
-      await options.daemon.postResult(command.runId, command.generation, pending.result, token);
+      if (pending.failure) await prepareFailure(execution, token, request);
+      posting = true;
+      await request((sent) =>
+        options.daemon.postResult(command.runId, command.generation, pending.result, sent),
+      );
       journal.resultAccepted(execution.id);
       journal.phase(execution.id, pending.failure ? "interrupted" : "complete");
+      resultRetries.delete(execution.id);
     } catch (error) {
-      if (error instanceof RunnerRequestError && [403, 409].includes(error.status)) {
+      const refused =
+        (granting || posting) &&
+        ((error instanceof RunnerRequestError &&
+          error.status >= 400 &&
+          error.status < 500 &&
+          ![408, 429].includes(error.status)) ||
+          error instanceof z.ZodError);
+      if (refused) {
         journal.resultRejected(execution.id);
         journal.phase(execution.id, "interrupted");
+        resultRetries.delete(execution.id);
         report(
           new Error(
             `Paws refused the stored result for execution ${execution.id}: ${error.message}`,
           ),
         );
-      } else report(error);
+      } else {
+        const previous = resultRetries.get(execution.id);
+        const message =
+          error instanceof RunnerRequestError
+            ? `${error.status}:${error.method}:${error.path}`
+            : String(error).replace(/after \d+ ms/g, "");
+        const tries = (previous?.tries ?? 0) + 1;
+        resultRetries.set(execution.id, {
+          tries,
+          message,
+          at:
+            monotonic() +
+            Math.min(
+              60_000,
+              (options.resultRetryMs ?? options.sessionRetryMs ?? 1000) *
+                2 ** Math.min(tries - 1, 6),
+            ),
+        });
+        if (message !== previous?.message) report(error);
+      }
     }
   }
-  async function prepareFailure(execution: Execution, token: string) {
+  async function prepareFailure(
+    execution: Execution,
+    token: () => Promise<string>,
+    request: AuthorizedRequest,
+  ) {
     const { command } = execution;
-    if (!journal.transcriptSealed(execution.id)) {
-      let raw: Buffer = Buffer.alloc(0);
-      try {
-        raw = readRunnerResultFile(options.results, execution.id, "events.jsonl");
-      } catch (caughtError2) {
-        journalCaught(caughtError2, "runner-runtime.fail.readRunnerResultFile", command.itemId);
-      }
-
-      let { offset, consumed } = journal.transcriptCursor(execution.id);
-      while (offset < consumed) {
-        const bytes = raw.subarray(
-          offset,
-          Math.min(offset + RUNNER_TRANSCRIPT_CHUNK_BYTES, consumed),
-        );
-        await options.daemon.uploadTranscript(
-          command.runId,
-          {
-            generation: command.generation,
-            executionId: execution.id,
-            offset,
-            sha256: createHash("sha256").update(bytes).digest("hex"),
-            data: bytes.toString("base64"),
-          },
-          token,
-        );
-        journal.transcriptUploaded(execution.id, offset, offset + bytes.length);
-        offset += bytes.length;
-      }
-      await options.daemon.finishTranscript(
-        command.runId,
-        {
-          generation: command.generation,
-          executionId: execution.id,
-          offset: consumed,
-          sizeBytes: consumed,
-          sha256: createHash("sha256").update(raw.subarray(0, consumed)).digest("hex"),
-        },
-        token,
-      );
-      journal.sealTranscript(execution.id);
-    }
-    // An outage during recovery retries from the stored offset, a few times at most.
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await uploadSession(execution, async () => token);
-        break;
-      } catch (error) {
-        if (!(error instanceof RemoteFailure) || attempt >= SESSION_UPLOAD_TRIES) {
-          skipSession(execution, error);
-          break;
+    try {
+      if (!journal.transcriptSealed(execution.id)) {
+        let raw: Buffer = Buffer.alloc(0);
+        try {
+          raw = readRunnerResultFile(options.results, execution.id, "events.jsonl");
+        } catch (caughtError2) {
+          journalCaught(caughtError2, "runner-runtime.fail.readRunnerResultFile", command.itemId);
         }
-        await new Promise((resolve) =>
-          setTimeout(resolve, (options.sessionRetryMs ?? 1_000) * 2 ** (attempt - 1)),
+
+        let { offset, consumed } = journal.transcriptCursor(execution.id);
+        while (offset < consumed) {
+          const bytes = raw.subarray(
+            offset,
+            Math.min(offset + RUNNER_TRANSCRIPT_CHUNK_BYTES, consumed),
+          );
+          await request((sent) =>
+            options.daemon.uploadTranscript(
+              command.runId,
+              {
+                generation: command.generation,
+                executionId: execution.id,
+                offset,
+                sha256: createHash("sha256").update(bytes).digest("hex"),
+                data: bytes.toString("base64"),
+              },
+              sent,
+            ),
+          );
+          journal.transcriptUploaded(execution.id, offset, offset + bytes.length);
+          offset += bytes.length;
+        }
+        await request((sent) =>
+          options.daemon.finishTranscript(
+            command.runId,
+            {
+              generation: command.generation,
+              executionId: execution.id,
+              offset: consumed,
+              sizeBytes: consumed,
+              sha256: createHash("sha256").update(raw.subarray(0, consumed)).digest("hex"),
+            },
+            sent,
+          ),
         );
+        journal.sealTranscript(execution.id);
       }
+    } catch (error) {
+      if (
+        !(error instanceof RunnerRequestError) ||
+        error.status >= 500 ||
+        [408, 429].includes(error.status) ||
+        /grant.*(invalid|expired)/i.test(error.reason ?? "")
+      )
+        throw error;
+      // Artifact refusal is not result refusal. Paws still needs the run's failure result.
+    }
+    try {
+      await uploadSession(execution, token, undefined, request);
+    } catch (error) {
+      if (
+        error instanceof RemoteFailure ||
+        (error instanceof RunnerRequestError &&
+          /grant.*(invalid|expired)/i.test(error.reason ?? ""))
+      )
+        throw error;
+      skipSession(execution, error);
     }
   }
   /**
@@ -571,6 +653,7 @@ export async function openRunnerRuntime(options: {
     execution: Execution,
     token: () => Promise<string>,
     guard: () => void = () => undefined,
+    request: AuthorizedRequest = async (operation) => operation(await token()),
   ) {
     const { command } = execution;
     if (command.type !== "run" || !options.daemon.uploadSession || !options.daemon.finishSession)
@@ -601,29 +684,31 @@ export async function openRunnerRuntime(options: {
         AGENT_SESSION_MAX_BYTES,
       );
       if (!bytes.length) throw new Error("The agent session bundle is shorter than recorded");
-      const sent = await token();
       await remote(() =>
-        options.daemon.uploadSession!(
-          command.runId,
-          {
-            generation: command.generation,
-            offset,
-            sha256: createHash("sha256").update(bytes).digest("hex"),
-            data: bytes.toString("base64"),
-          },
-          sent,
+        request((sent) =>
+          options.daemon.uploadSession!(
+            command.runId,
+            {
+              generation: command.generation,
+              offset,
+              sha256: createHash("sha256").update(bytes).digest("hex"),
+              data: bytes.toString("base64"),
+            },
+            sent,
+          ),
         ),
       );
       guard();
       journal.sessionUploaded(execution.id, offset, offset + bytes.length);
       offset += bytes.length;
     }
-    const sent = await token();
     await remote(() =>
-      options.daemon.finishSession!(
-        command.runId,
-        { ...session, generation: command.generation, agentVersion },
-        sent,
+      request((sent) =>
+        options.daemon.finishSession!(
+          command.runId,
+          { ...session, generation: command.generation, agentVersion },
+          sent,
+        ),
       ),
     );
     guard();
@@ -716,8 +801,8 @@ export async function openRunnerRuntime(options: {
                     { runId: execution.command.runId, generation: execution.command.generation },
                   ] as const,
               ),
-              ...journal.pendingResults().map(({ result }) => {
-                const execution = journal.execution(result.executionId)!;
+              ...journal.pendingResults().map(({ id }) => {
+                const execution = journal.execution(id)!;
                 return [
                   key(execution.command),
                   { runId: execution.command.runId, generation: execution.command.generation },
@@ -740,6 +825,7 @@ export async function openRunnerRuntime(options: {
             .sync(response.skills)
             .catch(journalRejection("runner-runtime.pulse.sync", report, null));
         const observed = monotonic();
+        if (unreachable) for (const retry of resultRetries.values()) retry.at = 0;
         unreachable = false;
         advertisedBudget = response.offlineBudgetMs;
         advertisedAliveAt = response.aliveAt;
@@ -1018,7 +1104,6 @@ export async function openRunnerRuntime(options: {
           token,
         ),
       );
-      entry.transcriptSealed = true;
       journal.sealTranscript(entry.execution.id);
       check(entry);
     }
@@ -1374,9 +1459,8 @@ export async function openRunnerRuntime(options: {
     }
     await drainTranscript(entry, true);
     journal.saveResult(entry.execution.id, result);
+    active.delete(key(entry.execution.command));
     await deliverResult(entry.execution);
-    if (!journal.pendingResults().some((row) => row.id === entry.execution.id))
-      active.delete(key(entry.execution.command));
   }
   async function step() {
     await pulse().catch(journalRejection("runner-runtime.step.pulse", report, null));
@@ -1510,8 +1594,7 @@ export async function openRunnerRuntime(options: {
     try {
       if (journal.hasResult(entry.execution.id)) {
         await deliverResult(entry.execution);
-        if (!journal.pendingResults().some((row) => row.id === entry.execution.id))
-          active.delete(key(entry.execution.command));
+        if (!journal.resultPending(entry.execution.id)) active.delete(key(entry.execution.command));
         return;
       }
       await deliver(entry);

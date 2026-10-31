@@ -130,6 +130,7 @@ function fixture(
   const chunks: AgentSessionChunk[] = [];
   const finishes: AgentSessionFinish[] = [];
   const failAt = new Set<number>();
+  let uploadOutages = 0;
   const paired = {
     phase: "paired" as const,
     runnerId: "runner",
@@ -234,7 +235,8 @@ function fixture(
         },
         async uploadSession(runId, chunk, token) {
           chunks.push(chunk);
-          if (failAt.delete(chunk.offset)) throw new RunnerRequestError(503, "POST", "/session");
+          if (uploadOutages-- > 0 || failAt.delete(chunk.offset))
+            throw new RunnerRequestError(503, "POST", "/session");
           return http(() => sessions.upload({ ...access, runId, token }, chunk));
         },
         async finishSession(runId, finish, token) {
@@ -333,6 +335,7 @@ function fixture(
     chunks,
     finishes,
     failAt,
+    failUploads: (count: number) => (uploadOutages = count),
     posted,
     errors,
     open,
@@ -476,9 +479,12 @@ test.skipIf(!linux)(
     context.finishWorker(id, bundle);
     // The connection drops during recovery too; the retry resumes there instead of skipping.
     context.failAt.add(1_048_576);
+    context.failUploads(6);
     const runtime = await context.open();
     try {
-      expect(context.chunks.map((chunk) => chunk.offset)).toEqual([524_288, 1_048_576, 1_048_576]);
+      await context.drive(runtime, () => context.posted.length > 0);
+      expect(context.chunks.filter((chunk) => chunk.offset === 524_288)).toHaveLength(7);
+      expect(context.chunks.filter((chunk) => chunk.offset === 1_048_576)).toHaveLength(2);
       expect(context.finishes).toHaveLength(1);
       expect((await context.read(3)).equals(bundle)).toBe(true);
       expect(context.posted).toHaveLength(1);
