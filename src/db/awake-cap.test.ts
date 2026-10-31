@@ -149,6 +149,26 @@ test("the job loop bills only active agent and Closeout work across every waitin
   db.close();
 });
 
+test("a live remote turn still counts without a local execution job", () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const clock = new FakeClock(20_000);
+  const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
+  const { run } = beginImplementRun(db, item.id, clock.now());
+  db.run("PRAGMA foreign_keys=OFF");
+  db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'runner','workspace',1,0,'command',?)",
+    [run.id, clock.now() + 120 * MINUTE],
+  );
+  accrueAwake(db, item.id, clock.mono(), clock.now());
+  clock.advance(5 * MINUTE);
+  expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.awakeMs).toBe(5 * MINUTE);
+  db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [clock.now(), run.id]);
+  clock.advance(60 * MINUTE);
+  expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item.awakeMs).toBe(5 * MINUTE);
+  db.close();
+});
+
 test("an idle running item and a control job do not spend the awake budget", () => {
   const db = openDatabase(":memory:");
   migrate(db);

@@ -32,6 +32,7 @@ import { withOpenFindings } from "./open-findings";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
+import { runnerLeaseCutoff } from "./runner-lease";
 
 export type WorkItemRecord = {
   id: string;
@@ -511,9 +512,11 @@ function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId
   const row = db
     .query<
       { live: number; waiting: number; usage: number },
-      [number, string, string, string, string, string, number]
+      [number, string, string, string, string, string, number, number]
     >(
-      `SELECT COALESCE(MAX(status='running' AND locked_until>?1), 0) AS live,
+      `SELECT (COALESCE(MAX(status='running' AND locked_until>?1), 0) OR EXISTS(
+         SELECT 1 FROM runner_work w JOIN work_item i ON i.current_run_id=w.run_id
+         WHERE i.id=?2 AND w.ended_at IS NULL AND w.lease_until>?8)) AS live,
        COALESCE(MAX(status='running' AND locked_until>?1
          AND json_extract(payload, '$.awakeWait.kind') IN ('ci', 'runner', 'backoff')
          AND json_extract(payload, '$.awakeWait.worker')=locked_by
@@ -532,6 +535,7 @@ function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId
       JOB_KIND.reverify,
       JOB_KIND.merge,
       exceptJobId,
+      runnerLeaseCutoff(now),
     )!;
   return { live: row.live === 1, waiting: row.waiting === 1, usage: row.usage === 1 };
 }
