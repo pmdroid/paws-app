@@ -118,6 +118,8 @@ export type ServerOptions = {
   slackSigningSecret?: string | null;
   linearWebhook?: LinearWebhookDeps;
   linearUsage?: () => LinearUsage;
+  riskApproval?: (itemId: string) => { head: string; detail: string } | null;
+  riskSettingsChanged?: () => void;
   /**
    * Webhook routes. Default follows `LINEAR_WEBHOOKS` via `webhookChecksNeeded`.
    * Off, every `/webhooks/*` path is 404.
@@ -210,6 +212,8 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           githubWebhookSecret,
           linearWebhook,
           linearUsage: options.linearUsage,
+          riskApproval: options.riskApproval,
+          riskSettingsChanged: options.riskSettingsChanged,
           webhooks,
           csrfToken,
           ip,
@@ -269,6 +273,8 @@ type Secrets = {
   githubWebhook: GitHubWebhook | undefined;
   linearWebhook: LinearWebhookDeps | undefined;
   linearUsage?: (() => LinearUsage) | undefined;
+  riskApproval?: ServerOptions["riskApproval"];
+  riskSettingsChanged?: ServerOptions["riskSettingsChanged"];
   webhooks: boolean;
   csrfToken: string;
   readLinearArtifact?: ReadLinearArtifact;
@@ -597,6 +603,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       })) ??
       (await handleMergeSettingsRequest(request, {
         ...shared,
+        ...(secrets.riskSettingsChanged ? { changed: secrets.riskSettingsChanged } : {}),
         ...(path === MERGE_SETTINGS_PATH && secrets.db
           ? {
               // The stored GitHub connection and team mappings, not a GitHub call.
@@ -637,6 +644,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ? {
           db: secrets.db,
           ...(secrets.linearUsage ? { linearUsage: secrets.linearUsage } : {}),
+          ...(secrets.riskApproval ? { riskApproval: secrets.riskApproval } : {}),
           ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
           ...(secrets.closeoutHome ? { closeoutHome: secrets.closeoutHome } : {}),
           ...(secrets.evidenceRoot ? { evidenceRoot: secrets.evidenceRoot } : {}),

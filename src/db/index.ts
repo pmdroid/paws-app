@@ -783,3 +783,10 @@ export {
   type ReviewFindingIssue,
   type ReviewFindingPlace,
 } from "./review-finding-issues";
+
+export {
+  saveRiskAutoContext,
+  getRiskAutoContext,
+  listRiskAutoContexts,
+  type RiskAutoContext,
+} from "./risk-auto-context";

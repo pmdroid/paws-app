@@ -1,6 +1,7 @@
+import { automaticRiskApproval } from "./automatic-risk-approval";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { HIGH_RISK_PATHS_FILE, JOB_KIND, riskLine } from "../core";
+import { JOB_KIND, riskLine } from "../core";
 import {
   applyLinearCommand,
   applyWorkItemEvent,
@@ -8,9 +9,6 @@ import {
   enqueueJobOnce,
   enqueueOutboxOnce,
   getCandidateRisk,
-  getCloseoutProgress,
-  getCandidatePaths,
-  listReviewFindings,
   getRiskFix,
   getWorkItem,
   listLinkAsks,
@@ -72,6 +70,8 @@ export async function riskApprovalFor(
     /** What the fix from `approved` to S changed, against main's `base`. Null when unreadable. */
     fixRisk?: (approved: string, base: string) => Promise<FixRisk | null>;
     autoApproveHighRisk?: boolean;
+    /** Reports the human approval the lane actually matched, for display only. */
+    onHumanApproval?: (head: string, kind: "exact" | "same_patch" | "fix") => void;
     /** Current policy digest supplied by the merge caller; unreadable means no automatic approval. */
     policyDigest?: string | null;
     policyPaths?: readonly string[] | null;
@@ -80,14 +80,31 @@ export async function riskApprovalFor(
   },
 ): Promise<RiskApproval> {
   if (!riskGateOn(input.publicUrl)) return "not_required";
+  const humanApproved = (head: string, kind: "exact" | "same_patch" | "fix") => {
+    try {
+      input.onHumanApproval?.(head, kind);
+    } catch (error) {
+      journalCaught(
+        error,
+        "risk-approval.humanApprovalDisplay",
+        input.itemId,
+        undefined,
+        input.journal,
+      );
+    }
+  };
   const risk = getCandidateRisk(db, input.itemId, input.head);
   if (risk?.tier === "normal") return "not_required";
   const approvals = riskApprovals(db, input.itemId);
-  if (approvals.some((ask) => ask.headCommit === input.head)) return "approved";
+  const exact = approvals.find((ask) => ask.headCommit === input.head);
+  if (exact) {
+    humanApproved(exact.headCommit, "exact");
+    return "approved";
+  }
   // Recompute from stored evidence on every read. Never persist an automatic approval.
   if (input.autoApproveHighRisk === true && risk?.tier === "high") {
     try {
-      if (cleanRiskEvidence(db, risk, input.policyDigest, input.policyPaths)) return "approved";
+      if (automaticRiskApproval(db, risk, input).eligible) return "approved";
     } catch (error) {
       journalCaught(
         error,
@@ -100,7 +117,10 @@ export async function riskApprovalFor(
   }
   if (risk === null) return "missing";
   for (const ask of approvals.toReversed())
-    if (await input.samePatch(ask.headCommit, risk.base)) return "approved";
+    if (await input.samePatch(ask.headCommit, risk.base)) {
+      humanApproved(ask.headCommit, "same_patch");
+      return "approved";
+    }
   const latest = approvals.at(-1);
   if (latest === undefined || input.fixRisk === undefined) return "missing";
   const fix = await fixSinceApproval(db, {
@@ -111,73 +131,11 @@ export async function riskApprovalFor(
     fixRisk: input.fixRisk,
     now: input.now ?? Date.now(),
   });
-  return fix !== null && fix.paths.length === 0 ? "approved" : "missing";
-}
-
-/** Exact-head evidence only. Shared finding rows can revoke eligibility, never grant it. */
-function cleanRiskEvidence(
-  db: Database,
-  risk: CandidateRisk,
-  policyDigest: string | null | undefined,
-  policyPaths: readonly string[] | null | undefined,
-): boolean {
-  if (policyDigest == null || policyPaths == null) return false;
-  const run = getCloseoutProgress(db, risk.itemId, risk.head);
-  if (
-    run?.decision !== "accepted" ||
-    run.finishedAt === null ||
-    run.base !== risk.base ||
-    run.policyDigest !== policyDigest
-  )
-    return false;
-  const paths = getCandidatePaths(db, risk.itemId, risk.head);
-  if (
-    paths === null ||
-    paths.some(
-      (path) =>
-        path === HIGH_RISK_PATHS_FILE ||
-        policyPaths.includes(path) ||
-        path
-          .toLowerCase()
-          .split("/")
-          .some((part) =>
-            [
-              ".agents",
-              ".claude",
-              ".codex",
-              ".cursor",
-              "agents.md",
-              "claude.md",
-              "claude.local.md",
-              "gemini.md",
-              "copilot-instructions.md",
-            ].includes(part),
-          ),
-    )
-  )
-    return false;
-  if (
-    run.steps.some(
-      (step) =>
-        step.state !== "passed" &&
-        !(step.state === "skipped" && step.detail === "no changed path matches"),
-    )
-  )
-    return false;
-  for (const id of ["security-review", "independent-review"]) {
-    const review = run.steps.find((step) => step.id === id && step.kind === "review");
-    if (
-      review?.state !== "passed" ||
-      review.attempt < 1 ||
-      !review.evidencePath ||
-      !Array.isArray(review.findingSeverities) ||
-      review.findingSeverities.some((severity) => severity !== "P3")
-    )
-      return false;
+  if (fix !== null && fix.paths.length === 0) {
+    humanApproved(latest.headCommit, "fix");
+    return "approved";
   }
-  return !listReviewFindings(db, { itemId: risk.itemId, head: risk.head, status: "open" }).some(
-    (finding) => finding.severity !== "P3",
-  );
+  return "missing";
 }
 
 /**

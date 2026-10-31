@@ -705,3 +705,23 @@ test("automatic high-risk approval defaults off, round-trips, and old clients pr
   }
   expect(() => parseConfigToml('[merge]\nauto_approve_high_risk = "true"\n')).toThrow();
 });
+
+test("a failed display notification does not undo a settings write or its audit", async () => {
+  const { options, audits } = fixture();
+  options.changed = () => {
+    throw new Error("display unavailable");
+  };
+  options.riskGate = { on: true };
+  const response = await handleMergeSettingsRequest(
+    request("PUT", {
+      default: { order: "queue", mainMoved: "ci" },
+      projects: [],
+      rules: [],
+      autoApproveHighRisk: true,
+    }),
+    options,
+  );
+  expect(response?.status).toBe(200);
+  expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(true);
+  expect(audits).toContainEqual(["settings.merging", "Automatic high-risk approval: on"]);
+});

@@ -1304,6 +1304,7 @@ describe("live status provider", () => {
         { path: "src/auth/session.ts", lists: ["settings", "file"] },
       ],
       securityReview: { state: "passed", detail: null, head },
+      automaticApproval: "Manual approval required",
     });
     expect(provider.item("ENG-12")?.risk).toMatchObject({
       tier: "normal",
