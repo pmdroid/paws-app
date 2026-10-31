@@ -43,6 +43,7 @@ import type {
 } from "../../../db";
 import {
   livePreviewForQuestion,
+  pendingLivePreviewForQuestion,
   getCandidateRisk,
   getRiskFix,
   latestCandidateRisk,
@@ -1306,12 +1307,13 @@ function withRiskDetail(
 }
 
 function previewDetail(db: Database, previewQuestionId: string) {
-  const preview = livePreviewForQuestion(db, previewQuestionId);
-  return preview && preview.expiresAt > Date.now()
+  const preview = pendingLivePreviewForQuestion(db, previewQuestionId);
+  return preview
     ? {
         url: preview.url,
         checklist: preview.checklist,
         frameable: preview.frameable,
+        confirmed: livePreviewForQuestion(db, previewQuestionId) !== null,
         expiresAt: preview.expiresAt,
       }
     : undefined;

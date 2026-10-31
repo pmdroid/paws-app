@@ -1,4 +1,10 @@
-import { createElement, type ReactElement, type ReactNode } from "react";
+import {
+  cloneElement,
+  isValidElement,
+  createElement,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import parse, {
@@ -36,14 +42,15 @@ export function renderMarkup(root: globalThis.Element, html: string): void {
     reactRoot = createRoot(root);
     roots.set(root, reactRoot);
   }
-  const content = themedMarkup(html);
+  const currentRevision = ++revision;
+  const content = themedMarkup(html, currentRevision);
   flushSync(() =>
     reactRoot.render(
       ["DETAILS", "P", "SPAN"].includes(root.tagName) ? (
         content
       ) : (
         <div
-          key={html.match(/data-live-preview="(\d+)"/)?.[1] ?? ++revision}
+          key={html.includes("data-live-preview=") ? "preview-layout" : currentRevision}
           className={
             root.classList.contains("settings-section")
               ? SETTINGS_SECTION_LAYOUT
@@ -61,11 +68,11 @@ export function renderMarkup(root: globalThis.Element, html: string): void {
   );
 }
 
-export function themedMarkup(html: string): ReactNode {
-  return parse(html, options);
+export function themedMarkup(html: string, renderRevision = 0): ReactNode {
+  return parse(html, markupOptions(renderRevision));
 }
 
-function ViewTabs({ node }: { node: Element }) {
+function ViewTabs({ node, options }: { node: Element; options: HTMLReactParserOptions }) {
   const panels = node.children.filter(
     (child): child is Element => child instanceof Element && Boolean(child.attribs["data-tab"]),
   );
@@ -97,10 +104,10 @@ function ViewTabs({ node }: { node: Element }) {
   );
 }
 
-function replace(node: DOMNode): ReactElement | undefined {
+function replace(node: DOMNode, options: HTMLReactParserOptions): ReactElement | undefined {
   if (!(node instanceof Element)) return;
   const { name, attribs } = node;
-  if ("data-view-tabs" in attribs) return <ViewTabs node={node} />;
+  if ("data-view-tabs" in attribs) return <ViewTabs node={node} options={options} />;
   const classes = new Set((attribs.class ?? "").split(/\s+/));
   const has = (...names: string[]) => names.some((value) => classes.has(value));
   const props = attributesToProps(attribs);
@@ -648,4 +655,32 @@ function inRow(node: Element): boolean {
   return host instanceof Element && (host.attribs.class ?? "").split(/\s+/).includes("row");
 }
 
-const options: HTMLReactParserOptions = { replace };
+/** Only preview panels and their ancestors survive a poll. Other subtrees keep
+ * the dashboard's existing remount behavior, including uncontrolled forms. */
+function markupOptions(renderRevision: number): HTMLReactParserOptions {
+  const containsPreview = (node: DOMNode): boolean =>
+    node instanceof Element &&
+    ("data-live-preview" in node.attribs ||
+      node.children.some((child) => containsPreview(child as DOMNode)));
+  const insidePreview = (node: DOMNode): boolean => {
+    for (let parent = node.parent; parent instanceof Element; parent = parent.parent)
+      if ("data-live-preview" in parent.attribs) return true;
+    return false;
+  };
+  const options: HTMLReactParserOptions = {
+    replace: (node) => replace(node, options),
+    transform: (element, node, index) => {
+      if (!isValidElement(element)) return typeof element === "string" ? element : null;
+      if (!(node instanceof Element)) return element;
+      const lifetime = node.attribs["data-live-preview"];
+      const key =
+        lifetime !== undefined
+          ? `preview:${node.attribs["data-preview-url"] ?? ""}:${lifetime}`
+          : insidePreview(node) || containsPreview(node)
+            ? `layout:${index}`
+            : `refresh:${renderRevision}:${index}`;
+      return cloneElement(element, { key });
+    },
+  };
+  return options;
+}

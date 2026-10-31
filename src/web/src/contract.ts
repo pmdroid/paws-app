@@ -344,6 +344,8 @@ export type LinkAskKind = (typeof LINK_ASK_KINDS)[number];
 
 /** A decision a signed-in person makes on the item page. Linear carries its `link`. */
 export interface StatusLivePreview {
+  /** False while runner confirmation is missing. The iframe may remain mounted. */
+  confirmed?: boolean;
   url: string;
   checklist: string[];
   frameable: boolean;
@@ -1792,6 +1794,7 @@ function readLivePreview(input: unknown, path: string): StatusLivePreview {
     url,
     checklist: stringArray(body, "checklist", path),
     frameable: boolean(body, "frameable", path),
+    ...(body.confirmed === undefined ? {} : { confirmed: boolean(body, "confirmed", path) }),
     expiresAt: positiveInteger(body, "expiresAt", path),
   };
 }
