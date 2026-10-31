@@ -857,8 +857,8 @@ function toItem(
   const runId = linkedRunId(record, runs);
   const pr = pullRequest(record, rows, repo);
   const fact = facts.get(record.id);
-  const waiting =
-    record.state === "queued" && !record.cancelRequested ? queue.get(record.id) : undefined;
+  const state = record.state === "queued" && record.cancelRequested ? "cancelled" : record.state;
+  const waiting = state === "queued" ? queue.get(record.id) : undefined;
   const mergeQueue =
     record.state === "merge_queue" || record.state === "verifying"
       ? merging.get(record.id)
@@ -868,7 +868,7 @@ function toItem(
   return {
     id,
     title: textOr(record.title, id),
-    state: itemState(record.state),
+    state: itemState(state),
     agent: runs.find((run) => run.id === runId)?.agent ?? "Paws",
     assignee: "Unassigned",
     owner: ownerName(fact),
@@ -880,7 +880,7 @@ function toItem(
     pr,
     links: pr === null ? [] : [{ label: `PR #${pr.number}`, href: pr.url }],
     version: record.version,
-    ...(NO_CONTROL_STATES.includes(record.state) && !getConversation(db, record.id).blocked
+    ...(NO_CONTROL_STATES.includes(state) && !getConversation(db, record.id).blocked
       ? { noControls: true }
       : {}),
     ...(waiting
@@ -991,8 +991,7 @@ function heldOf(
   record: WorkItemRecord,
   holds: ReadonlyMap<string, ItemHold>,
 ): { held?: StatusHeld } {
-  if (record.state === "queued" && record.cancelRequested)
-    return { held: { reason: "cancelled", blockers: [] } };
+  if (record.state === "queued" && record.cancelRequested) return {};
   const hold = record.state === "queued" ? holds.get(record.id) : undefined;
   return hold
     ? {

@@ -260,7 +260,6 @@ export interface StatusQueuePosition {
 }
 
 export const HELD_REASONS = [
-  "cancelled",
   "blocked",
   "project",
   "reconciling",

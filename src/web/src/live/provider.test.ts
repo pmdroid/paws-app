@@ -28,6 +28,7 @@ import {
   saveCloseoutRecovery,
   saveEvidence,
   saveTaskMode,
+  saveQueuePositions,
   saveTaskBlocks,
   startCloseoutRound,
   upsertCloseoutStep,
@@ -1658,13 +1659,15 @@ describe("live status provider", () => {
   test("a queued item with cancellation requested is reported as cancelled", () => {
     const db = database();
     const record = insertQueuedItem(db, { id: "cancelled-queued", now: 10 });
+    saveQueuePositions(db, [record.id], { busy: 1, total: 1 }, 11);
     db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [record.id]);
     const item = createLiveStatusProvider(db)
       .snapshot()
       .items.find((entry) => entry.id === record.id)!;
-    expect(item.held?.reason).toBe("cancelled");
+    expect(item.state).toBe("stopped");
+    expect(item.held).toBeUndefined();
     expect(item.queue).toBeUndefined();
-    expect(waitReason(item)).toBe("Cancelled");
+    expect(waitReason(item)).toBeNull();
   });
 
   test("task blocks use the latest item on a Linear issue and skip issues with no item", () => {

@@ -5240,10 +5240,6 @@ export class Orchestrator {
         }
         cancelItemQuestions(this.db, itemId, this.now());
         if (item.state === "failed") {
-          this.db.run(
-            "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
-            [itemId],
-          );
           resetAwakeTime(this.db, itemId);
         }
         if (item.state === "paused") {
@@ -5254,6 +5250,7 @@ export class Orchestrator {
         restart(this.db, item, {
           reason: "follow_up",
           body: "The task criteria changed in Linear. Read the updated issue and finish the work from its branch.",
+          resetExecution: item.state === "failed",
           now: this.now(),
         });
         enqueueOutboxOnce(this.db, {
@@ -6157,16 +6154,14 @@ export class Orchestrator {
     const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
     immediate(this.db, () => {
-      if (item!.cancelRequested || item!.state === "failed") {
-        this.db.run(
-          "UPDATE work_item SET cancel_requested = 0, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
-          [item!.id],
-        );
+      const resetExecution = item!.cancelRequested || item!.state === "failed";
+      if (resetExecution) {
         resetAwakeTime(this.db, item!.id);
         if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
       }
       const jobId = restart(this.db, getWorkItem(this.db, item!.id)!, {
         reason: rebase ? "conflict" : "follow_up",
+        resetExecution,
         body: rebase ? `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}` : handoff,
         jobKey,
         now: this.now(),
