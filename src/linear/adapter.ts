@@ -30,6 +30,10 @@ export type TrackerRequestOptions = {
  * `onAnswer` is inbound (the webhook), not a call on this interface.
  */
 export interface TrackerAdapter {
+  postSystemAlert?(
+    input: import("./system-alert").SystemAlert,
+    options?: TrackerRequestOptions,
+  ): Promise<void>;
   readBriefIssue?(
     identifier: string,
     options?: TrackerRequestOptions,

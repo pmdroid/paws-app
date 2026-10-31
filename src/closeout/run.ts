@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { SystemFault, isTransient } from "../core";
+import { SystemFault, isTransient, isTransientGitError, reviewerProfileFault } from "../core";
 import { applyBypasses, bypassSummary, type CloseoutBypass } from "./bypass";
 import type { FixRequest, FixRunner } from "./fixer";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
@@ -265,9 +265,10 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
     ran.decision === "blocked" &&
     ran.policy.digest === null &&
     ran.items.length === 0 &&
-    ran.message
+    ran.message?.startsWith("origin/main is unavailable") &&
+    isTransientGitError(ran.message)
   )
-    throw new SystemFault("closeout-policy", ran.message);
+    throw new PolicyFetchError(ran.message);
   const moved = await headUnmoved(input.worktree, input.head);
   if (moved) return failure("blocked", exitOf(ran.decision), moved, input.head);
   if (ran.gate !== CLOSEOUT_GATE) {
@@ -822,8 +823,11 @@ function withoutReviewPlan(
 }
 
 /** origin/main could not be read for the policy because of a temporary git failure. */
-export class PolicyFetchError extends Error {
-  override name = "PolicyFetchError";
+export class PolicyFetchError extends SystemFault {
+  override readonly name = "PolicyFetchError";
+  constructor(message: string) {
+    super("closeout-policy", message);
+  }
 }
 
 const REVIEW_RETRY_DELAYS_MS = [30_000, 120_000, 300_000];
@@ -874,22 +878,25 @@ async function addReviewEvidence(
         ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
         reviewer: {
           async review(request) {
-            const result = await reviewWithRetries(input, async () =>
-              // The reviewer runs the agent's own review command. The policy skill and the
-              // diff stay out of it; the policy digest still records the skill.
-              input.reviewer.review({
-                worktree: request.worktree,
-                taskId: input.taskId,
-                itemId: request.item.id,
-                base: request.base,
-                head: request.head,
-                candidate: {
-                  session: request.candidate.session,
-                  model: request.candidate.model,
-                  provider: request.candidate.provider,
-                },
-              }),
-            );
+            const result = await reviewWithRetries(input, async () => {
+              try {
+                return await input.reviewer.review({
+                  worktree: request.worktree,
+                  taskId: input.taskId,
+                  itemId: request.item.id,
+                  base: request.base,
+                  head: request.head,
+                  candidate: {
+                    session: request.candidate.session,
+                    model: request.candidate.model,
+                    provider: request.candidate.provider,
+                  },
+                });
+              } catch (error) {
+                if (isTransient(error)) throw error;
+                throw reviewerProfileFault(error) ?? error;
+              }
+            });
             tokens = result.tokens ?? null;
             return {
               producer: {
@@ -904,7 +911,7 @@ async function addReviewEvidence(
         },
       });
     } catch (error) {
-      if (error instanceof SystemFault) throw error;
+      if (error instanceof SystemFault || isTransient(error)) throw error;
       journalCaught(error, "run.addReviewEvidence.addReview", input.taskId);
       const message = error instanceof Error ? error.message : String(error);
       const detail = scrub(`reviewer failed for ${item.id}: ${message}`);
@@ -912,7 +919,7 @@ async function addReviewEvidence(
         durationMs: Date.now() - started,
         tokens,
       });
-      throw new SystemFault("reviewer-profile", detail, { cause: error });
+      return failure("blocked", null, detail, input.head);
     }
     metrics.set(item.id, { durationMs: Date.now() - started, tokens });
     if (!added.ok) {

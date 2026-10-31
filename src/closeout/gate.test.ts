@@ -1,4 +1,4 @@
-import { SystemFault } from "../core";
+import { SystemFault, RunnerCapacityWait } from "../core";
 import { describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -651,7 +651,7 @@ describe("closeout gate", () => {
         fixer: committingFixer(repo.dir, [], "ok.txt", "ok\n"),
       });
       expect(result.outcome).toBe(outcome);
-      if (outcome === "blocked") expect(result.systemFault?.faultClass).toBe("reviewer-profile");
+      if (outcome === "blocked") expect(result.systemFault).toBeUndefined();
       expect(reviews).toBe(calls);
       await repo.cleanup();
     });
@@ -1242,6 +1242,75 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
+  for (const error of [
+    new RunnerCapacityWait(["runner"]),
+    Object.assign(new Error("unavailable"), { name: "RunnerUnavailableError" }),
+    Object.assign(new Error("usage wait"), {
+      name: "UsageLimitExhaustedError",
+      cause: Object.assign(new Error("paused"), { name: "UsageLimitPause" }),
+    }),
+  ]) {
+    test(`reviewer ${error.name} retains its scheduling error`, async () => {
+      const repo = await originRepo({
+        ".agents/closeout.yaml": policy([reviewItem("review")]),
+        ".agents/skills/adversarial-review/SKILL.md": SKILL,
+      });
+      try {
+        await expect(
+          evaluateCandidate({
+            worktree: repo.dir,
+            taskId: TASK,
+            base: repo.head,
+            head: repo.head,
+            candidate: candidate(),
+            home: repo.home,
+            pawsHome: repo.pawsHome,
+            reviewRetryDelaysMs: [],
+            reviewer: {
+              async review() {
+                throw error;
+              },
+            },
+          }),
+        ).rejects.toBe(error);
+      } finally {
+        await repo.cleanup();
+      }
+    });
+  }
+
+  for (const [message, held] of [
+    ["Invalid review findings: expected array", false],
+    ["review command is not supported", true],
+  ] as const) {
+    test(`reviewer error classification: ${message}`, async () => {
+      const repo = await originRepo({
+        ".agents/closeout.yaml": policy([reviewItem("review")]),
+        ".agents/skills/adversarial-review/SKILL.md": SKILL,
+      });
+      try {
+        const result = await evaluateCandidate({
+          worktree: repo.dir,
+          taskId: TASK,
+          base: repo.head,
+          head: repo.head,
+          candidate: candidate(),
+          home: repo.home,
+          pawsHome: repo.pawsHome,
+          reviewer: {
+            async review() {
+              throw new Error(message);
+            },
+          },
+        });
+        expect(result.outcome).toBe("blocked");
+        expect(result.systemFault?.faultClass).toBe(held ? "reviewer-profile" : undefined);
+      } finally {
+        await repo.cleanup();
+      }
+    });
+  }
+
   test("a transfer fault records no failed check and retries the same candidate", async () => {
     const repo = await originRepo({ ".agents/closeout.yaml": policy([alwaysPass("test")], 1) });
     const input = {
@@ -1301,7 +1370,7 @@ describe("closeout gate", () => {
     expect(result.outcome).toBe("blocked");
     expect(fixes).toBe(0);
     expect(result.summary).toContain("closeout.yaml");
-    expect(result.systemFault?.faultClass).toBe("closeout-policy");
+    expect(result.systemFault).toBeUndefined();
     await repo.cleanup();
   });
 

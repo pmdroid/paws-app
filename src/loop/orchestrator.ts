@@ -1,5 +1,6 @@
-import { SystemFault } from "../core";
-import { clearSystemFault, listSystemFaults } from "../db";
+import { PolicyFetchError } from "../closeout";
+import { SystemFault, closeoutTransferFault, isTransientGitError } from "../core";
+import { clearSystemFault, listSystemFaults, getSystemFault } from "../db";
 import { holdSystemFault } from "./system-fault";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
@@ -1452,16 +1453,20 @@ export class Orchestrator {
       );
       const item = holds[0] ? getWorkItem(this.db, holds[0].itemId) : null;
       if (!item) return;
-      this.post(
-        item,
-        "thought",
-        `Infrastructure fault (${holds[0]!.faultClass}): ${holds[0]!.reason}
-
-Held items: ${holds.map((hold) => hold.identifier).join(", ")}. Paws retries automatically without spending task or review budgets.`,
-        `system-fault-alert:${job.id}`,
-        {},
-        "critical",
-      );
+      const alertId = readString(job.payload, "alertId");
+      if (!alertId) throw new Error("System alert id is missing");
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "linear.system_alert",
+        idempotencyKey: `system-fault-alert:${job.id}`,
+        delivery: "critical",
+        now: this.now(),
+        payload: {
+          id: alertId,
+          issueId: item.linearIssueId,
+          body: `Infrastructure fault (${holds[0]!.faultClass}): ${holds[0]!.reason}\n\nHeld items: ${holds.map((hold) => hold.identifier).join(", ")}. Paws retries automatically without spending task or review budgets.`,
+        },
+      });
       await this.flush();
     });
     jobs.register("item.ask", async (job, context) => {
@@ -3576,6 +3581,15 @@ Held items: ${holds.map((hold) => hold.identifier).join(", ")}. Paws retries aut
       } catch (error) {
         assertCurrent();
         if (deps.signal?.aborted || error instanceof RunnerCapacityWait) throw error;
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (
+          isTransient(error) &&
+          !(error instanceof LinearRateLimitError) &&
+          !LINEAR_RATE_LIMITED.test(errorMessage)
+        )
+          throw error;
+        const transferFault = closeoutTransferFault(error);
+        if (transferFault) throw transferFault;
         journalCaught(
           error,
           "orchestrator.runRunnerCloseout.itemPathId",
@@ -3598,12 +3612,10 @@ Held items: ${holds.map((hold) => hold.identifier).join(", ")}. Paws retries aut
           );
           assertCurrent();
           attempt -= 1;
-        } else if (isTransient(error))
-          throw new SystemFault("closeout-transfer", reason, { cause: error });
+        } else if (isTransient(error)) throw error;
       }
     }
-    throw new SystemFault(
-      "closeout-transfer",
+    throw new Error(
       `The Closeout checks could not run on the runner for commit ${short}: ${reason}. No check failed.`,
     );
   }
@@ -3828,12 +3840,7 @@ Held items: ${holds.map((hold) => hold.identifier).join(", ")}. Paws retries aut
   }
 
   private refreshFaultReviewer(item: WorkItemRecord): void {
-    if (
-      !listSystemFaults(this.db).some(
-        (hold) => hold.itemId === item.id && hold.faultClass === "reviewer-profile",
-      )
-    )
-      return;
+    if (getSystemFault(this.db, item.id)?.faultClass !== "reviewer-profile") return;
     const runId = item.currentRunId;
     const saved = runId ? this.readProfileSnapshot(runId) : null;
     if (!saved || !runId) return;
@@ -7506,7 +7513,11 @@ Held items: ${holds.map((hold) => hold.identifier).join(", ")}. Paws retries aut
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
     );
-    if (!required.ok) throw new SystemFault("closeout-policy", required.message);
+    if (!required.ok)
+      throw required.message.startsWith("origin/main is unavailable") &&
+        isTransientGitError(required.message)
+        ? new PolicyFetchError(required.message)
+        : new Error(required.message);
     const requirements = required.items.filter(
       (check) =>
         check.gate === "beforePR" &&
@@ -7545,6 +7556,7 @@ Held items: ${holds.map((hold) => hold.identifier).join(", ")}. Paws retries aut
         prompt: "",
         signal,
       }).catch((error: unknown) => {
+        if (isTransient(error)) throw error;
         const message = `${role} preparation failed: ${error instanceof Error ? error.message : String(error)}`;
         if (role === "reviewer")
           throw new SystemFault("reviewer-profile", message, { cause: error });

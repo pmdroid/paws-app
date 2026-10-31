@@ -69,14 +69,6 @@ test.each(cells)(
   "%s: %s that persists retains its recovery policy",
   async (phase, fault) => {
     const result = await runWithFault(phase, fault, Infinity);
-    if (phase === "reviewer launch") {
-      expect(result.state, result.detail).toBe("verifying");
-      expect(result.holds[0]?.faultClass).toBe("reviewer-profile");
-      expect(result.errors).toEqual([]);
-      expect(result.questions).toEqual([]);
-      expect(result.pending).toContain(JOB_KIND.reverify);
-      return;
-    }
     expect(result.state, result.detail).toBe("failed");
     const terminal = phase === "merge readiness read" ? result.closed : result.errors;
     expect(terminal.length, result.detail).toBe(1);

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, type SystemFault } from "../core";
 import {
@@ -21,7 +22,6 @@ export function holdSystemFault(
     if (!item || item.cancelRequested || !["running", "verifying"].includes(item.state))
       return false;
     const active = listSystemFaults(db).filter((hold) => hold.faultClass === fault.faultClass);
-    const epoch = active[0]?.startedAt ?? now;
     const hold = saveSystemFault(db, {
       itemId,
       version: item.version,
@@ -35,10 +35,11 @@ export function holdSystemFault(
       runAt: hold.retryAt,
       now,
     });
+    const epoch = active[0]?.startedAt ?? hold.startedAt;
     enqueueJobOnce(db, {
       queue: "system.fault-alert",
       jobKey: `system-fault:${fault.faultClass}:${epoch}`,
-      payload: { faultClass: fault.faultClass, epoch },
+      payload: { faultClass: fault.faultClass, epoch, alertId: randomUUID() },
       runAt: now + 5_000,
       now,
     });

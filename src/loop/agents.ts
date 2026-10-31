@@ -1,3 +1,4 @@
+import { SystemFault } from "../core";
 import { journalCaught } from "../journal";
 import type {
   AcpEvent,
@@ -206,7 +207,10 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
           );
         }
         if (result.authRequired) {
-          throw new Error(result.errorMessage ?? "Codex login is missing");
+          throw new SystemFault(
+            "reviewer-profile",
+            result.errorMessage ?? "Codex login is missing",
+          );
         }
         if (
           result.cancelled ||
@@ -307,7 +311,11 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
         },
       });
       if (!result.agentExited) deps.onCleanupFailure?.();
-      if (result.authRequired) throw new Error(result.errorMessage ?? "Reviewer login is missing");
+      if (result.authRequired)
+        throw new SystemFault(
+          "reviewer-profile",
+          result.errorMessage ?? "Reviewer login is missing",
+        );
       if (
         result.cancelled ||
         result.timedOut ||

@@ -57,6 +57,9 @@ export const RUNNER_ORCHESTRATION_SCENARIOS = [
   "rebase",
   "rebase-failing",
   "rebase-unreachable",
+  "rebase-policy-transfer",
+  "rebase-head-moved",
+  "rebase-check-error",
   "rebase-empty-report",
   "rebase-rate-limited",
 ] as const;
@@ -473,6 +476,8 @@ export async function probeRunnerOrchestration(
               assert(options.closeoutPolicy);
               if (scenario === "rebase-unreachable" && reverifying)
                 throw new Error("fixture runner is offline");
+              if (scenario === "rebase-policy-transfer" && reverifying)
+                throw new Error("Closeout policy exceeds runner transfer limit");
               if (scenario === "rebase-rate-limited" && reverifying && rateLimited < 2) {
                 rateLimited += 1;
                 throw new LinearRateLimitError(0, {
@@ -502,6 +507,24 @@ export async function probeRunnerOrchestration(
                 args: [join(import.meta.dir, "../../src/acp/testing/fake-agent.ts"), "", script],
                 env: { PATH: process.env.PATH!, HOME: home },
               });
+              if (scenario === "rebase-head-moved" && reverifying) {
+                writeFileSync(join(options.worktreePath, "check-rewrite.txt"), "changed by checks");
+                await git(["-C", options.worktreePath, "add", "."]);
+                await git([
+                  "-C",
+                  options.worktreePath,
+                  "commit",
+                  "--allow-empty",
+                  "-m",
+                  "checks rewrote HEAD",
+                ]);
+              }
+              if (scenario === "rebase-check-error" && reverifying)
+                return {
+                  ...result,
+                  stopReason: "error",
+                  errorMessage: "deterministic check runner error",
+                };
               if (scenario === "rebase-empty-report" && reverifying)
                 return {
                   ...result,
@@ -949,20 +972,35 @@ export async function probeRunnerOrchestration(
           const reverifyChecks = calls.filter((call) => call.checks && call.reverifying);
           const question = findOpenQuestion(db, "session");
           const rebased = checkedHeads.at(-1);
-          if (scenario === "rebase-unreachable" || scenario === "rebase-empty-report") {
-            assert.equal(verified.state, "verifying");
-            assert.equal(reverifyChecks.length, 2);
+          if (
+            [
+              "rebase-unreachable",
+              "rebase-policy-transfer",
+              "rebase-empty-report",
+              "rebase-head-moved",
+              "rebase-check-error",
+            ].includes(scenario)
+          ) {
+            const held = scenario === "rebase-unreachable" || scenario === "rebase-policy-transfer";
+            assert.equal(verified.state, held ? "verifying" : "awaiting_input");
+            assert.equal(reverifyChecks.length, held ? 1 : 2);
             assert.equal(reviewRunId, "");
-            assert.equal(question, null);
-            const fault = listSystemFaults(db).find((hold) => hold.itemId === item.id);
-            assert.equal(fault?.faultClass, "closeout-transfer");
-            assert(
-              fault?.reason.includes(
-                scenario === "rebase-unreachable"
-                  ? "fixture runner is offline"
-                  : "the runner's Closeout listed no checks",
-              ),
-            );
+            if (held) {
+              assert.equal(question, null);
+              assert.equal(
+                listSystemFaults(db).find((hold) => hold.itemId === item.id)?.faultClass,
+                "closeout-transfer",
+              );
+            } else {
+              const reason =
+                scenario === "rebase-empty-report"
+                  ? "the runner's Closeout listed no checks"
+                  : scenario === "rebase-head-moved"
+                    ? "the checks run changed the commit"
+                    : "deterministic check runner error";
+              assert(question?.body.includes(reason));
+              assert.equal(listSystemFaults(db).length, 0);
+            }
           } else {
             assert.equal(verified.state, "merged", question?.body ?? "no question");
             assert.equal(question, null);
@@ -1084,9 +1122,8 @@ export async function probeRunnerOrchestration(
               originalProfile,
             );
           } else if (scenario === "error") {
-            assert.equal(verified.state, "verifying");
-            assert.equal(findOpenQuestion(db, "session"), null);
-            assert.equal(listSystemFaults(db)[0]?.faultClass, "reviewer-profile");
+            assert.equal(verified.state, "awaiting_input");
+            assert(findOpenQuestion(db, "session"));
           } else if (scenario === "cancelled") assert.equal(verified.state, "cancelled");
           else {
             assert.equal(verified.state, "verifying");

@@ -21,6 +21,18 @@ export function listSystemFaults(db: Database): SystemFaultHold[] {
     .all();
 }
 
+export function getSystemFault(db: Database, itemId: string): SystemFaultHold | null {
+  return db
+    .query<
+      SystemFaultHold,
+      [string]
+    >(`SELECT f.item_id AS itemId, w.linear_identifier AS identifier,
+    f.fault_class AS faultClass, f.reason, f.failures, f.started_at AS startedAt, f.retry_at AS retryAt
+    FROM system_fault f JOIN work_item w ON w.id=f.item_id AND w.version=f.item_version
+    WHERE f.item_id=? AND w.cancel_requested=0 AND w.state IN ('running','verifying')`)
+    .get(itemId);
+}
+
 export function saveSystemFault(
   db: Database,
   input: {
@@ -31,9 +43,11 @@ export function saveSystemFault(
     now: number;
   },
 ): SystemFaultHold {
-  const previous = listSystemFaults(db).find(
-    (hold) => hold.itemId === input.itemId && hold.faultClass === input.faultClass,
-  );
+  const previous = db
+    .query<{ failures: number; startedAt: number }, [string, string]>(
+      "SELECT failures,started_at AS startedAt FROM system_fault WHERE item_id=? AND fault_class=?",
+    )
+    .get(input.itemId, input.faultClass);
   const failures = (previous?.failures ?? 0) + 1;
   const retryAt = input.now + Math.min(600_000, 30_000 * 2 ** Math.min(failures - 1, 5));
   db.run(
@@ -50,7 +64,7 @@ export function saveSystemFault(
       retryAt,
     ],
   );
-  return listSystemFaults(db).find((hold) => hold.itemId === input.itemId)!;
+  return getSystemFault(db, input.itemId)!;
 }
 
 export function clearSystemFault(db: Database, itemId: string): void {

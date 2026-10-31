@@ -8,6 +8,7 @@ import {
   JobLoop,
   OutboxDispatcher,
   listJobs,
+  enqueueOutboxOnce,
   listSystemFaults,
   listWorkItems,
   migrate,
@@ -110,14 +111,20 @@ for (const faultClass of ["closeout-transfer", "reviewer-profile"] as const) {
       expect(tracker.questions).toEqual([]);
       expect(listJobs(db).filter((job) => job.queue === "system.fault-alert")).toHaveLength(1);
       const rounds = db.query("SELECT * FROM closeout_round").all().length;
+      for (const id of ids)
+        enqueueOutboxOnce(db, {
+          target: "linear",
+          op: "activity",
+          orderingKey: `session-${id}`,
+          idempotencyKey: `pull-request-ready:${id}`,
+          payload: { sessionId: `session-${id}`, kind: "response", body: "PR ready" },
+        });
       db.run("UPDATE job SET run_at=0 WHERE status='pending'");
       await tickUntil(() => listSystemFaults(db).every((hold) => hold.failures === 2));
       await jobs.tick(["system.fault-alert"]);
       outbox.tick();
       await outbox.idle();
-      const alerts = tracker.progress.filter((update) =>
-        update.body.startsWith("Infrastructure fault"),
-      );
+      const alerts = tracker.systemAlerts;
       expect(alerts).toHaveLength(1);
       expect(listJobs(db).filter((job) => job.queue === "system.fault-alert")).toHaveLength(1);
       for (const id of ids) expect(alerts[0]!.body).toContain(`ENG-${id}`);

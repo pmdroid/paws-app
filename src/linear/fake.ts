@@ -41,6 +41,11 @@ import type {
 
 export type FakeTracker = LinearSessionAdapter &
   LinearRepositoryAdapter & {
+    systemAlerts: import("./system-alert").SystemAlert[];
+    postSystemAlert(
+      input: import("./system-alert").SystemAlert,
+      options?: TrackerRequestOptions,
+    ): Promise<void>;
     attachments: IssueAttachment[];
     issuePullRequests: Map<string, IssuePullRequest[]>;
     issueContexts: Map<string, LinearIssueContext>;
@@ -116,6 +121,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const briefParents = new Map<string, string>();
   const briefReads: string[] = [];
   const deps = new Map<string, readonly DependencyEdge[]>();
+  const systemAlerts: import("./system-alert").SystemAlert[] = [];
   const progress: ProgressUpdate[] = [];
   const questions: SessionElicitation[] = [];
   const statuses: StatusUpdate[] = [];
@@ -339,6 +345,11 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     },
     async listDeps(linearIssueId) {
       return deps.get(linearIssueId) ?? [];
+    },
+    systemAlerts,
+    async postSystemAlert(input, options) {
+      options?.signal?.throwIfAborted();
+      if (!systemAlerts.some((alert) => alert.id === input.id)) systemAlerts.push(input);
     },
     async postProgress(update, options) {
       await createActivity(update, options);

@@ -1,3 +1,4 @@
+import { createSystemAlertMethods } from "./system-alert";
 import { readLinearBriefIssue } from "./brief-issue";
 import { createIssuePullRequestReads } from "./issue-pulls";
 import { createLinearProjectScopeReads } from "./project-scope";
@@ -68,7 +69,8 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
   canceled: ["Canceled", "Cancelled"],
 };
 
-type LinearTracker = LinearSessionAdapter &
+type LinearTracker = ReturnType<typeof createSystemAlertMethods> &
+  LinearSessionAdapter &
   Required<Pick<import("./adapter").TrackerAdapter, "readBriefIssue">> &
   ReturnType<typeof createLinearSessionReads> &
   LinearRepositoryAdapter &
@@ -83,6 +85,7 @@ type TrackerMethod = {
 }[keyof LinearTracker];
 
 const TRACKER_CALLERS: Record<TrackerMethod, string> = {
+  postSystemAlert: "system-alert",
   getSession: "session-read",
   listSessionActivities: "session-activities",
   getIssueContext: "issue-context",
@@ -121,6 +124,7 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
   return {
     supportsActivityReconciliation: true,
     ...sessions,
+    ...createSystemAlertMethods(client),
     ...createLinearProjectScopeReads(client),
     ...repositories,
     ...createLinearSubIssueMethods(client, repositories.addRepositoryLabel),

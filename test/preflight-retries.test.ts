@@ -55,14 +55,16 @@ test("a remote preparation that keeps timing out asks once, naming preparation, 
   expect(question).not.toContain("Base: .");
 }, 90_000);
 
-test("a policy that does not parse waits without a question", async () => {
+test("a policy that does not parse still asks for Closeout help right away", async () => {
   const result = await runPreflight({
     policy: ".agents/closeout.yaml: invalid YAML",
     times: Infinity,
   });
-  expect(result.state, result.detail).toBe("running");
-  expect(result.questions).toEqual([]);
-  expect(result.holds[0]?.faultClass).toBe("closeout-policy");
+  expect(result.state, result.detail).toBe("awaiting_input");
+  expect(result.retries, result.detail).toEqual([]);
+  expect(result.questions, result.detail).toHaveLength(1);
+  expect(result.questions[0]).toStartWith("Closeout needs your help.");
+  expect(result.questions[0]).toContain("Closeout: blocked\n.agents/closeout.yaml: invalid YAML");
 }, 90_000);
 
 for (const scope of ["paths: [src/**]", "minChangedLines: 100"] as const) {

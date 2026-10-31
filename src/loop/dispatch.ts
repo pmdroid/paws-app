@@ -61,6 +61,14 @@ export async function deliverLinearOutbox(
     ...(context ? { signal: context.signal, isCurrent: context.isCurrent } : {}),
     ...(message.attempts > 1 ? { reconcile: true } : {}),
   };
+  if (message.op === "linear.system_alert") {
+    if (!tracker.postSystemAlert) throw new Error("Linear system alerts are unavailable");
+    const id = readString(payload, "id");
+    const issueId = readString(payload, "issueId");
+    const body = readString(payload, "body");
+    if (!id || !issueId || !body) throw new Error("System alert is missing required fields");
+    return tracker.postSystemAlert({ id, issueId, body }, options);
+  }
   if (message.op === "linear.attachment") {
     if (!tracker.createIssueAttachment) throw new Error("Linear issue attachments are unavailable");
     const id = readString(payload, "id");

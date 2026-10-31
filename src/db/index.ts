@@ -794,6 +794,7 @@ export {
 } from "./risk-auto-context";
 export {
   listSystemFaults,
+  getSystemFault,
   saveSystemFault,
   clearSystemFault,
   type SystemFaultHold,
