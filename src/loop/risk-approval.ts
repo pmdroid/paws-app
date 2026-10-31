@@ -8,7 +8,8 @@ import {
   enqueueJobOnce,
   enqueueOutboxOnce,
   getCandidateRisk,
-  listCloseoutProgress,
+  getCloseoutProgress,
+  getCandidatePaths,
   listReviewFindings,
   getRiskFix,
   getWorkItem,
@@ -50,7 +51,9 @@ export type FixRisk = { changed: string[]; paths: string[] };
  * Whether head S may merge as far as its risk goes. A normal-tier head, or any head on a Paws
  * whose risk gate is off, needs nothing. A high-risk or unclassified head needs a person's
  * approval of S in Paws, or of an earlier head with the same patch against main (`samePatch`),
- * as after a rebase. A Linear reply never approves, so only `approve` decisions count.
+ * as after a rebase. With automatic approval enabled, clean stored reviews of this exact head
+ * and policy can also satisfy the gate. That evidence never carries over to another head.
+ * A Linear reply never approves, so only `approve` decisions count for manual approvals.
  *
  * A fix Paws made after the latest approval (CI, a review, a comment) keeps that approval when
  * none of the files the fix itself changed since the approved head is a high-risk path. A fix
@@ -82,21 +85,33 @@ export async function riskApprovalFor(
   // Recompute from stored evidence on every read. Never persist an automatic approval.
   if (input.autoApproveHighRisk === true && risk?.tier === "high") {
     try {
-      const run = listCloseoutProgress(db, input.itemId, input.head).at(-1);
+      const run = getCloseoutProgress(db, input.itemId, input.head);
+      const paths = getCandidatePaths(db, input.itemId, input.head);
       const reviews = ["security-review", "independent-review"].map((id) =>
         run?.steps.find((step) => step.id === id && step.kind === "review"),
       );
       const findings = listReviewFindings(db, {
-        status: "open",
         itemId: input.itemId,
         head: input.head,
       });
+      // A nonempty findings display needs current structured reports. The display text
+      // is never parsed for severity, and older reports cannot fill a missing import.
+      const reported =
+        run?.finishedAt == null
+          ? []
+          : listReviewFindings(db, {
+              itemId: input.itemId,
+              head: input.head,
+              reportedSince: run.finishedAt,
+            });
       if (
-        !risk.paths.some(
+        paths !== null &&
+        !paths.some(
           (path) =>
             path === ".paws/high-risk-paths" || path === ".agents" || path.startsWith(".agents/"),
         ) &&
         run?.decision === "accepted" &&
+        run.finishedAt !== null &&
         run.base === risk.base &&
         run.policyDigest === input.policyDigest &&
         run.steps.every(
@@ -110,9 +125,12 @@ export async function riskApprovalFor(
             step.attempt > 0 &&
             step.evidencePath &&
             (step.findings === null ||
-              (/^P3 \S.*: /.test(step.findings) && !/^P(?:[012]|[4-9]\d*) /m.test(step.findings))),
+              (reported.some((finding) => finding.review === step.id) &&
+                reported
+                  .filter((finding) => finding.review === step.id)
+                  .every((finding) => finding.severity === "P3"))),
         ) &&
-        !findings.some((finding) => finding.severity !== "P3")
+        !findings.some((finding) => finding.status === "open" && finding.severity !== "P3")
       )
         return "approved";
     } catch (error) {

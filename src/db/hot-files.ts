@@ -27,6 +27,20 @@ export function saveCandidatePaths(
   );
 }
 
+/** Exact-head changed paths. Unknown paths must never be mistaken for an empty change. */
+export function getCandidatePaths(db: Database, itemId: string, head: string): string[] | null {
+  const row = db
+    .query<{ paths: string }, [string, string]>(
+      "SELECT paths FROM candidate_paths WHERE item_id = ? AND head_sha = ?",
+    )
+    .get(itemId, head);
+  if (row === null) return null;
+  const paths: unknown = JSON.parse(row.paths);
+  if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string"))
+    throw new Error("Invalid stored candidate paths");
+  return paths;
+}
+
 /**
  * The paths of each item's latest candidate, by item id. An item Paws has not published a
  * candidate for has no entry: its files are unknown.

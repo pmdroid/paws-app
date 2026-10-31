@@ -63,6 +63,7 @@ import {
   type AgentProfile,
   type AgentProfiles,
   type CheckoutExclusions,
+  type MergeSettings,
 } from "../config";
 import {
   fixAttemptLimit,
@@ -4056,17 +4057,22 @@ export class Orchestrator {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return { kind: "obsolete" };
     const run: MergeRun = { payload, jobId };
+    let policy: MergeSettings | undefined;
+    const mergePolicy = () =>
+      (policy ??= readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))));
+    // The lane calls this again after async publication checks, so keep digest reads fresh.
+    const policyDigests = (item: WorkItemRecord, worktree: string) => {
+      const { home, policyRoot } = this.closeoutHome(item);
+      return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
+    };
     return advanceMerge(
       this.db,
       { itemId, payload, jobId },
       {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
-        settings: (item, signal) => this.mergeSettingsFor(item, signal),
-        policyDigests: (item, worktree) => {
-          const { home, policyRoot } = this.closeoutHome(item);
-          return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
-        },
+        settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
+        policyDigests,
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
@@ -4074,21 +4080,17 @@ export class Orchestrator {
           let autoApproveHighRisk = false;
           let policyDigest: string | null = null;
           try {
-            autoApproveHighRisk = readMergeSettings(
-              loadConfigFile(join(this.options.pawsRoot, "config.toml")),
-            ).autoApproveHighRisk;
-            if (autoApproveHighRisk) {
-              const { home, policyRoot } = this.closeoutHome(item);
-              policyDigest =
-                candidatePolicyDigests(
-                  published.worktree,
-                  home,
-                  policyRoot,
-                  this.runCheckout(item).checks,
-                )?.digest ?? null;
-            }
+            autoApproveHighRisk = mergePolicy().autoApproveHighRisk;
+            if (autoApproveHighRisk)
+              policyDigest = policyDigests(item, published.worktree)?.digest ?? null;
           } catch (error) {
-            journalCaught(error, "orchestrator.riskApproval.settings", item.id);
+            journalCaught(
+              error,
+              "orchestrator.riskApproval.settings",
+              item.id,
+              undefined,
+              this.options.journal,
+            );
           }
           return riskApprovalFor(this.db, {
             itemId: item.id,
@@ -4608,10 +4610,12 @@ export class Orchestrator {
   private async mergeSettingsFor(
     item: WorkItemRecord,
     signal?: AbortSignal,
+    readPolicy = () =>
+      readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
   ): Promise<TaskMergeSettings> {
     const kept = getTaskMergeSettings(this.db, item.id);
     if (kept) return kept;
-    const policy = readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+    const policy = readPolicy();
     let context: LinearMergeContext | null = { projectId: null, labels: [] };
     if (this.tracker?.issueMergeContext) {
       try {

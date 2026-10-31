@@ -430,22 +430,43 @@ export function closeoutHeadsStarted(db: Database, itemId: string): Map<string, 
   return new Map(rows.map((row) => [row.head, row.startedAt]));
 }
 
-export function listCloseoutProgress(
+/** Latest stored Closeout results for this exact candidate, using the item index. */
+export function getCloseoutProgress(
   db: Database,
-  itemId?: string,
-  head?: string,
-): CloseoutProgressRecord[] {
-  const runs = db
-    .query<ProgressSql, [string | null, string | null]>(
-      "SELECT * FROM closeout_progress WHERE (?1 IS NULL OR item_id = ?1) AND (?2 IS NULL OR head = ?2) ORDER BY updated_at, id",
+  itemId: string,
+  head: string,
+): CloseoutProgressRecord | null {
+  const run = db
+    .query<ProgressSql, [string, string]>(
+      "SELECT * FROM closeout_progress WHERE item_id = ? AND head = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
     )
-    .all(itemId ?? null, head ?? null);
+    .get(itemId, head);
+  if (run === null) return null;
   const steps = db
     .query<StepSql, [string]>(
-      "SELECT * FROM closeout_step WHERE progress_id IN (SELECT value FROM json_each(?)) ORDER BY ordinal, step_id",
+      "SELECT * FROM closeout_step WHERE progress_id = ? ORDER BY ordinal, step_id",
     )
-    .all(JSON.stringify(runs.map((run) => run.id)));
-  return runs.map((run) => ({
+    .all(run.id);
+  return progressRecord(run, steps);
+}
+
+export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
+  const runs = db
+    .query<ProgressSql, []>("SELECT * FROM closeout_progress ORDER BY updated_at, id")
+    .all();
+  const steps = db
+    .query<StepSql, []>("SELECT * FROM closeout_step ORDER BY ordinal, step_id")
+    .all();
+  return runs.map((run) =>
+    progressRecord(
+      run,
+      steps.filter((step) => step.progress_id === run.id),
+    ),
+  );
+}
+
+function progressRecord(run: ProgressSql, steps: StepSql[]): CloseoutProgressRecord {
+  return {
     id: run.id,
     itemId: run.item_id,
     taskId: run.task_id,
@@ -457,8 +478,8 @@ export function listCloseoutProgress(
     startedAt: run.started_at,
     updatedAt: run.updated_at,
     finishedAt: run.finished_at,
-    steps: steps.filter((step) => step.progress_id === run.id).map(mapStep),
-  }));
+    steps: steps.map(mapStep),
+  };
 }
 
 function mapStep(row: StepSql): CloseoutStepRecord {

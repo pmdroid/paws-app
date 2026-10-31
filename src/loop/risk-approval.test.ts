@@ -22,6 +22,10 @@ import {
   migrate,
   openDatabase,
   saveCandidateRisk,
+  saveCandidatePaths,
+  getCandidatePaths,
+  getCloseoutProgress,
+  listCloseoutProgress,
   saveCheckpoint,
 } from "../db";
 import { findOpenQuestion, LINK_ASK_REMINDER_MS } from "../questions";
@@ -634,6 +638,7 @@ test("a rebase that changed the patch asks again, even when the change is only a
 function cleanRiskFixture() {
   const fixture = held();
   const { db, itemId } = fixture;
+  saveCandidatePaths(db, { itemId, head: heads.s, paths: ["session.ts"], recordedAt: NOW });
   const identity = {
     taskId: itemId,
     head: heads.s,
@@ -681,7 +686,31 @@ function cleanRiskFixture() {
       },
       ...overrides,
     });
-  return { ...fixture, identity, progress, step, read };
+  const report = (
+    review: string,
+    severity: "P0" | "P1" | "P2" | "P3",
+    text = "Review detail",
+    at = NOW,
+  ) => {
+    recordReviewFindings(db, {
+      itemId,
+      repository: "acme/repo",
+      head: heads.s,
+      seenAt: at,
+      findings: [
+        {
+          review,
+          severity,
+          location: "session.ts:12",
+          text,
+          bugClass: "review",
+          why: "below failOn",
+        },
+      ],
+      reviewed: [],
+    });
+  };
+  return { ...fixture, identity, progress, step, read, report };
 }
 
 async function automaticMerge(f: ReturnType<typeof cleanRiskFixture>) {
@@ -726,7 +755,8 @@ test("opt-in clean reviews at S pass mergeable without a question, writes or app
 for (const review of ["security-review", "independent-review"]) {
   test(`a P2 finding in ${review} asks even when Closeout passed it`, async () => {
     const f = cleanRiskFixture();
-    f.step(review, "P2 src/auth/session.ts:12: Unsafe token reuse (pre-existing, does not block)");
+    f.step(review, "Display text is not a severity source");
+    f.report(review, "P2");
     expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
     f.db.close();
   });
@@ -738,16 +768,19 @@ for (const review of ["security-review", "independent-review"]) {
   });
 }
 
-for (const policyPath of [".paws/high-risk-paths", ".agents/closeout.yaml"]) {
+for (const policyPath of [
+  ".paws/high-risk-paths",
+  ".agents/closeout.yaml",
+  ".agents/skills/review/SKILL.md",
+]) {
   test(`changing ${policyPath} always asks`, async () => {
     const f = cleanRiskFixture();
-    saveCandidateRisk(f.db, {
+    // The policy file deliberately matches no high-risk glob. Only session.ts is in risk.paths.
+    saveCandidatePaths(f.db, {
       itemId: f.itemId,
       head: heads.s,
-      base: heads.base,
-      tier: "high",
-      paths: [policyPath],
-      classifiedAt: NOW,
+      paths: ["session.ts", policyPath],
+      recordedAt: NOW,
     });
     expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
     f.db.close();
@@ -786,14 +819,119 @@ test("a failed rule probe asks even if the run was accepted", async () => {
   f.db.close();
 });
 
-test("P3 findings may pass; malformed stored review text and unreadable results ask", async () => {
+test("structured P3 findings pass regardless of how the display text is formatted", async () => {
   const f = cleanRiskFixture();
-  f.step("security-review", "P3 src/auth/session.ts:12: Rename the local");
+  f.step(
+    "security-review",
+    "P3 session.ts:12: Explanation\nP1 is a term in this explanation\nP10 too",
+  );
+  f.report("security-review", "P3", "Explanation\nP1 is a term in this explanation\nP10 too");
   expect(await f.read()).toBe("approved");
-  f.step("security-review", "unreadable findings");
+  f.step("security-review", "Completely different display format");
+  expect(await f.read()).toBe("approved");
+  f.db.close();
+});
+
+test("findings displays without fresh structured reports fail closed", async () => {
+  const f = cleanRiskFixture();
+  f.step("security-review", "Display with findings");
   expect(await f.read()).toBe("missing");
+  f.report("security-review", "P3", "An older report", NOW - 1);
+  expect(await f.read()).toBe("missing");
+  f.report("independent-review", "P3");
+  expect(await f.read()).toBe("missing");
+  f.report("security-review", "P3");
+  expect(await f.read()).toBe("approved");
   f.db.run("DROP TABLE closeout_step");
   expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
+  f.db.close();
+});
+
+for (const severity of ["P0", "P1", "P2"] as const) {
+  test(`structured ${severity} in a passed review blocks regardless of display format or dismissal`, async () => {
+    const f = cleanRiskFixture();
+    f.step("independent-review", "P3 misleading display text");
+    f.report("independent-review", severity);
+    expect(await f.read()).toBe("missing");
+    const finding = listReviewFindings(f.db)[0]!;
+    setReviewFindingStatus(f.db, {
+      id: finding.id,
+      status: "dismissed",
+      reason: "Acknowledged",
+      by: "user-lead",
+      now: NOW,
+    });
+    expect(await f.read()).toBe("missing");
+    f.db.close();
+  });
+}
+
+test("unknown or malformed candidate paths never reuse another head's path list", async () => {
+  const f = cleanRiskFixture();
+  f.db.run("DELETE FROM candidate_paths");
+  saveCandidatePaths(f.db, {
+    itemId: f.itemId,
+    head: heads.changed,
+    paths: ["session.ts"],
+    recordedAt: NOW + 1,
+  });
+  expect(getCandidatePaths(f.db, f.itemId, heads.s)).toBeNull();
+  expect(await f.read()).toBe("missing");
+  saveCandidatePaths(f.db, {
+    itemId: f.itemId,
+    head: heads.s,
+    paths: ["session.ts"],
+    recordedAt: NOW,
+  });
+  f.db.run("UPDATE candidate_paths SET paths = '{}' WHERE head_sha = ?", [heads.s]);
+  expect(await f.read()).toBe("missing");
+  f.db.close();
+});
+
+test("a carried acceptance after rebase does not substitute for exact-head reviews", async () => {
+  const f = cleanRiskFixture();
+  classify(f.db, heads.rebased, heads.newMain);
+  saveCandidatePaths(f.db, {
+    itemId: f.itemId,
+    head: heads.rebased,
+    paths: ["session.ts"],
+    recordedAt: NOW,
+  });
+  const riskApproval = await f.read({ head: heads.rebased, samePatch: async () => true });
+  expect(riskApproval).toBe("missing");
+  expect(
+    mergeable({
+      head: heads.rebased,
+      headMoved: false,
+      accept: { head: heads.rebased, policyDigest: "policy" },
+      policyDigest: "policy",
+      containsMain: true,
+      ci: "green",
+      unresolvedThreads: 0,
+      protection: "satisfied",
+      riskApproval,
+    }),
+  ).toEqual({ ok: false, block: "risk_approval" });
+  f.db.close();
+});
+
+test("differently named reviews do not substitute for the two required reviews", async () => {
+  const f = cleanRiskFixture();
+  f.db.run("UPDATE closeout_step SET step_id = 'review' WHERE step_id = 'security-review'");
+  expect(await f.read()).toBe("missing");
+  f.db.close();
+});
+
+test("the exact-head progress reader selects the latest run and preserves the unfiltered reader", () => {
+  const f = cleanRiskFixture();
+  expect(getCloseoutProgress(f.db, f.itemId, heads.s)).toEqual(listCloseoutProgress(f.db)[0]!);
+  expect(getCloseoutProgress(f.db, f.itemId, heads.rebased)).toBeNull();
+  expect(getCloseoutProgress(f.db, "another-item", heads.s)).toBeNull();
+  f.progress.begin({ ...f.identity, policyDigest: "other-policy" });
+  f.db.run("UPDATE closeout_progress SET updated_at = ? WHERE policy_digest = 'other-policy'", [
+    NOW + 1,
+  ]);
+  expect(getCloseoutProgress(f.db, f.itemId, heads.s)?.policyDigest).toBe("other-policy");
   f.db.close();
 });
 
