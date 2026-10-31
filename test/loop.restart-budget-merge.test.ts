@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { getWorkItem, listCiRounds, restart as rawRestart } from "../src/db";
+import { getWorkItem, listCiRounds } from "../src/db";
 import { restart } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { failingTest, mergeHarness } from "../src/merge/advance-harness";
@@ -8,13 +8,7 @@ test("CI failure at the lifetime limit asks without a send-back or failure", asy
   const h = await mergeHarness({ restart });
   try {
     await h.addItem("ENG-926");
-    for (let count = 0; count < 10; count++)
-      rawRestart(h.db, getWorkItem(h.db, "ENG-926")!, {
-        reason: "answer",
-        body: "human guidance",
-        now: h.clock.now(),
-      });
-    await h.requeue("ENG-926");
+    h.db.run("UPDATE work_item SET restart_count=10 WHERE id=?", ["ENG-926"]);
     h.state.ci = failingTest;
     expect(await h.pass("ENG-926")).toEqual({ kind: "asked" });
     expect(getWorkItem(h.db, "ENG-926")?.state).toBe("awaiting_input");

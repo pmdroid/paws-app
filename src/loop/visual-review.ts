@@ -458,6 +458,7 @@ export function decideVisualReview(
   const item = getWorkItem(db, review.itemId);
   if (item === null) return true;
   const jobId = restart(db, item, {
+    source: "human",
     reason: "review",
     body: visualReviewHandoff(db, review.questionId) ?? "",
     jobKey: `resume:answer:${review.questionId}`,

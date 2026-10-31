@@ -1,17 +1,15 @@
-import { MAX_ITEM_RESTARTS, RESTART_BUDGET_CONTINUE, transition } from "../core";
+import {
+  MAX_ITEM_RESTARTS,
+  RESTART_BUDGET_CONTINUE,
+  continuesRestartBudget,
+  transition,
+} from "../core";
 import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
   getWorkItem,
-  getLinearSession,
-  bindLinearSessionTask,
   immediate,
   halt,
-  lifetimeRestartBudget,
-  budgetHandoffs,
-  holdBudgetHandoff,
-  restoreBudgetQueue,
-  carryBudgetHandoffs,
   saveCheckpoint,
   type WorkItemRecord,
   restart as restartItem,
@@ -21,7 +19,6 @@ import {
   type Asked,
   type QuestionAsker,
   type StoredQuestion,
-  getQuestion,
 } from "../questions";
 
 export { halt, type RestartHandoff } from "../db";
@@ -60,72 +57,27 @@ export function ask(
 export function restart(...args: Parameters<typeof restartItem>): ReturnType<typeof restartItem> {
   const [db, item, handoff] = args;
   return immediate(db, () => {
-    let current = getWorkItem(db, item.id);
+    const current = getWorkItem(db, item.id);
     if (!current || current.version !== item.version) return null;
-    const { used, limit } = lifetimeRestartBudget(db, item.id);
-    if (used < limit) {
-      const held = budgetHandoffs(db, item.id);
-      if (held.length === 0) return restartItem(...args);
-      const original = held[0]!.handoff;
-      const requestedKey = original.jobKey ?? handoff.jobKey;
-      // A previous attempt can already own that key; enqueueJobOnce must not return its cancelled job.
-      const jobKey =
-        requestedKey && db.query("SELECT 1 FROM job WHERE job_key=?").get(requestedKey)
-          ? `budget-resume:${item.id}:${held[0]!.id}`
-          : requestedKey;
-      restoreBudgetQueue(db, item.id, held);
-      const body = [...new Set([...held.map((entry) => entry.handoff.body), handoff.body])].join(
-        "\n\n",
-      );
-      const jobId = restartItem(db, current, {
-        ...original,
-        // A human answer still resets the per-human turn/fix counters, never the lifetime tally.
-        reason: handoff.reason === "answer" ? "answer" : original.reason,
-        body,
-        now: handoff.now,
-        jobKey,
-        limit: original.limit ?? handoff.limit,
-        keepMergeQueuePlace:
-          handoff.keepMergeQueuePlace || held.some((entry) => entry.handoff.keepMergeQueuePlace),
-      });
-      if (jobId !== null) carryBudgetHandoffs(db, held, getWorkItem(db, item.id)!.version);
-      return jobId;
-    }
-    if (current.cancelRequested) return null;
-    if (!transition(current.state, "restart").ok) return null;
-    if (!current.sessionKey) {
-      const sessions = db
-        .query<{ sessionId: string }, [string]>(
-          "SELECT DISTINCT session_key AS sessionId FROM work_item WHERE delegation_id=? AND session_key IS NOT NULL AND session_key<>''",
-        )
-        .all(current.delegationId)
-        .filter(({ sessionId }) => {
-          const session = getLinearSession(db, sessionId);
-          return (
-            session !== null &&
-            session.stoppedAt === null &&
-            session.delegationId === current!.delegationId
-          );
-        });
-      if (sessions.length === 1) {
-        bindLinearSessionTask(db, sessions[0]!.sessionId, current.delegationId);
-        current = getWorkItem(db, item.id)!;
-      }
-    }
-    holdBudgetHandoff(db, current.id, handoff);
-    // No channel means no destructive halt and no exception in a caller's shared transaction.
-    if (!current.sessionKey) return null;
-    const halted = halt(db, current, handoff.now);
-    if (!halted) return null;
-    const waiting = db
-      .query<{ id: string }, [string]>(
-        "SELECT id FROM question WHERE item_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL ORDER BY rowid DESC LIMIT 1",
+    const source = handoff.source ?? (handoff.reason === "answer" ? "human" : "agent");
+    if (source === "agent" && current.restartCount >= current.restartLimit) {
+      // Ask only where the existing state machine permits it, without destructive fallback edges.
+      if (
+        current.cancelRequested ||
+        !current.sessionKey ||
+        !transition(current.state, "blocking_question").ok
       )
-      .get(item.id);
-    if (waiting) {
-      if (halted.state !== "awaiting_input")
-        awaitQuestion(db, halted, getQuestion(db, waiting.id)!, handoff.now);
-    } else {
+        return null;
+      if (
+        db
+          .query(
+            "SELECT 1 FROM question WHERE item_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL",
+          )
+          .get(item.id)
+      )
+        return null;
+      const halted = halt(db, current, handoff.now);
+      if (!halted) return null;
       ask(
         db,
         {
@@ -135,11 +87,35 @@ export function restart(...args: Parameters<typeof restartItem>): ReturnType<typ
           version: halted.version,
         },
         "clarification",
-        `Paws used ${used} of ${limit} lifetime restarts for this item. Automatic restarts have stopped. Continue grants ${MAX_ITEM_RESTARTS} more restarts; Stop ends the task.`,
+        `Paws used ${current.restartCount} of ${current.restartLimit} lifetime agent restarts. Continue grants ${MAX_ITEM_RESTARTS} more; Stop ends the task.\n\nRequested work:\n${handoff.body}`,
         { reason: "restart_budget", options: [RESTART_BUDGET_CONTINUE, "Stop"], now: handoff.now },
       );
+      return null;
     }
-    return null;
+    const jobId = restartItem(...args);
+    if (jobId === null) return null;
+    if (source === "agent")
+      db.run("UPDATE work_item SET restart_count=restart_count+1 WHERE id=?", [item.id]);
+    else if (source === "human") {
+      // An answer grants more only once it is carried into an admitted human turn.
+      const answers = db
+        .query<{ id: string; answer: string | null }, [string]>(
+          "SELECT id,answer FROM question WHERE item_id=? AND reason='restart_budget' AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL",
+        )
+        .all(item.id);
+      for (const answer of answers) {
+        if (continuesRestartBudget(answer.answer))
+          db.run("UPDATE work_item SET restart_limit=restart_limit+? WHERE id=?", [
+            MAX_ITEM_RESTARTS,
+            item.id,
+          ]);
+        db.run("UPDATE question SET handoff_version=? WHERE id=?", [
+          getWorkItem(db, item.id)!.version,
+          answer.id,
+        ]);
+      }
+    }
+    return jobId;
   });
 }
 

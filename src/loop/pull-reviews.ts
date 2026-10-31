@@ -199,6 +199,7 @@ export async function handlePullReview(
         comments,
       });
       const jobId = restart(db, current, {
+        source: "human",
         reason: "review",
         body: [
           digest,

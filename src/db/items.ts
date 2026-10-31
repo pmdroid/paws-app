@@ -54,6 +54,8 @@ export type WorkItemRecord = {
   awakeMs: number;
   lastMonoMs: number | null;
   turnCount: number;
+  restartCount: number;
+  restartLimit: number;
   maxTurns: number;
   maxAwakeMs: number;
   /** The head Closeout last accepted. Set until the task restarts from fresh main. */
@@ -87,6 +89,8 @@ type ItemSql = {
   awake_ms: number;
   last_mono_ms: number | null;
   turn_count: number;
+  restart_count?: number;
+  restart_limit?: number;
   max_turns: number;
   max_awake_ms: number;
   accepted_head: string | null;
@@ -907,6 +911,8 @@ function mapItem(row: ItemSql): WorkItemRecord {
     awakeMs: row.awake_ms,
     lastMonoMs: row.last_mono_ms,
     turnCount: row.turn_count,
+    restartCount: row.restart_count ?? 0,
+    restartLimit: row.restart_limit ?? 10,
     maxTurns: row.max_turns,
     maxAwakeMs: row.max_awake_ms,
     acceptedHead: row.accepted_head ?? null,

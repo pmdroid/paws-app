@@ -749,15 +749,7 @@ export {
 } from "./runner-agents";
 export { listWaitingProfileRuns } from "./runs";
 export { halt } from "./halt";
-export {
-  restart,
-  lifetimeRestarts,
-  lifetimeRestartBudget,
-  grantLifetimeRestarts,
-  fixRounds,
-  restartLimit,
-  type RestartHandoff,
-} from "./restart";
+export { restart, fixRounds, restartLimit, type RestartHandoff } from "./restart";
 
 export { jobVersionCurrent } from "./jobs";
 
@@ -783,11 +775,3 @@ export {
   type ReviewFindingIssue,
   type ReviewFindingPlace,
 } from "./review-finding-issues";
-
-export {
-  holdBudgetHandoff,
-  budgetHandoffs,
-  restoreBudgetQueue,
-  carryBudgetHandoffs,
-  type BudgetHandoff,
-} from "./restart-handoffs";

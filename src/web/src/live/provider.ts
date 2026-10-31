@@ -1,4 +1,3 @@
-import { lifetimeRestartBudget } from "../../../db";
 import { journalCaught } from "../journal";
 /**
  * Live status snapshot.
@@ -875,7 +874,7 @@ function toItem(
     project: itemProject(fact),
     blockers: blockersFor(db, record, itemsByIssue),
     attempts: record.turnCount,
-    restartBudget: lifetimeRestartBudget(db, record.id),
+    restartBudget: { used: record.restartCount, limit: record.restartLimit },
     branch: record.branchName.trim() ? record.branchName : null,
     runId,
     pr,

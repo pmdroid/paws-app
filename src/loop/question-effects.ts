@@ -1,11 +1,9 @@
 import { mergeAcceptedWork } from "./accepted-work";
 import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, TIME_LIMIT_MERGE, continuesRestartBudget } from "../core";
+import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
 import {
-  immediate,
   applyLinearCommand,
-  grantLifetimeRestarts,
   applyLinearTurns,
   announceLinearTurn,
   applyWorkItemEvent,
@@ -170,6 +168,7 @@ export function questionEffects(
     if (outcome === "asked" || !item) return;
     restart(db, item, {
       reason: "review",
+      source: "human",
       body: visualReviewHandoff(db, question.id) ?? "",
       jobKey: `resume:answer:${question.id}`,
       now: input.now,
@@ -264,10 +263,12 @@ export function questionEffects(
     agent: resume,
     clarification: (question) => {
       if (question.reason !== "restart_budget") return resume(question);
-      if (continuesRestartBudget(question.answer))
-        return immediate(db, () => {
-          if (grantLifetimeRestarts(db, question.id)) resume(question);
-        });
+      if (
+        db
+          .query("SELECT 1 FROM question WHERE id=? AND handoff_version IS NOT NULL")
+          .get(question.id)
+      )
+        return;
       if ((question.answer ?? "").trim().toLowerCase() !== "stop") return resume(question);
       consumeTurn(question);
       const item = getWorkItem(db, question.itemId);

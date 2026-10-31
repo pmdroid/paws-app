@@ -243,6 +243,7 @@ export async function handlePullComments(
       const jobKey = `review:${current.id}:${first.source}:${first.commentId}`;
       const targets = replyTargets({ pullNumber, threads, reviews: [], comments: batch });
       const jobId = restart(db, current, {
+        source: "human",
         reason: "review",
         body: [
           digest,

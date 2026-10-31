@@ -1963,8 +1963,12 @@ export class Orchestrator {
           markRun(this.db, run.id, "lost", now);
       }
       if (
-        restart(this.db, current, { reason: "follow_up", body: "Retry runner setup.", now }) ===
-        null
+        restart(this.db, current, {
+          reason: "follow_up",
+          source: "infrastructure",
+          body: "Retry runner setup.",
+          now,
+        }) === null
       )
         return getWorkItem(this.db, item.id)?.state === "awaiting_input";
       this.recordRunnerSetupHold(current, need, now, current.currentRunId);
@@ -2825,6 +2829,7 @@ export class Orchestrator {
         // next turn loads it there and goes on from the WIP commit.
         restart(this.db, finished, {
           reason: "follow_up",
+          source: "infrastructure",
           body: HANDOVER_FAILED_PROMPT,
           now: this.now(),
         });
@@ -5233,6 +5238,7 @@ export class Orchestrator {
         if (
           restart(this.db, item, {
             reason: "follow_up",
+            source: "human",
             body: "The task criteria changed in Linear. Read the updated issue and finish the work from its branch.",
             now: this.now(),
           }) === null
@@ -5302,6 +5308,7 @@ export class Orchestrator {
       if (
         restart(this.db, item, {
           reason: "follow_up",
+          source: "human",
           body: "Continue the task from its branch.",
           now: this.now(),
         }) === null
@@ -6148,6 +6155,7 @@ export class Orchestrator {
       }
       const jobId = restart(this.db, getWorkItem(this.db, item!.id)!, {
         reason: rebase ? "conflict" : "follow_up",
+        source: "human",
         body: rebase ? `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}` : handoff,
         jobKey,
         now: this.now(),
@@ -7755,6 +7763,7 @@ export class Orchestrator {
       if (!controller.signal.aborted && getWorkItem(this.db, item.id)?.state === "running")
         restart(this.db, getWorkItem(this.db, item.id)!, {
           reason: "follow_up",
+          source: "infrastructure",
           body: "Retry repository selection.",
           now: this.now(),
         });

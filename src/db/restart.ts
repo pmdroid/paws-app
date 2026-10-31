@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, MAX_ITEM_RESTARTS, continuesRestartBudget, type RestartReason } from "../core";
+import { JOB_KIND, type RestartReason } from "../core";
 import { halt } from "./halt";
 import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
 import { enqueueJobOnce } from "./jobs";
@@ -11,6 +11,8 @@ import { immediate } from "./tx";
 
 export type RestartHandoff = {
   reason: RestartReason;
+  /** Only agent requests consume the lifetime budget. Answers are human requests by default. */
+  source?: "agent" | "infrastructure" | "human";
   body: string;
   now: number;
   jobKey?: string;
@@ -81,47 +83,4 @@ export function restartLimit(db: Database, itemId: string): number | null {
   `)
     .get(JOB_KIND.resume, itemId);
   return typeof row?.limit === "number" ? row.limit : null;
-}
-
-/** Committed restarts across all runs and human replies. Never resets with turn_count. */
-export function lifetimeRestarts(db: Database, itemId: string): number {
-  return (
-    db
-      .query<{ count: number }, [string]>(
-        "SELECT COUNT(*) AS count FROM work_item_event WHERE item_id=? AND kind='restart'",
-      )
-      .get(itemId)?.count ?? 0
-  );
-}
-
-/** Human-approved extensions add to the limit without resetting the lifetime count. */
-export function lifetimeRestartBudget(
-  db: Database,
-  itemId: string,
-): { used: number; limit: number } {
-  const grant = db
-    .query<{ limit: number | null }, [string]>(
-      'SELECT MAX(restart_limit) AS "limit" FROM restart_budget_grant WHERE item_id=?',
-    )
-    .get(itemId);
-  return { used: lifetimeRestarts(db, itemId), limit: grant?.limit ?? MAX_ITEM_RESTARTS };
-}
-
-/** Record one explicit human extension, atomically and idempotently with answer delivery. */
-export function grantLifetimeRestarts(db: Database, questionId: string): boolean {
-  return immediate(db, () => {
-    const question = db
-      .query<{ item_id: string; answer: string | null }, [string]>(
-        "SELECT item_id,answer FROM question WHERE id=? AND reason='restart_budget' AND status='answered' AND cancelled_at IS NULL",
-      )
-      .get(questionId);
-    if (!question || !continuesRestartBudget(question.answer)) return false;
-    const budget = lifetimeRestartBudget(db, question.item_id);
-    return (
-      db.run(
-        "INSERT OR IGNORE INTO restart_budget_grant (question_id,item_id,restart_limit) VALUES (?,?,?)",
-        [questionId, question.item_id, Math.max(budget.used, budget.limit) + MAX_ITEM_RESTARTS],
-      ).changes > 0
-    );
-  });
 }
