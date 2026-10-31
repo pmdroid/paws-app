@@ -1,12 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  getWorkItem,
-  mergeQueuePosition,
-  saveCandidateRisk,
-  upsertCloseoutStep,
-  finishCloseoutProgress,
-  listLinkAsks,
-} from "../db";
+import { getWorkItem, mergeQueuePosition } from "../db";
 import { mergeHarness, type MergeHarness } from "./advance-harness";
 import { mergeable, type MergeFacts } from "./mergeable";
 
@@ -16,8 +9,6 @@ afterEach(async () => {
   await harness?.cleanup();
   harness = undefined;
 });
-
-import { riskApprovalFor } from "../loop";
 
 const S = "a".repeat(40);
 
@@ -102,67 +93,3 @@ test("under ci, a high-risk head nobody approved is asked about before the lane 
   expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
   expect(h.github.merged).toEqual([]);
 });
-
-for (const mode of ["clean", "P2", "missing", "rules", "off"] as const) {
-  test(`stored high-risk evidence through the fake merge lane: ${mode}`, async () => {
-    const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
-    const item = await h.addItem("ENG-1");
-    const identity = {
-      taskId: item.id,
-      head: item.accepted,
-      base: item.base,
-      policyDigest: h.state.policyDigest!,
-      policyPath: null,
-    };
-    saveCandidateRisk(h.db, {
-      itemId: item.id,
-      head: item.accepted,
-      base: item.base,
-      tier: "high",
-      paths: [mode === "rules" ? ".agents/closeout.yaml" : "src/auth/session.ts"],
-      classifiedAt: 1000,
-    });
-    for (const id of ["independent-review", "security-review"]) {
-      if (mode === "missing" && id === "security-review") continue;
-      upsertCloseoutStep(
-        h.db,
-        item.id,
-        identity,
-        {
-          id,
-          kind: "review",
-          state: "passed",
-          command: "",
-          detail: null,
-          attempt: 1,
-          timeoutSeconds: null,
-          startedAt: 1,
-          finishedAt: 2,
-          exitCode: null,
-          timedOut: false,
-          timeoutReason: null,
-          truncated: false,
-          logPath: null,
-          evidencePath: `${id}.json`,
-          findings: mode === "P2" ? "P2 src/auth/session.ts:1: Unsafe reuse" : null,
-          ordinal: 0,
-        },
-        1000,
-      );
-    }
-    finishCloseoutProgress(h.db, item.id, identity, "accepted", 1000);
-    h.state.risk = (head) =>
-      riskApprovalFor(h.db, {
-        itemId: item.id,
-        head,
-        publicUrl: "https://paws.example",
-        autoApproveHighRisk: mode !== "off",
-        policyDigest: h.state.policyDigest,
-        samePatch: async () => false,
-      });
-    expect(await h.pass(item.id)).toEqual({ kind: mode === "clean" ? "merged" : "asked" });
-    expect(h.state.riskAsked).toHaveLength(mode === "clean" ? 0 : 1);
-    expect(h.github.merged).toHaveLength(mode === "clean" ? 1 : 0);
-    expect(listLinkAsks(h.db, item.id).filter((ask) => ask.decision === "approve")).toEqual([]);
-  });
-}

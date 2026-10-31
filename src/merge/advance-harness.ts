@@ -142,7 +142,7 @@ export async function mergeHarness(
     upToDateRule: false,
     packages: [] as string[],
     /** The risk approval the lane reads for head S; normal tier unless a test says otherwise. */
-    risk: (_head: string): RiskApproval | Promise<RiskApproval> => "not_required",
+    risk: (_head: string): RiskApproval => "not_required",
     /** Heads the lane asked a person to approve. */
     riskAsked: [] as string[],
     /** Each task's Linear blockers; a blocker releases it once its merge is confirmed. */
