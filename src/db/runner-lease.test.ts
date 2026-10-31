@@ -18,6 +18,7 @@ import {
   runnerLeaseLive,
   runnerOccupancy,
   runnerSlotFree,
+  slotWaitRunners,
   runnerSlotsHeldBetweenCommands,
   runnerWorkSettled,
   runnerHoldsRunWork,
@@ -248,6 +249,50 @@ describe("slots held between commands", () => {
       runs[1]!.id,
     ]);
     expect(runnerSlotFree(db, ["runner"], clock.now(), runs[2]!.id)).toBe(false);
+    db.close();
+  });
+
+  test("a run never placed also wakes for a runner that came online during its wait", () => {
+    const clock = new FakeClock(1_000_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    db.run("PRAGMA foreign_keys=OFF");
+    for (const id of ["busy", "free"]) {
+      db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'workspace','owner',?,'active',?,?)",
+        [id, id, clock.now(), clock.now()],
+      );
+      db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", [id]);
+    }
+    const [busy, fresh, tied] = ["busy", "fresh", "tied"].map(
+      (id) =>
+        beginImplementRun(
+          db,
+          insertQueuedItem(db, { id, now: clock.now() }).id,
+          clock.now(),
+          checkpoint,
+        ).run,
+    );
+    db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'busy','workspace',1,0,'busy',?)",
+      [busy!.id, clock.now() + RENEWAL_MS],
+    );
+    db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,'busy','workspace',1,0,'tied',?,?)",
+      [tied!.id, clock.now(), clock.now()],
+    );
+    const wait = { since: clock.now(), attempt: 0, runnerIds: ["busy"] };
+    const free = (runId: string, online?: string[]) =>
+      runnerSlotFree(
+        db,
+        slotWaitRunners(db, runId, online ? { ...wait, online } : wait, clock.now()),
+        clock.now(),
+        runId,
+      );
+    expect(free(fresh!.id, ["busy"])).toBe(true);
+    expect(free(fresh!.id, ["busy", "free"])).toBe(false);
+    expect(free(fresh!.id)).toBe(true);
+    expect(free(tied!.id, ["busy"])).toBe(false);
     db.close();
   });
 });
