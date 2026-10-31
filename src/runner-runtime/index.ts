@@ -386,6 +386,12 @@ export async function openRunnerRuntime(options: {
     entry.deadline = Math.min(
       entry.agreedAt + entry.idleMs + Math.max(0, credited - entry.agreedWallAt),
       entry.agreedAt + Math.max(0, authorityUntil - entry.agreedWallAt),
+      entry.agreedAt +
+        Math.min(
+          entry.offlineBudgetMs,
+          Math.max(0, entry.execution.command.expiresAt - entry.agreedWallAt),
+        ) -
+        RUNNER_LEASE_GRACE_MS,
     );
   }
   async function grant(entry: Active) {
@@ -535,11 +541,8 @@ export async function openRunnerRuntime(options: {
     } catch (error) {
       const refused =
         (granting || posting) &&
-        ((error instanceof RunnerRequestError &&
-          error.status >= 400 &&
-          error.status < 500 &&
-          ![408, 429].includes(error.status)) ||
-          error instanceof z.ZodError);
+        error instanceof RunnerRequestError &&
+        (error.status === 409 || (error.status === 403 && /\bfenced\b/i.test(error.reason ?? "")));
       if (refused) {
         journal.resultRejected(execution.id);
         journal.phase(execution.id, "interrupted");

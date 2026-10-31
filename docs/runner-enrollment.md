@@ -125,11 +125,9 @@ delivery. Helper commands retain their signed deadlines.
 A heartbeat that answers without the run's lease, or explicitly fences it, stops
 the worker immediately. Connection errors, timeouts and server errors allow work
 to continue within the offline budget. Events remain local until delivery can
-resume. Successful results ready for delivery and failures produced by the runner
-stay in its execution journal until Paws accepts them, including across a runner
-restart. Pending results remain in heartbeat reports until delivered. A permanent
-result or grant refusal ends retries and keeps the result locally for diagnosis.
-Uploads cannot reject a result. Delivery renews expiring grants, retains transient
-session-upload progress, and backs off repeated failures up to one minute.
-Retries use the same execution and command identifiers, so Paws can
-recognize a repeated delivery if its acknowledgement was lost.
+resume. Results remain in the execution journal until accepted, including across
+a runner restart, and remain in heartbeat reports while pending. Only a fence
+refusal or HTTP 409 ends retries; other 4xx responses and parse errors stay retryable.
+Uploads do not reject results. Delivery renews expiring grants and bounds optional
+session uploads to five attempts. Result retries back off up to one minute and
+reuse the execution and command identifiers so Paws recognizes repeated delivery.

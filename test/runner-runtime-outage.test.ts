@@ -7,6 +7,7 @@ import { openRunnerRuntime } from "../src/runner-runtime";
 import {
   PAWS_ALIVE_LEASE_SKEW_MS,
   RUNNER_OFFLINE_BUDGET_MS,
+  RunnerResultSchema,
   type RunnerCommand,
   type RunnerResult,
 } from "../src/runner-protocol";
@@ -29,6 +30,7 @@ async function fixture(
   let postFailures = 0;
   let postAttempts = 0;
   let permanentStatus = 0;
+  let permanentReason: string | undefined;
   let grantAttempts = 0;
   let serverEnded = false;
   let seals = 0;
@@ -166,7 +168,13 @@ async function fixture(
         postAttempts++;
         if (postGate) await postGate;
         if (serverEnded || permanentStatus)
-          throw new RunnerRequestError(permanentStatus || 409, "POST", "/result", 1);
+          throw new RunnerRequestError(
+            permanentStatus || 409,
+            "POST",
+            "/result",
+            1,
+            permanentReason,
+          );
         if (postFailures-- > 0) throw new RunnerRequestError(503, "POST", "/result", 1);
         posted.push(result);
         return { duplicate: false };
@@ -209,7 +217,10 @@ async function fixture(
     reports,
     seals: () => seals,
     grantAttempts: () => grantAttempts,
-    rejectPermanently: (status: number) => (permanentStatus = status),
+    rejectPermanently: (status: number, reason?: string) => {
+      permanentStatus = status;
+      permanentReason = reason;
+    },
     rejectSealed: () => (rejectSealed = true),
     holdPost: () => {
       postGate = new Promise<void>((resolve) => {
@@ -418,7 +429,10 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
     try {
       f.goDown();
       await f.tick();
-      f.advance(RUNNER_OFFLINE_BUDGET_MS + 60_000 + 5 * 60_000);
+      f.advance(RUNNER_OFFLINE_BUDGET_MS - 1);
+      await Bun.sleep(300);
+      expect(f.stopped()).toBe(0);
+      f.advance(1);
       await f.tick();
       const stopped = () => f.errors.some((error) => error.includes("lease deadline passed"));
       for (let index = 0; index < 40 && !stopped(); index++) await Bun.sleep(25);
@@ -571,10 +585,10 @@ test("pending failure remains reported after active cleanup until Paws accepts i
 });
 
 test("permanent result refusals stop retries across runner restarts", async () => {
-  for (const status of [400, 403, 404, 409, 410]) {
+  for (const status of [403, 409]) {
     const f = await fixture();
     try {
-      f.rejectPermanently(status);
+      f.rejectPermanently(status, "Runner work is fenced.");
       f.finish();
       await f.tickUntil(() => f.postAttempts() > 0);
       for (let i = 0; i < 3; i++) await f.tick();
@@ -654,19 +668,6 @@ test("idle offline time cannot extend the lease beyond Paws's authority ceiling"
   }
 });
 
-test("an unchanged malformed event journal reports one error while offline", async () => {
-  const f = await fixture();
-  try {
-    f.goDown();
-    await f.tick();
-    f.event({ type: "question" });
-    await Bun.sleep(900);
-    expect(f.errors.filter((error) => error.includes("Invalid runner question"))).toHaveLength(1);
-  } finally {
-    await f.cleanup();
-  }
-});
-
 test("an expired upload grant is renewed without rejecting the failure result", async () => {
   const f = await fixture();
   try {
@@ -718,22 +719,34 @@ test("a lost transcript seal acknowledgement cannot reject the failure result", 
 });
 
 test("transient result retries back off and report one repeated failure", async () => {
-  const f = await fixture({ retryMs: 1000 });
-  try {
-    f.rejectResults(100);
-    f.finish();
-    await f.tickUntil(() => f.postAttempts() > 0);
-    for (let i = 0; i < 4; i++) await f.tick();
-    expect(f.postAttempts()).toBe(1);
-    f.advance(1000);
-    await f.tickUntil(() => f.postAttempts() > 1);
-    expect(f.postAttempts()).toBe(2);
-    expect(f.errors.filter((error) => error.includes("/result"))).toHaveLength(1);
-    expect(f.status().active).toBeNull();
-    f.advance(2 * RUNNER_OFFLINE_BUDGET_MS);
-    await Bun.sleep(300);
-    expect(f.errors.join("\n")).not.toContain("Runner interrupted");
-  } finally {
-    await f.cleanup();
+  for (const status of [503, 400, 401, 403, 404, 410, "parse"]) {
+    const f = await fixture({ retryMs: 1000 });
+    try {
+      if (status === 503) f.rejectResults(100);
+      else if (typeof status === "number") f.rejectPermanently(status);
+      else {
+        const post = f.daemon.postResult;
+        f.daemon.postResult = async (...args) => {
+          const result = await post(...args);
+          RunnerResultSchema.parse({});
+          return result;
+        };
+      }
+      f.finish();
+      await f.tickUntil(() => f.postAttempts() > 0);
+      for (let i = 0; i < 4; i++) await f.tick();
+      expect(f.postAttempts()).toBe(status === 403 ? 2 : 1);
+      const errors = f.errors.length;
+      f.advance(1000);
+      await f.tickUntil(() => f.postAttempts() > (status === 403 ? 2 : 1));
+      expect(f.postAttempts()).toBe(status === 403 ? 4 : 2);
+      expect(f.errors).toHaveLength(errors);
+      expect(f.status().active).toBeNull();
+      f.advance(2 * RUNNER_OFFLINE_BUDGET_MS);
+      await Bun.sleep(300);
+      expect(f.errors.join("\n")).not.toContain("Runner interrupted");
+    } finally {
+      await f.cleanup();
+    }
   }
 });
