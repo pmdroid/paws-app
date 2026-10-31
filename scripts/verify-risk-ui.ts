@@ -46,6 +46,7 @@ const detail = (id: string): StatusItemDetail | null =>
     : null;
 
 const configPath = join(mkdtempSync(join(tmpdir(), "paws-risk-")), "config.toml");
+let riskGateOn = true;
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -57,6 +58,7 @@ const server = Bun.serve({
     return (
       (await handleMergeSettingsRequest(request, {
         configPath,
+        riskGate: { on: riskGateOn, reason: "The risk gate needs an HTTPS public URL." },
         csrfToken: "ui-fixture",
         repos: ["acme/platform", "acme/web", "acme/docs"],
         highRiskFile: async (repo) =>
@@ -88,6 +90,7 @@ const fits = (page: import("@playwright/test").Page) =>
 try {
   for (const scheme of ["light", "dark"] as const)
     for (const width of [1440, 390]) {
+      riskGateOn = true;
       writeFileSync(configPath, '[merge]\norder = "queue"\nmain_moved = "closeout"\n');
       const page = await browser.newPage({ viewport: { width, height: 1000 } });
       page.on("pageerror", (error) => errors.push(error.message));
@@ -140,6 +143,17 @@ try {
       await page.evaluate(() => scrollTo(0, 0));
       await page.screenshot({
         path: join(directory, `high-risk-paths-${scheme}-${width}.png`),
+        fullPage: true,
+      });
+      riskGateOn = false;
+      await page.reload();
+      await expect(automatic).toBeDisabled();
+      await expect(
+        page.getByText("Turn on the risk gate before changing this setting.", { exact: false }),
+      ).toBeVisible();
+      await fits(page);
+      await page.screenshot({
+        path: join(directory, `risk-gate-off-${scheme}-${width}.png`),
         fullPage: true,
       });
       await page.close();
