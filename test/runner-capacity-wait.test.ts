@@ -324,7 +324,12 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     ).toEqual(
       [...waiting].map((identifier) => [
         identifier,
-        { since: expect.any(Number), attempt: 0, runnerIds: [busyRunner] },
+        {
+          since: expect.any(Number),
+          attempt: 0,
+          runnerIds: [busyRunner],
+          online: expect.arrayContaining([busyRunner, freeRunner]),
+        },
       ]),
     );
   } finally {
