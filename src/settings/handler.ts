@@ -1,3 +1,4 @@
+import { supportsReviewCommand } from "../closeout-spec";
 import { journalCaught } from "../journal";
 import { timingSafeEqual } from "node:crypto";
 import {
@@ -84,15 +85,6 @@ export async function handleAgentSettingsRequest(
       throw new Error("applyToWaiting must be a boolean");
     applyToWaiting = apply === true;
     settings = parseAgentSettings(isRecord(body) ? agents : body);
-    const reviewers = [
-      settings.defaults.reviewer,
-      settings.defaults.reviewerFallback,
-      ...settings.projects.map((project) => project.reviewer),
-    ].filter((profile) => profile !== undefined);
-    if (reviewers.some((profile) => profile.agent !== "codex" && profile.agent !== "claude"))
-      throw new Error(
-        "Closeout review commands require a Codex or Claude reviewer. Choose a supported reviewer profile before saving.",
-      );
     mergeBody = merge;
     queueBody = queue;
   } catch (error) {
@@ -156,12 +148,30 @@ export async function handleAgentSettingsRequest(
       "settings.queue-owner-cap",
       `Running tasks per owner ${capBefore ?? "no cap"} → ${queue.maxRunningPerOwner ?? "no cap"}`,
     );
-  return json({
+  const response = json({
     ...settings,
     merge: { ciFixAttempts: saved },
     queue: savedQueue,
     ...(applyToWaiting ? { waitingRuns } : {}),
   });
+  const reviewers = [
+    settings.defaults.reviewer,
+    settings.defaults.reviewerFallback,
+    ...settings.projects.map((project) => project.reviewer),
+  ].filter((profile) => profile !== undefined);
+  const agents = [
+    ...new Set(
+      reviewers
+        .filter((profile) => !supportsReviewCommand(profile.agent))
+        .map((profile) => profile.agent),
+    ),
+  ];
+  if (agents.length > 0) {
+    const warning = `${agents.join(", ")} reviewers use ACP instead of a native review command. Verify they can complete the repository's Closeout review steps.`;
+    response.headers.set("x-paws-reviewer-warning", warning);
+    options.audit?.("settings.reviewer-warning", warning);
+  }
+  return response;
 }
 
 export function localRequest(request: Request, trustedOrigin?: string): boolean {

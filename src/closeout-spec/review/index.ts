@@ -8,6 +8,7 @@ export {
   reaskArgv,
   REVIEW_COMMAND_TIMEOUT_MS,
   reviewArgv,
+  supportsReviewCommand,
   reviewProvider,
 } from "./command";
 export type {

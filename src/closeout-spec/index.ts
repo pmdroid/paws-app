@@ -149,6 +149,7 @@ export {
   parseFindings,
   parseReviewEvents,
   reviewArgv,
+  supportsReviewCommand,
   runReviewCommand,
 } from "./review/index";
 export type {

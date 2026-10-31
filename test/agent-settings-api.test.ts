@@ -41,7 +41,7 @@ function request(
 
 describe("local agent settings API", () => {
   for (const agent of ["grok", "opencode"] as const) {
-    test(`refuses ${agent} reviewer profiles before saving`, async () => {
+    test(`warns about ${agent} ACP review and permits unrelated saves`, async () => {
       const { options } = fixture();
       const proposed = {
         ...settings,
@@ -54,11 +54,15 @@ describe("local agent settings API", () => {
         request(undefined, "PUT", proposed),
         options,
       );
-      expect(response?.status).toBe(400);
-      expect(((await response!.json()) as { error: string }).error).toContain(
-        "Closeout review commands require",
-      );
-      expect(existsSync(options.configPath)).toBe(false);
+      expect(response?.status).toBe(200);
+      expect(response?.headers.get("x-paws-reviewer-warning")).toContain("use ACP");
+      expect(existsSync(options.configPath)).toBe(true);
+      const unrelated = {
+        ...proposed,
+        defaults: { ...proposed.defaults, implementer: { agent: "claude", model: "other" } },
+      };
+      const again = await handleAgentSettingsRequest(request(undefined, "PUT", unrelated), options);
+      expect(again?.status).toBe(200);
     });
   }
 
