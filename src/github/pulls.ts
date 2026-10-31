@@ -1,17 +1,9 @@
-import type {
-  MergePullRequest,
-  MergeResult,
-  OpenPullRequest,
-  PullRequestRef,
-  PullRequests,
-} from "./app";
 import { acquireOperationToken } from "./auth/provider";
-import type { GitHubCredentialInput, GitHubTokenProvider } from "./auth/types";
+import type { GitHubCredentialInput } from "./auth/types";
 import { branchForIssue, githubHttpsUrl, pullRequestBody } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, gitFailureReason, redact } from "./git";
 import { pushDenial, pushWithLease } from "./push";
-import { splitRepository } from "./token";
 import {
   GitCommandError,
   type GitExec,
@@ -61,6 +53,7 @@ export async function openPullRequest(
     title?: string;
     description?: string;
     evidence: string;
+    reviewer?: string;
     client: GitHubClient;
   } & GitHubCredentialInput,
 ): Promise<OpenedPull> {
@@ -82,7 +75,15 @@ export async function openPullRequest(
     },
   });
   if (created.status === 201) {
-    return pullFrom(created.body, body);
+    const pull = pullFrom(created.body, body);
+    if (input.reviewer)
+      await input.client.request({
+        method: "POST",
+        path: repoApiPath(input.owner, input.repo, `/pulls/${pull.number}/requested_reviewers`),
+        token,
+        body: { reviewers: [input.reviewer] },
+      });
+    return pull;
   }
   if (created.status === 422) {
     const existing = await findOpenPull(input, token, branch);
@@ -132,101 +133,6 @@ function pullFrom(body: unknown, fallbackBody: string): OpenedPull {
   };
 }
 
-export type PullRequestClientOptions = {
-  client: GitHubClient;
-  now?: () => Date;
-} & (
-  | {
-      tokenProvider?: undefined;
-      appId: string;
-      installationId: string;
-      privateKeyPem: string;
-    }
-  | {
-      tokenProvider: GitHubTokenProvider;
-      appId?: string;
-      installationId?: string;
-      privateKeyPem?: string;
-    }
-);
-
-/**
- * Foundation seam. `open` posts the given body. `merge` is one squash guarded
- * by `expectedHeadSha`; a 409 fails closed and does not retry.
- * `github.auth = "gh"` adds the paws label and evidence marker. `"app"` mints
- * an installation token and leaves the body unchanged.
- */
-export function createPullRequests(options: PullRequestClientOptions): PullRequests {
-  return {
-    async open(input: OpenPullRequest): Promise<PullRequestRef> {
-      const { owner, repo } = splitRepository(input.repository);
-      const token = await acquireOperationToken(
-        {
-          tokenProvider: options.tokenProvider,
-          client: options.client,
-          appId: options.appId,
-          installationId: options.installationId,
-          privateKeyPem: options.privateKeyPem,
-          owner,
-          repo,
-          ...(options.now ? { now: options.now() } : {}),
-        },
-        "pr",
-      );
-      const body = input.body;
-      const created = await options.client.request({
-        method: "POST",
-        path: repoApiPath(owner, repo, "/pulls"),
-        token,
-        body: {
-          title: input.title,
-          head: input.head,
-          base: input.base,
-          body,
-        },
-      });
-      if (created.status !== 201) {
-        throw new Error(`opening the pull request failed with status ${created.status}`);
-      }
-      const pull = pullFrom(created.body, body);
-      return { number: pull.number, url: pull.url ?? "" };
-    },
-    async merge(input: MergePullRequest): Promise<MergeResult> {
-      const { owner, repo } = splitRepository(input.repository);
-      const token = await acquireOperationToken(
-        {
-          tokenProvider: options.tokenProvider,
-          client: options.client,
-          appId: options.appId,
-          installationId: options.installationId,
-          privateKeyPem: options.privateKeyPem,
-          owner,
-          repo,
-          ...(options.now ? { now: options.now() } : {}),
-        },
-        "merge",
-      );
-      const merged = await options.client.request({
-        method: "PUT",
-        path: repoApiPath(owner, repo, `/pulls/${input.number}/merge`),
-        token,
-        body: {
-          merge_method: "squash",
-          sha: input.expectedHeadSha,
-        },
-      });
-      if (merged.status !== 200) {
-        return { merged: false, sha: input.expectedHeadSha };
-      }
-      const sha =
-        isRecord(merged.body) && typeof merged.body.sha === "string"
-          ? merged.body.sha
-          : input.expectedHeadSha;
-      return { merged: isRecord(merged.body) && merged.body.merged === true, sha };
-    },
-  };
-}
-
 /** Push `paws/<issue>` and open the PR only after Closeout has accepted. */
 export async function publishAccepted(
   input: {
@@ -239,6 +145,7 @@ export async function publishAccepted(
     repo: string;
     title?: string;
     description?: string;
+    reviewer?: string;
     remoteUrl?: string;
     gitExec?: GitExec;
     client: GitHubClient;

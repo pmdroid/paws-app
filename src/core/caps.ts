@@ -1,7 +1,6 @@
 /**
- * Awake-time cap from the Quick MVP plan (45 minutes). Sleep does not count.
- * The turn cap is configurable; 80 is the default because the plan does not
- * fix a number.
+ * Awake-time cap (3 hours). Sleep does not count.
+ * The turn cap is configurable; 80 is the default.
  */
 export const DEFAULT_MAX_TURNS = 80;
 export const DEFAULT_MAX_AWAKE_MS = 3 * 60 * 60 * 1000;
@@ -50,23 +49,33 @@ export function capActivityText(
   return tracked ? `${cap} ${formatAwakeBreakdown(breakdown)}` : cap;
 }
 
-/** "Counted: agent turns 120 min, Closeout 60 min. Not counted: waiting for answers 90 min." */
+/** "Counted: agent turns 120 min, Closeout 60 min. Not counted: waiting 90 min." */
 export function formatAwakeBreakdown(breakdown: AwakeBreakdown): string {
   const counted = `Counted: agent turns ${minutes(breakdown.agentMs)}, Closeout ${minutes(breakdown.closeoutMs)}.`;
   const skipped = [
-    breakdown.waitingMs > 0 ? `waiting for answers ${minutes(breakdown.waitingMs)}` : null,
+    breakdown.waitingMs > 0 ? `waiting ${minutes(breakdown.waitingMs)}` : null,
     breakdown.recheckMs > 0 ? `re-checking accepted work ${minutes(breakdown.recheckMs)}` : null,
   ].filter((part) => part !== null);
   return skipped.length === 0 ? counted : `${counted} Not counted: ${skipped.join(", ")}.`;
 }
 
-export function timeLimitQuestion(maxAwakeMs: number, breakdown: AwakeBreakdown): string {
+export function timeLimitQuestion(
+  maxAwakeMs: number,
+  breakdown: AwakeBreakdown,
+  /** Whether the time limit held back a handoff the agent had not started, such as a review. */
+  heldHandoff = false,
+): string {
   return [
     `Time limit reached (${Math.max(1, Math.round(maxAwakeMs / 60_000))} min awake); merge, continue or stop?`,
     "Closeout already accepted this task's work, so Paws did not fail it.",
     formatAwakeBreakdown(breakdown),
+    heldHandoff
+      ? "The agent had not started on the latest feedback yet: Continue hands it over, Merge and Stop leave it unaddressed."
+      : null,
     `${TIME_LIMIT_MERGE} sends the accepted head to the merge queue without another agent turn. Continue gives the agent another ${minutes(TIME_LIMIT_EXTENSION_MS)}. Stop ends the task without merging: the accepted work stays on its branch and its pull request is not closed.`,
-  ].join(" ");
+  ]
+    .filter((part) => part !== null)
+    .join(" ");
 }
 
 function minutes(ms: number): string {

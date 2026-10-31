@@ -29,6 +29,7 @@ export const AGENT_PACKAGES: Readonly<Record<string, AgentPackage>> = {
   },
   codex: { package: "@agentclientprotocol/codex-acp", native: "@openai/codex" },
   grok: { package: "@xai-official/grok", native: "@xai-official/grok" },
+  opencode: { package: "@opencode/cli", native: "@opencode/cli" },
 };
 
 /** A version is offered only once it has been on npm this long. */

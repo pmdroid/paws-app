@@ -230,9 +230,9 @@ export function createMemberVmHttp(options: {
         {
           error:
             path === "/api/runners/vm/delete"
-              ? "Observers cannot delete a VM."
+              ? "Only active workspace members can delete a VM."
               : path === "/api/runners/vm/pool"
-                ? "Observers cannot move a VM."
+                ? "Only active workspace members can move a VM."
                 : "Only workspace members can create a VM.",
         },
         403,
@@ -270,10 +270,7 @@ export function createMemberVmHttp(options: {
         const row = getMemberVm(db, body.id);
         if (row === null || row.workspaceId !== member.workspaceId) throw new MemberVmMissing();
         if (!mayDeleteMemberVm(db, row, member))
-          return json(
-            { error: "Only the VM's owner or a workspace owner or admin can move it." },
-            403,
-          );
+          return json({ error: "Only the VM's owner or a workspace admin can move it." }, 403);
         if (row.deleteStep !== null) return json({ error: "This VM is being deleted." }, 409);
         try {
           await pools.adoptVm(row.vmName, body.pool);

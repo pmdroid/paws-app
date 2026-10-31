@@ -193,6 +193,21 @@ describe("Settings → Merging", () => {
     expect(html).toContain("Paws has no copy of this repository yet.");
   });
 
+  test("Pull request comments: the wait is editable and saved; an engine without it leaves it out", () => {
+    const view = { ...data(), commentWait: { quietSeconds: 90, maxWaitSeconds: 600 } };
+    const html = renderMergeSettings({ data: view, busy: null, error: null, saved: false });
+    expect(html).toContain("<h2>Pull request comments</h2>");
+    expect(html).toContain('name="comment-quiet" type="number"');
+    expect(html).toContain('value="90"');
+    expect(html).toContain('name="comment-max" type="number"');
+    expect(html).toContain('value="600"');
+    expect(mergeSettingsBody(view).commentWait).toEqual({ quietSeconds: 90, maxWaitSeconds: 600 });
+
+    const without = renderMergeSettings({ data: data(), busy: null, error: null, saved: false });
+    expect(without).not.toContain("Pull request comments");
+    expect(mergeSettingsBody(data())).not.toHaveProperty("commentWait");
+  });
+
   test("High-risk paths: an engine that does not list them leaves the section and body out", () => {
     const html = renderMergeSettings({ data: data(), busy: null, error: null, saved: false });
     expect(html).not.toContain("High-risk paths");
@@ -230,4 +245,33 @@ describe("Settings → Merging", () => {
     expect(html).toMatch(/name="risk-0"[^>]*>src\/auth\/\*\*<\/textarea>/);
     expect(html).toContain("Merging settings saved.");
   });
+});
+
+test("Merging renders and submits the opt-in high-risk checkbox", () => {
+  for (const enabled of [false, true]) {
+    const view = { ...data(), autoApproveHighRisk: enabled, riskGate: { on: true } };
+    const html = renderMergeSettings({ data: view, busy: null, error: null, saved: false });
+    expect(html).toContain("Let high-risk changes through when both reviews are clean");
+    expect(html).toContain(
+      `aria-describedby="auto-approve-high-risk-help"${enabled ? " checked" : ""}>`,
+    );
+    expect(html).toContain("High-risk approval");
+    expect(html).toContain("Closeout accepted the exact commit");
+    expect(mergeSettingsBody(view).autoApproveHighRisk).toBe(enabled);
+  }
+});
+
+test("automatic high-risk approval is disabled while the risk gate is off", () => {
+  const html = renderMergeSettings({
+    data: {
+      ...data(),
+      autoApproveHighRisk: true,
+      riskGate: { on: false, reason: "HTTPS public URL required" },
+    },
+    busy: null,
+    error: null,
+    saved: false,
+  });
+  expect(html).toContain("checked disabled> Let high-risk");
+  expect(html).toContain("Turn on the risk gate before changing this setting.");
 });

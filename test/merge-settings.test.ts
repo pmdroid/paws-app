@@ -6,6 +6,7 @@ import {
   MAIN_MOVED,
   ignoredCommentBots,
   loadConfigFile,
+  parseCommentWait,
   parseConfigToml,
   readMergeSettings,
   highRiskPaths,
@@ -111,7 +112,9 @@ packages = ["apps/*", "packages/*"]
         { project: PAYMENTS, label: 'Needs "care"' },
       ],
       repositories: { "acme/platform": { packages: ["apps/*", "packages/*"] } },
+      autoApproveHighRisk: false,
       ciFixAttempts: 2,
+      commentWait: { quietSeconds: 60, maxWaitSeconds: 300 },
     });
     expect(repositoryPackages(readMergeSettings(config), "Acme/Platform")).toEqual([
       "apps/*",
@@ -186,6 +189,40 @@ packages = ["apps/*", "packages/*"]
       ).toThrow("high_risk_paths");
   });
 
+  test("the pull request comment wait reads, defaults and stays within bounds", () => {
+    expect(readMergeSettings(parseConfigToml("")).commentWait).toEqual({
+      quietSeconds: 60,
+      maxWaitSeconds: 300,
+    });
+    expect(
+      readMergeSettings(
+        parseConfigToml("[merge]\ncomment_quiet_seconds = 120\ncomment_max_wait_seconds = 600\n"),
+      ).commentWait,
+    ).toEqual({ quietSeconds: 120, maxWaitSeconds: 600 });
+    // A longest wait below the quiet time waits the quiet time; values cap at an hour.
+    expect(
+      readMergeSettings(
+        parseConfigToml("[merge]\ncomment_quiet_seconds = 9000\ncomment_max_wait_seconds = 30\n"),
+      ).commentWait,
+    ).toEqual({ quietSeconds: 3600, maxWaitSeconds: 3600 });
+    expect(parseCommentWait({ quietSeconds: 0, maxWaitSeconds: 0 })).toEqual({
+      quietSeconds: 0,
+      maxWaitSeconds: 0,
+    });
+    expect(() => parseCommentWait({ quietSeconds: 90, maxWaitSeconds: 60 })).toThrow(
+      "at least the quiet time",
+    );
+    expect(() => parseCommentWait({ quietSeconds: 1.5, maxWaitSeconds: 60 })).toThrow(
+      "whole number of seconds",
+    );
+    expect(() => parseCommentWait({ quietSeconds: 60, maxWaitSeconds: 3601 })).toThrow(
+      "from 0 to 3600",
+    );
+    expect(() => parseCommentWait({ quietSeconds: 60, maxWaitSeconds: 60, extra: 1 })).toThrow(
+      "unknown key",
+    );
+  });
+
   test("unknown choices are rejected", () => {
     expect(() => parseConfigToml('[merge]\norder = "fast"\n')).toThrow("merge.order");
     expect(() => parseConfigToml('[[merge.rules]]\nlabel = "Bug"\nmain_moved = "x"\n')).toThrow();
@@ -224,6 +261,8 @@ describe("Merging settings API", () => {
     const response = await handleMergeSettingsRequest(request(), options);
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
+      autoApproveHighRisk: false,
+      commentWait: { quietSeconds: 60, maxWaitSeconds: 300 },
       default: { order: "queue", mainMoved: "ci" },
       projects: [],
       rules: [],
@@ -303,7 +342,13 @@ describe("Merging settings API", () => {
     };
     const saved = await handleMergeSettingsRequest(request("PUT", body), options);
     expect(saved?.status).toBe(200);
-    expect(await saved!.json()).toEqual({ ...body, highRiskPaths: [], highRiskRepositories: [] });
+    expect(await saved!.json()).toEqual({
+      autoApproveHighRisk: false,
+      ...body,
+      commentWait: { quietSeconds: 60, maxWaitSeconds: 300 },
+      highRiskPaths: [],
+      highRiskRepositories: [],
+    });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
     expect(text).toContain('[agents.defaults.implementer]\nagent = "claude"');
@@ -315,7 +360,9 @@ describe("Merging settings API", () => {
       projects: { [PAWS]: {}, [PAYMENTS]: { order: "github-queue", mainMoved: "overlap" } },
       rules: [{ label: "Bug", mainMoved: "closeout" }],
       repositories: { "acme/platform": { packages: ["apps/*"] } },
+      autoApproveHighRisk: false,
       ciFixAttempts: 5,
+      commentWait: { quietSeconds: 60, maxWaitSeconds: 300 },
     });
     expect(
       ((await (await handleMergeSettingsRequest(request(), options))!.json()) as { rules: unknown })
@@ -476,6 +523,48 @@ describe("Merging settings API", () => {
     expect(reads.filter((repo) => repo === "acme/platform")).toHaveLength(2);
   });
 
+  test("PUT saves the comment wait, audits it, and a body without it keeps it", async () => {
+    const { options, audits } = fixture();
+    writeFileSync(options.configPath, "max_turns = 31\n");
+    const valid = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] };
+    const read = async () =>
+      (
+        (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
+          commentWait: unknown;
+        }
+      ).commentWait;
+    expect(await read()).toEqual({ quietSeconds: 60, maxWaitSeconds: 300 });
+
+    const saved = await handleMergeSettingsRequest(
+      request("PUT", { ...valid, commentWait: { quietSeconds: 120, maxWaitSeconds: 900 } }),
+      options,
+    );
+    expect(saved?.status).toBe(200);
+    expect(((await saved!.json()) as { commentWait: unknown }).commentWait).toEqual({
+      quietSeconds: 120,
+      maxWaitSeconds: 900,
+    });
+    const text = readFileSync(options.configPath, "utf8");
+    expect(text).toContain("max_turns = 31");
+    expect(text).toContain("comment_quiet_seconds = 120\ncomment_max_wait_seconds = 900");
+    expect(audits).toContainEqual([
+      "settings.merging",
+      "Pull request comment wait: 60s quiet, 300s at most → 120s quiet, 900s at most",
+    ]);
+
+    expect((await handleMergeSettingsRequest(request("PUT", valid), options))?.status).toBe(200);
+    expect(await read()).toEqual({ quietSeconds: 120, maxWaitSeconds: 900 });
+
+    const invalid = await handleMergeSettingsRequest(
+      request("PUT", { ...valid, commentWait: { quietSeconds: 600, maxWaitSeconds: 60 } }),
+      options,
+    );
+    expect(invalid?.status).toBe(400);
+    expect(((await invalid!.json()) as { error: string }).error).toContain(
+      "at least the quiet time",
+    );
+  });
+
   test("PUT rejects invalid settings and a missing CSRF token", async () => {
     const { options, audits } = fixture();
     const valid = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] };
@@ -561,4 +650,58 @@ describe("Merging settings API", () => {
     const body = await (await handleMergeSettingsRequest(request(), options))!.json();
     expect(body).toMatchObject({ choices: null, choicesError: expect.any(String) });
   });
+});
+
+test("automatic high-risk approval defaults off, round-trips, and old clients preserve it", async () => {
+  const { options, audits } = fixture();
+  options.riskGate = { on: true };
+  expect(readMergeSettings(parseConfigToml("")).autoApproveHighRisk).toBe(false);
+  const body = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] };
+  for (const enabled of [true, false]) {
+    const response = await handleMergeSettingsRequest(
+      request("PUT", { ...body, autoApproveHighRisk: enabled }),
+      options,
+    );
+    expect(response?.status).toBe(200);
+    expect(((await response!.json()) as { autoApproveHighRisk: boolean }).autoApproveHighRisk).toBe(
+      enabled,
+    );
+    expect(readFileSync(options.configPath, "utf8")).toContain(
+      `auto_approve_high_risk = ${enabled}`,
+    );
+    expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(enabled);
+    await handleMergeSettingsRequest(request("PUT", body), options);
+    expect(
+      (
+        (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
+          autoApproveHighRisk: boolean;
+        }
+      ).autoApproveHighRisk,
+    ).toBe(enabled);
+  }
+  options.riskGate = { on: false };
+  const put = (enabled: boolean) =>
+    handleMergeSettingsRequest(request("PUT", { ...body, autoApproveHighRisk: enabled }), options);
+  const saved = readFileSync(options.configPath, "utf8");
+  const auditCount = audits.length;
+  expect((await put(true))?.status).toBe(400);
+  expect(readFileSync(options.configPath, "utf8")).toBe(saved);
+  expect(audits).toHaveLength(auditCount);
+  writeFileSync(options.configPath, "[merge]\nauto_approve_high_risk = true\n");
+  expect((await put(true))?.status).toBe(200);
+  expect((await put(false))?.status).toBe(200);
+  expect(readMergeSettings(loadConfigFile(options.configPath)).autoApproveHighRisk).toBe(false);
+  expect(audits.map(([, text]) => text)).toContain("Automatic high-risk approval: on");
+  expect(audits.map(([, text]) => text)).toContain("Automatic high-risk approval: off");
+  for (const invalid of ["true", 1, null]) {
+    expect(
+      (
+        await handleMergeSettingsRequest(
+          request("PUT", { ...body, autoApproveHighRisk: invalid }),
+          options,
+        )
+      )?.status,
+    ).toBe(400);
+  }
+  expect(() => parseConfigToml('[merge]\nauto_approve_high_risk = "true"\n')).toThrow();
 });

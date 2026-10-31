@@ -60,12 +60,17 @@ export function quotaSignal(message: string, now: number): QuotaSignal | null {
 }
 
 function clockReset(text: string, now: number): number | null {
-  const match = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)/i.exec(text);
-  if (!match || Number(match[1]) > 12) return null;
+  const match =
+    /resets\s+(?:([a-z]{3})\s+(\d{1,2}),\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)/i.exec(
+      text,
+    );
+  if (!match || Number(match[3]) > 12) return null;
+  const month = match[1] ? MONTHS.indexOf(match[1].toLowerCase()) : null;
+  if (month === -1) return null;
   let format: Intl.DateTimeFormat;
   try {
     format = new Intl.DateTimeFormat("en-US", {
-      timeZone: match[4]!.trim(),
+      timeZone: match[6]!.trim(),
       hourCycle: "h23",
       year: "numeric",
       month: "numeric",
@@ -91,17 +96,22 @@ function clockReset(text: string, now: number): number | null {
     );
   };
   const today = new Date(wall(now));
-  const hour = (Number(match[1]) % 12) + (match[3]!.toLowerCase() === "pm" ? 12 : 0);
-  for (const day of [0, 1]) {
-    const local = Date.UTC(
-      today.getUTCFullYear(),
-      today.getUTCMonth(),
-      today.getUTCDate() + day,
-      hour,
-      Number(match[2] ?? 0),
-    );
+  const hour = (Number(match[3]) % 12) + (match[5]!.toLowerCase() === "pm" ? 12 : 0);
+  const minute = Number(match[4] ?? 0);
+  const candidates =
+    month === null
+      ? [0, 1].map((day) =>
+          Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + day),
+        )
+      : [0, 1]
+          .map((year) => Date.UTC(today.getUTCFullYear() + year, month, Number(match[2])))
+          .filter((date) => new Date(date).getUTCDate() === Number(match[2]));
+  for (const date of candidates) {
+    const local = date + hour * 3_600_000 + minute * 60_000;
     const at = local - (wall(local) - local);
     if (at >= now) return at;
   }
   return null;
 }
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];

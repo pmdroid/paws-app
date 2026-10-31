@@ -36,7 +36,7 @@ const FAILED_STEP = {
 } as const;
 
 /**
- * `POST /api/runners/:runnerId/sessions/:runId/move`: an owner or admin asks the runner to hand
+ * `POST /api/runners/:runnerId/sessions/:runId/move`: an admin asks the runner to hand
  * one running session over. Paws then resumes it on another eligible runner, and the runner card
  * shows the move from `runner_session_move`. The server checks the session, CSRF and origin.
  */

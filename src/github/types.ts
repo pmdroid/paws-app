@@ -2,7 +2,7 @@ import type { Readiness } from "./readiness";
 export const MAX_TOKEN_TTL_MS = 60 * 60 * 1000;
 export const TOKEN_TTL_SKEW_MS = 30 * 1000;
 
-/** Permissions the Quick MVP GitHub App token is allowed to hold. */
+/** Permissions the Paws GitHub App installation token is allowed to hold. */
 export const INSTALLATION_PERMISSIONS = {
   contents: "write",
   pull_requests: "write",

@@ -81,6 +81,7 @@ import {
   runAgentSetup,
   runRunnerName,
   usagePause,
+  listPolicyRunnerWarnings,
   listPushOutages,
   listTaskBlockers,
   listWorkItemFacts,
@@ -94,7 +95,7 @@ import {
 import { isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
-import { reviewsOf } from "./reviews";
+import { itemReviews } from "./reviews";
 import { isRuleStep, skippedRules, withRuleDetail } from "./rules";
 import { mergedTimes, stateTotals, toStateTimes, type StateTotals } from "./state-times";
 import {
@@ -211,6 +212,7 @@ export function createLiveStatusProvider(
         ...readLiveSnapshot(db, options),
         ...readIntake(db, options),
         ...readPushOutages(db),
+        ...readPolicyRunnerWarnings(db),
       };
     },
     item(id) {
@@ -311,11 +313,7 @@ function readItemDetail(
     verdicts: detail.verdicts.map((verdict) => {
       const record = records.find((entry) => publicId(entry) === verdict.itemId);
       if (!record) return verdict;
-      const reviews = reviewsOf(
-        progress.filter((row) => row.itemId === record.id),
-        pawsHome,
-        env,
-      );
+      const reviews = itemReviews(db, record.id, pawsHome, env, progress);
       return reviews.length === 0 ? verdict : { ...verdict, reviews };
     }),
     id,
@@ -446,6 +444,21 @@ function readPushOutages(db: Database): Pick<StatusSnapshot, "pushOutages"> {
       lastError: outage.lastError,
       nextProbeAt: iso(outage.nextProbeAt),
       installationUrl: outage.installationUrl,
+    })),
+  };
+}
+
+/** Repositories whose Closeout policy uses keys the lowest online runner does not know (PAS-888). */
+function readPolicyRunnerWarnings(db: Database): Pick<StatusSnapshot, "policyRunnerWarnings"> {
+  const warnings = listPolicyRunnerWarnings(db);
+  if (!warnings.length) return {};
+  return {
+    policyRunnerWarnings: warnings.map((warning) => ({
+      repository: warning.repository,
+      policyDigest: warning.policyDigest,
+      runnerVersion: warning.runnerVersion,
+      keys: warning.keys,
+      checkedAt: iso(warning.checkedAt),
     })),
   };
 }
@@ -1123,7 +1136,9 @@ function runReviewer(pawsHome: string | undefined, runId: string): string {
       readFileSync(join(pawsHome, "runs", runId, "agent-profile.json"), "utf8"),
     );
     const reviewer = snapshot?.profiles?.reviewer?.agent;
-    return ["claude", "codex", "grok"].includes(reviewer) ? agentName(reviewer) : "Unknown";
+    return ["claude", "codex", "grok", "opencode"].includes(reviewer)
+      ? agentName(reviewer)
+      : "Unknown";
   } catch (caughtError1) {
     journalCaught(caughtError1, "provider.runReviewer.parse", null);
     return "Unknown";
@@ -2172,6 +2187,7 @@ function agentName(agent: string): string {
     claude: "Claude",
     codex: "Codex",
     grok: "Grok",
+    opencode: "OpenCode",
     cursor: "Cursor",
     gemini: "Gemini",
     paws: "Paws",

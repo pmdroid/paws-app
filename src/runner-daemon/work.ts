@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  RUNNER_OFFLINE_BUDGET_MS,
   RunnerAgentTargetsSchema,
   RunnerEventSchema,
   RunnerResultSchema,
@@ -20,6 +21,12 @@ export const RunnerHeartbeatSchema = z.strictObject({
   skills: RunnerSkillManifestSchema.optional(),
   /** Agent versions Paws asks for, sent only to runners that report their coding agents. */
   agents: RunnerAgentTargetsSchema.optional(),
+  /**
+   * Set together, and only for a runner at `OFFLINE_LEASE_RUNNER_VERSION` or newer.
+   * While heartbeats fail, that runner passes them to `creditedLeaseUntil`.
+   */
+  offlineBudgetMs: z.number().int().positive().max(RUNNER_OFFLINE_BUDGET_MS).optional(),
+  aliveAt: timestamp.optional(),
 });
 export const RunnerGrantRequestSchema = z.strictObject({ commandId: identifier, generation });
 export const RunnerGrantTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);

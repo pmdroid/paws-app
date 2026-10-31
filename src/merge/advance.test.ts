@@ -32,7 +32,7 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     stopped: () => false,
     publish: unused("publish"),
     settings: unused("settings"),
-    policyDigest: unused("policyDigest"),
+    policyDigests: unused("policyDigests"),
     packages: unused("packages"),
     assertReady: unused("assertReady"),
     riskApproval: async () => "not_required",

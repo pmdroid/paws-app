@@ -1,7 +1,10 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { GitExec } from "./types";
+import { GitCommandError, type GitExec } from "./types";
+
+/** A branch literally named `HEAD`, which some repositories carry by accident. */
+const HEAD_BRANCH = "refs/heads/HEAD";
 
 export function publicationEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
@@ -39,6 +42,52 @@ export function publicationRemote(url: string): void {
   }
 }
 
+/** Prefix of the stderr a {@link PublicationStagingError} carries, so callers that see only text know it. */
+export const PUBLICATION_STAGING_FAILURE = "Paws could not stage the candidate for publication";
+
+/**
+ * Copying the candidate into the private publication repository failed, before any network push.
+ * Retrying cannot help, and GitHub was not involved.
+ */
+class PublicationStagingError extends GitCommandError {
+  constructor(args: string[], stderr: string) {
+    super(args, `${PUBLICATION_STAGING_FAILURE}: ${stderr.trim() || "git failed"}`);
+    this.name = "PublicationStagingError";
+  }
+}
+
+/**
+ * Copies the candidate's branches, tags and HEAD commit into the empty publication repository.
+ * A branch named `HEAD` makes the name ambiguous, and `git bundle` then leaves the checkout's HEAD
+ * out, so HEAD is resolved to its commit ($GIT_DIR/HEAD wins over refs/heads/HEAD), carried in the
+ * bundle by id, and the `HEAD` branch stays out of the publication repository.
+ */
+async function stageCandidate(
+  run: (argv: string[], cwd?: string) => Promise<{ stdout: string }>,
+  candidate: string,
+  repository: string,
+  bundle: string,
+): Promise<void> {
+  const head = (
+    await run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], candidate)
+  ).stdout.trim();
+  await run(
+    ["bundle", "create", bundle, `--exclude=${HEAD_BRANCH}`, "--branches", "--tags", head],
+    candidate,
+  );
+  await run([
+    "--git-dir",
+    repository,
+    "fetch",
+    bundle,
+    "+refs/heads/*:refs/heads/*",
+    "+refs/tags/*:refs/tags/*",
+    `^${HEAD_BRANCH}`,
+  ]);
+  await run(["--git-dir", repository, "bundle", "unbundle", bundle]);
+  await run(["--git-dir", repository, "update-ref", "--no-deref", "HEAD", head]);
+}
+
 export function publicationExec(
   gitExec: GitExec,
   credential?: { path: string; token: string },
@@ -62,17 +111,14 @@ export function publicationExec(
     try {
       if (command !== "clone") await run(["init", "--bare", "--template=", repository]);
       if (command === "push") {
-        await run(["bundle", "create", bundle, "--branches", "--tags", "HEAD"], options.cwd);
-        await run([
-          "--git-dir",
-          repository,
-          "fetch",
-          bundle,
-          "+refs/heads/*:refs/heads/*",
-          "+refs/tags/*:refs/tags/*",
-        ]);
-        await run(["--git-dir", repository, "fetch", bundle, "HEAD"]);
-        await run(["--git-dir", repository, "update-ref", "HEAD", "FETCH_HEAD"]);
+        try {
+          await stageCandidate(run, options.cwd, repository, bundle);
+        } catch (error) {
+          throw new PublicationStagingError(
+            error instanceof GitCommandError ? error.args : [],
+            error instanceof GitCommandError ? error.stderr : String(error),
+          );
+        }
       }
       if (credential && !path.isAbsolute(remote))
         await writeFile(credential.path, credential.token, { mode: 0o600 });

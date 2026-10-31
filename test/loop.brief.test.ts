@@ -13,7 +13,8 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { worktreePath } from "../src/acp";
 import { JobLoop, OutboxDispatcher, getWorkItem, migrate, openDatabase } from "../src/db";
-import { systemClock } from "../src/core";
+import { systemClock, defaultBriefTemplate } from "../src/core";
+import { writeBriefTemplates } from "../src/config";
 import {
   createFakeTracker,
   createLinearTracker,
@@ -43,121 +44,99 @@ items:
     failOn: P1
 `;
 
-test("linear intake delivers a persisted body-only requirement to implementation and fix prompts, and not to the review command", async () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-brief-"));
-  const seed = join(root, "seed");
-  const bare = join(root, "origin.git");
-  const pawsRoot = join(root, "paws");
-  const evidence = join(root, "prompts.jsonl");
-  const git = (...args: string[]) => execFileSync("git", args, { stdio: "pipe" }).toString().trim();
-  mkdirSync(pawsRoot);
-  git("init", "--bare", "-b", "main", bare);
-  git("clone", bare, seed);
-  git("-C", seed, "config", "user.name", "Paws Test");
-  git("-C", seed, "config", "user.email", "paws@example.com");
-  git("-C", seed, "config", "commit.gpgsign", "false");
-  mkdirSync(join(seed, ".agents", "skills", "review"), { recursive: true });
-  writeFileSync(join(seed, ".agents", "closeout.yaml"), policy);
-  writeFileSync(
-    join(seed, ".agents", "skills", "review", "SKILL.md"),
-    "Review the change against the supplied task brief.",
-  );
-  git("-C", seed, "add", ".");
-  git("-C", seed, "commit", "-m", "Seed policy");
-  git("-C", seed, "push", "origin", "main");
-  const snapshot = await linearSnapshot();
-  const tracker = createFakeTracker([snapshot]);
-  tracker.listSessionActivities = async () => [
-    {
-      id: "immutable-request",
-      sessionId: "brief-session",
+test.each([
+  {
+    name: "workspace",
+    workspace: "Workspace marker",
+    override: null,
+    expected: "Workspace marker",
+  },
+  {
+    name: "repository",
+    workspace: "Workspace marker",
+    override: "Repository marker",
+    expected: "Repository marker",
+  },
+])(
+  "queued turns use the current $name template",
+  async ({ workspace, override, expected }) => {
+    const root = mkdtempSync(join(tmpdir(), "paws-brief-"));
+    const seed = join(root, "seed");
+    const bare = join(root, "origin.git");
+    const pawsRoot = join(root, "paws");
+    const evidence = join(root, "prompts.jsonl");
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { stdio: "pipe" }).toString().trim();
+    mkdirSync(pawsRoot);
+    git("init", "--bare", "-b", "main", bare);
+    git("clone", bare, seed);
+    git("-C", seed, "config", "user.name", "Paws Test");
+    git("-C", seed, "config", "user.email", "paws@example.com");
+    git("-C", seed, "config", "commit.gpgsign", "false");
+    mkdirSync(join(seed, ".agents", "skills", "review"), { recursive: true });
+    writeFileSync(join(seed, ".agents", "closeout.yaml"), policy);
+    writeFileSync(
+      join(seed, ".agents", "skills", "review", "SKILL.md"),
+      "Review the change against the supplied task brief.",
+    );
+    git("-C", seed, "add", ".");
+    git("-C", seed, "commit", "-m", "Seed policy");
+    git("-C", seed, "push", "origin", "main");
+    const snapshot = await linearSnapshot();
+    const tracker = createFakeTracker([snapshot]);
+    tracker.listSessionActivities = async () => [
+      {
+        id: "immutable-request",
+        sessionId: "brief-session",
+        createdAt: "2026-10-11T00:00:00Z",
+        updatedAt: "2026-10-11T00:00:00Z",
+        userId: "human",
+        content: { type: "prompt", body: "Immutable user followup" },
+        signal: null,
+        signalMetadata: null,
+        sourceCommentId: "mention",
+        ephemeral: false,
+      },
+    ];
+    tracker.getSession = async () => ({
+      id: "brief-session",
+      status: "active",
       createdAt: "2026-10-11T00:00:00Z",
       updatedAt: "2026-10-11T00:00:00Z",
-      userId: "human",
-      content: { type: "prompt", body: "Immutable user followup" },
-      signal: null,
-      signalMetadata: null,
-      sourceCommentId: "mention",
-      ephemeral: false,
-    },
-  ];
-  tracker.getSession = async () => ({
-    id: "brief-session",
-    status: "active",
-    createdAt: "2026-10-11T00:00:00Z",
-    updatedAt: "2026-10-11T00:00:00Z",
-    endedAt: null,
-    dismissedAt: null,
-    appUserId: "app",
-    creatorId: "human",
-    issue: {
-      id: "parent",
-      identifier: "ENG-1",
-      title: "Export epic",
-      description: "API issue snapshot",
-    },
-    comment: null,
-    sourceComment: {
-      id: "source",
-      body: "API source thread request",
-      createdAt: "2026-10-11T00:00:00Z",
-    },
-    summary: null,
-    plan: null,
-    context: null,
-    externalLinks: [],
-    pullRequest: null,
-  });
-  const dbPath = join(root, "paws.db");
-  let db = openDatabase(dbPath);
-  migrate(db);
-  const launch = (input: { purpose: string; role: string }) => ({
-    command: process.execPath,
-    args: [agent, input.purpose, evidence, input.role],
-    env: process.env,
-  });
-  const repository = { owner: "acme", repo: "widgets", remoteUrl: bare };
-  let jobs = new JobLoop(db, systemClock);
-  let outbox = new OutboxDispatcher(db, systemClock);
-  let orchestrator = attachOrchestrator({
-    db,
-    admission: workspaceAdmission(db),
-    jobs,
-    outbox,
-    tracker,
-    repositories: [repository],
-    pawsRoot,
-    home: process.env.HOME,
-    launch,
-  });
-  try {
-    await orchestrator.onLinearEvent({
-      dedupeKey: "brief-created",
-      deliveryId: null,
-      source: "poll",
-      action: "created",
-      sessionId: "brief-session",
-      issueId: snapshot.linearIssueId,
-      activityId: null,
-      body: null,
-      signal: null,
-      updatedAtMs: 1,
-      payload: JSON.stringify({
-        promptContext: "Initial mention request",
-        agentSession: { comment: { id: "mention", body: "Comment instruction" } },
-        previousComments: [{ body: "Earlier discussion" }],
-        guidance: [{ body: "Team instruction", origin: { type: "team", id: "team" } }],
-      }),
+      endedAt: null,
+      dismissedAt: null,
+      appUserId: "app",
+      creatorId: "human",
+      issue: {
+        id: "parent",
+        identifier: "ENG-1",
+        title: "Export epic",
+        description: "API issue snapshot",
+      },
+      comment: null,
+      sourceComment: {
+        id: "source",
+        body: "API source thread request",
+        createdAt: "2026-10-11T00:00:00Z",
+      },
+      summary: null,
+      plan: null,
+      context: null,
+      externalLinks: [],
+      pullRequest: null,
     });
-    const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()?.id;
-    expect(itemId).toBeDefined();
-    db.close();
-    tracker.epics.clear();
-    db = openDatabase(dbPath);
+    const dbPath = join(root, "paws.db");
+    let db = openDatabase(dbPath);
     migrate(db);
-    jobs = new JobLoop(db, systemClock);
-    outbox = new OutboxDispatcher(db, systemClock);
-    orchestrator = attachOrchestrator({
+    const launch = (input: { purpose: string; role: string }) => ({
+      command: process.execPath,
+      args: [agent, input.purpose, evidence, input.role],
+      env: process.env,
+    });
+    const repository = { owner: "acme", repo: "widgets", remoteUrl: bare };
+    let jobs = new JobLoop(db, systemClock);
+    let outbox = new OutboxDispatcher(db, systemClock);
+    let orchestrator = attachOrchestrator({
       db,
       admission: workspaceAdmission(db),
       jobs,
@@ -168,58 +147,109 @@ test("linear intake delivers a persisted body-only requirement to implementation
       home: process.env.HOME,
       launch,
     });
-    await tickWithRestarts(jobs, orchestrator, db);
-    const item = getWorkItem(db, itemId!);
-    const prompts = readFileSync(evidence, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { purpose: string; prompt: string });
-    if (process.env.PAWS_BRIEF_EVIDENCE)
-      appendFileSync(
-        process.env.PAWS_BRIEF_EVIDENCE,
-        `${JSON.stringify({ source: "linear", state: item?.state, prompts })}\n`,
+    try {
+      await orchestrator.onLinearEvent({
+        dedupeKey: "brief-created",
+        deliveryId: null,
+        source: "poll",
+        action: "created",
+        sessionId: "brief-session",
+        issueId: snapshot.linearIssueId,
+        activityId: null,
+        body: null,
+        signal: null,
+        updatedAtMs: 1,
+        payload: JSON.stringify({
+          promptContext: "Initial mention request",
+          agentSession: { comment: { id: "mention", body: "Comment instruction" } },
+          previousComments: [{ body: "Earlier discussion" }],
+          guidance: [{ body: "Team instruction", origin: { type: "team", id: "team" } }],
+        }),
+      });
+      const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()?.id;
+      expect(itemId).toBeDefined();
+      db.close();
+      tracker.epics.clear();
+      db = openDatabase(dbPath);
+      migrate(db);
+      jobs = new JobLoop(db, systemClock);
+      outbox = new OutboxDispatcher(db, systemClock);
+      orchestrator = attachOrchestrator({
+        db,
+        admission: workspaceAdmission(db),
+        jobs,
+        outbox,
+        tracker,
+        repositories: [repository],
+        pawsRoot,
+        home: process.env.HOME,
+        launch,
+      });
+      writeBriefTemplates(join(pawsRoot, "config.toml"), {
+        template: `${workspace}\n\n${defaultBriefTemplate()}`,
+        projects: override ? { "acme/widgets": `${override}\n\n${defaultBriefTemplate()}` } : {},
+      });
+      await tickWithRestarts(jobs, orchestrator, db);
+      const item = getWorkItem(db, itemId!);
+      const prompts = readFileSync(evidence, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { purpose: string; prompt: string });
+      if (process.env.PAWS_BRIEF_EVIDENCE)
+        appendFileSync(
+          process.env.PAWS_BRIEF_EVIDENCE,
+          `${JSON.stringify({ source: "linear", state: item?.state, prompts })}\n`,
+        );
+      for (const { prompt } of prompts.filter((entry) => entry.purpose !== "review")) {
+        expect(prompt).toContain(expected);
+        if (override) expect(prompt).not.toContain(workspace);
+        for (const requirement of [
+          "Initial mention request",
+          "Comment instruction",
+          "Earlier discussion",
+          "Team instruction",
+          "Immutable user followup",
+          "API source thread request",
+          "API issue snapshot",
+        ])
+          expect(prompt).toContain(requirement);
+        expect(prompt).toContain(childDescription);
+        expect(prompt).toContain(parentDescription);
+        expect(prompt).toContain(snapshot.linearIssueId);
+        expect(prompt).toContain(snapshot.subIssues[0]!.linearIssueId);
+      }
+      // The review runs the agent's own review command: no brief, skill or finding format.
+      for (const { prompt } of prompts.filter((entry) => entry.purpose === "review")) {
+        expect(prompt).toMatch(
+          /^Review [a-f0-9]{40}\.\.[a-f0-9]{40} with the agent's review command\.$/,
+        );
+        for (const absent of [
+          "Initial mention request",
+          childDescription,
+          snapshot.linearIssueId,
+          "Reply with a JSON array of findings",
+          "Review the change against the supplied task brief.",
+        ])
+          expect(prompt).not.toContain(absent);
+      }
+      expect(item?.state, JSON.stringify(prompts)).toBe("merge_queue");
+      expect(prompts.map((entry) => entry.purpose)).toEqual([
+        "implement",
+        "review",
+        "fix",
+        "review",
+      ]);
+      const pathId = itemPathId(item!);
+      expect(readFileSync(join(worktreePath(pawsRoot, pathId), "result.txt"), "utf8")).toBe(
+        "BODY_ONLY_37_雪-fixed",
       );
-    for (const { prompt } of prompts.filter((entry) => entry.purpose !== "review")) {
-      for (const requirement of [
-        "Initial mention request",
-        "Comment instruction",
-        "Earlier discussion",
-        "Team instruction",
-        "Immutable user followup",
-        "API source thread request",
-        "API issue snapshot",
-      ])
-        expect(prompt).toContain(requirement);
-      expect(prompt).toContain(childDescription);
-      expect(prompt).toContain(parentDescription);
-      expect(prompt).toContain(snapshot.linearIssueId);
-      expect(prompt).toContain(snapshot.subIssues[0]!.linearIssueId);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
     }
-    // The review runs the agent's own review command: no brief, skill or finding format.
-    for (const { prompt } of prompts.filter((entry) => entry.purpose === "review")) {
-      expect(prompt).toMatch(
-        /^Review [a-f0-9]{40}\.\.[a-f0-9]{40} with the agent's review command\.$/,
-      );
-      for (const absent of [
-        "Initial mention request",
-        childDescription,
-        snapshot.linearIssueId,
-        "Reply with a JSON array of findings",
-        "Review the change against the supplied task brief.",
-      ])
-        expect(prompt).not.toContain(absent);
-    }
-    expect(item?.state, JSON.stringify(prompts)).toBe("merge_queue");
-    expect(prompts.map((entry) => entry.purpose)).toEqual(["implement", "review", "fix", "review"]);
-    const pathId = itemPathId(item!);
-    expect(readFileSync(join(worktreePath(pawsRoot, pathId), "result.txt"), "utf8")).toBe(
-      "BODY_ONLY_37_雪-fixed",
-    );
-  } finally {
-    db.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-}, 60_000);
+  },
+  60_000,
+);
 
 async function linearSnapshot(): Promise<EpicSnapshot> {
   const client: LinearClient = {

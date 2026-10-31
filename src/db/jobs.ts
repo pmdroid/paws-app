@@ -107,7 +107,9 @@ export function mergeLaneSql(alias: string): string {
 
 const EXECUTION_SQL = `(candidate.queue IN (${EXCLUSIVE_QUEUES.map(sqlLiteral).join(", ")}))`;
 const ITEM_ID = "COALESCE(json_extract(candidate.payload, '$.itemId'), '')";
-const NEEDS_RESERVATION = `(candidate.queue = ${sqlLiteral(JOB_KIND.start)} OR
+const NEEDS_RESERVATION = `((candidate.queue = ${sqlLiteral(JOB_KIND.start)}
+  AND (json_extract(candidate.payload, '$.capacityWait') IS NULL OR EXISTS
+    (SELECT 1 FROM work_item mine WHERE mine.id=${ITEM_ID} AND mine.state='queued'))) OR
   (candidate.queue = ${sqlLiteral(JOB_KIND.resume)} AND EXISTS
     (SELECT 1 FROM work_item mine WHERE mine.id=${ITEM_ID} AND mine.state='queued')))`;
 const RESERVATION = `EXISTS (SELECT 1 FROM scheduler_admission a JOIN work_item mine ON mine.id=a.item_id
@@ -118,6 +120,11 @@ const SAME_ITEM = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id 
     AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${ITEM_ID})`;
 const CLAIMABLE =
   "(candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ?)))";
+const HELD_SAME_MERGE_LANE = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")} AND NOT (EXISTS (SELECT 1 FROM work_item_repository mine
+    JOIN work_item_repository other ON other.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
+    WHERE mine.item_id = ${ITEM_ID}
+      AND (lower(mine.owner) != lower(other.owner) OR lower(mine.repo) != lower(other.repo)))))`;
 
 function queueFilterSql(queueCount: number): string {
   return queueCount > 0
@@ -125,30 +132,49 @@ function queueFilterSql(queueCount: number): string {
     : "";
 }
 
+/** Shared by the claim and by the health check. Placeholders: run_at, then one `now` per lease cutoff. */
+function claimWhereSql(queueCount: number): string {
+  return (
+    "candidate.run_at <= ?" +
+    queueFilterSql(queueCount) +
+    ` AND ${CLAIMABLE} ` +
+    `AND NOT (${NEEDS_RESERVATION} AND NOT (${RESERVATION})) ` +
+    `AND NOT (${mergeLaneSql("candidate")} AND ${HELD_SAME_MERGE_LANE}) ` +
+    `AND NOT (${EXECUTION_SQL} AND ${SAME_ITEM}) `
+  );
+}
+
 /**
  * One `UPDATE … RETURNING`. Lower priority numbers run first, then earlier run_at.
  * A running row whose lease has expired is reclaimable. No semicolon: one statement.
  *
- * Queued starts and restarts need the scheduler's reservation. Jobs for the same item and
- * merge jobs in the same repository cannot hold overlapping leases. Other items run independently.
+ * Queued starts and restarts need the scheduler's reservation. A start parked for a runner
+ * slot already began, so it is claimed again without a new reservation (PAS-898). Jobs for
+ * the same item and merge jobs in the same repository cannot hold overlapping leases. Other
+ * items run independently.
  */
 export function claimJobSql(queueCount: number): string {
-  const heldSameMergeLane = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
-    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")} AND NOT (EXISTS (SELECT 1 FROM work_item_repository mine
-    JOIN work_item_repository other ON other.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
-    WHERE mine.item_id = ${ITEM_ID}
-      AND (lower(mine.owner) != lower(other.owner) OR lower(mine.repo) != lower(other.repo)))))`;
   return (
     "UPDATE job SET status = 'running', locked_by = ?, locked_until = ?, attempts = attempts + 1 " +
     "WHERE id = (" +
-    "SELECT candidate.id FROM job AS candidate WHERE candidate.run_at <= ?" +
-    queueFilterSql(queueCount) +
-    ` AND ${CLAIMABLE} ` +
-    `AND NOT (${NEEDS_RESERVATION} AND NOT (${RESERVATION})) ` +
-    `AND NOT (${mergeLaneSql("candidate")} AND ${heldSameMergeLane}) ` +
-    `AND NOT (${EXECUTION_SQL} AND ${SAME_ITEM}) ` +
+    "SELECT candidate.id FROM job AS candidate WHERE " +
+    claimWhereSql(queueCount) +
     "ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1) RETURNING *"
   );
+}
+
+/** Due work the loop could claim right now. A start without a reservation is not included. */
+export function actionableDue(
+  db: Database,
+  now: number,
+): { count: number; oldestRunAt: number | null } {
+  const row = db
+    .query<{ count: number; oldest: number | null }, [number, number, number, number]>(
+      `SELECT count(*) AS count, min(candidate.run_at) AS oldest
+       FROM job AS candidate WHERE ${claimWhereSql(0)}`,
+    )
+    .get(now, now, now, now);
+  return { count: row?.count ?? 0, oldestRunAt: row?.oldest ?? null };
 }
 
 /** Insert in the same transaction as the state change that needs the work. */

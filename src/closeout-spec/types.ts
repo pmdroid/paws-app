@@ -91,6 +91,11 @@ export type PolicyCommand = {
    * any text, such as `test (*)`. A merge-queue re-check takes the result from those checks.
    */
   ci?: string;
+  /**
+   * Paws extension. A policy change to this check re-checks a commit Closeout already accepted;
+   * a change to any other check leaves the acceptance standing.
+   */
+  recheck?: boolean;
 };
 
 export type PolicyReview = {
@@ -109,6 +114,8 @@ export type PolicyReview = {
   parallel?: boolean;
   minChangedLines?: number;
   paths?: PolicyPaths;
+  /** See {@link PolicyCommand.recheck}. */
+  recheck?: boolean;
 };
 
 export type ReviewScope = "candidate" | "diff";
@@ -138,6 +145,8 @@ export type PolicyEvidence = {
   /** Omitted means publishing is enough. */
   approval?: EvidenceApprovalMode;
   paths?: PolicyPaths;
+  /** See {@link PolicyCommand.recheck}. */
+  recheck?: boolean;
 };
 
 /** Paws extension to draft 0.1. What happens when a rule's probe fails. */
@@ -160,6 +169,8 @@ export type PolicyRule = {
   failOn: Severity;
   /** Defaults to `fix`. */
   onFail?: RuleOnFail;
+  /** See {@link PolicyCommand.recheck}. */
+  recheck?: boolean;
 };
 
 /** Unknown kinds are not in `policy.schema.json`. See `ResolvedUnsupported`. */
@@ -178,7 +189,8 @@ export type PolicySetupStep = {
 
 /**
  * One YAML 1.2 policy file after parsing. Duplicate keys are an error.
- * The JSON value matches `schema/policy.schema.json`. Unknown fields are errors.
+ * The JSON value matches `schema/policy.schema.json`. A key the schema does not know is dropped
+ * before validation and reported once per policy digest; the keys it knows are strict.
  * `imports` and `items` default to empty arrays when omitted.
  */
 export type PolicyDocument = {
@@ -239,6 +251,8 @@ export type ResolvedCommand = {
   paths?: string[];
   /** See {@link PolicyCommand.ci}. */
   ci?: string;
+  /** See {@link PolicyCommand.recheck}. */
+  recheck?: boolean;
 };
 
 /** Resolved review, in canonical form. `independence` has both flags. */
@@ -253,6 +267,8 @@ export type ResolvedReview = {
   parallel?: boolean;
   minChangedLines?: number;
   paths?: string[];
+  /** See {@link PolicyCommand.recheck}. */
+  recheck?: boolean;
 };
 
 /** Resolved evidence requirement, with `media` and `minimum` defaulted. */
@@ -265,6 +281,8 @@ export type ResolvedEvidence = {
   hint?: string;
   approval?: EvidenceApprovalMode;
   paths?: string[];
+  /** See {@link PolicyCommand.recheck}. */
+  recheck?: boolean;
 };
 
 /** One video or screenshot Paws keeps for a check of this task. */
@@ -316,6 +334,8 @@ export type ResolvedRule = {
   paths?: string[];
   failOn: Severity;
   onFail: RuleOnFail;
+  /** See {@link PolicyCommand.recheck}. */
+  recheck?: boolean;
 };
 
 /**

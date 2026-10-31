@@ -3,6 +3,7 @@ export {
   SKILL_BUNDLE_FILE,
   SKILL_BUNDLE_LIMIT,
   SkillError,
+  skillFile,
   skillPath,
   writeSkillBundle,
 } from "./bundle";

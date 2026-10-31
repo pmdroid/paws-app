@@ -10,10 +10,14 @@ export type ReviewThreadComment = {
   reviewId: number | null;
   /** The comment's page on GitHub, when GitHub returned it. */
   url?: string;
+  /** The comment's REST id, which a reply names. */
+  databaseId?: number;
 };
 
 /** One review thread on a pull request, its comments oldest first. */
 export type ReviewThread = {
+  /** The thread's GraphQL node id, which resolving it names. */
+  id?: string;
   /** Set when the read included resolved threads. */
   resolved?: boolean;
   path: string | null;
@@ -31,6 +35,7 @@ const commentsSchema = z.object({
       body: z.string(),
       author: z.object({ login: z.string() }).nullable().optional(),
       url: z.string().optional(),
+      databaseId: z.number().nullable().optional(),
       pullRequestReview: z.object({ databaseId: z.number().nullable() }).nullable().optional(),
     }),
   ),
@@ -63,7 +68,7 @@ const commentsResponseSchema = z.object({
 });
 
 const COMMENT_FIELDS = `pageInfo { hasNextPage endCursor }
-            nodes { body url author { login } pullRequestReview { databaseId } }`;
+            nodes { databaseId body url author { login } pullRequestReview { databaseId } }`;
 
 const query = `query ReviewThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $repo) {
@@ -105,6 +110,7 @@ function threadComments(comments: Comments): ReviewThreadComment[] {
     body: comment.body,
     reviewId: comment.pullRequestReview?.databaseId ?? null,
     ...(comment.url ? { url: comment.url } : {}),
+    ...(typeof comment.databaseId === "number" ? { databaseId: comment.databaseId } : {}),
   }));
 }
 
@@ -160,6 +166,7 @@ export async function readReviewThreads(input: {
         more = rest.data.node.comments.pageInfo;
       }
       threads.push({
+        id: node.id,
         ...(input.includeResolved ? { resolved: node.isResolved } : {}),
         path: node.path ?? null,
         line: node.line ?? null,

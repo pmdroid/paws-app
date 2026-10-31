@@ -33,7 +33,6 @@ export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app
 export type { GitHubAppCredentials } from "./github-app";
 
 export {
-  parseAgentProfile,
   parseAgentSettings,
   readAgentSettings,
   resolveAgentProfiles,
@@ -43,6 +42,7 @@ export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles }
 
 export {
   DEFAULT_CI_FIX_ATTEMPTS,
+  DEFAULT_COMMENT_WAIT,
   DEFAULT_IGNORED_COMMENT_BOTS,
   DEFAULT_MERGE_CHOICE,
   ignoredCommentBots,
@@ -50,6 +50,7 @@ export {
   MAX_CI_FIX_ATTEMPTS,
   MERGE_ORDERS,
   highRiskPaths,
+  parseCommentWait,
   parseHighRiskPathSettings,
   parseMergePolicy,
   parseMergeSettings,
@@ -60,6 +61,7 @@ export {
   writeMergePolicy,
 } from "./merge";
 export type {
+  CommentWait,
   MainMoved,
   MergeChoice,
   MergeLevel,
@@ -104,4 +106,13 @@ export {
   setCheckoutProjectsText,
   writeCheckoutProjects,
 } from "./checkout";
+export {
+  emptyBriefTemplates,
+  parseBriefTemplates,
+  renderBriefTemplates,
+  resolveBriefTemplate,
+  setBriefTemplatesText,
+  writeBriefTemplates,
+} from "./brief";
+export type { BriefTemplates } from "./brief";
 export type { CheckoutExclusions, CheckoutProject, CheckoutProjects } from "./checkout";

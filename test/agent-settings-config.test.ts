@@ -197,4 +197,40 @@ describe("agent settings config", () => {
     });
     expect(parsed.projects[0]?.repo).toBe("pmdroid/barkvisor");
   });
+
+  test("keeps an optional reviewer fallback that is independent of the implementer", () => {
+    const path = join(tempHome(), "config.toml");
+    const next: AgentSettings = {
+      defaults: {
+        implementer: { agent: "codex", model: "gpt-6.1-sol" },
+        reviewer: { agent: "claude", model: "opus" },
+        reviewerFallback: { agent: "codex", model: "gpt-6-sol" },
+      },
+      projects: [],
+    };
+    writeAgentSettings(path, next);
+    expect(readFileSync(path, "utf8")).toContain(
+      '[agents.defaults.reviewer_fallback]\nagent = "codex"\nmodel = "gpt-6-sol"',
+    );
+    expect(readAgentSettings(loadConfigFile(path))).toEqual(next);
+    expect(resolveAgentProfiles(loadConfigFile(path)).reviewerFallback).toEqual({
+      agent: "codex",
+      model: "gpt-6-sol",
+    });
+    expect(() =>
+      parseAgentSettings({
+        ...next,
+        defaults: { ...next.defaults, reviewerFallback: { agent: "codex", model: "gpt-6.1-sol" } },
+      }),
+    ).toThrow(/different/);
+    expect(() =>
+      parseAgentSettings({
+        ...next,
+        defaults: { ...next.defaults, reviewerFallback: { agent: "claude", model: "sonnet" } },
+      }),
+    ).toThrow(/fallback/);
+    expect(resolveAgentProfiles(loadConfigFile(join(tempHome(), "none.toml")))).not.toHaveProperty(
+      "reviewerFallback",
+    );
+  });
 });

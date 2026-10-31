@@ -166,12 +166,12 @@ test("a slot taken before assignment waits for the runner without a retry and re
   const result = await runRemoteFault("busy");
   expect(result.state, result.detail).toBe("merge_queue");
   expect(result.errors, result.detail).toEqual([]);
-  expect(result.deferredState, result.detail).toBe("recovering");
-  expect(result.retries, result.detail).toEqual([0]);
+  expect(result.deferredState, result.detail).toBe("running");
+  expect(result.retries, result.detail).toEqual([]);
   expect(result.faultedAttempts, result.detail).toBe(1);
   // The retry places the run again, and its start line is not posted a second time.
   expect(result.thoughts, result.detail).toEqual(["Starting on fixture in acme/fixture."]);
-  expect(result.runs, result.detail).toEqual(["implement:lost", "implement:ended"]);
+  expect(result.runs, result.detail).toEqual(["implement:ended"]);
 }, 60_000);
 
 test("a deferred remote run is lost, holds no runner slot, and its retry is a new run", async () => {
@@ -469,7 +469,12 @@ async function runRemoteFault(fault: Fault) {
       resumeUsagePauseNow(db, paused.runId, Date.now());
       return;
     }
-    const deferred = listJobs(db).find((job) => job.queue === JOB_KIND.resume);
+    const deferred = listJobs(db).find(
+      (job) =>
+        job.queue === JOB_KIND.resume ||
+        (job.status === "pending" &&
+          (job.payload as { capacityWait?: unknown }).capacityWait !== undefined),
+    );
     if (!deferred) return;
     if (fault === "unpaired") runner.faultedAttempts++;
     runner.faulty = false;

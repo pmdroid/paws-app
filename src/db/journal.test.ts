@@ -71,9 +71,9 @@ describe("journal", () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-3", sessionKey: "s", maxAwakeMs: 1_000 });
     beginImplementRun(db, "PAS-3", 1_000);
-    accrueAwake(db, "PAS-3", 0, 1_000);
+    accrueAwake(db, "PAS-3", 0, 1_000, undefined, true);
     lines = [];
-    accrueAwake(db, "PAS-3", 1_000, 2_000);
+    accrueAwake(db, "PAS-3", 1_000, 2_000, undefined, true);
     expect(lines.filter((line) => line.startsWith("item "))).toEqual([
       "item PAS-3 failed: cap:time",
     ]);
