@@ -169,7 +169,8 @@ export type ReviewReplyGitHub = {
 
 /**
  * Post every reported reply on pull request `pullNumber`, once each, and resolve the threads the
- * fix addressed. A reply that fails stays unposted for the next publication. The number posted.
+ * agent fixed. Failed replies stay unposted; failed resolutions leave threads open.
+ * Process every row before reporting errors. Return the number of replies posted.
  */
 export async function postReviewReplies(
   db: Database,
@@ -177,22 +178,24 @@ export async function postReviewReplies(
   github: ReviewReplyGitHub,
 ): Promise<number> {
   let posted = 0;
+  const errors: unknown[] = [];
   for (const reply of unpostedReviewReplies(db, input.itemId, input.pullNumber)) {
-    if (reply.repliedAt === null) {
+    try {
       const body = replyBody(reply, input.head);
       if (reply.target === "thread" && reply.commentId !== null)
         await github.replyToReviewComment(input.pullNumber, reply.commentId, body);
       else await github.commentOnPullRequest(input.pullNumber, quoted(reply, body));
       markReviewReplyPosted(db, reply.id, input.now(), false);
       posted += 1;
-    }
-    const resolve =
-      reply.target === "thread" && reply.threadId !== null && reply.outcome === "fixed";
-    if (resolve) {
-      await github.resolveReviewThread(reply.threadId!);
-      markReviewReplyPosted(db, reply.id, input.now(), true);
+      if (reply.target === "thread" && reply.threadId !== null && reply.outcome === "fixed") {
+        await github.resolveReviewThread(reply.threadId);
+        markReviewReplyPosted(db, reply.id, input.now(), true);
+      }
+    } catch (error) {
+      errors.push(error);
     }
   }
+  if (errors.length > 0) throw new AggregateError(errors, "GitHub review replies failed");
   return posted;
 }
 
@@ -200,10 +203,12 @@ function replyBody(reply: ReviewReplyRecord, head: string): string {
   const text = reply.reply?.trim() ?? "";
   const lead =
     reply.outcome === "fixed"
-      ? `**Fixed** in ${head}. ${text}`
-      : reply.outcome === "answered" || reply.outcome === "not_changed"
-        ? `**Not changed.** ${text}`
-        : "Paws gave this comment to the agent, but the agent did not report on it. Leaving it open for a reviewer.";
+      ? `**Fixed** in ${head.slice(0, 7)}. ${text}`
+      : reply.outcome === "answered"
+        ? `**Answered.** ${text}`
+        : reply.outcome === "not_changed"
+          ? `**Not changed.** ${text}`
+          : "Paws gave this comment to the agent, but the agent did not report on it. Leaving it open for a reviewer.";
   return `${lead.trim()}\n\n${REVIEW_REPLY_MARKER}`;
 }
 

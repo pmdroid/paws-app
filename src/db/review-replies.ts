@@ -127,8 +127,7 @@ export function unpostedReviewReplies(
   return db
     .query<Row, [string, number]>(
       `SELECT * FROM review_reply WHERE item_id = ? AND pull_number = ? AND outcome IS NOT NULL
-         AND (replied_at IS NULL OR (target = 'thread' AND thread_id IS NOT NULL
-           AND outcome = 'fixed' AND resolved_at IS NULL)) ORDER BY recorded_at, number`,
+         AND replied_at IS NULL ORDER BY recorded_at, number`,
     )
     .all(itemId, pullNumber)
     .map(mapRow);

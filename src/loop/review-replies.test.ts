@@ -371,7 +371,7 @@ describe("Paws replies to every handed-off comment", () => {
       {
         prNumber: 7,
         commentId: 9001,
-        body: `**Fixed** in abcdef1234567890. Sort descending by score, with a test.\n\n${REVIEW_REPLY_MARKER}`,
+        body: `**Fixed** in abcdef1. Sort descending by score, with a test.\n\n${REVIEW_REPLY_MARKER}`,
       },
       {
         prNumber: 7,
@@ -425,13 +425,13 @@ describe("Paws replies to every handed-off comment", () => {
       },
       github,
     );
-    expect(replies.replies[0]!.body).toContain("**Not changed.** A fresh read is required.");
+    expect(replies.replies[0]!.body).toContain("**Answered.** A fresh read is required.");
     expect(replies.replies[1]!.body).toContain("did not report on it");
     expect(replies.resolved).toEqual([]);
     expect(unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
   });
 
-  test("a failed resolution retries without posting the reply twice", async () => {
+  test("a permanently failed resolution leaves later replies and resolutions independent", async () => {
     const { db, github, replies } = setup();
     recordReplyTargets(
       db,
@@ -447,35 +447,63 @@ describe("Paws replies to every handed-off comment", () => {
           author: "pascal",
           excerpt: "Fix the sorting.",
         },
+        {
+          number: 2,
+          pullNumber: 7,
+          target: "thread",
+          commentId: 9002,
+          threadId: "RT_1",
+          author: "pascal",
+          excerpt: "Fix the cache.",
+        },
+        {
+          number: 3,
+          pullNumber: 7,
+          target: "conversation",
+          commentId: 9003,
+          threadId: null,
+          author: "pascal",
+          excerpt: "Why bypass the cache?",
+        },
       ],
       1_000,
     );
-    recordAgentReviewReplies(db, "eng-1", "R1 fixed: Sort descending.", 2_000);
+    recordAgentReviewReplies(
+      db,
+      "eng-1",
+      "R1 fixed: Sort descending.\nR2 fixed: Include the tenant.\nR3 not changed: A fresh read is required.",
+      2_000,
+    );
     const input = { itemId: "eng-1", pullNumber: 7, head: "abcdef1234567890", now: () => 3_000 };
-    await expect(
-      postReviewReplies(db, input, {
-        ...github,
-        resolveReviewThread: async () => {
-          throw new Error("GitHub unavailable");
-        },
-      }),
-    ).rejects.toThrow("GitHub unavailable");
-    expect(replies.replies).toHaveLength(1);
-    expect(unpostedReviewReplies(db, "eng-1", 7)[0]!.repliedAt).toBe(3_000);
-    expect(await postReviewReplies(db, input, github)).toBe(0);
-    expect(replies.replies).toHaveLength(1);
-    expect(replies.resolved).toEqual(["RT_0"]);
+    const attempts: string[] = [];
+    const failing = {
+      ...github,
+      resolveReviewThread: async (threadId: string) => {
+        attempts.push(threadId);
+        if (threadId === "RT_0") throw new Error("GitHub unavailable");
+        await github.resolveReviewThread(threadId);
+      },
+    };
+    await expect(postReviewReplies(db, input, failing)).rejects.toThrow(
+      "GitHub review replies failed",
+    );
+    expect(replies.replies).toHaveLength(2);
+    expect(replies.comments).toHaveLength(1);
+    expect(replies.resolved).toEqual(["RT_1"]);
+    expect(attempts).toEqual(["RT_0", "RT_1"]);
     expect(unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
-    expect(await postReviewReplies(db, input, github)).toBe(0);
+    expect(await postReviewReplies(db, input, failing)).toBe(0);
+    expect(replies.replies).toHaveLength(2);
+    expect(replies.comments).toHaveLength(1);
+    expect(attempts).toEqual(["RT_0", "RT_1"]);
   });
 
-  test("Paws' own replies never come back as new comments", () => {
+  test.each([
+    ["paws-test[bot]", "A reply without a marker."],
+    ["pascal", `**Fixed** in abcdef1.\n\n${REVIEW_REPLY_MARKER}`],
+  ])("Paws replies from %s never come back as new comments", (author, body) => {
     const { db, conversation } = setup();
-    conversation({
-      id: 3002,
-      author: "paws-test[bot]",
-      body: `**Fixed** in abcdef1234567890.\n\n${REVIEW_REPLY_MARKER}`,
-    });
+    conversation({ id: 3002, author, body });
     expect(getPullComment(db, "conversation", 3002)).toBeNull();
   });
 });
