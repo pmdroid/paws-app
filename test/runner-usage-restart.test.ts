@@ -64,7 +64,16 @@ test("a restart between the usage receipt commit and candidate processing still 
   expect(result.receipts, result.detail).toBe(2);
 }, 60_000);
 
-async function usageLimitScenario(restart: boolean) {
+test("updated agent settings release a quota wait without resuming the exhausted provider", async () => {
+  const result = await usageLimitScenario(false, true);
+  expect(result.paused, result.detail).toEqual({ resetsAt: result.limitedAt + 120_000 });
+  expect(result.agents, result.detail).toEqual(["claude", "codex"]);
+  expect(result.finished, result.detail).toMatchObject({ stopReason: "end_turn" });
+  expect(result.activePauses, result.detail).toBe(0);
+  expect(result.policyAtPause?.cooldown_until).toBeGreaterThan(result.finishedAt);
+}, 60_000);
+
+async function usageLimitScenario(restart: boolean, switchProfiles = false) {
   const root = mkdtempSync(join(tmpdir(), "paws-usage-restart-"));
   const source = join(root, "source");
   const origin = join(root, "origin.git");
@@ -145,6 +154,10 @@ async function usageLimitScenario(restart: boolean) {
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
+  if (switchProfiles)
+    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [
+      runnerId,
+    ]);
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now);
   recordLinearInstallation(db, {
@@ -215,6 +228,8 @@ async function usageLimitScenario(restart: boolean) {
     pause: null as { resetsAt: number } | null,
     policyAtPause: null as Record<string, unknown> | null,
   };
+  let selectedAgent: "claude" | "codex" = "claude";
+  const agents: string[] = [];
   const handled = new Set<string>();
   const runner = (async () => {
     while (!sim.stopped) {
@@ -229,7 +244,8 @@ async function usageLimitScenario(restart: boolean) {
         if (pause && !sim.pause) {
           sim.pause = { resetsAt: pause.resetsAt };
           sim.policyAtPause = policy();
-          resumeUsagePauseNow(db, pause.runId, Date.now());
+          if (switchProfiles) selectedAgent = "codex";
+          else resumeUsagePauseNow(db, pause.runId, Date.now());
         }
         for (const envelope of work.commands(runnerId)) {
           const command = JSON.parse(
@@ -239,6 +255,7 @@ async function usageLimitScenario(restart: boolean) {
           handled.add(command.id);
           work.acknowledge(runnerId, command.id);
           if (command.type !== "run") continue;
+          agents.push(command.profile.agent);
           const limited = !limitedCommand;
           if (limited) limitedCommand = command.id;
           const grant = work.issueGrant({
@@ -280,6 +297,7 @@ async function usageLimitScenario(restart: boolean) {
     worktreePath: worktree,
     pawsRoot: root,
     profile: { agent: "claude" as const, model: null },
+    resolveProfiles: () => ({ profile: { agent: selectedAgent, model: null } }),
     // GitHub, served from the bare origin, so the run never reaches the network.
     networkGit: (args: string[]) => git(args.map((arg) => (arg === GITHUB_URL ? origin : arg))),
     signal,
@@ -318,6 +336,11 @@ async function usageLimitScenario(restart: boolean) {
       .get(limitedCommand);
     return {
       candidateSha,
+      agents,
+      finishedAt: Date.now(),
+      activePauses: db
+        .query<{ count: number }, []>("SELECT count(*) AS count FROM usage_pause")
+        .get()!.count,
       limitedAt,
       shutdown: shutdownError,
       detachedCancels,

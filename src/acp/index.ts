@@ -164,3 +164,5 @@ export { validateCandidateAttribution } from "./commit-policy";
 export { assertDescendsFromAny, candidateBases, CHECKPOINT_COMMIT_MESSAGE } from "../core";
 
 export { snapshotImplementationSkills, materializeImplementationSkills } from "./skill-bundle";
+
+export { providerFor } from "./model";

@@ -642,7 +642,7 @@ export function createRemoteAgentRunner(options: {
   function usageLimitWait(itemId: string, input: RunAgentOptions): UsageLimitWait {
     return {
       now,
-      async pause(limit) {
+      async pause(limit, profilesChanged) {
         const runId = getWorkItem(db, itemId)?.currentRunId;
         if (!runId) throw limit;
         const agent = agentName(limit.agent);
@@ -655,6 +655,7 @@ export function createRemoteAgentRunner(options: {
           resumeAt: limit.resumeAt,
           pausedAt: now(),
         });
+        let changed = false;
         try {
           await input.onEvent?.({
             type: "progress",
@@ -663,7 +664,8 @@ export function createRemoteAgentRunner(options: {
           // Resume now moves resume_at forward; Stop aborts the signal.
           for (;;) {
             const wait = (usagePause(db, runId)?.resumeAt ?? 0) - now();
-            if (wait <= 0) break;
+            changed = profilesChanged?.() ?? false;
+            if (wait <= 0 || changed) break;
             await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
           }
         } finally {
@@ -672,7 +674,9 @@ export function createRemoteAgentRunner(options: {
         input.signal?.throwIfAborted();
         await input.onEvent?.({
           type: "progress",
-          text: `Continuing: Paws is trying ${agent} again after its usage limit.`,
+          text: changed
+            ? "Continuing: Paws is trying the updated agent settings."
+            : `Continuing: Paws is trying ${agent} again after its usage limit.`,
         });
       },
     };

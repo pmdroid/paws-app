@@ -98,6 +98,7 @@ export interface RunAgentOptions {
   networkGit?: (args: string[]) => Promise<string>;
   profile?: AgentProfile;
   fallbackProfile?: AgentProfile;
+  resolveProfiles?: () => { profile?: AgentProfile; fallbackProfile?: AgentProfile };
   readOnly?: boolean;
   hostAccess?: boolean;
   prepareOnly?: boolean;
