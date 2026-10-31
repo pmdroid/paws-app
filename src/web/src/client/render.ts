@@ -485,8 +485,6 @@ function issueFacts(
     ["Runner", esc(run?.runner ?? "Not placed yet")],
     ["Agent", esc(run?.agent ?? item.agent)],
   ];
-  if (item.restartBudget)
-    facts.push(["Lifetime restarts", `${item.restartBudget.used} of ${item.restartBudget.limit}`]);
   if (item.owner) facts.push(["Delegated by", esc(item.owner)]);
   if (run) facts.push(["Started", esc(ago(run.startedAt, snapshot.generatedAt))]);
   if (item.pr)
@@ -676,7 +674,9 @@ function earlierAttempt(
   const facts = [
     itemLabel(item.state),
     ...(run ? [`${run.agent}${run.runner ? ` on runner ${run.runner}` : ""}`] : []),
-    ...(verdict ? [`Closeout ${verdict.decision}, evaluation ${verdict.attempt}`] : []),
+    ...(verdict
+      ? [`Closeout ${verdict.decision}, attempt ${verdict.attempt} of ${verdict.maxAttempts}`]
+      : []),
   ];
   return `<section class="earlier-attempt" aria-labelledby="${heading}"><h2 id="${heading}">Earlier attempt${item.endedAt ? `, ended ${esc(clock24(item.endedAt))}` : ""}</h2>
     <p class="muted">${esc(facts.join(" · "))}</p>
@@ -867,7 +867,7 @@ function phaseStrip(
       : index === 0 && agent?.attempts.at(-1)?.checks.length
         ? `${name} · Agent Closeout ${agentProgress(agent)}`
         : index === 1 && verdict
-          ? `${name} · evaluation ${verdict.attempt}`
+          ? `${name} · ${verdict.attempt} of ${verdict.maxAttempts}`
           : index === 2 && item?.state === "merge_queue" && item.mergeQueue
             ? `${name} · #${item.mergeQueue.position} in queue`
             : name,

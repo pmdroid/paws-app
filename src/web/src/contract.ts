@@ -113,8 +113,6 @@ export interface StatusItem {
   /** Unresolved blockers, evaluated by core before rendering. */
   blockers: string[];
   attempts: number;
-  /** Restart admissions across the entire item, separate from Closeout evaluations. */
-  restartBudget?: { used: number; limit: number };
   branch: string | null;
   runId: string | null;
   pr: StatusPullRequest | null;
@@ -1495,11 +1493,6 @@ function readProject(input: unknown): StatusProject {
   };
 }
 
-function readRestartBudget(input: unknown, path: string): { used: number; limit: number } {
-  const budget = object(input, path);
-  return { used: count(budget, "used", path), limit: count(budget, "limit", path) };
-}
-
 function readItem(input: unknown, index: number): StatusItem {
   const path = `items[${index}]`;
   const body = object(input, path);
@@ -1521,11 +1514,6 @@ function readItem(input: unknown, index: number): StatusItem {
     project: readItemProject(body.project, `${path}.project`),
     blockers: stringArray(body, "blockers", path),
     attempts: count(body, "attempts", path),
-    ...(body.restartBudget === undefined
-      ? {}
-      : {
-          restartBudget: readRestartBudget(body.restartBudget, `${path}.restartBudget`),
-        }),
     branch,
     runId,
     pr: readPr(body.pr, `${path}.pr`),

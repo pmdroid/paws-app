@@ -874,7 +874,6 @@ function toItem(
     project: itemProject(fact),
     blockers: blockersFor(db, record, itemsByIssue),
     attempts: record.turnCount,
-    restartBudget: { used: record.restartCount, limit: record.restartLimit },
     branch: record.branchName.trim() ? record.branchName : null,
     runId,
     pr,
@@ -1424,15 +1423,7 @@ function verdictFor(
   const base = best ? toVerdict(record, best) : impliedVerdict(record);
   if (base === null) return [];
   if (!live) return [base];
-  const evaluations = progress
-    .filter((row) => row.itemId === record.id)
-    .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
-  const verdict = withProgress(
-    { ...base, attempt: Math.max(1, evaluations.findIndex((row) => row.id === live.id) + 1) },
-    live,
-    nowMs,
-    env,
-  );
+  const verdict = withProgress(base, live, nowMs, env);
   return [
     { ...verdict, attempts: attemptsFor(record, progress, rounds, live, verdict, nowMs, env) },
   ];
@@ -1673,7 +1664,7 @@ function verdictCandidates(
 
 function toVerdict(record: WorkItemRecord, candidate: VerdictCandidate): StatusVerdict {
   const checks = parseChecks(candidate.summary);
-  const attempt = storedEvaluationCount(candidate.summary);
+  const attempt = attemptOf(candidate.summary, record);
   const failing = checks.find((check) => check.state === "failed");
   return {
     itemId: publicId(record),
@@ -1696,7 +1687,7 @@ function toVerdict(record: WorkItemRecord, candidate: VerdictCandidate): StatusV
 function impliedVerdict(record: WorkItemRecord): StatusVerdict | null {
   const decision = impliedDecision(record.state);
   if (decision === null) return null;
-  const attempt = 1;
+  const attempt = Math.max(record.turnCount, 1);
   const summary =
     decision === "running"
       ? "Closeout is running."
@@ -2309,6 +2300,24 @@ function decisionFromSummary(summary: string): VerdictDecision | null {
   return decisionOf(line.slice("Closeout:".length).trim());
 }
 
+function attemptOf(summary: string, record: WorkItemRecord): number {
+  const caller = intField(summary, "Caller attempt");
+  if (caller !== null) return caller;
+  const evaluations = intField(summary, "Evaluations");
+  if (evaluations !== null) return evaluations;
+  const fixes = intField(summary, "Fix attempts");
+  if (fixes !== null) return fixes + 1;
+  return Math.max(record.turnCount, 1);
+}
+
+function intField(summary: string, label: string): number | null {
+  const value = lineField(summary, label);
+  if (value === null) return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
 function shaField(summary: string, label: string): string | null {
   return blank(lineField(summary, label) ?? undefined);
 }
@@ -2400,13 +2409,4 @@ function httpUrl(value: string): string | null {
     journalCaught(caughtError3, "provider.httpUrl.toString", null);
     return null;
   }
-}
-
-/** Stored evaluation totals are not lifetime agent turns or per-check fix attempts. */
-function storedEvaluationCount(summary: string): number {
-  for (const label of ["Evaluations", "Caller attempt"]) {
-    const value = Number(lineField(summary, label));
-    if (Number.isInteger(value) && value > 0) return value;
-  }
-  return 1;
 }

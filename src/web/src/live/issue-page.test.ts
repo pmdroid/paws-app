@@ -130,17 +130,6 @@ function visibleText(html: string): string {
 }
 
 describe("one page per issue", () => {
-  test("the live item retains its lifetime restart budget through the detail contract", () => {
-    const db = database();
-    threeRuns(db);
-    db.run("UPDATE work_item SET restart_count=3, turn_count=46 WHERE id=?", [ITEM]);
-    const snapshot = snapshotOf(db);
-    const item = snapshot.details.get("PAS-367")!.items.find((entry) => !entry.endedAt)!;
-    expect(item.restartBudget).toEqual({ used: 3, limit: 10 });
-    const html = issuePage(snapshot);
-    expect(html).toContain("<dt>Lifetime restarts</dt><dd>3 of 10</dd>");
-    expect(html).not.toContain("attempt 46 of");
-  });
   test("a task with three engine runs renders one issue page with one timeline holding all three in order", () => {
     const db = database();
     threeRuns(db);

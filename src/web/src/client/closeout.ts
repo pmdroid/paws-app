@@ -180,10 +180,10 @@ export function renderCloseoutChecks(
   const decision = attempt.decision;
   const accepted = decision === "accepted";
   const title = accepted
-    ? `Accepted on Closeout evaluation ${shown}${inRound}`
+    ? `Accepted on attempt ${shown} of ${verdict.maxAttempts}${inRound}`
     : decision === "exhausted"
-      ? `Exhausted after Closeout evaluation ${shown}${inRound}`
-      : `${attemptLabel(attempt)[0]!.toUpperCase()}${attemptLabel(attempt).slice(1)} on Closeout evaluation ${shown}${inRound}`;
+      ? `Exhausted after ${shown} of ${verdict.maxAttempts} attempts${inRound}`
+      : `${attemptLabel(attempt)[0]!.toUpperCase()}${attemptLabel(attempt).slice(1)} on attempt ${shown} of ${verdict.maxAttempts}${inRound}`;
   const head = attempt.headSha ? ` on head ${esc(attempt.headSha.slice(0, 7))}` : "";
   const description = accepted
     ? `All ${checks.length} checks passed${head}.${pr && itemState === "merge_queue" ? ` Pull request <a href="${esc(pr.url)}">#${pr.number}</a> is waiting to merge.` : itemState === "merged" ? " This change has merged." : ""}`
@@ -237,8 +237,7 @@ export function roundAttempt(
   attempts: readonly StatusCloseoutAttempt[],
   attempt: StatusCloseoutAttempt,
 ): number {
-  if (attempt.round === undefined) return attempt.number;
-  const round = attempt.round;
+  const round = attempt.round ?? 1;
   return attempts.filter((entry) => (entry.round ?? 1) === round && entry.number <= attempt.number)
     .length;
 }

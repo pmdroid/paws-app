@@ -57,16 +57,6 @@ function page(snapshot: FullStatus, id = "ENG-101"): string {
 }
 
 describe("issue page", () => {
-  test("lifetime restarts use their own budget beside Closeout evaluations", () => {
-    const snapshot = fullStatusFixture();
-    const item = snapshot.items.find((entry) => entry.id === "ENG-101")!;
-    item.attempts = 46;
-    item.restartBudget = { used: 10, limit: 10 };
-    const html = page(snapshot);
-    expect(html).toContain("<dt>Lifetime restarts</dt><dd>10 of 10</dd>");
-    expect(html).not.toContain("attempt 46 of");
-    expect(html).not.toContain("evaluation 46");
-  });
   test("desktop: state, project, runner and agent, then the timeline, the pull request and earlier attempts", () => {
     const html = page(redelegated());
     for (const term of ["Project", "Runner", "Agent", "Session"])
