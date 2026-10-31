@@ -110,3 +110,18 @@ For daemon errors, inspect its journal on the VM:
 ```sh
 sudo journalctl -u paws-runner.service -n 100 --no-pager
 ```
+
+## Working through a Paws outage
+
+Runner 0.1.55 keeps working while Paws cannot be reached. Deploy Paws's lease-credit
+support before upgrading runners. The 30-minute budget counts monotonic awake work;
+sleep, wall-clock jumps and idle waits do not spend it. The stop deadline remains
+capped by 30 minutes and command expiry. Helpers retain their signed deadlines.
+
+A missing lease or fence stops the worker immediately. Network failures use the
+offline budget. Events and results remain local until accepted, including across
+runner restarts. Pending results remain in heartbeats until delivered. Only a
+fence refusal or HTTP 409 ends retries; other 4xx and parse errors stay retryable.
+Transcript replay validates the consumed bytes. Optional session uploads have a
+five-attempt bound. Result retries renew grants, back off up to one minute, and
+reuse the execution and command identifiers so Paws recognizes repeated delivery.

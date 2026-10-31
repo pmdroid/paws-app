@@ -101,11 +101,16 @@ const workerResult = z.object({
   candidateSha: RunnerResultSchema.shape.candidateSha,
   reviewText: RunnerResultSchema.shape.reviewText,
 });
+type AuthorizedRequest = <T>(operation: (token: string) => Promise<T>) => Promise<T>;
 type PushFailure = NonNullable<RunnerResult["pushFailure"]>;
 type Active = {
   execution: Execution;
   abort: AbortController;
   deadline: number;
+  accountedAt: number;
+  idleMs: number;
+  workMs: number;
+  workLimitMs: number;
   /** Monotonic time of the heartbeat that reported the server lease and alive mark. */
   agreedAt?: number;
   /** Wall time of that heartbeat. */
@@ -125,7 +130,6 @@ type Active = {
   quiesced?: Promise<void>;
   publicationBranch?: string;
   followUps?: number;
-  transcriptSealed?: boolean;
   restarts?: number;
   pushTries?: number;
   pushAt?: number;
@@ -201,10 +205,15 @@ export async function openRunnerRuntime(options: {
   deliveryWaitMs?: number;
   /** The first wait before a session upload is retried during restart recovery; it doubles. */
   sessionRetryMs?: number;
+  /** First delay between stored-result attempts, doubling up to one minute. */
+  resultRetryMs?: number;
 }) {
   if (options.daemon.status().phase !== "paired")
     throw new Error("Runner must be paired before execution");
   const journal = openExecutionJournal(options.root);
+  let closed = false;
+  const resultDeliveries = new Map<string, Promise<void>>();
+  const resultRetries = new Map<string, { tries: number; at: number; message: string }>();
   const broker =
     options.broker ??
     createDirectWorkerSupervisor({
@@ -263,6 +272,7 @@ export async function openRunnerRuntime(options: {
   try {
     for (const previous of journal.executions(true)) {
       await broker.stop(previous.id);
+      if (journal.resultPending(previous.id)) continue;
       report(
         new Error(
           `Runner interrupted execution ${previous.id} for run ${previous.command.runId}: runner restarted`,
@@ -291,7 +301,6 @@ export async function openRunnerRuntime(options: {
       );
   concurrency();
   const active = new Map<string, Active>();
-  let closed = false;
   let ticking: Promise<void> | undefined;
   let pulsing: Promise<void> | undefined;
   let stopping: Promise<void> | undefined;
@@ -308,7 +317,23 @@ export async function openRunnerRuntime(options: {
    * While Paws is unreachable, move the deadline with `creditedLeaseUntil` and the alive mark
    * from the last heartbeat. No credit leaves the clamped deadline from that heartbeat.
    */
+  function accountWork(entry: Active) {
+    const at = monotonic();
+    const elapsed = Math.max(0, at - entry.accountedAt);
+    entry.accountedAt = at;
+    const working =
+      entry.execution.phase === "running" &&
+      !entry.abort.signal.aborted &&
+      broker.alive?.(entry.execution.id) !== false &&
+      !journal.waiting(entry.execution.id);
+    if (working) entry.workMs += elapsed;
+    else if (entry.offlineBudgetMs !== undefined) {
+      entry.idleMs += elapsed;
+      entry.deadline += elapsed;
+    }
+  }
   function holdOffline(entry: Active) {
+    accountWork(entry);
     if (
       !unreachable ||
       entry.offlineBudgetMs === undefined ||
@@ -318,7 +343,7 @@ export async function openRunnerRuntime(options: {
       entry.serverLeaseUntil === undefined
     )
       return;
-    const elapsed = monotonic() - entry.agreedAt;
+    const elapsed = Math.max(0, monotonic() - entry.agreedAt - entry.idleMs);
     const credited = creditedLeaseUntil({
       leaseUntil: entry.serverLeaseUntil,
       expiresAt: entry.execution.command.expiresAt,
@@ -327,8 +352,24 @@ export async function openRunnerRuntime(options: {
       budgetMs: entry.offlineBudgetMs,
       skewMs: PAWS_ALIVE_LEASE_SKEW_MS,
     });
-    if (credited === entry.serverLeaseUntil) return;
-    entry.deadline = entry.agreedAt + Math.max(0, credited - entry.agreedWallAt);
+    const authorityUntil = creditedLeaseUntil({
+      leaseUntil: entry.serverLeaseUntil,
+      expiresAt: entry.execution.command.expiresAt,
+      aliveAt: entry.serverAliveAt,
+      now: entry.serverAliveAt + entry.offlineBudgetMs,
+      budgetMs: entry.offlineBudgetMs,
+      skewMs: PAWS_ALIVE_LEASE_SKEW_MS,
+    });
+    entry.deadline = Math.min(
+      entry.agreedAt + entry.idleMs + Math.max(0, credited - entry.agreedWallAt),
+      entry.agreedAt + Math.max(0, authorityUntil - entry.agreedWallAt),
+      entry.agreedAt +
+        Math.min(
+          entry.offlineBudgetMs,
+          Math.max(0, entry.execution.command.expiresAt - entry.agreedWallAt),
+        ) -
+        RUNNER_LEASE_GRACE_MS,
+    );
   }
   async function grant(entry: Active) {
     check(entry);
@@ -358,6 +399,10 @@ export async function openRunnerRuntime(options: {
     notify = false,
     pushFailure?: PushFailure,
   ) {
+    if (journal.hasResult(entry.execution.id)) {
+      active.delete(key(entry.execution.command));
+      return deliverResult(entry.execution);
+    }
     const first = !entry.abort.signal.aborted;
     entry.abort.abort();
     if (first)
@@ -368,32 +413,157 @@ export async function openRunnerRuntime(options: {
       );
     entry.stopped ??= (async () => {
       await quiesce(entry);
-      if (notify) await fail(entry.execution, reason, entry.transcriptSealed, pushFailure);
+      if (notify) await fail(entry.execution, reason, pushFailure);
       journal.phase(entry.execution.id, "interrupted");
       entry.execution.phase = "interrupted";
     })();
     await entry.stopped;
   }
-  async function fail(
+  async function fail(execution: Execution, reason: string, pushFailure?: PushFailure) {
+    const { command } = execution;
+    if (journal.hasResult(execution.id)) return deliverResult(execution);
+    if (command.type !== "run" && command.type !== "review" && command.type !== "task") return;
+    const tail = (broker.log?.(execution.id) ?? "")
+      .replace(/gh[opsu]_[A-Za-z0-9]{10,}/g, "[redacted]")
+      .replace(/:\/\/[^\s/@]+@/g, "://[redacted]@");
+    journal.saveResult(
+      execution.id,
+      RunnerResultSchema.parse({
+        executionId: execution.id,
+        commandId: command.id,
+        role: command.type === "review" ? "reviewer" : "implementer",
+        stopReason: "error",
+        timedOut: false,
+        cancelled: false,
+        authRequired: false,
+        agentExited: true,
+        errorMessage:
+          `The runner stopped this run: ${reason}.${tail ? `\n\nLast worker output:\n${tail}` : ""}`.slice(
+            0,
+            16_384,
+          ),
+        ...(pushFailure ? { pushFailure } : {}),
+      }),
+      true,
+    );
+    await deliverResult(execution);
+  }
+  function deliverResult(execution: Execution): Promise<void> {
+    if (closed) return Promise.resolve();
+    if ((resultRetries.get(execution.id)?.at ?? 0) > monotonic()) return Promise.resolve();
+    const current = resultDeliveries.get(execution.id);
+    if (current) return current;
+    const delivery = sendResult(execution).finally(() => resultDeliveries.delete(execution.id));
+    resultDeliveries.set(execution.id, delivery);
+    return delivery;
+  }
+  async function sendResult(execution: Execution) {
+    const { command } = execution;
+    const pending = journal.pendingResult(execution.id);
+    if (!pending) return;
+    let credential: RunnerGrant | undefined;
+    let issuedAt = 0;
+    let granting = false;
+    let posting = false;
+    const token = async () => {
+      const at = now();
+      if (
+        !credential ||
+        credential.expiresAt <= at + 5000 ||
+        at >= issuedAt + (credential.expiresAt - issuedAt) / 2
+      ) {
+        granting = true;
+        credential = await options.daemon.issueRunGrant(command.runId, {
+          commandId: command.id,
+          generation: command.generation,
+        });
+        granting = false;
+        issuedAt = at;
+      }
+      return credential.token;
+    };
+    const request: AuthorizedRequest = async (operation) => {
+      for (let attempt = 0; ; attempt++) {
+        if (closed) throw new RemoteFailure("Runner stopping");
+        const sent = await token();
+        if (closed) throw new RemoteFailure("Runner stopping");
+        try {
+          const value = await operation(sent);
+          if (closed) throw new RemoteFailure("Runner stopping");
+          return value;
+        } catch (error) {
+          if (!(error instanceof RunnerRequestError) || error.status !== 403) throw error;
+          const grantExpired =
+            now() >= credential!.expiresAt || /grant.*(invalid|expired)/i.test(error.reason ?? "");
+          credential = undefined;
+          if (attempt) {
+            if (grantExpired) throw new RemoteFailure("Delivery grant expired");
+            throw error;
+          }
+        }
+      }
+    };
+    try {
+      if (pending.failure) await prepareFailure(execution, token, request);
+      posting = true;
+      await request((sent) =>
+        options.daemon.postResult(command.runId, command.generation, pending.result, sent),
+      );
+      journal.resultAccepted(execution.id);
+      journal.phase(execution.id, pending.failure ? "interrupted" : "complete");
+      resultRetries.delete(execution.id);
+    } catch (error) {
+      if (closed) return;
+      const refused =
+        (granting || posting) &&
+        error instanceof RunnerRequestError &&
+        (error.status === 409 || (error.status === 403 && /\bfenced\b/i.test(error.reason ?? "")));
+      if (refused) {
+        journal.resultRejected(execution.id);
+        journal.phase(execution.id, "interrupted");
+        resultRetries.delete(execution.id);
+        report(
+          new Error(
+            `Paws refused the stored result for execution ${execution.id}: ${error.message}`,
+          ),
+        );
+      } else {
+        const previous = resultRetries.get(execution.id);
+        const message =
+          error instanceof RunnerRequestError
+            ? `${error.status}:${error.method}:${error.path}`
+            : String(error).replace(/after \d+ ms/g, "");
+        const tries = (previous?.tries ?? 0) + 1;
+        resultRetries.set(execution.id, {
+          tries,
+          message,
+          at:
+            monotonic() +
+            Math.min(
+              60_000,
+              (options.resultRetryMs ?? options.sessionRetryMs ?? 1000) *
+                2 ** Math.min(tries - 1, 6),
+            ),
+        });
+        if (message !== previous?.message) report(error);
+      }
+    }
+  }
+  async function prepareFailure(
     execution: Execution,
-    reason: string,
-    sealed = false,
-    pushFailure?: PushFailure,
+    token: () => Promise<string>,
+    request: AuthorizedRequest,
   ) {
     const { command } = execution;
-    if (command.type !== "run" && command.type !== "review" && command.type !== "task") return;
     try {
-      const { token } = await options.daemon.issueRunGrant(command.runId, {
-        commandId: command.id,
-        generation: command.generation,
-      });
-      if (!sealed) {
+      if (!journal.transcriptSealed(execution.id)) {
         let raw: Buffer = Buffer.alloc(0);
         try {
           raw = readRunnerResultFile(options.results, execution.id, "events.jsonl");
         } catch (caughtError2) {
           journalCaught(caughtError2, "runner-runtime.fail.readRunnerResultFile", command.itemId);
         }
+
         journal.ingest(execution.id, raw);
         let { offset, consumed } = journal.transcriptCursor(execution.id);
         while (offset < consumed) {
@@ -401,74 +571,61 @@ export async function openRunnerRuntime(options: {
             offset,
             Math.min(offset + RUNNER_TRANSCRIPT_CHUNK_BYTES, consumed),
           );
-          await options.daemon.uploadTranscript(
-            command.runId,
-            {
-              generation: command.generation,
-              executionId: execution.id,
-              offset,
-              sha256: createHash("sha256").update(bytes).digest("hex"),
-              data: bytes.toString("base64"),
-            },
-            token,
+          await request((sent) =>
+            options.daemon.uploadTranscript(
+              command.runId,
+              {
+                generation: command.generation,
+                executionId: execution.id,
+                offset,
+                sha256: createHash("sha256").update(bytes).digest("hex"),
+                data: bytes.toString("base64"),
+              },
+              sent,
+            ),
           );
           journal.transcriptUploaded(execution.id, offset, offset + bytes.length);
           offset += bytes.length;
         }
-        await options.daemon.finishTranscript(
-          command.runId,
-          {
-            generation: command.generation,
-            executionId: execution.id,
-            offset: consumed,
-            sizeBytes: consumed,
-            sha256: createHash("sha256").update(raw.subarray(0, consumed)).digest("hex"),
-          },
-          token,
+        await request((sent) =>
+          options.daemon.finishTranscript(
+            command.runId,
+            {
+              generation: command.generation,
+              executionId: execution.id,
+              offset: consumed,
+              sizeBytes: consumed,
+              sha256: createHash("sha256").update(raw.subarray(0, consumed)).digest("hex"),
+            },
+            sent,
+          ),
+        );
+        journal.sealTranscript(execution.id);
+      }
+    } catch (error) {
+      if (
+        !(error instanceof RunnerRequestError) ||
+        error.status >= 500 ||
+        [408, 429].includes(error.status) ||
+        /grant.*(invalid|expired)/i.test(error.reason ?? "")
+      )
+        throw error;
+      // Artifact refusal is not result refusal. Paws still needs the run's failure result.
+    }
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await uploadSession(execution, token, undefined, request);
+        break;
+      } catch (error) {
+        if (closed) throw error;
+        if (!(error instanceof RemoteFailure) || attempt >= SESSION_UPLOAD_TRIES) {
+          skipSession(execution, error);
+          break;
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, (options.sessionRetryMs ?? 1000) * 2 ** (attempt - 1)),
         );
       }
-      // An outage during recovery retries from the stored offset, a few times at most.
-      for (let attempt = 1; ; attempt++) {
-        try {
-          await uploadSession(execution, async () => token);
-          break;
-        } catch (error) {
-          if (!(error instanceof RemoteFailure) || attempt >= SESSION_UPLOAD_TRIES) {
-            skipSession(execution, error);
-            break;
-          }
-          await new Promise((resolve) =>
-            setTimeout(resolve, (options.sessionRetryMs ?? 1_000) * 2 ** (attempt - 1)),
-          );
-        }
-      }
-      const tail = (broker.log?.(execution.id) ?? "")
-        .replace(/gh[opsu]_[A-Za-z0-9]{10,}/g, "[redacted]")
-        .replace(/:\/\/[^\s/@]+@/g, "://[redacted]@");
-      await options.daemon.postResult(
-        command.runId,
-        command.generation,
-        RunnerResultSchema.parse({
-          executionId: execution.id,
-          commandId: command.id,
-          role: command.type === "review" ? "reviewer" : "implementer",
-          stopReason: "error",
-          timedOut: false,
-          cancelled: false,
-          authRequired: false,
-          agentExited: true,
-          errorMessage:
-            `The runner stopped this run: ${reason}.${tail ? `\n\nLast worker output:\n${tail}` : ""}`.slice(
-              0,
-              16_384,
-            ),
-          ...(pushFailure ? { pushFailure } : {}),
-        }),
-        token,
-      );
-    } catch (error) {
-      journalCaught(error, "runner-runtime.fail.issueRunGrant", command.itemId);
-      report(error);
     }
   }
   /**
@@ -479,6 +636,7 @@ export async function openRunnerRuntime(options: {
     execution: Execution,
     token: () => Promise<string>,
     guard: () => void = () => undefined,
+    request: AuthorizedRequest = async (operation) => operation(await token()),
   ) {
     const { command } = execution;
     if (command.type !== "run" || !options.daemon.uploadSession || !options.daemon.finishSession)
@@ -509,29 +667,31 @@ export async function openRunnerRuntime(options: {
         AGENT_SESSION_MAX_BYTES,
       );
       if (!bytes.length) throw new Error("The agent session bundle is shorter than recorded");
-      const sent = await token();
       await remote(() =>
-        options.daemon.uploadSession!(
-          command.runId,
-          {
-            generation: command.generation,
-            offset,
-            sha256: createHash("sha256").update(bytes).digest("hex"),
-            data: bytes.toString("base64"),
-          },
-          sent,
+        request((sent) =>
+          options.daemon.uploadSession!(
+            command.runId,
+            {
+              generation: command.generation,
+              offset,
+              sha256: createHash("sha256").update(bytes).digest("hex"),
+              data: bytes.toString("base64"),
+            },
+            sent,
+          ),
         ),
       );
       guard();
       journal.sessionUploaded(execution.id, offset, offset + bytes.length);
       offset += bytes.length;
     }
-    const sent = await token();
     await remote(() =>
-      options.daemon.finishSession!(
-        command.runId,
-        { ...session, generation: command.generation, agentVersion },
-        sent,
+      request((sent) =>
+        options.daemon.finishSession!(
+          command.runId,
+          { ...session, generation: command.generation, agentVersion },
+          sent,
+        ),
       ),
     );
     guard();
@@ -561,9 +721,14 @@ export async function openRunnerRuntime(options: {
     })();
     return entry.quiesced;
   }
+  function expired(entry: Active) {
+    return (
+      entry.workMs >= entry.workLimitMs || monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS
+    );
+  }
   function check(entry: Active) {
     holdOffline(entry);
-    if (closed || monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS) {
+    if (closed || expired(entry)) {
       void interrupt(entry, closed ? "runner stopping" : "lease deadline passed", !closed).catch(
         journalRejection("runner-runtime.check.interrupt", report, entry.execution.command.itemId),
       );
@@ -610,10 +775,17 @@ export async function openRunnerRuntime(options: {
           options.skills?.installed(),
           runtimes.installed(),
           agents,
-          [...active.values()].map(({ execution }) => ({
-            runId: execution.command.runId,
-            generation: execution.command.generation,
-          })),
+          [
+            ...new Map(
+              [
+                ...[...active.values()].map(({ execution }) => execution.command),
+                ...journal.pendingResults(),
+              ].map((command) => [
+                key(command),
+                { runId: command.runId, generation: command.generation },
+              ]),
+            ).values(),
+          ],
         );
         if (closed) return;
         if (response.agents && options.agents)
@@ -629,6 +801,7 @@ export async function openRunnerRuntime(options: {
             .sync(response.skills)
             .catch(journalRejection("runner-runtime.pulse.sync", report, null));
         const observed = monotonic();
+        if (unreachable) for (const retry of resultRetries.values()) retry.at = 0;
         unreachable = false;
         advertisedBudget = response.offlineBudgetMs;
         advertisedAliveAt = response.aliveAt;
@@ -665,6 +838,8 @@ export async function openRunnerRuntime(options: {
               ),
             );
           else if (!entry.abort.signal.aborted) {
+            accountWork(entry);
+            entry.idleMs = 0;
             entry.agreedAt = started;
             entry.agreedWallAt = now();
             entry.serverAliveAt = response.aliveAt;
@@ -890,7 +1065,7 @@ export async function openRunnerRuntime(options: {
       offset += bytes.length;
       journal.transcriptUploaded(entry.execution.id, previous, offset);
     }
-    if (final && !entry.transcriptSealed) {
+    if (final && !journal.transcriptSealed(entry.execution.id)) {
       const token = await grant(entry);
       await remote(() =>
         options.daemon.finishTranscript(
@@ -905,8 +1080,8 @@ export async function openRunnerRuntime(options: {
           token,
         ),
       );
+      journal.sealTranscript(entry.execution.id);
       check(entry);
-      entry.transcriptSealed = true;
     }
   }
   async function deliver(entry: Active) {
@@ -1259,23 +1434,21 @@ export async function openRunnerRuntime(options: {
       check(entry);
     }
     await drainTranscript(entry, true);
-    const token = await grant(entry);
-    await remote(() =>
-      options.daemon.postResult(
-        entry.execution.command.runId,
-        entry.execution.command.generation,
-        result,
-        token,
-      ),
-    );
-    check(entry);
-    journal.phase(entry.execution.id, "complete");
+    journal.saveResult(entry.execution.id, result);
     active.delete(key(entry.execution.command));
+    await deliverResult(entry.execution);
   }
   async function step() {
     await pulse().catch(journalRejection("runner-runtime.step.pulse", report, null));
     if (closed) return;
-    const polled = await options.daemon.pollCommands();
+    for (const pending of journal.pendingResults()) {
+      const execution = journal.execution(pending.id);
+      if (execution) void deliverResult(execution);
+    }
+    const polled = await options.daemon.pollCommands().catch((error) => {
+      report(error);
+      return { commands: [], rejected: [], deniedRepositories: [] };
+    });
     for (const repository of polled.deniedRepositories) {
       if (deniedReported.has(repository)) continue;
       deniedReported.add(repository);
@@ -1318,7 +1491,7 @@ export async function openRunnerRuntime(options: {
         if (!entry.task) prepare(entry);
       }
     }
-    if (active.size < concurrency()) {
+    if (!unreachable && active.size < concurrency()) {
       for (const command of commands) {
         if (command.type !== "run" && command.type !== "review" && command.type !== "task")
           continue;
@@ -1339,6 +1512,10 @@ export async function openRunnerRuntime(options: {
           execution,
           abort: new AbortController(),
           deadline,
+          accountedAt: monotonic(),
+          idleMs: 0,
+          workMs: 0,
+          workLimitMs: Math.max(0, command.expiresAt - now()),
           ...(advertisedBudget === undefined ||
           advertisedAliveAt === undefined ||
           agreedPulseAt === undefined ||
@@ -1394,6 +1571,11 @@ export async function openRunnerRuntime(options: {
   }
   async function advance(entry: Active) {
     try {
+      if (journal.hasResult(entry.execution.id)) {
+        active.delete(key(entry.execution.command));
+        await deliverResult(entry.execution);
+        return;
+      }
       await deliver(entry);
       if (!(await resumeIfCrashed(entry))) await complete(entry);
     } catch (error) {
@@ -1414,7 +1596,7 @@ export async function openRunnerRuntime(options: {
   const watchdog = setInterval(() => {
     for (const entry of active.values()) {
       holdOffline(entry);
-      if (monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS)
+      if (expired(entry))
         void interrupt(entry, "lease deadline passed", true).catch(
           journalRejection(
             "runner-runtime.openRunnerRuntime.interrupt",
@@ -1458,9 +1640,10 @@ export async function openRunnerRuntime(options: {
         clearInterval(heartbeat);
         clearInterval(watchdog);
         await Promise.all([...active.values()].map((entry) => interrupt(entry, "runner stopping")));
-        await Promise.allSettled([
+        await settle([
           ticking,
           pulsing,
+          ...resultDeliveries.values(),
           ...[...active.values()].flatMap((entry) => [entry.task, entry.delivering]),
         ]);
         journal.close();

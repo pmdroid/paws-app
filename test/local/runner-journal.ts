@@ -126,10 +126,12 @@ export function probeRunnerJournal(root: string, observe: Observe) {
         .map((record) => JSON.stringify(record) + "\n")
         .join(""),
     );
-    journal.ingest(
-      id,
-      Buffer.concat([prefix, next.subarray(0, next.indexOf(10) + 1), receiptRecords]),
-    );
+    const consumed = Buffer.concat([
+      prefix,
+      next.subarray(0, next.indexOf(10) + 1),
+      receiptRecords,
+    ]);
+    journal.ingest(id, consumed);
     assert.equal(journal.requestId(id, 3), receiptRequest);
     assert.throws(() => journal.answered(id, 3), /delivered question/);
     journal.sent(id, 3);
@@ -144,6 +146,7 @@ export function probeRunnerJournal(root: string, observe: Observe) {
     assert.equal(journal.answerCursor(id), 4);
     assert.equal(journal.phase(id, "interrupted"), true);
     assert.equal(journal.phase(id, "running"), false);
+    journal.ingest(id, Buffer.concat([consumed, Buffer.from('{"type":')]));
     assert.throws(() => journal.ingest(id, Buffer.concat([prefix, prefix])), /terminal/);
     assert.deepEqual(journal.pending(id), []);
     assert.equal(journal.admit(command, 3000), null);
