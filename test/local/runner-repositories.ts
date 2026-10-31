@@ -395,16 +395,25 @@ export async function probeRunnerRepositories(
   const staleSha = (await invoke(["-C", rebaseTree, "rev-parse", "HEAD"])).trim();
   const staleBundle = join(root, "stale.bundle");
   await invoke(["-C", rebaseTree, "bundle", "create", staleBundle, "HEAD", `^${updatedSha}`]);
+  await assert.rejects(
+    repositories.publish(rebase, {
+      bundle: readFileSync(staleBundle),
+      sha: staleSha,
+      branch: candidate.branch,
+    }),
+  );
   const joined = await repositories.publish(rebase, {
     bundle: readFileSync(staleBundle),
     sha: staleSha,
     branch: candidate.branch,
+    rebase: true,
   });
   assert.equal(
     await repositories.publish(rebase, {
       bundle: readFileSync(staleBundle),
       sha: staleSha,
       branch: candidate.branch,
+      rebase: true,
     }),
     joined,
   );

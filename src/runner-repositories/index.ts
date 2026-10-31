@@ -480,7 +480,7 @@ export function createRunnerRepositories(options: {
                 });
               return sha;
             } catch (error) {
-              if (!branchMoved(error)) throw error;
+              if (!candidate.rebase || !branchMoved(error)) throw error;
               journalCaught(error, "runner-repositories.publish.branchMoved", null);
               // The branch moved on GitHub while the turn ran (PAS-886): the turn's own commits go
               // on top of the branch as it is now, with a lease on that tip, and no new turn.
