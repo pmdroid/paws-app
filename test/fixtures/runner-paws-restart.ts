@@ -22,6 +22,7 @@ import {
   setJournalSink,
 } from "../../src/db";
 import { JOB_KIND } from "../../src/core";
+import { loadConfigFile, resolveAgentProfiles } from "../../src/config";
 import { createFakeTracker } from "../../src/linear";
 import { createFakeGitHub } from "../../src/github";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
@@ -107,8 +108,12 @@ await git(["-C", source, "bundle", "create", join(root, "candidate.bundle"), "HE
 mkdirSync(home, { recursive: true });
 writeFileSync(
   join(home, "config.toml"),
-  '[agents.implementer]\nagent = "claude"\nmodel = "implement-model"\n[agents.reviewer]\nagent = "codex"\nmodel = "review-model"\n',
+  '[agents.defaults.implementer]\nagent = "claude"\nmodel = "implement-model"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "review-model"\n',
 );
+assert.deepEqual(resolveAgentProfiles(loadConfigFile(join(home, "config.toml"))), {
+  implementer: { agent: "claude", model: "implement-model" },
+  reviewer: { agent: "codex", model: "review-model" },
+});
 
 const tracker = createFakeTracker();
 const github = createFakeGitHub();
@@ -267,6 +272,7 @@ const paired = {
   expiresAt: Date.now() + 3_600_000,
 };
 function result(command: RunnerCommand, executionId: string) {
+  assert("profile" in command && command.profile.model, "Fixture commands need a pinned model");
   return {
     executionId,
     commandId: command.id,
@@ -278,10 +284,7 @@ function result(command: RunnerCommand, executionId: string) {
     agentExited: true,
     identity: {
       session: `session-${command.id}`,
-      model:
-        command.type === "review" || (command.type === "probe" && command.profile.agent === "codex")
-          ? "review-model"
-          : "implement-model",
+      model: command.profile.model,
       provider: "fixture",
     },
   };
@@ -433,7 +436,7 @@ async function until(label: string, done: () => boolean) {
   }
   assert(
     done(),
-    `${label}: ${JSON.stringify({ errors, items: listWorkItems(paws.db), commands: [...commands.values()] })}`,
+    `${label}: ${JSON.stringify({ errors, items: listWorkItems(paws.db), commands: [...commands.values()], activities: listOutbox(paws.db).map((row) => row.payload) })}`,
   );
 }
 function addItem(id: string, answer = false) {
