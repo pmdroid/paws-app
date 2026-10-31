@@ -98,6 +98,7 @@ import {
   RunnerCapacityWait,
   RunnerSetupRequired,
   WORKSPACE_HOOK_LIMIT,
+  systemClock,
   type WorkspaceHook,
 } from "../core";
 import {
@@ -290,6 +291,7 @@ export function createRemoteAgentRunner(options: {
     repository: string,
   ) => Promise<NonNullable<Extract<RunnerCommand, { type: "run" }>["checkpointBot"]>>;
   now?: () => number;
+  mono?: () => number;
   pollIntervalMs?: number;
   /** How long a run may go without a runner event before Paws asks whether the runner has it. */
   silentRunMs?: number;
@@ -299,6 +301,7 @@ export function createRemoteAgentRunner(options: {
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
+  const mono = options.mono ?? systemClock.mono;
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
@@ -389,13 +392,50 @@ export function createRemoteAgentRunner(options: {
             .get() !== null))
     )
       throw new RunnerCapacityWait(busy, heldForSession ? SESSION_GRACE_MS : undefined, details);
+    const readyRunners = options.placement
+      ? async () => {
+          const runId = getWorkItem(db, itemId)?.currentRunId;
+          const candidates = await options.placement!.candidates({
+            ...placement,
+            reserved: unassigned(runId ?? undefined),
+          });
+          if (!runId || reservations.has(runId)) return [];
+          const pending = unassigned(runId);
+          return candidates
+            .filter((runner) => {
+              const held =
+                runnerSlotsHeldBetweenCommands(db, runner.id, now(), runId) +
+                pinnedSlotsReserved(db, runner.id, itemId, now());
+              return runnerHasCapacity(
+                db,
+                runner.id,
+                now(),
+                runId,
+                (pending.get(runner.id) ?? 0) + held,
+              );
+            })
+            .map((runner) => runner.id);
+        }
+      : undefined;
     if (agent && limit && limit.resumeAt > now())
-      throw new UsageLimitPause(agent, limit.resumeAt, limit.resetsAt, limit.runnerId);
+      throw new UsageLimitPause(
+        agent,
+        limit.resumeAt,
+        limit.resetsAt,
+        limit.runnerId,
+        readyRunners,
+      );
     if (!agent || resetsAt === null)
       throw new RunnerUnavailableError(
         `No available paired runner can access this Linear task repository (${details.join("; ")})`,
       );
-    throw new UsageLimitPause(agent, resetsAt + USAGE_LIMIT_RESUME_SLACK_MS, resetsAt, null);
+    throw new UsageLimitPause(
+      agent,
+      resetsAt + USAGE_LIMIT_RESUME_SLACK_MS,
+      resetsAt,
+      null,
+      readyRunners,
+    );
   }
   /**
    * Places a handed-over run. With no eligible runner the run waits where it is, keeping its
@@ -646,15 +686,19 @@ export function createRemoteAgentRunner(options: {
         const runId = getWorkItem(db, itemId)?.currentRunId;
         if (!runId) throw limit;
         const agent = agentName(limit.agent);
-        startUsagePause(db, {
-          runId,
-          itemId,
-          agent: limit.agent,
-          runnerId: limit.runnerId,
-          resetsAt: limit.resetsAt,
-          resumeAt: limit.resumeAt,
-          pausedAt: now(),
-        });
+        startUsagePause(
+          db,
+          {
+            runId,
+            itemId,
+            agent: limit.agent,
+            runnerId: limit.runnerId,
+            resetsAt: limit.resetsAt,
+            resumeAt: limit.resumeAt,
+            pausedAt: now(),
+          },
+          mono(),
+        );
         let changed = false;
         try {
           await input.onEvent?.({
@@ -666,10 +710,11 @@ export function createRemoteAgentRunner(options: {
             const wait = (usagePause(db, runId)?.resumeAt ?? 0) - now();
             changed = profilesChanged?.() ?? false;
             if (wait <= 0 || changed) break;
+            if ((await limit.readyRunners?.())?.length) break;
             await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
           }
         } finally {
-          endUsagePause(db, runId);
+          endUsagePause(db, runId, mono(), now());
         }
         input.signal?.throwIfAborted();
         await input.onEvent?.({

@@ -34,6 +34,7 @@ export class UsageLimitPause extends Error {
     readonly resumeAt: number,
     readonly resetsAt: number | null,
     readonly runnerId: string | null,
+    readonly readyRunners?: () => Promise<readonly string[]>,
   ) {
     super(
       `${agent} reached its usage limit${resetsAt === null ? "" : ` until ${new Date(resetsAt).toISOString()}`}`,

@@ -106,4 +106,13 @@ export {
   setCheckoutProjectsText,
   writeCheckoutProjects,
 } from "./checkout";
+export {
+  emptyBriefTemplates,
+  parseBriefTemplates,
+  renderBriefTemplates,
+  resolveBriefTemplate,
+  setBriefTemplatesText,
+  writeBriefTemplates,
+} from "./brief";
+export type { BriefTemplates } from "./brief";
 export type { CheckoutExclusions, CheckoutProject, CheckoutProjects } from "./checkout";

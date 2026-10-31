@@ -46,7 +46,9 @@ export function runnerSlotsHeldBetweenCommands(
   return db
     .query<{ held: number }, [string, string, number]>(
       `SELECT count(*) AS held FROM runner_work w JOIN run r ON r.id=w.run_id
-       WHERE w.runner_id=? AND w.run_id<>? AND (w.ended_at IS NOT NULL OR w.lease_until<=?)
+       WHERE w.runner_id=? AND w.run_id<>? AND (w.ended_at IS NOT NULL OR (w.lease_until<=? AND EXISTS (
+         SELECT 1 FROM runner_result result WHERE result.run_id=w.run_id
+           AND result.generation=w.generation AND result.command_id=w.command_id)))
        AND r.status IN ('active','provisioning')`,
     )
     .get(runnerId, excludeRunId, runnerLeaseCutoff(now))!.held;

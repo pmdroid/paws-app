@@ -260,8 +260,7 @@ test.each([false, true, "cap"] as const)(
       if (stop === "cap") {
         const item = listWorkItems(db)[0]!;
         configureWorkItem(db, item.id, { maxAwakeMs: 1_000 });
-        accrueAwake(db, item.id, 0);
-        accrueAwake(db, item.id, 1_000);
+        accrueAwake(db, item.id, 1_000, Date.now(), 0);
         expect(getWorkItem(db, item.id)?.state).toBe("failed");
         await orchestrator.onLinearEvent(linearEvent("prompted", "Continue the repair", null));
         await running;
@@ -356,8 +355,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
     expect(started()).toHaveLength(1);
     const item = listWorkItems(db)[0]!;
     configureWorkItem(db, item.id, { maxAwakeMs: 1_000 });
-    accrueAwake(db, item.id, 0);
-    accrueAwake(db, item.id, 1_000);
+    accrueAwake(db, item.id, 1_000, Date.now(), 0);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
     await orchestrator.onLinearEvent(linearEvent("prompted", "Try again", null));
     await running;
@@ -458,8 +456,7 @@ test("a retried run starts with the main that moved while it was failed", async 
     await waitFor(entered(1));
     const item = listWorkItems(db)[0]!;
     configureWorkItem(db, item.id, { maxAwakeMs: 1_000 });
-    accrueAwake(db, item.id, 0);
-    accrueAwake(db, item.id, 1_000);
+    accrueAwake(db, item.id, 1_000, Date.now(), 0);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
     await commitOnMain(layout.bare, "merged by hand\n", "hand.txt");
     const movedMain = (

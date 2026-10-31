@@ -522,12 +522,16 @@ export function candidatePolicyDigests(
 ): PolicyDigests | null {
   const loaded = loadOrigin(repo, home, policyRoot, checkoutExclusions);
   if (!loaded.ok) return null;
-  if (loaded.policy.source === "none") return { digest: "", recheck: "" };
-  return { digest: loaded.policy.digest, recheck: recheckDigest(loaded.policy) };
+  if (loaded.policy.source === "none") return { digest: "", recheck: "", paths: [] };
+  return {
+    digest: loaded.policy.digest,
+    recheck: recheckDigest(loaded.policy),
+    paths: loaded.policy.files.map((file) => file.path),
+  };
 }
 
 /** A policy's digest and the digest of its checks marked `recheck: true`. */
-export type PolicyDigests = { digest: string; recheck: string };
+export type PolicyDigests = { digest: string; recheck: string; paths?: readonly string[] };
 
 /** Judge the evidence already stored for this candidate. Does not run commands. */
 export async function decision(input: DecisionInput): Promise<DecisionDocument> {

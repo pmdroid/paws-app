@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { afterEach, expect, test } from "bun:test";
 import {
   createCloseoutSession,
+  candidatePolicyDigests,
   decodePolicyFiles,
   encodePolicyFiles,
   encodePolicyChunk,
@@ -123,6 +124,9 @@ test("the trusted policy comes from origin/main, not from the worktree", async (
   git(clone, "clone", "-q", origin, ".");
   writeFileSync(join(clone, ".agents", "closeout.yaml"), policy("edited-on-branch"));
   const first = trustedPolicyFiles(clone);
+  const digests = candidatePolicyDigests(clone);
+  expect(digests?.paths).toContain(".agents/closeout.yaml");
+  expect(digests?.digest).toBe(first.ok && !first.absent ? first.digest : undefined);
   expect(first.ok && !first.absent && first.digest).toBe(
     (trusted("lint") as { digest: string }).digest,
   );

@@ -5,7 +5,6 @@ import {
   awakeCategory,
   capActivityText,
   capReason,
-  countsAwakeTime,
   formatAwakeBreakdown,
   timeLimitQuestion,
   TIME_LIMIT_EXTENSION_MS,
@@ -13,6 +12,7 @@ import {
   type AwakeBreakdown,
   type AwakeCategory,
   IN_FLIGHT_ITEM_STATES,
+  isAwakeItemState,
   isTerminalWorkItemState,
   JOB_KIND,
   OUTBOX_ACTIVITY,
@@ -24,7 +24,7 @@ import {
   type WorkItemState,
   type WorkBrief,
 } from "../core";
-import { cancelOpenJobs, enqueueJobOnce, hasLiveJob } from "./jobs";
+import { cancelOpenJobs, enqueueJobOnce, type Job } from "./jobs";
 import { journal } from "./journal";
 import { enqueueOutboxOnce } from "./outbox";
 import { getLinearSessionGeneration } from "./linear-sessions";
@@ -32,6 +32,7 @@ import { withOpenFindings } from "./open-findings";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
+import { runnerLeaseCutoff } from "./runner-lease";
 
 export type WorkItemRecord = {
   id: string;
@@ -403,6 +404,11 @@ export function accrueAwake(
   sinceMono?: number,
   /** Whether a job worked on the item over the interval. Defaults to whether one does now. */
   liveJob?: boolean,
+  /**
+   * Classifies this interval as a wait even when the job was just claimed. A slot-wait claim
+   * settles the parked interval before the attempt runs.
+   */
+  forcedHold?: "slot" | "ci",
 ): CapOutcome {
   return immediate(db, () => {
     const current = getWorkItem(db, id);
@@ -410,13 +416,19 @@ export function accrueAwake(
     const baseline = sinceMono ?? current.lastMonoMs;
     const delta = baseline === null ? 0 : Math.max(0, mono - baseline);
     const counted = awakeCategory(current.state, current.checkpoint, current.acceptedHead);
-    // Closeout time is time a job spends verifying. An item left in `verifying` with no
-    // job working on it is idle and does not count toward the cap (PAS-771). Job claims
+    // Only an execution job doing agent or Closeout work spends the budget. Idle running,
+    // recovering and verifying items are waiting. Job claims
     // and ends settle the interval before them (accrueAtJobBoundary), so the job status
     // now holds for the whole interval since the last accrual.
-    const idle = counted === "closeout" && !(liveJob ?? hasLiveJob(db, id, now));
-    const category = idle ? null : counted;
-    const awake = !idle && countsAwakeTime(current.state, current.checkpoint, current.acceptedHead);
+    const activity = awakeJobActivity(db, id, now);
+    const live = liveJob ?? activity.live;
+    const idle = (counted === "agent" || counted === "closeout") && !live;
+    // A parked slot wait, or Closeout blocked on CI, is waiting. The caller settles the
+    // interval before the wait, so this delta is only the wait itself (PAS-898).
+    const hold = forcedHold !== undefined || activity.waiting || activity.usage;
+    const category: AwakeCategory | null =
+      (idle || hold) && (counted === "agent" || counted === "closeout") ? "waiting" : counted;
+    const awake = category === "agent" || category === "closeout";
     const awakeMs = current.awakeMs + (awake ? delta : 0);
     if (delta > 0 || (current.lastMonoMs === null && sinceMono === undefined)) {
       const breakdown =
@@ -438,9 +450,8 @@ export function accrueAwake(
 }
 
 /**
- * Settles a verifying item's awake time when a job claims it or ends, so the interval
- * before the boundary counts by whether a job worked on the item then (PAS-771): idle time
- * before a claim stays idle, and the last stretch of a job still counts as Closeout.
+ * Settle active time at every execution claim and end. The interval before a claim
+ * stays waiting; the final stretch before an execution job ends still counts as work.
  */
 export function accrueAtJobBoundary(
   db: Database,
@@ -452,10 +463,81 @@ export function accrueAtJobBoundary(
   const itemId = (job.payload as { itemId?: unknown } | null)?.itemId;
   if (typeof itemId !== "string") return;
   immediate(db, () => {
-    if (getWorkItem(db, itemId)?.state !== "verifying") return;
-    const liveJob = boundary === "ending" || hasLiveJob(db, itemId, now, job.id);
+    const item = getWorkItem(db, itemId);
+    if (item === null) return;
+    // The claim ends a parked slot wait. Settle that interval as waiting before the attempt.
+    if (boundary === "claimed" && runnerCapacityWait(job.payload) && isAwakeItemState(item.state)) {
+      accrueAwake(db, itemId, mono, now, undefined, false, "slot");
+      return;
+    }
+    if (!isAwakeItemState(item.state) && boundary !== "claimed") return;
+    const liveJob = awakeJobActivity(db, itemId, now, boundary === "claimed" ? job.id : -1).live;
     accrueAwake(db, itemId, mono, now, undefined, liveJob);
   });
+}
+
+/** Wait bookkeeping belongs to one claim. A stale finally may clear only its own mark. */
+export function markJobAwakeWait(
+  db: Database,
+  job: Job,
+  waiting: boolean,
+  mono: number,
+  now: number,
+  reason: "ci" | "runner" | "backoff" = "ci",
+): void {
+  const itemId = (job.payload as { itemId?: string }).itemId;
+  if (!itemId) return;
+  immediate(db, () => {
+    accrueAwake(db, itemId, mono, now);
+    if (waiting) {
+      db.run(
+        `UPDATE job SET payload = json_set(payload, '$.awakeWait',
+           json_object('kind', ?1, 'worker', locked_by, 'attempt', attempts))
+         WHERE id=?2 AND status='running' AND locked_by=?3 AND attempts=?4 AND locked_until>?5`,
+        [reason, job.id, job.lockedBy, job.attempts, now],
+      );
+    } else {
+      db.run(
+        `UPDATE job SET payload = json_remove(payload, '$.awakeWait')
+         WHERE id=? AND json_extract(payload, '$.awakeWait.worker')=?
+           AND json_extract(payload, '$.awakeWait.attempt')=?`,
+        [job.id, job.lockedBy, job.attempts],
+      );
+    }
+  });
+}
+
+/** Read ownership and wait flags in one scan for each accrual. Pending CI marks are never live. */
+function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId = -1) {
+  const row = db
+    .query<
+      { live: number; waiting: number; usage: number },
+      [number, string, string, string, string, string, number, number]
+    >(
+      `SELECT (COALESCE(MAX(status='running' AND locked_until>?1), 0) OR EXISTS(
+         SELECT 1 FROM runner_work w JOIN work_item i ON i.current_run_id=w.run_id
+         WHERE i.id=?2 AND w.ended_at IS NULL AND w.lease_until>?8)) AS live,
+       COALESCE(MAX(status='running' AND locked_until>?1
+         AND json_extract(payload, '$.awakeWait.kind') IN ('ci', 'runner', 'backoff')
+         AND json_extract(payload, '$.awakeWait.worker')=locked_by
+         AND json_extract(payload, '$.awakeWait.attempt')=attempts), 0) AS waiting,
+       EXISTS(SELECT 1 FROM usage_pause p JOIN work_item i ON i.current_run_id=p.run_id
+         WHERE i.id=?2) AS usage
+     FROM job WHERE json_extract(payload, '$.itemId')=?2
+       AND status IN ('pending', 'running') AND id<>?7
+       AND (queue IN (?3, ?4, ?5, ?6) OR queue LIKE (?6 || '.%'))`,
+    )
+    .get(
+      now,
+      itemId,
+      JOB_KIND.start,
+      JOB_KIND.resume,
+      JOB_KIND.reverify,
+      JOB_KIND.merge,
+      exceptJobId,
+      runnerLeaseCutoff(now),
+    )!;
+  return { live: row.live === 1, waiting: row.waiting === 1, usage: row.usage === 1 };
 }
 
 /**

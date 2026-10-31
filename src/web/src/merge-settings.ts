@@ -5,6 +5,7 @@ export type MergeChoice = { order: MergeOrder; mainMoved: MainMoved };
 export type MergeProject = Partial<MergeChoice> & { id: string };
 export type MergeRule = Partial<MergeChoice> & { project?: string; label: string };
 export type MergeSettings = {
+  autoApproveHighRisk?: boolean;
   default: MergeChoice;
   projects: MergeProject[];
   rules: MergeRule[];

@@ -42,9 +42,9 @@ function askedAtTimeLimit(pendingHandoff?: string) {
       payload: { itemId: item.id, reason: "review", handoff: pendingHandoff },
       now: clock.now(),
     });
-  accrueAwake(db, item.id, clock.mono(), clock.now());
+  accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
   clock.advance(31 * MINUTE);
-  expect(accrueAwake(db, item.id, clock.mono(), clock.now()).asked).toBe(true);
+  expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).asked).toBe(true);
   const request = listJobs(db).find((job) => job.queue === "item.ask")!.payload as {
     body: string;
     options: string[];
