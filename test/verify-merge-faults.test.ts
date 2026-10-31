@@ -5,7 +5,14 @@ import { expect, spyOn, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import * as closeoutCommands from "../src/closeout-spec/run/exec";
 import { JOB_KIND, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
+import {
+  JobLoop,
+  OutboxDispatcher,
+  listJobs,
+  listSystemFaults,
+  migrate,
+  openDatabase,
+} from "../src/db";
 import { createFakeGitHub, type GitHubResponse } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
@@ -59,9 +66,17 @@ test.each(cells)(
 );
 
 test.each(cells)(
-  "%s: %s that persists fails the task with its reason",
+  "%s: %s that persists retains its recovery policy",
   async (phase, fault) => {
     const result = await runWithFault(phase, fault, Infinity);
+    if (phase === "reviewer launch") {
+      expect(result.state, result.detail).toBe("verifying");
+      expect(result.holds[0]?.faultClass).toBe("reviewer-profile");
+      expect(result.errors).toEqual([]);
+      expect(result.questions).toEqual([]);
+      expect(result.pending).toContain(JOB_KIND.reverify);
+      return;
+    }
     expect(result.state, result.detail).toBe("failed");
     const terminal = phase === "merge readiness read" ? result.closed : result.errors;
     expect(terminal.length, result.detail).toBe(1);
@@ -87,6 +102,7 @@ async function runWithFault(
   times: number,
 ): Promise<{
   state: string | null;
+  holds: ReturnType<typeof listSystemFaults>;
   errors: string[];
   closed: string[];
   questions: string[];
@@ -199,6 +215,10 @@ async function runWithFault(
       Date.now() < deadline &&
       !["failed", "merged", "awaiting_input"].includes(stateOf(db, "ENG-7") ?? "")
     ) {
+      if (listSystemFaults(db).length > 0) {
+        if (times === Infinity) break;
+        db.run("UPDATE job SET run_at=0 WHERE status='pending'");
+      }
       db.run("UPDATE job SET max_attempts = 3 WHERE queue IN (?, ?) AND status = 'pending'", [
         JOB_KIND.merge,
         JOB_KIND.reverify,
@@ -213,6 +233,7 @@ async function runWithFault(
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     return {
       state: stateOf(db, "ENG-7"),
+      holds: listSystemFaults(db),
       errors: progress("error"),
       closed: progress("response").filter((body) => body.startsWith("Closed:")),
       questions: progress("elicitation"),

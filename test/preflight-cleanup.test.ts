@@ -12,6 +12,7 @@ import {
   bindWorkItemRepository,
   getConversation,
   getWorkItem,
+  listSystemFaults,
   insertQueuedItem,
   migrate,
   openDatabase,
@@ -101,8 +102,14 @@ for await (const line of createInterface({ input: process.stdin })) {
       orchestrator = create();
       await (orchestrator as unknown as PreflightRunner).runItem(getWorkItem(db, item.id)!);
       const question = findOpenQuestion(db, "session");
-      expect(question).not.toBeNull();
-      expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+      if (lostRole === "reviewer") {
+        expect(question).toBeNull();
+        expect(getWorkItem(db, item.id)?.state).toBe("running");
+        expect(listSystemFaults(db)[0]?.faultClass).toBe("reviewer-profile");
+      } else {
+        expect(question).not.toBeNull();
+        expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+      }
       const before = existsSync(writes) ? readFileSync(writes, "utf8").length : 0;
       for (let i = 0; i < 100; i++) {
         if (existsSync(writes) && readFileSync(writes, "utf8").length > before) break;
@@ -114,8 +121,10 @@ for await (const line of createInterface({ input: process.stdin })) {
       db.close();
       db = openDatabase(databasePath);
       expect(getConversation(db, item.id).blocked).toBe(true);
-      answerQuestion(db, question!.id, { answer: "Retry", answeredBy: "human" });
-      applyWorkItemEvent(db, item.id, "answer_received");
+      if (question) {
+        answerQuestion(db, question.id, { answer: "Retry", answeredBy: "human" });
+        applyWorkItemEvent(db, item.id, "answer_received");
+      }
       orchestrator = create();
       const priorLaunches = launches;
       await (orchestrator as unknown as PreflightRunner).runItem(
