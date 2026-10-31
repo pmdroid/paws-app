@@ -113,21 +113,15 @@ sudo journalctl -u paws-runner.service -n 100 --no-pager
 
 ## Working through a Paws outage
 
-Runner 0.1.55 keeps a running agent working when Paws cannot be reached. Deploy the
-Paws lease-credit support before upgrading runners. The heartbeat advertises a
-30-minute offline budget, capped by the command's remaining active-work time.
-The runner counts monotonic awake time spent working. Sleep, wall-clock jumps,
-questions waiting for an answer and finished work waiting for delivery do not
-spend that budget. Paws's maximum credited lease still caps local authority; if
-that deadline passes while idle, the runner stops and retains a failure for
-delivery. Helper commands retain their signed deadlines.
+Runner 0.1.55 keeps working while Paws cannot be reached. Deploy Paws's lease-credit
+support before upgrading runners. The 30-minute budget counts monotonic awake work;
+sleep, wall-clock jumps and idle waits do not spend it. The stop deadline remains
+capped by 30 minutes and command expiry. Helpers retain their signed deadlines.
 
-A heartbeat that answers without the run's lease, or explicitly fences it, stops
-the worker immediately. Connection errors, timeouts and server errors allow work
-to continue within the offline budget. Events remain local until delivery can
-resume. Results remain in the execution journal until accepted, including across
-a runner restart, and remain in heartbeat reports while pending. Only a fence
-refusal or HTTP 409 ends retries; other 4xx responses and parse errors stay retryable.
-Uploads do not reject results. Delivery renews expiring grants and bounds optional
-session uploads to five attempts. Result retries back off up to one minute and
+A missing lease or fence stops the worker immediately. Network failures use the
+offline budget. Events and results remain local until accepted, including across
+runner restarts. Pending results remain in heartbeats until delivered. Only a
+fence refusal or HTTP 409 ends retries; other 4xx and parse errors stay retryable.
+Transcript replay validates the consumed bytes. Optional session uploads have a
+five-attempt bound. Result retries renew grants, back off up to one minute, and
 reuse the execution and command identifiers so Paws recognizes repeated delivery.

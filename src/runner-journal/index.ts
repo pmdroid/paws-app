@@ -225,7 +225,7 @@ export function openExecutionJournal(root: string) {
           .get(id);
         if (!row) throw new Error("Unknown execution journal");
         const terminal = row.phase === "complete" || row.phase === "interrupted";
-        if (terminal && bytes.length !== row.consumed)
+        if (terminal && (bytes.length < row.consumed || bytes.indexOf(10, row.consumed) !== -1))
           throw new Error("Execution journal is terminal");
         if (
           bytes.length < row.consumed ||
