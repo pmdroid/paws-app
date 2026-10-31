@@ -196,3 +196,5 @@ export {
   closeoutTransferFault,
   type SystemFaultClass,
 } from "./system-fault";
+
+export { supportsReviewCommand, type ReviewCommandAgent } from "./review-command";

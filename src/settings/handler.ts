@@ -1,4 +1,4 @@
-import { supportsReviewCommand } from "../closeout-spec";
+import { supportsReviewCommand } from "../core";
 import { journalCaught } from "../journal";
 import { timingSafeEqual } from "node:crypto";
 import {

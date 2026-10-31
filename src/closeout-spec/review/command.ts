@@ -1,12 +1,9 @@
 import { journalCaught } from "../../journal";
 
 /** Agents whose own review command Closeout starts. */
-const REVIEW_COMMAND_AGENTS = ["codex", "claude"] as const;
-export type ReviewCommandAgent = (typeof REVIEW_COMMAND_AGENTS)[number];
-
-export function supportsReviewCommand(agent: string): agent is ReviewCommandAgent {
-  return REVIEW_COMMAND_AGENTS.some((supported) => supported === agent);
-}
+export { supportsReviewCommand } from "../../core";
+export type { ReviewCommandAgent } from "../../core";
+import type { ReviewCommandAgent } from "../../core";
 
 export type ReviewCommandRequest = {
   argv: string[];
