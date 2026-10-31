@@ -59,6 +59,7 @@ import {
   repositoryPackages,
   readQueueSettings,
   resolveAgentProfiles,
+  resolveBriefTemplate,
   resolveMergeSettings,
   type AgentProfile,
   type AgentProfiles,
@@ -429,7 +430,7 @@ import {
 import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
-import { renderWorkBrief } from "./brief";
+import { renderWorkContext } from "../core";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
@@ -6596,18 +6597,20 @@ export class Orchestrator {
           .map((snapshot) => JSON.parse(snapshot) as LinearActivitySnapshot)
           .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral)
       : [];
-    return [
-      renderWorkBrief(item.brief),
-      (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
-      ...listLinearTurnsForItem(this.db, item.id).map((turn) => `User update:\n${turn.body}`),
-      classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
-      item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
-      activities.length
-        ? `Immutable Linear conversation history:\n${JSON.stringify(activities)}`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const repository = this.repositoryForItem(item);
+    const template = resolveBriefTemplate(
+      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+      repository ? `${repository.owner}/${repository.repo}` : null,
+    );
+    return renderWorkContext(template, {
+      brief: item.brief,
+      projectOverview:
+        (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
+      userUpdates: listLinearTurnsForItem(this.db, item.id).map((turn) => turn.body),
+      taskContext: classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
+      sessionContext: item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
+      activities,
+    });
   }
 
   private artifactPublisher(item: WorkItemRecord) {
