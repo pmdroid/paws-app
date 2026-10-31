@@ -98,6 +98,7 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
   };
   let delivery = 0;
   const deliver = (review: {
+    author?: string;
     id: number;
     state: string;
     body?: string;
@@ -118,7 +119,7 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
             state: review.state,
             body: review.body ?? "",
             commit_id: "h",
-            user: { login: "rev" },
+            user: { login: review.author ?? "rev" },
           },
           pull_request: {
             number: review.pull ?? 7,
@@ -356,3 +357,20 @@ function laneCapabilities(): MergeCapabilities {
   const caps: Partial<MergeCapabilities> = { now: () => 10, mergedOutsideLane: async () => null };
   return caps as MergeCapabilities;
 }
+
+test.each(["cursor[bot]", "rev"])(
+  "restart budget classifies PR reviews from %s",
+  async (author) => {
+    const { db, caps, deliver } = setup();
+    db.run("UPDATE work_item SET restart_count=10 WHERE id='eng-1'");
+    deliver({ id: 991, state: "changes_requested", author, body: "Fix the cache key" });
+    const bot = author.endsWith("[bot]");
+    expect(await handlePullReview(db, 991, caps)).toBe(bot ? "asked" : "restarted");
+    expect(getWorkItem(db, "eng-1")).toMatchObject({
+      restartCount: 10,
+      restartLimit: bot ? 10 : 20,
+    });
+    if (bot) expect(findOpenQuestion(db, "s-1")?.reason).toBe("restart_budget");
+    db.close();
+  },
+);

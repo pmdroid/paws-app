@@ -243,7 +243,11 @@ export async function handlePullComments(
       const jobKey = `review:${current.id}:${first.source}:${first.commentId}`;
       const targets = replyTargets({ pullNumber, threads, reviews: [], comments: batch });
       const restarted = restart(db, current, {
-        source: "human",
+        source: batch.every(
+          (comment) => comment.author !== null && !comment.author.toLowerCase().endsWith("[bot]"),
+        )
+          ? "human"
+          : "agent",
         reason: "review",
         body: [
           digest,
@@ -256,6 +260,10 @@ export async function handlePullComments(
         jobKey,
         now,
       });
+      if (restarted.kind === "asked") {
+        settlePullComments(db, batch, "asked", now);
+        return "asked";
+      }
       if (restarted.kind !== "restarted") return "wait";
       postPullFeedback(db, {
         sessionId: caps.session(current),

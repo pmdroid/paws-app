@@ -15,9 +15,9 @@ import {
   openDatabase,
 } from "../db";
 import { createFakeTracker } from "../linear";
-import { answerQuestion, findOpenQuestion } from "../questions";
+import { answerQuestion, findOpenQuestion, getQuestion } from "../questions";
 import { deliverLinearOutbox } from "./dispatch";
-import { restart } from "./operations";
+import { restart, ask } from "./operations";
 import { questionEffects } from "./question-effects";
 
 function setup(path = ":memory:") {
@@ -154,13 +154,6 @@ test("Stop uses the normal cancellation lifecycle", () => {
     db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
     restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
     const question = findOpenQuestion(db, "session")!;
-    restart(db, getWorkItem(db, "budget")!, {
-      source: "human",
-      reason: "follow_up",
-      body: "Look again",
-      now: 4,
-    });
-    applyWorkItemEvent(db, "budget", "dispatched");
     const answer = answerQuestion(db, question.id, {
       answer: "Stop",
       answeredBy: "human",
@@ -307,6 +300,93 @@ test("a human retry renews a sessionless item's spent budget without resetting i
     expect(
       restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 5 }),
     ).toMatchObject({ kind: "restarted" });
+  } finally {
+    db.close();
+  }
+});
+
+test("renewal cancels the old question and a late Stop cannot stop the resumed item", () => {
+  const db = setup();
+  try {
+    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
+    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
+    const old = findOpenQuestion(db, "session")!;
+    restart(db, getWorkItem(db, "budget")!, {
+      source: "human",
+      reason: "follow_up",
+      body: "Retry",
+      now: 4,
+    });
+    expect(getQuestion(db, old.id)?.cancelledAt).toBe(4);
+    expect(findOpenQuestion(db, "session")).toBeNull();
+    expect(answerQuestion(db, old.id, { answer: "Stop", answeredBy: "human", now: 5 })).toBeNull();
+    applyWorkItemEvent(db, "budget", "dispatched");
+    questionEffects(db, { now: 6 }).clarification!({ ...old, answer: "Stop" });
+    expect(getWorkItem(db, "budget")).toMatchObject({
+      state: "running",
+      restartLimit: 20,
+      cancelRequested: false,
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test("an answered Stop cannot cancel an item waiting on a different question", () => {
+  const db = setup();
+  try {
+    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
+    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Fix CI", now: 3 });
+    const old = findOpenQuestion(db, "session")!;
+    const stopped = answerQuestion(db, old.id, { answer: "Stop", answeredBy: "human", now: 4 })!;
+    const item = getWorkItem(db, "budget")!;
+    ask(
+      db,
+      { itemId: item.id, runId: item.currentRunId, sessionId: "session", version: item.version },
+      "clarification",
+      "Which approach?",
+      { now: 5 },
+    );
+    const active = findOpenQuestion(db, "session")!;
+    questionEffects(db, { now: 6 }).clarification!(stopped);
+    expect(getWorkItem(db, "budget")).toMatchObject({
+      state: "awaiting_input",
+      cancelRequested: false,
+    });
+    expect(findOpenQuestion(db, "session")?.id).toBe(active.id);
+  } finally {
+    db.close();
+  }
+});
+
+test("budget questions and grants stay in the current session", () => {
+  const db = setup();
+  try {
+    db.run("UPDATE work_item SET restart_count=10 WHERE id='budget'");
+    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "Old work", now: 3 });
+    const old = findOpenQuestion(db, "session")!;
+    restart(db, getWorkItem(db, "budget")!, {
+      source: "infrastructure",
+      reason: "follow_up",
+      body: "Recover",
+      now: 4,
+    });
+    db.run("UPDATE work_item SET session_key='new-session' WHERE id='budget'");
+    applyWorkItemEvent(db, "budget", "dispatched");
+    restart(db, getWorkItem(db, "budget")!, { reason: "ci", body: "New work", now: 5 });
+    const active = findOpenQuestion(db, "new-session")!;
+    expect(active.id).not.toBe(old.id);
+    expect(active.body).toContain("New work");
+    const stale = answerQuestion(db, old.id, { answer: "Continue", answeredBy: "human", now: 6 })!;
+    questionEffects(db, { now: 7 }).clarification!(stale);
+    expect(getWorkItem(db, "budget")).toMatchObject({ state: "awaiting_input", restartLimit: 10 });
+    const continued = answerQuestion(db, active.id, {
+      answer: "Continue",
+      answeredBy: "human",
+      now: 8,
+    })!;
+    questionEffects(db, { now: 9 }).clarification!(continued);
+    expect(getWorkItem(db, "budget")).toMatchObject({ state: "queued", restartLimit: 20 });
   } finally {
     db.close();
   }

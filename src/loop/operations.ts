@@ -18,6 +18,7 @@ import {
   type QuestionAsker,
   type StoredQuestion,
   getQuestion,
+  cancelQuestion,
 } from "../questions";
 
 export { halt, type RestartHandoff } from "../db";
@@ -67,15 +68,11 @@ export function restart(...args: Parameters<typeof restartItem>): RestartResult 
       if (current.cancelRequested || !transition(current.state, "blocking_question").ok)
         return { kind: "skipped" };
       const waiting = db
-        .query<{ id: string }, [string]>(
-          "SELECT id FROM question WHERE item_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL ORDER BY rowid DESC LIMIT 1",
+        .query<{ id: string }, [string, string | null]>(
+          "SELECT id FROM question WHERE item_id=? AND session_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL ORDER BY rowid DESC LIMIT 1",
         )
-        .get(item.id);
+        .get(item.id, current.sessionKey);
       const question = waiting ? getQuestion(db, waiting.id)! : null;
-      if (!current.sessionKey && question) {
-        db.run("UPDATE work_item SET session_key=? WHERE id=?", [question.sessionId, item.id]);
-        current.sessionKey = question.sessionId;
-      }
       if (!current.sessionKey) {
         // There is no channel for an elicitation. End active execution with an explicit error.
         if (current.state !== "awaiting_input") {
@@ -128,10 +125,10 @@ export function restart(...args: Parameters<typeof restartItem>): RestartResult 
     else if (source === "human") {
       // An answer grants more only once it is carried into an admitted human turn.
       const answers = db
-        .query<{ id: string }, [string]>(
-          "SELECT id FROM question WHERE item_id=? AND reason='restart_budget' AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL",
+        .query<{ id: string }, [string, string | null]>(
+          "SELECT id FROM question WHERE item_id=? AND session_id=? AND reason='restart_budget' AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL",
         )
-        .all(item.id);
+        .all(item.id, current.sessionKey);
       // Admitting human guidance means continuing. Explicit retries also renew a spent budget.
       const extensions = answers.length || (current.restartCount >= current.restartLimit ? 1 : 0);
       if (extensions)
@@ -139,6 +136,14 @@ export function restart(...args: Parameters<typeof restartItem>): RestartResult 
           extensions * MAX_ITEM_RESTARTS,
           item.id,
         ]);
+      if (extensions) {
+        const waiting = db
+          .query<{ id: string }, [string, string | null]>(
+            "SELECT id FROM question WHERE item_id=? AND session_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL",
+          )
+          .all(item.id, current.sessionKey);
+        for (const question of waiting) cancelQuestion(db, question.id, handoff.now);
+      }
       for (const answer of answers) {
         db.run("UPDATE question SET handoff_version=? WHERE id=?", [
           getWorkItem(db, item.id)!.version,

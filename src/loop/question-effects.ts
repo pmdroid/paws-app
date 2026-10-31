@@ -25,6 +25,7 @@ import {
 import {
   findOpenQuestion,
   getVisualReview,
+  getQuestion,
   handoffNote,
   type AnswerEffects,
   type StoredQuestion,
@@ -263,6 +264,10 @@ export function questionEffects(
     agent: resume,
     clarification: (question) => {
       if (question.reason !== "restart_budget") return resume(question);
+      const stored = getQuestion(db, question.id);
+      const item = getWorkItem(db, question.itemId);
+      if (!stored || stored.cancelledAt !== null || !item || item.sessionKey !== question.sessionId)
+        return;
       if (
         db
           .query("SELECT 1 FROM question WHERE id=? AND handoff_version IS NOT NULL")
@@ -271,9 +276,13 @@ export function questionEffects(
         return;
       if (!/^\s*stop(?:[.!]|,\s*it['’]?s done[.!]?)?\s*$/i.test(question.answer ?? ""))
         return resume(question);
+      const active = db
+        .query<{ payload_digest: string | null }, [string]>(
+          "SELECT payload_digest FROM work_item_event WHERE item_id=? AND event='blocking_question' ORDER BY id DESC LIMIT 1",
+        )
+        .get(item.id);
+      if (item.state !== "awaiting_input" || active?.payload_digest !== question.id) return;
       consumeTurn(question);
-      const item = getWorkItem(db, question.itemId);
-      if (!item) return;
       // Accept Stop with punctuation, without treating "Stop rewriting tests" as cancellation.
       db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
       applyLinearCommand(

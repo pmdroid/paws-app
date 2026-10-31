@@ -517,3 +517,20 @@ function laneCapabilities(): MergeCapabilities {
   const caps: Partial<MergeCapabilities> = { now: () => 10, mergedOutsideLane: async () => null };
   return caps as MergeCapabilities;
 }
+
+test.each(["cursor[bot]", "pascal"])(
+  "restart budget classifies PR comments from %s",
+  async (author) => {
+    const { db, caps, inline } = setup();
+    db.run("UPDATE work_item SET restart_count=10 WHERE id='eng-1'");
+    inline({ id: 9901, review: 991, author, body: "Fix the cache key", path: "src/cache.ts" });
+    const bot = author.endsWith("[bot]");
+    expect(await handlePullComments(db, "eng-1", caps)).toBe(bot ? "asked" : "restarted");
+    expect(getWorkItem(db, "eng-1")).toMatchObject({
+      restartCount: 10,
+      restartLimit: bot ? 10 : 20,
+    });
+    if (bot) expect(findOpenQuestion(db, "s-1")?.reason).toBe("restart_budget");
+    db.close();
+  },
+);

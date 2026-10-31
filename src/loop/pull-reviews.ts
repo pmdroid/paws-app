@@ -199,7 +199,14 @@ export async function handlePullReview(
         comments,
       });
       const restarted = restart(db, current, {
-        source: "human",
+        source:
+          review.reviewer !== null &&
+          !review.reviewer.toLowerCase().endsWith("[bot]") &&
+          comments.every(
+            (comment) => comment.author !== null && !comment.author.toLowerCase().endsWith("[bot]"),
+          )
+            ? "human"
+            : "agent",
         reason: "review",
         body: [
           digest,
@@ -220,6 +227,11 @@ export async function handlePullReview(
         jobKey,
         now: caps.now(),
       });
+      if (restarted.kind === "asked") {
+        settlePullReview(db, reviewId, "asked", caps.now());
+        settlePullComments(db, comments, "asked", caps.now());
+        return "asked";
+      }
       if (restarted.kind !== "restarted") return "wait";
       postPullFeedback(db, {
         sessionId: caps.session(current),
