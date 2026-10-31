@@ -16,7 +16,7 @@ export function listSystemFaults(db: Database): SystemFaultHold[] {
     .query<SystemFaultHold, []>(`SELECT f.item_id AS itemId, w.linear_identifier AS identifier,
     f.fault_class AS faultClass, f.reason, f.failures, f.started_at AS startedAt, f.retry_at AS retryAt
     FROM system_fault f JOIN work_item w ON w.id=f.item_id AND w.version=f.item_version
-    WHERE w.cancel_requested=0 AND w.state IN ('running','verifying')
+    WHERE w.cancel_requested=0 AND w.state IN ('running','verifying','merge_queue','recovering','paused')
     ORDER BY f.started_at, f.item_id`)
     .all();
 }
@@ -29,7 +29,7 @@ export function getSystemFault(db: Database, itemId: string): SystemFaultHold | 
     >(`SELECT f.item_id AS itemId, w.linear_identifier AS identifier,
     f.fault_class AS faultClass, f.reason, f.failures, f.started_at AS startedAt, f.retry_at AS retryAt
     FROM system_fault f JOIN work_item w ON w.id=f.item_id AND w.version=f.item_version
-    WHERE f.item_id=? AND w.cancel_requested=0 AND w.state IN ('running','verifying')`)
+    WHERE f.item_id=? AND w.cancel_requested=0 AND w.state IN ('running','verifying','merge_queue','recovering','paused')`)
     .get(itemId);
 }
 
@@ -69,4 +69,29 @@ export function saveSystemFault(
 
 export function clearSystemFault(db: Database, itemId: string): void {
   db.run("DELETE FROM system_fault WHERE item_id=?", [itemId]);
+}
+
+/** Keeps one alert identity until the last active hold in its class clears. */
+export function systemFaultAlertEpoch(
+  db: Database,
+  faultClass: SystemFaultClass,
+  nextEpoch: string,
+): string {
+  // Ownership versions can advance between retries without ending the outage.
+  const active = db
+    .query<{ itemId: string }, [string]>(
+      `SELECT f.item_id AS itemId FROM system_fault f JOIN work_item w ON w.id=f.item_id
+     WHERE f.fault_class=? AND w.cancel_requested=0
+     AND w.state IN ('running','verifying','merge_queue','recovering','paused') LIMIT 1`,
+    )
+    .get(faultClass);
+  const saved = db
+    .query<{ epoch: string }, [string]>("SELECT epoch FROM system_fault_alert WHERE fault_class=?")
+    .get(faultClass);
+  if (active && saved) return saved.epoch;
+  db.run(
+    "INSERT INTO system_fault_alert VALUES (?,?) ON CONFLICT(fault_class) DO UPDATE SET epoch=excluded.epoch",
+    [faultClass, nextEpoch],
+  );
+  return nextEpoch;
 }

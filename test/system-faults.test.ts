@@ -119,6 +119,8 @@ for (const faultClass of ["closeout-transfer", "reviewer-profile"] as const) {
           idempotencyKey: `pull-request-ready:${id}`,
           payload: { sessionId: `session-${id}`, kind: "response", body: "PR ready" },
         });
+      if (faultClass === "closeout-transfer")
+        db.run("UPDATE work_item SET state='merge_queue' WHERE state='verifying'");
       db.run("UPDATE job SET run_at=0 WHERE status='pending'");
       await tickUntil(() => listSystemFaults(db).every((hold) => hold.failures === 2));
       await jobs.tick(["system.fault-alert"]);
@@ -133,7 +135,11 @@ for (const faultClass of ["closeout-transfer", "reviewer-profile"] as const) {
       transferWorks = true;
       config("reviewer");
       db.run("UPDATE job SET run_at=0 WHERE status='pending'");
-      await tickUntil(() => listWorkItems(db).every((item) => item.state === "merge_queue"));
+      await tickUntil(
+        () =>
+          listSystemFaults(db).length === 0 &&
+          listWorkItems(db).every((item) => item.state === "merge_queue"),
+      );
       expect(listSystemFaults(db)).toEqual([]);
       expect(tracker.questions).toEqual([]);
       expect(listJobs(db).filter((job) => job.status === "dead")).toEqual([]);

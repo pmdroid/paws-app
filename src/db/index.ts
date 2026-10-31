@@ -796,6 +796,7 @@ export {
   listSystemFaults,
   getSystemFault,
   saveSystemFault,
+  systemFaultAlertEpoch,
   clearSystemFault,
   type SystemFaultHold,
 } from "./system-fault";

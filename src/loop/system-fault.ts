@@ -7,7 +7,7 @@ import {
   getWorkItem,
   immediate,
   saveSystemFault,
-  listSystemFaults,
+  systemFaultAlertEpoch,
 } from "../db";
 import { publicToolText } from "./activity";
 
@@ -19,9 +19,13 @@ export function holdSystemFault(
 ): boolean {
   return immediate(db, () => {
     const item = getWorkItem(db, itemId);
-    if (!item || item.cancelRequested || !["running", "verifying"].includes(item.state))
+    if (
+      !item ||
+      item.cancelRequested ||
+      !["running", "verifying", "merge_queue", "recovering", "paused"].includes(item.state)
+    )
       return false;
-    const active = listSystemFaults(db).filter((hold) => hold.faultClass === fault.faultClass);
+    const epoch = systemFaultAlertEpoch(db, fault.faultClass, randomUUID());
     const hold = saveSystemFault(db, {
       itemId,
       version: item.version,
@@ -30,12 +34,13 @@ export function holdSystemFault(
       now,
     });
     enqueueJob(db, {
-      queue: item.state === "verifying" ? JOB_KIND.reverify : JOB_KIND.resume,
+      queue: ["verifying", "merge_queue"].includes(item.state)
+        ? JOB_KIND.reverify
+        : JOB_KIND.resume,
       payload: { itemId, systemFault: fault.faultClass },
       runAt: hold.retryAt,
       now,
     });
-    const epoch = active[0]?.startedAt ?? hold.startedAt;
     enqueueJobOnce(db, {
       queue: "system.fault-alert",
       jobKey: `system-fault:${fault.faultClass}:${epoch}`,
