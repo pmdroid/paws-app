@@ -51,6 +51,8 @@ Paws applies these exclusions before checking out files, including in detached C
 
 ## Deploys
 
+A restart is safe while work is running; deploys need no idle wait. Runners keep working while Paws is down and retain their results until it returns. Paws reattaches to the same commands after startup, including in-flight Closeout reviews and answer tasks.
+
 Paws never changes its own checkout or restarts itself. To deploy a new commit, update the checkout Paws runs from and restart the service:
 
 ```sh
