@@ -213,6 +213,7 @@ export async function openRunnerRuntime(options: {
   if (options.daemon.status().phase !== "paired")
     throw new Error("Runner must be paired before execution");
   const journal = openExecutionJournal(options.root);
+  let closed = false;
   const resultDeliveries = new Map<string, Promise<void>>();
   const resultRetries = new Map<string, { tries: number; at: number; message: string }>();
   const broker =
@@ -302,7 +303,6 @@ export async function openRunnerRuntime(options: {
       );
   concurrency();
   const active = new Map<string, Active>();
-  let closed = false;
   let ticking: Promise<void> | undefined;
   let pulsing: Promise<void> | undefined;
   let stopping: Promise<void> | undefined;
@@ -480,6 +480,7 @@ export async function openRunnerRuntime(options: {
     await deliverResult(execution);
   }
   function deliverResult(execution: Execution): Promise<void> {
+    if (closed) return Promise.resolve();
     if ((resultRetries.get(execution.id)?.at ?? 0) > monotonic()) return Promise.resolve();
     const current = resultDeliveries.get(execution.id);
     if (current) return current;
@@ -514,7 +515,9 @@ export async function openRunnerRuntime(options: {
     };
     const request: AuthorizedRequest = async (operation) => {
       for (let attempt = 0; ; attempt++) {
+        if (closed) throw new RemoteFailure("Runner stopping");
         const sent = await token();
+        if (closed) throw new RemoteFailure("Runner stopping");
         try {
           return await operation(sent);
         } catch (error) {
@@ -539,6 +542,7 @@ export async function openRunnerRuntime(options: {
       journal.phase(execution.id, pending.failure ? "interrupted" : "complete");
       resultRetries.delete(execution.id);
     } catch (error) {
+      if (closed) return;
       const refused =
         (granting || posting) &&
         error instanceof RunnerRequestError &&
@@ -642,6 +646,7 @@ export async function openRunnerRuntime(options: {
         await uploadSession(execution, token, undefined, request);
         break;
       } catch (error) {
+        if (closed) throw error;
         if (!(error instanceof RemoteFailure) || attempt >= SESSION_UPLOAD_TRIES) {
           skipSession(execution, error);
           break;

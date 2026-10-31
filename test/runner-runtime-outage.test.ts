@@ -214,6 +214,7 @@ async function fixture(
     daemon: runtimeOptions.daemon,
     wall: () => wall,
     status: () => runtime.status(),
+    stop: () => runtime.stop(),
     reports,
     seals: () => seals,
     grantAttempts: () => grantAttempts,
@@ -668,28 +669,22 @@ test("idle offline time cannot extend the lease beyond Paws's authority ceiling"
   }
 });
 
-test("an expired upload grant is renewed without rejecting the failure result", async () => {
+test("shutdown cannot renew a grant or post a result after an upload stops", async () => {
   const f = await fixture();
+  let stopping: Promise<void> | undefined;
   try {
-    let grants = 0;
-    f.daemon.issueRunGrant = async () => ({
-      token: String(++grants),
-      expiresAt: f.wall() + 60_000,
-    });
     const finish = f.daemon.finishTranscript;
-    let expired = false;
     f.daemon.finishTranscript = async (...args) => {
-      if (!expired) {
-        expired = true;
-        f.jumpWall(70_000);
-        throw new RunnerRequestError(403, "POST", "/finish", 1, "Run grant is invalid or expired.");
-      }
-      return finish(...args);
+      await finish(...args);
+      stopping = f.stop();
+      throw new RunnerRequestError(403, "POST", "/finish", 1, "Run grant is invalid or expired.");
     };
     f.refuse(403, 1);
-    await f.tickUntil(() => f.posted.length > 0);
-    expect(f.posted).toHaveLength(1);
-    expect(grants).toBeGreaterThanOrEqual(2);
+    await f.tickUntil(() => stopping !== undefined);
+    const grants = f.grantAttempts();
+    await stopping;
+    expect(f.grantAttempts()).toBe(grants);
+    expect(f.posted).toHaveLength(0);
   } finally {
     await f.cleanup();
   }
