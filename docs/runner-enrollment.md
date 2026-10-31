@@ -110,3 +110,20 @@ For daemon errors, inspect its journal on the VM:
 ```sh
 sudo journalctl -u paws-runner.service -n 100 --no-pager
 ```
+
+## Working through a Paws outage
+
+Runner 0.1.55 keeps a running agent working when Paws cannot be reached. Deploy the
+Paws lease-credit support before upgrading runners. The heartbeat advertises a
+30-minute offline budget, capped by the command's remaining active-work time.
+The runner counts monotonic awake time spent working. Sleep, wall-clock jumps,
+questions waiting for an answer and finished work waiting for delivery do not
+spend that budget. Helper commands retain their signed deadlines.
+
+A heartbeat that answers without the run's lease, or explicitly fences it, stops
+the worker immediately. Connection errors, timeouts and server errors allow work
+to continue within the offline budget. Events remain local until delivery can
+resume. Successful results ready for delivery and failures produced by the runner
+stay in its execution journal until Paws accepts them, including across a runner
+restart. Retries use the same execution and command identifiers, so Paws can
+recognize a repeated delivery if its acknowledgement was lost.

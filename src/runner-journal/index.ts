@@ -9,6 +9,8 @@ import {
   RunnerPermissionSchema,
   RunnerCommandSchema,
   RunnerEventSchema,
+  RunnerResultSchema,
+  type RunnerResult,
   type RunnerCommand,
 } from "../runner-protocol";
 
@@ -78,6 +80,9 @@ export function openExecutionJournal(root: string) {
   db.run(
     "CREATE TABLE IF NOT EXISTS delivery (execution_id TEXT NOT NULL REFERENCES execution(id), sequence INTEGER NOT NULL, payload TEXT NOT NULL, request_id TEXT, sent INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(execution_id,sequence)) STRICT",
   );
+  db.run(
+    "CREATE TABLE IF NOT EXISTS result_delivery (execution_id TEXT PRIMARY KEY REFERENCES execution(id), payload TEXT NOT NULL, failure INTEGER NOT NULL, accepted INTEGER NOT NULL DEFAULT 0) STRICT",
+  );
   const columns = new Set(
     db
       .query<{ name: string }, []>("PRAGMA table_info(execution)")
@@ -106,6 +111,40 @@ export function openExecutionJournal(root: string) {
   }
   return {
     executions,
+    saveResult(id: string, result: RunnerResult, failure = false) {
+      db.run("INSERT OR IGNORE INTO result_delivery(execution_id,payload,failure) VALUES (?,?,?)", [
+        id,
+        JSON.stringify(RunnerResultSchema.parse(result)),
+        Number(failure),
+      ]);
+    },
+    pendingResults() {
+      return db
+        .query<{ id: string; payload: string; failure: number }, []>(
+          "SELECT execution_id AS id,payload,failure FROM result_delivery WHERE accepted=0 ORDER BY rowid",
+        )
+        .all()
+        .map((row) => ({
+          id: row.id,
+          result: RunnerResultSchema.parse(JSON.parse(row.payload)),
+          failure: Boolean(row.failure),
+        }));
+    },
+    resultAccepted(id: string) {
+      db.run("UPDATE result_delivery SET accepted=1 WHERE execution_id=?", [id]);
+    },
+    hasResult(id: string) {
+      return Boolean(db.query("SELECT 1 FROM result_delivery WHERE execution_id=?").get(id));
+    },
+    waiting(id: string) {
+      return Boolean(
+        db
+          .query(
+            "SELECT 1 FROM delivery d JOIN execution e ON e.id=d.execution_id WHERE e.id=? AND d.sequence>e.answer_cursor AND json_extract(d.payload,'$.type') IN ('question','artifact','closeout_policy') LIMIT 1",
+          )
+          .get(id),
+      );
+    },
     admit(command: WorkCommand, now: number): Execution | null {
       const parsed = RunnerCommandSchema.parse(command);
       if (parsed.type !== "run" && parsed.type !== "review" && parsed.type !== "task")

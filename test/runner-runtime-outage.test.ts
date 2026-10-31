@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunnerRequestError } from "../src/runner-daemon";
@@ -11,10 +11,23 @@ import {
   type RunnerResult,
 } from "../src/runner-protocol";
 
-async function fixture(options: { budget?: boolean; aliveOffsetMs?: number } = {}) {
+async function fixture(
+  options: {
+    budget?: boolean;
+    aliveOffsetMs?: number;
+    connectionError?: boolean;
+    expiresMs?: number;
+  } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-outage-"));
   const now = Date.now();
   let clock = 0;
+  let wall = now;
+  let stops = 0;
+  let missing = false;
+  let postFailures = 0;
+  let postAttempts = 0;
+  const events: unknown[] = [];
   let down = false;
   let fenced = false;
   let finished = false;
@@ -46,7 +59,7 @@ async function fixture(options: { budget?: boolean; aliveOffsetMs?: number } = {
     taskModeGeneration: 1,
     purpose: "answer",
     issuedAt: now,
-    expiresAt: now + 3_600_000,
+    expiresAt: now + (options.expiresMs ?? 3_600_000),
     profile: { agent: "claude", model: null },
     prompt: "signed prompt",
   };
@@ -62,15 +75,16 @@ async function fixture(options: { budget?: boolean; aliveOffsetMs?: number } = {
   const posted: RunnerResult[] = [];
   const errors: string[] = [];
   const reachable = () => {
+    if (down && options.connectionError) throw new Error("ECONNREFUSED");
     if (down) throw new RunnerRequestError(503, "POST", "/v1/heartbeat", 7);
   };
-  const runtime = await openRunnerRuntime({
+  const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     root,
     spool,
     results,
     repositoryRoot: join(root, "repositories"),
     home: root,
-    now: () => now,
+    now: () => wall,
     monotonic: () => clock,
     onError: (error) => errors.push(error.message),
     broker: {
@@ -83,7 +97,9 @@ async function fixture(options: { budget?: boolean; aliveOffsetMs?: number } = {
         chmodSync(join(directory, "events.jsonl"), 0o640);
         return { alreadyAdmitted: false };
       },
-      async stop() {},
+      async stop() {
+        stops++;
+      },
       alive: () => !finished,
     },
     daemon: {
@@ -95,12 +111,12 @@ async function fixture(options: { budget?: boolean; aliveOffsetMs?: number } = {
             ? {}
             : {
                 offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS,
-                aliveAt: now + (options.aliveOffsetMs ?? 0),
+                aliveAt: wall + (options.aliveOffsetMs ?? 0),
               };
         return fenced
           ? { leases: [], fenced: [{ runId: "run", generation: 1 }], ...budget }
           : {
-              leases: [{ runId: "run", generation: 1, expiresAt: now + 60_000 }],
+              leases: missing ? [] : [{ runId: "run", generation: 1, expiresAt: wall + 60_000 }],
               fenced: [],
               ...budget,
             };
@@ -117,8 +133,9 @@ async function fixture(options: { budget?: boolean; aliveOffsetMs?: number } = {
         reachable();
         return { token: "token", expiresAt: now + 60_000 };
       },
-      async sendEvent() {
+      async sendEvent(event) {
         reachable();
+        events.push(event);
         return { duplicate: false };
       },
       async answers() {
@@ -131,6 +148,8 @@ async function fixture(options: { budget?: boolean; aliveOffsetMs?: number } = {
       },
       async postResult(_runId, _generation, result) {
         reachable();
+        postAttempts++;
+        if (postFailures-- > 0) throw new RunnerRequestError(503, "POST", "/result", 1);
         posted.push(result);
         return { duplicate: false };
       },
@@ -152,7 +171,8 @@ async function fixture(options: { budget?: boolean; aliveOffsetMs?: number } = {
         return { uri: "transcript" };
       },
     },
-  });
+  };
+  let runtime = await openRunnerRuntime(runtimeOptions);
   const tick = () => runtime.tick().catch((error: Error) => errors.push(error.message));
   const tickUntil = async (done: () => boolean) => {
     for (let index = 0; index < 400 && !done(); index++) {
@@ -163,7 +183,21 @@ async function fixture(options: { budget?: boolean; aliveOffsetMs?: number } = {
   await tickUntil(() => execution !== "");
   return {
     posted,
+    rejectResults: (times: number) => {
+      postFailures = times;
+    },
+    postAttempts: () => postAttempts,
     errors,
+    events,
+    stopped: () => stops,
+    missing: () => (missing = true),
+    jumpWall: (ms: number) => (wall += ms),
+    event: (event: unknown) =>
+      appendFileSync(join(results.root, execution, "events.jsonl"), JSON.stringify(event) + "\n"),
+    restart: async () => {
+      await runtime.stop();
+      runtime = await openRunnerRuntime(runtimeOptions);
+    },
     tick,
     tickUntil,
     goDown: () => (down = true),
@@ -357,3 +391,124 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
     }
   },
 );
+
+test("connection errors for twenty minutes retain events and deliver a result once", async () => {
+  const f = await fixture({ connectionError: true });
+  try {
+    f.goDown();
+    await f.tick();
+    f.event({ type: "progress", text: "Working offline" });
+    f.advance(20 * 60_000);
+    await f.tick();
+    await Bun.sleep(300);
+    expect(f.stopped()).toBe(0);
+    f.finish();
+    f.comeBack();
+    await f.tickUntil(() => f.posted.length > 0);
+    await f.tick();
+    expect(f.events).toContainEqual(
+      expect.objectContaining({ event: { type: "progress", text: "Working offline" } }),
+    );
+    expect(f.posted.map((result) => result.stopReason)).toEqual(["end_turn"]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a heartbeat answering without this lease stops the worker immediately", async () => {
+  const f = await fixture();
+  try {
+    f.missing();
+    await f.tick();
+    expect(f.stopped()).toBe(1);
+    expect(f.errors.join("\n")).toContain("heartbeat did not renew the lease");
+    expect(f.posted).toEqual([]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("an offline watchdog failure survives restart and is posted after reconnect", async () => {
+  const f = await fixture();
+  try {
+    f.goDown();
+    await f.tick();
+    f.advance(RUNNER_OFFLINE_BUDGET_MS + 6 * 60_000);
+    await Bun.sleep(300);
+    expect(f.stopped()).toBe(1);
+    expect(f.posted).toEqual([]);
+    await f.restart();
+    f.comeBack();
+    await f.tickUntil(() => f.posted.length > 0);
+    await f.tick();
+    expect(f.posted).toHaveLength(1);
+    expect(f.posted[0]!.errorMessage).toContain("lease deadline passed");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("sleep and wall-clock jumps spend no active command time", async () => {
+  const f = await fixture({ expiresMs: 25 * 60_000 });
+  try {
+    f.goDown();
+    await f.tick();
+    f.jumpWall(24 * 60 * 60_000);
+    await Bun.sleep(300);
+    expect(f.stopped()).toBe(0);
+    f.advance(24 * 60_000);
+    await Bun.sleep(300);
+    expect(f.stopped()).toBe(0);
+    f.advance(60_000);
+    await Bun.sleep(300);
+    expect(f.stopped()).toBe(1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("waiting for a question or finished result does not spend offline budget", async () => {
+  for (const wait of ["question", "result"]) {
+    const f = await fixture();
+    try {
+      f.goDown();
+      await f.tick();
+      if (wait === "question")
+        f.event({
+          type: "question",
+          requestId: crypto.randomUUID(),
+          question: "Continue?",
+          options: [],
+        });
+      else f.finish();
+      await Bun.sleep(300);
+      f.advance(2 * RUNNER_OFFLINE_BUDGET_MS);
+      await Bun.sleep(300);
+      expect(f.stopped()).toBe(0);
+      f.comeBack();
+      if (wait === "result") {
+        await f.tickUntil(() => f.posted.length > 0);
+        expect(f.posted[0]!.stopReason).toBe("end_turn");
+      }
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+test("a prepared success survives an unavailable result endpoint and a runner restart", async () => {
+  const f = await fixture();
+  try {
+    f.rejectResults(1);
+    f.finish();
+    await f.tickUntil(() => f.postAttempts() > 0);
+    expect(f.posted).toEqual([]);
+    await f.restart();
+    await f.tickUntil(() => f.posted.length > 0);
+    await f.tick();
+    expect(f.posted.map((result) => result.stopReason)).toEqual(["end_turn"]);
+    expect(f.postAttempts()).toBe(2);
+  } finally {
+    await f.cleanup();
+  }
+});
