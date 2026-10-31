@@ -16,6 +16,7 @@ import {
   enqueueJobOnce,
   getLinkAsk,
   livePreviewForQuestion,
+  pendingLivePreviewForQuestion,
   OutboxDispatcher,
   getRun,
   getWorkItem,
@@ -148,7 +149,7 @@ test("host abort and redelivery preserve the active preview and original deadlin
   }
 }, 90000);
 
-test("loss of the preview execution rejects Accept immediately", async () => {
+test("a long confirmation gap disables Accept and recovers the same review", async () => {
   const f = await pausedForReview({ preview: true });
   try {
     await f.until(() => findOpenQuestion(f.db, "ses_1") !== null);
@@ -156,11 +157,43 @@ test("loss of the preview execution rejects Accept immediately", async () => {
     expect(await f.approve()).toBe("rejected");
     expect(livePreviewForQuestion(f.db, findOpenQuestion(f.db, "ses_1")!.id)).toBeNull();
     expect(f.github.opened).toHaveLength(0);
+    expect(pendingLivePreviewForQuestion(f.db, findOpenQuestion(f.db, "ses_1")!.id)).not.toBeNull();
+    f.advance(70000);
+    await Bun.sleep(5200);
+    expect(
+      f.db.query<{ ended: number | null }, []>("SELECT ended_at AS ended FROM live_preview").get()
+        ?.ended,
+    ).toBeNull();
+    expect(f.previewRuntime.stopped).toBe(false);
+    f.restorePreviewRunner();
+    expect(await f.approve()).toBe("answered");
     await f.turn;
+    await f.driveUntil(() => f.github.opened.length === 1);
   } finally {
     await f.close();
   }
 }, 90000);
+
+test.each(["feedback", "cancel"] as const)(
+  "%s ends the stored preview even when the review signal aborts",
+  async (action) => {
+    const f = await pausedForReview({ preview: true });
+    try {
+      await f.until(() => findOpenQuestion(f.db, "ses_1") !== null);
+      if (action === "feedback")
+        await f.orchestrator.onLinearEvent(prompted("Change the fixture", "delegator-1"));
+      else await f.orchestrator.stopAgent(listWorkItems(f.db)[0]!.id);
+      expect(
+        f.db.query<{ ended: number | null }, []>("SELECT ended_at AS ended FROM live_preview").get()
+          ?.ended,
+      ).not.toBeNull();
+      await f.turn;
+    } finally {
+      await f.close();
+    }
+  },
+  90000,
+);
 
 test.each(["offline", "revoked", "other-owner"] as const)(
   "an %s runner cannot satisfy preview capability",
@@ -1569,6 +1602,9 @@ items:
     previewRuntime,
     losePreviewRunner() {
       previewRunning = false;
+    },
+    restorePreviewRunner() {
+      previewRunning = true;
     },
     turn: running,
     bare: layout.bare,

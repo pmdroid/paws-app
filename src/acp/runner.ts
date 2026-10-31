@@ -1,4 +1,4 @@
-import type { ShowPreviewHook, ReviewPreviewHook } from "../live-preview";
+import type { ShowPreviewHook } from "../live-preview";
 import type { AgentProfile } from "../config";
 import type { ItemId } from "../core";
 import type { AgentRole } from "./adapters";
@@ -38,7 +38,6 @@ export type StartAcpRun = {
   askTeam?: AskTeamHook;
   publishArtifact?: PublishArtifactHook;
   showPreview?: ShowPreviewHook;
-  reviewPreview?: ReviewPreviewHook;
   artifactLimits?: ArtifactLimits;
   command?: string;
   args?: string[];

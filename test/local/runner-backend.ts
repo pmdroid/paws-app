@@ -2334,6 +2334,78 @@ export async function probeRunnerBackend(
           "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.26',?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
           [host, now],
         );
+      {
+        const record = item();
+        const pinned = (
+          await placement.candidates({
+            itemId: record.id,
+            profile: { agent: "codex", model: "model" },
+            role: "implementer",
+            purpose: "work",
+          })
+        )[0]!.id;
+        const initialTurn = affinityBackend.forItem(record.id)(input(record));
+        const initialCommand = await next(pinned);
+        assert(initialCommand.type === "run");
+        const initialGrant = work.issueGrant({
+          runnerId: pinned,
+          runId: initialCommand.runId,
+          commandId: initialCommand.id,
+          generation: initialCommand.generation,
+        });
+        results.submit({
+          runnerId: pinned,
+          runId: initialCommand.runId,
+          generation: initialCommand.generation,
+          token: initialGrant.token,
+          result: { ...result(initialCommand), candidateSha: head },
+        });
+        await initialTurn;
+        for (const host of hostIds)
+          db.run("UPDATE runner_host_status SET runner_version=? WHERE runner_id=?", [
+            host === pinned ? "0.1.52" : "0.1.53",
+            host,
+          ]);
+        const candidates = await placement.candidates({
+          itemId: record.id,
+          profile: { agent: "codex", model: "model" },
+          role: "implementer",
+          purpose: "work",
+          pinnedRunnerId: pinned,
+          minimumRunnerVersion: [0, 1, 53],
+        });
+        assert(candidates.length > 0);
+        assert(candidates.every((candidate) => candidate.id !== pinned));
+        const previewTurn = affinityBackend.forItem(record.id)(
+          input(record, {
+            reviewPreview: { required: true, review: async () => "unused" },
+          }),
+        );
+        const command = await next(candidates[0]!.id);
+        assert(command.type === "run");
+        const compatibleGrant = work.issueGrant({
+          runnerId: command.runnerId,
+          runId: command.runId,
+          commandId: command.id,
+          generation: command.generation,
+        });
+        results.submit({
+          runnerId: command.runnerId,
+          runId: command.runId,
+          generation: command.generation,
+          token: compatibleGrant.token,
+          result: { ...result(command), candidateSha: head },
+        });
+        await previewTurn;
+        db.run("UPDATE run SET status='ended' WHERE id=?", [record.run.id]);
+        for (const host of hostIds)
+          db.run("UPDATE runner_host_status SET runner_version='0.1.26' WHERE runner_id=?", [host]);
+        observe(
+          "a preview requirement can leave an older pinned runner for a compatible runner",
+          true,
+          {},
+        );
+      }
       for (const unavailable of ["offline", "revoked", "draining", "paused"] as const) {
         const record = item();
         const affinityNotices: string[] = [];

@@ -105,6 +105,7 @@ import {
   PlacementRaceError,
   quotaSignal,
   RUNNER_ONLINE_MS,
+  compatibleRunnerIds,
   SESSION_GRACE_MS,
   type RunnerPlacement,
 } from "../runner-placement";
@@ -504,22 +505,20 @@ export function createRemoteAgentRunner(options: {
           .all();
     if (placement.minimumRunnerVersion) {
       const minimum = placement.minimumRunnerVersion;
-      const versions = new Map(
-        db
-          .query<{ id: string; version: string | null }, []>(
-            "SELECT runner_id AS id, runner_version AS version FROM runner_host_status",
-          )
-          .all()
-          .map((row) => [row.id, row.version]),
+      const compatibleIds = compatibleRunnerIds(
+        db,
+        candidates.map((runner) => runner.id),
+        minimum,
       );
       candidates = candidates.filter((runner) => {
-        const compatible = versionAtLeast(versions.get(runner.id), minimum);
+        const compatible = compatibleIds.has(runner.id);
         if (!compatible)
           rejected.push(`${runner.id}: requires runner ${minimum.join(".")} or later`);
         return compatible;
       });
     }
     const pinnedOnline = Boolean(
+      candidates.some((runner) => runner.id === placement.pinnedRunnerId) &&
       placement.purpose !== "prepare" &&
       placement.pinnedRunnerId &&
       placement.pinnedRunnerId !== placement.handedOverFrom &&

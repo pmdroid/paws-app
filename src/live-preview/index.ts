@@ -1,4 +1,3 @@
-import { LIVE_PREVIEW_RUNNER_VERSION, runnerVersionAtLeast } from "../runner-protocol";
 import type { PreviewRequest, PreviewReady } from "../runner-protocol";
 export {
   LIVE_PREVIEW_RUNNER_VERSION,
@@ -22,7 +21,3 @@ export interface ReviewPreviewHook {
 }
 export { runPreview, type PreviewRuntime, type PreviewProcess } from "./runtime";
 export { createFakePreviewRuntime } from "./fake";
-
-export function previewRunnerSupported(version: string | null | undefined): boolean {
-  return runnerVersionAtLeast(version ?? "", LIVE_PREVIEW_RUNNER_VERSION);
-}

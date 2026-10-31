@@ -7,13 +7,13 @@ import {
 } from "../live-preview";
 import { askWithLink } from "./link-ask";
 import {
-  livePreviewForQuestion,
   confirmLivePreview,
   detachLivePreview,
   detachAllLivePreviews,
   getLivePreview,
   saveLivePreview,
   endLivePreview,
+  endItemLivePreviews,
   livePreviewApprovals,
   unacceptedLivePreview,
 } from "../db";
@@ -4767,9 +4767,14 @@ export class Orchestrator {
               saveLivePreview(this.db, item.id, asked.question.id, preview);
               return asked;
             });
-        const check = () => !context.signal.aborted && context.isRunning();
+        const check = () => {
+          const running = !context.signal.aborted && context.isRunning();
+          if (running) confirmLivePreview(this.db, preview.id, this.now() + 10000);
+          else detachLivePreview(this.db, preview.id);
+          return running;
+        };
         this.previewChecks.set(opened.question.id, check);
-        if (check()) confirmLivePreview(this.db, preview.id, this.now() + 10000);
+        check();
         let notify: (() => void) | undefined;
         const wakes = this.previewWaiters.get(opened.question.id) ?? new Set<() => void>();
         this.previewWaiters.set(opened.question.id, wakes);
@@ -4781,14 +4786,13 @@ export class Orchestrator {
               wakes.add(resolve);
             });
             context.signal.throwIfAborted();
-            if (check()) confirmLivePreview(this.db, preview.id, this.now() + 10000);
-            else detachLivePreview(this.db, preview.id);
+            check();
             const previewAsk = getLinkAsk(this.db, opened.question.id);
             if (previewAsk?.decision === "approve")
               return `Live preview accepted for ${preview.head}. End your turn without further changes. Any new commit requires another preview.`;
             if (
               preview.expiresAt <= this.now() ||
-              livePreviewForQuestion(this.db, opened.question.id, this.now()) === null
+              getLivePreview(this.db, preview.id)?.endedAt !== null
             ) {
               this.askedRuns.add(runId);
               return "Preview stopped or expired. End your turn now. A reply in Linear or Request changes in Paws restarts it.";
@@ -4822,7 +4826,16 @@ export class Orchestrator {
             this.previewChecks.delete(opened.question.id);
             detachLivePreview(this.db, preview.id);
           }
-          if (!context.signal.aborted) endLivePreview(this.db, preview.id, this.now());
+          const latest = getWorkItem(this.db, item.id);
+          const closed = getLinkAsk(this.db, opened.question.id)?.closedAt;
+          if (
+            !context.signal.aborted ||
+            closed != null ||
+            !latest ||
+            latest.cancelRequested ||
+            latest.currentRunId !== runId
+          )
+            endLivePreview(this.db, preview.id, this.now());
         }
       },
     };
@@ -5174,8 +5187,10 @@ export class Orchestrator {
             this.db,
             sessionId,
             item,
-            VISUAL_REVIEW_ANSWERERS,
-            `visual-review-refused:${event.dedupeKey}`,
+            linkAsk.kind === "preview"
+              ? "Only the person who delegated this issue or the Linear project lead can answer this live preview review."
+              : VISUAL_REVIEW_ANSWERERS,
+            `${linkAsk.kind}-refused:${event.dedupeKey}`,
             this.now(),
           );
         await this.flush();
@@ -6502,6 +6517,7 @@ export class Orchestrator {
   }
 
   private abortItem(itemId: string): void {
+    endItemLivePreviews(this.db, itemId, this.now());
     for (const live of this.live.values()) {
       if (live.itemId !== itemId) continue;
       live.controller.abort();
@@ -6986,9 +7002,7 @@ export class Orchestrator {
     effects: LinkAskEffects = {},
   ): Promise<"answered" | "forbidden" | "rejected"> {
     const itemId = getQuestion(this.db, input.questionId)?.itemId;
-    const live = livePreviewForQuestion(this.db, input.questionId, this.now());
-    if (live && this.previewChecks.get(input.questionId)?.() !== true)
-      detachLivePreview(this.db, live.id);
+    this.previewChecks.get(input.questionId)?.();
     const outcome = decideLinkAsk(
       this.db,
       { ...input, now: this.now() },

@@ -140,3 +140,5 @@ export {
 } from "./placement";
 
 export { createRunnerPlacementBrowser } from "./browser";
+
+export { compatibleRunnerIds } from "./versions";

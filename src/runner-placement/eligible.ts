@@ -1,4 +1,5 @@
-import { runnerVersionAtLeast, type RunnerVersion } from "../runner-protocol";
+import type { RunnerVersion } from "../runner-protocol";
+import { compatibleRunnerIds } from "./versions";
 import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
 import { CANCEL_STILL_PENDING, delegatedLinearUserId, workspaceMember } from "../db";
@@ -233,21 +234,17 @@ export function itemOwnerHasCompatibleRunner(
 ): boolean {
   const scope = itemOwnerScope(db, input.itemId);
   if (!scope) return false;
-  const versions = new Map(
-    db
-      .query<{ id: string; version: string | null }, []>(
-        "SELECT runner_id AS id, runner_version AS version FROM runner_host_status",
-      )
-      .all()
-      .map((row) => [row.id, row.version]),
-  );
-  return eligibleRunners(db, {
+  const eligible = eligibleRunners(db, {
     ...scope,
     agent: input.agent,
     purpose: "work",
     now: input.now,
-  }).some(
-    (runner) =>
-      runner.eligible && runnerVersionAtLeast(versions.get(runner.id) ?? "", input.minimum),
+  }).filter((runner) => runner.eligible);
+  return (
+    compatibleRunnerIds(
+      db,
+      eligible.map((runner) => runner.id),
+      input.minimum,
+    ).size > 0
   );
 }

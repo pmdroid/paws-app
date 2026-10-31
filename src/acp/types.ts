@@ -151,6 +151,7 @@ export interface RunAgentOptions {
   postUpdate?: PostUpdateHook;
   publishArtifact?: PublishArtifactHook;
   showPreview?: ShowPreviewHook;
+  /** Remote backend review channel; local ACP only receives showPreview. */
   reviewPreview?: ReviewPreviewHook;
   closeoutProgress?: CloseoutProgressHook;
   artifactLimits?: ArtifactLimits;

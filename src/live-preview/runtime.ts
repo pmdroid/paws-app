@@ -111,6 +111,7 @@ export async function runPreview(input: {
   stopped?(id: string): void;
   runtime?: PreviewRuntime;
   timeoutMs?: number;
+  startupTimeouts?: { appMs: number; warmupMs: number };
 }): Promise<string> {
   const request = PreviewRequestSchema.parse(input.request);
   const io = input.runtime ?? runtime;
@@ -136,6 +137,8 @@ export async function runPreview(input: {
   let child: PreviewProcess | undefined;
   let serving = false;
   let published: PreviewReady | undefined;
+  let startup: AbortSignal | undefined;
+  let startupStage = "App startup";
   try {
     signal.throwIfAborted();
     // A dead worker can leave Serve configured. Clear only after owning its name.
@@ -171,7 +174,7 @@ export async function runPreview(input: {
         exited = true;
       },
     );
-    const startup = AbortSignal.any([signal, AbortSignal.timeout(60000)]);
+    startup = AbortSignal.any([signal, AbortSignal.timeout(input.startupTimeouts?.appMs ?? 60000)]);
     let response: Response;
     for (;;) {
       startup.throwIfAborted();
@@ -206,6 +209,12 @@ export async function runPreview(input: {
       `http://127.0.0.1:${request.port}`,
     ]);
     const url = `https://${service}.${suffix}${request.startPath}`;
+    // Certificate issuance gets its own budget after app startup and Serve finish.
+    startupStage = "Tailscale HTTPS certificate warm-up";
+    startup = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(input.startupTimeouts?.warmupMs ?? 120000),
+    ]);
     // Warm up the service certificate before publishing the URL.
     for (;;) {
       startup.throwIfAborted();
@@ -261,6 +270,13 @@ export async function runPreview(input: {
       if (signal.aborted) reject(signal.reason);
     });
     return await Promise.race([input.ready(preview, signal), died, expired]);
+  } catch (error) {
+    if (!signal.aborted && startup?.aborted && !published)
+      throw new Error(
+        `${startupStage} timed out. ${startupStage === "App startup" ? "Check the fixture command and loopback port." : "Check Tailscale service approval, DNS and certificate issuance."}`,
+        { cause: error },
+      );
+    throw error;
   } finally {
     try {
       if (published) input.stopped?.(published.id);

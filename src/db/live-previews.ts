@@ -30,6 +30,19 @@ export function getLivePreview(
     .get(id);
   return row ? { ...row, ready: PreviewReadySchema.parse(JSON.parse(row.ready)) } : null;
 }
+/** Pending review metadata survives confirmation gaps; this does not authorize Accept. */
+export function pendingLivePreviewForQuestion(
+  db: Database,
+  questionId: string,
+  now = Date.now(),
+): PreviewReady | null {
+  const row = db
+    .query<{ ready: string }, [string, number]>(
+      "SELECT ready FROM live_preview WHERE question_id=? AND ended_at IS NULL AND json_extract(ready,'$.expiresAt')>?",
+    )
+    .get(questionId, now);
+  return row ? PreviewReadySchema.parse(JSON.parse(row.ready)) : null;
+}
 export function livePreviewForQuestion(
   db: Database,
   questionId: string,
@@ -93,4 +106,13 @@ export function unacceptedLivePreview(db: Database, itemId: string, head: string
   if (!row) return false;
   const preview = PreviewReadySchema.parse(JSON.parse(row.ready));
   return row.decision !== "approve" || preview.head !== head;
+}
+
+/** Explicit cancellation ends every preview owned by the item, even after disconnect. */
+export function endItemLivePreviews(db: Database, itemId: string, now: number): void {
+  db.run("UPDATE live_preview SET ended_at=COALESCE(ended_at,?) WHERE item_id=?", [now, itemId]);
+  db.run(
+    "DELETE FROM live_preview_confirmation WHERE question_id IN (SELECT question_id FROM live_preview WHERE item_id=?)",
+    [itemId],
+  );
 }

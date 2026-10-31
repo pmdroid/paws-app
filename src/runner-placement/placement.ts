@@ -1,3 +1,4 @@
+import { compatibleRunnerIds } from "./versions";
 import { teamRepositoryAllowedSql } from "../db";
 import type { Database } from "bun:sqlite";
 import {
@@ -255,7 +256,7 @@ export function createRunnerPlacement(options: {
       // of its Linear project leads.
       // Preparation probes identities without moving a checkout or resuming an agent session.
       const pinnedRunnerId = input.purpose === "prepare" ? undefined : input.pinnedRunnerId;
-      const pinnedOnline =
+      let pinnedOnline =
         pinnedRunnerId && pinnedRunnerId !== input.handedOverFrom
           ? db
               .query(
@@ -294,25 +295,34 @@ export function createRunnerPlacement(options: {
                 : [],
             )
           : [eligibility(current)];
-      const rows = scopes
-        .flatMap((owner) =>
-          eligibleRunners(db, {
-            ...owner,
-            agent: input.profile!.agent,
-            purpose: input.findingGroups ? "work" : input.purpose,
-            now: at,
-            includeRevoked: true,
-          }),
-        )
-        .filter((runner) => {
-          const reason = !runner.eligible
-            ? runner.reason
+      const eligible = scopes.flatMap((owner) =>
+        eligibleRunners(db, {
+          ...owner,
+          agent: input.profile!.agent,
+          purpose: input.findingGroups ? "work" : input.purpose,
+          now: at,
+          includeRevoked: true,
+        }),
+      );
+      const compatible = input.minimumRunnerVersion
+        ? compatibleRunnerIds(
+            db,
+            eligible.filter((runner) => runner.eligible).map((runner) => runner.id),
+            input.minimumRunnerVersion,
+          )
+        : null;
+      pinnedOnline = Boolean(pinnedOnline && (!compatible || compatible.has(pinnedRunnerId!)));
+      const rows = eligible.filter((runner) => {
+        const reason = !runner.eligible
+          ? runner.reason
+          : compatible && !compatible.has(runner.id)
+            ? `requires runner ${input.minimumRunnerVersion!.join(".")} or later`
             : pinnedOnline && runner.id !== pinnedRunnerId
               ? "run pinned to another online runner"
               : null;
-          if (reason) input.onRejected?.(runner.id, reason);
-          return reason === null;
-        });
+        if (reason) input.onRejected?.(runner.id, reason);
+        return reason === null;
+      });
       const lastImplementation = input.itemId
         ? db
             .query<{ runnerId: string; model: string | null }, [string]>(

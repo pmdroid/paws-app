@@ -2,12 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  PreviewRequestSchema,
-  createFakePreviewRuntime,
-  runPreview,
-  previewRunnerSupported,
-} from "./index";
+import { PreviewRequestSchema, createFakePreviewRuntime, runPreview } from "./index";
 import { previewEnvironment } from "./runtime";
 
 const roots: string[] = [];
@@ -198,20 +193,6 @@ test("a failed Serve clear stops the product and retries cleanup before reusing 
   expect(retry.calls[0]).toEqual(["tailscale", "serve", "clear", "svc:paws-preview-1"]);
 });
 
-test.each([
-  ["0.1.48", false],
-  ["0.1.49", false],
-  ["0.1.52", false],
-  ["0.1.53", true],
-  ["0.1.53-rc.1", true],
-  ["0.1.54+build", true],
-  ["0.2.0", true],
-  [null, false],
-  ["invalid", false],
-] as const)("preview runner capability for %s is %s", (version, expected) => {
-  expect(previewRunnerSupported(version)).toBe(expected);
-});
-
 test("unconfirmed process cleanup retains its lease without replacing acceptance", async () => {
   const config = await input();
   const fake = createFakePreviewRuntime();
@@ -269,4 +250,47 @@ test("a killed worker releases its kernel lease and the next worker clears Serve
     child.kill();
     await child.exited;
   }
+});
+
+test.each(["app", "certificate"] as const)("startup timeout names the %s stage", async (stage) => {
+  const fake = createFakePreviewRuntime();
+  const fetch = fake.io.fetch;
+  fake.io.fetch = async (url, signal) => {
+    if (stage === "app" || url.startsWith("https:")) throw new Error("not ready");
+    return fetch(url, signal);
+  };
+  await expect(
+    runPreview({
+      ...(await input()),
+      runtime: fake.io,
+      startupTimeouts: { appMs: 25, warmupMs: 25 },
+      ready: async () => "unexpected",
+    }),
+  ).rejects.toThrow(
+    stage === "app" ? "App startup timed out" : "Tailscale HTTPS certificate warm-up timed out",
+  );
+  expect(fake.stopped).toBe(true);
+});
+
+test("certificate warm-up gets a fresh budget after app startup", async () => {
+  const fake = createFakePreviewRuntime();
+  const fetch = fake.io.fetch;
+  let first = true;
+  fake.io.fetch = async (url, signal) => {
+    if (first) {
+      first = false;
+      await Bun.sleep(60);
+    }
+    if (url.startsWith("https:")) await Bun.sleep(60);
+    signal.throwIfAborted();
+    return fetch(url, signal);
+  };
+  expect(
+    await runPreview({
+      ...(await input()),
+      runtime: fake.io,
+      startupTimeouts: { appMs: 100, warmupMs: 100 },
+      ready: async () => "accepted",
+    }),
+  ).toBe("accepted");
 });

@@ -762,7 +762,9 @@ export {
   detachAllLivePreviews,
   getLivePreview,
   livePreviewForQuestion,
+  pendingLivePreviewForQuestion,
   endLivePreview,
+  endItemLivePreviews,
   livePreviewApprovals,
   unacceptedLivePreview,
 } from "./live-previews";

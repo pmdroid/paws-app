@@ -85,3 +85,12 @@ exits, including after SIGKILL. A new owner clears any abandoned Tailscale Serve
 configuration before starting. Cleanup failures are logged separately from the
 human decision. If process termination is unconfirmed, the worker retains the
 service until it exits.
+
+A missing runner confirmation disables Accept without ending the pending review.
+The same review becomes available again when confirmation returns, until its
+original expiry. Request changes, a Linear reply and explicit cancellation end
+the stored preview even when the review signal is aborted.
+
+App startup has a 60-second budget. After the app answers and Serve is configured,
+HTTPS certificate warm-up gets a separate 120-second budget. Timeout errors name
+the stage and the relevant checks.

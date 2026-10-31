@@ -166,7 +166,7 @@ export function remindLinkAsk(db: Database, questionId: string, now: number): bo
         sessionId: question.sessionId,
         questionId,
         body:
-          linkAsk.kind === "preview" && (!live || live.expiresAt <= now)
+          linkAsk.kind === "preview" && !live
             ? "The live preview has stopped. Reply with your feedback or ask the agent to restart it. Review in Paws: " +
               linkAsk.link
             : linkAskReminderBody(linkAsk),
@@ -233,8 +233,7 @@ export function decideLinkAsk(
       return stopRiskAsk(db, linkAsk, item, input);
     if (linkAsk.kind === "preview" && input.decision === "approve") {
       const preview = livePreviewForQuestion(db, question.id, now);
-      if (!preview || preview.expiresAt <= now || preview.head !== item.checkpoint?.wipCommit)
-        return "rejected";
+      if (!preview || preview.head !== item.checkpoint?.wipCommit) return "rejected";
     }
     const bypassing = linkAsk.kind === "bypass" && input.decision === "approve";
     // Approving a rule break needs a reason; it covers every rule the ask holds.
