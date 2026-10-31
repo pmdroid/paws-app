@@ -50,6 +50,7 @@ export function returnToAgent(
   db: Database,
   input: {
     itemId: string;
+    restart?: typeof restart;
     reason: MergeReturnReason;
     /** Whether one more return is allowed, given the returns already spent. */
     admit: (returns: number) => boolean;
@@ -74,7 +75,7 @@ export function returnToAgent(
     input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`);
     const jobKey = `${input.reason}:${current.id}:${round}`;
     if (input.keepPlace) keepMergeQueuePlace(db, current.id);
-    const jobId = restart(db, current, {
+    const jobId = (input.restart ?? restart)(db, current, {
       reason: input.reason === "rebase-conflict" ? "conflict" : "ci",
       body: input.handoff,
       jobKey,

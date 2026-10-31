@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, type RestartReason } from "../core";
+import { JOB_KIND, MAX_ITEM_RESTARTS, type RestartReason } from "../core";
 import { halt } from "./halt";
 import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
 import { enqueueJobOnce } from "./jobs";
@@ -23,6 +23,7 @@ export function restart(
   handoff: RestartHandoff,
 ): number | null {
   return immediate(db, () => {
+    if (lifetimeRestarts(db, item.id) >= MAX_ITEM_RESTARTS) return null;
     if (!halt(db, item, handoff.now)) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
     if (handoff.reason === "answer")
@@ -76,4 +77,15 @@ export function restartLimit(db: Database, itemId: string): number | null {
   `)
     .get(JOB_KIND.resume, itemId);
   return typeof row?.limit === "number" ? row.limit : null;
+}
+
+/** Committed restarts across all runs and human replies. Never resets with turn_count. */
+export function lifetimeRestarts(db: Database, itemId: string): number {
+  return (
+    db
+      .query<{ count: number }, [string]>(
+        "SELECT COUNT(*) AS count FROM work_item_event WHERE item_id=? AND kind='restart'",
+      )
+      .get(itemId)?.count ?? 0
+  );
 }

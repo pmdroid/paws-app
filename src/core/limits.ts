@@ -5,3 +5,6 @@ export const WAKE_GAP_MS = 30_000;
 export const LONG_SLEEP_MS = 2 * 60 * 60 * 1000;
 
 export const RESUME_AGAIN_AFTER_MS = 30 * 60_000;
+
+/** Lifetime restart admissions per item, independent of Closeout review retries. */
+export const MAX_ITEM_RESTARTS = 10;

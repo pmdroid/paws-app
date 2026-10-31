@@ -71,6 +71,7 @@ export type MergeVoice = {
 
 export type OrderCapabilities = {
   ask: typeof ask;
+  restart?: typeof import("../db").restart;
   now(): number;
   stopped(): boolean;
   session(item: WorkItemRecord): string | null;
@@ -113,6 +114,7 @@ export function sendBack(
 ): boolean {
   return returnToAgent(db, {
     itemId: item.id,
+    restart: caps.restart,
     reason,
     admit,
     handoff,

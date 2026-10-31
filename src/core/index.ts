@@ -78,7 +78,7 @@ export {
   type CommandListener,
   type LinearCommand,
 } from "./commands";
-export { LONG_SLEEP_MS, WAKE_GAP_MS } from "./limits";
+export { LONG_SLEEP_MS, WAKE_GAP_MS, MAX_ITEM_RESTARTS } from "./limits";
 export { JOB_KIND, MERGE_WORK, OUTBOX_ACTIVITY, isMergeWork } from "./kinds";
 export {
   AWAKE_ITEM_STATES,

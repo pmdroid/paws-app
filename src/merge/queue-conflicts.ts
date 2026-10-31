@@ -19,7 +19,10 @@ import {
 } from "./orders";
 import { askMergeHelp, rebaseBudgetFor, returnToAgent } from "./returns";
 
-export type QueueConflictCapabilities = Pick<OrderCapabilities, "ask" | "now" | "session"> & {
+export type QueueConflictCapabilities = Pick<
+  OrderCapabilities,
+  "ask" | "restart" | "now" | "session"
+> & {
   voice: Pick<OrderCapabilities["voice"], "thought" | "flush">;
   /** GitHub's `mergeable` for the item's pull request, read again while GitHub computes it. */
   readPull(item: WorkItemRecord, pullNumber: number): Promise<PullMergeable | null>;
@@ -94,6 +97,7 @@ function returnConflict(
 ): boolean {
   return returnToAgent(db, {
     itemId: item.id,
+    restart: caps.restart,
     reason: "rebase-conflict",
     admit: () => owned() && rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
     handoff: REBASE_CONFLICT_INSTRUCTION,

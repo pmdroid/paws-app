@@ -1601,6 +1601,7 @@ export class Orchestrator {
       if (sweep === null || !context.isCurrent()) return;
       await returnQueuedConflicts(this.db, sweep, {
         ask,
+        restart,
         now: () => this.now(),
         session: (item) => this.activitySession(item),
         voice: {
@@ -4486,6 +4487,7 @@ export class Orchestrator {
   private orderCapabilities(itemId: string): OrderCapabilities {
     return {
       ask,
+      restart,
       now: () => this.now(),
       stopped: () => this.stopped(itemId),
       session: (item) => this.activitySession(item),

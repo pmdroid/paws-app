@@ -1,8 +1,11 @@
+import { MAX_ITEM_RESTARTS, transition } from "../core";
 import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
   getWorkItem,
   immediate,
+  halt,
+  lifetimeRestarts,
   saveCheckpoint,
   type WorkItemRecord,
   restart as restartItem,
@@ -12,6 +15,7 @@ import {
   type Asked,
   type QuestionAsker,
   type StoredQuestion,
+  getQuestion,
 } from "../questions";
 
 export { halt, type RestartHandoff } from "../db";
@@ -48,7 +52,38 @@ export function ask(
 }
 
 export function restart(...args: Parameters<typeof restartItem>): ReturnType<typeof restartItem> {
-  return restartItem(...args);
+  const [db, item, handoff] = args;
+  return immediate(db, () => {
+    const current = getWorkItem(db, item.id);
+    if (!current || current.version !== item.version || current.cancelRequested) return null;
+    const used = lifetimeRestarts(db, item.id);
+    if (used < MAX_ITEM_RESTARTS) return restartItem(...args);
+    if (!transition(current.state, "restart").ok) return null;
+    const halted = halt(db, current, handoff.now);
+    if (!halted) return null;
+    // A delivered or answered budget question still counts. Replays never ask again.
+    const asked = db
+      .query<{ id: string }, [string]>(
+        "SELECT id FROM question WHERE item_id=? AND reason='restart_budget' LIMIT 1",
+      )
+      .get(item.id);
+    if (asked && halted.state !== "awaiting_input")
+      awaitQuestion(db, halted, getQuestion(db, asked.id)!, handoff.now);
+    if (!asked && halted.sessionKey !== null)
+      ask(
+        db,
+        {
+          itemId: item.id,
+          runId: halted.currentRunId,
+          sessionId: halted.sessionKey,
+          version: halted.version,
+        },
+        "clarification",
+        `Paws used ${used} of ${MAX_ITEM_RESTARTS} lifetime restarts for this item. Automatic restarts have stopped. Please review the work and decide how to proceed.`,
+        { reason: "restart_budget", now: handoff.now },
+      );
+    return null;
+  });
 }
 
 /** Adopt an already stored question when recovering older in-flight work. */
