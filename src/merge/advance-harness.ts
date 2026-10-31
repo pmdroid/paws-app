@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { FakeClock } from "../core";
 import {
+  restart,
   applyWorkItemEvent,
   beginImplementRun,
   enterMergeQueue,
@@ -93,6 +94,7 @@ export async function mergeHarness(
   options: {
     settings?: Partial<Pick<TaskMergeSettings, "order" | "mainMoved">>;
     queue?: FakeMergeQueue;
+    restart?: typeof restart;
   } = {},
 ) {
   const root = await mkdtemp(path.join(tmpdir(), "paws-advance-"));
@@ -372,6 +374,7 @@ export async function mergeHarness(
     const item = items.get(id)!;
     return {
       ask,
+      restart: options.restart ?? restart,
       now: () => clock.now(),
       stopped: () => state.stopped,
       session: (current) => current.sessionKey,
@@ -475,6 +478,7 @@ export async function mergeHarness(
       { repository: "acme/app", main },
       {
         ask,
+        restart: options.restart ?? restart,
         now: () => clock.now(),
         session: (current) => current.sessionKey,
         voice: {

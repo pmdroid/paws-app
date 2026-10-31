@@ -1962,7 +1962,11 @@ export class Orchestrator {
         if (run && (run.status === "active" || run.status === "provisioning"))
           markRun(this.db, run.id, "lost", now);
       }
-      restart(this.db, current, { reason: "follow_up", body: "Retry runner setup.", now });
+      if (
+        restart(this.db, current, { reason: "follow_up", body: "Retry runner setup.", now }) ===
+        null
+      )
+        return getWorkItem(this.db, item.id)?.state === "awaiting_input";
       this.recordRunnerSetupHold(current, need, now, current.currentRunId);
       return true;
     });
@@ -5226,11 +5230,14 @@ export class Orchestrator {
           this.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [itemId]);
           continue;
         }
-        restart(this.db, item, {
-          reason: "follow_up",
-          body: "The task criteria changed in Linear. Read the updated issue and finish the work from its branch.",
-          now: this.now(),
-        });
+        if (
+          restart(this.db, item, {
+            reason: "follow_up",
+            body: "The task criteria changed in Linear. Read the updated issue and finish the work from its branch.",
+            now: this.now(),
+          }) === null
+        )
+          continue;
         enqueueOutboxOnce(this.db, {
           target: "linear",
           op: "activity",
@@ -5292,11 +5299,14 @@ export class Orchestrator {
     const resumed = immediate(this.db, () => {
       const item = getWorkItem(this.db, itemId);
       if (!canAct() || item?.state !== "paused" || item.cancelRequested) return false;
-      restart(this.db, item, {
-        reason: "follow_up",
-        body: "Continue the task from its branch.",
-        now: this.now(),
-      });
+      if (
+        restart(this.db, item, {
+          reason: "follow_up",
+          body: "Continue the task from its branch.",
+          now: this.now(),
+        }) === null
+      )
+        return false;
       onCommitted?.();
       return true;
     });

@@ -95,25 +95,27 @@ function returnConflict(
   caps: QueueConflictCapabilities,
   owned: () => boolean,
 ): boolean {
-  return returnToAgent(db, {
-    itemId: item.id,
-    restart: caps.restart,
-    reason: "rebase-conflict",
-    admit: () => owned() && rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
-    handoff: REBASE_CONFLICT_INSTRUCTION,
-    now: caps.now(),
-    keepPlace: true,
-    announce: (running, _, key) => caps.voice.thought(running, REBASE_CONFLICT_THOUGHT, key),
-    record: (jobId) =>
-      recordRebaseReturn(db, {
-        itemId: item.id,
-        jobId,
-        candidate: head,
-        reason: "merge",
-        ...conflict,
-        recordedAt: caps.now(),
-      }),
-  });
+  return (
+    returnToAgent(db, {
+      itemId: item.id,
+      restart: caps.restart,
+      reason: "rebase-conflict",
+      admit: () => owned() && rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+      handoff: REBASE_CONFLICT_INSTRUCTION,
+      now: caps.now(),
+      keepPlace: true,
+      announce: (running, _, key) => caps.voice.thought(running, REBASE_CONFLICT_THOUGHT, key),
+      record: (jobId) =>
+        recordRebaseReturn(db, {
+          itemId: item.id,
+          jobId,
+          candidate: head,
+          reason: "merge",
+          ...conflict,
+          recordedAt: caps.now(),
+        }),
+    }) !== "skipped"
+  );
 }
 
 function askSpentBudget(

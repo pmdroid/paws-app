@@ -749,7 +749,15 @@ export {
 } from "./runner-agents";
 export { listWaitingProfileRuns } from "./runs";
 export { halt } from "./halt";
-export { restart, lifetimeRestarts, fixRounds, restartLimit, type RestartHandoff } from "./restart";
+export {
+  restart,
+  lifetimeRestarts,
+  lifetimeRestartBudget,
+  grantLifetimeRestarts,
+  fixRounds,
+  restartLimit,
+  type RestartHandoff,
+} from "./restart";
 
 export { jobVersionCurrent } from "./jobs";
 

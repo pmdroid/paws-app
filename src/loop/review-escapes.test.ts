@@ -1,3 +1,4 @@
+import { restart } from "./operations";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -55,6 +56,7 @@ async function accepted() {
 
   const ciFailed = (checks: FailedCiCheck[]) =>
     returnToAgent(db, {
+      restart,
       itemId: "eng-1",
       reason: "ci-failed",
       admit: (returns) => returns < 3,
@@ -86,9 +88,9 @@ async function accepted() {
 describe("review escapes found after the pull request", () => {
   test("a CI fix after an accepted head records one candidate, and a docs-only fix is not an escape", async () => {
     const { db, head, ciFailed, commit, settle } = await accepted();
-    expect(ciFailed([{ name: "test", url: null }])).toBe(true);
+    expect(ciFailed([{ name: "test", url: null }])).toBe("restarted");
     // The item is back with the agent; the same failure read again starts no second round.
-    expect(ciFailed([{ name: "test", url: null }])).toBe(false);
+    expect(ciFailed([{ name: "test", url: null }])).toBe("skipped");
     const [candidate, ...rest] = listReviewEscapes(db);
     expect(rest).toEqual([]);
     expect(candidate).toMatchObject({
@@ -157,7 +159,7 @@ describe("review escapes found after the pull request", () => {
   test("no candidate when Closeout has not accepted a head", async () => {
     const { db, ciFailed } = await accepted();
     db.run("UPDATE work_item SET accepted_head = NULL");
-    expect(ciFailed([{ name: "test", url: null }])).toBe(true);
+    expect(ciFailed([{ name: "test", url: null }])).toBe("restarted");
     expect(listReviewEscapes(db)).toEqual([]);
   });
 });

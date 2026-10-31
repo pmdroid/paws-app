@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
+  restart,
   applyWorkItemEvent,
   beginImplementRun,
   enqueueJob,
@@ -31,6 +32,7 @@ function sendBack(db: ReturnType<typeof queued>, limit = 3) {
   const announced: string[] = [];
   const sent = returnToAgent(db, {
     itemId: "eng-1",
+    restart,
     reason: "rebase-conflict",
     admit: (returns) => returns < limit,
     handoff: "rebase",
@@ -39,7 +41,7 @@ function sendBack(db: ReturnType<typeof queued>, limit = 3) {
       recordRebaseReturn(db, { itemId: "eng-1", jobId, candidate: "h", reason: "merge" }),
     announce: (_, attempt, key) => announced.push(`${attempt}:${key}`),
   });
-  return { sent, announced };
+  return { sent: sent === "restarted", announced };
 }
 
 describe("merge returns", () => {

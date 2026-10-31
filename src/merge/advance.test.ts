@@ -1,6 +1,7 @@
 import { ask as rawAsk } from "../questions";
 import { describe, expect, test } from "bun:test";
 import {
+  restart,
   applyWorkItemEvent,
   beginImplementRun,
   enterMergeQueue,
@@ -28,6 +29,7 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
   };
   const caps: MergeCapabilities = {
     ask,
+    restart,
     now: () => 10,
     stopped: () => false,
     publish: unused("publish"),

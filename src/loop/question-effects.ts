@@ -1,8 +1,10 @@
 import { mergeAcceptedWork } from "./accepted-work";
 import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
+import { JOB_KIND, TIME_LIMIT_MERGE, continuesRestartBudget } from "../core";
 import {
+  immediate,
+  grantLifetimeRestarts,
   applyLinearTurns,
   announceLinearTurn,
   applyWorkItemEvent,
@@ -259,7 +261,20 @@ export function questionEffects(
     },
     "time-limit": timeLimit,
     agent: resume,
-    clarification: resume,
+    clarification: (question) => {
+      if (question.reason !== "restart_budget") return resume(question);
+      if (continuesRestartBudget(question.answer))
+        return immediate(db, () => {
+          if (grantLifetimeRestarts(db, question.id)) resume(question);
+        });
+      if (!/^\s*stop\b/i.test(question.answer ?? "")) return resume(question);
+      consumeTurn(question);
+      const item = getWorkItem(db, question.itemId);
+      if (!item || item.state !== "awaiting_input") return;
+      // Any response other than the explicit extension ends this budget hold.
+      db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
+      applyWorkItemEvent(db, item.id, "cancel", { now: input.now });
+    },
     repository: resume,
     "ci-help": resume,
     "closeout-help": closeoutHelp,

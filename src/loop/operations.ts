@@ -1,11 +1,13 @@
-import { MAX_ITEM_RESTARTS, transition } from "../core";
+import { MAX_ITEM_RESTARTS, RESTART_BUDGET_CONTINUE, transition } from "../core";
 import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
   getWorkItem,
+  getLinearSession,
+  bindLinearSessionTask,
   immediate,
   halt,
-  lifetimeRestarts,
+  lifetimeRestartBudget,
   saveCheckpoint,
   type WorkItemRecord,
   restart as restartItem,
@@ -54,34 +56,59 @@ export function ask(
 export function restart(...args: Parameters<typeof restartItem>): ReturnType<typeof restartItem> {
   const [db, item, handoff] = args;
   return immediate(db, () => {
-    const current = getWorkItem(db, item.id);
-    if (!current || current.version !== item.version || current.cancelRequested) return null;
-    const used = lifetimeRestarts(db, item.id);
-    if (used < MAX_ITEM_RESTARTS) return restartItem(...args);
+    let current = getWorkItem(db, item.id);
+    if (!current || current.version !== item.version) return null;
+    const { used, limit } = lifetimeRestartBudget(db, item.id);
+    if (used < limit) return restartItem(...args);
     if (!transition(current.state, "restart").ok) return null;
+    if (!current.sessionKey) {
+      const sessions = db
+        .query<{ sessionId: string }, [string]>(
+          "SELECT DISTINCT session_key AS sessionId FROM work_item WHERE delegation_id=? AND session_key IS NOT NULL AND session_key<>''",
+        )
+        .all(current.delegationId)
+        .filter(({ sessionId }) => {
+          const session = getLinearSession(db, sessionId);
+          return (
+            session !== null &&
+            session.stoppedAt === null &&
+            session.delegationId === current!.delegationId
+          );
+        });
+      if (sessions.length === 1) {
+        bindLinearSessionTask(db, sessions[0]!.sessionId, current.delegationId);
+        current = getWorkItem(db, item.id)!;
+      }
+    }
+    // A missing or ambiguous channel is an admission error, never a partially committed halt.
+    if (!current.sessionKey)
+      throw new Error(
+        "The lifetime restart budget is spent, but this item has no Linear session for its budget question. Connect a session before retrying.",
+      );
     const halted = halt(db, current, handoff.now);
     if (!halted) return null;
-    // A delivered or answered budget question still counts. Replays never ask again.
-    const asked = db
+    const waiting = db
       .query<{ id: string }, [string]>(
-        "SELECT id FROM question WHERE item_id=? AND reason='restart_budget' LIMIT 1",
+        "SELECT id FROM question WHERE item_id=? AND reason='restart_budget' AND status IN ('open','queued') AND cancelled_at IS NULL ORDER BY rowid DESC LIMIT 1",
       )
       .get(item.id);
-    if (asked && halted.state !== "awaiting_input")
-      awaitQuestion(db, halted, getQuestion(db, asked.id)!, handoff.now);
-    if (!asked && halted.sessionKey !== null)
+    if (waiting) {
+      if (halted.state !== "awaiting_input")
+        awaitQuestion(db, halted, getQuestion(db, waiting.id)!, handoff.now);
+    } else {
       ask(
         db,
         {
           itemId: item.id,
           runId: halted.currentRunId,
-          sessionId: halted.sessionKey,
+          sessionId: current.sessionKey,
           version: halted.version,
         },
         "clarification",
-        `Paws used ${used} of ${MAX_ITEM_RESTARTS} lifetime restarts for this item. Automatic restarts have stopped. Please review the work and decide how to proceed.`,
-        { reason: "restart_budget", now: handoff.now },
+        `Paws used ${used} of ${limit} lifetime restarts for this item. Automatic restarts have stopped. Continue grants ${MAX_ITEM_RESTARTS} more restarts; Stop ends the task.`,
+        { reason: "restart_budget", options: [RESTART_BUDGET_CONTINUE, "Stop"], now: handoff.now },
       );
+    }
     return null;
   });
 }

@@ -71,7 +71,7 @@ export type MergeVoice = {
 
 export type OrderCapabilities = {
   ask: typeof ask;
-  restart?: typeof import("../db").restart;
+  restart: typeof import("../db").restart;
   now(): number;
   stopped(): boolean;
   session(item: WorkItemRecord): string | null;
@@ -112,21 +112,23 @@ export function sendBack(
     pullNumber?: number | null;
   },
 ): boolean {
-  return returnToAgent(db, {
-    itemId: item.id,
-    restart: caps.restart,
-    reason,
-    admit,
-    handoff,
-    now: caps.now(),
-    record: report.record,
-    ...(report.failedChecks ? { failedChecks: report.failedChecks } : {}),
-    ...(report.pullNumber !== undefined ? { pullNumber: report.pullNumber } : {}),
-    announce: (running, attempt, key) => {
-      if (reason === "ci-failed") caps.voice.status(running, report.thought(attempt), key);
-      else caps.voice.thought(running, report.thought(attempt), key);
-    },
-  });
+  return (
+    returnToAgent(db, {
+      itemId: item.id,
+      restart: caps.restart,
+      reason,
+      admit,
+      handoff,
+      now: caps.now(),
+      record: report.record,
+      ...(report.failedChecks ? { failedChecks: report.failedChecks } : {}),
+      ...(report.pullNumber !== undefined ? { pullNumber: report.pullNumber } : {}),
+      announce: (running, attempt, key) => {
+        if (reason === "ci-failed") caps.voice.status(running, report.thought(attempt), key);
+        else caps.voice.thought(running, report.thought(attempt), key);
+      },
+    }) !== "skipped"
+  );
 }
 
 export function askHelp(
@@ -332,7 +334,9 @@ export async function mergeThroughGitHubQueue(
             },
           )
         )
-          return { kind: "returned" };
+          return {
+            kind: getWorkItem(db, item.id)?.state === "awaiting_input" ? "asked" : "returned",
+          };
         const message = `GitHub's merge queue removed the pull request for a conflict${why}.${budget.allowed ? "" : ` ${budget.message}`}`;
         if (
           askHelp(
@@ -387,7 +391,9 @@ async function githubQueueCiFailed(
       pullNumber: pull.number,
     })
   )
-    return { kind: "returned" };
+    return {
+      kind: getWorkItem(merge.db, merge.item.id)?.state === "awaiting_input" ? "asked" : "returned",
+    };
   if (askHelp(merge, ciFixQuestion(checks, limit, pull.url), "budget_spent")) {
     await merge.caps.voice.flush();
     return { kind: "asked" };

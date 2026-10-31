@@ -1,14 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
-  restart,
+  type restart,
   fixRounds,
   countRebaseReturns,
   listRebaseReturns,
   getWorkItem,
   immediate,
   recordReviewEscape,
-  keepMergeQueuePlace,
   type WorkItemRecord,
 } from "../db";
 import type { ask } from "../questions";
@@ -50,7 +49,7 @@ export function returnToAgent(
   db: Database,
   input: {
     itemId: string;
-    restart?: typeof restart;
+    restart: typeof restart;
     reason: MergeReturnReason;
     /** Whether one more return is allowed, given the returns already spent. */
     admit: (returns: number) => boolean;
@@ -64,24 +63,25 @@ export function returnToAgent(
     failedChecks?: readonly FailedCiCheck[];
     pullNumber?: number | null;
   },
-): boolean {
+): "restarted" | "asked" | "skipped" {
   return immediate(db, () => {
     const current = getWorkItem(db, input.itemId);
-    if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
+    if (!current || current.state !== "merge_queue" || current.cancelRequested) return "skipped";
     const returns =
       input.reason === "rebase-conflict" ? rebaseReturns(db, current.id) : ciFixes(db, current.id);
-    if (!input.admit(returns)) return false;
+    if (!input.admit(returns)) return "skipped";
     const round = `${latestUserTurn(db, current.id)}:${returns}`;
-    input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`);
     const jobKey = `${input.reason}:${current.id}:${round}`;
-    if (input.keepPlace) keepMergeQueuePlace(db, current.id);
-    const jobId = (input.restart ?? restart)(db, current, {
+    const jobId = input.restart(db, current, {
       reason: input.reason === "rebase-conflict" ? "conflict" : "ci",
       body: input.handoff,
       jobKey,
       now: input.now,
+      keepMergeQueuePlace: input.keepPlace,
     });
-    if (jobId === null) return false;
+    if (jobId === null)
+      return getWorkItem(db, current.id)?.state === "awaiting_input" ? "asked" : "skipped";
+    input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`);
     // CI failed on a head Closeout accepted: a candidate escape of the independent review.
     if (input.reason === "ci-failed" && current.acceptedHead !== null)
       recordReviewEscape(db, {
@@ -99,7 +99,7 @@ export function returnToAgent(
         recordedAt: input.now,
       });
     input.record(jobId, returns + 1);
-    return true;
+    return "restarted";
   });
 }
 

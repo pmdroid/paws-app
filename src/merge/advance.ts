@@ -326,7 +326,7 @@ export async function advanceMerge(
       },
     )
   )
-    return { kind: "returned" };
+    return { kind: getWorkItem(db, item.id)?.state === "awaiting_input" ? "asked" : "returned" };
   if (turn.kind === "blocked" && turn.block === "ci_failed") {
     const { readiness, head } = turn.pull;
     const checks = readiness.failedChecks ?? [];
@@ -341,7 +341,7 @@ export async function advanceMerge(
         pullNumber: pull.number,
       })
     )
-      return { kind: "returned" };
+      return { kind: getWorkItem(db, item.id)?.state === "awaiting_input" ? "asked" : "returned" };
     if (askHelp(merge, ciFixQuestion(checks, ciFixLimit, pull.url), "budget_spent")) {
       round("asked");
       await voice.flush();

@@ -8,3 +8,10 @@ export const RESUME_AGAIN_AFTER_MS = 30 * 60_000;
 
 /** Lifetime restart admissions per item, independent of Closeout review retries. */
 export const MAX_ITEM_RESTARTS = 10;
+
+export const RESTART_BUDGET_CONTINUE = `Continue for ${MAX_ITEM_RESTARTS} more restarts`;
+export function continuesRestartBudget(answer: string | null): boolean {
+  return ["continue", RESTART_BUDGET_CONTINUE.toLowerCase()].includes(
+    (answer ?? "").trim().toLowerCase(),
+  );
+}

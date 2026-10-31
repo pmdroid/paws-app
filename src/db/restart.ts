@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, MAX_ITEM_RESTARTS, type RestartReason } from "../core";
+import { JOB_KIND, MAX_ITEM_RESTARTS, continuesRestartBudget, type RestartReason } from "../core";
 import { halt } from "./halt";
 import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
 import { enqueueJobOnce } from "./jobs";
+import { keepMergeQueuePlace } from "./merge-queue";
+import { getWorkItem } from "./items";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
 
@@ -14,16 +16,18 @@ export type RestartHandoff = {
   jobKey?: string;
   /** The fix-attempt limit this round's lines name, when it differs from the fix rounds. */
   limit?: number;
+  keepMergeQueuePlace?: boolean;
 };
 
-/** One admission path back to the agent. Keeps the run, branch and Linear session. */
+/** Persist a restart admitted by src/loop. Keeps the run, branch and Linear session. */
 export function restart(
   db: Database,
   item: WorkItemRecord,
   handoff: RestartHandoff,
 ): number | null {
   return immediate(db, () => {
-    if (lifetimeRestarts(db, item.id) >= MAX_ITEM_RESTARTS) return null;
+    if (getWorkItem(db, item.id)?.version !== item.version) return null;
+    if (handoff.keepMergeQueuePlace) keepMergeQueuePlace(db, item.id);
     if (!halt(db, item, handoff.now)) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
     if (handoff.reason === "answer")
@@ -88,4 +92,36 @@ export function lifetimeRestarts(db: Database, itemId: string): number {
       )
       .get(itemId)?.count ?? 0
   );
+}
+
+/** Human-approved extensions add to the limit without resetting the lifetime count. */
+export function lifetimeRestartBudget(
+  db: Database,
+  itemId: string,
+): { used: number; limit: number } {
+  const grant = db
+    .query<{ limit: number | null }, [string]>(
+      'SELECT MAX(restart_limit) AS "limit" FROM restart_budget_grant WHERE item_id=?',
+    )
+    .get(itemId);
+  return { used: lifetimeRestarts(db, itemId), limit: grant?.limit ?? MAX_ITEM_RESTARTS };
+}
+
+/** Record one explicit human extension, atomically and idempotently with answer delivery. */
+export function grantLifetimeRestarts(db: Database, questionId: string): boolean {
+  return immediate(db, () => {
+    const question = db
+      .query<{ item_id: string; answer: string | null }, [string]>(
+        "SELECT item_id,answer FROM question WHERE id=? AND reason='restart_budget' AND status='answered' AND cancelled_at IS NULL",
+      )
+      .get(questionId);
+    if (!question || !continuesRestartBudget(question.answer)) return false;
+    const budget = lifetimeRestartBudget(db, question.item_id);
+    return (
+      db.run(
+        "INSERT OR IGNORE INTO restart_budget_grant (question_id,item_id,restart_limit) VALUES (?,?,?)",
+        [questionId, question.item_id, Math.max(budget.used, budget.limit) + MAX_ITEM_RESTARTS],
+      ).changes > 0
+    );
+  });
 }
