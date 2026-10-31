@@ -427,7 +427,7 @@ export function createRemoteAgentRunner(options: {
       );
     if (!agent || resetsAt === null)
       throw new RunnerUnavailableError(
-        `No available paired runner can access this Linear task repository (${details.join("; ")})`,
+        `No available paired runner can access this Linear task repository${agent ? ` with agent ${agent}` : ""} (${details.join("; ")})`,
       );
     throw new UsageLimitPause(
       agent,

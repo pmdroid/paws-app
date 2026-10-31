@@ -5556,6 +5556,7 @@ export class Orchestrator {
     const ownerHasRunner = this.options.ownerHasRunner;
     let config: ReturnType<typeof loadConfigFile> | null = null;
     try {
+      this.reconcileAgentSettings();
       if (ownerHasRunner) config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     } catch (caughtError15) {
       journalCaught(
@@ -5743,12 +5744,14 @@ export class Orchestrator {
     if (item.currentRunId !== null) {
       const existing = getRun(this.db, item.currentRunId);
       if (existing && (existing.status === "active" || existing.status === "ended")) {
+        this.reconcileAgentSettings();
         markRun(this.db, existing.id, "active", this.now());
         return existing;
       }
       // A runner-setup hold stopped this run before any work. The resume continues it, so the
       // task keeps one run.
       if (existing?.status === "lost" && takeRunnerSetupResume(this.db, item.id, existing.id)) {
+        this.reconcileAgentSettings();
         markRun(this.db, existing.id, "active", this.now());
         return existing;
       }
@@ -6015,6 +6018,7 @@ export class Orchestrator {
     return async (options: RunAgentOptions) => {
       this.assertJobCurrent(itemId);
       const resolveProfiles = () => {
+        this.reconcileAgentSettings();
         const currentRunId = getWorkItem(this.db, itemId)?.currentRunId;
         if (!currentRunId)
           return { profile: options.profile, fallbackProfile: options.fallbackProfile };
@@ -7326,6 +7330,12 @@ export class Orchestrator {
       }
       throw error;
     }
+  }
+
+  private reconcileAgentSettings(): void {
+    const configPath = join(this.options.pawsRoot, "config.toml");
+    if (!existsSync(configPath)) return;
+    this.applyAgentSettingsToWaiting();
   }
 
   /** Synchronous with snapshot reads and runner admission in this process. */
