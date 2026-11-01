@@ -266,3 +266,53 @@ test("an existing remote invocation resolves updated waiting profiles and role-s
     fallbackProfile: reviewerFallback,
   });
 });
+
+test.each([false, true])(
+  "config edits reconcile a waiting run before it starts, prior observation=%s",
+  async (observed) => {
+    const f = fixture();
+    writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
+    const waiting = f.seed("paused");
+    const internals = f.orchestrator as unknown as {
+      ensureRun(item: WorkItemRecord): { id: string };
+      remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
+    };
+    if (observed) internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+    writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
+    f.db.run("UPDATE work_item SET state='running' WHERE id=?", [waiting.item.id]);
+    expect(internals.ensureRun(getWorkItem(f.db, waiting.item.id)!).id).toBe(waiting.run.id);
+    await internals.remoteAgentForItem(waiting.item.id)({
+      role: "implementer",
+      runId: waiting.run.id,
+      itemId: waiting.item.id,
+      pawsRoot: f.root,
+      worktreePath: f.root,
+      prompt: "Continue",
+      profile: oldProfiles.implementer,
+    });
+    expect(f.calls.map((call) => call.profile)).toEqual([profiles.implementer]);
+    expect(JSON.parse(readFileSync(waiting.file, "utf8"))).toMatchObject({
+      profiles,
+      candidate: waiting.candidate,
+    });
+  },
+);
+
+test("automatic reconciliation waits for a live runner lease to end", () => {
+  const f = fixture();
+  const waiting = f.seed("running");
+  writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
+  f.db.run("PRAGMA foreign_keys=OFF");
+  f.db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
+    [waiting.run.id, "runner", "workspace", 1, 0, "command", 2000],
+  );
+  const internals = f.orchestrator as unknown as {
+    ensureRun(item: WorkItemRecord): { id: string };
+  };
+  internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+  expect(JSON.parse(readFileSync(waiting.file, "utf8")).profiles).toEqual(oldProfiles);
+  f.db.run("UPDATE runner_work SET ended_at=1000 WHERE run_id=?", [waiting.run.id]);
+  internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+  expect(JSON.parse(readFileSync(waiting.file, "utf8")).profiles).toEqual(profiles);
+});
