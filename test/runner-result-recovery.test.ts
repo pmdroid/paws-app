@@ -17,6 +17,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   recoverOnStartup,
+  requeueOrphanedWork,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -217,14 +218,28 @@ test("an expired execution without an accepted result follows the existing recov
 test("a cancelled item does not consume its accepted result after expiry", async () => {
   const f = await fixture();
   try {
-    const { command, submit } = f.admit(1);
+    const { command, result, submit } = f.admit(1);
     submit();
     f.clock.at += 60_001 + RUNNER_LEASE_GRACE_MS;
     f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [f.item.id]);
-    expect(() => f.results.read(f.run.id, 1, command.id)).toThrow();
-    expect(recoverOnStartup(f.db, f.clock.at)).toEqual([
-      { type: "resume", freshSession: true, checkpoint: null },
-    ]);
+    // A saved result is evidence, not permission to resume a cancelled item.
+    for (let startup = 0; startup < 3; startup++) {
+      f.reopen();
+      expect(() => f.results.read(f.run.id, 1, command.id)).toThrow();
+      expect(recoverOnStartup(f.db, f.clock.at)).toEqual([]);
+      expect(requeueOrphanedWork(f.db, f.clock.at)).toEqual([]);
+      expect(resumes(f.db)).toEqual([]);
+      expect(getWorkItem(f.db, f.item.id)).toMatchObject({
+        state: "running",
+        cancelRequested: true,
+        recoveryAttempts: 0,
+      });
+      const saved = f.db
+        .query<{ payload: string }, [string]>("SELECT payload FROM runner_result WHERE run_id=?")
+        .get(f.run.id);
+      expect(JSON.parse(saved!.payload)).toEqual(result);
+      f.clock.at += 45 * 60_000;
+    }
   } finally {
     f.close();
   }
