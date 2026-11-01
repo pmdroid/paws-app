@@ -1478,7 +1478,25 @@ export class Orchestrator {
     jobs.register(JOB_KIND.command, async (job, context) => {
       if (!context.isCurrent()) return;
       const command = parseLinearCommand(job.payload);
-      if (!command || !applyLinearCommand(this.db, command, this.now()).applied) return;
+      if (!command) return;
+      const saved = job.payload as { response?: string; options?: { keepPullRequest?: boolean } };
+      const result = applyLinearCommand(
+        this.db,
+        command,
+        this.now(),
+        saved.response,
+        saved.options,
+      );
+      if (result.deferred) {
+        parkLeasedJob(this.db, job, {
+          runAt: this.now() + 1_000,
+          payload: job.payload,
+          attempts: 0,
+          now: this.now(),
+        });
+        return;
+      }
+      if (!result.applied) return;
       try {
         this.bus.emit(command);
       } finally {

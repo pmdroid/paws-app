@@ -1,3 +1,4 @@
+import { mergeStopRequested } from "../db";
 import type { ask } from "../questions";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
@@ -55,7 +56,12 @@ export function reviewHold(db: Database, itemId: string, now: number): MergeStep
 
 /** Whether the merge call must not be made now: stopped, artifacts missing, or a review pending. */
 export function mergeHeld({ db, item, caps }: MergeContext): boolean {
-  return caps.stopped() || !artifactPublicationReady(db, item.id) || feedbackPending(db, item.id);
+  return (
+    caps.stopped() ||
+    mergeStopRequested(db, item.id) ||
+    !artifactPublicationReady(db, item.id) ||
+    feedbackPending(db, item.id)
+  );
 }
 
 function feedbackPending(db: Database, itemId: string): boolean {

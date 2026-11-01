@@ -12,7 +12,7 @@ import { applyWorkItemEvent, getWorkItem } from "./items";
 import {
   claimNextJob,
   completeJob,
-  enqueueJob,
+  parkLeasedJob,
   enqueueJobOnce,
   errorText,
   noteJobError,
@@ -22,6 +22,7 @@ import { withOpenFindings } from "./open-findings";
 import { markRun } from "./runs";
 import { halt } from "./halt";
 import { enqueueEndedSessionFace, stoppedResponse } from "./stop-response";
+import { mergeCallInFlight, getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
 
 export function enqueueCommand(
@@ -29,7 +30,7 @@ export function enqueueCommand(
   command: LinearCommand,
   now = command.requestedAt,
 ): number {
-  return enqueueJob(db, {
+  return enqueueJobOnce(db, {
     queue: JOB_KIND.command,
     jobKey: `cmd:${command.type}:${command.itemId}:${command.requestedAt}`,
     priority: 0,
@@ -47,15 +48,43 @@ export function applyLinearCommand(
   response?: string,
   /** `keepPullRequest`: the stop leaves the item's pull request open, as Stop on the Risk card does. */
   options: { keepPullRequest?: boolean } = {},
-): { applied: boolean } {
+): { applied: boolean; deferred?: boolean } {
   return immediate(db, () => {
     const item = getWorkItem(db, command.itemId);
     if (item === null) return { applied: false };
+    if (mergeCallInFlight(db, item.id)) {
+      // The command row is the durable request. Do not fence the lane before it records GitHub's fact.
+      enqueueJobOnce(db, {
+        queue: JOB_KIND.command,
+        jobKey: `cmd:${command.type}:${command.itemId}:${command.requestedAt}`,
+        payload: { ...command, response, options },
+        now,
+        runAt: now + 1_000,
+      });
+      return { applied: false, deferred: true };
+    }
+    if (item.state === "merged") {
+      const fact = getConfirmedRemoteMerge(db, item.id);
+      if (fact)
+        enqueueOutboxOnce(db, {
+          target: OUTBOX_ACTIVITY.target,
+          op: OUTBOX_ACTIVITY.op,
+          orderingKey: item.sessionKey ?? item.id,
+          idempotencyKey: `command:already-merged:${item.id}:${command.requestedAt}`,
+          payload: {
+            sessionId: item.sessionKey ?? item.id,
+            kind: "response",
+            body: `Pull request #${fact.pullNumber} was already merged. ${item.linearIdentifier} is Done.`,
+          },
+          now,
+        });
+      return { applied: false };
+    }
     if (!transition(item.state, "cancel").ok) return { applied: false };
     try {
       immediate(db, () => {
         if (!halt(db, item, now)) throw new Error("Stop owner changed");
-        applyWorkItemEvent(db, item.id, "cancel");
+        applyWorkItemEvent(db, item.id, "cancel", { now });
       });
     } catch (caughtError1) {
       journalCaught(caughtError1, "commands.applyLinearCommand.applyWorkItemEvent", command.itemId);
@@ -163,7 +192,15 @@ export function drainCommands(db: Database, bus: CommandBus, now = Date.now()): 
     const job = claimNextJob(db, { workerId: "command-drain", now, queues: [JOB_KIND.command] });
     if (job === null) break;
     const command = parseLinearCommand(job.payload);
-    const applied = command !== null && applyLinearCommand(db, command, now).applied;
+    const saved = job.payload as { response?: string; options?: { keepPullRequest?: boolean } };
+    const result =
+      command !== null ? applyLinearCommand(db, command, now, saved.response, saved.options) : null;
+    if (result?.deferred) {
+      parkLeasedJob(db, job, { runAt: now + 1_000, payload: job.payload, attempts: 0, now });
+      handled += 1;
+      continue;
+    }
+    const applied = result?.applied === true;
     const completed = completeJob(db, job, now);
     if (applied && completed && command !== null) {
       try {

@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { JOB_KIND } from "../core";
+import { CommandBus, JOB_KIND } from "../core";
 import {
   enqueueJob,
+  applyLinearCommand,
+  completeMergedItem,
+  drainCommands,
+  listOutbox,
   getConfirmedRemoteMerge,
   getWorkItem,
   listJobs,
@@ -98,7 +102,8 @@ describe("a Paws restart and the merge queue", () => {
       pullNumber: item.pull,
       mergeSha: `fake-merge-${item.accepted}`,
     });
-    expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+    // The call stays fenced until local completion commits.
+    expect(mergeCallInFlight(h.db, item.id)).toBe(true);
 
     expect(await h.pass(item.id, payload)).toEqual({ kind: "obsolete" });
     expect(h.completed).toEqual([item.id]);
@@ -134,4 +139,68 @@ describe("a Paws restart and the merge queue", () => {
     expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual([first.id, second.id]);
     expect(h.github.merged).toEqual([]);
   });
+});
+
+test("a stop after the last squash guard defers until the remote merge completes locally", async () => {
+  const h = (harness = await mergeHarness());
+  const item = await h.addItem("ENG-230");
+  let release = () => {};
+  h.state.squashGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const turn = h.pass(item.id);
+  for (let tries = 0; !h.state.squashing; tries++) {
+    if (tries > 500) throw new Error("squash did not start");
+    await Bun.sleep(10);
+  }
+  expect(
+    applyLinearCommand(h.db, {
+      type: "stop",
+      source: "linear",
+      itemId: item.id,
+      requestedAt: h.clock.now(),
+    }).deferred,
+  ).toBe(true);
+  expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+  release();
+  expect(await turn).toEqual({ kind: "merged" });
+  expect(h.github.merged).toHaveLength(1);
+  expect(mergeCallInFlight(h.db, item.id)).toBe(true);
+  // A retry in the gap between the remote response and local completion still waits.
+  h.clock.advance(1_000);
+  drainCommands(h.db, new CommandBus(), h.clock.now());
+  expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+  expect(completeMergedItem(h.db, { itemId: item.id, now: h.clock.now() })?.state).toBe("merged");
+  h.clock.advance(1_000);
+  drainCommands(h.db, new CommandBus(), h.clock.now());
+  expect(getWorkItem(h.db, item.id)?.state).toBe("merged");
+  expect(
+    listOutbox(h.db).filter((row) =>
+      String((row.payload as { body?: string }).body).includes("was already merged"),
+    ),
+  ).toHaveLength(1);
+});
+
+test("a stop during the final squash reads still prevents the GitHub call", async () => {
+  const h = (harness = await mergeHarness());
+  const item = await h.addItem("ENG-231");
+  let stopped = false;
+  h.state.pullHead = (head) => {
+    if (mergeCallInFlight(h.db, item.id) && !stopped) {
+      stopped = true;
+      applyLinearCommand(h.db, {
+        type: "stop",
+        source: "linear",
+        itemId: item.id,
+        requestedAt: h.clock.now(),
+      });
+    }
+    return head;
+  };
+  await h.pass(item.id);
+  expect(stopped).toBe(true);
+  expect(h.github.merged).toEqual([]);
+  h.clock.advance(1_000);
+  drainCommands(h.db, new CommandBus(), h.clock.now());
+  expect(getWorkItem(h.db, item.id)?.state).toBe("cancelled");
 });
