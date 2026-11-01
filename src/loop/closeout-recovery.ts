@@ -79,6 +79,11 @@ export function recoveryQuestion(
           `The Closeout policy on origin/main uses \`${unsupported}\`, which this version of Paws does not support. Update Paws, then reply retry.`,
         ]
       : []),
+    ...(recovery.summary.includes("Message: no closeout policy")
+      ? [
+          "Add `.agents/closeout.yaml` to the repository's main branch, then reply retry so Paws can verify against it. Paws cannot merge without a Closeout policy.",
+        ]
+      : []),
     ...(error ? [error] : []),
     recovery.summary,
     `Base: ${recovery.base}. Head: ${recovery.head}. Policy: ${recovery.policyDigest || "unavailable"}.`,
