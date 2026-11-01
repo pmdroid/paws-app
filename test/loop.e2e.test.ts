@@ -15,7 +15,6 @@ import type { Finding } from "../src/closeout";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
-  applyWorkItemEvent,
   bindWorkItemRepository,
   accrueAwake,
   configureWorkItem,

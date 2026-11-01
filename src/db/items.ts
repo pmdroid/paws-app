@@ -959,7 +959,8 @@ function commitFailure(
 
 function moveToFailed(db: Database, item: WorkItemRecord, stopped: boolean): number {
   if (item.state === "failed") return item.version;
-  const event = stopped && item.state === "awaiting_input" ? "answer_stopped" : failureEvent(item.state);
+  const event =
+    stopped && item.state === "awaiting_input" ? "answer_stopped" : failureEvent(item.state);
   if (event === null) {
     throw new TransitionRejectedError("illegal_transition");
   }

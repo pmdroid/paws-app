@@ -91,9 +91,7 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
   const { clock, db, itemId, askedAt } = askedAtTimeLimit();
   clock.advance(10 * MINUTE);
   expect(reply(db, "Merge the accepted work", clock.now()).status).toBe("answered");
-  expect(history(db, itemId, askedAt)).toEqual([
-    "awaiting_input -closeout_accepted-> merge_queue",
-  ]);
+  expect(history(db, itemId, askedAt)).toEqual(["awaiting_input -closeout_accepted-> merge_queue"]);
 
   clock.advance(5 * MINUTE);
   const provider = createLiveStatusProvider(db, { now: () => new Date(clock.now()), env: {} });
@@ -129,9 +127,7 @@ test("an answered runner wait re-verifies without passing through running", () =
   );
   const askedAt = getWorkItem(db, item.id)!.version;
   expect(reply(db, "Keep waiting", 3_000).status).toBe("answered");
-  expect(history(db, item.id, askedAt)).toEqual([
-    "awaiting_input -reverify_requested-> verifying",
-  ]);
+  expect(history(db, item.id, askedAt)).toEqual(["awaiting_input -reverify_requested-> verifying"]);
   expect(listJobs(db).some((job) => job.queue === "run.reverify")).toBe(true);
 });
 
@@ -152,7 +148,9 @@ test("Discarding a plan completes it from the wait with one answer_completed", (
     itemId: item.id,
     parentIssueId: "issue-9",
     repository: null,
-    drafts: [{ title: "One", description: "Do one.", acceptanceCriteria: ["One is done."], blockedBy: [] }],
+    drafts: [
+      { title: "One", description: "Do one.", acceptanceCriteria: ["One is done."], blockedBy: [] },
+    ],
     now: 2_000,
   });
   const askedAt = getWorkItem(db, item.id)!.version;
