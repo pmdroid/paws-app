@@ -143,13 +143,15 @@ export function questionEffects(
       return;
     }
     consumeTurn(question);
-    const item = applyWorkItemEvent(db, question.itemId, "answer_received");
+    const item = getWorkItem(db, question.itemId);
+    if (item?.state !== "awaiting_input") return;
     failWorkItem(
       db,
       item,
       "cap:time",
       `Stopped at the time limit, as asked in Linear. The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
       input.now,
+      { stoppedByAnswer: true },
     );
   };
   /**
@@ -242,8 +244,7 @@ export function questionEffects(
       if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
       const item = getWorkItem(db, question.itemId);
       if (item?.state !== "awaiting_input") return;
-      applyWorkItemEvent(db, item.id, "answer_received");
-      applyWorkItemEvent(db, item.id, "turn_ended");
+      applyWorkItemEvent(db, item.id, "reverify_requested", { now: input.now });
       const live = db
         .query(
           "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",

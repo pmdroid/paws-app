@@ -242,8 +242,7 @@ export function approveRisk(
   now: number,
 ): boolean {
   if (item.state !== "awaiting_input") return false;
-  applyWorkItemEvent(db, item.id, "answer_received");
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  applyWorkItemEvent(db, item.id, "reverify_requested", { now });
   if (item.checkpoint)
     saveCheckpoint(db, item.id, {
       ...item.checkpoint,

@@ -34,7 +34,8 @@ function askedAtTimeLimit(pendingHandoff?: string) {
   applyWorkItemEvent(db, item.id, "turn_ended");
   applyWorkItemEvent(db, item.id, "closeout_accepted");
   markCloseoutAccepted(db, item.id, "accepted");
-  applyWorkItemEvent(db, item.id, "ejected");
+  applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
+  applyWorkItemEvent(db, item.id, "dispatched");
   saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
   if (pendingHandoff !== undefined)
     enqueueJob(db, {

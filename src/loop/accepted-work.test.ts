@@ -29,7 +29,8 @@ function acceptedItem() {
   applyWorkItemEvent(db, item.id, "closeout_accepted");
   markCloseoutAccepted(db, item.id, ACCEPTED);
   saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: ACCEPTED });
-  applyWorkItemEvent(db, item.id, "ejected");
+  applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
+  applyWorkItemEvent(db, item.id, "dispatched");
   return { db, itemId: item.id, runId: run.id };
 }
 

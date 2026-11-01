@@ -91,11 +91,6 @@ export function recordPlanFiled(
   });
 }
 
-/**
- * Complete a plan task whose approval question was answered with Create or
- * Discard. The item leaves `awaiting_input` through `running` to `completed`,
- * the same edges an answer task takes; the caller posts the one response.
- */
 export function completePlanTask(db: Database, itemId: string, now: number): void {
   immediate(db, () => {
     const item = getWorkItem(db, itemId);
@@ -103,8 +98,7 @@ export function completePlanTask(db: Database, itemId: string, now: number): voi
       throw new Error("Plan task is no longer waiting for approval");
     if (getTaskMode(db, itemId) !== "plan")
       throw new Error("Only plan tasks complete at the plan approval");
-    applyWorkItemEvent(db, itemId, "answer_received");
-    applyWorkItemEvent(db, itemId, "answer_completed");
+    applyWorkItemEvent(db, itemId, "answer_completed", { now });
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", now);
     cancelAdvancingJobs(db, itemId, "plan_completed", now);
   });

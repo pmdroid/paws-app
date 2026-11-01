@@ -105,7 +105,6 @@ test("a fix sent back from the merge queue or its re-verify counts as merge-queu
     accepted("reverify");
     applyWorkItemEvent(db, "reverify", "closeout_accepted");
     applyWorkItemEvent(db, "reverify", "reverify_requested");
-    applyWorkItemEvent(db, "reverify", "commit_while_verifying");
     restart(db, getWorkItem(db, "reverify")!, { reason: "findings", body: "Fix", now: 4 });
     expect(restartedFromMergeQueue(db, "reverify")).toBe(true);
 

@@ -28,7 +28,6 @@ type Edge<State extends string, Event extends string> = {
  * Legal work-item edges. `cancel` is not listed: it leaves every non-terminal state.
  */
 export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
-  { from: "planning", event: "plan_approved", to: "queued" },
   { from: "queued", event: "dispatched", to: "running" },
   { from: "queued", event: "start_timed_out", to: "failed" },
   { from: "awaiting_input", event: "blocking_question", to: "awaiting_input" },
@@ -37,6 +36,9 @@ export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "merge_queue", event: "blocking_question", to: "awaiting_input" },
   { from: "recovering", event: "blocking_question", to: "awaiting_input" },
   { from: "awaiting_input", event: "answer_received", to: "running" },
+  { from: "awaiting_input", event: "answer_completed", to: "completed" },
+  { from: "awaiting_input", event: "answer_stopped", to: "failed" },
+  { from: "awaiting_input", event: "reverify_requested", to: "verifying" },
   { from: "running", event: "pause", to: "paused" },
   { from: "paused", event: "resume", to: "running" },
   { from: "running", event: "lease_expired", to: "recovering" },
@@ -56,17 +58,17 @@ export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "running", event: "answer_completed", to: "completed" },
   { from: "running", event: "artifact_completed", to: "completed" },
   { from: "running", event: "run_failed", to: "failed" },
-  { from: "verifying", event: "closeout_rejected", to: "running" },
-  { from: "verifying", event: "commit_while_verifying", to: "verifying" },
   { from: "verifying", event: "closeout_infra_failed", to: "failed" },
   { from: "verifying", event: "closeout_accepted", to: "merge_queue" },
-  { from: "merge_queue", event: "main_moved", to: "merge_queue" },
+  { from: "queued", event: "closeout_accepted", to: "merge_queue" },
+  { from: "running", event: "closeout_accepted", to: "merge_queue" },
+  { from: "paused", event: "closeout_accepted", to: "merge_queue" },
+  { from: "recovering", event: "closeout_accepted", to: "merge_queue" },
+  { from: "awaiting_input", event: "closeout_accepted", to: "merge_queue" },
   { from: "merge_queue", event: "reverify_requested", to: "verifying" },
   { from: "merge_queue", event: "merge_accepted", to: "merged" },
-  { from: "merge_queue", event: "ejected", to: "running" },
-  { from: "failed", event: "requeue", to: "queued" },
+  { from: "merge_queue", event: "work_failed", to: "failed" },
   { from: "failed", event: "take_over", to: "manual" },
-  { from: "manual", event: "human_completed", to: "merged" },
 ];
 
 const workItemTable = edgeTable(WORK_ITEM_EDGES);

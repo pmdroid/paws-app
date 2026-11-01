@@ -15,7 +15,6 @@ import type { Finding } from "../src/closeout";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
-  applyWorkItemEvent,
   bindWorkItemRepository,
   accrueAwake,
   configureWorkItem,
@@ -3834,7 +3833,6 @@ test.each([
       }
       const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-94")!;
       db.run("UPDATE job SET status = 'cancelled' WHERE status = 'pending'");
-      applyWorkItemEvent(db, item.id, "main_moved");
       remaining = timeouts;
       enqueueJob(db, {
         queue: JOB_KIND.reverify,

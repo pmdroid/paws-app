@@ -310,8 +310,12 @@ export class GitHubInstallationCheck {
       "UPDATE github_integration_hold SET status='verified' WHERE question_id=? AND status='pending'",
       [question.id],
     );
-    applyWorkItemEvent(this.db, hold.item_id, "answer_received");
-    if (hold.phase === "publication") applyWorkItemEvent(this.db, hold.item_id, "turn_ended");
+    applyWorkItemEvent(
+      this.db,
+      hold.item_id,
+      hold.phase === "publication" ? "reverify_requested" : "answer_received",
+      { now: this.now() },
+    );
     enqueueJobOnce(this.db, {
       queue: hold.phase === "initial" ? JOB_KIND.resume : JOB_KIND.reverify,
       jobKey: `github-integration:${question.id}`,

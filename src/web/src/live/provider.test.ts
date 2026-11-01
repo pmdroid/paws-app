@@ -787,7 +787,8 @@ describe("live status provider", () => {
       confirmedAt: now - 60_000,
     });
     const back = merging("ENG-15", "acme/platform", null, 6);
-    applyWorkItemEvent(db, back.id, "ejected");
+    applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
+    applyWorkItemEvent(db, back.id, "dispatched");
     enqueueJob(db, {
       queue: "run.resume",
       jobKey: `ci-failed:${back.id}:0`,
@@ -874,7 +875,8 @@ describe("live status provider", () => {
     };
     bound("ENG-21", 1);
     const back = bound("ENG-22", 2);
-    applyWorkItemEvent(db, back.id, "ejected");
+    applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
+    applyWorkItemEvent(db, back.id, "dispatched");
     enqueueJob(db, {
       queue: "run.resume",
       jobKey: `ci-failed:${back.id}:0`,

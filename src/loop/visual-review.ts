@@ -425,8 +425,7 @@ export function decideVisualReview(
     // While the other checks still run on S, that evaluation picks the approval up.
     if (item?.state !== "awaiting_input" || findOpenQuestion(db, question.sessionId) !== null)
       return true;
-    applyWorkItemEvent(db, item.id, "answer_received");
-    applyWorkItemEvent(db, item.id, "turn_ended");
+    applyWorkItemEvent(db, item.id, "reverify_requested", { now });
     if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
     enqueueJobOnce(db, {
       queue: JOB_KIND.reverify,

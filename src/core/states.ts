@@ -34,7 +34,6 @@ export const IN_FLIGHT_ITEM_STATES = [
 
 /** Events the work-item machine accepts. `cancel` is legal from every non-terminal state. */
 export const WORK_ITEM_EVENTS = [
-  "plan_approved",
   "dispatched",
   "blocking_question",
   "answer_received",
@@ -46,24 +45,32 @@ export const WORK_ITEM_EVENTS = [
   "crash_budget_used",
   "turn_ended",
   "run_failed",
-  "closeout_rejected",
-  "commit_while_verifying",
   "closeout_infra_failed",
   "closeout_accepted",
-  "main_moved",
   "reverify_requested",
   "merge_accepted",
-  "ejected",
-  "requeue",
   "take_over",
-  "human_completed",
   "answer_completed",
+  "answer_stopped",
+  "work_failed",
   "artifact_completed",
   "cancel",
   "start_timed_out",
 ] as const;
 
 export type WorkItemEvent = (typeof WORK_ITEM_EVENTS)[number];
+
+export const RETIRED_WORK_ITEM_EVENTS = [
+  "plan_approved",
+  "requeue",
+  "human_completed",
+  "commit_while_verifying",
+  "main_moved",
+  "ejected",
+  "closeout_rejected",
+] as const;
+
+export type RecordedWorkItemEvent = WorkItemEvent | (typeof RETIRED_WORK_ITEM_EVENTS)[number];
 
 /** Epic states. Budget hold is a flag on the row, not a state. */
 export const DELEGATION_STATES = [
