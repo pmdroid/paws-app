@@ -6,9 +6,11 @@ import { CommandBus, FakeClock, JOB_KIND, type Checkpoint } from "../core";
 import {
   accrueAwake,
   applyLinearCommand,
+  applyDecision,
   applyWorkItemEvent,
   beginImplementRun,
   beginMergeCall,
+  bindWorkItemRepository,
   cancelOpenJobs,
   claimNextJob,
   completeJob,
@@ -350,6 +352,83 @@ describe("restart recovery", () => {
     expect(listJobs(db).map((job) => job.queue)).toEqual(["github.merge"]);
     expect(listOutbox(db)).toHaveLength(0);
   });
+
+  for (const order of ["keep-first", "reverify-first"] as const) {
+    for (const sameRepository of [true, false]) {
+      for (const status of ["pending", "running"] as const) {
+        for (const inFlight of [false, true]) {
+          test(`mixed startup ${order}, same repo=${sameRepository}, ${status}, in flight=${inFlight} preserves unrelated merge work`, () => {
+            const { db, clock } = harness();
+            const ids = order === "keep-first" ? ["keep", "reverify"] : ["reverify", "keep"];
+            for (const id of ids) {
+              insertQueuedItem(db, { id, now: clock.now() });
+              bindWorkItemRepository(db, id, {
+                owner: "owner",
+                repo: sameRepository ? "shared" : id,
+                remoteUrl: `https://github.com/owner/${sameRepository ? "shared" : id}.git`,
+              });
+              const { run } = beginImplementRun(db, id, clock.now(), checkpoint);
+              enterMergeQueue(db, id, checkpoint);
+              if (id === "keep") markRun(db, run.id, "ended", clock.now());
+              clock.advance(1);
+            }
+            const mergeId = enqueueJob(db, {
+              queue: JOB_KIND.merge,
+              payload: {
+                itemId: "keep",
+                head: "abc",
+                summary: "Accepted",
+                mergeCallInFlight: inFlight,
+              },
+              runAt: status === "pending" && !inFlight ? clock.now() + 60_000 : clock.now(),
+              now: clock.now(),
+            });
+            if (status === "running") {
+              expect(
+                claimNextJob(db, { queues: [JOB_KIND.merge], workerId: "merger", now: clock.now() })
+                  ?.id,
+              ).toBe(mergeId);
+            }
+            if (inFlight) beginMergeCall(db, "keep", "abc", clock.now());
+            const savedJob = getJob(db, mergeId);
+            const savedItem = getWorkItem(db, "keep");
+            const savedMarker = db.query("SELECT * FROM merge_call WHERE item_id = ?").get("keep");
+            const ownMerge = enqueueJob(db, {
+              queue: JOB_KIND.merge,
+              payload: { itemId: "reverify" },
+              now: clock.now(),
+            });
+            const expected = ids.map((id) =>
+              id === "keep"
+                ? { type: "keep_place" as const, mergeCallInFlight: inFlight }
+                : { type: "reverify" as const },
+            );
+
+            expect(recoverOnStartup(db, clock.now())).toEqual(expected);
+            expect(getJob(db, ownMerge)?.status).toBe("cancelled");
+            for (let repeat = 0; repeat < 2; repeat++) {
+              clock.advance(1);
+              recoverOnStartup(db, clock.now());
+              applyDecision(db, getWorkItem(db, "reverify")!, { type: "reverify" }, clock.now(), {
+                stamp: { fromWall: clock.now() - 1, toWall: clock.now(), sleptMs: 1 },
+              });
+              expect(getJob(db, mergeId)).toEqual(savedJob);
+              expect(getWorkItem(db, "keep")).toEqual(savedItem);
+              expect(db.query("SELECT * FROM merge_call WHERE item_id = ?").get("keep")).toEqual(
+                savedMarker,
+              );
+              expect(
+                listJobs(db).filter(
+                  (job) => (job.payload as { itemId?: string }).itemId === "keep",
+                ),
+              ).toEqual([savedJob!]);
+            }
+            db.close();
+          });
+        }
+      }
+    }
+  }
 
   test("a queued task whose run is still active at shutdown re-verifies", () => {
     const { db, clock } = harness();
