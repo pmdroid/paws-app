@@ -223,11 +223,18 @@ export async function squashPull(
   // A server error or an unreadable success response can arrive after GitHub committed the merge.
   // Keep the caller's durable marker until a pull request read establishes the outcome.
   if (
+    merged === null ||
     merged.status >= 500 ||
     merged.status === 408 ||
     (merged.status === 200 && (!isRecord(merged.body) || typeof merged.body.merged !== "boolean"))
   )
-    throw new Error(`GitHub merge outcome is unknown after status ${merged.status}`);
+    return {
+      merged: false,
+      outcome: "unknown",
+      branch,
+      head: expectedHead,
+      message: "Waiting for GitHub to confirm the squash outcome.",
+    };
   if (merged.status === 409)
     return {
       merged: false,
@@ -423,7 +430,7 @@ async function squash(
   token: string,
   head: string,
   summary: string,
-): Promise<{ status: number; body: unknown }> {
+): Promise<{ status: number; body: unknown } | null> {
   const request: Parameters<GitHubClient["request"]>[0] = {
     method: "PUT",
     path: repoApiPath(input.owner, input.repo, `/pulls/${input.prNumber}/merge`),
@@ -436,7 +443,16 @@ async function squash(
     },
   };
   input.beforeMergeCall?.(head);
-  return input.client.request(request);
+  try {
+    return await input.client.request(request);
+  } catch (error) {
+    // Cancellation belongs to the owner. It must retain the marker and propagate normally.
+    if (input.isCancelled?.() || (error instanceof Error && error.name === "AbortError"))
+      throw error;
+    // Only the PUT was attempted here. Preparation and request construction errors propagate.
+    journalCaught(error, "merge.squash.request", input.issue);
+    return null;
+  }
 }
 
 function operationToken(input: FetchUpstreamMainInput, purpose: "push" | "merge"): Promise<string> {

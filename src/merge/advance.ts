@@ -198,40 +198,32 @@ export async function advanceMerge(
         }
       : {}),
   };
-  let turn: LaneTurn;
-  try {
-    turn = await laneTurn({
-      read: () => readPullFacts(lane),
-      facts: (facts) =>
-        mergeFacts(
-          db,
-          item.id,
-          facts,
-          caps.policyDigests(item, published.worktree),
-          mergeSettings.mainMoved,
-          { head: published.head, approval: riskApproval },
-        ),
-      rebase: () => rebaseOntoMain(lane),
-      squash: async (head, facts) => {
-        const squashed = await squashPull(
-          {
-            ...lane,
-            beforeMergeCall: (expectedHead) =>
-              beginMergeCall(db, item.id, expectedHead, caps.now()),
-          },
-          { head, base: facts.base },
-          published.summary,
-        );
-        if (!squashed.merged) endMergeCall(db, item.id);
-        return squashed;
-      },
-    });
-  } catch (error) {
-    if (!mergeCallInFlight(db, item.id)) throw error;
-    // The squash may have succeeded despite a lost response. Only a later read can release it.
-    journal(`item ${item.linearIdentifier} awaits GitHub confirmation after its merge call failed`);
-    return pendingMergeOutcome();
-  }
+  const turn = await laneTurn({
+    read: () => readPullFacts(lane),
+    facts: (facts) =>
+      mergeFacts(
+        db,
+        item.id,
+        facts,
+        caps.policyDigests(item, published.worktree),
+        mergeSettings.mainMoved,
+        { head: published.head, approval: riskApproval },
+      ),
+    rebase: () => rebaseOntoMain(lane),
+    squash: async (head, facts) => {
+      const squashed = await squashPull(
+        {
+          ...lane,
+          beforeMergeCall: (expectedHead) => beginMergeCall(db, item.id, expectedHead, caps.now()),
+        },
+        { head, base: facts.base },
+        published.summary,
+      );
+      if (!squashed.merged && squashed.outcome !== "unknown") endMergeCall(db, item.id);
+      return squashed;
+    },
+  });
+  if (turn.kind === "stopped" && turn.result.outcome === "unknown") return pendingMergeOutcome();
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
   if ((turn.kind === "stopped" || turn.kind === "blocked") && !caps.stopped()) {
