@@ -197,7 +197,7 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
     }
     return head;
   };
-  await h.pass(item.id);
+  expect(await h.pass(item.id)).toEqual({ kind: "obsolete" });
   expect(stopped).toBe(true);
   expect(h.github.merged).toEqual([]);
   h.clock.advance(1_000);

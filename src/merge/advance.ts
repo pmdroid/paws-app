@@ -3,6 +3,7 @@ import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   beginMergeCall,
+  mergeStopRequested,
   carriedAcceptFor,
   closeoutPolicyDigests,
   completeMergedItem,
@@ -267,6 +268,8 @@ export async function advanceMerge(
       confirmedAt: caps.now(),
     });
   }
+  // A deferred stop owns the next step after an unsent or unsuccessful squash.
+  if (turn.kind !== "merged" && mergeStopRequested(db, item.id)) return { kind: "obsolete" };
   if (caps.stopped()) {
     if (turn.kind === "merged" && completeMergedItem(db, { itemId: item.id, now: caps.now() }))
       caps.completed();
