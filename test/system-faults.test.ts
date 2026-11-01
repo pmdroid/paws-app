@@ -106,10 +106,23 @@ for (const faultClass of ["closeout-transfer", "reviewer-profile"] as const) {
       expect(done(), JSON.stringify(listJobs(db))).toBe(true);
     };
     try {
-      for (const id of ids) await orchestrator.onLinearEvent(event(id));
+      await orchestrator.onLinearEvent(event(ids[0]!));
+      await tickUntil(() => listSystemFaults(db).length === 1);
+      db.run("UPDATE job SET run_at=0 WHERE queue='system.fault-alert' AND status='pending'");
+      await jobs.tick(["system.fault-alert"]);
+      outbox.tick();
+      await outbox.idle();
+      expect(tracker.systemAlerts).toHaveLength(1);
+      for (const id of ids.slice(1)) await orchestrator.onLinearEvent(event(id));
       await tickUntil(() => listSystemFaults(db).length === ids.length);
       expect(tracker.questions).toEqual([]);
-      expect(listJobs(db).filter((job) => job.queue === "system.fault-alert")).toHaveLength(1);
+      expect(
+        new Set(
+          listJobs(db)
+            .filter((job) => job.queue === "system.fault-alert")
+            .map((job) => (job.payload as { alertId: string }).alertId),
+        ).size,
+      ).toBe(1);
       const rounds = db.query("SELECT * FROM closeout_round").all().length;
       for (const id of ids)
         enqueueOutboxOnce(db, {
@@ -128,12 +141,24 @@ for (const faultClass of ["closeout-transfer", "reviewer-profile"] as const) {
       await outbox.idle();
       const alerts = tracker.systemAlerts;
       expect(alerts).toHaveLength(1);
-      expect(listJobs(db).filter((job) => job.queue === "system.fault-alert")).toHaveLength(1);
+      expect(
+        new Set(
+          listJobs(db)
+            .filter((job) => job.queue === "system.fault-alert")
+            .map((job) => (job.payload as { alertId: string }).alertId),
+        ).size,
+      ).toBe(1);
       for (const id of ids) expect(alerts[0]!.body).toContain(`ENG-${id}`);
       expect(db.query("SELECT * FROM closeout_round").all()).toHaveLength(rounds);
       expect(tracker.questions).toEqual([]);
       transferWorks = true;
       config("reviewer");
+      // A new owner must still see the hold and refresh its saved reviewer profile.
+      db.run("UPDATE work_item SET version=version+1");
+      expect(listSystemFaults(db)).toHaveLength(ids.length);
+      db.run(
+        "UPDATE job SET item_version=(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId')) WHERE status='pending'",
+      );
       db.run("UPDATE job SET run_at=0 WHERE status='pending'");
       await tickUntil(
         () =>

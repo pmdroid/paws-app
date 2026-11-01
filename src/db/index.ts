@@ -761,7 +761,7 @@ export { listWaitingProfileRuns } from "./runs";
 export { halt } from "./halt";
 export { restart, fixRounds, restartLimit, type RestartHandoff } from "./restart";
 
-export { jobVersionCurrent } from "./jobs";
+export { deferPendingItemJob, jobVersionCurrent } from "./jobs";
 
 export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
 
@@ -797,6 +797,7 @@ export {
   getSystemFault,
   saveSystemFault,
   systemFaultAlertEpoch,
+  systemFaultAlertIssue,
   clearSystemFault,
   type SystemFaultHold,
 } from "./system-fault";

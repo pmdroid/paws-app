@@ -1,6 +1,6 @@
 import { PolicyFetchError } from "../closeout";
 import { SystemFault, closeoutTransferFault, isTransientGitError } from "../core";
-import { clearSystemFault, listSystemFaults, getSystemFault } from "../db";
+import { clearSystemFault, listSystemFaults, getSystemFault, systemFaultAlertIssue } from "../db";
 import { holdSystemFault } from "./system-fault";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
@@ -1451,19 +1451,24 @@ export class Orchestrator {
       const holds = listSystemFaults(this.db).filter(
         (hold) => hold.faultClass === readString(job.payload, "faultClass"),
       );
-      const item = holds[0] ? getWorkItem(this.db, holds[0].itemId) : null;
-      if (!item) return;
+      if (holds.length === 0) return;
+      const item = holds
+        .map((hold) => getWorkItem(this.db, hold.itemId))
+        .find((candidate) => candidate?.linearIssueId);
       const alertId = readString(job.payload, "alertId");
       if (!alertId) throw new Error("System alert id is missing");
+      const issueId = systemFaultAlertIssue(this.db, alertId, item?.linearIssueId ?? null);
+      if (!issueId) return;
       enqueueOutboxOnce(this.db, {
         target: "linear",
         op: "linear.system_alert",
+        orderingKey: `system-alert:${alertId}`,
         idempotencyKey: `system-fault-alert:${job.id}`,
         delivery: "critical",
         now: this.now(),
         payload: {
           id: alertId,
-          issueId: item.linearIssueId,
+          issueId,
           body: `Infrastructure fault (${holds[0]!.faultClass}): ${holds[0]!.reason}\n\nHeld items: ${holds.map((hold) => hold.identifier).join(", ")}. Paws retries automatically without spending task or review budgets.`,
         },
       });
@@ -3616,7 +3621,7 @@ export class Orchestrator {
       }
     }
     throw new Error(
-      `The Closeout checks could not run on the runner for commit ${short}: ${reason}. No check failed.`,
+      `The Closeout checks could not run on the runner for commit ${short}: ${reason}. No check failed. Reply retry to run Closeout again.`,
     );
   }
 

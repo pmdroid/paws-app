@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND, type SystemFault } from "../core";
 import {
   enqueueJob,
-  enqueueJobOnce,
+  deferPendingItemJob,
   getWorkItem,
   immediate,
   saveSystemFault,
@@ -33,18 +33,21 @@ export function holdSystemFault(
       reason: publicToolText(fault.message),
       now,
     });
+    const queue = ["verifying", "merge_queue"].includes(item.state)
+      ? JOB_KIND.reverify
+      : JOB_KIND.resume;
+    // A person's pause is retained until they explicitly resume the item.
+    if (item.state !== "paused" && !deferPendingItemJob(db, queue, itemId, hold.retryAt))
+      enqueueJob(db, {
+        queue,
+        payload: { itemId, systemFault: fault.faultClass },
+        runAt: hold.retryAt,
+        now,
+      });
+    // Refresh the same comment so items joining an existing outage are included.
     enqueueJob(db, {
-      queue: ["verifying", "merge_queue"].includes(item.state)
-        ? JOB_KIND.reverify
-        : JOB_KIND.resume,
-      payload: { itemId, systemFault: fault.faultClass },
-      runAt: hold.retryAt,
-      now,
-    });
-    enqueueJobOnce(db, {
       queue: "system.fault-alert",
-      jobKey: `system-fault:${fault.faultClass}:${epoch}`,
-      payload: { faultClass: fault.faultClass, epoch, alertId: randomUUID() },
+      payload: { faultClass: fault.faultClass, epoch, alertId: epoch },
       runAt: now + 5_000,
       now,
     });

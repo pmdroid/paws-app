@@ -15,7 +15,7 @@ export function listSystemFaults(db: Database): SystemFaultHold[] {
   return db
     .query<SystemFaultHold, []>(`SELECT f.item_id AS itemId, w.linear_identifier AS identifier,
     f.fault_class AS faultClass, f.reason, f.failures, f.started_at AS startedAt, f.retry_at AS retryAt
-    FROM system_fault f JOIN work_item w ON w.id=f.item_id AND w.version=f.item_version
+    FROM system_fault f JOIN work_item w ON w.id=f.item_id
     WHERE w.cancel_requested=0 AND w.state IN ('running','verifying','merge_queue','recovering','paused')
     ORDER BY f.started_at, f.item_id`)
     .all();
@@ -28,7 +28,7 @@ export function getSystemFault(db: Database, itemId: string): SystemFaultHold | 
       [string]
     >(`SELECT f.item_id AS itemId, w.linear_identifier AS identifier,
     f.fault_class AS faultClass, f.reason, f.failures, f.started_at AS startedAt, f.retry_at AS retryAt
-    FROM system_fault f JOIN work_item w ON w.id=f.item_id AND w.version=f.item_version
+    FROM system_fault f JOIN work_item w ON w.id=f.item_id
     WHERE f.item_id=? AND w.cancel_requested=0 AND w.state IN ('running','verifying','merge_queue','recovering','paused')`)
     .get(itemId);
 }
@@ -94,4 +94,21 @@ export function systemFaultAlertEpoch(
     [faultClass, nextEpoch],
   );
   return nextEpoch;
+}
+
+/** Bind an outage comment to its original issue even when that item recovers. */
+export function systemFaultAlertIssue(
+  db: Database,
+  id: string,
+  issueId: string | null,
+): string | null {
+  if (issueId !== null)
+    db.run("INSERT OR IGNORE INTO system_fault_alert_issue VALUES (?,?)", [id, issueId]);
+  return (
+    db
+      .query<{ issueId: string }, [string]>(
+        "SELECT issue_id AS issueId FROM system_fault_alert_issue WHERE id=?",
+      )
+      .get(id)?.issueId ?? null
+  );
 }

@@ -20,13 +20,23 @@ export function createSystemAlertMethods(client: LinearClient) {
       if (!Array.isArray(nodes) || nodes.length > 1) throw new Error("Invalid system alert lookup");
       if (nodes.length === 1) {
         const node = nodes[0];
-        if (
-          !isRecord(node) ||
-          node.body !== input.body ||
-          !isRecord(node.issue) ||
-          node.issue.id !== input.issueId
-        )
+        if (!isRecord(node) || !isRecord(node.issue) || node.issue.id !== input.issueId)
           throw new Error("System alert identity does not match");
+        if (node.body !== input.body) {
+          const updated = await client.query(
+            `mutation SystemAlertUpdate($id: String!, $input: CommentUpdateInput!) {
+              commentUpdate(id: $id, input: $input) { success }
+            }`,
+            { id: input.id, input: { body: input.body } },
+            options,
+          );
+          if (
+            !isRecord(updated) ||
+            !isRecord(updated.commentUpdate) ||
+            updated.commentUpdate.success !== true
+          )
+            throw new Error("System alert update was not confirmed");
+        }
         return;
       }
       const result = await client.query(

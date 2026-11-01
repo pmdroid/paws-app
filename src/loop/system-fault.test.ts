@@ -2,8 +2,10 @@ import { expect, test } from "bun:test";
 import { SystemFault } from "../core";
 import {
   beginImplementRun,
+  enqueueJob,
   clearSystemFault,
   listSystemFaults,
+  systemFaultAlertIssue,
   getSystemFault,
   getWorkItem,
   insertQueuedItem,
@@ -23,13 +25,15 @@ test("a version change preserves infrastructure backoff and its single alert epo
     expect(holdSystemFault(db, "item", fault, 100)).toBe(true);
     const previous = getSystemFault(db, "item")!;
     db.run("UPDATE work_item SET version=version+1 WHERE id='item'");
+    expect(getSystemFault(db, "item")?.faultClass).toBe("reviewer-profile");
+    expect(listSystemFaults(db)).toHaveLength(1);
     expect(holdSystemFault(db, "item", fault, 200)).toBe(true);
     expect(getSystemFault(db, "item")).toMatchObject({
       failures: 2,
       startedAt: previous.startedAt,
       retryAt: 60_200,
     });
-    expect(listJobs(db).filter((job) => job.queue === "system.fault-alert")).toHaveLength(1);
+    expect(alertIds(db).size).toBe(1);
     expect(getWorkItem(db, "item")?.state).toBe("running");
   } finally {
     db.close();
@@ -52,10 +56,13 @@ for (const state of ["running", "verifying", "merge_queue", "recovering", "pause
         retryAt: 30_100,
       });
       expect(listSystemFaults(db)).toHaveLength(1);
-      expect(listJobs(db).find((job) => job.queue !== "system.fault-alert")).toMatchObject({
-        queue: ["verifying", "merge_queue"].includes(state) ? "run.reverify" : "run.resume",
-        runAt: 30_100,
-      });
+      const retry = listJobs(db).find((job) => job.queue !== "system.fault-alert");
+      if (state === "paused") expect(retry).toBeUndefined();
+      else
+        expect(retry).toMatchObject({
+          queue: ["verifying", "merge_queue"].includes(state) ? "run.reverify" : "run.resume",
+          runAt: 30_100,
+        });
       expect(getWorkItem(db, "item")?.state).toBe(state);
     } finally {
       db.close();
@@ -76,10 +83,56 @@ test("the alert epoch survives the oldest item's recovery until all holds clear"
     holdSystemFault(db, "b", fault, 200);
     clearSystemFault(db, "a");
     holdSystemFault(db, "b", fault, 300);
-    expect(listJobs(db).filter((job) => job.queue === "system.fault-alert")).toHaveLength(1);
+    expect(alertIds(db).size).toBe(1);
     clearSystemFault(db, "b");
     holdSystemFault(db, "b", fault, 400);
-    expect(listJobs(db).filter((job) => job.queue === "system.fault-alert")).toHaveLength(2);
+    expect(alertIds(db).size).toBe(2);
+  } finally {
+    db.close();
+  }
+});
+
+function alertIds(db: ReturnType<typeof openDatabase>): Set<string> {
+  return new Set(
+    listJobs(db)
+      .filter((job) => job.queue === "system.fault-alert")
+      .map((job) => (job.payload as { alertId: string }).alertId),
+  );
+}
+
+test("a fault reuses an existing pending reverify and delays it until backoff ends", () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    insertQueuedItem(db, { id: "item", sessionKey: "session" });
+    db.run("UPDATE work_item SET state='verifying' WHERE id='item'");
+    const original = enqueueJob(db, {
+      queue: "run.reverify",
+      payload: { itemId: "item", reason: "ci" },
+      runAt: 200,
+    });
+    enqueueJob(db, { queue: "run.reverify", payload: { itemId: "item" }, runAt: 300 });
+    const fault = new SystemFault("closeout-transfer", "transfer failed");
+    holdSystemFault(db, "item", fault, 100);
+    holdSystemFault(db, "item", fault, 200);
+    const pending = listJobs(db).filter(
+      (job) => job.queue === "run.reverify" && job.status === "pending",
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ id: original, runAt: 60_200, payload: { reason: "ci" } });
+  } finally {
+    db.close();
+  }
+});
+
+test("an outage comment waits for an issue and then retains that destination", () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    expect(systemFaultAlertIssue(db, "alert", null)).toBeNull();
+    expect(systemFaultAlertIssue(db, "alert", "issue-1")).toBe("issue-1");
+    expect(systemFaultAlertIssue(db, "alert", "issue-2")).toBe("issue-1");
+    expect(systemFaultAlertIssue(db, "alert", null)).toBe("issue-1");
   } finally {
     db.close();
   }

@@ -538,3 +538,25 @@ export function jobVersionCurrent(db: Database, job: Pick<Job, "id">): boolean {
     .get(job.id);
   return row !== null && (row.expected === null || row.expected === row.current);
 }
+
+/** Reuse one pending retry for this owner, retaining its existing continuation payload. */
+export function deferPendingItemJob(
+  db: Database,
+  queue: string,
+  itemId: string,
+  runAt: number,
+): boolean {
+  const rows = db
+    .query<{ id: number }, [string, string]>(
+      `SELECT j.id FROM job j JOIN work_item w ON w.id=json_extract(j.payload,'$.itemId')
+     WHERE j.queue=? AND w.id=? AND j.status='pending'
+     AND j.item_version=w.version ORDER BY j.id`,
+    )
+    .all(queue, itemId);
+  const first = rows[0];
+  if (!first) return false;
+  db.run("UPDATE job SET run_at=MAX(run_at,?) WHERE id=?", [runAt, first.id]);
+  for (const extra of rows.slice(1))
+    db.run("UPDATE job SET status='cancelled' WHERE id=? AND status='pending'", [extra.id]);
+  return true;
+}

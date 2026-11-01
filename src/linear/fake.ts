@@ -349,7 +349,9 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     systemAlerts,
     async postSystemAlert(input, options) {
       options?.signal?.throwIfAborted();
-      if (!systemAlerts.some((alert) => alert.id === input.id)) systemAlerts.push(input);
+      const existing = systemAlerts.findIndex((alert) => alert.id === input.id);
+      if (existing < 0) systemAlerts.push(input);
+      else systemAlerts[existing] = input;
     },
     async postProgress(update, options) {
       await createActivity(update, options);
