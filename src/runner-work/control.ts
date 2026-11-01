@@ -30,6 +30,7 @@ import {
   runnerCancelPending,
 } from "../db";
 import {
+  LIVE_PREVIEW_RUNNER_VERSION,
   OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
   RUNNER_LEASE_MS,
@@ -435,6 +436,19 @@ export function createRunnerWork(options: {
         )
           throw new Error("Run assignment generation conflicts.");
         const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
+        if (
+          command.type === "run" &&
+          command.livePreview &&
+          !runnerReleaseAtLeast(
+            db
+              .query<{ version: string | null }, [string]>(
+                "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+              )
+              .get(command.runnerId)?.version,
+            LIVE_PREVIEW_RUNNER_VERSION,
+          )
+        )
+          delete command.livePreview;
         const envelope = queue(command);
         db.run(
           `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
