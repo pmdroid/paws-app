@@ -61,7 +61,7 @@ export function recoverOnStartup(
       }
       if (hasParkedCapacityWait(db, item)) continue;
       if (hasPendingAnswerResume(db, item.id)) continue;
-      if (hasPendingTransientRetry(db, item.id)) continue;
+      if (hasPendingTransientRetry(db, item)) continue;
       const holds = runnerHoldsWork(db, item, now);
       const decision = decideStartup({
         itemState: item.state,
@@ -135,14 +135,15 @@ function hasOpenReverify(db: Database, itemId: string): boolean {
   );
 }
 
-function hasPendingTransientRetry(db: Database, itemId: string): boolean {
+function hasPendingTransientRetry(db: Database, item: WorkItemRecord): boolean {
   return (
     db
       .query(
         `SELECT 1 FROM job WHERE queue IN (?, ?) AND status = 'pending'
-         AND json_extract(payload, '$.itemId') = ? AND json_extract(payload, '$.reason') = ?`,
+         AND json_extract(payload, '$.itemId') = ? AND json_extract(payload, '$.reason') = ?
+         AND (item_version IS NULL OR item_version = ?)`,
       )
-      .get(JOB_KIND.resume, JOB_KIND.reverify, itemId, "transient_failure") !== null
+      .get(JOB_KIND.resume, JOB_KIND.reverify, item.id, "transient_failure", item.version) !== null
   );
 }
 
@@ -224,8 +225,9 @@ export function requeueOrphanedWork(db: Database, now: number): string[] {
     .query<{ id: string }, [number, number]>(
       `SELECT i.id FROM work_item i
        WHERE i.state IN ('running','verifying','recovering','merge_queue') AND i.cancel_requested = 0
-       AND NOT EXISTS (SELECT 1 FROM job j WHERE j.status IN ('pending','running')
-         AND json_extract(j.payload,'$.itemId') = i.id)
+       AND NOT EXISTS (SELECT 1 FROM job j WHERE json_extract(j.payload,'$.itemId') = i.id
+         AND (j.status = 'running' OR (j.status = 'pending' AND (j.item_version IS NULL
+           OR j.item_version = i.version OR j.queue IN ('${JOB_KIND.command}', '${JOB_KIND.reverify}')))))
        AND NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.run_id = i.current_run_id
          AND w.ended_at IS NULL AND w.lease_until > ?1)
        AND (SELECT MAX(j.finished_at) FROM job j WHERE json_extract(j.payload,'$.itemId') = i.id) < ?2`,
