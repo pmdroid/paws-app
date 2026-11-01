@@ -151,6 +151,19 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
       item.paths,
     );
   }
+  if (item.kind === "preview") {
+    return withPaths(
+      {
+        id: item.id,
+        kind: item.kind,
+        gate: item.gate,
+        approval: item.approval,
+        ...(item.hint !== undefined ? { hint: item.hint } : {}),
+        ...(item.recheck === true ? { recheck: true } : {}),
+      },
+      item.paths,
+    );
+  }
   return withPaths(
     {
       id: item.id,

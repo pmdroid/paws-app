@@ -149,6 +149,16 @@ export type PolicyEvidence = {
   recheck?: boolean;
 };
 
+export type PolicyPreview = {
+  id: string;
+  kind: "preview";
+  gate: Gate;
+  approval: EvidenceApprovalMode;
+  hint?: string;
+  paths?: PolicyPaths;
+  recheck?: boolean;
+};
+
 /** Paws extension to draft 0.1. What happens when a rule's probe fails. */
 export type RuleOnFail = "fix" | "approve";
 
@@ -174,7 +184,7 @@ export type PolicyRule = {
 };
 
 /** Unknown kinds are not in `policy.schema.json`. See `ResolvedUnsupported`. */
-export type PolicyItem = PolicyCommand | PolicyReview | PolicyEvidence;
+export type PolicyItem = PolicyCommand | PolicyReview | PolicyEvidence | PolicyPreview;
 
 /**
  * Entry document only. An imported file that contains `setup` does not load.
@@ -285,6 +295,16 @@ export type ResolvedEvidence = {
   recheck?: boolean;
 };
 
+export type ResolvedPreview = {
+  id: string;
+  kind: "preview";
+  gate: Gate;
+  approval: EvidenceApprovalMode;
+  hint?: string;
+  paths?: string[];
+  recheck?: boolean;
+};
+
 /** One video or screenshot Paws keeps for a check of this task. */
 export type PublishedEvidence = {
   /** Evidence store id. An approval names the files it accepted by this id. */
@@ -308,6 +328,7 @@ export type EvidenceApproval = {
   /** ISO 8601 time of the approval. */
   approvedAt: string;
   commit?: string;
+  url?: string;
 };
 
 /**
@@ -364,6 +385,7 @@ export type ResolvedItem =
   | ResolvedCommand
   | ResolvedReview
   | ResolvedEvidence
+  | ResolvedPreview
   | ResolvedSetup
   | ResolvedUnsupported;
 

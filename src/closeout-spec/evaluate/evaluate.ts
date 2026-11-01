@@ -24,6 +24,7 @@ import {
   type PublishedEvidence,
   type ResolvedCommand,
   type ResolvedEvidence,
+  type ResolvedPreview,
   type ResolvedItem,
   type ResolvedPolicy,
   type ResolvedReview,
@@ -253,6 +254,15 @@ function judgeItem(
   }
   if (item.kind === "evidence") {
     return judgeEvidence(item, request.published ?? [], request.approvals ?? [], taskOf(request));
+  }
+  if (item.kind === "preview") {
+    const accept = previewAcceptFor(item, request.approvals ?? [], taskOf(request), request.head);
+    if (accept === undefined) return row(item, "missing", PREVIEW_WAITING);
+    return row(
+      item,
+      "passed",
+      `accepted by ${accept.approvedBy} at ${accept.approvedAt}${accept.url ? ` on ${accept.url}` : ""}`,
+    );
   }
   const retry = policy.source === "none" ? undefined : policy.retry;
   const blocked = retryBlock(item, retry, policy.digest ?? "", records, request, trust);
@@ -499,6 +509,29 @@ export function approvalFor(
   for (const approval of approvals) {
     if (approval.task !== task || approval.checkId !== item.id) continue;
     if (!ids.every((id) => id !== undefined && approval.evidenceIds.includes(id))) continue;
+    if (latest === undefined || approval.approvedAt > latest.approvedAt) latest = approval;
+  }
+  return latest;
+}
+
+export const PREVIEW_WAITING =
+  "waiting for a person to accept the live preview of this head in Paws";
+
+export function previewRequest(item: ResolvedPreview): string {
+  const ask = "Call show_preview so a person can try the change, then a person accepts it in Paws.";
+  return item.hint === undefined ? ask : `${item.hint} ${ask}`;
+}
+
+export function previewAcceptFor(
+  item: ResolvedPreview,
+  approvals: readonly EvidenceApproval[],
+  task: string,
+  head: string,
+): EvidenceApproval | undefined {
+  let latest: EvidenceApproval | undefined;
+  for (const approval of approvals) {
+    if (approval.task !== task || approval.checkId !== item.id || approval.commit !== head)
+      continue;
     if (latest === undefined || approval.approvedAt > latest.approvedAt) latest = approval;
   }
   return latest;
