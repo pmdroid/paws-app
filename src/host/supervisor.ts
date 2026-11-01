@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { accrueAwake, enqueueJobOnce, immediate, listInFlightItems } from "../db";
-import { capReason, countsAwakeTime, JOB_KIND, sleep, type Clock } from "../core";
+import { awakeCapReached, countsAwakeTime, JOB_KIND, sleep, type Clock } from "../core";
 import { WakeDetector, type WakeSample } from "./wake";
 
 export class HostSupervisor {
@@ -55,7 +55,7 @@ export class HostSupervisor {
           item.lastMonoMs ?? this.lastObservedMono.get(item.id) ?? mono,
           this.lastObservedMono.get(item.id) ?? -Infinity,
         );
-        if (mono <= since && capReason(item) === null) continue;
+        if (mono <= since && !awakeCapReached(item)) continue;
         if (accrueAwake(this.db, item.id, mono, now, since).stopAgent) stops.push(item.id);
       }
     });

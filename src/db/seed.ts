@@ -19,7 +19,6 @@ export function insertQueuedItem(
     title?: string;
     branchName?: string;
     sessionKey?: string;
-    maxTurns?: number;
     maxAwakeMs?: number;
   } = {},
 ): WorkItemRecord {
@@ -42,7 +41,6 @@ export function insertQueuedItem(
   );
   configureWorkItem(db, id, {
     sessionKey: input.sessionKey ?? "session",
-    maxTurns: input.maxTurns,
     maxAwakeMs: input.maxAwakeMs,
   });
   const item = getWorkItem(db, id);

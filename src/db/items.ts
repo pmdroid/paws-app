@@ -5,8 +5,8 @@ import { wakeMergesBehind } from "./merge-queue";
 import { readCheckpoint } from "./checkpoint";
 import {
   awakeCategory,
+  awakeCapReached,
   capActivityText,
-  capReason,
   formatAwakeBreakdown,
   timeLimitQuestion,
   TIME_LIMIT_EXTENSION_MS,
@@ -59,8 +59,6 @@ export type WorkItemRecord = {
   resumedAt: number | null;
   awakeMs: number;
   lastMonoMs: number | null;
-  turnCount: number;
-  maxTurns: number;
   maxAwakeMs: number;
   /** The head Closeout last accepted. Cleared when a later verdict on that work retires it. */
   acceptedHead: string | null;
@@ -92,8 +90,6 @@ type ItemSql = {
   resumed_at: number | null;
   awake_ms: number;
   last_mono_ms: number | null;
-  turn_count: number;
-  max_turns: number;
   max_awake_ms: number;
   accepted_head: string | null;
   agent_ms: number;
@@ -311,13 +307,10 @@ export function listWorkItemEventRows(
 export function configureWorkItem(
   db: Database,
   id: string,
-  patch: { sessionKey?: string; maxTurns?: number; maxAwakeMs?: number },
+  patch: { sessionKey?: string; maxAwakeMs?: number },
 ): void {
   if (patch.sessionKey !== undefined) {
     db.run("UPDATE work_item SET session_key = ? WHERE id = ?", [patch.sessionKey, id]);
-  }
-  if (patch.maxTurns !== undefined) {
-    db.run("UPDATE work_item SET max_turns = ? WHERE id = ?", [patch.maxTurns, id]);
   }
   if (patch.maxAwakeMs !== undefined) {
     db.run("UPDATE work_item SET max_awake_ms = ? WHERE id = ?", [patch.maxAwakeMs, id]);
@@ -356,23 +349,6 @@ export type CapOutcome = {
   stopAgent?: boolean;
   item: WorkItemRecord;
 };
-
-export function recordTurn(db: Database, id: string, now = Date.now()): CapOutcome {
-  return immediate(db, () => {
-    const current = getWorkItem(db, id);
-    if (current === null) throw new Error(`work item ${id} not found`);
-    if (
-      current.state === "failed" ||
-      current.state === "cancelled" ||
-      current.state === "merged" ||
-      current.state === "completed"
-    ) {
-      return { capped: current.cancelRequested, item: current };
-    }
-    db.run("UPDATE work_item SET turn_count = turn_count + 1 WHERE id = ?", [id]);
-    return enforceCaps(db, id, now, { stopsAgent: false });
-  });
-}
 
 const BREAKDOWN_COLUMN: Record<AwakeCategory, string> = {
   agent: "agent_ms",
@@ -530,26 +506,12 @@ function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId
  * Fails an item past a cap. Work Closeout already accepted never fails on the time
  * cap: Paws keeps publishing and merging it, and a resumed agent asks in Linear.
  */
-function enforceCaps(
-  db: Database,
-  id: string,
-  now: number,
-  options: { stopsAgent: boolean } = { stopsAgent: true },
-): CapOutcome {
+function enforceCaps(db: Database, id: string, now: number): CapOutcome {
   const updated = getWorkItem(db, id);
   if (updated === null) throw new Error(`work item ${id} not found`);
-  const reason = capReason({
-    turnCount: updated.turnCount,
-    maxTurns: updated.maxTurns,
-    awakeMs: updated.awakeMs,
-    maxAwakeMs: updated.maxAwakeMs,
-  });
-  if (reason === null) return { capped: false, item: updated };
-  if (reason === "time" && updated.acceptedHead !== null) {
+  if (!awakeCapReached(updated)) return { capped: false, item: updated };
+  if (updated.acceptedHead !== null) {
     if (updated.state !== "running") return { capped: false, item: updated };
-    // Asking or pausing ends the run, so only a caller that stops the live agent
-    // (the host supervisor, through accrueAwake) may do it. It asks on its next tick.
-    if (!options.stopsAgent) return { capped: false, item: updated };
     if (
       db
         .query(
@@ -563,7 +525,7 @@ function enforceCaps(
     pauseAtTimeLimit(db, updated, now);
     return { capped: false, stopAgent: true, item: refetch() };
   }
-  failForCap(db, updated, reason, now);
+  failForCap(db, updated, now);
   return { capped: true, item: refetch() };
 
   function refetch(): WorkItemRecord {
@@ -905,19 +867,14 @@ export function runnerCapacityWait(payload: unknown): RunnerCapacityWaitState | 
     : null;
 }
 
-function failForCap(
-  db: Database,
-  item: WorkItemRecord,
-  reason: "turns" | "time",
-  now: number,
-): void {
+function failForCap(db: Database, item: WorkItemRecord, now: number): void {
   commitFailure(
     db,
     item,
-    `cap:${reason}`,
-    capActivityText(reason, item.maxTurns, item.maxAwakeMs, awakeBreakdown(item)),
+    "cap:time",
+    capActivityText(item.maxAwakeMs, awakeBreakdown(item)),
     now,
-    (version) => `cap:${item.id}:${version}:${reason}`,
+    (version) => `cap:${item.id}:${version}:time`,
   );
 }
 
@@ -1003,8 +960,6 @@ function mapItem(row: ItemSql): WorkItemRecord {
     resumedAt: row.resumed_at,
     awakeMs: row.awake_ms,
     lastMonoMs: row.last_mono_ms,
-    turnCount: row.turn_count,
-    maxTurns: row.max_turns,
     maxAwakeMs: row.max_awake_ms,
     acceptedHead: row.accepted_head ?? null,
     agentMs: row.agent_ms ?? 0,

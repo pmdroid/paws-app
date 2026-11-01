@@ -139,7 +139,6 @@ export {
   listLastWorkItemEventTimes,
   type WorkItemEventRecord,
   type WorkItemEventRow,
-  recordTurn,
   saveCheckpoint,
   setCurrentRun,
   setRecoveryAttempts,

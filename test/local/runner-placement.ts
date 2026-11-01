@@ -180,9 +180,7 @@ export async function probeRunnerPlacement(
       baseSha: "a".repeat(40),
       wipCommit: "b".repeat(40),
     });
-    db.run("UPDATE work_item SET awake_ms=awake_ms+1000,turn_count=turn_count+1 WHERE id=?", [
-      item.id,
-    ]);
+    db.run("UPDATE work_item SET awake_ms=awake_ms+1000 WHERE id=?", [item.id]);
     const progressCommand = workspaceId();
     placement.started({
       commandId: progressCommand,

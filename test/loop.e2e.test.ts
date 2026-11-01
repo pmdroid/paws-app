@@ -127,7 +127,7 @@ test.each([false, true, "cap"] as const)(
       pawsRoot: layout.pawsRoot,
       home: layout.home,
       tracker,
-      caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
+      caps: { maxAwakeMs: 3 * 60 * 60 * 1000 },
       repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
       launch(input) {
         const fixing =
@@ -313,7 +313,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
+    caps: { maxAwakeMs: 3 * 60 * 60 * 1000 },
     repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     launch(input) {
       const launch = input.purpose === "implement" ? ++launches : 0;
@@ -399,7 +399,7 @@ test("a retried run starts with the main that moved while it was failed", async 
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
+    caps: { maxAwakeMs: 3 * 60 * 60 * 1000 },
     repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     githubForRepository: () => ({
       appId: "1",
@@ -511,7 +511,7 @@ test("a frontend change without visual proof gets a fix round, publishes a scree
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
+    caps: { maxAwakeMs: 3 * 60 * 60 * 1000 },
     repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     evidence: {
       publicUrl: "https://paws.example",

@@ -25,7 +25,6 @@ test("project skills resolve per repository and survive setup rewrites", () => {
     githubAuth: "app",
     repo: "acme/demo",
     checkout: "/repo",
-    maxTurns: 10,
     maxAwakeMs: 1000,
     implementer: "claude",
   };

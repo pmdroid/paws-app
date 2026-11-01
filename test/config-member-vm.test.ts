@@ -64,7 +64,6 @@ describe("[member_vm]", () => {
       githubAuth: "app",
       repo: "acme/one",
       checkout: paths.home,
-      maxTurns: 40,
       maxAwakeMs: 1_000,
       implementer: "claude",
     });

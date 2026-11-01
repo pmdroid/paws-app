@@ -63,16 +63,14 @@ export {
 } from "./backoff";
 export {
   DEFAULT_MAX_AWAKE_MS,
-  DEFAULT_MAX_TURNS,
+  awakeCapReached,
   capActivityText,
-  capReason,
   formatAwakeBreakdown,
   timeLimitQuestion,
   TIME_LIMIT_EXTENSION_MS,
   TIME_LIMIT_MERGE,
   TIME_LIMIT_OPTIONS,
   type AwakeBreakdown,
-  type CapReason,
 } from "./caps";
 export {
   CommandBus,

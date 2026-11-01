@@ -69,7 +69,6 @@ describe("process", () => {
       githubAuth: "app",
       repo: "pmdroid/paws-demo",
       checkout: home,
-      maxTurns: 80,
       maxAwakeMs: 45 * 60 * 1000,
       implementer: "claude",
     });

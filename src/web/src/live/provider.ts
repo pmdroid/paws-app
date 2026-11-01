@@ -634,6 +634,7 @@ function readScopedSnapshot(
       queue,
       merging,
       jobs,
+      storedRuns.get(record.id)?.length ?? 0,
     ),
     linearRequests: linearRequests.get(record.id) ?? 0,
     ...heldOf(record, holds),
@@ -891,6 +892,7 @@ function toItem(
   queue: ReadonlyMap<string, QueuePosition>,
   merging: ReadonlyMap<string, StatusMergeQueue>,
   jobs: readonly Job[],
+  attempts: number,
 ): StatusItem {
   const id = publicId(record);
   const runId = linkedRunId(record, runs);
@@ -912,7 +914,7 @@ function toItem(
     owner: ownerName(fact),
     project: itemProject(fact),
     blockers: blockersFor(db, record, itemsByIssue),
-    attempts: record.turnCount,
+    attempts,
     branch: record.branchName.trim() ? record.branchName : null,
     runId,
     pr,
@@ -1157,7 +1159,7 @@ function runsFor(
       reviewer: runReviewer(pawsHome, current.id),
       runner: runRunnerName(db, current.id),
       startedAt: iso(first.createdAt, generatedAt),
-      attempt: Math.max(record.turnCount, record.checkpoint?.turn ?? 0),
+      attempt: record.checkpoint?.turn ?? 0,
       summary: recent?.text ?? textOr(record.title, publicId(record)),
       activity,
       links: [],
@@ -1721,7 +1723,7 @@ function verdictCandidates(
 
 function toVerdict(record: WorkItemRecord, candidate: VerdictCandidate): StatusVerdict {
   const checks = parseChecks(candidate.summary);
-  const attempt = attemptOf(candidate.summary, record);
+  const attempt = attemptOf(candidate.summary);
   const failing = checks.find((check) => check.state === "failed");
   return {
     itemId: publicId(record),
@@ -1744,7 +1746,6 @@ function toVerdict(record: WorkItemRecord, candidate: VerdictCandidate): StatusV
 function impliedVerdict(record: WorkItemRecord): StatusVerdict | null {
   const decision = impliedDecision(record.state);
   if (decision === null) return null;
-  const attempt = Math.max(record.turnCount, 1);
   const summary =
     decision === "running"
       ? "Closeout is running."
@@ -1754,8 +1755,8 @@ function impliedVerdict(record: WorkItemRecord): StatusVerdict | null {
   return {
     itemId: publicId(record),
     decision,
-    attempt,
-    maxAttempts: Math.max(MAX_CLOSEOUT_ATTEMPTS, attempt),
+    attempt: 1,
+    maxAttempts: MAX_CLOSEOUT_ATTEMPTS,
     summary,
     failingCheck: null,
     baseSha: blank(record.checkpoint?.baseSha),
@@ -2357,14 +2358,14 @@ function decisionFromSummary(summary: string): VerdictDecision | null {
   return decisionOf(line.slice("Closeout:".length).trim());
 }
 
-function attemptOf(summary: string, record: WorkItemRecord): number {
+function attemptOf(summary: string): number {
   const caller = intField(summary, "Caller attempt");
   if (caller !== null) return caller;
   const evaluations = intField(summary, "Evaluations");
   if (evaluations !== null) return evaluations;
   const fixes = intField(summary, "Fix attempts");
   if (fixes !== null) return fixes + 1;
-  return Math.max(record.turnCount, 1);
+  return 1;
 }
 
 function intField(summary: string, label: string): number | null {

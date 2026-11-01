@@ -30,7 +30,6 @@ describe("config", () => {
       githubAuth: "app" as const,
       repo: "acme/one",
       checkout: paths.home,
-      maxTurns: 40,
       maxAwakeMs: 1_000,
       implementer: "claude" as const,
     };
@@ -43,7 +42,7 @@ describe("config", () => {
     writeFileSync(paths.configFile, `${text}\n[merge]\nmain_moved = "closeout"\n`, {
       mode: 0o600,
     });
-    writeConfigFile(paths.configFile, { ...setup, maxTurns: 50 });
+    writeConfigFile(paths.configFile, { ...setup, maxAwakeMs: 2_000 });
     expect(loadConfigFile(paths.configFile).githubRepos).toEqual(["acme/one", "acme/two"]);
     expect(readMergeSettings(loadConfigFile(paths.configFile)).default.mainMoved).toBe("closeout");
     expect(closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, "Acme/One")).toBe(
@@ -136,6 +135,35 @@ describe("config", () => {
     expect(statSync(paths.home).mode & 0o777).toBe(0o700);
   });
 
+  test("a retired turn cap in config.toml or the environment loads and is not configured", () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
+    ensureLayout(paths);
+    writeFileSync(paths.configFile, "[caps]\nmax_turns = 2\nmax_awake_ms = 5000\n", {
+      mode: 0o600,
+    });
+    const parsed = loadConfigFile(paths.configFile);
+    expect(parsed.maxAwakeMs).toBe(5_000);
+    expect(parsed).not.toHaveProperty("maxTurns");
+    const runtime = loadRuntime({ PAWS_HOME: home, PAWS_MAX_TURNS: "3" });
+    expect(runtime.maxAwakeMs).toBe(5_000);
+    expect(runtime).not.toHaveProperty("maxTurns");
+    const rendered = renderConfigToml({
+      linearTeam: "ENG",
+      linearTeamId: "team",
+      linearViewerId: "human",
+      linearSecret: "secrets/linear-api-key",
+      linearClientFile: null,
+      githubAuth: "app",
+      repo: "acme/one",
+      checkout: home,
+      maxAwakeMs: 5_000,
+      implementer: "claude",
+    });
+    expect(rendered).toContain("[caps]\nmax_awake_ms = 5000\n");
+    expect(rendered).not.toContain("max_turns");
+  });
+
   test("missing config.toml is empty", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
@@ -155,7 +183,6 @@ describe("config", () => {
       githubAuth: "app",
       repo: "pmdroid/paws-demo",
       checkout: home,
-      maxTurns: 40,
       maxAwakeMs: 1_000,
       implementer: "claude",
     });
@@ -170,7 +197,7 @@ describe("config", () => {
     const parsed = loadConfigFile(paths.configFile);
     expect(parsed.linearTeam).toBe("ENG");
     expect(parsed.repo).toBe("pmdroid/paws-demo");
-    expect(parsed.maxTurns).toBe(40);
+    expect(parsed.maxAwakeMs).toBe(1_000);
 
     const runtime = loadRuntime({
       PAWS_HOME: home,
@@ -181,7 +208,7 @@ describe("config", () => {
     expect(runtime.linearAccessToken).toBe("lin_oauth_from_file");
     expect(runtime.repos).toEqual(["pmdroid/paws-demo"]);
     expect(runtime.githubAuth).toBe("app");
-    expect(runtime.maxTurns).toBe(40);
+    expect(runtime.maxAwakeMs).toBe(1_000);
     expect(runtime.webhooks).toBe(false);
 
     const overridden = loadRuntime({
@@ -315,7 +342,6 @@ describe("config", () => {
       trackerKind: "linear",
       repo: "pmdroid/paws-demo",
       checkout: home,
-      maxTurns: 40,
       maxAwakeMs: 1_000,
       implementer: "claude",
     });
