@@ -2,6 +2,13 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-01: The command reviewer gets the issue brief and earlier findings
+
+### Changed
+
+- **Upgrade runners to 0.1.55** for this. An older runner still runs the review, without the instructions.
+- Closeout's review command now gets review instructions: the issue brief, a rule that behaviour the issue asks for is not a defect and that a declined finding is not raised again unless the new code changes it, and the earlier rounds' findings. They stay under 8 KiB, and the latest round's findings are kept first. Claude gets them with `--append-system-prompt`. Codex gets them as the `codex exec review` prompt, which names the base and head in place of `--base`.
+
 ## 2026-10-27: Closeout's live review runs the agent's review command on the runner
 
 ### Changed
