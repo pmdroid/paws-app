@@ -153,7 +153,7 @@ describe("runner failure causes", () => {
       [tempFile(`{ ${secret}, oops }`), "Runner configuration is not valid JSON."],
       [
         tempFile(JSON.stringify({ controlPlaneUrl: 1, runnerApiUrl: "x", [TOKEN]: TOKEN })),
-        "Runner configuration has invalid fields: controlPlaneUrl, allowedRepositories, an unknown key.",
+        "Runner configuration has invalid fields: controlPlaneUrl, an unknown key.",
       ],
       [
         tempFile("{}", 0o644),

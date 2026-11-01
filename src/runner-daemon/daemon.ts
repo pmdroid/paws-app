@@ -107,7 +107,7 @@ export type RunnerDaemonOptions = {
   runnerApiUrl: string;
   serverCa?: string;
   trustedKeys?: ReadonlyMap<string, KeyObject>;
-  allowedRepositories: readonly string[];
+  allowedRepositories?: readonly string[];
   concurrency?: number;
   now?: () => number;
   /** Host metrics sent with every heartbeat. */
@@ -368,15 +368,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       // A Paws release without agents, runtimes or skills refuses the unknown field with 403.
       // Drop the newest fields one at a time so the leases still renew.
       const withAgents = coding === undefined ? withRuntimes : { ...withRuntimes, agents: coding };
+      const withLive =
+        live === undefined
+          ? withAgents
+          : { ...withAgents, live: live.map(({ runId, generation }) => ({ runId, generation })) };
       const attempts: unknown[] = [
-        ...(live === undefined
-          ? []
-          : [
-              {
-                ...withAgents,
-                live: live.map(({ runId, generation }) => ({ runId, generation })),
-              },
-            ]),
+        { ...withLive, repositories: options.allowedRepositories ?? null },
+        ...(live === undefined ? [] : [withLive]),
         withAgents,
         ...(coding === undefined ? [] : [withRuntimes]),
         ...(installed === undefined ? [] : [withSkills]),

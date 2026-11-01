@@ -21,7 +21,10 @@ export {
 const configuration = z.strictObject({
   controlPlaneUrl: z.string().max(2048),
   runnerApiUrl: z.string().max(2048),
-  allowedRepositories: z.array(z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/)).max(256),
+  allowedRepositories: z
+    .array(z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/))
+    .max(256)
+    .optional(),
   serverCa: z.string().max(32768).optional(),
   concurrency: z.number().int().min(1).max(16).default(2),
 });
