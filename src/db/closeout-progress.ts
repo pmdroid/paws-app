@@ -323,8 +323,10 @@ export function finishCloseoutProgress(
       "UPDATE closeout_progress SET decision = ?, finished_at = ?, updated_at = ? WHERE id = ?",
       [decision, now, now, id],
     );
-    if (decision === "rejected") {
-      // Rejection also retires acceptance carried through a permitted lane rebase.
+    if (decision === "rejected" || decision === "exhausted") {
+      // A verdict against the head retires its acceptance, including one carried through a
+      // permitted lane rebase. Infrastructure outcomes (blocked, invalid) leave it standing, but
+      // the merge lane still refuses while such a run is the head's latest.
       db.run(
         `UPDATE work_item SET accepted_head = NULL WHERE id = ? AND
           (accepted_head = ? OR accepted_head = (SELECT accepted_head FROM merge_carried_accept

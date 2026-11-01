@@ -61,6 +61,22 @@ for (const changedIdentity of [false, true]) {
   });
 }
 
+for (const decision of ["exhausted", "blocked"] as const) {
+  test(`a ${decision} verdict ${decision === "exhausted" ? "retires" : "keeps"} the accepted head`, () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    insertQueuedItem(db, { id: "item" });
+    const identity = { taskId: "task", base: "b", head: "s", policyDigest: "p", policyPath: null };
+    finishCloseoutProgress(db, "item", identity, "accepted", 10);
+    markCloseoutAccepted(db, "item", "s");
+    finishCloseoutProgress(db, "item", { ...identity, base: "c" }, decision, 20);
+    expect(getWorkItem(db, "item")?.acceptedHead).toBe(decision === "exhausted" ? null : "s");
+    // Either way the older acceptance is not resurrected by the newer identity's row.
+    expect(acceptedCloseoutReviews(db, "item", "s")).toBeNull();
+    db.close();
+  });
+}
+
 test("rejecting a carried head retires its source acceptance", () => {
   const db = openDatabase(":memory:");
   migrate(db);

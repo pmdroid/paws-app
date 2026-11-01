@@ -55,7 +55,9 @@ export function acceptedResumeNeedsTurn(input: {
 /**
  * Sends an item whose work Closeout accepted to the merge queue at its accepted head instead of
  * another agent turn. Pending agent jobs, other than `exceptJobId`, are cancelled and the current
- * run ends. Returns false when the item has no accepted head or cannot get there from its state.
+ * run ends. Returns false when the item has no accepted head, cannot get there from its state, or
+ * a later Closeout run on that head did not accept it. Automatic callers check for pending agent
+ * input first; a person's Merge answer does not wait for it.
  */
 export function mergeAcceptedWork(
   db: Database,
@@ -69,7 +71,6 @@ export function mergeAcceptedWork(
     const head = item.acceptedHead;
     const verdict = closeoutPolicyDigests(db, itemId, head);
     if (verdict !== null && verdict.decision !== "accepted") return false;
-    if (pendingRestartHandoff(db, itemId).handoff) return false;
     db.run(
       `UPDATE job
        SET status = 'cancelled', last_error = 'accepted_work', locked_by = NULL,
@@ -106,8 +107,8 @@ export function mergeAcceptedWork(
 
 /**
  * A run's candidate push was rejected. When the remote branch is the accepted head, or contains
- * it, the accepted work is already on GitHub: the item goes to the merge queue instead of asking.
- * Returns false otherwise, so the rejection goes on to the push question and conflict handling.
+ * it, the accepted work is already on GitHub: the item goes to the merge queue instead of asking,
+ * unless the run was delivering findings, review or CI input. Returns false otherwise, so the rejection goes on to the push question and conflict handling.
  */
 export function settleRejectedPush(
   db: Database,
@@ -116,5 +117,7 @@ export function settleRejectedPush(
 ): boolean {
   const accepted = getWorkItem(db, itemId)?.acceptedHead ?? null;
   if (accepted === null || (input.remoteHead !== accepted && !input.containsAccepted)) return false;
+  // A turn carrying findings, review or CI input was not for nothing: it goes to the question.
+  if (pendingRestartHandoff(db, itemId).handoff) return false;
   return mergeAcceptedWork(db, itemId, { now: input.now });
 }
