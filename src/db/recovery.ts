@@ -19,6 +19,7 @@ import {
   shiftRunnerLeasesForDowntime,
 } from "./runner-lease";
 import { mergeCallInFlight } from "./remote-merges";
+import { ensureRestartQuestion } from "./restart-hold";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { immediate } from "./tx";
 
@@ -52,6 +53,10 @@ export function recoverOnStartup(
     let resumes = 0;
     const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
     for (const item of items) {
+      if (ensureRestartQuestion(db, item, now)) {
+        decisions.push({ type: "ask_restart" });
+        continue;
+      }
       if (hasParkedCapacityWait(db, item)) continue;
       if (hasPendingAnswerResume(db, item.id)) continue;
       if (hasPendingResume(db, item.id, "transient_failure")) continue;
@@ -212,7 +217,7 @@ export function requeueOrphanedWork(db: Database, now: number): string[] {
   const requeued: string[] = [];
   for (const { id } of orphans) {
     const found = getWorkItem(db, id);
-    if (!found) continue;
+    if (!found || ensureRestartQuestion(db, found, now)) continue;
     if (found.state === "merge_queue") applyWorkItemEvent(db, found.id, "lease_expired");
     const item = getWorkItem(db, id) ?? found;
     const key = `orphan:${item.id}:${now}`;

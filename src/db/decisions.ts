@@ -17,13 +17,11 @@ import {
   markResumed,
   type WorkItemRecord,
 } from "./items";
-import { cancelOpenJobs, enqueueJobOnce, reenqueueJob } from "./jobs";
+import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
+import { ensureRestartQuestion, holdRestart, restartQuestionStands } from "./restart-hold";
 import { getRun, insertRun, markRun, releaseRunCapacity } from "./runs";
 import { getTaskMode } from "./tasks";
-
-const RESTART_QUESTION =
-  "Paws restarted twice while this task was running. Start it again from its branch in a fresh session? Stop the session to leave it.";
 
 export type WakeStamp = { fromWall: number; toWall: number; sleptMs: number };
 
@@ -145,27 +143,14 @@ function applyAskRestart(db: Database, item: WorkItemRecord, now: number): void 
     );
     return;
   }
-  if (
-    db
-      .query(`SELECT 1 FROM question WHERE item_id=? AND session_id=?
-    AND reason='restart' AND status IN ('open','queued') AND cancelled_at IS NULL LIMIT 1`)
-      .get(item.id, item.sessionKey)
-  )
-    return;
+  if (item.state === "running" || item.state === "verifying")
+    applyWorkItemEvent(db, item.id, "lease_expired");
+  const held = getWorkItem(db, item.id) ?? item;
+  holdRestart(db, held, now);
+  if (restartQuestionStands(db, held)) return;
   cancelOpenJobs(db, { itemId: item.id, reason: "restart_question", now });
-  if (item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
-  reenqueueJob(db, {
-    queue: "item.ask",
-    jobKey: `restart-ask:${item.id}:${item.version}`,
-    payload: {
-      itemId: item.id,
-      kind: "agent",
-      reason: "restart",
-      body: RESTART_QUESTION,
-      options: ["Start again"],
-    },
-    now,
-  });
+  if (held.currentRunId) releaseRunCapacity(db, held.currentRunId, now);
+  ensureRestartQuestion(db, held, now);
 }
 
 function applyRestartSession(
