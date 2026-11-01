@@ -59,3 +59,9 @@ export const CLOSEOUT_POLICY_CHUNKS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
 /** First runner release retaining results across outages and counting only active awake work. */
 export const DURABLE_RESULTS_RUNNER_VERSION: RunnerVersion = [0, 1, 55];
 export const DURABLE_PUBLICATION_RUNNER_VERSION: RunnerVersion = [0, 1, 55];
+/**
+ * First runner release that runs Claude's `/code-review` at the reviewer profile's level with at
+ * most five findings, and passes that effort to `codex exec review`. Older runners still review,
+ * with the level and cap left on that runner.
+ */
+export const REVIEW_EFFORT_RUNNER_VERSION: RunnerVersion = [0, 1, 55];

@@ -39,16 +39,38 @@ export function reviewProvider(agent: ReviewCommandAgent): string {
   return PROVIDERS[agent];
 }
 
+/** Effort levels Claude's `/code-review` accepts. */
+const CLAUDE_REVIEW_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+/** Most findings one Claude `/code-review` reports. */
+const CLAUDE_REVIEW_MAX_FINDINGS = 5;
+
+/**
+ * The level Claude's `/code-review` runs at: the profile's effort when the command accepts it,
+ * otherwise `medium`. The command reuses the last level typed on that runner when none is given.
+ */
+function claudeReviewLevel(effort: string | undefined): string {
+  return effort !== undefined && CLAUDE_REVIEW_LEVELS.has(effort) ? effort : "medium";
+}
+
+/** Codex config override for the profile's effort; none when the profile sets no effort. */
+function codexEffortArgs(effort: string | undefined): string[] {
+  return effort ? ["-c", `model_reasoning_effort=${effort}`] : [];
+}
+
 /**
  * The agent's own review of `base..head`.
  * Codex: `codex exec review --base <base>`, which takes no prompt beside `--base`.
- * Claude: `/code-review <base>..<head>` in a plan-mode print session.
+ * Claude: `/code-review <level> --max-findings 5 <base>..<head>` in a plan-mode print session.
+ * Claude's command keeps the last level and cap typed on the runner, so both are always stated.
  * Neither command gets a bypass flag; each runs its own read-only review.
  */
 export function reviewArgv(input: {
   agent: ReviewCommandAgent;
   command?: string;
   model: string;
+  /** The reviewer profile's effort. */
+  effort?: string;
   base: string;
   head: string;
   /** Codex reads the schema from a file. Claude takes it inline. */
@@ -64,6 +86,7 @@ export function reviewArgv(input: {
       input.base,
       "--model",
       input.model,
+      ...codexEffortArgs(input.effort),
       "--json",
       "--output-schema",
       input.schemaPath,
@@ -81,15 +104,21 @@ export function reviewArgv(input: {
     "--verbose",
     "--json-schema",
     input.schema,
-    `/code-review ${input.base}..${input.head}`,
+    `/code-review ${claudeReviewLevel(input.effort)} --max-findings ${CLAUDE_REVIEW_MAX_FINDINGS} ${input.base}..${input.head}`,
   ];
 }
 
-/** Follow-up in the same review session, for a final message that did not parse. */
+/**
+ * Follow-up in the same review session, for a final message that did not parse.
+ * Codex resumes at the profile's effort. Claude's follow-up is a plain prompt, not another
+ * `/code-review`: the session's review already ran at the pinned level and cap.
+ */
 export function reaskArgv(input: {
   agent: ReviewCommandAgent;
   command?: string;
   model: string;
+  /** The reviewer profile's effort. */
+  effort?: string;
   session: string;
   schemaPath: string;
   schema: string;
@@ -103,6 +132,7 @@ export function reaskArgv(input: {
       input.session,
       "--model",
       input.model,
+      ...codexEffortArgs(input.effort),
       "--json",
       "--output-schema",
       input.schemaPath,

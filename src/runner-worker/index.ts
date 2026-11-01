@@ -551,6 +551,7 @@ function resumedSession(directory: string): string | undefined {
 async function reviewCommandTurn(input: {
   agent: "claude" | "codex";
   model: string;
+  effort?: string;
   base: string;
   head: string;
   worktree: string;
@@ -569,6 +570,7 @@ async function reviewCommandTurn(input: {
     {
       agent: input.agent,
       model: input.model,
+      ...(input.effort !== undefined ? { effort: input.effort } : {}),
       command: input.executable,
       base: input.base,
       head: input.head,
@@ -1248,6 +1250,7 @@ export async function executeRunnerCommand(
               return reviewCommandTurn({
                 agent: agentName,
                 model: command.profile.model!,
+                ...(command.profile.effort !== undefined ? { effort: command.profile.effort } : {}),
                 base,
                 head: command.repository.baseSha,
                 worktree,

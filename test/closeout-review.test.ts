@@ -13,6 +13,8 @@ import {
   createReviewer,
   findingsJsonSchema,
   formatFixFeedback,
+  reaskArgv,
+  reviewArgv,
   type CommandRecord,
   type DecisionDocument,
   type Finding,
@@ -150,7 +152,7 @@ describe("closeout reviewer runs the agent's review command", () => {
         "--verbose",
         "--json-schema",
         JSON.stringify(findingsJsonSchema()),
-        `/code-review ${repo.base}..${repo.head}`,
+        `/code-review medium --max-findings 5 ${repo.base}..${repo.head}`,
       ]);
       expect(seen[0]?.head).toBe(repo.head);
       expect(call.argv.at(-2)).toContain("P1: a reachable defect in changed code");
@@ -406,6 +408,91 @@ describe("closeout reviewer runs the agent's review command", () => {
       expect(runner.calls).toHaveLength(0);
     } finally {
       await repo.cleanup();
+    }
+  });
+});
+
+describe("review command argv", () => {
+  const base = "a".repeat(40);
+  const head = "b".repeat(40);
+  const review = (agent: "codex" | "claude", effort?: string) =>
+    reviewArgv({
+      agent,
+      model: "m",
+      ...(effort !== undefined ? { effort } : {}),
+      base,
+      head,
+      schemaPath: "/tmp/schema.json",
+      schema: "{}",
+    });
+  const reask = (agent: "codex" | "claude", effort?: string) =>
+    reaskArgv({
+      agent,
+      model: "m",
+      ...(effort !== undefined ? { effort } : {}),
+      session: "s",
+      schemaPath: "/tmp/schema.json",
+      schema: "{}",
+      prompt: "Reply again.",
+    });
+
+  test("Claude's /code-review states the profile's level and five findings", () => {
+    for (const level of ["low", "medium", "high", "xhigh", "max"]) {
+      expect(review("claude", level).at(-1)).toBe(
+        `/code-review ${level} --max-findings 5 ${base}..${head}`,
+      );
+    }
+  });
+
+  test("Claude's /code-review runs at medium when the effort is absent or unknown", () => {
+    for (const effort of [undefined, "minimal", "HIGH", "ultra"]) {
+      expect(review("claude", effort).at(-1)).toBe(
+        `/code-review medium --max-findings 5 ${base}..${head}`,
+      );
+    }
+  });
+
+  test("Claude's re-ask resumes with the prompt alone, not a second review", () => {
+    for (const effort of [undefined, "high"]) {
+      const argv = reask("claude", effort);
+      expect(argv.slice(0, 4)).toEqual(["claude", "-p", "--resume", "s"]);
+      expect(argv.at(-1)).toBe("Reply again.");
+      expect(argv.join(" ")).not.toContain("/code-review");
+    }
+  });
+
+  test("Codex gets model_reasoning_effort only when an effort is set", () => {
+    expect(review("codex", "high")).toEqual([
+      "codex",
+      "exec",
+      "review",
+      "--base",
+      base,
+      "--model",
+      "m",
+      "-c",
+      "model_reasoning_effort=high",
+      "--json",
+      "--output-schema",
+      "/tmp/schema.json",
+    ]);
+    expect(reask("codex", "low")).toEqual([
+      "codex",
+      "exec",
+      "resume",
+      "s",
+      "--model",
+      "m",
+      "-c",
+      "model_reasoning_effort=low",
+      "--json",
+      "--output-schema",
+      "/tmp/schema.json",
+      "Reply again.",
+    ]);
+    for (const argv of [review("codex"), reask("codex")]) {
+      expect(argv).not.toContain("-c");
+      expect(argv.join(" ")).not.toContain("model_reasoning_effort");
     }
   });
 });

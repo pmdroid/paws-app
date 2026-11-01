@@ -26,6 +26,7 @@ async function reviewOnRunner(input: {
   agent: "codex" | "claude";
   events: unknown[];
   base?: string;
+  effort?: string;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-review-"));
   roots.push(root);
@@ -79,7 +80,11 @@ async function reviewOnRunner(input: {
       generation: 1,
       issuedAt: 1,
       expiresAt: Date.now() + 60_000,
-      profile: { agent: input.agent, model: "review-model" },
+      profile: {
+        agent: input.agent,
+        model: "review-model",
+        ...(input.effort ? { effort: input.effort } : {}),
+      },
       repository: {
         owner: "acme",
         repo: "repo",
@@ -149,9 +154,22 @@ test("a Codex review command runs codex exec review --base in the run's checkout
   expect(result.candidateSha).toBeUndefined();
 }, 20_000);
 
-test("a Claude review command runs /code-review base..head in plan mode", async () => {
+test("a Codex review command runs at the run profile's effort", async () => {
+  const { ran } = await reviewOnRunner({
+    agent: "codex",
+    effort: "high",
+    events: [
+      { type: "thread.started", thread_id: "thread-1" },
+      { type: "item.completed", item: { type: "agent_message", text: "[]" } },
+    ],
+  });
+  expect(ran?.argv.slice(6, 8)).toEqual(["-c", "model_reasoning_effort=high"]);
+}, 20_000);
+
+test("a Claude review command runs /code-review at the profile's level with five findings", async () => {
   const { result, ran, base, head } = await reviewOnRunner({
     agent: "claude",
+    effort: "low",
     events: [
       { type: "system", subtype: "init", session_id: "session-1", model: "claude-review" },
       { type: "result", session_id: "session-1", structured_output: [] },
@@ -159,7 +177,7 @@ test("a Claude review command runs /code-review base..head in plan mode", async 
   });
   expect(ran?.argv.slice(0, 2)).toEqual(["-p", "--permission-mode"]);
   expect(ran?.argv[2]).toBe("plan");
-  expect(ran?.argv.at(-1)).toBe(`/code-review ${base}..${head}`);
+  expect(ran?.argv.at(-1)).toBe(`/code-review low --max-findings 5 ${base}..${head}`);
   expect(result.run).toMatchObject({
     stopReason: "end_turn",
     identity: { session: "session-1", model: "claude-review", provider: "anthropic" },
