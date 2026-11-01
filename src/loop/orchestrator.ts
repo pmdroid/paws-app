@@ -1,6 +1,10 @@
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
-import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity-policy";
+import {
+  AFTER_PULL_REQUEST_RESPONSE,
+  canReportProgress as canReportSessionProgress,
+  hasPublishedPullRequest,
+} from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
@@ -5374,6 +5378,14 @@ export class Orchestrator {
         if (item.state === "manual") {
           // Intake saved the new brief in this transaction. Human ownership keeps its fence.
           cancelItemQuestions(this.db, itemId, this.now(), "criteria");
+          if (
+            !canReportSessionProgress(
+              this.db,
+              changes.sessionId,
+              getLinearSessionGeneration(this.db, changes.sessionId),
+            )
+          )
+            continue;
           const revision =
             this.db
               .query<{ revision: number }, [string]>(

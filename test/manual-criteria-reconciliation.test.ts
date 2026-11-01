@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { FakeClock, transition } from "../src/core";
 import {
   bindLinearSessionTask,
+  advanceLinearSessionGeneration,
   getWorkItem,
+  getLinkAsk,
+  insertQueuedItem,
+  openLinkAsks,
+  enqueueOutbox,
   JobLoop,
   listOutbox,
   OutboxDispatcher,
@@ -11,7 +16,14 @@ import {
 import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
-import { answerQuestion, ask, getQuestion, openLinkAsk, type QuestionKind } from "../src/questions";
+import {
+  answerQuestion,
+  ask,
+  cancelItemQuestions,
+  getQuestion,
+  openLinkAsk,
+  type QuestionKind,
+} from "../src/questions";
 import { workspaceAdmission } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
 
@@ -173,7 +185,11 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
         ).toBeNull();
       } else expect(getQuestion(db, question.id)!.cancelledAt).toBeNull();
     }
+    expect(openLinkAsks(db, manualId).map((link) => link.kind)).toEqual(["question"]);
     for (const link of links) {
+      const stored = getLinkAsk(db, link.question.id)!;
+      expect(stored.closedAt).toBe(link.linkAsk.kind === "question" ? null : clock.now());
+      expect(stored.closedReason).toBe(link.linkAsk.kind === "question" ? null : "cancelled");
       expect(getQuestion(db, link.question.id)!.cancelledAt === null).toBe(
         link.linkAsk.kind === "question",
       );
@@ -207,6 +223,22 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     expect(getWorkItem(db, manualId)!.version).toBe(7);
     expect(notices()).toHaveLength(2);
     expect(jobs()).toEqual(afterJobs);
+    advanceLinearSessionGeneration(db, "session", { now: clock.now() });
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "session",
+      idempotencyKey: `pull-request-ready:${manualId}:0`,
+      payload: { sessionId: "session", kind: "response", body: "Opened PR" },
+      now: clock.now(),
+    });
+    tracker.epics
+      .get("parent")!
+      .subIssues.find((child) => child.linearIssueId === "manual")!.description =
+      "Criteria after PR";
+    await reconciler.reconcile({ itemId: manualId, workspaceId: "workspace" });
+    expect(getWorkItem(db, manualId)!.brief!.issue.description).toBe("Criteria after PR");
+    expect(notices()).toHaveLength(2);
     expect(transition("manual", "restart").ok).toBe(false);
     expect(transition("manual", "resume").ok).toBe(false);
   } finally {
@@ -215,3 +247,73 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     db.close();
   }
 });
+
+test.each(["all", "criteria"] as const)(
+  "%s cancellation closes link asks and drops undelivered prompts atomically",
+  (scope) => {
+    const db = tempDb();
+    try {
+      const item = insertQueuedItem(db, {
+        id: "EDIT-1",
+        title: "Manual edit",
+        sessionKey: "session",
+      });
+      const open = openLinkAsk(db, {
+        asker: { itemId: item.id, runId: null, sessionId: "session" },
+        kind: "risk",
+        head: "candidate",
+        link: "https://paws.example.test/risk",
+        detail: "Approve candidate",
+        answerers: ["owner"],
+        now: 1000,
+      });
+      db.run("UPDATE outbox SET status='dead' WHERE op='elicitation'");
+      const queued = openLinkAsk(db, {
+        asker: { itemId: item.id, runId: null, sessionId: "session" },
+        kind: "bypass",
+        head: "candidate",
+        link: "https://paws.example.test/bypass",
+        detail: "Bypass candidate check",
+        answerers: ["owner"],
+        now: 1001,
+      });
+      expect(queued.question.status).toBe("queued");
+      const before = listOutbox(db);
+      expect(() =>
+        db
+          .transaction(() => {
+            cancelItemQuestions(db, item.id, 1002, scope);
+            throw new Error("rollback cleanup");
+          })
+          .immediate(),
+      ).toThrow("rollback cleanup");
+      expect(openLinkAsks(db, item.id)).toHaveLength(2);
+      expect(getQuestion(db, open.question.id)!.status).toBe("open");
+      expect(listOutbox(db)).toEqual(before);
+      cancelItemQuestions(db, item.id, 1003, scope);
+      expect(openLinkAsks(db, item.id)).toEqual([]);
+      for (const { question } of [open, queued]) {
+        expect(getLinkAsk(db, question.id)).toMatchObject({
+          closedReason: "cancelled",
+          closedAt: 1003,
+        });
+        expect(getQuestion(db, question.id)!.status).toBe("cancelled");
+        expect(
+          listOutbox(db).find(
+            (row) => row.idempotencyKey === `link-ask-url-removed:${question.id}`,
+          ),
+        ).toBeDefined();
+      }
+      expect(
+        listOutbox(db)
+          .filter((row) => row.op === "elicitation")
+          .map((row) => row.status),
+      ).toEqual(["dropped"]);
+      const after = listOutbox(db);
+      cancelItemQuestions(db, item.id, 1004, scope);
+      expect(listOutbox(db)).toEqual(after);
+    } finally {
+      db.close();
+    }
+  },
+);
