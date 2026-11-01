@@ -40,6 +40,7 @@ export function applyDecision(
   now: number,
   { stamp, runAt = now }: { stamp?: WakeStamp; runAt?: number } = {},
 ): void {
+  if (repairRestartDecision(db, item, now)) return;
   switch (decision.type) {
     case "ignore":
     case "none":
@@ -133,6 +134,21 @@ function applyResume(
   });
 }
 
+/** Repair delivery before any time-based recovery can release a human hold. */
+export function repairRestartDecision(db: Database, item: WorkItemRecord, now: number): boolean {
+  if (
+    item.cancelRequested ||
+    !["running", "recovering", "verifying", "awaiting_input"].includes(item.state)
+  )
+    return false;
+  const held = db
+    .query("SELECT 1 FROM restart_decision WHERE item_id=? AND session_id=?")
+    .get(item.id, item.sessionKey);
+  if (!held) return false;
+  applyAskRestart(db, item, now);
+  return true;
+}
+
 /** Already resumed once: ask in Linear. Any answer starts the task again through the answer resume. */
 function applyAskRestart(db: Database, item: WorkItemRecord, now: number): void {
   if (item.sessionKey === null) {
@@ -145,6 +161,18 @@ function applyAskRestart(db: Database, item: WorkItemRecord, now: number): void 
     );
     return;
   }
+  db.run("DELETE FROM restart_decision WHERE item_id=? AND session_id<>?", [
+    item.id,
+    item.sessionKey,
+  ]);
+  db.run(`INSERT OR IGNORE INTO restart_decision(item_id,session_id,job_key) VALUES (?,?,?)`, [
+    item.id,
+    item.sessionKey,
+    `restart-ask:${item.id}:${item.version}`,
+  ]);
+  const intent = db
+    .query<{ job_key: string }, [string]>("SELECT job_key FROM restart_decision WHERE item_id=?")
+    .get(item.id)!;
   if (
     db
       .query(`SELECT 1 FROM question WHERE item_id=? AND session_id=?
@@ -152,11 +180,20 @@ function applyAskRestart(db: Database, item: WorkItemRecord, now: number): void 
       .get(item.id, item.sessionKey)
   )
     return;
-  cancelOpenJobs(db, { itemId: item.id, reason: "restart_question", now });
+  cancelOpenJobs(db, {
+    itemId: item.id,
+    reason: "restart_question",
+    now,
+    exceptId: db
+      .query<{ id: number }, [string, number]>(
+        "SELECT id FROM job WHERE job_key=? AND (item_version IS NULL OR item_version=?)",
+      )
+      .get(intent.job_key, item.version)?.id,
+  });
   if (item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
   reenqueueJob(db, {
     queue: "item.ask",
-    jobKey: `restart-ask:${item.id}:${item.version}`,
+    jobKey: intent.job_key,
     payload: {
       itemId: item.id,
       kind: "agent",

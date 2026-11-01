@@ -9,6 +9,7 @@ import {
 } from "../db";
 import {
   ask as openQuestion,
+  getQuestion,
   type Asked,
   type QuestionAsker,
   type StoredQuestion,
@@ -40,7 +41,31 @@ export function ask(
       (pending && item.state !== "verifying")
     )
       throw new Error("Question owner is stale");
+    // A delivery retried after a crash adopts the stored decision instead of asking twice.
+    if (args[2]?.reason === "restart") {
+      const existing = db
+        .query<{ id: string; status: "open" | "queued" }, [string, string]>(
+          `SELECT id,status FROM question WHERE item_id=? AND session_id=? AND reason='restart'
+         AND status IN ('open','queued') AND cancelled_at IS NULL LIMIT 1`,
+        )
+        .get(item.id, owner.sessionId);
+      if (existing) {
+        db.run("UPDATE restart_decision SET question_id=? WHERE item_id=? AND session_id=?", [
+          existing.id,
+          item.id,
+          owner.sessionId,
+        ]);
+        const question = getQuestion(db, existing.id)!;
+        return { status: existing.status === "open" ? "asked" : "queued", question };
+      }
+    }
     const result = openQuestion(db, owner, ...args);
+    if (args[2]?.reason === "restart")
+      db.run("UPDATE restart_decision SET question_id=? WHERE item_id=? AND session_id=?", [
+        result.question.id,
+        item.id,
+        owner.sessionId,
+      ]);
     if (!pending && !workspace)
       awaitQuestion(db, item, result.question, args[2]?.now ?? Date.now());
     return result;

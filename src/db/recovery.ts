@@ -7,7 +7,7 @@ import {
   type StartupDecision,
   type WorkItemState,
 } from "../core";
-import { applyDecision } from "./decisions";
+import { applyDecision, repairRestartDecision } from "./decisions";
 import { enqueueJobOnce } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
 import { applyWorkItemEvent, getWorkItem, listInFlightItems, listWorkItemsByStates } from "./items";
@@ -52,6 +52,7 @@ export function recoverOnStartup(
     let resumes = 0;
     const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
     for (const item of items) {
+      if (repairRestartDecision(db, item, now)) continue;
       if (hasParkedCapacityWait(db, item)) continue;
       if (hasPendingAnswerResume(db, item.id)) continue;
       if (hasPendingResume(db, item.id, "transient_failure")) continue;
@@ -198,10 +199,19 @@ const ORPHAN_GRACE_MS = 5 * 60_000;
  * a re-verify, as on startup, so Closeout checks the head before the merge job is queued again.
  */
 export function requeueOrphanedWork(db: Database, now: number): string[] {
+  return immediate(db, () => {
+    for (const item of listWorkItemsByStates(db, STARTUP_STATES))
+      repairRestartDecision(db, item, now);
+    return enqueueOrphans(db, now);
+  });
+}
+
+function enqueueOrphans(db: Database, now: number): string[] {
   const orphans = db
     .query<{ id: string }, [number, number]>(
       `SELECT i.id FROM work_item i
        WHERE i.state IN ('running','verifying','recovering','merge_queue') AND i.cancel_requested = 0
+       AND NOT EXISTS (SELECT 1 FROM restart_decision d WHERE d.item_id=i.id AND d.session_id=i.session_key)
        AND NOT EXISTS (SELECT 1 FROM job j WHERE j.status IN ('pending','running')
          AND json_extract(j.payload,'$.itemId') = i.id)
        AND NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.run_id = i.current_run_id

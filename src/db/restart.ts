@@ -23,7 +23,20 @@ export function restart(
   handoff: RestartHandoff,
 ): number | null {
   return immediate(db, () => {
+    const held = db
+      .query("SELECT 1 FROM restart_decision WHERE item_id=? AND session_id=?")
+      .get(item.id, item.sessionKey);
+    if (held && item.state !== "failed") {
+      if (handoff.reason !== "answer") return null;
+      const authorized = db
+        .query(`SELECT 1 FROM restart_decision d JOIN question q ON q.id=d.question_id
+        WHERE d.item_id=? AND d.session_id=? AND q.status='answered' AND q.cancelled_at IS NULL
+          AND q.handoff_version IS NULL AND (q.run_id IS NULL OR q.run_id=?)`)
+        .get(item.id, item.sessionKey, item.currentRunId);
+      if (!authorized) return null;
+    }
     if (!halt(db, item, handoff.now)) return null;
+    db.run("DELETE FROM restart_decision WHERE item_id=?", [item.id]);
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
     if (item.state === "failed")
       db.run(

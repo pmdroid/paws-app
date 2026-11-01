@@ -97,6 +97,22 @@ export function questionEffects(
     }
   };
   const resume = (question: StoredQuestion, held: readonly HeldHandoff[] = []) => {
+    if (question.reason === "restart") {
+      const item = getWorkItem(db, question.itemId);
+      if (
+        !item ||
+        item.cancelRequested ||
+        item.sessionKey !== question.sessionId ||
+        item.currentRunId !== question.runId ||
+        question.cancelledAt !== null ||
+        !db
+          .query(
+            "SELECT 1 FROM restart_decision WHERE item_id=? AND session_id=? AND question_id=?",
+          )
+          .get(item.id, question.sessionId, question.id)
+      )
+        return;
+    }
     if (input.redirect && question.answerEventKey !== null)
       announceLinearTurn(db, question.sessionId, question.answerEventKey, input.now);
     else consumeTurn(question);
