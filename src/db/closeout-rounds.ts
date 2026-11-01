@@ -54,7 +54,7 @@ export function saveHumanRetryWindow(
   baseline: readonly string[],
 ): void {
   db.run(
-    "INSERT OR IGNORE INTO closeout_retry_window(job_id,item_id,retry_baseline) VALUES (?,?,?)",
+    "INSERT OR IGNORE INTO closeout_retry_window(job_id,activation_id,item_id,retry_baseline) VALUES (?1,(SELECT activation_id FROM job WHERE id=?1),?2,?3)",
     [jobId, itemId, JSON.stringify(baseline)],
   );
 }
@@ -62,7 +62,7 @@ export function saveHumanRetryWindow(
 export function humanRetryBaseline(db: Database, itemId: string): string[] {
   const row = db
     .query<{ baseline: string }, [string]>(
-      "SELECT retry_baseline AS baseline FROM closeout_retry_window WHERE item_id=? ORDER BY job_id DESC LIMIT 1",
+      "SELECT retry_baseline AS baseline FROM closeout_retry_window WHERE item_id=? ORDER BY activation_id DESC LIMIT 1",
     )
     .get(itemId);
   return row ? (JSON.parse(row.baseline) as string[]) : [];

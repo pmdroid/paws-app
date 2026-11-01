@@ -25,7 +25,7 @@ import {
 } from "../src/db";
 import { acceptCloseout, ask, attachOrchestrator, questionEffects, restart } from "../src/loop";
 import { itemReadiness } from "../src/intake";
-import { answer, findOpenQuestion } from "../src/questions";
+import { ask as rawAsk, answer, findOpenQuestion } from "../src/questions";
 import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 import { tempDb, tempHome } from "./helpers";
 
@@ -182,6 +182,33 @@ describe("restart and ask", () => {
     expect(findOpenQuestion(db, "session")?.reason).toBe("restart");
     db.close();
   });
+
+  test.each(["open", "queued"] as const)(
+    "startup retains an existing %s restart question even when its ask job is done",
+    (status) => {
+      const { db, item } = fixture();
+      const owner = { itemId: item.id, runId: item.currentRunId, sessionId: "session" };
+      if (status === "queued") rawAsk(db, owner, "agent", "First question", { now: 2 });
+      rawAsk(db, owner, "agent", "Restart?", { reason: "restart", now: 3 });
+      const id = enqueueJob(db, {
+        queue: "item.ask",
+        jobKey: `restart-ask:${item.id}:${item.version}`,
+        payload: { itemId: item.id, reason: "restart" },
+        now: 4,
+      });
+      db.run("UPDATE job SET status='done' WHERE id=?", [id]);
+      db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=1 WHERE id='item'");
+      recoverOnStartup(db, 100);
+      recoverOnStartup(db, 200);
+      expect(getJob(db, id)?.status).toBe("done");
+      expect(
+        db
+          .query("SELECT status FROM question WHERE reason='restart' AND cancelled_at IS NULL")
+          .all(),
+      ).toEqual([{ status }]);
+      db.close();
+    },
+  );
 
   test("a failed restart rolls back its fence, cancellations, and capacity release", () => {
     const { db, item } = fixture();

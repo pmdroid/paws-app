@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND } from "../core";
 import {
   restart,
+  latestHumanTurn,
   fixRounds,
   countRebaseReturns,
   listRebaseReturns,
@@ -18,14 +18,7 @@ import type { FailedCiCheck } from "./ci-fix";
 export type MergeReturnReason = "rebase-conflict" | "ci-failed";
 
 export function latestUserTurn(db: Database, itemId: string): number {
-  const row = db
-    .query<{ id: number | null }, [string, string]>(
-      `SELECT MAX(id) AS id FROM job
-       WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-         AND (job_key LIKE 'linear-turn:%' OR json_extract(payload, '$.reason') = 'answer')`,
-    )
-    .get(JOB_KIND.resume, itemId);
-  return Number(row?.id ?? 0);
+  return latestHumanTurn(db, itemId);
 }
 
 export function rebaseReturns(db: Database, itemId: string): number {

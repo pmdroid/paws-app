@@ -31,6 +31,8 @@ export type NewJob = {
 
 export type Job = {
   id: number;
+  /** Immutable identity of this use of a durable logical job row. */
+  activationId: number;
   queue: string;
   jobKey: string | null;
   payload: unknown;
@@ -50,6 +52,7 @@ export type Job = {
 
 type JobRow = {
   id: number;
+  activation_id: number;
   queue: string;
   job_key: string | null;
   payload: string;
@@ -244,19 +247,38 @@ export function enqueueJobOnce(db: Database, job: NewJob): number {
 export function reenqueueJob(
   db: Database,
   job: NewJob & { jobKey: string },
+  payloadFor?: (previous: Job | null) => unknown,
 ): { id: number; pending: boolean } {
   return immediate(db, () => {
-    const id = enqueueJobOnce(db, job);
+    const previous = findByKey(db, job.jobKey);
+    if (previous && previous.queue !== job.queue)
+      throw new Error("Recurring job key belongs to a different queue");
+    if (previous && (previous.status === "pending" || previous.status === "running"))
+      return { id: previous.id, pending: previous.status === "pending" };
+    const payload = payloadFor ? payloadFor(previous) : job.payload;
+    if (!previous) return { id: enqueueJob(db, { ...job, payload }), pending: true };
+    const activation = db
+      .query<{ id: number }, [number]>("INSERT INTO job_activation(job_id) VALUES (?) RETURNING id")
+      .get(previous.id)!;
     const now = job.now ?? Date.now();
-    const changed = db.run(
+    db.run(
       `UPDATE job SET status='pending', payload=?1, attempts=0, run_at=?2,
          item_version=(SELECT version FROM work_item WHERE id=json_extract(?1,'$.itemId')),
+         activation_id=?4, priority=?5, max_attempts=?6, recurring_every_ms=?7,
          locked_by=NULL, locked_until=NULL, last_error=NULL, finished_at=NULL
-       WHERE id=?3 AND status IN ('done','cancelled','dead')`,
-      [JSON.stringify(job.payload ?? {}), job.runAt ?? now, id],
-    ).changes;
-    if (changed) emitJobReady(db);
-    return { id, pending: getJob(db, id)?.status === "pending" };
+       WHERE id=?3`,
+      [
+        JSON.stringify(payload ?? {}),
+        job.runAt ?? now,
+        previous.id,
+        activation.id,
+        job.priority ?? 5,
+        job.maxAttempts ?? 10,
+        job.recurringEveryMs ?? null,
+      ],
+    );
+    emitJobReady(db);
+    return { id: previous.id, pending: true };
   });
 }
 
@@ -390,7 +412,11 @@ export function failJob(
 
 export function isJobCurrent(db: Database, job: Job): boolean {
   const current = getJob(db, job.id);
-  return current?.status === "running" && current.lockedBy === job.lockedBy;
+  return (
+    current?.status === "running" &&
+    current.lockedBy === job.lockedBy &&
+    current.activationId === job.activationId
+  );
 }
 
 /** Whether a claimed job with an unexpired lease, other than `exceptJobId`, is working on the item. */
@@ -517,13 +543,15 @@ function journalOutcome(job: Job): void {
   );
 }
 
-function findByKey(db: Database, jobKey: string): { id: number } | null {
-  return db.query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?").get(jobKey);
+function findByKey(db: Database, jobKey: string): Job | null {
+  const row = db.query<JobRow, [string]>("SELECT * FROM job WHERE job_key=?").get(jobKey);
+  return row ? mapJob(row) : null;
 }
 
 function mapJob(row: JobRow): Job {
   return {
     id: row.id,
+    activationId: row.activation_id,
     queue: row.queue,
     jobKey: row.job_key,
     payload: JSON.parse(row.payload) as unknown,
@@ -553,12 +581,12 @@ export function errorText(error: unknown): string {
 }
 
 /** The item's version when this job was created, checked before starting side effects. */
-export function jobVersionCurrent(db: Database, job: Pick<Job, "id">): boolean {
+export function jobVersionCurrent(db: Database, job: Pick<Job, "id" | "activationId">): boolean {
   const row = db
-    .query<{ expected: number | null; current: number | null }, [number]>(
+    .query<{ expected: number | null; current: number | null }, [number, number]>(
       `SELECT j.item_version AS expected, i.version AS current FROM job j LEFT JOIN work_item i
-      ON i.id=json_extract(j.payload,'$.itemId') WHERE j.id=?`,
+      ON i.id=json_extract(j.payload,'$.itemId') WHERE j.id=? AND j.activation_id=?`,
     )
-    .get(job.id);
+    .get(job.id, job.activationId);
   return row !== null && (row.expected === null || row.expected === row.current);
 }

@@ -6,6 +6,7 @@ import type { Database } from "bun:sqlite";
 import {
   getWorkItem,
   getJob,
+  recordConfirmedRemoteMerge,
   jobVersionCurrent,
   insertQueuedItem,
   insertRun,
@@ -164,6 +165,26 @@ test("re-acceptance revives a done merge job with the current item fence", () =>
   db.run("UPDATE work_item SET cancel_requested=1 WHERE id='item'");
   const cancelled = getWorkItem(db, "item")!;
   expect(accept(db, { version: cancelled.version, runId: cancelled.currentRunId })).toBeNull();
+  expect(getJob(db, id)?.status).toBe("done");
+  db.close();
+});
+
+test("a confirmed merge cannot be revived while the merged item edge is still pending", () => {
+  const db = tempDb();
+  const id = accept(db, verifying(db))!;
+  db.run("UPDATE job SET status='done' WHERE id=?", [id]);
+  recordConfirmedRemoteMerge(db, {
+    itemId: "item",
+    repositoryOwner: "acme",
+    repositoryName: "platform",
+    pullNumber: 1,
+    pullUrl: null,
+    mergeSha: "merged",
+    confirmedAt: 11,
+  });
+  const item = getWorkItem(db, "item")!;
+  expect(item.state).toBe("merge_queue");
+  expect(accept(db, { version: item.version, runId: item.currentRunId })).toBeNull();
   expect(getJob(db, id)?.status).toBe("done");
   db.close();
 });

@@ -760,7 +760,7 @@ export {
 } from "./runner-agents";
 export { listWaitingProfileRuns } from "./runs";
 export { halt } from "./halt";
-export { restart, fixRounds, restartLimit, type RestartHandoff } from "./restart";
+export { latestHumanTurn, restart, fixRounds, restartLimit, type RestartHandoff } from "./restart";
 
 export { jobVersionCurrent } from "./jobs";
 

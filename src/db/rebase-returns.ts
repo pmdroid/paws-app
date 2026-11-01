@@ -23,9 +23,9 @@ export type RebaseReturnRecord = {
 
 export function recordRebaseReturn(db: Database, row: RebaseReturn): void {
   db.run(
-    `INSERT INTO rebase_return (job_id, item_id, candidate, reason, base, files, recorded_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (job_id) DO NOTHING`,
+    `INSERT INTO rebase_return (job_id, activation_id, item_id, candidate, reason, base, files, recorded_at)
+     VALUES (?1, COALESCE((SELECT activation_id FROM job WHERE id=?1),?1), ?2, ?3, ?4, ?5, ?6, ?7)
+     ON CONFLICT (job_id,activation_id) DO NOTHING`,
     [
       row.jobId,
       row.itemId,
@@ -38,19 +38,23 @@ export function recordRebaseReturn(db: Database, row: RebaseReturn): void {
   );
 }
 
-export function countRebaseReturns(db: Database, itemId: string, sinceJobId: number): number {
+export function countRebaseReturns(
+  db: Database,
+  itemId: string,
+  sinceActivationId: number,
+): number {
   const row = db
     .query<{ n: number }, [string, number]>(
-      "SELECT COUNT(*) AS n FROM rebase_return WHERE item_id = ? AND job_id >= ?",
+      "SELECT COUNT(*) AS n FROM rebase_return WHERE item_id = ? AND activation_id >= ?",
     )
-    .get(itemId, sinceJobId);
+    .get(itemId, sinceActivationId);
   return Number(row?.n ?? 0);
 }
 
 export function listRebaseReturns(
   db: Database,
   itemId: string,
-  sinceJobId: number,
+  sinceActivationId: number,
 ): RebaseReturnRecord[] {
   return db
     .query<
@@ -64,9 +68,9 @@ export function listRebaseReturns(
       [string, number]
     >(
       `SELECT job_id AS jobId, reason, base, files, recorded_at AS recordedAt
-       FROM rebase_return WHERE item_id = ? AND job_id >= ? ORDER BY job_id`,
+       FROM rebase_return WHERE item_id = ? AND activation_id >= ? ORDER BY activation_id`,
     )
-    .all(itemId, sinceJobId)
+    .all(itemId, sinceActivationId)
     .map((row) => ({
       ...row,
       files: row.files === null ? null : (JSON.parse(row.files) as string[]),

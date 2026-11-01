@@ -5,6 +5,7 @@ import {
   jobVersionCurrent,
   reenqueueJob,
   getWorkItem,
+  getConfirmedRemoteMerge,
   immediate,
   saveCheckpoint,
   parkLeasedJob,
@@ -84,8 +85,8 @@ export function acceptGitHubDelivery(
   if (moved) mainMoved(db, { ...moved, now });
   const facts = deliveryFacts(delivery.event, body);
   const jobs = db
-    .query<{ id: number; payload: string }, [string]>(
-      "SELECT id, payload FROM job WHERE queue = ? AND status IN ('pending', 'running')",
+    .query<{ id: number; activationId: number; payload: string }, [string]>(
+      "SELECT id, activation_id AS activationId, payload FROM job WHERE queue = ? AND status IN ('pending', 'running')",
     )
     .all(JOB_KIND.merge);
   for (const job of jobs) {
@@ -198,6 +199,7 @@ export function applyCloseoutAcceptance(
     if (
       !current ||
       current.cancelRequested ||
+      getConfirmedRemoteMerge(db, itemId) !== null ||
       current.version !== expected.version ||
       current.currentRunId !== expected.runId ||
       (current.state !== "verifying" && current.state !== "merge_queue")
