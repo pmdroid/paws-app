@@ -798,3 +798,5 @@ export {
 
 export { wakeMergesBehind } from "./merge-queue";
 export { mergeStopRequested } from "./remote-merges";
+
+export { pendingRestartHandoff } from "./restart";

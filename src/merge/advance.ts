@@ -484,11 +484,14 @@ function mergeFacts(
     acceptedHead !== null &&
     acceptedHead !== pull.head &&
     carriedAcceptFor(db, itemId, pull.head) === acceptedHead;
+  const headVerdict = carried ? closeoutPolicyDigests(db, itemId, pull.head) : null;
   return {
     head: pull.head,
     headMoved: readiness.outcome === "sha_moved",
     accept:
-      acceptedHead === null
+      acceptedHead === null ||
+      (accepted !== null && accepted.decision !== "accepted") ||
+      (headVerdict !== null && headVerdict.decision !== "accepted")
         ? null
         : {
             head: carried ? pull.head : acceptedHead,

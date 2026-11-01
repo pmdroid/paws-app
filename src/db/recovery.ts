@@ -20,6 +20,7 @@ import {
 } from "./runner-lease";
 import { mergeCallInFlight } from "./remote-merges";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
+import { pendingRestartHandoff } from "./restart";
 import { immediate } from "./tx";
 
 /** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
@@ -228,6 +229,7 @@ export function requeueOrphanedWork(db: Database, now: number): string[] {
               freshSession: true,
               checkpoint: item.checkpoint,
               reason: "orphaned",
+              ...pendingRestartHandoff(db, item.id),
             },
       now,
     });
