@@ -512,7 +512,6 @@ test("termination survives reopen and receipt replay cannot admit a canceled gen
   }
 });
 
-
 test("upgrade reconciles historical terminal executions through the broker contract", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-legacy-cleanup-"));
   let journal = openExecutionJournal(root);
@@ -525,9 +524,11 @@ test("upgrade reconciles historical terminal executions through the broker contr
     expect(journal.unconfirmedTerminations().map((entry) => entry.id)).toEqual([execution.id]);
     journal.confirmTermination(command);
     expect(journal.unconfirmedTerminations()).toEqual([]);
-    expect(journal.pendingTerminations()).toEqual([{runId:command.runId,generation:1,commandId:command.id}]);
+    expect(journal.pendingTerminations()).toEqual([
+      { runId: command.runId, generation: 1, commandId: command.id },
+    ]);
   } finally {
     journal.close();
-    rmSync(root, {recursive:true,force:true});
+    rmSync(root, { recursive: true, force: true });
   }
 });

@@ -59,8 +59,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
           repositories,
           terminated,
           ...host
-        } =
-          heartbeat.parse(await body(request));
+        } = heartbeat.parse(await body(request));
         return json(
           work.heartbeat(
             runnerId,
