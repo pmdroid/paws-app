@@ -153,7 +153,10 @@ export {
   parseFindings,
   parseReviewEvents,
   reaskArgv,
+  REVIEW_COMMAND_RULE,
+  REVIEW_INSTRUCTIONS_BYTES,
   reviewArgv,
+  reviewInstructions,
   runReviewCommand,
 } from "./review/index";
 export type {

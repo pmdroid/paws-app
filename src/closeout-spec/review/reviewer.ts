@@ -126,6 +126,7 @@ export type ReviewCommandOptions = {
   head: string;
   /** Checkout at `head`. */
   cwd: string;
+  instructions?: string;
 };
 
 /** Findings from the review command, or why it produced none. Either way, who produced them. */
@@ -177,6 +178,7 @@ async function runCommand(input: CommandInput): Promise<ReviewCommandOutcome> {
   const command = {
     ...(options.command !== undefined ? { command: options.command } : {}),
     ...(options.effort !== undefined ? { effort: options.effort } : {}),
+    ...(options.instructions !== undefined ? { instructions: options.instructions } : {}),
   };
   const first = await invoke(
     input,

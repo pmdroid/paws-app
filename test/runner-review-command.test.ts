@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/acp";
+import { REVIEW_COMMAND_RULE } from "../src/closeout-spec";
 import type { RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
 
@@ -27,6 +28,8 @@ async function reviewOnRunner(input: {
   events: unknown[];
   base?: string;
   effort?: string;
+  brief?: string;
+  firstRound?: boolean;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-review-"));
   roots.push(root);
@@ -92,7 +95,23 @@ async function reviewOnRunner(input: {
         baseSha: head,
       },
       prompt: "Review the change with the agent's review command.",
-      reviewCommand: { base: input.base ?? base },
+      reviewCommand: {
+        base: input.base ?? base,
+        ...(input.brief ? { brief: input.brief } : {}),
+        ...(input.firstRound
+          ? {
+              earlier: [
+                {
+                  severity: "P1" as const,
+                  location: finding.location,
+                  explanation: finding.explanation,
+                  head: base,
+                  status: "open" as const,
+                },
+              ],
+            }
+          : {}),
+      },
     },
   };
   const result = await executeRunnerCommand({
@@ -121,7 +140,7 @@ async function reviewOnRunner(input: {
   return { result, ran, base, head, home, worktree: join(workRoot, job.executionId) };
 }
 
-test("a Codex review command runs codex exec review --base in the run's checkout at head", async () => {
+test("a Codex review command runs codex exec review of base..head in the run's checkout at head", async () => {
   const { result, ran, base, head, home, worktree } = await reviewOnRunner({
     agent: "codex",
     events: [
@@ -129,14 +148,9 @@ test("a Codex review command runs codex exec review --base in the run's checkout
       { type: "item.completed", item: { type: "agent_message", text: JSON.stringify([finding]) } },
     ],
   });
-  expect(ran?.argv.slice(0, 6)).toEqual([
-    "exec",
-    "review",
-    "--base",
-    base,
-    "--model",
-    "review-model",
-  ]);
+  expect(ran?.argv.slice(0, 4)).toEqual(["exec", "review", "--model", "review-model"]);
+  expect(ran?.argv.at(-1)).toContain(`git diff ${base}..${head}`);
+  expect(ran?.argv.at(-1)).toEndWith(`# Review rule\n${REVIEW_COMMAND_RULE}`);
   expect(ran?.argv).toContain("--output-schema");
   expect(ran?.argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
   expect(ran?.cwd).toBe(worktree);
@@ -163,7 +177,7 @@ test("a Codex review command runs at the run profile's effort", async () => {
       { type: "item.completed", item: { type: "agent_message", text: "[]" } },
     ],
   });
-  expect(ran?.argv.slice(6, 8)).toEqual(["-c", "model_reasoning_effort=high"]);
+  expect(ran?.argv.slice(4, 6)).toEqual(["-c", "model_reasoning_effort=high"]);
 }, 20_000);
 
 test("a Claude review command runs /code-review at the profile's level with five findings", async () => {
@@ -206,4 +220,40 @@ test("a review base missing from the checkout fails before the CLI starts", asyn
   expect(result.run.errorMessage).toBe(
     `The review base ${"f".repeat(40)} is not in the run's checkout`,
   );
+}, 20_000);
+
+test("a second-round Codex review receives the brief, the rule and the first round's findings", async () => {
+  const brief = "Issue: PAS-1 Clear the fence when the item resumes.";
+  const { result, ran, base, head } = await reviewOnRunner({
+    agent: "codex",
+    brief,
+    firstRound: true,
+    events: [
+      { type: "thread.started", thread_id: "thread-2" },
+      { type: "item.completed", item: { type: "agent_message", text: "[]" } },
+    ],
+  });
+  expect(ran?.argv).not.toContain("--base");
+  const prompt = ran!.argv.at(-1)!;
+  expect(prompt).toContain(`git diff ${base}..${head}`);
+  expect(prompt).toContain(`# Issue brief\n${brief}`);
+  expect(prompt).toContain(REVIEW_COMMAND_RULE);
+  expect(prompt).toContain("# Earlier findings");
+  expect(prompt).toContain(
+    `- open, P1 at app.txt:1 (head ${base.slice(0, 12)}): wrong constant: the head changed the value.`,
+  );
+  expect(result.run.stopReason).toBe("end_turn");
+  expect(result.reviewText).toBe("[]");
+}, 20_000);
+
+test("a second-round Claude review appends the first round's findings to its system prompt", async () => {
+  const { ran, base } = await reviewOnRunner({
+    agent: "claude",
+    brief: "Issue: PAS-1",
+    firstRound: true,
+    events: [{ type: "result", session_id: "session-2", structured_output: [] }],
+  });
+  const appended = ran!.argv[ran!.argv.indexOf("--append-system-prompt") + 1]!;
+  expect(appended).toStartWith("# Issue brief\nIssue: PAS-1\n\n# Review rule\n");
+  expect(appended).toContain(`- open, P1 at app.txt:1 (head ${base.slice(0, 12)})`);
 }, 20_000);

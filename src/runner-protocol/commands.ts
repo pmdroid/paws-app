@@ -168,6 +168,10 @@ const common = {
   expiresAt: time,
 };
 
+export const REVIEW_BRIEF_LIMIT = 65_536;
+export const REVIEW_LOCATION_LIMIT = 1_024;
+export const REVIEW_EXPLANATION_LIMIT = 1_024;
+
 const work = {
   runId: id,
   itemId: id,
@@ -212,7 +216,24 @@ export const RunnerCommandSchema = z
        * Run the agent's own review command of `base..HEAD` in the checkout instead of an ACP
        * turn: `codex exec review --base` or Claude `/code-review`. HEAD is `repository.baseSha`.
        */
-      reviewCommand: z.strictObject({ base: z.string().regex(/^[a-f0-9]{40}$/) }).optional(),
+      reviewCommand: z
+        .strictObject({
+          base: z.string().regex(/^[a-f0-9]{40}$/),
+          brief: z.string().min(1).max(REVIEW_BRIEF_LIMIT).optional(),
+          earlier: z
+            .array(
+              z.strictObject({
+                severity: z.enum(["P0", "P1", "P2", "P3"]),
+                location: z.string().min(1).max(REVIEW_LOCATION_LIMIT),
+                explanation: z.string().max(REVIEW_EXPLANATION_LIMIT),
+                head: z.string().regex(/^[a-f0-9]{7,64}$/),
+                status: z.enum(["open", "fixed"]),
+              }),
+            )
+            .max(50)
+            .optional(),
+        })
+        .optional(),
     }),
     z.strictObject({
       ...common,

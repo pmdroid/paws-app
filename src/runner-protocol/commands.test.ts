@@ -322,3 +322,28 @@ test("a review command names a Claude or Codex model and a base other than the c
   ])
     expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
 });
+
+test("a review command may carry the issue brief and earlier findings", () => {
+  const earlier = {
+    severity: "P1",
+    location: "src/app.ts:4",
+    explanation: "dropped caller",
+    head: "c".repeat(40),
+    status: "open",
+  };
+  const review = {
+    ...run,
+    type: "review",
+    profile: { agent: "codex", model: "gpt-5.5" },
+    reviewCommand: { base: "b".repeat(40), brief: "Issue: PAS-1", earlier: [earlier] },
+  };
+  expect(RunnerCommandSchema.safeParse(review).success).toBe(true);
+  for (const reviewCommand of [
+    { ...review.reviewCommand, brief: "" },
+    { ...review.reviewCommand, earlier: [{ ...earlier, severity: "P5" }] },
+    { ...review.reviewCommand, earlier: [{ ...earlier, head: "main" }] },
+    { ...review.reviewCommand, earlier: [{ ...earlier, evidence: "x" }] },
+    { ...review.reviewCommand, earlier: Array.from({ length: 51 }, () => earlier) },
+  ])
+    expect(RunnerCommandSchema.safeParse({ ...review, reviewCommand }).success).toBe(false);
+});
