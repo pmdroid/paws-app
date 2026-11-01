@@ -263,6 +263,7 @@ async function fixture(
     },
     tick,
     tickUntil,
+    stopWorks: () => (stopFailure = false),
     goDown: () => (down = true),
     comeBack: () => (down = false),
     fence: () => (fenced = true),
@@ -616,16 +617,20 @@ test("a crash after a finished but unpublished turn leaves it to lost-run recove
   }
 });
 
-test("a crash whose worker cannot be stopped fails startup instead of leaving the work out", async () => {
+test("a crash whose worker cannot be stopped keeps reporting it until the stop succeeds", async () => {
   const f = await fixture();
   try {
     await f.tick();
-    const reports = f.reports.length;
-    await expect(f.crash(true)).rejects.toThrow("Worker cleanup unavailable");
-    expect(f.reports).toHaveLength(reports);
+    await f.crash(true);
+    for (let i = 0; i < 3; i++) await f.tick();
+    expect(f.reports.at(-1)).toEqual(["run"]);
     expect(f.posted).toEqual([]);
+    f.stopWorks();
+    await f.tickUntil(() => f.reports.at(-1)?.length === 0);
+    expect(f.posted).toEqual([]);
+    expect(f.errors.join("\n")).toContain("Paws recovers the run from its branch");
   } finally {
-    rmSync(f.root, { recursive: true, force: true });
+    await f.cleanup();
   }
 });
 

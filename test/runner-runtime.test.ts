@@ -195,12 +195,14 @@ for (const failure of ["hung", "rejected"] as const)
     let confirmed = false;
     const reports: { runId: string; generation: number }[][] = [];
     const terminations: { runId: string; generation: number; commandId: string }[][] = [];
+    const errors: string[] = [];
     const options: Parameters<typeof openRunnerRuntime>[0] = {
       root,
       repositoryRoot: join(root, "repositories"),
       home: root,
       concurrency: 1,
       stopWaitMs: 50,
+      onError: (error) => errors.push(error.message),
       spool,
       results: { root: join(root, "results"), agentUid: 1002, resultsGid: 1003 },
       broker: {
@@ -309,15 +311,16 @@ for (const failure of ["hung", "rejected"] as const)
         generation: 1,
         commandId: "first",
       });
+      expect(
+        errors.some((message) => message.includes("Paws recovers the run from its branch")),
+      ).toBe(true);
       const db = openDatabase(join(root, "executions.db"));
       try {
         expect(
           db
-            .query<{ failure: number }, []>(
-              "SELECT d.failure FROM result_delivery d JOIN execution e ON e.id=d.execution_id WHERE e.command_id='first'",
-            )
-            .get()?.failure,
-        ).toBe(1);
+            .query<{ phase: string }, []>("SELECT phase FROM execution WHERE command_id='first'")
+            .get()?.phase,
+        ).toBe("interrupted");
       } finally {
         db.close();
       }
