@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { CommandBus, JOB_KIND } from "../core";
-import { ask } from "../loop";
+import { CommandBus, JOB_KIND } from "../src/core";
+import { ask } from "../src/loop";
 import {
   applyLinearCommand,
   applyWorkItemEvent,
@@ -19,7 +19,7 @@ import {
   openDatabase,
   recordConfirmedRemoteMerge,
   submitCommand,
-} from "./index";
+} from "../src/db";
 
 function setup() {
   const db = openDatabase(":memory:");
