@@ -17,6 +17,7 @@ export function createFakeLivePreviewSystem(
     warmAfter?: number;
     slots?: number;
     suffix?: string;
+    onSleep?: () => void;
   } = {},
 ): FakeLivePreviewSystem {
   const pid = options.pid ?? 4100;
@@ -67,6 +68,7 @@ export function createFakeLivePreviewSystem(
     },
     async sleep(ms) {
       clock += ms;
+      options.onSleep?.();
     },
     now: () => clock,
   };

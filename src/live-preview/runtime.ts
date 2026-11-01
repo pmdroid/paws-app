@@ -23,8 +23,8 @@ export interface LivePreviewSystem {
   tree(pid: number): Promise<ReadonlySet<number>>;
   claimSlot(): Promise<{ slot: number; release(): void } | null>;
   tailscale(args: readonly string[]): Promise<{ code: number; stdout: string; stderr: string }>;
-  warm(url: string): Promise<boolean>;
-  sleep(ms: number): Promise<void>;
+  warm(url: string, signal: AbortSignal): Promise<boolean>;
+  sleep(ms: number, signal: AbortSignal): Promise<void>;
   now(): number;
 }
 
@@ -54,10 +54,13 @@ export function livePreviewEnv(
 }
 
 class PreviewFailure extends Error {}
+class PreviewCancelled extends Error {}
 
 export async function startLivePreview(input: {
   preview: RunnerLivePreview;
+  runner: string;
   worktree: string;
+  signal?: AbortSignal;
   path: string;
   system: LivePreviewSystem;
   emit(event: RunnerPreviewEvent): void;
@@ -68,17 +71,18 @@ export async function startLivePreview(input: {
   const { preview, system, emit } = input;
   const readyTimeoutMs = input.readyTimeoutMs ?? 120_000;
   const pollMs = input.pollMs ?? 500;
-  const claim = await system.claimSlot();
-  if (!claim) {
-    emit({
-      type: "preview",
-      state: "stopped",
-      reason: "failed",
-      message: "Every preview service on this runner is in use.",
-    });
+  const signal = input.signal ?? new AbortController().signal;
+  const namespace = input.runner.toLowerCase();
+  const refuse = (message: string) => {
+    emit({ type: "preview", state: "stopped", reason: "failed", message });
     return null;
-  }
-  const service = `paws-preview-${claim.slot}`;
+  };
+  if (!/^[a-z0-9]{1,40}$/.test(namespace))
+    return refuse("The runner ID can't name a tailnet service.");
+  if (signal.aborted) return null;
+  const claim = await system.claimSlot();
+  if (!claim) return refuse("Every preview service on this runner is in use.");
+  const service = `paws-preview-${namespace}-${claim.slot}`;
   const home = mkdtempSync(join(tmpdir(), "paws-preview-"));
   let child: PreviewProcess | undefined;
   let served = false;
@@ -102,11 +106,15 @@ export async function startLivePreview(input: {
     let exited = false;
     void started.exited.then(() => (exited = true));
     const deadline = system.now() + readyTimeoutMs;
+    const live = () => {
+      if (signal.aborted) throw new PreviewCancelled();
+    };
     const until = async (check: () => Promise<boolean>, timeout: string) => {
-      while (!(await check())) {
+      while ((live(), !(await check()))) {
+        live();
         if (exited) throw new PreviewFailure("The preview command exited before it was ready.");
         if (system.now() >= deadline) throw new PreviewFailure(timeout);
-        await system.sleep(pollMs);
+        await system.sleep(pollMs, signal).catch(live);
       }
     };
     await until(
@@ -119,9 +127,11 @@ export async function startLivePreview(input: {
       throw new PreviewFailure(
         `Port ${preview.port} is held by a process the preview command did not start.`,
       );
+    live();
     const status = await system.tailscale(["status", "--json"]);
     const suffix = status.code === 0 ? magicDnsSuffix(status.stdout) : null;
     if (!suffix) throw new PreviewFailure("Tailscale did not report the tailnet name.");
+    live();
     const serve = await system.tailscale([
       "serve",
       `--service=svc:${service}`,
@@ -134,12 +144,17 @@ export async function startLivePreview(input: {
         `tailscale serve failed: ${(serve.stderr || serve.stdout).trim().slice(0, 500)}`,
       );
     url = `https://${service}.${suffix}${preview.path ?? "/"}`;
-    await until(() => system.warm(url), `${url} did not answer in time.`);
+    await until(() => system.warm(url, signal), `${url} did not answer in time.`);
   } catch (error) {
     await teardown();
+    if (error instanceof PreviewCancelled || signal.aborted) {
+      emit({ type: "preview", state: "stopped", service, reason: "run_ended" });
+      return null;
+    }
     emit({
       type: "preview",
       state: "stopped",
+      service,
       reason: "failed",
       message:
         error instanceof PreviewFailure

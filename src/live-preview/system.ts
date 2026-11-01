@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { journalCaught } from "../journal";
 import type { LivePreviewSystem } from "./runtime";
 
@@ -164,16 +165,19 @@ export function createLivePreviewSystem(options: { lockDirectory: string }): Liv
         );
       });
     },
-    async warm(url) {
+    async warm(url, signal) {
       try {
-        await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(10_000) });
+        await fetch(url, {
+          redirect: "manual",
+          signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+        });
         return true;
       } catch (error) {
         journalCaught(error, "live-preview.warm", null, "certificate may not be issued yet");
         return false;
       }
     },
-    sleep: (ms) => Bun.sleep(ms),
+    sleep: (ms, signal) => sleep(ms, undefined, { signal }),
     now: () => Date.now(),
   };
 }
