@@ -125,3 +125,16 @@ fence refusal or HTTP 409 ends retries; other 4xx and parse errors stay retryabl
 Transcript replay validates the consumed bytes. Optional session uploads have a
 five-attempt bound. Result retries renew grants, back off up to one minute, and
 reuse the execution and command identifiers so Paws recognizes repeated delivery.
+
+## Restarting the runner mid-turn
+
+A crash and a graceful stop of `paws-runner.service` end an unfinished turn the
+same way. A graceful stop interrupts the worker. After a crash, the runner stops
+the worker left behind before it sends its first heartbeat, and a failed stop
+fails startup. Neither stop posts a result for an unfinished turn, so the next
+heartbeat leaves the work out. Paws fences that work as lost and retries it
+through its usual infrastructure retries, continuing from the item's branch.
+Linear shows "The runner lost this run after it restarted; continuing from the
+branch." A result the runner had saved is delivered unchanged. An agent error
+the worker wrote before the crash is delivered as that error. A finished turn
+whose publication was cut short is recovered as lost work too.
