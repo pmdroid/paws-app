@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import { isTerminalWorkItemState, type LinearCommand, type WorkItemState } from "../core";
 import {
   applyLinearCommand,
+  mergeCallInFlight,
   changeLinearTeamAccess,
   completeMergedItem,
   getConfirmedRemoteMerge,
@@ -112,7 +113,7 @@ export async function handleLinearAdministration(
       for (const id of affected) dropLinearSessionDeliveries(db, id);
     return affected;
   });
-  await deliver(commands, stopped, options);
+  await deliver(db, commands, stopped, options);
   if (
     administration.kind === "teams" &&
     !administration.canAccessAllPublicTeams &&
@@ -147,7 +148,7 @@ export async function stopUndelegatedIssue(
     commands = cancelSessions(db, affected, undelegation.createdAtMs);
     return affected;
   });
-  await deliver(commands, stopped, options);
+  await deliver(db, commands, stopped, options);
 }
 
 export const ISSUE_CLOSED_RESPONSE = {
@@ -200,8 +201,9 @@ export async function closeClosedIssueTasks(
         source: "linear",
         requestedAt: now,
       };
-      if (!applyLinearCommand(db, command, now, response).applied)
-        throw new Error(`Could not close Linear task ${row.id}`);
+      const result = applyLinearCommand(db, command, now, response);
+      if (result.deferred) continue;
+      if (!result.applied) throw new Error(`Could not close Linear task ${row.id}`);
       journal(`${label} cancelled: its Linear issue moved to ${status} outside this task`);
       commands.push(command);
       if (row.sessionKey !== null) sessions.add(row.sessionKey);
@@ -209,7 +211,7 @@ export async function closeClosedIssueTasks(
     }
     return outcomes;
   });
-  await deliver(commands, sessions, options);
+  await deliver(db, commands, sessions, options);
   return results;
 }
 
@@ -263,14 +265,16 @@ function cancelSessions(
       source: "linear",
       requestedAt,
     };
-    if (!applyLinearCommand(db, command).applied)
-      throw new Error(`Could not cancel Linear task ${item.id}`);
+    const result = applyLinearCommand(db, command);
+    if (result.deferred) continue;
+    if (!result.applied) throw new Error(`Could not cancel Linear task ${item.id}`);
     commands.push(command);
   }
   return commands;
 }
 
 async function deliver(
+  db: Database,
   commands: readonly LinearCommand[],
   sessions: ReadonlySet<string>,
   options: {
@@ -286,7 +290,14 @@ async function deliver(
     failures.push(error);
   }
   const results = await Promise.allSettled(
-    [...sessions].map(async (id) => options.interrupt?.(id)),
+    [...sessions]
+      .filter(
+        (id) =>
+          !listWorkItems(db).some(
+            (item) => item.sessionKey === id && mergeCallInFlight(db, item.id),
+          ),
+      )
+      .map(async (id) => options.interrupt?.(id)),
   );
   for (const result of results) if (result.status === "rejected") failures.push(result.reason);
   if (failures.length > 0) throw failures[0];

@@ -15,7 +15,6 @@ import {
   jobVersionCurrent,
   listRebaseReturns,
   migrate,
-  migrations,
   openDatabase,
   recordRebaseReturn,
   reenqueueJob,
@@ -211,44 +210,65 @@ test("queue collisions roll back revival and fresh queue settings replace termin
   db.close();
 });
 
-test("activation migration preserves existing human windows, returns, and job IDs", () => {
-  const db = openDatabase(":memory:");
-  const index = migrations.findIndex((m) => m.id === "20261101T0601_job_activation");
-  migrate(db, { until: migrations[index - 1]!.id });
-  insertQueuedItem(db, { id: "legacy", now: 1 });
-  const id = enqueueJob(db, {
-    queue: JOB_KIND.resume,
-    jobKey: "linear-turn:legacy:1",
-    payload: { itemId: "legacy" },
-    now: 1,
-  });
-  db.run(
-    "INSERT INTO closeout_retry_window(job_id,item_id,retry_baseline) VALUES (?, 'legacy', '[\"old\"]')",
-    [id],
-  );
-  db.run(
-    "INSERT INTO rebase_return(job_id,item_id,candidate,reason) VALUES (?, 'legacy', 'head', 'linear')",
-    [id],
-  );
-  migrate(db);
-  expect(getJob(db, id)?.activationId).toBe(id);
-  expect(latestUserTurn(db, "legacy")).toBe(id);
-  expect(humanRetryBaseline(db, "legacy")).toEqual(["old"]);
-  expect(rebaseReturns(db, "legacy")).toBe(1);
-  db.run("UPDATE job SET status='done' WHERE id=?", [id]);
-  reenqueueJob(db, {
-    queue: JOB_KIND.resume,
-    jobKey: "linear-turn:legacy:1",
-    payload: { itemId: "legacy" },
-    now: 2,
-  });
-  expect(getJob(db, id)!.activationId).toBeGreaterThan(id);
-  expect(rebaseReturns(db, "legacy")).toBe(0);
-  saveHumanRetryWindow(db, "legacy", id, ["new"]);
-  expect(humanRetryBaseline(db, "legacy")).toEqual(["new"]);
-  expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
-  db.close();
-});
+test.each(["linear", "push"] as const)(
+  "activation migration preserves %s returns, human windows, and job IDs",
+  (reason) => {
+    const db = openDatabase(":memory:");
+    migrate(db, {
+      until:
+        reason === "push"
+          ? "20261101T0640_push_conflict_returns"
+          : "20261031T1931_risk_auto_context",
+    });
+    insertQueuedItem(db, { id: "legacy", now: 1 });
+    const id = enqueueJob(db, {
+      queue: JOB_KIND.resume,
+      jobKey: "linear-turn:legacy:1",
+      payload: { itemId: "legacy" },
+      now: 1,
+    });
+    db.run(
+      "INSERT INTO closeout_retry_window(job_id,item_id,retry_baseline) VALUES (?, 'legacy', '[\"old\"]')",
+      [id],
+    );
+    db.run(
+      `INSERT INTO rebase_return(job_id,item_id,candidate,reason,base,files,recorded_at)
+     VALUES (?, 'legacy', 'head', ?, 'main', '["changed.ts"]', 10)`,
+      [id, reason],
+    );
+    migrate(db);
+    expect(getJob(db, id)?.activationId).toBe(id);
+    expect(latestUserTurn(db, "legacy")).toBe(id);
+    expect(humanRetryBaseline(db, "legacy")).toEqual(["old"]);
+    expect(rebaseReturns(db, "legacy")).toBe(1);
+    expect(listRebaseReturns(db, "legacy", 0)).toEqual([
+      {
+        jobId: id,
+        reason,
+        base: "main",
+        files: ["changed.ts"],
+        recordedAt: 10,
+      },
+    ]);
+    db.run("UPDATE job SET status='done' WHERE id=?", [id]);
+    reenqueueJob(db, {
+      queue: JOB_KIND.resume,
+      jobKey: "linear-turn:legacy:1",
+      payload: { itemId: "legacy" },
+      now: 2,
+    });
+    expect(getJob(db, id)!.activationId).toBeGreaterThan(id);
+    expect(rebaseReturns(db, "legacy")).toBe(0);
+    for (let replay = 0; replay < 2; replay++)
+      recordRebaseReturn(db, { itemId: "legacy", jobId: id, candidate: "fixed", reason });
+    expect(rebaseReturns(db, "legacy")).toBe(1);
+    expect(listRebaseReturns(db, "legacy", 0)).toHaveLength(2);
+    saveHumanRetryWindow(db, "legacy", id, ["new"]);
+    expect(humanRetryBaseline(db, "legacy")).toEqual(["new"]);
+    expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  },
+);
 
 test("a revived older human row captures a new baseline once and outranks later row IDs", () => {
   const db = fixture();

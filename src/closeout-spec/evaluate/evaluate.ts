@@ -160,20 +160,7 @@ export function evaluate(
   if (request.evidenceError !== undefined) return blocked(request.evidenceError);
   const taskError = retryTaskError(policy, taskOf(request));
   if (taskError !== undefined) return blocked(taskError);
-  if (policy.source === "none") {
-    return {
-      specVersion: SPEC_VERSION,
-      decision: "accepted",
-      gate: request.gate,
-      base: request.base,
-      head: request.head,
-      message: "no closeout policy",
-      candidate,
-      policy: policyIdentity(policy),
-      items: [],
-      warnings,
-    };
-  }
+  if (policy.source === "none") return blocked("no closeout policy");
 
   const items: DecisionItem[] = [];
   let setupFailed = false;

@@ -1478,7 +1478,25 @@ export class Orchestrator {
     jobs.register(JOB_KIND.command, async (job, context) => {
       if (!context.isCurrent()) return;
       const command = parseLinearCommand(job.payload);
-      if (!command || !applyLinearCommand(this.db, command, this.now()).applied) return;
+      if (!command) return;
+      const saved = job.payload as { response?: string; options?: { keepPullRequest?: boolean } };
+      const result = applyLinearCommand(
+        this.db,
+        command,
+        this.now(),
+        saved.response,
+        saved.options,
+      );
+      if (result.deferred) {
+        parkLeasedJob(this.db, job, {
+          runAt: this.now() + 1_000,
+          payload: job.payload,
+          attempts: 0,
+          now: this.now(),
+        });
+        return;
+      }
+      if (!result.applied) return;
       try {
         this.bus.emit(command);
       } finally {
@@ -5221,6 +5239,7 @@ export class Orchestrator {
     this.githubAuth?.invalidate({ sessionId });
     const requestedAt = at > 0 ? at : this.now();
     const commands: LinearCommand[] = [];
+    let deferred = false;
     const accepted = immediate(this.db, () => {
       if (acceptLinearStop(this.db, sessionId, eventKey, requestedAt) === null) return false;
       const items = this.itemsForSession(sessionId);
@@ -5249,8 +5268,12 @@ export class Orchestrator {
           source: "linear",
           requestedAt,
         };
-        if (!applyLinearCommand(this.db, command, undefined, undefined, options).applied)
-          throw new Error(`Could not stop Linear task ${item.id}`);
+        const result = applyLinearCommand(this.db, command, undefined, undefined, options);
+        if (result.deferred) {
+          deferred = true;
+          continue;
+        }
+        if (!result.applied) throw new Error(`Could not stop Linear task ${item.id}`);
         commands.push(command);
       }
       return true;
@@ -5259,7 +5282,9 @@ export class Orchestrator {
     try {
       for (const command of commands) this.bus.emit(command);
     } finally {
-      await this.interruptLinearSession(sessionId);
+      if (deferred)
+        await Promise.all(commands.map((command) => this.interruptItem(command.itemId)));
+      else await this.interruptLinearSession(sessionId);
     }
     await this.flush();
   }

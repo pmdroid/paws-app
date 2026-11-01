@@ -9,6 +9,7 @@ import {
   bindWorkItemRepository,
   actionableDue,
   claimJobSql,
+  cancelOpenJobs,
   claimNextJob,
   completeJob,
   enqueueJob,
@@ -59,6 +60,40 @@ function claim(
 }
 
 describe("job queue", () => {
+  test("item cancellation stays local while explicit merge-lane cancellation unions scopes", () => {
+    const { db, clock } = queue();
+    const own = enqueueMerge(db, clock, "own");
+    const other = enqueueMerge(db, clock, "other");
+    const otherResume = enqueueJob(db, {
+      queue: JOB_KIND.resume,
+      payload: { itemId: "other" },
+      now: clock.now(),
+    });
+    const command = enqueueJob(db, {
+      queue: JOB_KIND.command,
+      payload: { itemId: "own" },
+      now: clock.now(),
+    });
+    expect(cancelOpenJobs(db, { itemId: "own", reason: "local", now: clock.now() })).toBe(1);
+    expect(getJob(db, own)?.status).toBe("cancelled");
+    expect(getJob(db, other)?.status).toBe("pending");
+    expect(getJob(db, otherResume)?.status).toBe("pending");
+
+    const ownResume = enqueueJob(db, {
+      queue: JOB_KIND.resume,
+      payload: { itemId: "own" },
+      now: clock.now(),
+    });
+    expect(
+      cancelOpenJobs(db, { itemId: "own", mergeLane: true, reason: "global", now: clock.now() }),
+    ).toBe(2);
+    expect(getJob(db, ownResume)?.status).toBe("cancelled");
+    expect(getJob(db, other)?.status).toBe("cancelled");
+    expect(getJob(db, otherResume)?.status).toBe("pending");
+    expect(getJob(db, command)?.status).toBe("pending");
+    db.close();
+  });
+
   test("claims with one UPDATE ... RETURNING statement", () => {
     const sql = claimJobSql(2);
     expect(sql).toContain("UPDATE job");

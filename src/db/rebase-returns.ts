@@ -4,7 +4,7 @@ export type RebaseReturn = {
   itemId: string;
   jobId: number;
   candidate: string | null;
-  reason: "merge" | "github_queue" | "linear";
+  reason: "merge" | "github_queue" | "linear" | "push";
   /** The main commit the branch conflicted with, when known. */
   base?: string | null;
   /** The files that conflicted, when the rebase was attempted. */

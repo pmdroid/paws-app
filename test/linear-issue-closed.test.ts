@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { CommandBus, FakeClock, JOB_KIND } from "../src/core";
 import {
   applyWorkItemEvent,
+  beginMergeCall,
+  endMergeCall,
+  drainCommands,
   bindLinearSessionTask,
   getWorkItem,
   listJobs,
@@ -28,7 +31,12 @@ import {
   type AcceptedLinearEvent,
   type IntakeSighting,
 } from "../src/linear";
-import { closeClosedIssueTasks, deliverLinearOutbox, ISSUE_CLOSED_RESPONSE } from "../src/loop";
+import {
+  closeClosedIssueTasks,
+  deliverLinearOutbox,
+  ISSUE_CLOSED_RESPONSE,
+  stopUndelegatedIssue,
+} from "../src/loop";
 import { startServer } from "../src/server";
 import { createLiveStatusProvider } from "../src/web";
 import { tempHome } from "./helpers";
@@ -330,3 +338,53 @@ describe("parseLinearIssueClosed", () => {
     expect(parse({ ...issueUpdate("completed"), type: "Comment" })).toBeNull();
   });
 });
+
+for (const exit of ["closed", "undelegated"] as const) {
+  test(`an issue ${exit} during a merge records a deferred cancel without interrupting the call`, async () => {
+    const f = await fixture();
+    applyWorkItemEvent(f.db, f.item.id, "dispatched");
+    applyWorkItemEvent(f.db, f.item.id, "turn_ended");
+    applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+    const now = Date.now() + 1_000;
+    beginMergeCall(f.db, f.item.id, "head", now);
+    let notified = 0;
+    const interrupted: string[] = [];
+    const options = {
+      notify: () => {
+        notified++;
+      },
+      interrupt: async (id: string) => {
+        interrupted.push(id);
+      },
+    };
+    if (exit === "closed") {
+      const closed = parseLinearIssueClosed(
+        parseAgentEvent(JSON.stringify(issueUpdate("canceled")), "closed", now)!,
+      )!;
+      expect(await closeClosedIssueTasks(f.db, closed, { ...options, now: () => now })).toEqual([]);
+    } else {
+      await stopUndelegatedIssue(
+        f.db,
+        {
+          organizationId: scope.organizationId,
+          appUserId: scope.appUserId,
+          issueId: "issue",
+          createdAtMs: now,
+        },
+        options,
+      );
+    }
+    expect(notified).toBe(0);
+    expect(interrupted).toEqual([]);
+    expect(getWorkItem(f.db, f.item.id)).toMatchObject({
+      state: "merge_queue",
+      cancelRequested: false,
+    });
+    expect(
+      listJobs(f.db).filter((job) => job.queue === JOB_KIND.command && job.status === "pending"),
+    ).toHaveLength(1);
+    endMergeCall(f.db, f.item.id);
+    drainCommands(f.db, new CommandBus(), now + 2_000);
+    expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+  });
+}

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { JOB_KIND } from "../core";
 import { immediate } from "./tx";
 
 export type ConfirmedRemoteMerge = {
@@ -76,4 +77,15 @@ export function endMergeCall(db: Database, itemId: string): void {
 
 export function mergeCallInFlight(db: Database, itemId: string): boolean {
   return db.query("SELECT 1 FROM merge_call WHERE item_id = ?").get(itemId) !== null;
+}
+
+/** A durable stop waiting for the lane to settle its call also guards an unsent squash. */
+export function mergeStopRequested(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query(`SELECT 1 FROM job WHERE queue = ?
+    AND status IN ('pending','running') AND json_extract(payload, '$.itemId') = ?
+    AND json_extract(payload, '$.type') IN ('stop','cancel') LIMIT 1`)
+      .get(JOB_KIND.command, itemId) !== null
+  );
 }

@@ -631,13 +631,13 @@ describe("closeout evaluate", () => {
     expectSchema(decision);
   });
 
-  test("an absent policy is accepted", () => {
+  test("an absent policy blocks without requirements or a digest", () => {
     const decision = run(absentPolicy(), [commandRecord("check", ["true"], { exitCode: 1 })]);
-    expect(decision.decision).toBe("accepted");
+    expect(decision.decision).toBe("blocked");
     expect(decision.message).toBe("no closeout policy");
     expect(decision.policy).toEqual({ path: null, digest: null, absent: true });
     expect(decision.items).toEqual([]);
-    expect(decisionExit(decision.decision)).toBe(0);
+    expect(decisionExit(decision.decision)).toBe(3);
     expectSchema(decision);
   });
 

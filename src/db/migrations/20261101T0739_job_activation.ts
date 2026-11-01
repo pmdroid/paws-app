@@ -1,7 +1,7 @@
 import type { Migration } from "../migration";
 
 export const migration: Migration = {
-  id: "20261101T0601_job_activation",
+  id: "20261101T0739_job_activation",
   sql: `
 ALTER TABLE job ADD COLUMN activation_id INTEGER NOT NULL DEFAULT 0;
 CREATE TABLE job_activation (
@@ -21,7 +21,7 @@ CREATE TABLE rebase_return (
   activation_id INTEGER NOT NULL,
   item_id TEXT NOT NULL REFERENCES work_item(id),
   candidate TEXT,
-  reason TEXT NOT NULL CHECK(reason IN ('merge','github_queue','linear')),
+  reason TEXT NOT NULL CHECK(reason IN ('merge','github_queue','linear','push')),
   base TEXT,
   files TEXT CHECK(files IS NULL OR json_valid(files)),
   recorded_at INTEGER,

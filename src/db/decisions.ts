@@ -224,7 +224,7 @@ function applyRestartFromMain(
 }
 
 function applyReverify(db: Database, item: WorkItemRecord, now: number, stamp?: WakeStamp): void {
-  cancelOpenJobs(db, { itemId: item.id, mergeLane: true, reason: "sleep_interrupted_merge", now });
+  cancelOpenJobs(db, { itemId: item.id, reason: "sleep_interrupted_merge", now });
   if (item.checkpoint?.phase === "merge_queue") {
     saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
   }

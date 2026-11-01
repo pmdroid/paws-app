@@ -793,3 +793,6 @@ export {
   listRiskAutoContexts,
   type RiskAutoContext,
 } from "./risk-auto-context";
+
+export { wakeMergesBehind } from "./merge-queue";
+export { mergeStopRequested } from "./remote-merges";

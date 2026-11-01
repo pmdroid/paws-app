@@ -231,7 +231,7 @@ export type PolicyFile = {
  *   read. Imports and skills resolve from the home directory. Commands still
  *   run in the candidate repository. The decision warning code is `global-policy`.
  * - `none`: the remote entry and the global file are both absent. There are
- *   no requirements. `validate` succeeds. A decision is `accepted` with message
+ *   no requirements. `validate` succeeds. A decision is `blocked` with message
  *   `no closeout policy`.
  *
  * A file that exists and fails to load is not `none`. Acceptance is `blocked`.

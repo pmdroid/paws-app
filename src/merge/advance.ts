@@ -3,6 +3,7 @@ import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   beginMergeCall,
+  mergeStopRequested,
   carriedAcceptFor,
   closeoutPolicyDigests,
   completeMergedItem,
@@ -267,9 +268,11 @@ export async function advanceMerge(
       confirmedAt: caps.now(),
     });
   }
-  if (turn.kind === "merged") endMergeCall(db, item.id);
+  // A deferred stop owns the next step after an unsent or unsuccessful squash.
+  if (turn.kind !== "merged" && mergeStopRequested(db, item.id)) return { kind: "obsolete" };
   if (caps.stopped()) {
-    if (turn.kind === "merged") completeMergedItem(db, { itemId: item.id, now: caps.now() });
+    if (turn.kind === "merged" && completeMergedItem(db, { itemId: item.id, now: caps.now() }))
+      caps.completed();
     return { kind: "obsolete" };
   }
   if (turn.kind === "merged") return { kind: "merged" };
@@ -374,14 +377,13 @@ async function mergedOutsideLane(
   const merge = await caps.mergedOutsideLane(item);
   if (merge === null || getWorkItem(db, item.id)?.state !== "merge_queue") return null;
   recordConfirmedRemoteMerge(db, { ...merge, itemId: item.id, confirmedAt: caps.now() });
-  endMergeCall(db, item.id);
   leaveMergeQueue(db, item.id);
   wakeMergesBehind(db, caps.now());
   journal(
     `item ${item.linearIdentifier} merged outside the merge lane: #${merge.pullNumber} at ${merge.mergeSha ?? "unknown commit"}`,
   );
   if (caps.stopped()) {
-    completeMergedItem(db, { itemId: item.id, now: caps.now() });
+    if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
     return { kind: "obsolete" };
   }
   return { kind: "merged" };
