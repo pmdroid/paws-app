@@ -12,6 +12,7 @@ import {
   retryBackoffMs,
 } from "../core";
 import { journal } from "./journal";
+import { immediate } from "./tx";
 
 export const JOB_STATUSES = ["pending", "running", "done", "dead", "cancelled"] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
@@ -234,6 +235,29 @@ export function enqueueJobOnce(db: Database, job: NewJob): number {
     }
     throw error;
   }
+}
+
+/**
+ * Explicitly arm a recurring logical operation. Active rows retain their payload and lease;
+ * terminal rows receive fresh work and version fencing. Ordinary lifetime dedupe stays separate.
+ */
+export function reenqueueJob(
+  db: Database,
+  job: NewJob & { jobKey: string },
+): { id: number; pending: boolean } {
+  return immediate(db, () => {
+    const id = enqueueJobOnce(db, job);
+    const now = job.now ?? Date.now();
+    const changed = db.run(
+      `UPDATE job SET status='pending', payload=?1, attempts=0, run_at=?2,
+         item_version=(SELECT version FROM work_item WHERE id=json_extract(?1,'$.itemId')),
+         locked_by=NULL, locked_until=NULL, last_error=NULL, finished_at=NULL
+       WHERE id=?3 AND status IN ('done','cancelled','dead')`,
+      [JSON.stringify(job.payload ?? {}), job.runAt ?? now, id],
+    ).changes;
+    if (changed) emitJobReady(db);
+    return { id, pending: getJob(db, id)?.status === "pending" };
+  });
 }
 
 export function getJob(db: Database, id: number): Job | null {

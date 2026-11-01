@@ -3,7 +3,7 @@ import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   jobVersionCurrent,
-  enqueueJobOnce,
+  reenqueueJob,
   getWorkItem,
   immediate,
   saveCheckpoint,
@@ -178,18 +178,12 @@ export function enqueueVerifiedMerge(
   const suffix = input.reverifyJobId === undefined ? "" : `:reverify:${input.reverifyJobId}`;
   const jobKey = `merge:${input.itemId}:${input.head}${suffix}`;
   const payload = { itemId: input.itemId, summary: input.summary, head: input.head };
-  db.run(
-    `UPDATE job SET status = 'pending', attempts = 0, last_error = NULL, finished_at = NULL,
-       locked_by = NULL, locked_until = NULL, item_version=(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId')), run_at = ?, payload = ?
-     WHERE job_key = ? AND status IN ('cancelled', 'dead')`,
-    [input.now, JSON.stringify(payload), jobKey],
-  );
-  return enqueueJobOnce(db, {
+  return reenqueueJob(db, {
     queue: JOB_KIND.merge,
     jobKey,
     payload,
     now: input.now,
-  });
+  }).id;
 }
 
 export type VerificationOwner = { version: number; runId: string | null };

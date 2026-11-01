@@ -13,6 +13,8 @@ import {
   completeJob,
   enqueueJob,
   enqueueJobOnce,
+  reenqueueJob,
+  jobVersionCurrent,
   failJob,
   extendJobLease,
   getJob,
@@ -447,3 +449,43 @@ describe("leased job writes", () => {
     expect(getJob(db, again.id)).toMatchObject({ status: "pending", lastError: "boom" });
   });
 });
+
+test.each(["done", "cancelled", "dead"] as const)(
+  "explicit revival refreshes a %s row while lifetime dedupe retains it",
+  (status) => {
+    const { db } = queue();
+    insertQueuedItem(db, { id: "revive", now: 1 });
+    const original = {
+      queue: "test",
+      jobKey: "revive",
+      payload: { itemId: "revive", body: "old" },
+      now: 1,
+    };
+    const id = enqueueJobOnce(db, original);
+    db.run("UPDATE job SET status=?, attempts=7, finished_at=2, last_error='old' WHERE id=?", [
+      status,
+      id,
+    ]);
+    db.run("UPDATE work_item SET version=version+1 WHERE id='revive'");
+    const fresh = { ...original, payload: { itemId: "revive", body: "new" }, now: 3 };
+    expect(enqueueJobOnce(db, fresh)).toBe(id);
+    expect(getJob(db, id)).toMatchObject({ status, attempts: 7, payload: original.payload });
+    expect(reenqueueJob(db, fresh)).toEqual({ id, pending: true });
+    expect(getJob(db, id)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      runAt: 3,
+      finishedAt: null,
+      lastError: null,
+      payload: fresh.payload,
+    });
+    expect(jobVersionCurrent(db, getJob(db, id)!)).toBe(true);
+    expect(reenqueueJob(db, { ...fresh, now: 4, payload: {} })).toEqual({ id, pending: true });
+    expect(getJob(db, id)?.payload).toEqual(fresh.payload);
+    const leased = claimNextJob(db, { now: 4, queues: ["test"] })!;
+    expect(reenqueueJob(db, { ...fresh, now: 5, payload: {} })).toEqual({ id, pending: false });
+    expect(getJob(db, id)).toEqual(leased);
+    expect(listJobs(db)).toHaveLength(1);
+    db.close();
+  },
+);

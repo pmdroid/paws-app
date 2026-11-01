@@ -10,6 +10,7 @@ import {
   claimNextJob,
   enqueueJob,
   getJob,
+  fixRounds,
   getRun,
   getWorkItem,
   insertQueuedItem,
@@ -99,6 +100,88 @@ describe("restart and ask", () => {
       db.close();
     },
   );
+
+  test("same-head CI recurs with fresh handoff and accounting, while stale replays do nothing", () => {
+    const { db, item } = fixture();
+    const jobKey = "ci-failed:item:recheck:head";
+    const first = restart(db, item, { reason: "ci", body: "first failure", jobKey, now: 2 })!;
+    expect(restart(db, item, { reason: "ci", body: "first failure", jobKey, now: 2 })).toBeNull();
+    expect(fixRounds(db, item.id)).toBe(1);
+    db.run("UPDATE job SET status='done', attempts=4, finished_at=3 WHERE id=?", [first]);
+    beginImplementRun(db, item.id, 4);
+    const secondItem = getWorkItem(db, item.id)!;
+    const second = restart(db, secondItem, {
+      reason: "ci",
+      body: "second failure",
+      jobKey,
+      now: 5,
+    })!;
+    expect(second).toBe(first);
+    expect(getJob(db, second)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      runAt: 5,
+      finishedAt: null,
+      payload: { handoff: "second failure", reason: "ci" },
+    });
+    expect(jobVersionCurrent(db, getJob(db, second)!)).toBe(true);
+    expect(fixRounds(db, item.id)).toBe(2);
+    expect(
+      restart(db, secondItem, { reason: "ci", body: "second failure", jobKey, now: 5 }),
+    ).toBeNull();
+    expect(fixRounds(db, item.id)).toBe(2);
+    expect(listJobs(db)).toHaveLength(1);
+
+    restart(db, getWorkItem(db, item.id)!, { reason: "answer", body: "try again", now: 6 });
+    expect(fixRounds(db, item.id)).toBe(0);
+    beginImplementRun(db, item.id, 7);
+    restart(db, getWorkItem(db, item.id)!, { reason: "ci", body: "third failure", jobKey, now: 8 });
+    expect(fixRounds(db, item.id)).toBe(1);
+    db.close();
+  });
+
+  test("a restart without a pending job rolls back the edge and handoff", () => {
+    const { db, item } = fixture();
+    enqueueJob(db, { queue: JOB_KIND.resume, jobKey: "blocked", payload: { itemId: "other" } });
+    db.run("UPDATE job SET status='running' WHERE job_key='blocked'");
+    expect(() =>
+      restart(db, item, { reason: "ci", body: "fix", jobKey: "blocked", now: 2 }),
+    ).toThrow("pending resume");
+    expect(getWorkItem(db, item.id)).toEqual(item);
+    expect(getRun(db, item.currentRunId!)?.status).toBe("active");
+    expect(
+      listWorkItemEventRows(db, item.id).filter((event) => event.kind === "restart"),
+    ).toHaveLength(0);
+    db.close();
+  });
+
+  test("repeated startup keeps one runnable restart question and one actionable question", async () => {
+    const { db } = fixture();
+    db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=1 WHERE id='item'");
+    recoverOnStartup(db, 100);
+    recoverOnStartup(db, 200);
+    const pending = listJobs(db).filter((job) => job.queue === "item.ask");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.status).toBe("pending");
+    const clock = new FakeClock(300);
+    const jobs = new JobLoop(db, clock);
+    attachOrchestrator({
+      db,
+      jobs,
+      outbox: new OutboxDispatcher(db, clock),
+      pawsRoot: tempHome(),
+      admission: workspaceAdmission(db),
+    });
+    await jobs.tick(["item.ask"]);
+    recoverOnStartup(db, 400);
+    await jobs.tick(["item.ask"]);
+    expect(getWorkItem(db, "item")?.state).toBe("awaiting_input");
+    expect(
+      db.query("SELECT id FROM question WHERE status IN ('open','queued')").all(),
+    ).toHaveLength(1);
+    expect(findOpenQuestion(db, "session")?.reason).toBe("restart");
+    db.close();
+  });
 
   test("a failed restart rolls back its fence, cancellations, and capacity release", () => {
     const { db, item } = fixture();

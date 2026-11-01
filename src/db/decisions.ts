@@ -17,7 +17,7 @@ import {
   markResumed,
   type WorkItemRecord,
 } from "./items";
-import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
+import { cancelOpenJobs, enqueueJobOnce, reenqueueJob } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
 import { getRun, insertRun, markRun, releaseRunCapacity } from "./runs";
 import { getTaskMode } from "./tasks";
@@ -147,7 +147,7 @@ function applyAskRestart(db: Database, item: WorkItemRecord, now: number): void 
   }
   cancelOpenJobs(db, { itemId: item.id, reason: "restart_question", now });
   if (item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
-  enqueueJobOnce(db, {
+  reenqueueJob(db, {
     queue: "item.ask",
     jobKey: `restart-ask:${item.id}:${item.version}`,
     payload: {

@@ -155,6 +155,7 @@ export {
   completeJob,
   enqueueJob,
   enqueueJobOnce,
+  reenqueueJob,
   extendJobLease,
   hasLiveJob,
   failJob,
