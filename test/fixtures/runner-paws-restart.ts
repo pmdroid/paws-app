@@ -35,10 +35,11 @@ import { readRunnerJob } from "../../src/runner-execution";
 import type { RunnerCommand, RunnerResult } from "../../src/runner-protocol";
 import { createRunnerResults } from "../../src/runner-results";
 import { openRunnerRuntime } from "../../src/runner-runtime";
-import { createRunnerWork, runnerFailureStatus } from "../../src/runner-work";
+import { createRunnerWork, RUNNER_LIVE_GRACE_MS, runnerFailureStatus } from "../../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 import { githubClient } from "../e2e-harness";
 import { workspaceAdmission } from "../fake-workspace";
+import { runtimeProcess } from "./runner-runtime-process";
 
 setJournalSink(() => {});
 // Match CI even when the parent runner has a restrictive umask.
@@ -246,6 +247,7 @@ const commands = new Map<string, RunnerCommand>();
 const accepted: RunnerResult[] = [];
 const executions = new Map<string, string>();
 const finished = new Set<string>();
+const stopped = new Set<string>();
 let stops = 0;
 const errors: string[] = [];
 const runnerRoot = join(root, "runner");
@@ -289,7 +291,14 @@ function result(command: RunnerCommand, executionId: string) {
     },
   };
 }
-const runtime = await openRunnerRuntime({
+let preparing = false;
+let releasePreparation: (() => void) | undefined;
+let preparationGate: Promise<void> | undefined;
+let releaseCleanup: (() => void) | undefined;
+let cleanupGate: Promise<void> | undefined;
+let cleanupEntered = false;
+let heartbeats = 0;
+const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
   root: runnerRoot,
   spool,
   results: resultFiles,
@@ -316,14 +325,18 @@ const runtime = await openRunnerRuntime({
       return { alreadyAdmitted: false };
     },
     async stop(id) {
+      if (cleanupGate) cleanupEntered = true;
+      await cleanupGate;
+      stopped.add(id);
       if (!finished.has(id)) stops++;
     },
-    alive: (id) => !finished.has(id),
+    alive: (id) => !finished.has(id) && !stopped.has(id),
   },
   daemon: {
     status: () => paired,
     async heartbeat(skills, runtimes, agents, live) {
       reachable();
+      heartbeats++;
       return services.work.heartbeat(
         runnerId,
         1,
@@ -399,6 +412,10 @@ const runtime = await openRunnerRuntime({
     },
     async repositoryCredential(runId) {
       reachable();
+      if (preparationGate) {
+        preparing = true;
+        await preparationGate;
+      }
       const item = listWorkItems(paws.db).find((i) => i.currentRunId === runId)!;
       return {
         token: "fixture",
@@ -426,7 +443,11 @@ const runtime = await openRunnerRuntime({
       return { uri: "transcript" };
     },
   },
-});
+};
+const runnerRestart = process.argv[3];
+let runtime = runnerRestart
+  ? await runtimeProcess(runtimeOptions)
+  : await openRunnerRuntime(runtimeOptions);
 
 async function until(label: string, done: () => boolean) {
   const deadline = performance.now() + 12_000;
@@ -463,7 +484,11 @@ function addItem(id: string, answer = false) {
 }
 function activeCommand(type: string) {
   return [...commands.values()].find(
-    (c) => c.type === type && executions.has(c.id) && !accepted.some((r) => r.commandId === c.id),
+    (c) =>
+      c.type === type &&
+      executions.has(c.id) &&
+      !stopped.has(executions.get(c.id)!) &&
+      !accepted.some((r) => r.commandId === c.id),
   );
 }
 // Permission notices are public activities without post_update's intentional throttle.
@@ -532,7 +557,10 @@ async function restartMidTurn(command: RunnerCommand) {
   }
   assert(offlineCalls > 0);
   assert.equal(stops, 0);
-  assert.equal(runtime.status().active?.executionId, execution);
+  assert.equal(
+    (runtime as Awaited<ReturnType<typeof openRunnerRuntime>>).status().active?.executionId,
+    execution,
+  );
   say(command, `After restart ${command.id}.`);
   finish(command);
   await runtime.tick();
@@ -547,51 +575,134 @@ async function restartMidTurn(command: RunnerCommand) {
   assert.equal(stops, 0);
 }
 try {
-  const code = addItem("code");
-  await until("implementer running", () => !!activeCommand("run"));
-  await restartMidTurn(activeCommand("run")!);
-  await until("reviewer running", () => !!activeCommand("review"));
-  await restartMidTurn(activeCommand("review")!);
-  await until("one pull request published", () => github.opened.length === 1);
-  const answer = addItem("answer", true);
-  await until("answer running", () => !!activeCommand("task"));
-  await restartMidTurn(activeCommand("task")!);
-  await until("answer completed", () => getWorkItem(paws.db, answer)?.state === "completed");
-  assert.equal(github.opened.length, 1);
-  assert.equal(getWorkItem(paws.db, code)?.acceptedHead, head);
-  assert.equal(stops, 0);
-  assert.equal(paws.db.query("SELECT 1 FROM runner_command WHERE kind='cancel'").all().length, 0);
-  assert.equal(executions.size, 3);
-  assert.equal(
-    paws.db.query("SELECT 1 FROM runner_command WHERE kind IN ('run','review','task')").all()
-      .length,
-    3,
-  );
-  assert.equal(accepted.length, 3);
-  assert(duplicateEvents >= 3, "lost event receipts must replay across restarts");
-  for (const value of accepted) {
-    assert.equal(value.stopReason, "end_turn");
-    assert.equal(value.cancelled, false);
-    assert.equal(value.agentExited, true);
-    assert.equal(
-      paws.db.query("SELECT 1 FROM runner_result WHERE command_id=?").all(value.commandId).length,
-      1,
+  if (runnerRestart) {
+    const preparation = process.argv[4] === "preparing";
+    if (preparation)
+      preparationGate = new Promise<void>((resolve) => {
+        releasePreparation = resolve;
+      });
+    const code = addItem("runner-restart");
+    await until("turn interrupted at requested phase", () =>
+      preparation ? preparing : !!activeCommand("run"),
     );
-  }
-  const activities = listOutbox(paws.db).filter((row) => row.op === "activity");
-  for (const command of [...commands.values()].filter(
-    (c) => executions.has(c.id) && c.type !== "review",
-  )) {
-    for (const prefix of ["Before", "After"]) {
-      const text = `${prefix} restart ${command.id}.`;
+    const old = [...commands.values()].find((c) => c.type === "run")!;
+    assert(old.type === "run");
+    const oldExecution = executions.get(old.id);
+    const branch = getWorkItem(paws.db, code)?.branchName;
+    assert(
+      paws.db
+        .query("SELECT 1 FROM runner_command WHERE id=? AND acknowledged_at IS NOT NULL")
+        .get(old.id),
+    );
+    // The turn has been running for longer than the grace Paws gives a fresh acknowledgment.
+    paws.db.run("UPDATE runner_command SET acknowledged_at=? WHERE id=?", [
+      Date.now() - 2 * RUNNER_LIVE_GRACE_MS,
+      old.id,
+    ]);
+    const beforeHeartbeat = heartbeats;
+    const beforeExecutions = executions.size;
+    const beforeAccepted = accepted.length;
+    cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    let opened = false;
+    let reopening: Promise<Awaited<ReturnType<typeof runtimeProcess>>>;
+    if (runnerRestart === "crash") {
+      await (runtime as Awaited<ReturnType<typeof runtimeProcess>>).crash();
+      releasePreparation?.();
+      preparationGate = undefined;
+      reopening = runtimeProcess(runtimeOptions).then((value) => {
+        opened = true;
+        return value;
+      });
+    } else {
+      const stopping = runtime.stop();
+      releasePreparation?.();
+      preparationGate = undefined;
+      reopening = stopping
+        .then(() => runtimeProcess(runtimeOptions))
+        .then((value) => {
+          opened = true;
+          return value;
+        });
+    }
+    const observedCleanup = () => cleanupEntered;
+    for (let i = 0; i < 2000 && !observedCleanup(); i++) await Bun.sleep(5);
+    assert(cleanupEntered, "restart must reach broker cleanup");
+    assert(!opened, "restart must wait for confirmed cleanup");
+    assert.equal(heartbeats, beforeHeartbeat);
+    assert.equal(executions.size, beforeExecutions);
+    assert.equal(accepted.length, beforeAccepted);
+    releaseCleanup!();
+    cleanupGate = undefined;
+    runtime = await reopening;
+    await until(
+      "replacement implementation",
+      () => !!activeCommand("run") && activeCommand("run")!.id !== old.id,
+    );
+    const replacement = activeCommand("run")!;
+    assert(replacement.type === "run");
+    assert.equal(getWorkItem(paws.db, code)?.branchName, branch);
+    assert(!accepted.some((r) => r.commandId === old.id));
+    assert(replacement.generation > old.generation);
+    assert.notEqual(getWorkItem(paws.db, code)?.state, "failed");
+    if (oldExecution) assert(stops > 0, "old worker must be stopped before replacement");
+    finish(replacement);
+    await until("reviewer after recovery", () => !!activeCommand("review"));
+    finish(activeCommand("review")!);
+    await until("pull request after recovery", () => github.opened.length === 1);
+    assert.equal(getWorkItem(paws.db, code)?.acceptedHead, head);
+    const activities = listOutbox(paws.db).map((row) => JSON.stringify(row.payload));
+    assert(activities.some((body) => body.includes("continuing from the branch")));
+    assert(!activities.some((body) => body.includes("The runner stopped this run")));
+    console.log("runner restart integration passed");
+  } else {
+    const code = addItem("code");
+    await until("implementer running", () => !!activeCommand("run"));
+    await restartMidTurn(activeCommand("run")!);
+    await until("reviewer running", () => !!activeCommand("review"));
+    await restartMidTurn(activeCommand("review")!);
+    await until("one pull request published", () => github.opened.length === 1);
+    const answer = addItem("answer", true);
+    await until("answer running", () => !!activeCommand("task"));
+    await restartMidTurn(activeCommand("task")!);
+    await until("answer completed", () => getWorkItem(paws.db, answer)?.state === "completed");
+    assert.equal(github.opened.length, 1);
+    assert.equal(getWorkItem(paws.db, code)?.acceptedHead, head);
+    assert.equal(stops, 0);
+    assert.equal(paws.db.query("SELECT 1 FROM runner_command WHERE kind='cancel'").all().length, 0);
+    assert.equal(executions.size, 3);
+    assert.equal(
+      paws.db.query("SELECT 1 FROM runner_command WHERE kind IN ('run','review','task')").all()
+        .length,
+      3,
+    );
+    assert.equal(accepted.length, 3);
+    assert(duplicateEvents >= 3, "lost event receipts must replay across restarts");
+    for (const value of accepted) {
+      assert.equal(value.stopReason, "end_turn");
+      assert.equal(value.cancelled, false);
+      assert.equal(value.agentExited, true);
       assert.equal(
-        activities.filter((row) => (row.payload as { body?: string }).body === text).length,
+        paws.db.query("SELECT 1 FROM runner_result WHERE command_id=?").all(value.commandId).length,
         1,
-        `${command.type} ${text}`,
       );
     }
+    const activities = listOutbox(paws.db).filter((row) => row.op === "activity");
+    for (const command of [...commands.values()].filter(
+      (c) => executions.has(c.id) && c.type !== "review",
+    )) {
+      for (const prefix of ["Before", "After"]) {
+        const text = `${prefix} restart ${command.id}.`;
+        assert.equal(
+          activities.filter((row) => (row.payload as { body?: string }).body === text).length,
+          1,
+          `${command.type} ${text}`,
+        );
+      }
+    }
+    console.log("restart integration passed");
   }
-  console.log("restart integration passed");
 } finally {
   await paws.stop();
   await runtime.stop();
