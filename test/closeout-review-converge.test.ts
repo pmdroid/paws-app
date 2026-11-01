@@ -298,10 +298,15 @@ describe("second review round", () => {
     expect(prompt.indexOf("# Diff ")).toBeLessThan(prompt.indexOf("# Earlier findings"));
   });
 
-  test("the finding format asks for path:line and the class of bug", () => {
+  test("the finding format asks for path:line, every place, and defines severities", () => {
     expect(FINDING_FORMAT).toContain("location: path:line in the head commit");
-    expect(FINDING_FORMAT).toContain("start with the class of bug");
-    expect(FINDING_FORMAT).toContain("Name every place in the change where the same class occurs");
+    expect(FINDING_FORMAT).toContain("No label prefix.");
+    expect(FINDING_FORMAT).toContain(
+      "Name every place in the change where the same problem occurs",
+    );
+    expect(FINDING_FORMAT).toContain(
+      "P3: style, duplication, efficiency, naming and documentation.",
+    );
     expect(renderReviewPrompt(material(), BASE, HEAD)).toContain(FINDING_FORMAT);
   });
 });

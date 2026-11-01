@@ -85,6 +85,7 @@ describe("closeout reviewer runs the agent's review command", () => {
         schemaPath,
       ]);
       expect(seen[0]?.schema).toEqual(findingsJsonSchema());
+      expect(JSON.stringify(seen[0]?.schema)).toContain("P1: a reachable defect in changed code");
       expect(existsSync(schemaPath)).toBe(false);
       expect(call.cwd).not.toBe(repo.dir);
       expect(seen[0]?.head).toBe(repo.head);
@@ -152,6 +153,7 @@ describe("closeout reviewer runs the agent's review command", () => {
         `/code-review ${repo.base}..${repo.head}`,
       ]);
       expect(seen[0]?.head).toBe(repo.head);
+      expect(call.argv.at(-2)).toContain("P1: a reachable defect in changed code");
       expect(result.status).toBe("recorded");
       if (result.status !== "recorded") return;
       expect(result.record.producer).toEqual({
