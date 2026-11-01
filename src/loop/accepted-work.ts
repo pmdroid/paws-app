@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND, type WorkItemEvent, type WorkItemState } from "../core";
 import {
   applyWorkItemEvent,
+  closeoutPolicyDigests,
+  pendingRestartHandoff,
   enqueueJobOnce,
   getRun,
   getWorkItem,
@@ -44,9 +46,10 @@ export function acceptedResumeNeedsTurn(input: {
   acceptedHead: string | null;
   pullHead: string | null;
   reason: string | null;
+  handoff?: string | null;
 }): boolean {
   if (input.acceptedHead === null || input.pullHead !== input.acceptedHead) return true;
-  return input.reason !== null && NEW_INPUT.has(input.reason);
+  return Boolean(input.handoff?.trim()) || (input.reason !== null && NEW_INPUT.has(input.reason));
 }
 
 /**
@@ -64,6 +67,9 @@ export function mergeAcceptedWork(
     const path = item ? TO_MERGE_QUEUE[item.state] : undefined;
     if (!item || item.cancelRequested || item.acceptedHead === null || !path) return false;
     const head = item.acceptedHead;
+    const verdict = closeoutPolicyDigests(db, itemId, head);
+    if (verdict !== null && verdict.decision !== "accepted") return false;
+    if (pendingRestartHandoff(db, itemId).handoff) return false;
     db.run(
       `UPDATE job
        SET status = 'cancelled', last_error = 'accepted_work', locked_by = NULL,

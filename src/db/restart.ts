@@ -114,3 +114,26 @@ export function restartLimit(db: Database, itemId: string): number | null {
     .get(JOB_KIND.resume, itemId);
   return typeof row?.limit === "number" ? row.limit : null;
 }
+
+/**
+ * Recover the latest unfinished agent input. Inspect the latest activation before its handoff
+ * so an older cancelled job cannot resurrect input after a newer turn completed.
+ */
+export function pendingRestartHandoff(
+  db: Database,
+  itemId: string,
+): { handoff?: string; limit?: number } {
+  const row = db
+    .query<
+      { status: string; handoff: string | null; limit: number | null },
+      [string, string, string]
+    >(`
+    SELECT status, json_extract(payload, '$.handoff') AS handoff,
+      json_extract(payload, '$.limit') AS "limit" FROM job
+    WHERE queue IN (?, ?) AND json_extract(payload, '$.itemId') = ?
+    ORDER BY activation_id DESC LIMIT 1
+  `)
+    .get(JOB_KIND.start, JOB_KIND.resume, itemId);
+  if (!row || row.status === "done" || !row.handoff?.trim()) return {};
+  return { handoff: row.handoff, ...(typeof row.limit === "number" ? { limit: row.limit } : {}) };
+}

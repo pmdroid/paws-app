@@ -20,6 +20,7 @@ import {
 import { cancelOpenJobs, enqueueJobOnce, reenqueueJob } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
 import { getRun, insertRun, markRun, releaseRunCapacity } from "./runs";
+import { pendingRestartHandoff } from "./restart";
 import { getTaskMode } from "./tasks";
 
 const RESTART_QUESTION =
@@ -114,7 +115,10 @@ function applyResume(
     if (run && run.status === "lost") markRun(db, run.id, "active", now);
   }
   const restartHandoff =
-    !reattach && checkpoint === null && getTaskMode(db, item.id) === "code"
+    !reattach &&
+    item.acceptedHead === null &&
+    checkpoint === null &&
+    getTaskMode(db, item.id) === "code"
       ? `Paws restarted before this task saved a checkpoint, and the earlier session is gone. Start again${item.branchName ? ` from the branch ${item.branchName}` : ""}: keep any work already on it and finish the issue.`
       : null;
   enqueueJobOnce(db, {
@@ -127,6 +131,7 @@ function applyResume(
       checkpoint,
       ...(restartHandoff === null ? {} : { handoff: restartHandoff }),
       reason: "process_restart",
+      ...pendingRestartHandoff(db, item.id),
     },
     runAt,
     now,
@@ -194,6 +199,7 @@ function applyRestartSession(
       freshSession: true,
       checkpoint,
       reason: "agent_dead",
+      ...pendingRestartHandoff(db, item.id),
     },
     now,
   });
@@ -205,6 +211,7 @@ function applyRestartFromMain(
   now: number,
   stamp?: WakeStamp,
 ): void {
+  const pendingInput = pendingRestartHandoff(db, item.id);
   const wipBranch = item.branchName;
   const previousCheckpoint = item.checkpoint;
   cancelOpenJobs(db, { itemId: item.id, reason: "slept_over_2h", now });
@@ -218,7 +225,13 @@ function applyRestartFromMain(
   enqueueJobOnce(db, {
     queue: JOB_KIND.start,
     jobKey: key,
-    payload: { itemId: item.id, from: "fresh_main", wipBranch, previousCheckpoint },
+    payload: {
+      itemId: item.id,
+      from: "fresh_main",
+      wipBranch,
+      previousCheckpoint,
+      ...pendingInput,
+    },
     now,
   });
 }

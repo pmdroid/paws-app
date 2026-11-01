@@ -1,3 +1,4 @@
+import { pendingRestartHandoff } from "./restart";
 import type { Database } from "bun:sqlite";
 import { halt } from "./halt";
 import { wakeMergesBehind } from "./merge-queue";
@@ -854,6 +855,7 @@ export function deferWorkItem(
         runId: current.currentRunId,
         reason: "transient_failure",
         retry: input.retry,
+        ...pendingRestartHandoff(db, item.id),
         ...(input.handoff === null ? {} : { handoff: input.handoff }),
         ...(input.capacityWait ? { capacityWait: input.capacityWait } : {}),
       },

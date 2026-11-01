@@ -137,12 +137,23 @@ test("an item without accepted work is not sent to the merge queue", () => {
   expect(getWorkItem(db, "fresh")?.state).toBe("running");
 });
 
-test("an accepted item queued again by a restart leaves that restart for the merge queue", () => {
+test("an accepted item with pending follow-up input cannot skip its restart", () => {
   const { db, itemId } = acceptedItem();
   const item = getWorkItem(db, itemId)!;
   const job = restart(db, item, { reason: "follow_up", body: "go on", now: 2_000 })!;
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(mergeAcceptedWork(db, itemId, { now: 3_000, exceptJobId: job })).toBe(true);
-  expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
+  expect(mergeAcceptedWork(db, itemId, { now: 3_000, exceptJobId: job })).toBe(false);
+  expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(listJobs(db).find((entry) => entry.id === job)?.status).toBe("pending");
+});
+
+test("a deferred handoff still needs a turn when its reason became transient", () => {
+  expect(
+    acceptedResumeNeedsTurn({
+      acceptedHead: ACCEPTED,
+      pullHead: ACCEPTED,
+      reason: "transient_failure",
+      handoff: "Fix the Closeout findings",
+    }),
+  ).toBe(true);
 });

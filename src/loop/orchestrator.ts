@@ -4913,6 +4913,7 @@ export class Orchestrator {
         acceptedHead: item.acceptedHead,
         pullHead: item.acceptedHead,
         reason,
+        handoff: readString(job.payload, "handoff"),
       })
     )
       return false;
@@ -4939,7 +4940,12 @@ export class Orchestrator {
     });
     if (
       !context.isCurrent() ||
-      acceptedResumeNeedsTurn({ acceptedHead: item.acceptedHead, pullHead, reason }) ||
+      acceptedResumeNeedsTurn({
+        acceptedHead: item.acceptedHead,
+        pullHead,
+        reason,
+        handoff: readString(job.payload, "handoff"),
+      }) ||
       !mergeAcceptedWork(this.db, item.id, { now: this.now(), exceptJobId: job.id })
     )
       return false;
