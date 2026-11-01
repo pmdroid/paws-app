@@ -4,6 +4,11 @@ import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 
+const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confirmed_at IS NULL
+  AND NOT (w.confirmed_at IS NULL AND EXISTS(SELECT 1 FROM runner_command undelivered
+    WHERE undelivered.id=w.command_id AND undelivered.acknowledged_at IS NULL
+    AND undelivered.expires_at<=?)))`;
+
 /**
  * Slots Paws may fill on a runner. A lowered desired value applies at once; a raised one waits
  * until the runner reports it applied the value.
@@ -29,14 +34,14 @@ export function runnerOccupancy(
   return db
     .query<
       { capacity: number; occupied: number },
-      [string, string, number, string, string, number]
+      [string, string, number, string, number, string, number]
     >(
       `SELECT COALESCE((SELECT MIN(capacity,COALESCE(desired,16)) FROM runner_capacity WHERE runner_id=?),1) AS capacity,
-     (SELECT count(*) FROM runner_work WHERE runner_id=? AND ((ended_at IS NULL AND lease_until>? AND run_id<>?)
-       OR (ended_at IS NOT NULL AND teardown_confirmed_at IS NULL))) +
+     (SELECT count(*) FROM runner_work w WHERE w.runner_id=? AND ((w.ended_at IS NULL AND w.lease_until>? AND w.run_id<>?)
+       OR ${TEARDOWN_UNRESOLVED})) +
      (SELECT count(*) FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?) AS occupied`,
     )
-    .get(runnerId, runnerId, runnerLeaseCutoff(now), excludeRunId, runnerId, now)!;
+    .get(runnerId, runnerId, runnerLeaseCutoff(now), excludeRunId, now, runnerId, now)!;
 }
 
 export function runnerSlotsHeldBetweenCommands(
@@ -46,15 +51,14 @@ export function runnerSlotsHeldBetweenCommands(
   excludeRunId = "",
 ): number {
   const holders = db
-    .query<{ runId: string }, [string, number]>(
+    .query<{ runId: string }, [string, number, number]>(
       `SELECT w.run_id AS runId FROM runner_work w JOIN run r ON r.id=w.run_id
        WHERE w.runner_id=? AND (w.ended_at IS NOT NULL OR (w.lease_until<=? AND EXISTS (
          SELECT 1 FROM runner_result result WHERE result.run_id=w.run_id
            AND result.generation=w.generation AND result.command_id=w.command_id)))
-       AND r.status IN ('active','provisioning') AND (w.teardown_confirmed_at IS NOT NULL OR EXISTS(
-         SELECT 1 FROM runner_result r WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id))`,
+       AND r.status IN ('active','provisioning') AND NOT ${TEARDOWN_UNRESOLVED}`,
     )
-    .all(runnerId, runnerLeaseCutoff(now))
+    .all(runnerId, runnerLeaseCutoff(now), now)
     .map((row) => row.runId);
   return holders.includes(excludeRunId) ? 0 : holders.length;
 }
@@ -240,13 +244,21 @@ export function pinnedSlotsReserved(
   ).size;
 }
 
-/** Ending execution authority retains the slot until generation-bound termination is confirmed. */
-export function runnerCancelPending(db: Database, runnerId: string, _now: number): boolean {
+export function runnerCancelPending(db: Database, runnerId: string, now: number): boolean {
   return (
     db
-      .query(`SELECT 1 FROM runner_work WHERE runner_id=?
-    AND ended_at IS NOT NULL AND teardown_confirmed_at IS NULL`)
-      .get(runnerId) !== null
+      .query(`SELECT 1 FROM runner_work w WHERE w.runner_id=? AND ${TEARDOWN_UNRESOLVED}`)
+      .get(runnerId, now) !== null
+  );
+}
+
+export function runTeardownOwner(db: Database, runId: string, now: number): string | null {
+  return (
+    db
+      .query<{ runnerId: string }, [string, number]>(
+        `SELECT w.runner_id AS runnerId FROM runner_work w WHERE w.run_id=? AND ${TEARDOWN_UNRESOLVED}`,
+      )
+      .get(runId, now)?.runnerId ?? null
   );
 }
 

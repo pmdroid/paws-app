@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDatabase } from "../src/db";
+import { openExecutionJournal } from "../src/runner-journal";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import type { RunnerCommand } from "../src/runner-protocol";
 
@@ -504,6 +505,119 @@ test("lowering concurrency holds back new work and lets running work continue", 
     await runtime.tick();
     expect(calls).toEqual(["ack:first", "ack:second", "ack:third"]);
   } finally {
+    await runtime.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an execution an older release ended is confirmed only after the broker stops it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-runtime-historical-"));
+  const now = Date.now();
+  const paired = {
+    phase: "paired" as const,
+    runnerId: "runner",
+    workspaceId: "workspace",
+    fingerprint: "fixture",
+    expiresAt: now + 3_600_000,
+  };
+  const historical: RunnerCommand = {
+    id: "old-work",
+    type: "task",
+    runId: "old-run",
+    itemId: "item-old",
+    generation: 1,
+    runnerId: "runner",
+    workspaceId: "workspace",
+    issuedAt: now,
+    expiresAt: now + 60_000,
+    sessionId: "session",
+    sessionGeneration: 1,
+    taskModeGeneration: 1,
+    purpose: "answer",
+    profile: { agent: "claude", model: null },
+    prompt: "Answer",
+  };
+  const seeded = openExecutionJournal(root);
+  seeded.phase(seeded.admit(historical, now)!.id, "interrupted");
+  seeded.close();
+  let release!: () => void;
+  const stopped = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const stops: string[] = [];
+  const reports: { runId: string; generation: number }[][] = [];
+  const terminations: { runId: string; generation: number; commandId: string }[][] = [];
+  const runtime = await openRunnerRuntime({
+    root,
+    repositoryRoot: join(root, "repositories"),
+    home: root,
+    spool: { root: join(root, "spool"), runnerUid: 1001, agentGid: 1002 },
+    results: { root: join(root, "results"), agentUid: 1002, resultsGid: 1003 },
+    broker: {
+      async start() {
+        throw new Error("unused");
+      },
+      async stop(id) {
+        stops.push(id);
+        await stopped;
+      },
+    },
+    daemon: {
+      status: () => paired,
+      async heartbeat(_skills, _runtimes, _agents, live, terminated) {
+        reports.push([...(live ?? [])]);
+        terminations.push([...(terminated ?? [])]);
+        return { leases: [], fenced: [], terminated: [...(terminated ?? [])] };
+      },
+      async pollCommands() {
+        return { commands: [], rejected: [], deniedRepositories: [] };
+      },
+      pendingCommands: () => [],
+      async acknowledgeCommand() {},
+      async issueRunGrant() {
+        throw new Error("unused");
+      },
+      async sendEvent() {
+        return { duplicate: false };
+      },
+      async answers() {
+        return { answers: [] };
+      },
+      async postResult() {
+        throw new Error("A historical execution must not report a new result");
+      },
+      async repositoryCredential() {
+        throw new Error("unused");
+      },
+      async renewCertificate() {
+        return paired;
+      },
+      async uploadTranscript() {
+        throw new Error("unused");
+      },
+      async finishTranscript() {
+        throw new Error("unused");
+      },
+      async uploadArtifact() {
+        return { ok: true };
+      },
+    },
+  });
+  try {
+    await runtime.tick();
+    expect(stops).toHaveLength(1);
+    expect(reports.at(-1)).toEqual([]);
+    expect(terminations.at(-1)).toEqual([]);
+    release();
+    await Bun.sleep(0);
+    await runtime.tick();
+    expect(terminations.at(-1)).toEqual([
+      { runId: "old-run", generation: 1, commandId: "old-work" },
+    ]);
+    await runtime.tick();
+    expect(terminations.at(-1)).toEqual([]);
+  } finally {
+    release();
     await runtime.stop();
     rmSync(root, { recursive: true, force: true });
   }

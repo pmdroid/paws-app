@@ -29,6 +29,7 @@ import {
   taskRequiresRepository,
   workspaceSessionIds,
   runnerCancelPending,
+  runTeardownOwner,
 } from "../db";
 import {
   OFFLINE_LEASE_RUNNER_VERSION,
@@ -430,12 +431,8 @@ export function createRunnerWork(options: {
           )
             throw new Error("Run assignment repository or task changed.");
         }
-        const pending = db
-          .query<{ runnerId: string }, [string]>(
-            "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=? AND ended_at IS NOT NULL AND teardown_confirmed_at IS NULL",
-          )
-          .get(command.runId);
-        if (pending) throw new RunnerCapacityWait([pending.runnerId]);
+        const owner = runTeardownOwner(db, command.runId, at);
+        if (owner !== null) throw new RunnerCapacityWait([owner]);
         const previous = assignment(command.runId);
         if (
           command.generation !== (previous?.generation ?? 0) + 1 ||
@@ -448,7 +445,7 @@ export function createRunnerWork(options: {
         const envelope = queue(command);
         db.run(
           `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
-          VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET runner_id=excluded.runner_id,workspace_id=excluded.workspace_id,generation=excluded.generation,runner_fence=excluded.runner_fence,command_id=excluded.command_id,lease_until=excluded.lease_until,last_sequence=0,consumed_sequence=0,ended_at=NULL,teardown_confirmed_at=NULL`,
+          VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET runner_id=excluded.runner_id,workspace_id=excluded.workspace_id,generation=excluded.generation,runner_fence=excluded.runner_fence,command_id=excluded.command_id,lease_until=excluded.lease_until,last_sequence=0,consumed_sequence=0,ended_at=NULL,confirmed_at=NULL,teardown_confirmed_at=NULL`,
           [
             command.runId,
             command.runnerId,

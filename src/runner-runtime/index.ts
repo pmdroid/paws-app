@@ -275,7 +275,8 @@ export async function openRunnerRuntime(options: {
       new Promise<void>((resolve) => setTimeout(resolve, waitMs).unref?.()),
     ]);
   const resumed: Execution[] = [];
-  const recovering = [...journal.executions(true), ...journal.unconfirmedTerminations()];
+  const recovering = journal.executions(true);
+  const historical = journal.unconfirmedTerminations();
   const concurrency = () =>
     z
       .number()
@@ -1731,8 +1732,31 @@ export async function openRunnerRuntime(options: {
       journalRejection("runner-runtime.recover.interrupt", report, execution.command.itemId),
     );
   }
-  // With restored work, each cleanup owns its processes. Sweeping must not block heartbeat.
-  if (!recovering.length) await broker.sweep?.();
+  const sweep = async () => {
+    const leftover = (await broker.sweep?.()) ?? 0;
+    if (leftover)
+      report(new Error(`Runner stopped ${leftover} processes left by earlier executions`));
+  };
+  if (recovering.length)
+    void Promise.allSettled([...active.values()].map((entry) => entry.stopped))
+      .then(sweep)
+      .catch(journalRejection("runner-runtime.recover.sweep", report, null));
+  else await sweep();
+  const reconciling = (async () => {
+    for (const execution of historical) {
+      while (!closed) {
+        try {
+          await broker.stop(execution.id);
+          journal.confirmTermination(execution.command);
+          break;
+        } catch (error) {
+          journalCaught(error, "runner-runtime.reconcile.stop", execution.command.itemId);
+          await new Promise<void>((resolve) => setTimeout(resolve, 15_000).unref?.());
+        }
+      }
+      if (closed) return;
+    }
+  })();
   const heartbeat = setInterval(() => {
     void pulse().catch(journalRejection("runner-runtime.openRunnerRuntime.pulse", report, null));
   }, 15_000);
@@ -1787,6 +1811,7 @@ export async function openRunnerRuntime(options: {
         );
         const draining = Promise.allSettled([
           cleanup,
+          reconciling,
           ticking,
           pulsing,
           ...resultDeliveries.values(),
