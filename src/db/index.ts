@@ -763,6 +763,7 @@ export {
 export { listWaitingProfileRuns } from "./runs";
 export { halt } from "./halt";
 export { latestHumanTurn, restart, fixRounds, restartLimit, type RestartHandoff } from "./restart";
+export { restartHold, type RestartHold } from "./restart-hold";
 
 export { jobVersionCurrent } from "./jobs";
 

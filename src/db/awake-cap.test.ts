@@ -553,6 +553,13 @@ describe("awake-time cap after Closeout accepted the work", () => {
       baseSha: "base",
       wipCommit: "accepted",
     });
+    db.run("UPDATE work_item SET accepted_head = NULL");
+    applyWorkItemEvent(db, accepted.id, "reverify_requested");
+    recoverOnStartup(db, clock.now());
+    expect(getWorkItem(db, accepted.id)).toMatchObject({
+      state: "verifying",
+      checkpoint: { phase: "verifying" },
+    });
     const fresh = insertQueuedItem(db, {
       id: "eng-2",
       sessionKey: "b",
@@ -562,13 +569,6 @@ describe("awake-time cap after Closeout accepted the work", () => {
     beginImplementRun(db, fresh.id, clock.now());
     applyWorkItemEvent(db, fresh.id, "turn_ended");
     saveCheckpoint(db, fresh.id, { phase: "verifying", baseSha: "base", wipCommit: "unchecked" });
-    db.run("UPDATE work_item SET accepted_head = NULL");
-    applyWorkItemEvent(db, accepted.id, "reverify_requested");
-    recoverOnStartup(db, clock.now());
-    expect(getWorkItem(db, accepted.id)).toMatchObject({
-      state: "verifying",
-      checkpoint: { phase: "verifying" },
-    });
     for (const column of ["accepted_head", "agent_ms", "closeout_ms", "waiting_ms", "recheck_ms"])
       db.run(`ALTER TABLE work_item DROP COLUMN ${column}`);
     db.run("DELETE FROM schema_migration WHERE id = '117_work_item_awake_breakdown'");

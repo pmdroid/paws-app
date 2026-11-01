@@ -54,6 +54,7 @@ test.each(cells)(
     expect(result.errors, result.detail).toEqual([]);
     expect(result.questions, result.detail).toEqual([]);
     expect(result.injected, result.detail).toBe(1);
+    expect(result.implementations, result.detail).toBe(1);
   },
   120_000,
 );
@@ -93,6 +94,7 @@ async function runWithFault(
   pending: string[];
   injected: number;
   injectedAt: number[];
+  implementations: number;
   detail: string;
 }> {
   const layout = await repoLayout("paws-verify-merge-faults-");
@@ -139,6 +141,7 @@ async function runWithFault(
     },
   );
   let sequence = 0;
+  let implementations = 0;
   const orchestrator = attachOrchestrator({
     db,
     admission: workspaceAdmission(db),
@@ -177,6 +180,7 @@ async function runWithFault(
     launch(input) {
       if (input.purpose === "review" && inject(phase === "reviewer launch")) throw thrown[fault]();
       sequence += 1;
+      if (input.purpose === "implement") implementations += 1;
       const scriptPath = path.join(layout.root, `fault-${sequence}.json`);
       const steps: FakeScript["steps"] =
         input.purpose === "implement"
@@ -221,6 +225,7 @@ async function runWithFault(
         .map((job) => job.queue),
       injected,
       injectedAt,
+      implementations,
       detail: JSON.stringify({
         state: stateOf(db, "ENG-7"),
         jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),

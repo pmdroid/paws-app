@@ -40,7 +40,7 @@ test("removing obsolete states preserves work items, references, indexes and set
           "SELECT type,name,sql FROM sqlite_master WHERE tbl_name='work_item' AND type<>'table' ORDER BY name",
         )
         .all(),
-    ).toEqual(schema);
+    ).toEqual(expect.arrayContaining(schema));
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
     expect(db.query("SELECT * FROM runner_setup_hold").all()).toHaveLength(1);

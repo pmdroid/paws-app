@@ -85,6 +85,7 @@ export {
   decideStartup,
   decideWake,
   formatPauseNote,
+  hasVerificationCandidate,
   isAwakeItemState,
   awakeCategory,
   countsAwakeTime,
