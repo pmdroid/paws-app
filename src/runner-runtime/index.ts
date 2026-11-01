@@ -105,6 +105,7 @@ type AuthorizedRequest = <T>(operation: (token: string) => Promise<T>) => Promis
 type PushFailure = NonNullable<RunnerResult["pushFailure"]>;
 type Active = {
   execution: Execution;
+  interruption?: { reason: string; notify: boolean; pushFailure?: PushFailure };
   abort: AbortController;
   deadline: number;
   accountedAt: number;
@@ -417,23 +418,26 @@ export async function openRunnerRuntime(options: {
           `Runner interrupted execution ${entry.execution.id} for run ${entry.execution.command.runId}: ${reason}`,
         ),
       );
+    if (!entry.interruption || (notify && !entry.interruption.notify))
+      entry.interruption = { reason, notify, pushFailure };
     journal.phase(entry.execution.id, "cleaning");
     entry.execution.phase = "cleaning";
     entry.stopped ??= (async () => {
       await quiesce(entry);
+      const intent = entry.interruption!;
       const publication =
-        !pushFailure && !journal.hasResult(entry.execution.id)
+        !intent.pushFailure && !journal.hasResult(entry.execution.id)
           ? journal.publication(entry.execution.id)
           : undefined;
       if (publication && closed) return;
-      if (publication && (!notify || reason === LEASE_PASSED)) {
-        journal.refusePublication(entry.execution.id, reason);
+      if (publication && (!intent.notify || intent.reason === LEASE_PASSED)) {
+        journal.refusePublication(entry.execution.id, intent.reason);
         report(
           new Error(
-            `Runner kept the finished turn of execution ${entry.execution.id} for run ${entry.execution.command.runId} without delivering it: ${reason}`,
+            `Runner kept the finished turn of execution ${entry.execution.id} for run ${entry.execution.command.runId} without delivering it: ${intent.reason}`,
           ),
         );
-      } else if (notify) await fail(entry.execution, reason, pushFailure);
+      } else if (intent.notify) await fail(entry.execution, intent.reason, intent.pushFailure);
       journal.phase(entry.execution.id, "interrupted");
       entry.execution.phase = "interrupted";
       entry.teardownConfirmed = true;

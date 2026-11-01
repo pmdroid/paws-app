@@ -309,6 +309,18 @@ for (const failure of ["hung", "rejected"] as const)
         generation: 1,
         commandId: "first",
       });
+      const db = openDatabase(join(root, "executions.db"));
+      try {
+        expect(
+          db
+            .query<{ failure: number }, []>(
+              "SELECT d.failure FROM result_delivery d JOIN execution e ON e.id=d.execution_id WHERE e.command_id='first'",
+            )
+            .get()?.failure,
+        ).toBe(1);
+      } finally {
+        db.close();
+      }
     } finally {
       confirmed = true;
       release();
