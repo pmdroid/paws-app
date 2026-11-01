@@ -127,6 +127,7 @@ type Active = {
   task?: Promise<void>;
   delivering?: Promise<void>;
   stopped?: Promise<void>;
+  teardownConfirmed?: boolean;
   quiesced?: Promise<void>;
   publicationBranch?: string;
   followUps?: number;
@@ -274,23 +275,7 @@ export async function openRunnerRuntime(options: {
       new Promise<void>((resolve) => setTimeout(resolve, waitMs).unref?.()),
     ]);
   const resumed: Execution[] = [];
-  try {
-    for (const previous of journal.executions(true)) {
-      await broker.stop(previous.id);
-      if (journal.resultPending(previous.id)) continue;
-      const publication =
-        previous.phase === "publishing" ? journal.publication(previous.id) : undefined;
-      if (publication?.refused !== undefined) journal.phase(previous.id, "interrupted");
-      else if (publication) resumed.push(previous);
-      else await recoverInterrupted(previous);
-    }
-    const leftover = (await broker.sweep?.()) ?? 0;
-    if (leftover)
-      report(new Error(`Runner stopped ${leftover} processes left by earlier executions`));
-  } catch (error) {
-    journal.close();
-    throw error;
-  }
+  const recovering = [...journal.executions(true), ...journal.unconfirmedTerminations()];
   const concurrency = () =>
     z
       .number()
@@ -418,10 +403,6 @@ export async function openRunnerRuntime(options: {
     notify = false,
     pushFailure?: PushFailure,
   ) {
-    if (journal.hasResult(entry.execution.id)) {
-      active.delete(key(entry.execution.command));
-      return deliverResult(entry.execution);
-    }
     const first = !entry.abort.signal.aborted;
     entry.abort.abort();
     if (first)
@@ -430,6 +411,8 @@ export async function openRunnerRuntime(options: {
           `Runner interrupted execution ${entry.execution.id} for run ${entry.execution.command.runId}: ${reason}`,
         ),
       );
+    journal.phase(entry.execution.id, "cleaning");
+    entry.execution.phase = "cleaning";
     entry.stopped ??= (async () => {
       await quiesce(entry);
       const publication =
@@ -447,7 +430,11 @@ export async function openRunnerRuntime(options: {
       } else if (notify) await fail(entry.execution, reason, pushFailure);
       journal.phase(entry.execution.id, "interrupted");
       entry.execution.phase = "interrupted";
-    })();
+      entry.teardownConfirmed = true;
+    })().catch((error) => {
+      entry.stopped = undefined;
+      throw error;
+    });
     await entry.stopped;
   }
   async function fail(execution: Execution, reason: string, pushFailure?: PushFailure) {
@@ -807,7 +794,17 @@ export async function openRunnerRuntime(options: {
   function quiesce(entry: Active) {
     entry.quiesced ??= (async () => {
       await broker.stop(entry.execution.id);
-    })();
+      // A start already in flight may complete after the first stop. Abort prevents
+      // further dispatch; stop again after preparation has settled.
+      if (entry.task) {
+        await entry.task;
+        await broker.stop(entry.execution.id);
+      }
+      journal.confirmTermination(entry.execution.command);
+    })().catch((error) => {
+      entry.quiesced = undefined;
+      throw error;
+    });
     return entry.quiesced;
   }
   function expired(entry: Active) {
@@ -867,7 +864,9 @@ export async function openRunnerRuntime(options: {
           [
             ...new Map(
               [
-                ...[...active.values()].map(({ execution }) => execution.command),
+                ...[...active.values()]
+                  .filter((entry) => !entry.teardownConfirmed)
+                  .map(({ execution }) => execution.command),
                 ...journal.pendingResults(),
               ].map((command) => [
                 key(command),
@@ -875,8 +874,10 @@ export async function openRunnerRuntime(options: {
               ]),
             ).values(),
           ],
+          journal.pendingTerminations(),
         );
         if (closed) return;
+        for (const entry of response.terminated ?? []) journal.terminationReported(entry);
         if (response.agents && options.agents)
           try {
             options.agents.apply(response.agents);
@@ -1089,7 +1090,17 @@ export async function openRunnerRuntime(options: {
     } catch (error) {
       journalCaught(error, "runner-runtime.launch.grant", entry.execution.command.itemId);
       if (!(error instanceof RemoteFailure))
-        await interrupt(entry, error instanceof Error ? error.message : "preparation failed", true);
+        void interrupt(
+          entry,
+          error instanceof Error ? error.message : "preparation failed",
+          true,
+        ).catch(
+          journalRejection(
+            "runner-runtime.launch.interrupt",
+            report,
+            entry.execution.command.itemId,
+          ),
+        );
       report(error);
     } finally {
       if (bundle) rmSync(bundle, { force: true });
@@ -1555,7 +1566,19 @@ export async function openRunnerRuntime(options: {
       if (command.type !== "cancel" && command.type !== "handover" && command.type !== "checkpoint")
         continue;
       const entry = active.get(`${command.runId}:${command.generation}`);
-      if (command.type === "cancel" && entry) await interrupt(entry, "cancelled by Paws");
+      if (command.type === "cancel" && entry)
+        void interrupt(entry, "cancelled by Paws").catch(
+          journalRejection(
+            "runner-runtime.cancel.interrupt",
+            report,
+            entry.execution.command.itemId,
+          ),
+        );
+      if (command.type === "cancel" && !entry) {
+        // No admitted execution or in-flight preparation can start this generation.
+        // Persist proof before acknowledging receipt, including across a lost heartbeat.
+        journal.confirmTermination(command);
+      }
       if (command.type === "handover") {
         if (entry?.execution.command.type === "run" && !entry.abort.signal.aborted) {
           entry.handover ??= { sent: 0 };
@@ -1576,8 +1599,15 @@ export async function openRunnerRuntime(options: {
     }
     for (const entry of active.values()) {
       if (entry.abort.signal.aborted) {
-        await settle([entry.stopped, entry.task]);
-        active.delete(key(entry.execution.command));
+        if (entry.teardownConfirmed && !entry.task) active.delete(key(entry.execution.command));
+        else if (!entry.stopped)
+          void interrupt(entry, "cleanup pending").catch(
+            journalRejection(
+              "runner-runtime.cleanup.interrupt",
+              report,
+              entry.execution.command.itemId,
+            ),
+          );
       } else if (entry.execution.phase === "preparing") {
         if (!entry.task) prepare(entry);
       }
@@ -1686,6 +1716,23 @@ export async function openRunnerRuntime(options: {
       );
     }
   }
+  for (const execution of recovering) {
+    const entry: Active = {
+      execution,
+      abort: new AbortController(),
+      deadline: 0,
+      accountedAt: monotonic(),
+      idleMs: 0,
+      workMs: 0,
+      workLimitMs: 0,
+    };
+    active.set(key(execution.command), entry);
+    void interrupt(entry, "the runner restarted while it was running", true).catch(
+      journalRejection("runner-runtime.recover.interrupt", report, execution.command.itemId),
+    );
+  }
+  // With restored work, each cleanup owns its processes. Sweeping must not block heartbeat.
+  if (!recovering.length) await broker.sweep?.();
   const heartbeat = setInterval(() => {
     void pulse().catch(journalRejection("runner-runtime.openRunnerRuntime.pulse", report, null));
   }, 15_000);
@@ -1735,14 +1782,20 @@ export async function openRunnerRuntime(options: {
         closed = true;
         clearInterval(heartbeat);
         clearInterval(watchdog);
-        await Promise.all([...active.values()].map((entry) => interrupt(entry, "runner stopping")));
-        await settle([
+        const cleanup = Promise.allSettled(
+          [...active.values()].map((entry) => interrupt(entry, "runner stopping")),
+        );
+        const draining = Promise.allSettled([
+          cleanup,
           ticking,
           pulsing,
           ...resultDeliveries.values(),
           ...[...active.values()].flatMap((entry) => [entry.task, entry.delivering]),
         ]);
-        journal.close();
+        // Return after a bounded shutdown without erasing unresolved cleanup. Keep
+        // the journal open until callbacks settle; a new process restores the same rows.
+        void draining.then(() => journal.close());
+        await settle([draining]);
       })();
       return stopping;
     },

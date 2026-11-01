@@ -138,11 +138,29 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     [otherRun.id, busyRunner, workspace.id, now + 60 * 60_000],
   );
 
+  let workNow = Date.now;
   const work = createRunnerWork({
     db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    now: () => workNow(),
   });
+  workNow = () => now - 120_000;
+  work.enqueue({
+    id: "cancel-other",
+    type: "cancel",
+    runId: otherRun.id,
+    generation: 1,
+    runnerId: busyRunner,
+    workspaceId: workspace.id,
+    issuedAt: now - 120_000,
+    expiresAt: now - 60_000,
+  });
+  work.acknowledge(busyRunner, "cancel-other");
+  workNow = Date.now;
+  work.heartbeat(busyRunner, 1, {}, undefined, undefined, undefined, undefined, [
+    { runId: otherRun.id, generation: 1 },
+  ]);
   work.heartbeat(freeRunner, 8);
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
@@ -334,9 +352,9 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     );
   } finally {
     controller.abort();
+    await orchestrator.shutdown().catch(() => undefined);
     sim.stopped = true;
     await runner;
-    await orchestrator.shutdown().catch(() => undefined);
     await loop;
     db.close();
     rmSync(root, { recursive: true, force: true });

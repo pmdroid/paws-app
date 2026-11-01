@@ -59,3 +59,6 @@ export const CLOSEOUT_POLICY_CHUNKS_RUNNER_VERSION: RunnerVersion = [0, 1, 53];
 /** First runner release retaining results across outages and counting only active awake work. */
 export const DURABLE_RESULTS_RUNNER_VERSION: RunnerVersion = [0, 1, 55];
 export const DURABLE_PUBLICATION_RUNNER_VERSION: RunnerVersion = [0, 1, 55];
+
+/** First runner release with durable cleanup and explicit broker termination reports. */
+export const CONFIRMED_TEARDOWN_RUNNER_VERSION: RunnerVersion = [0, 1, 55];

@@ -352,6 +352,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       runtimes?: readonly RunnerInstalledRuntime[],
       agents?: readonly RunnerInstalledAgent[],
       live?: readonly { runId: string; generation: number }[],
+      terminated?: readonly import("../runner-protocol").RunnerTermination[],
     ) {
       const body = {
         ...options.sampleHost?.(),
@@ -373,6 +374,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           ? withAgents
           : { ...withAgents, live: live.map(({ runId, generation }) => ({ runId, generation })) };
       const attempts: unknown[] = [
+        ...(terminated === undefined
+          ? []
+          : [{ ...withLive, repositories: options.allowedRepositories ?? null, terminated }]),
         { ...withLive, repositories: options.allowedRepositories ?? null },
         ...(live === undefined ? [] : [withLive]),
         withAgents,

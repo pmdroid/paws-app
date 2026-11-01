@@ -1,3 +1,4 @@
+import { RunnerCapacityWait } from "../core";
 import { journalCaught } from "../journal";
 import {
   listSkills,
@@ -407,8 +408,11 @@ export function createRunnerWork(options: {
           command.expiresAt <= at
         )
           throw new Error("Runner is not accepting this assignment.");
-        if (runnerCancelPending(db, command.runnerId, at))
-          throw new Error("Runner cancellation teardown is still pending.");
+        if (
+          runnerCancelPending(db, command.runnerId, at) &&
+          !runnerHasCapacity(db, command.runnerId, at, command.runId)
+        )
+          throw new RunnerCapacityWait([command.runnerId]);
         if (!runnerHasCapacity(db, command.runnerId, at, command.runId))
           throw new Error("Runner is occupied by active work.");
         if (command.type === "task")
@@ -426,6 +430,12 @@ export function createRunnerWork(options: {
           )
             throw new Error("Run assignment repository or task changed.");
         }
+        const pending = db
+          .query<{ runnerId: string }, [string]>(
+            "SELECT runner_id AS runnerId FROM runner_work WHERE run_id=? AND ended_at IS NOT NULL AND teardown_confirmed_at IS NULL",
+          )
+          .get(command.runId);
+        if (pending) throw new RunnerCapacityWait([pending.runnerId]);
         const previous = assignment(command.runId);
         if (
           command.generation !== (previous?.generation ?? 0) + 1 ||
@@ -438,7 +448,7 @@ export function createRunnerWork(options: {
         const envelope = queue(command);
         db.run(
           `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
-          VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET runner_id=excluded.runner_id,workspace_id=excluded.workspace_id,generation=excluded.generation,runner_fence=excluded.runner_fence,command_id=excluded.command_id,lease_until=excluded.lease_until,last_sequence=0,consumed_sequence=0,ended_at=NULL`,
+          VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET runner_id=excluded.runner_id,workspace_id=excluded.workspace_id,generation=excluded.generation,runner_fence=excluded.runner_fence,command_id=excluded.command_id,lease_until=excluded.lease_until,last_sequence=0,consumed_sequence=0,ended_at=NULL,teardown_confirmed_at=NULL`,
           [
             command.runId,
             command.runnerId,
@@ -581,6 +591,7 @@ export function createRunnerWork(options: {
       agents?: readonly RunnerInstalledAgent[],
       reported?: readonly { runId: string; generation: number }[],
       repositories?: readonly string[] | null,
+      terminated?: readonly { runId: string; generation: number; commandId: string }[],
     ) {
       const running =
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
@@ -615,6 +626,17 @@ export function createRunnerWork(options: {
               ? [parsed.data]
               : [];
           });
+        // A receipt ACK and an expired command never confirm worker termination.
+        // Only a generation/command-bound broker confirmation releases cleanup ownership.
+        for (const entry of terminated ?? []) {
+          db.run(
+            `UPDATE runner_work SET teardown_confirmed_at=COALESCE(teardown_confirmed_at,?)
+            WHERE runner_id=? AND run_id=? AND generation=? AND (command_id=? OR EXISTS(
+              SELECT 1 FROM runner_command c WHERE c.id=? AND c.runner_id=runner_work.runner_id
+                AND c.run_id=runner_work.run_id AND c.generation=runner_work.generation AND c.kind='cancel'))`,
+            [at, runnerId, entry.runId, entry.generation, entry.commandId, entry.commandId],
+          );
+        }
         const rows = db
           .query<Assignment, [string]>(
             `SELECT ${columns} FROM runner_work WHERE runner_id=? AND ended_at IS NULL`,
@@ -672,6 +694,7 @@ export function createRunnerWork(options: {
         return {
           leases,
           fenced,
+          ...(terminated === undefined ? {} : { terminated: [...terminated] }),
           ...(offlineCredit === undefined ? {} : offlineCredit),
           ...(concurrency === undefined ? {} : { concurrency }),
           ...(skills === undefined ? {} : { skills }),
@@ -760,8 +783,8 @@ export function createRunnerWork(options: {
       immediate(db, () => {
         if (
           db.run(
-            "UPDATE runner_work SET ended_at=? WHERE run_id=? AND generation=? AND ended_at IS NULL",
-            [now(), runId, generation],
+            "UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=? AND generation=? AND ended_at IS NULL",
+            [now(), now(), runId, generation],
           ).changes !== 1
         )
           throw new Error("Run assignment changed.");

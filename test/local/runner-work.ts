@@ -99,6 +99,21 @@ export async function probeRunnerWork(
     privateKey: keys.privateKey,
     now: () => now,
   });
+  const confirmStopped = (
+    runnerId: string,
+    command: { runId: string; generation: number; id: string },
+  ) =>
+    work.heartbeat(
+      runnerId,
+      1,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      [{ runId: command.runId, generation: command.generation, commandId: command.id }],
+    );
   const item = insertQueuedItem(db, { id: "fixture-item", now, sessionKey: "fixture-session" });
   const { run } = beginImplementRun(db, item.id, now);
   recordLinearInstallation(db, {
@@ -420,6 +435,7 @@ export async function probeRunnerWork(
       issuedAt: now,
       expiresAt: now + 5 * 60_000,
     };
+    confirmStopped(firstRunner, command);
     work.assign(secondCommand);
     assert.throws(() => work.issueGrant(grantInput), /fenced/);
     assert.equal(work.commands(firstRunner).length, 0);
@@ -478,6 +494,7 @@ export async function probeRunnerWork(
     });
     const third = { ...secondCommand, id: workspaceId(), generation: 3 };
     work.acknowledge(secondRunner, previousCancellationId);
+    confirmStopped(secondRunner, secondCommand);
     work.assign(third);
     const thirdGrant = work.issueGrant({ ...current, commandId: third.id, generation: 3 });
     control.setStatus(principal, secondRunner, "revoked");
@@ -680,8 +697,8 @@ export async function probeRunnerWork(
       const commandsBeforeTeardown = db
         .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command")
         .get()!.count;
-      assert.throws(() => work.assign(afterCancel), /cancellation/);
-      assert.throws(() => helpers.dispatch(helperInput), /cancellation/);
+      assert.throws(() => work.assign(afterCancel), /(?:cancellation|free slot)/);
+      assert.throws(() => helpers.dispatch(helperInput), /(?:cancellation|free slot)/);
       assert.equal(
         db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command").get()!
           .count,
@@ -695,11 +712,13 @@ export async function probeRunnerWork(
           privateKey: keys.privateKey,
           now: () => now,
         });
-        assert.throws(() => reconstructed.assign(afterCancel), /cancellation/);
+        assert.throws(() => reconstructed.assign(afterCancel), /(?:cancellation|free slot)/);
         reconstructed.acknowledge(firstRunner, cancellationId);
       } finally {
         waitingForTeardown.close();
       }
+      confirmStopped(firstRunner, released);
+      confirmStopped(firstRunner, waiting);
       work.assign(afterCancel);
       work.finish(waiting.runId, 2);
       control.setStatus(principal, firstRunner, "paused");
@@ -770,18 +789,19 @@ export async function probeRunnerWork(
         assert.equal(cancellationJoined, false);
         assert.throws(
           () => work.assign({ ...review, id: workspaceId(), generation: 6 }),
-          /cancellation/,
+          /(?:cancellation|free slot)/,
         );
       } finally {
         work.acknowledge(firstRunner, pendingCancellation.id);
         await Promise.all([cancelTask, repeatedCancelTask]);
       }
       assert.equal(cancellationJoined, true);
+      confirmStopped(firstRunner, { ...review, id: pendingCancellation.id, generation: 5 });
       work.assign({ ...review, id: workspaceId(), generation: 6 });
       work.finish(waiting.runId, 6);
       work.assign({ ...review, id: workspaceId(), generation: 7 });
       const unacknowledged = backend.cancelItem(waiting.itemId);
-      const rejected = assert.rejects(unacknowledged, /teardown is not acknowledged/);
+      const rejected = assert.rejects(unacknowledged, /free slot/);
       const expiredCancel = db
         .query<{ id: string; expiresAt: number }, [string]>(
           "SELECT id,expires_at AS expiresAt FROM runner_command WHERE run_id=? AND generation=7 AND kind='cancel' ORDER BY ordinal DESC LIMIT 1",
@@ -798,9 +818,9 @@ export async function probeRunnerWork(
             issuedAt: now,
             expiresAt: now + 60_000,
           }),
-        /cancellation/,
+        /(?:cancellation|free slot)/,
       );
-      assert.throws(() => helpers.dispatch(helperInput), /cancellation/);
+      assert.throws(() => helpers.dispatch(helperInput), /(?:cancellation|free slot)/);
       const retriedCancel = backend.cancelItem(waiting.itemId);
       const replacementCancellation = db
         .query<{ id: string }, [string]>(
@@ -819,6 +839,7 @@ export async function probeRunnerWork(
         null,
       );
       await backend.cancelItem(waiting.itemId);
+      confirmStopped(firstRunner, { ...review, id: replacementCancellation.id, generation: 7 });
       work.assign({
         ...review,
         id: workspaceId(),
