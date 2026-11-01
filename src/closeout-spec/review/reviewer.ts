@@ -118,6 +118,8 @@ export function createReviewer(runner: ReviewCommandRunner, options: ReviewerOpt
 export type ReviewCommandOptions = {
   agent: ReviewCommandAgent;
   model: string;
+  /** The reviewer profile's effort, passed to the review command. */
+  effort?: string;
   /** Executable to start. Defaults to `codex` or `claude`. */
   command?: string;
   base: string;
@@ -172,7 +174,10 @@ type CommandInput = {
 
 async function runCommand(input: CommandInput): Promise<ReviewCommandOutcome> {
   const { options } = input;
-  const command = options.command !== undefined ? { command: options.command } : {};
+  const command = {
+    ...(options.command !== undefined ? { command: options.command } : {}),
+    ...(options.effort !== undefined ? { effort: options.effort } : {}),
+  };
   const first = await invoke(
     input,
     reviewArgv({
