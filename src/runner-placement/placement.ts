@@ -1,4 +1,4 @@
-import { teamRepositoryAllowedSql } from "../db";
+import { runnerAllowsRepository, teamRepositoryAllowedSql } from "../db";
 import type { Database } from "bun:sqlite";
 import {
   getLinearSession,
@@ -335,6 +335,15 @@ export function createRunnerPlacement(options: {
         if (helper && !helper.available)
           return reject("helper already running or no free capacity");
         if (runner.id === input.handedOverFrom) return reject("handed the session over");
+        if (
+          current.repository &&
+          !runnerAllowsRepository(
+            db,
+            runner.id,
+            `${current.repository.owner}/${current.repository.repo}`,
+          )
+        )
+          return reject("repository not allowed on this runner");
         // Retry exclusions avoid failed hosts for unpinned work. A live run retries a fresh
         // session on its pinned host instead of moving its checkout and held slot.
         if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline)

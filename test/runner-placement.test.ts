@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   bindLinearSessionTask,
+  bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   insertRun,
@@ -12,6 +13,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  recordRunnerRepositories,
   syncWorkspaceMember,
 } from "../src/db";
 import {
@@ -152,6 +154,35 @@ test("Runner placement uses actual ownership, explicit sharing, provider evidenc
 test("a solo item runs on its owner's runners and not another member's shared runner", async () => {
   const placed = await placeItem();
   try {
+    expect(await placed.ids()).toEqual(["own", "second"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("work goes only to runners whose reported repositories include the item's repository", async () => {
+  const placed = await placeItem();
+  try {
+    bindWorkItemRepository(placed.db, "item", {
+      owner: "Acme",
+      repo: "Looky",
+      remoteUrl: "https://github.com/Acme/Looky.git",
+    });
+    placed.db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
+      placed.workspaceId,
+      "acme/looky",
+      "team",
+    ]);
+    const now = placed.now();
+    recordRunnerRepositories(placed.db, "own", ["acme/paws-app"], now);
+    const rejected: [string, string][] = [];
+    expect(await placed.ids({ onRejected: (id, reason) => rejected.push([id, reason]) })).toEqual([
+      "second",
+    ]);
+    expect(rejected).toContainEqual(["own", "repository not allowed on this runner"]);
+    recordRunnerRepositories(placed.db, "own", ["ACME/looky"], now);
+    recordRunnerRepositories(placed.db, "second", null, now);
     expect(await placed.ids()).toEqual(["own", "second"]);
   } finally {
     placed.db.close();

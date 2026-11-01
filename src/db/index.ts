@@ -743,6 +743,7 @@ export type {
   NpmVersionMetadata,
   StoredNpmPackage,
 } from "./agent-versions";
+export { recordRunnerRepositories, runnerAllowsRepository } from "./runner-repositories";
 export {
   listRunnerAgents,
   recordRunnerAgents,

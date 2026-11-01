@@ -4,6 +4,7 @@ import {
   recordRunAgentSetup,
   recordRunnerCapacity,
   recordRunnerAgents,
+  recordRunnerRepositories,
   recordRunnerRuntimes,
   recordRunnerSkills,
   runnerAgentTargets,
@@ -579,6 +580,7 @@ export function createRunnerWork(options: {
       runtimes?: readonly RunnerInstalledRuntime[],
       agents?: readonly RunnerInstalledAgent[],
       reported?: readonly { runId: string; generation: number }[],
+      repositories?: readonly string[] | null,
     ) {
       const running =
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
@@ -604,6 +606,7 @@ export function createRunnerWork(options: {
         if (installed) recordRunnerSkills(db, runnerId, installed, at);
         if (runtimes) recordRunnerRuntimes(db, runnerId, runtimes, at);
         if (agents) recordRunnerAgents(db, runnerId, agents, at);
+        if (repositories !== undefined) recordRunnerRepositories(db, runnerId, repositories, at);
         const targets: RunnerAgentTarget[] | undefined =
           agents &&
           runnerAgentTargets(db, runnerId).flatMap((target) => {
