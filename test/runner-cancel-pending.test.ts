@@ -19,8 +19,7 @@ import {
   runnerSlotFree,
   runnerSlotsHeldBetweenCommands,
 } from "../src/db";
-import { RunnerCapacityWait } from "../src/core";
-import { createRunnerWork, createRunnerWorkHttp } from "../src/runner-work";
+import { createRunnerWork, createRunnerWorkHttp, RunnerTeardownPending } from "../src/runner-work";
 import { CONFIRMED_TEARDOWN_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
 import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
 
@@ -111,7 +110,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
     expect(runnerSlotsHeldBetweenCommands(db, "box", now)).toBe(0);
     work.acknowledge("box", cancel.id);
-    expect(runnerCancelPending(db, "box", now)).toBe(true);
+    expect(runnerCancelPending(db, "box")).toBe(true);
     now = cancel.expiresAt + 1;
     const report = [{ runId: run.id, generation: 1 }];
     const host = { runnerVersion: CONFIRMED_TEARDOWN_RUNNER_VERSION.join(".") };
@@ -120,7 +119,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     db.close();
     db = openDatabase(path);
     work = controller();
-    expect(runnerCancelPending(db, "box", now)).toBe(true);
+    expect(runnerCancelPending(db, "box")).toBe(true);
     const next = {
       ...command,
       id: "work-2",
@@ -128,7 +127,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       issuedAt: now,
       expiresAt: now + 600_000,
     };
-    expect(() => work.assign(next)).toThrow(RunnerCapacityWait);
+    expect(() => work.assign(next)).toThrow(RunnerTeardownPending);
     // Absence also cannot erase the durable cleanup obligation.
     work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, []);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
@@ -144,7 +143,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     );
     expect(response!.status).toBe(200);
     expect(((await response!.json()) as { terminated: unknown }).terminated).toEqual([termination]);
-    expect(runnerCancelPending(db, "box", now)).toBe(false);
+    expect(runnerCancelPending(db, "box")).toBe(false);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(0);
     // Between-command ownership survives until the owning run ends.
     expect(runnerSlotsHeldBetweenCommands(db, "box", now)).toBe(1);
@@ -176,7 +175,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, [
       termination,
     ]);
-    expect(runnerCancelPending(db, "box", now)).toBe(true);
+    expect(runnerCancelPending(db, "box")).toBe(true);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
     // Generic release/recovery paths end authority but keep the slot until confirmation.
     releaseRunCapacity(db, run.id, now);
@@ -208,12 +207,14 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     };
     work.assign(undelivered);
     db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, retry.id]);
-    expect(runnerCancelPending(db, "box", now)).toBe(true);
+    expect(runnerCancelPending(db, "box")).toBe(true);
     expect(() => work.assign({ ...undelivered, id: "work-4", generation: 2 })).toThrow(
-      RunnerCapacityWait,
+      RunnerTeardownPending,
     );
-    now = undelivered.expiresAt;
-    expect(runnerCancelPending(db, "box", now)).toBe(false);
+    now = undelivered.expiresAt + 1;
+    expect(runnerCancelPending(db, "box")).toBe(true);
+    work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, []);
+    expect(runnerCancelPending(db, "box")).toBe(false);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(0);
     const reported = {
       ...undelivered,
@@ -227,8 +228,9 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       { runId: retry.id, generation: 2 },
     ]);
     releaseRunCapacity(db, retry.id, now);
-    now = reported.expiresAt;
-    expect(runnerCancelPending(db, "box", now)).toBe(true);
+    now = reported.expiresAt + 1;
+    work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, []);
+    expect(runnerCancelPending(db, "box")).toBe(true);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
   } finally {
     db.close();

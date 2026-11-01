@@ -1,4 +1,3 @@
-import { RunnerCapacityWait } from "../core";
 import { journalCaught } from "../journal";
 import {
   listSkills,
@@ -75,6 +74,13 @@ const columns =
  * heartbeat sampled just before the runner acknowledged the command.
  */
 export const RUNNER_LIVE_GRACE_MS = 30_000;
+
+export class RunnerTeardownPending extends Error {
+  override readonly name = "RunnerTeardownPending";
+  constructor(readonly runnerIds: readonly string[]) {
+    super(`Runner cancellation cleanup on ${runnerIds.join(", ")} is not confirmed yet`);
+  }
+}
 
 export class RunnerWorkFencedError extends Error {
   override readonly name = "RunnerWorkFencedError";
@@ -410,10 +416,10 @@ export function createRunnerWork(options: {
         )
           throw new Error("Runner is not accepting this assignment.");
         if (
-          runnerCancelPending(db, command.runnerId, at) &&
+          runnerCancelPending(db, command.runnerId) &&
           !runnerHasCapacity(db, command.runnerId, at, command.runId)
         )
-          throw new RunnerCapacityWait([command.runnerId]);
+          throw new RunnerTeardownPending([command.runnerId]);
         if (!runnerHasCapacity(db, command.runnerId, at, command.runId))
           throw new Error("Runner is occupied by active work.");
         if (command.type === "task")
@@ -431,8 +437,8 @@ export function createRunnerWork(options: {
           )
             throw new Error("Run assignment repository or task changed.");
         }
-        const owner = runTeardownOwner(db, command.runId, at);
-        if (owner !== null) throw new RunnerCapacityWait([owner]);
+        const owner = runTeardownOwner(db, command.runId);
+        if (owner !== null) throw new RunnerTeardownPending([owner]);
         const previous = assignment(command.runId);
         if (
           command.generation !== (previous?.generation ?? 0) + 1 ||
@@ -680,6 +686,8 @@ export function createRunnerWork(options: {
         }
         // A run Paws already ended that the runner still names keeps its process alive there, so
         // a conversation blocked on its cleanup stays blocked until a report leaves it out.
+        if (reported && terminated)
+          db.run("UPDATE runner SET terminations_reported_at=? WHERE id=?", [at, runnerId]);
         if (reported) {
           db.run("UPDATE runner SET live_reported_at=? WHERE id=?", [at, runnerId]);
           for (const { runId, generation } of reported)

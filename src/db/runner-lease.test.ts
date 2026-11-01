@@ -152,7 +152,11 @@ describe("the runner lease grace", () => {
 
   test("a finished command still holds its slot after the lease grace", () => {
     const { clock, db, run } = leased();
-    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [clock.now(), run.id]);
+    db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
+      clock.now(),
+      clock.now(),
+      run.id,
+    ]);
     clock.advance(PAST);
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(1);
     expect(getRun(db, run.id)?.status).toBe("active");
@@ -232,8 +236,18 @@ describe("slots held between commands", () => {
       const item = insertQueuedItem(db, { id: `item-${index}`, now: clock.now() });
       const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
       db.run(
-        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,?,?,?,?,?,?,?)",
-        [run.id, "runner", "workspace", 1, 0, `command-${index}`, clock.now(), clock.now()],
+        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,?,?,?,?,?,?,?,?)",
+        [
+          run.id,
+          "runner",
+          "workspace",
+          1,
+          0,
+          `command-${index}`,
+          clock.now(),
+          clock.now(),
+          clock.now(),
+        ],
       );
       return run;
     });
