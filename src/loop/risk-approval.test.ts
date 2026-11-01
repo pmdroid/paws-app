@@ -20,6 +20,7 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
+  listWorkItemEventRows,
   listOutbox,
   migrate,
   openDatabase,
@@ -330,6 +331,14 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
   expect(outcome).toBe("answered");
   expect(await approval(db, heads.s)).toBe("approved");
   expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+  expect(
+    listWorkItemEventRows(db, itemId)
+      .slice(-2)
+      .map((row) => [row.fromState, row.event, row.toState]),
+  ).toEqual([
+    ["merge_queue", "blocking_question", "awaiting_input"],
+    ["awaiting_input", "reverify_requested", "verifying"],
+  ]);
   expect(
     listJobs(db)
       .filter((job) => job.queue === JOB_KIND.reverify)

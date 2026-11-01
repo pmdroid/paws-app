@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, type WorkItemEvent, type WorkItemState } from "../core";
+import { JOB_KIND, type WorkItemState } from "../core";
 import {
   applyWorkItemEvent,
   closeoutPolicyDigests,
@@ -13,18 +13,14 @@ import {
   saveCheckpoint,
 } from "../db";
 
-/**
- * The existing edges that carry an item from where it waits to `merge_queue`, the way an accepted
- * turn goes: the turn ends, then Closeout's acceptance applies. No new edge and no second machine.
- */
-const TO_MERGE_QUEUE: Partial<Record<WorkItemState, readonly WorkItemEvent[]>> = {
-  queued: ["dispatched", "turn_ended", "closeout_accepted"],
-  running: ["turn_ended", "closeout_accepted"],
-  paused: ["resume", "turn_ended", "closeout_accepted"],
-  recovering: ["recovered", "turn_ended", "closeout_accepted"],
-  awaiting_input: ["answer_received", "turn_ended", "closeout_accepted"],
-  verifying: ["closeout_accepted"],
-};
+const ACCEPTS_FROM: ReadonlySet<WorkItemState> = new Set([
+  "queued",
+  "running",
+  "paused",
+  "recovering",
+  "awaiting_input",
+  "verifying",
+]);
 
 /**
  * Restart reasons that bring the agent something new: a person's reply, CI, review comments,
@@ -66,8 +62,8 @@ export function mergeAcceptedWork(
 ): boolean {
   return immediate(db, () => {
     const item = getWorkItem(db, itemId);
-    const path = item ? TO_MERGE_QUEUE[item.state] : undefined;
-    if (!item || item.cancelRequested || item.acceptedHead === null || !path) return false;
+    if (!item || item.cancelRequested || item.acceptedHead === null) return false;
+    if (!ACCEPTS_FROM.has(item.state)) return false;
     const head = item.acceptedHead;
     const verdict = closeoutPolicyDigests(db, itemId, head);
     if (verdict !== null && verdict.decision !== "accepted") return false;
@@ -84,7 +80,7 @@ export function mergeAcceptedWork(
       if (run?.status === "active" || run?.status === "provisioning")
         markRun(db, run.id, "ended", input.now);
     }
-    for (const event of path) applyWorkItemEvent(db, itemId, event, { now: input.now });
+    applyWorkItemEvent(db, itemId, "closeout_accepted", { now: input.now });
     saveCheckpoint(db, itemId, { ...item.checkpoint, phase: "merge_queue", wipCommit: head });
     leaveMergeQueue(db, itemId);
     const queued = getWorkItem(db, itemId)!;

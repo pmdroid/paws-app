@@ -441,8 +441,7 @@ export function reverifyBypassed(
   );
   if (recovery === undefined || item.state !== "awaiting_input") return false;
   db.run("UPDATE question SET handoff_version=0 WHERE id=?", [linkAsk.questionId]);
-  applyWorkItemEvent(db, item.id, "answer_received");
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  applyWorkItemEvent(db, item.id, "reverify_requested", { now });
   saveCheckpoint(db, item.id, {
     phase: "verifying",
     baseSha: recovery.base,
