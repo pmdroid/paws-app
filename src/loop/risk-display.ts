@@ -149,8 +149,23 @@ export class RiskDisplayReader {
     this.policyWatches.set(itemId, state);
     changed();
     try {
-      for (const file of files)
+      for (const file of files) {
         watchFile(file.path, { persistent: false, interval: 1000 }, changed);
+        try {
+          const eventWatch = watch(file.path, { persistent: false }, changed);
+          eventWatches.push(eventWatch);
+          eventWatch.on("error", (error) => {
+            state.watchFailed = true;
+            state.stale = true;
+            this.caught(error, "policyWatch", itemId);
+          });
+        } catch (error) {
+          // Absent optional files are covered by polling until they appear.
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+      // Cover edits between the first digest read and watcher registration.
+      changed();
     } catch (error) {
       state.watchFailed = true;
       state.stale = true;
