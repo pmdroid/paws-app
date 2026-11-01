@@ -400,8 +400,8 @@ describe("restart recovery", () => {
             });
             const expected = ids.map((id) =>
               id === "keep"
-                ? { type: "keep_place", mergeCallInFlight: inFlight }
-                : { type: "reverify" },
+                ? { type: "keep_place" as const, mergeCallInFlight: inFlight }
+                : { type: "reverify" as const },
             );
 
             expect(recoverOnStartup(db, clock.now())).toEqual(expected);
