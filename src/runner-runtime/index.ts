@@ -105,7 +105,8 @@ type AuthorizedRequest = <T>(operation: (token: string) => Promise<T>) => Promis
 type PushFailure = NonNullable<RunnerResult["pushFailure"]>;
 type Active = {
   execution: Execution;
-  interruption?: { reason: string; notify: boolean; pushFailure?: PushFailure };
+  interruption?: { reason: string; notify: boolean; pushFailure?: PushFailure; recover?: boolean };
+  restoring?: Promise<void>;
   abort: AbortController;
   deadline: number;
   accountedAt: number;
@@ -276,13 +277,22 @@ export async function openRunnerRuntime(options: {
       Promise.allSettled(work),
       new Promise<void>((resolve) => setTimeout(resolve, waitMs).unref?.()),
     ]);
-  const resumed: Execution[] = [];
   const restored = journal.executions(true);
-  const recovering = restored.filter((execution) => !journal.resultPending(execution.id));
   const historical = [
     ...restored.filter((execution) => journal.resultPending(execution.id)),
     ...journal.unconfirmedTerminations(),
   ];
+  const resumed: Execution[] = [];
+  const recovering: { execution: Execution; refused: boolean }[] = [];
+  for (const previous of restored) {
+    if (journal.resultPending(previous.id)) continue;
+    const publication =
+      previous.phase === "publishing" || previous.phase === "cleaning"
+        ? journal.publication(previous.id)
+        : undefined;
+    if (publication && publication.refused === undefined) resumed.push(previous);
+    else recovering.push({ execution: previous, refused: Boolean(publication) });
+  }
   const concurrency = () =>
     z
       .number()
@@ -314,6 +324,7 @@ export async function openRunnerRuntime(options: {
         `Runner resumes publishing the finished turn of execution ${execution.id} for run ${execution.command.runId} after a restart`,
       ),
     );
+    const restoring = stopRestored(execution);
     active.set(key(execution.command), {
       execution,
       abort: new AbortController(),
@@ -322,7 +333,21 @@ export async function openRunnerRuntime(options: {
       idleMs: 0,
       workMs: 0,
       workLimitMs: Math.max(0, execution.command.expiresAt - now()),
+      restoring,
+      dispatching: restoring,
     });
+  }
+  async function stopRestored(execution: Execution) {
+    for (;;) {
+      if (closed) return;
+      try {
+        await broker.stop(execution.id);
+        return;
+      } catch (error) {
+        journalCaught(error, "runner-runtime.restore.stop", execution.command.itemId);
+        await new Promise<void>((resolve) => setTimeout(resolve, 15_000).unref?.());
+      }
+    }
   }
   /**
    * While Paws is unreachable, move the deadline with `creditedLeaseUntil` and the alive mark
@@ -409,6 +434,7 @@ export async function openRunnerRuntime(options: {
     reason: string,
     notify = false,
     pushFailure?: PushFailure,
+    recover = false,
   ) {
     const first = !entry.abort.signal.aborted;
     entry.abort.abort();
@@ -418,19 +444,23 @@ export async function openRunnerRuntime(options: {
           `Runner interrupted execution ${entry.execution.id} for run ${entry.execution.command.runId}: ${reason}`,
         ),
       );
-    if (!entry.interruption || (notify && !entry.interruption.notify))
-      entry.interruption = { reason, notify, pushFailure };
+    entry.interruption ??= { reason, notify, pushFailure, recover };
     journal.phase(entry.execution.id, "cleaning");
     entry.execution.phase = "cleaning";
     entry.stopped ??= (async () => {
       await quiesce(entry);
       const intent = entry.interruption!;
       const publication =
-        !intent.pushFailure && !journal.hasResult(entry.execution.id)
+        !intent.recover && !intent.pushFailure && !journal.hasResult(entry.execution.id)
           ? journal.publication(entry.execution.id)
           : undefined;
-      if (publication && closed) return;
-      if (publication && (!intent.notify || intent.reason === LEASE_PASSED)) {
+      if (publication && closed) {
+        journal.phase(entry.execution.id, "publishing");
+        entry.execution.phase = "publishing";
+        return;
+      }
+      if (intent.recover && !intent.notify) await recoverInterrupted(entry.execution);
+      else if (publication && (!intent.notify || intent.reason === LEASE_PASSED)) {
         journal.refusePublication(entry.execution.id, intent.reason);
         report(
           new Error(
@@ -1711,6 +1741,7 @@ export async function openRunnerRuntime(options: {
   }
   async function advance(entry: Active) {
     try {
+      await entry.restoring;
       if (journal.hasResult(entry.execution.id)) {
         active.delete(key(entry.execution.command));
         await deliverResult(entry.execution);
@@ -1735,7 +1766,7 @@ export async function openRunnerRuntime(options: {
       );
     }
   }
-  for (const execution of recovering) {
+  for (const { execution, refused } of recovering) {
     const entry: Active = {
       execution,
       abort: new AbortController(),
@@ -1746,9 +1777,13 @@ export async function openRunnerRuntime(options: {
       workLimitMs: 0,
     };
     active.set(key(execution.command), entry);
-    void interrupt(entry, "the runner restarted while it was running", true).catch(
-      journalRejection("runner-runtime.recover.interrupt", report, execution.command.itemId),
-    );
+    void interrupt(
+      entry,
+      "the runner restarted; stopping its worker",
+      false,
+      undefined,
+      !refused,
+    ).catch(journalRejection("runner-runtime.recover.interrupt", report, execution.command.itemId));
   }
   const sweep = async () => {
     const leftover = (await broker.sweep?.()) ?? 0;

@@ -629,13 +629,14 @@ try {
     const observedCleanup = () => cleanupEntered;
     for (let i = 0; i < 2000 && !observedCleanup(); i++) await Bun.sleep(5);
     assert(cleanupEntered, "restart must reach broker cleanup");
-    assert(!opened, "restart must wait for confirmed cleanup");
-    assert.equal(heartbeats, beforeHeartbeat);
-    assert.equal(executions.size, beforeExecutions);
+    runtime = await reopening;
+    assert(opened, "restart keeps heartbeats running while cleanup is unconfirmed");
+    for (let i = 0; i < 5; i++) await runtime.tick();
+    assert(heartbeats > beforeHeartbeat, "heartbeats continue while cleanup is unconfirmed");
+    assert.equal(executions.size, beforeExecutions, "no new worker before confirmed cleanup");
     assert.equal(accepted.length, beforeAccepted);
     releaseCleanup!();
     cleanupGate = undefined;
-    runtime = await reopening;
     await until(
       "replacement implementation",
       () => !!activeCommand("run") && activeCommand("run")!.id !== old.id,

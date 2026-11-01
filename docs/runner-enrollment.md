@@ -140,9 +140,11 @@ reuse the execution and command identifiers so Paws recognizes repeated delivery
 
 A crash and a graceful stop of `paws-runner.service` end an unfinished turn the
 same way. A graceful stop interrupts the worker. After a crash, the runner stops
-the worker left behind before it sends its first heartbeat, and a failed stop
-fails startup. Neither stop posts a result for an unfinished turn, so the next
-heartbeat leaves the work out. Paws fences that work as lost and retries it
+the worker left behind in the background, so heartbeats continue. While that
+stop is pending or failing, the runner keeps naming the run in `live`, keeps its
+slot, and retries the stop. Neither stop posts a result for an unfinished turn,
+so once the stop succeeds the next heartbeat leaves the work out. Paws fences
+that work as lost and retries it
 through its usual infrastructure retries, continuing from the item's branch.
 Linear shows "The runner lost this run after it restarted; continuing from the
 branch." A result the runner had saved is delivered unchanged. An agent error
@@ -155,8 +157,9 @@ A finished turn starts publishing by recording the worker's outcome in the
 runner's execution journal. Publishing uploads the agent session, pushes the
 candidate and drains the transcript. After the push, the journal records the
 commit the branch got. A crash or a graceful stop during publishing keeps that
-record. On the next start, the runner names the run in its first heartbeat and
-resumes publishing from the stored session and transcript offsets. The turn is
+record. On the next start, the runner names the run in its first heartbeat,
+stops any worker left behind, and then resumes publishing from the stored
+session and transcript offsets. The turn is
 not run again. A push whose result was not recorded is sent again. It finds the
 candidate, or its copy rebased onto a moved branch, already there and records
 that commit. Paws then gets the worker's own outcome with the published commit.
