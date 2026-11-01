@@ -54,6 +54,7 @@ import { renderIntake } from "./intake";
 import { renderPushOutages } from "./push-outage";
 import { renderPolicyRunnerWarnings } from "./policy-runners";
 import { itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
+import { isRunningNow, isWaitingNow, itemNowLine, itemPill, itemTime } from "./doing";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
@@ -252,10 +253,13 @@ function viewOverview(snapshot: StatusSnapshot): string {
     );
   });
   const queued = snapshot.items.filter((item) => item.state === "queued").length;
+  const running = work.filter(isRunningNow).length;
+  const now = Date.parse(snapshot.generatedAt);
   const merging = snapshot.items.filter((item) => item.state === "merge_queue").length;
   const summary = [
     `${attention.length} need${attention.length === 1 ? "s" : ""} you`,
-    `${work.length} working`,
+    `${running} working`,
+    ...(work.length > running ? [`${work.length - running} waiting or stalled`] : []),
     ...(queued ? [`${queued} queued`] : []),
     ...(merging ? [`${merging} waiting to merge`] : []),
   ].join(" · ");
@@ -272,7 +276,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
               .slice(0, 6)
               .map((item) => {
                 const href = routeHref({ view: "issues", id: item.id });
-                return `<li class="overview-row"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${itemAge(item)}${statePill(item.state, itemLabel(item.state))}</li>`;
+                return `<li class="overview-row"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${itemTime(item, now)}${itemPill(item)}</li>`;
               })
               .join(
                 "",
@@ -356,7 +360,7 @@ function projectFilter(items: readonly StatusItem[]): string {
 function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
   const blockers = item.blockers;
   const reason = waitReason(item) ?? (blockers.length ? `Blocked by ${blockers.join(", ")}` : null);
-  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${itemAge(item)}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
+  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${itemPill(item)}<div class="issue-facts">${issueMeta(item)}${itemTime(item, Date.parse(snapshot.generatedAt))}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
 }
 
 function issueMeta(item: StatusItem): string {
@@ -415,8 +419,9 @@ function issuePage(
   const blocked = snapshot.blocks;
   return `${pageHeading("issues")}<article class="run-page issue-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
-    <header class="run-heading"><div class="row wrap">${run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span></div>
+    <header class="run-heading"><div class="row wrap">${isWaitingNow(item) ? itemPill(item) : run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span></div>
       <h1><span class="lin-id">${esc(item.id)}</span> ${esc(item.title)}</h1>
+      ${itemNowLine(item, Date.parse(snapshot.generatedAt))}
       ${issueFacts(snapshot, item, run, blocked)}
       ${item.links.length ? `<div class="row wrap">${linkButtons(item.links)}</div>` : ""}
     </header>
