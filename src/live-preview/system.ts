@@ -151,12 +151,16 @@ export function createLivePreviewSystem(options: { lockDirectory: string }): Liv
     },
     tailscale(args) {
       return new Promise((done) => {
-        execFile("tailscale", [...args], { timeout: 30_000 }, (error, stdout, stderr) =>
-          done({
-            code: error ? (typeof error.code === "number" ? error.code : 1) : 0,
-            stdout,
-            stderr: stderr || (error?.message ?? ""),
-          }),
+        execFile(
+          Bun.which("tailscale") ?? "/usr/bin/tailscale",
+          [...args],
+          { timeout: 30_000 },
+          (error, stdout, stderr) =>
+            done({
+              code: error ? (typeof error.code === "number" ? error.code : 1) : 0,
+              stdout,
+              stderr: stderr || (error?.message ?? ""),
+            }),
         );
       });
     },
