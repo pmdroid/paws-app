@@ -280,8 +280,13 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
   const h = (harness = await mergeHarness());
   const item = await h.addItem("ENG-231");
   let stopped = false;
+  let squashing = false;
+  // The squash acquires its merge token before its final fetch and readiness reads.
+  h.state.beforeMergeToken = (purpose) => {
+    if (purpose === "merge") squashing = true;
+  };
   h.state.pullHead = (head) => {
-    if (mergeCallInFlight(h.db, item.id) && !stopped) {
+    if (squashing && !stopped) {
       stopped = true;
       applyLinearCommand(h.db, {
         type: "stop",

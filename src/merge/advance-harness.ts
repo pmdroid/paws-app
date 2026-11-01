@@ -155,7 +155,8 @@ export async function mergeHarness(
     /** GitHub merges the pull request, but its answer to the merge call never arrives. */
     dropMergeResponse: false,
     mergeResponseStatus: 200,
-    beforeMergeToken: (): void => {},
+    /** Runs before each operation token the lane acquires, with its purpose. */
+    beforeMergeToken: (_purpose?: string): void => {},
     beforeGit: (_args: string[]): void => {},
     /** GitHub's `mergeable` before it has computed one: null reads to answer first, per pull. */
     lazyMergeable: new Map<number, number>(),
@@ -379,7 +380,16 @@ export async function mergeHarness(
     return {
       ask,
       now: () => clock.now(),
-      stopped: () => state.stopped,
+      // Like the orchestrator, a stop that cancelled the item stops the lane as well as the flag.
+      stopped: () => {
+        const current = getWorkItem(db, id);
+        return (
+          state.stopped ||
+          current === null ||
+          current.state === "cancelled" ||
+          current.cancelRequested
+        );
+      },
       session: (current) => current.sessionKey,
       fetchMain: async () => {
         await git(item.worktree, "fetch", "-q", bare, "+refs/heads/main:refs/paws/upstream-main");
@@ -408,8 +418,8 @@ export async function mergeHarness(
             client,
             tokenProvider: {
               mode: "app",
-              tokenFor: async () => {
-                state.beforeMergeToken();
+              tokenFor: async (purpose: string) => {
+                state.beforeMergeToken(purpose);
                 return "ghs_test";
               },
             },
