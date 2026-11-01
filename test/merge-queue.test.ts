@@ -116,3 +116,14 @@ test("a fix sent back from the merge queue or its re-verify counts as merge-queu
     db.close();
   }
 });
+
+test("mixed-case bindings join one ordered queue and keep their places", () => {
+  const db = tempDb();
+  ready(db, "first", "Acme/APP", 1);
+  ready(db, "second", "acme/app", 2);
+  joinMergeQueue(db, { itemId: "first", repository: "ACME/App", now: 3 });
+  expect(listMergeQueues(db).map((e) => [e.itemId, e.repository, e.position])).toEqual([
+    ["first", "acme/app", 1],
+    ["second", "acme/app", 2],
+  ]);
+});

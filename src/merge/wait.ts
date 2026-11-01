@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND } from "../core";
+export { wakeMergesBehind } from "../db";
 import { latestGitHubDelivery, parkLeasedJob, type Job } from "../db";
 
 export const MERGE_CI_POLL_MS = 10_000;
@@ -88,16 +88,6 @@ function park(
   now: number,
 ): "parked" | "lost" {
   return parkLeasedJob(db, job, { runAt, payload, attempts: 0, now }) ? "parked" : "lost";
-}
-
-/** A place opened or a task merged: the tasks behind it, or waiting for it, look again now. */
-export function wakeMergesBehind(db: Database, now: number): void {
-  db.run(
-    `UPDATE job SET run_at = MIN(run_at, ?)
-     WHERE queue = ? AND status = 'pending'
-       AND json_extract(payload, '$.mergeWait.reason') IN ('ahead','dependencies')`,
-    [now, JOB_KIND.merge],
-  );
 }
 
 export function ciWaitVerification(payload: unknown): CiWaitVerification | undefined {

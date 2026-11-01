@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { JOB_KIND } from "../core";
 
 /**
  * A task's place in its repository's merge queue. The first task in `merge_queue` moves; the
@@ -35,7 +36,7 @@ export function joinMergeQueue(
 ): void {
   db.run("INSERT OR IGNORE INTO merge_queue_entry(item_id,repository,ready_at) VALUES(?,?,?)", [
     input.itemId,
-    input.repository,
+    input.repository.toLowerCase(),
     input.now,
   ]);
 }
@@ -147,4 +148,14 @@ export function mergeQueuePosition(
   held?: (itemId: string) => boolean,
 ): MergeQueuePosition | null {
   return listMergeQueues(db, held).find((entry) => entry.itemId === itemId) ?? null;
+}
+
+/** A holder departed or changed eligibility: parked followers check again now. */
+export function wakeMergesBehind(db: Database, now: number): void {
+  db.run(
+    `UPDATE job SET run_at = MIN(run_at, ?)
+     WHERE queue = ? AND status = 'pending'
+       AND json_extract(payload, '$.mergeWait.reason') IN ('ahead','dependencies')`,
+    [now, JOB_KIND.merge],
+  );
 }

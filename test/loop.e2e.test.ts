@@ -4461,15 +4461,39 @@ for (const race of ["token", "merge", "followup"] as const) {
           ? linearEvent("prompted", "Also implement a different follow-up", null, "publication")
           : linearEvent("prompted", null, "stop"),
       );
-      if (race !== "followup")
+      if (race === "token")
         for (let i = 0; i < 1_000 && getWorkItem(db, item.id)?.state !== "cancelled"; i++)
           await Bun.sleep(1);
-      if (race !== "followup") expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
-      else await Bun.sleep(10);
+      if (race === "token") expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
+      else if (race === "merge") {
+        await stopped;
+        expect(getWorkItem(db, item.id)).toMatchObject({
+          state: "merge_queue",
+          cancelRequested: false,
+        });
+      } else await Bun.sleep(10);
       release.resolve();
       await publication;
       await stopped;
-      expect(getWorkItem(db, item.id)?.state).toBe(race === "followup" ? "merged" : "cancelled");
+      expect(getWorkItem(db, item.id)?.state).toBe(race === "token" ? "cancelled" : "merged");
+      if (race === "merge") {
+        db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.command]);
+        await tickWithRestarts(jobs, orchestrator, db);
+        expect(
+          listOutbox(db).filter(
+            (row) =>
+              row.status !== "dropped" &&
+              String((row.payload as { body?: string }).body).includes("was already merged"),
+          ),
+        ).toHaveLength(1);
+        expect(
+          listOutbox(db).filter(
+            (row) =>
+              row.status !== "dropped" &&
+              String((row.payload as { body?: string }).body).startsWith("Merged #"),
+          ),
+        ).toHaveLength(1);
+      }
       if (race === "followup") {
         const items = db
           .query<{ id: string; state: string }, []>("SELECT id, state FROM work_item")

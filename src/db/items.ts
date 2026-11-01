@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { halt } from "./halt";
+import { wakeMergesBehind } from "./merge-queue";
 import { readCheckpoint } from "./checkpoint";
 import {
   awakeCategory,
@@ -30,7 +31,7 @@ import { enqueueOutboxOnce } from "./outbox";
 import { getLinearSessionGeneration } from "./linear-sessions";
 import { withOpenFindings } from "./open-findings";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
-import { getConfirmedRemoteMerge } from "./remote-merges";
+import { endMergeCall, getConfirmedRemoteMerge, mergeStopRequested } from "./remote-merges";
 import { immediate } from "./tx";
 import { runnerLeaseCutoff } from "./runner-lease";
 
@@ -207,6 +208,7 @@ export function applyWorkItemEvent(
     if (updated.changes === 0) {
       throw new Error(`work item ${id} changed before ${event}`);
     }
+    if (current.state !== result.to) wakeMergesBehind(db, record.now ?? Date.now());
     const next = getWorkItem(db, id);
     if (next === null) throw new Error(`work item ${id} not found`);
     db.run(
@@ -767,7 +769,7 @@ export function completeMergedItem(
       target: "linear",
       op: "activity",
       orderingKey: sessionId,
-      delivery: "ordered",
+      delivery: mergeStopRequested(db, current.id) ? "stop" : "ordered",
       generation,
       idempotencyKey: `merged:${current.id}:${generation}`,
       payload: {
@@ -783,7 +785,8 @@ export function completeMergedItem(
       now: input.now,
     });
     input.announce?.(current);
-    const merged = applyWorkItemEvent(db, current.id, "merge_accepted");
+    const merged = applyWorkItemEvent(db, current.id, "merge_accepted", { now: input.now });
+    endMergeCall(db, current.id);
     endActiveRun(db, current.currentRunId, input.now);
     cancelAdvancingJobs(db, current.id, "merged", input.now);
     return merged;
