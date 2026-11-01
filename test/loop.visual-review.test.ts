@@ -1383,8 +1383,8 @@ function attachLease(db: Database, runId: string): string {
   );
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", ["runner-1"]);
   db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,?,?,1,0,?,?,0)",
-    [runId, "runner-1", "ws-1", `cmd-${runId}`, now + 60_000],
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence,teardown_confirmed_at) VALUES(?,?,?,1,0,?,?,0,?)",
+    [runId, "runner-1", "ws-1", `cmd-${runId}`, now + 60_000, now],
   );
   return "runner-1";
 }

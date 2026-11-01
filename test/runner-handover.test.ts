@@ -149,7 +149,21 @@ async function setup() {
         });
         if (verified.ok) {
           work.acknowledge(runnerId, verified.command.id);
-          return verified.command;
+          const command = verified.command;
+          if (command.type === "cancel")
+            work.heartbeat(
+              runnerId,
+              1,
+              {},
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              [{ runId: command.runId, generation: command.generation, commandId: command.id }],
+            );
+          return command;
         }
       }
       await delay(1);
