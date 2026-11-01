@@ -154,7 +154,9 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       )
       .get()!.confirmed;
     now++;
-    work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], [termination]);
+    work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, [
+      termination,
+    ]);
     expect(
       db
         .query<{ confirmed: number }, []>(
@@ -171,24 +173,63 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       expiresAt: now + 60_000,
     });
     work.acknowledge("box", cancel.id);
-    work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], [termination]);
+    work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, [
+      termination,
+    ]);
     expect(runnerCancelPending(db, "box", now)).toBe(true);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
     // Generic release/recovery paths end authority but keep the slot until confirmation.
     releaseRunCapacity(db, run.id, now);
     expect(runnerSlotFree(db, ["box"], now)).toBe(false);
-    work.heartbeat(
-      "box",
-      1,
-      host,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      [],
-      [{ runId: run.id, generation: 2, commandId: "cancel-2" }],
-    );
+    work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, [
+      { runId: run.id, generation: 2, commandId: "cancel-2" },
+    ]);
     expect(runnerSlotFree(db, ["box"], now)).toBe(true);
+    const other = insertQueuedItem(db, { id: "item-2", now, sessionKey: "session-2" });
+    const retry = beginImplementRun(db, other.id, now).run;
+    recordLinearInstallation(db, {
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      sessionId: "session-2",
+      teamId: "team",
+      observedAtMs: now,
+    });
+    bindLinearSessionTask(db, "session-2", other.delegationId, { actorId: "owner" });
+    bindWorkItemRepository(db, other.id, repository);
+    const undelivered = {
+      ...command,
+      id: "work-3",
+      runId: retry.id,
+      itemId: other.id,
+      generation: 1,
+      issuedAt: now,
+      expiresAt: now + 120_000,
+    };
+    work.assign(undelivered);
+    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, retry.id]);
+    expect(runnerCancelPending(db, "box", now)).toBe(true);
+    expect(() => work.assign({ ...undelivered, id: "work-4", generation: 2 })).toThrow(
+      RunnerCapacityWait,
+    );
+    now = undelivered.expiresAt;
+    expect(runnerCancelPending(db, "box", now)).toBe(false);
+    expect(runnerOccupancy(db, "box", now).occupied).toBe(0);
+    const reported = {
+      ...undelivered,
+      id: "work-4",
+      generation: 2,
+      issuedAt: now,
+      expiresAt: now + 120_000,
+    };
+    work.assign(reported);
+    work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [
+      { runId: retry.id, generation: 2 },
+    ]);
+    releaseRunCapacity(db, retry.id, now);
+    now = reported.expiresAt;
+    expect(runnerCancelPending(db, "box", now)).toBe(true);
+    expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
   } finally {
     db.close();
     rmSync(root, { recursive: true, force: true });

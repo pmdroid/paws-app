@@ -61,6 +61,7 @@ export {
 } from "./review-replies";
 export {
   runnerCancelPending,
+  runTeardownOwner,
   recordRunnerCapacity,
   runnerHasCapacity,
   runnerOccupancy,
