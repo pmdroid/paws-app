@@ -143,8 +143,7 @@ function hasPendingTransientRetry(db: Database, item: WorkItemRecord): boolean {
          AND json_extract(payload, '$.itemId') = ? AND json_extract(payload, '$.reason') = ?
          AND (item_version IS NULL OR item_version = ?)`,
       )
-      .get(JOB_KIND.resume, JOB_KIND.reverify, item.id, "transient_failure", item.version) !==
-    null
+      .get(JOB_KIND.resume, JOB_KIND.reverify, item.id, "transient_failure", item.version) !== null
   );
 }
 
