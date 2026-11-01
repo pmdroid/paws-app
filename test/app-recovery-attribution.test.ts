@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWorktree, ensureBareMirror, git, worktreePath } from "../src/acp";
-import { FakeClock, JOB_KIND, LONG_SLEEP_MS } from "../src/core";
+import { FakeClock, JOB_KIND } from "../src/core";
 import {
   beginImplementRun,
   getRun,
@@ -23,7 +23,7 @@ for (const state of [
   "paused",
   "awaiting_input",
 ] as const) {
-  test(`legacy App ${state} work cannot enqueue fresh-main recovery without a run commit policy`, async () => {
+  test(`a clock gap over two hours leaves legacy App ${state} work, its run and its worktree as they were`, async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "paws-app-recovery-")));
     const home = join(root, "home");
     mkdirSync(join(home, ".kyotoagent"), { recursive: true });
@@ -87,27 +87,29 @@ for (const state of [
                 ? (["turn_ended", "closeout_accepted"] as const)
                 : [])
         applyWorkItemEvent(paws.db, "legacy", event);
-      clock.sleep(LONG_SLEEP_MS + 1);
+      const held = getWorkItem(paws.db, "legacy")!;
+      const runStatus = getRun(paws.db, run.id)?.status;
+      const outbox = listOutbox(paws.db).length;
+      clock.sleep(2 * 60 * 60_000 + 1);
       for (let i = 0; i < 100 && paws.db.query("SELECT 1 FROM wake").get() === null; i++)
         await Bun.sleep(10);
       expect(paws.db.query("SELECT 1 FROM wake").get()).not.toBeNull();
       expect(
-        listJobs(paws.db).some((job) => job.queue === JOB_KIND.start && job.status === "pending"),
-      ).toBe(false);
-      expect(getWorkItem(paws.db, "legacy")?.state).toBe(
-        state === "paused" || state === "awaiting_input" ? state : "failed",
-      );
-      expect(getRun(paws.db, run.id)?.status).toBe("lost");
-      expect(
-        listOutbox(paws.db).some((row) =>
-          JSON.stringify(row.payload).includes("valid GitHub App commit policy"),
-        ),
-      ).toBe(true);
-      expect(
-        listOutbox(paws.db).some((row) =>
-          JSON.stringify(row.payload).includes("Restarting from fresh main"),
+        listJobs(paws.db).some(
+          (job) =>
+            (job.queue === JOB_KIND.start || job.queue === JOB_KIND.resume) &&
+            job.status === "pending",
         ),
       ).toBe(false);
+      expect(getWorkItem(paws.db, "legacy")).toMatchObject({
+        state: held.state,
+        currentRunId: run.id,
+        checkpoint: held.checkpoint,
+        acceptedHead: held.acceptedHead,
+        branchName: "paws/legacy",
+      });
+      expect(getRun(paws.db, run.id)?.status).toBe(runStatus);
+      expect(listOutbox(paws.db)).toHaveLength(outbox);
       expect((await git(["-C", tree, "rev-parse", "HEAD"], { env })).trim()).toBe(before);
       expect(readFileSync(join(tree, "dirty"), "utf8")).toBe("preserve exact legacy WIP");
     } finally {

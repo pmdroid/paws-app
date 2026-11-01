@@ -8,8 +8,9 @@ export type WakeSample = {
 };
 
 /**
- * A stall moves the wall clock and the monotonic clock together.
- * Laptop sleep moves only the wall clock. The gap is the time we were asleep.
+ * A stall moves the wall clock and the monotonic clock together. A host suspension or a
+ * wall-clock correction moves only the wall clock. The gap is the difference; it says nothing
+ * about whether any worker, lease or candidate changed meanwhile.
  */
 export class WakeDetector {
   private lastWall: number | null = null;

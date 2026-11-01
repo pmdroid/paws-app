@@ -76,7 +76,7 @@ export {
   RunnerConcurrencyError,
   setRunnerConcurrency,
 } from "./runner-capacity";
-export { applyDecision, postPauseNote, type WakeStamp } from "./decisions";
+export { applyDecision } from "./decisions";
 export { OutboxDispatcher, type OutboxHandler, type OutboxDeliveryContext } from "./dispatcher";
 export {
   completeAnswerTask,
@@ -119,7 +119,6 @@ export {
   markJobAwakeWait,
   applyWorkItemEvent,
   awakeBreakdown,
-  clearProgress,
   configureWorkItem,
   deferWorkItem,
   extendAwakeCap,

@@ -78,22 +78,18 @@ export {
   type CommandListener,
   type LinearCommand,
 } from "./commands";
-export { LONG_SLEEP_MS, WAKE_GAP_MS } from "./limits";
+export { WAKE_GAP_MS } from "./limits";
 export { JOB_KIND, MERGE_WORK, OUTBOX_ACTIVITY, isMergeWork } from "./kinds";
 export {
   AWAKE_ITEM_STATES,
   decideStartup,
-  decideWake,
-  formatPauseNote,
   hasVerificationCandidate,
   isAwakeItemState,
   awakeCategory,
   countsAwakeTime,
   type AwakeCategory,
   isInFlightItemState,
-  pauseOutcome,
   type StartupDecision,
-  type WakeDecision,
 } from "./recovery";
 export { handoffNote } from "./handoff";
 

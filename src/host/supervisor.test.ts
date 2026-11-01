@@ -4,12 +4,13 @@ import {
   DEFAULT_MAX_TURNS,
   FakeClock,
   JOB_KIND,
-  LONG_SLEEP_MS,
   type Checkpoint,
+  type Clock,
 } from "../core";
 import {
   applyWorkItemEvent as applyEvent,
   beginImplementRun as beginRun,
+  beginMergeCall,
   claimNextJob,
   completeJob,
   enqueueJob,
@@ -70,21 +71,11 @@ const listJobs = (db: Parameters<typeof storedJobs>[0]) =>
 
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 3, baseSha: "main" };
 
-function boot(
-  agentAlive: (runId: string) => boolean = () => true,
-  restartFromMain?: (item: { id: string; branchName: string }) => void,
-) {
+function boot() {
   const clock = new FakeClock(1_000_000);
   const db = openDatabase(":memory:");
   migrate(db);
-  const host = new HostSupervisor(
-    db,
-    clock,
-    new WakeDetector(clock),
-    agentAlive,
-    250,
-    restartFromMain,
-  );
+  const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
   return { clock, db, host };
 }
 
@@ -223,7 +214,7 @@ describe("supervisor accrual writes", () => {
   });
 });
 
-describe("laptop sleep and wake", () => {
+describe("host suspension and clock gaps", () => {
   test("an active run does not acquire a system sleep inhibitor", () => {
     const db = openDatabase(":memory:");
     migrate(db);
@@ -243,163 +234,134 @@ describe("laptop sleep and wake", () => {
       db.close();
     }
   });
-  test("a short sleep with a live agent posts one resuming note and keeps the run", () => {
-    const { clock, db, host } = boot(() => true);
+  const TWO_HOURS = 2 * 60 * 60_000;
+  const GAPS = [
+    ["below two hours", 5 * 60_000],
+    ["at two hours", TWO_HOURS],
+    ["above two hours", TWO_HOURS + 1],
+  ] as const;
+  const HELD = [
+    "running",
+    "accepted",
+    "merge_queue",
+    "merge_call",
+    "paused",
+    "awaiting_input",
+  ] as const;
+
+  /** Puts eng-9 where `held` names and returns what a clock gap must leave as it is. */
+  function hold(db: ReturnType<typeof boot>["db"], clock: FakeClock, held: (typeof HELD)[number]) {
     const { run } = startRun(db, clock);
-    host.tick();
+    if (held === "paused") applyWorkItemEvent(db, "eng-9", "pause");
+    if (held === "awaiting_input") applyWorkItemEvent(db, "eng-9", "blocking_question");
+    if (held === "accepted") {
+      applyWorkItemEvent(db, "eng-9", "turn_ended");
+      markCloseoutAccepted(db, "eng-9", "wip");
+      verifyingJob(db, clock);
+    }
+    if (held === "merge_queue" || held === "merge_call") {
+      markCloseoutAccepted(db, "eng-9", "wip");
+      enterMergeQueue(db, "eng-9", { ...checkpoint, phase: "merge_queue" });
+      enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-9" }, now: clock.now() });
+      claimNextJob(db, { workerId: "merger", now: clock.now(), queues: [JOB_KIND.merge] });
+      if (held === "merge_call") beginMergeCall(db, "eng-9", "wip", clock.now());
+    }
+    return run;
+  }
 
-    clock.sleep(5 * 60_000);
-    host.tick();
-
-    expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "running", branchName: "paws/eng-9" });
-    expect(getRun(db, run.id)?.status).toBe("active");
-    expect(activities(db).map((message) => message.payload)).toEqual([
-      {
-        sessionId: "linear-session",
-        kind: "thought",
-        body: "Paused for 5 min (laptop asleep), resuming.",
+  function snapshot(db: ReturnType<typeof boot>["db"], runId: string) {
+    const item = getWorkItem(db, "eng-9")!;
+    return {
+      item: {
+        state: item.state,
+        currentRunId: item.currentRunId,
+        checkpoint: item.checkpoint,
+        acceptedHead: item.acceptedHead,
+        branchName: item.branchName,
+        version: item.version,
       },
-    ]);
-    expect(listJobs(db).filter((job) => job.queue === "linear.catchup")).toHaveLength(1);
+      run: getRun(db, runId)?.status,
+      jobs: storedJobs(db).filter((job) => job.queue !== JOB_KIND.catchup),
+      mergeCall: db.query("SELECT * FROM merge_call WHERE item_id = 'eng-9'").get(),
+    };
+  }
 
-    host.tick();
-    expect(activities(db)).toHaveLength(1);
-    expect(listJobs(db).filter((job) => job.queue === "linear.catchup")).toHaveLength(1);
+  for (const [gapName, gapMs] of GAPS)
+    for (const held of HELD)
+      test(`a host suspension ${gapName} leaves ${held} work with its owner`, () => {
+        const { clock, db, host } = boot();
+        try {
+          const run = hold(db, clock, held);
+          host.tick();
+          const before = snapshot(db, run.id);
+
+          clock.sleep(gapMs);
+          host.tick();
+          host.tick();
+
+          // No reset, no new implementer, no cancelled job and no rewritten hold.
+          expect(snapshot(db, run.id)).toEqual(before);
+          expect(activities(db)).toEqual([]);
+          expect(listJobs(db).filter((job) => job.queue === JOB_KIND.catchup)).toHaveLength(1);
+          expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: gapMs }]);
+          if (held === "merge_queue" || held === "merge_call") {
+            // The merge job that was working when the host slept still owns the outcome.
+            const merge = before.jobs.find((job) => job.queue === JOB_KIND.merge)!;
+            expect(completeJob(db, merge, clock.now())).toBe(true);
+          }
+        } finally {
+          host.stop();
+          db.close();
+        }
+      });
+
+  test("a wall-clock correction is recorded like a suspension and changes no item", () => {
+    const wall = { now: 1_000_000, mono: 1_000_000 };
+    const clock: Clock = { now: () => wall.now, mono: () => wall.mono };
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
+    try {
+      const { run } = startRun(db, new FakeClock(wall.now));
+      host.tick();
+      const before = snapshot(db, run.id);
+      // NTP steps the wall clock three hours ahead while monotonic time moves one second.
+      wall.now += 3 * 60 * 60_000 + 1_000;
+      wall.mono += 1_000;
+      host.tick();
+      // And back again: a negative gap is no wake at all.
+      wall.now -= 3 * 60 * 60_000;
+      wall.mono += 1_000;
+      host.tick();
+      expect(snapshot(db, run.id)).toEqual(before);
+      expect(getWorkItem(db, "eng-9")?.agentMs).toBe(2_000);
+      expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: 3 * 60 * 60_000 }]);
+      expect(activities(db)).toEqual([]);
+    } finally {
+      host.stop();
+      db.close();
+    }
   });
 
-  test("a dead agent restarts from the checkpoint with a fresh session", () => {
-    const { clock, db, host } = boot(() => false);
-    const { run } = startRun(db, clock);
-    host.tick();
-    clock.sleep(5 * 60_000);
-    host.tick();
-
-    const item = getWorkItem(db, "eng-9");
-    expect(item?.state).toBe("running");
-    expect(getRun(db, run.id)?.status).toBe("lost");
-    expect(item?.currentRunId).not.toBe(run.id);
-    const next =
-      item?.currentRunId === null || item === null ? null : getRun(db, item.currentRunId);
-    expect(next?.freshSession).toBe(true);
-    const resume = listJobs(db).find((job) => job.queue === "run.resume");
-    expect(resume?.payload).toMatchObject({ freshSession: true, checkpoint });
-    expect(activities(db)[0]?.payload).toEqual({
-      sessionId: "linear-session",
-      kind: "thought",
-      body: "Paused for 5 min (laptop asleep), resuming.",
-    });
-  });
-
-  test("sleep longer than two hours restarts the item from fresh main and keeps the WIP branch", () => {
-    const { clock, db, host } = boot(() => true);
-    const { run } = startRun(db, clock);
-    host.tick();
-    clock.sleep(LONG_SLEEP_MS + 1);
-    host.tick();
-
-    expect(getWorkItem(db, "eng-9")).toMatchObject({
-      state: "queued",
-      branchName: "paws/eng-9",
-      checkpoint: null,
-      turnCount: 0,
-      awakeMs: 0,
-    });
-    expect(getRun(db, run.id)?.status).toBe("lost");
-    const start = listJobs(db).find((job) => job.queue === "item.start");
-    expect(start?.payload).toMatchObject({ from: "fresh_main", wipBranch: "paws/eng-9" });
-    expect(activities(db)[0]?.payload).toEqual({
-      sessionId: "linear-session",
-      kind: "thought",
-      body: "Paused for 120 min (laptop asleep). Restarting from fresh main.",
-    });
-  });
-
-  test("exactly two hours resumes instead of starting over", () => {
-    const checkouts: string[] = [];
-    const { clock, db, host } = boot(
-      () => true,
-      (item) => {
-        checkouts.push(item.branchName);
-      },
-    );
-    startRun(db, clock);
-    host.tick();
-    clock.sleep(LONG_SLEEP_MS);
-    host.tick();
-    expect(getWorkItem(db, "eng-9")?.state).toBe("running");
-    expect(checkouts).toEqual([]);
-    expect(activities(db)[0]?.payload).toEqual({
-      sessionId: "linear-session",
-      kind: "thought",
-      body: "Paused for 120 min (laptop asleep), resuming.",
-    });
-  });
-
-  test("sleep longer than two hours checks out fresh main and keeps the WIP branch", () => {
-    const checkouts: { id: string; branchName: string }[] = [];
-    const { clock, db, host } = boot(
-      () => true,
-      (item) => {
-        checkouts.push({ id: item.id, branchName: item.branchName });
-      },
-    );
-    startRun(db, clock);
-    host.tick();
-    clock.sleep(LONG_SLEEP_MS + 1);
-    host.tick();
-
-    expect(checkouts).toEqual([{ id: "eng-9", branchName: "paws/eng-9" }]);
-    expect(getWorkItem(db, "eng-9")).toMatchObject({
-      state: "queued",
-      branchName: "paws/eng-9",
-    });
-    const start = listJobs(db).find((job) => job.queue === "item.start");
-    expect(start?.payload).toMatchObject({ from: "fresh_main", wipBranch: "paws/eng-9" });
-    host.tick();
-    expect(checkouts).toHaveLength(1);
-  });
-
-  test("a merge fails closed across a short sleep and cannot be completed", () => {
-    const { clock, db, host } = boot(() => true);
-    startRun(db, clock);
-    enterMergeQueue(db, "eng-9", checkpoint);
-    enqueueJob(db, {
-      queue: "github.merge",
-      payload: { itemId: "eng-9" },
-      now: clock.now(),
-    });
-    const claimed = claimNextJob(db, {
-      workerId: "merger",
-      now: clock.now(),
-      queues: ["github.merge"],
-    });
-    expect(claimed).not.toBeNull();
-
-    host.tick();
-    clock.sleep(5 * 60_000);
-    host.tick();
-
-    expect(getWorkItem(db, "eng-9")?.state).toBe("verifying");
-    expect(claimed !== null && completeJob(db, claimed, clock.now())).toBe(false);
-    expect(
-      listJobs(db).some((job) => job.queue === "run.reverify" && job.status === "pending"),
-    ).toBe(true);
-    expect(activities(db)[0]?.payload).toEqual({
-      sessionId: "linear-session",
-      kind: "thought",
-      body: "Paused for 5 min (laptop asleep), resuming.",
-    });
-  });
-
-  test("a merge that slept more than two hours starts over from main", () => {
-    const { clock, db, host } = boot(() => true);
-    startRun(db, clock);
-    enterMergeQueue(db, "eng-9", checkpoint);
-    host.tick();
-    clock.sleep(LONG_SLEEP_MS + 1);
-    host.tick();
-    expect(getWorkItem(db, "eng-9")?.state).toBe("queued");
-    expect(getWorkItem(db, "eng-9")?.branchName).toBe("paws/eng-9");
+  test("a process restart is not a clock gap: a new supervisor records no wake", () => {
+    const { clock, db, host } = boot();
+    try {
+      const { run } = startRun(db, clock);
+      host.tick();
+      host.stop();
+      const before = snapshot(db, run.id);
+      clock.sleep(TWO_HOURS + 1);
+      const next = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
+      next.tick();
+      clock.advance(250);
+      next.tick();
+      next.stop();
+      expect(snapshot(db, run.id)).toEqual(before);
+      expect(db.query("SELECT 1 FROM wake").all()).toEqual([]);
+      expect(listJobs(db).filter((job) => job.queue === JOB_KIND.catchup)).toEqual([]);
+    } finally {
+      db.close();
+    }
   });
 
   test("awake time does not include the sleep, and the cap still trips on awake time", () => {
@@ -499,20 +461,6 @@ describe("laptop sleep and wake", () => {
     expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(100);
   });
 
-  test.each(["blocking_question", "pause"] as const)(
-    "a %s wait stays parked without reactivating Linear",
-    (event) => {
-      const { clock, db, host } = boot(() => false);
-      startRun(db, clock);
-      applyWorkItemEvent(db, "eng-9", event);
-      host.tick();
-      clock.sleep(5 * 60_000);
-      host.tick();
-      expect(getWorkItem(db, "eng-9")?.state).toBe(event === "pause" ? "paused" : "awaiting_input");
-      expect(activities(db)).toEqual([]);
-    },
-  );
-
   test("a wake with nothing in flight still enqueues catch-up and no pause note", () => {
     const { clock, db, host } = boot();
     host.tick();
@@ -554,15 +502,8 @@ test("the supervisor stops the live agent when the time limit asks instead of fa
   const db = openDatabase(":memory:");
   migrate(db);
   const stopped: string[] = [];
-  const host = new HostSupervisor(
-    db,
-    clock,
-    new WakeDetector(clock),
-    () => true,
-    250,
-    undefined,
-    undefined,
-    (itemId) => stopped.push(itemId),
+  const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250, (itemId) =>
+    stopped.push(itemId),
   );
   insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", maxAwakeMs: 1_000, now: 0 });
   const { run } = beginImplementRun(db, "eng-9", clock.now(), checkpoint);
@@ -586,15 +527,8 @@ test("a turn recorded past the time limit leaves the ask and the stop to the sup
   const db = openDatabase(":memory:");
   migrate(db);
   const stopped: string[] = [];
-  const host = new HostSupervisor(
-    db,
-    clock,
-    new WakeDetector(clock),
-    () => true,
-    250,
-    undefined,
-    undefined,
-    (itemId) => stopped.push(itemId),
+  const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250, (itemId) =>
+    stopped.push(itemId),
   );
   insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", maxAwakeMs: 1_000, now: 0 });
   const { run } = beginImplementRun(db, "eng-9", clock.now(), checkpoint);
