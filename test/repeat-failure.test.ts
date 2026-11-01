@@ -30,7 +30,7 @@ test("a retried task that fails again with the same reason posts a second error"
   const { id } = insertQueuedItem(db, { sessionKey: "session" });
   applyWorkItemEvent(db, id, "dispatched");
   failWorkItem(db, getWorkItem(db, id)!, "run_error", "first failure", 1);
-  applyWorkItemEvent(db, id, "requeue");
+  applyWorkItemEvent(db, id, "restart");
   applyWorkItemEvent(db, id, "dispatched");
   failWorkItem(db, getWorkItem(db, id)!, "run_error", "second failure", 2);
   expect(errorBodies(db)).toEqual(["first failure", "second failure"]);
@@ -42,7 +42,7 @@ test("a retried task that hits the same cap again posts a second error", () => {
   const { id } = insertQueuedItem(db, { sessionKey: "session", maxTurns: 1 });
   applyWorkItemEvent(db, id, "dispatched");
   expect(recordTurn(db, id, 1).capped).toBe(true);
-  applyWorkItemEvent(db, id, "requeue");
+  applyWorkItemEvent(db, id, "restart");
   configureWorkItem(db, id, { maxTurns: 2 });
   applyWorkItemEvent(db, id, "dispatched");
   expect(recordTurn(db, id, 2).capped).toBe(true);

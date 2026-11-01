@@ -59,8 +59,7 @@ describe("state times", () => {
       [60, "blocking_question", "ask"],
       [80, "answer_received"],
       [90, "turn_ended"],
-      [95, "closeout_rejected"],
-      [100, "restart", "restart"],
+      [95, "restart", "restart"],
       [110, "dispatched"],
       [120, "turn_ended"],
       [125, "closeout_accepted"],
@@ -72,8 +71,8 @@ describe("state times", () => {
     expect(times.until).toBe(new Date(T0 + 140 * MIN).toISOString());
     expect(times.current).toBe("merge_queue");
     expect(minutesByState(times.states)).toEqual({
-      queued: 20,
-      running: 55,
+      queued: 25,
+      running: 50,
       recovering: 20,
       awaiting_input: 20,
       verifying: 10,

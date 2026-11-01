@@ -257,7 +257,8 @@ describe("awake-time cap after Closeout accepted the work", () => {
 
   test("a resumed agent at the cap asks in Linear instead of failing", () => {
     const { clock, db, item, run } = acceptedItem(30 * MINUTE);
-    applyWorkItemEvent(db, item.id, "ejected");
+    applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
+    applyWorkItemEvent(db, item.id, "dispatched");
     saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
     accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(20 * MINUTE);
@@ -587,7 +588,8 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("without a Linear session, a resumed agent at the cap pauses instead of failing", () => {
     const { clock, db, item, run } = acceptedItem(30 * MINUTE);
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
-    applyWorkItemEvent(db, item.id, "ejected");
+    applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
+    applyWorkItemEvent(db, item.id, "dispatched");
     setCurrentRun(db, item.id, run.id);
     saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
     accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);

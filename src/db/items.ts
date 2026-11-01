@@ -23,6 +23,7 @@ import {
   transition,
   type Checkpoint,
   type RestartReason,
+  type RecordedWorkItemEvent,
   type WorkItemEvent,
   type WorkItemEventKind,
   type WorkItemState,
@@ -246,7 +247,7 @@ export type WorkItemEventRow = {
   at: number;
   fromState: WorkItemState;
   toState: WorkItemState;
-  event: WorkItemEvent;
+  event: RecordedWorkItemEvent;
   kind: WorkItemEventKind;
   reason: string | null;
   payloadDigest: string | null;
@@ -280,7 +281,7 @@ export function listWorkItemEventRows(
         at: number;
         from_state: WorkItemState;
         to_state: WorkItemState;
-        event: WorkItemEvent;
+        event: RecordedWorkItemEvent;
         kind: WorkItemEventKind;
         reason: string | null;
         payload_digest: string | null;
@@ -705,6 +706,7 @@ export function failWorkItem(
   reason: string,
   text: string,
   now: number,
+  options: { stoppedByAnswer?: boolean } = {},
 ): boolean {
   return immediate(db, () => {
     const current = getWorkItem(db, item.id);
@@ -723,6 +725,7 @@ export function failWorkItem(
       text,
       now,
       (version) => `fail:${item.id}:${version}:${reason}`,
+      options.stoppedByAnswer === true,
     );
     return true;
   });
@@ -925,8 +928,9 @@ function commitFailure(
   text: string,
   now: number,
   idempotencyKey: (version: number) => string,
+  stoppedByAnswer = false,
 ): void {
-  const version = moveToFailed(db, item);
+  const version = moveToFailed(db, item, stoppedByAnswer);
   journal(`item ${item.linearIdentifier} failed: ${reason}`);
   db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
   if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
@@ -953,13 +957,9 @@ function commitFailure(
   });
 }
 
-function moveToFailed(db: Database, item: WorkItemRecord): number {
+function moveToFailed(db: Database, item: WorkItemRecord, stopped: boolean): number {
   if (item.state === "failed") return item.version;
-  if (item.state === "merge_queue") {
-    applyWorkItemEvent(db, item.id, "lease_expired");
-    return applyWorkItemEvent(db, item.id, "closeout_infra_failed").version;
-  }
-  const event = failureEvent(item.state);
+  const event = stopped && item.state === "awaiting_input" ? "answer_stopped" : failureEvent(item.state);
   if (event === null) {
     throw new TransitionRejectedError("illegal_transition");
   }
@@ -976,6 +976,8 @@ function failureEvent(state: WorkItemState): WorkItemEvent | null {
       return "crash_budget_used";
     case "queued":
       return "start_timed_out";
+    case "merge_queue":
+      return "work_failed";
     default:
       return null;
   }

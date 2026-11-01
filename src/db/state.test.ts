@@ -659,7 +659,8 @@ describe("hard caps", () => {
     applyWorkItemEvent(db, item.id, "turn_ended");
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
-    applyWorkItemEvent(db, item.id, "ejected");
+    applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
+    applyWorkItemEvent(db, item.id, "dispatched");
     // The merge queue dropped the baseline; the supervisor's next tick starts the clock again.
     accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(2_000);

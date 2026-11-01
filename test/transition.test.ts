@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  RETIRED_WORK_ITEM_EVENTS,
   WORK_ITEM_EDGES,
   WORK_ITEM_EVENTS,
   WORK_ITEM_STATES,
@@ -36,24 +37,62 @@ describe("transition", () => {
     expect(transition("merge_queue", "restart")).toMatchObject({ ok: true, to: "queued" });
   });
 
-  test("explicit reverify returns only queued merges to verification", () => {
-    expect(transition("merge_queue", "reverify_requested")).toMatchObject({
-      ok: true,
-      to: "verifying",
-    });
+  test("explicit reverify returns queued merges and answered approvals to verification", () => {
+    for (const state of ["merge_queue", "awaiting_input"] as const)
+      expect(transition(state, "reverify_requested")).toMatchObject({ ok: true, to: "verifying" });
     for (const state of WORK_ITEM_STATES.filter(
-      (candidateState) => candidateState !== "merge_queue",
+      (candidateState) => candidateState !== "merge_queue" && candidateState !== "awaiting_input",
     ))
       expect(transition(state, "reverify_requested").ok).toBe(false);
   });
 
+  test("operations without an agent turn take one direct edge", () => {
+    for (const state of [
+      "queued",
+      "running",
+      "paused",
+      "recovering",
+      "awaiting_input",
+      "verifying",
+    ] as const)
+      expect(transition(state, "closeout_accepted")).toMatchObject({ ok: true, to: "merge_queue" });
+    expect(transition("awaiting_input", "answer_completed")).toMatchObject({
+      ok: true,
+      to: "completed",
+    });
+    expect(transition("awaiting_input", "answer_stopped")).toMatchObject({
+      ok: true,
+      to: "failed",
+    });
+    expect(transition("merge_queue", "work_failed")).toMatchObject({ ok: true, to: "failed" });
+    for (const state of WORK_ITEM_STATES.filter((candidate) => candidate !== "merge_queue"))
+      expect(transition(state, "work_failed").ok).toBe(false);
+  });
+
   test("rejects an edge the table does not list", () => {
-    expect(transition("running", "closeout_accepted")).toEqual({
+    expect(transition("failed", "closeout_accepted")).toEqual({
       ok: false,
-      from: "running",
+      from: "failed",
       event: "closeout_accepted",
       reason: "illegal_transition",
     });
+  });
+
+  test("planning stays a state with no live edge but cancel", () => {
+    for (const edge of WORK_ITEM_EDGES) {
+      expect(edge.from).not.toBe("planning");
+      expect(edge.to).not.toBe("planning");
+    }
+    expect(transition("planning", "cancel")).toMatchObject({ ok: true, to: "cancelled" });
+  });
+
+  test("retired events stay out of the live union and no state accepts them", () => {
+    const live = new Set<string>(WORK_ITEM_EVENTS);
+    for (const event of RETIRED_WORK_ITEM_EVENTS) {
+      expect(live.has(event)).toBe(false);
+      for (const state of WORK_ITEM_STATES)
+        expect(transition(state, event as never).ok).toBe(false);
+    }
   });
 
   test("cancel leaves every non-terminal state and stops on a terminal one", () => {
