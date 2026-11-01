@@ -2,7 +2,12 @@ import { journalCaught } from "../journal";
 import { runProviderLogin } from "../runner-login-worker";
 import type { RunnerLoginUpdate } from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
-import { createReviewCommandRunner, runReviewCommand } from "../closeout-spec";
+import {
+  createReviewCommandRunner,
+  type EarlierFinding,
+  reviewInstructions,
+  runReviewCommand,
+} from "../closeout-spec";
 import {
   closeSync,
   chmodSync,
@@ -553,6 +558,8 @@ async function reviewCommandTurn(input: {
   model: string;
   base: string;
   head: string;
+  brief?: string;
+  earlier?: readonly EarlierFinding[];
   worktree: string;
   executable: string;
   env: NodeJS.ProcessEnv;
@@ -573,6 +580,10 @@ async function reviewCommandTurn(input: {
       base: input.base,
       head: input.head,
       cwd: input.worktree,
+      instructions: reviewInstructions({
+        ...(input.brief ? { brief: input.brief } : {}),
+        ...(input.earlier ? { earlier: input.earlier } : {}),
+      }),
     },
   );
   const cancelled = input.signal?.aborted === true;
@@ -1213,7 +1224,7 @@ export async function executeRunnerCommand(
             })
         : command.type === "review" && command.reviewCommand
           ? async (input: RunAgentOptions): Promise<RunAgentResult> => {
-              const base = command.reviewCommand!.base;
+              const { base, brief, earlier } = command.reviewCommand!;
               const known = await invokeGit([
                 "-C",
                 worktree,
@@ -1242,7 +1253,7 @@ export async function executeRunnerCommand(
                 type: "progress",
                 text:
                   agentName === "codex"
-                    ? `Running codex exec review --base ${base.slice(0, 7)}.`
+                    ? `Running codex exec review of ${base.slice(0, 7)}..${command.repository.baseSha.slice(0, 7)}.`
                     : `Running Claude /code-review ${base.slice(0, 7)}..${command.repository.baseSha.slice(0, 7)}.`,
               });
               return reviewCommandTurn({
@@ -1250,6 +1261,8 @@ export async function executeRunnerCommand(
                 model: command.profile.model!,
                 base,
                 head: command.repository.baseSha,
+                ...(brief ? { brief } : {}),
+                ...(earlier ? { earlier } : {}),
                 worktree,
                 executable: providerCli(agentName),
                 env: input.env ?? agentEnv,

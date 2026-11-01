@@ -479,3 +479,37 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
     await f.close();
   }
 }, 60_000);
+
+test("a review command carries the brief and earlier findings only to a runner that accepts them", async () => {
+  const earlier = [
+    {
+      severity: "P1" as const,
+      location: "app.txt:1",
+      explanation: "wrong constant",
+      head: "c".repeat(40),
+      status: "open" as const,
+    },
+  ];
+  for (const [version, expected] of [
+    ["0.1.54", (base: string) => ({ base })],
+    ["9.0.0", (base: string) => ({ base, brief: "Issue: PAS-1", earlier })],
+  ] as const) {
+    const f = await fixture();
+    try {
+      f.db.run("UPDATE runner_host_status SET runner_version=?", [version]);
+      const options = f.review(new AbortController().signal);
+      const base = options.reviewCommand!.base;
+      const running = f.services.backend.forItem(f.item.id)({
+        ...options,
+        reviewCommand: { base, brief: "Issue: PAS-1", earlier },
+      });
+      await f.until(() => f.placed.length === 1);
+      const command = f.placed[0]!;
+      expect(command.type === "review" && command.reviewCommand).toEqual(expected(base));
+      f.finish(command, { reviewText: REVIEW_TEXT });
+      expect(await running).toMatchObject({ stopReason: "end_turn" });
+    } finally {
+      await f.close();
+    }
+  }
+}, 60_000);

@@ -59,7 +59,11 @@ import type { RunnerArtifactStore } from "../runner-artifacts";
 import {
   SKILL_HOOK_RUNNER_VERSION,
   REBASE_RUNNER_VERSION,
+  REVIEW_BRIEF_LIMIT,
   REVIEW_COMMAND_RUNNER_VERSION,
+  REVIEW_CONTEXT_RUNNER_VERSION,
+  REVIEW_EXPLANATION_LIMIT,
+  REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
   RUNTIMES_RUNNER_VERSION,
   ANY_MISE_BACKEND_RUNNER_VERSION,
@@ -186,6 +190,25 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
       : undefined;
   }
   return undefined;
+}
+
+function reviewContext(
+  review: NonNullable<RunAgentOptions["reviewCommand"]>,
+): NonNullable<Extract<RunnerCommand, { type: "review" }>["reviewCommand"]> {
+  const brief = review.brief?.trim().slice(0, REVIEW_BRIEF_LIMIT);
+  const earlier = (review.earlier ?? [])
+    .filter((entry) => /^[a-f0-9]{7,64}$/.test(entry.head) && entry.location.trim())
+    .slice(0, 50)
+    .map((entry) => ({
+      ...entry,
+      location: entry.location.slice(0, REVIEW_LOCATION_LIMIT),
+      explanation: entry.explanation.slice(0, REVIEW_EXPLANATION_LIMIT),
+    }));
+  return {
+    base: review.base,
+    ...(brief ? { brief } : {}),
+    ...(earlier.length > 0 ? { earlier } : {}),
+  };
 }
 
 function versionAtLeast(version: string | null | undefined, minimum: RunnerVersion): boolean {
@@ -1404,7 +1427,14 @@ export function createRemoteAgentRunner(options: {
                   : {
                       type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
                       ...(input.role === "reviewer" && input.reviewCommand
-                        ? { reviewCommand: { base: input.reviewCommand.base } }
+                        ? {
+                            reviewCommand: versionAtLeast(
+                              runnerVersion,
+                              REVIEW_CONTEXT_RUNNER_VERSION,
+                            )
+                              ? reviewContext(input.reviewCommand)
+                              : { base: input.reviewCommand.base },
+                          }
                         : {}),
                       ...(skillsInputId !== undefined ? { skillsInputId } : {}),
                       ...(input.role === "reviewer" ? {} : runHooks(profile.agent, selected.id)),

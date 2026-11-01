@@ -1,4 +1,6 @@
 import { journalCaught } from "../../journal";
+import type { EarlierFinding } from "../types";
+import { renderEarlierFindings } from "./earlier";
 
 /** Agents whose own review command Closeout starts. */
 export type ReviewCommandAgent = "codex" | "claude";
@@ -39,9 +41,54 @@ export function reviewProvider(agent: ReviewCommandAgent): string {
   return PROVIDERS[agent];
 }
 
+export const REVIEW_COMMAND_RULE =
+  "Behaviour the issue asks for is not a defect. Do not raise again a finding the author declined in an earlier round unless the new code changes it.";
+
+export const REVIEW_INSTRUCTIONS_BYTES = 8 * 1024;
+
+const BRIEF_FLOOR_BYTES = 4 * 1024;
+
+export function reviewInstructions(input: {
+  brief?: string;
+  earlier?: readonly EarlierFinding[];
+}): string {
+  const brief = input.brief?.trim() ?? "";
+  const earlier = input.earlier ?? [];
+  const render = (text: string, findings: readonly EarlierFinding[]) =>
+    [
+      ...(text ? ["# Issue brief", text, ""] : []),
+      "# Review rule",
+      REVIEW_COMMAND_RULE,
+      ...(findings.length > 0 ? ["", ...renderEarlierFindings(findings)] : []),
+    ].join("\n");
+  const floor = clipBytes(brief, BRIEF_FLOOR_BYTES);
+  let kept = earlier.length;
+  while (kept > 0 && byteLength(render(floor, earlier.slice(0, kept))) > REVIEW_INSTRUCTIONS_BYTES)
+    kept -= 1;
+  const findings = earlier.slice(0, kept);
+  const room = REVIEW_INSTRUCTIONS_BYTES - byteLength(render("x", findings)) + 1;
+  return render(clipBytes(brief, room, "…"), findings);
+}
+
+function byteLength(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+function clipBytes(text: string, limit: number, suffix = ""): string {
+  if (byteLength(text) <= limit) return text;
+  const budget = limit - byteLength(suffix);
+  let used = 0;
+  let end = 0;
+  for (const char of text) {
+    used += byteLength(char);
+    if (used > budget) break;
+    end += char.length;
+  }
+  return `${text.slice(0, end)}${suffix}`;
+}
+
 /**
  * The agent's own review of `base..head`.
- * Codex: `codex exec review --base <base>`, which takes no prompt beside `--base`.
  * Claude: `/code-review <base>..<head>` in a plan-mode print session.
  * Neither command gets a bypass flag; each runs its own read-only review.
  */
@@ -54,19 +101,21 @@ export function reviewArgv(input: {
   /** Codex reads the schema from a file. Claude takes it inline. */
   schemaPath: string;
   schema: string;
+  instructions?: string;
 }): string[] {
+  const instructions = input.instructions?.trim() || undefined;
   if (input.agent === "codex") {
     return [
       input.command ?? "codex",
       "exec",
       "review",
-      "--base",
-      input.base,
+      ...(instructions ? [] : ["--base", input.base]),
       "--model",
       input.model,
       "--json",
       "--output-schema",
       input.schemaPath,
+      ...(instructions ? [codexReviewPrompt(input.base, input.head, instructions)] : []),
     ];
   }
   return [
@@ -81,8 +130,17 @@ export function reviewArgv(input: {
     "--verbose",
     "--json-schema",
     input.schema,
+    ...(instructions ? ["--append-system-prompt", instructions] : []),
     `/code-review ${input.base}..${input.head}`,
   ];
+}
+
+function codexReviewPrompt(base: string, head: string, instructions: string): string {
+  return [
+    `Review the code changes from base commit ${base} to head commit ${head}. Run \`git diff ${base}..${head}\` to inspect them. Provide prioritized, actionable findings.`,
+    "",
+    instructions,
+  ].join("\n");
 }
 
 /** Follow-up in the same review session, for a final message that did not parse. */
@@ -94,7 +152,9 @@ export function reaskArgv(input: {
   schemaPath: string;
   schema: string;
   prompt: string;
+  instructions?: string;
 }): string[] {
+  const instructions = input.instructions?.trim() || undefined;
   if (input.agent === "codex") {
     return [
       input.command ?? "codex",
@@ -123,6 +183,7 @@ export function reaskArgv(input: {
     "--verbose",
     "--json-schema",
     input.schema,
+    ...(instructions ? ["--append-system-prompt", instructions] : []),
     input.prompt,
   ];
 }

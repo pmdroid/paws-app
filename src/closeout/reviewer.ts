@@ -1,3 +1,4 @@
+import type { EarlierFinding } from "../closeout-spec";
 import type { CandidateIdentity, Finding } from "./types";
 
 /**
@@ -17,6 +18,7 @@ export type ReviewRequest = {
   head: string;
   candidate: CandidateIdentity;
   prompt?: string;
+  earlier?: readonly EarlierFinding[];
 };
 
 export type ReviewResult = {

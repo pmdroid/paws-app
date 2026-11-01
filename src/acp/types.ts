@@ -1,7 +1,7 @@
 import type { GitCommitIdentity, GitCommitPolicy, HookEvent, WorkspaceHook } from "../core";
 import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
-import type { PolicyFilesLoad } from "../closeout-spec";
+import type { EarlierFinding, PolicyFilesLoad } from "../closeout-spec";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import type { SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 import type { CheckpointResult } from "./checkpoint";
@@ -160,7 +160,7 @@ export interface RunAgentOptions {
    * A remote reviewer runs the agent's own review command of `base..HEAD` on its runner
    * instead of an ACP turn. Its review text is the findings array.
    */
-  reviewCommand?: { base: string };
+  reviewCommand?: { base: string; brief?: string; earlier?: readonly EarlierFinding[] };
 }
 
 export interface RunAgentResult {

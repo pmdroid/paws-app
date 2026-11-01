@@ -252,13 +252,6 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
   };
 }
 
-/**
- * The live gate's reviewer: the agent's own review command of `base..head` on the item's runner,
- * in the run's checkout at `head`, with the runner's login. Codex runs `codex exec review --base`
- * and Claude runs `/code-review`. Paws sends no brief, skill, diff or finding format with it, and
- * the command's read-only review is the sandbox. The runner re-asks once, in the same review,
- * when the final message is not a findings array.
- */
 export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
   let seq = 0;
   return {
@@ -290,7 +283,11 @@ export function createReviewCommandReviewer(deps: AcpAgentDeps): CodexReviewer {
         readOnly: true,
         // The diff base goes in the runner's bundle next to the head.
         mainSha: request.base,
-        reviewCommand: { base: request.base },
+        reviewCommand: {
+          base: request.base,
+          ...(deps.brief ? { brief: deps.brief } : {}),
+          ...(request.earlier?.length ? { earlier: request.earlier } : {}),
+        },
         ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
