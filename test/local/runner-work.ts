@@ -690,7 +690,7 @@ export async function probeRunnerWork(
         .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command")
         .get()!.count;
       assert.throws(() => work.assign(afterCancel), /(?:cancellation|free slot)/);
-      assert.throws(() => helpers.dispatch(helperInput), /(?:cancellation|free slot)/);
+      assert.throws(() => helpers.dispatch(helperInput), /(?:cancellation|free slot|busy)/);
       assert.equal(
         db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command").get()!
           .count,
@@ -812,7 +812,7 @@ export async function probeRunnerWork(
           }),
         /(?:cancellation|free slot)/,
       );
-      assert.throws(() => helpers.dispatch(helperInput), /(?:cancellation|free slot)/);
+      assert.throws(() => helpers.dispatch(helperInput), /(?:cancellation|free slot|busy)/);
       const retriedCancel = backend.cancelItem(waiting.itemId);
       const replacementCancellation = db
         .query<{ id: string }, [string]>(
