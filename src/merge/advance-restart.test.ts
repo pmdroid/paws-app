@@ -86,7 +86,10 @@ describe("a Paws restart and the merge queue", () => {
     const item = await h.addItem("ENG-210");
     enqueueMerges(h, [item.id]);
     h.state.dropMergeResponse = true;
-    await expect(h.pass(item.id, openMergeJob(h, item.id))).rejects.toThrow();
+    expect(await h.pass(item.id, openMergeJob(h, item.id))).toMatchObject({
+      kind: "wait",
+      reason: "merge_outcome",
+    });
     expect(h.github.merged).toHaveLength(1);
     expect(getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
     expect(mergeCallInFlight(h.db, item.id)).toBe(true);
@@ -113,6 +116,41 @@ describe("a Paws restart and the merge queue", () => {
     ).toEqual({ n: 1 });
   });
 
+  test.each(["timeout", "502"])(
+    "%s: unknown reads retain a possibly successful merge until a positive read, without a payload flag",
+    async (fault) => {
+      const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+      const item = await h.addItem("ENG-215");
+      enqueueMerges(h, [item.id]);
+      h.state.dropMergeResponse = fault === "timeout";
+      h.state.mergeResponseStatus = fault === "502" ? 502 : 200;
+      expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "merge_outcome" });
+      restart(h);
+      h.state.mergeReadUnknown = true;
+      const published = h.published.length;
+      const queue = listMergeQueues(h.db);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        expect(await h.pass(item.id, { itemId: item.id })).toMatchObject({
+          kind: "wait",
+          reason: "merge_outcome",
+        });
+        expect(mergeCallInFlight(h.db, item.id)).toBe(true);
+        expect(listMergeQueues(h.db)).toEqual(queue);
+        expect(getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
+        expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+        expect(reverifies(h)).toEqual([]);
+        expect(h.published).toHaveLength(published);
+        h.clock.advance(300_000);
+      }
+      h.state.mergeReadUnknown = false;
+      expect(await h.pass(item.id, { itemId: item.id })).toEqual({ kind: "merged" });
+      expect(await h.pass(item.id, { itemId: item.id })).toEqual({ kind: "obsolete" });
+      expect(h.completed).toEqual([item.id]);
+      expect(h.github.merged).toHaveLength(1);
+      expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+    },
+  );
+
   test("a merge call GitHub never saw re-verifies the task, which keeps its place", async () => {
     const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
     const first = await h.addItem("ENG-220");
@@ -131,7 +169,15 @@ describe("a Paws restart and the merge queue", () => {
 
     restart(h);
 
-    expect(await h.pass(first.id, openMergeJob(h, first.id))).toEqual({ kind: "returned" });
+    h.state.mergeReadUnknown = true;
+    expect(await h.pass(first.id, { itemId: first.id })).toMatchObject({
+      kind: "wait",
+      reason: "merge_outcome",
+    });
+    expect(mergeCallInFlight(h.db, first.id)).toBe(true);
+    expect(reverifies(h)).toEqual([]);
+    h.state.mergeReadUnknown = false;
+    expect(await h.pass(first.id, { itemId: first.id })).toEqual({ kind: "returned" });
     expect(getWorkItem(h.db, first.id)?.state).toBe("verifying");
     expect(reverifies(h).map((job) => job.payload)).toEqual([{ itemId: first.id }]);
     expect(mergeCallInFlight(h.db, first.id)).toBe(false);

@@ -21,7 +21,13 @@ export type CiWaitVerification = {
   head: string;
   summary: string;
 };
-export type MergeWaitReason = "ahead" | "ci" | "review" | "branch_update" | "dependencies";
+export type MergeWaitReason =
+  | "ahead"
+  | "ci"
+  | "review"
+  | "branch_update"
+  | "dependencies"
+  | "merge_outcome";
 export type MergeWait = {
   message: string;
   base?: string;
@@ -45,6 +51,18 @@ export function parkMerge(
       ...(wait.message ? { message: wait.message } : {}),
       at: now,
     };
+  if (wait.reason === "merge_outcome") {
+    const previous = payload.mergeOutcomeRetries;
+    const retries =
+      typeof previous === "number" && Number.isFinite(previous)
+        ? Math.min(Math.max(previous, 0), 5)
+        : 0;
+    const delayMs = Math.min(MERGE_CI_POLL_MS * 2 ** retries, MERGE_BACKSTOP_POLL_MS);
+    payload.mergeOutcomeRetries = retries + 1;
+    delete payload.ciWaitDeadline;
+    return park(db, job, now + delayMs, payload, now);
+  }
+  delete payload.mergeOutcomeRetries;
   if (wait.queued) {
     delete payload.ciWaitDeadline;
     return park(db, job, now + pollMs(db, now, MERGE_QUEUE_POLL_MS), payload, now);

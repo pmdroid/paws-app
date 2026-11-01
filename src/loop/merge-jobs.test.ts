@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { FakeClock, JOB_KIND } from "../core";
 import {
   JobLoop,
+  beginMergeCall,
+  mergeCallInFlight,
   bindWorkItemRepository,
   claimNextJob,
   completeJob,
@@ -32,6 +34,53 @@ function queue() {
   const clock = new FakeClock(1_000);
   return { db, clock };
 }
+
+test("unknown merge outcomes back off without expiring or spending job attempts", async () => {
+  const { db, clock } = queue();
+  try {
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      payload: { itemId: "eng-1", head: "h", ciWaitDeadline: clock.now() - 1 },
+      now: clock.now(),
+      maxAttempts: 1,
+    });
+    const loop = new JobLoop(db, clock);
+    let reason: "merge_outcome" | "ci" = "merge_outcome";
+    loop.register(JOB_KIND.merge, (job) => {
+      expect(parkMerge(db, job, clock.now(), { reason })).toBe("parked");
+    });
+    for (const delay of [10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000]) {
+      expect((await loop.tick())?.id).toBe(id);
+      const parked = getJob(db, id)!;
+      expect(parked.status).toBe("pending");
+      expect(parked.attempts).toBe(0);
+      expect(parked.runAt).toBe(clock.now() + delay);
+      expect(parked.payload).not.toHaveProperty("ciWaitDeadline");
+      clock.advance(delay);
+    }
+    beginMergeCall(db, "eng-1", "h", clock.now());
+    const delivery = {
+      deliveryId: "uncertain-merge-confirmation",
+      event: "pull_request",
+      payload: JSON.stringify({
+        action: "closed",
+        pull_request: { merged: true, head: { sha: "h" } },
+      }),
+    };
+    expect(acceptGitHubDelivery(db, delivery, clock.now())).toBe(true);
+    expect(acceptGitHubDelivery(db, delivery, clock.now())).toBe(false);
+    expect(mergeCallInFlight(db, "eng-1")).toBe(true);
+    reason = "ci";
+    await loop.tick();
+    expect(getJob(db, id)?.payload).not.toHaveProperty("mergeOutcomeRetries");
+    expect(getJob(db, id)?.payload).toMatchObject({
+      ciWaitDeadline: clock.now() + MERGE_CI_WAIT_MS,
+    });
+  } finally {
+    db.close();
+  }
+});
 
 describe("merge CI wait", () => {
   test("a parked merge remembers what it waits for, for the Merge queue page", async () => {

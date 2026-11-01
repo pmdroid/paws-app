@@ -150,6 +150,7 @@ import {
   cancelOpenJobs,
   getLinearSessionAccess,
   getConfirmedRemoteMerge,
+  mergeCallInFlight,
   type ConfirmedRemoteMerge,
   getLinearTaskDelegation,
   getTaskModeGeneration,
@@ -4233,11 +4234,12 @@ export class Orchestrator {
   /** The merge of the item's pull request when a person merged it on GitHub, outside the lane. */
   private async mergedOutsideLane(
     item: WorkItemRecord,
-  ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null> {
+  ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null | "unknown"> {
     const pull = getItemPullRequest(this.db, item.id);
     const repository = pull ? this.repositoryForItem(item) : null;
     const github = repository ? this.githubForRepository(repository) : null;
-    if (!pull || !repository || !github) return null;
+    if (!pull) return mergeCallInFlight(this.db, item.id) ? "unknown" : null;
+    if (!repository || !github) return "unknown";
     const read = await readPullMerge({
       client: github.client,
       owner: repository.owner,
@@ -4255,7 +4257,8 @@ export class Orchestrator {
       );
       return null;
     });
-    if (!read?.merged) return null;
+    if (read === null) return "unknown";
+    if (!read.merged) return null;
     return {
       repositoryOwner: repository.owner,
       repositoryName: repository.repo,

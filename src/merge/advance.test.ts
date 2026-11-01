@@ -2,6 +2,8 @@ import { ask as rawAsk } from "../questions";
 import { describe, expect, test } from "bun:test";
 import {
   applyWorkItemEvent,
+  beginMergeCall,
+  mergeCallInFlight,
   beginImplementRun,
   enterMergeQueue,
   getWorkItem,
@@ -75,12 +77,29 @@ describe("advanceMerge", () => {
       mergeSha: "m",
       confirmedAt: 5,
     });
+    beginMergeCall(db, "eng-1", "h", 1);
     const { caps, calls } = capabilities();
     expect(await advanceMerge(db, { itemId: "eng-1", payload: {}, jobId: 1 }, caps)).toEqual({
       kind: "obsolete",
     });
     expect(getWorkItem(db, "eng-1")?.state).toBe("merged");
     expect(calls).toEqual(["completed"]);
+    expect(mergeCallInFlight(db, "eng-1")).toBe(false);
+  });
+
+  test("a durable marker without a payload flag fences publication after a confirmed negative read", async () => {
+    const db = queued();
+    try {
+      beginMergeCall(db, "eng-1", "h", 1);
+      const { caps } = capabilities();
+      expect(await advanceMerge(db, { itemId: "eng-1", payload: {}, jobId: 1 }, caps)).toEqual({
+        kind: "returned",
+      });
+      expect(getWorkItem(db, "eng-1")?.state).toBe("verifying");
+      expect(mergeCallInFlight(db, "eng-1")).toBe(false);
+    } finally {
+      db.close();
+    }
   });
 
   test("a publication that cannot go ahead is the step", async () => {

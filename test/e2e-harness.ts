@@ -146,6 +146,7 @@ export function githubClient(
   seen: string[] = [],
 ): GitHubClient {
   let n = 0;
+  const mergeShas = new Map<number, string>();
   return {
     async request(req): Promise<GitHubResponse> {
       seen.push(req.path);
@@ -190,6 +191,21 @@ export function githubClient(
           body: { number: opened.number, html_url: opened.url, body: body.body },
         };
       }
+      if (req.method === "GET" && /\/pulls\/\d+$/.test(req.path)) {
+        const number = Number(req.path.split("/").at(-1));
+        const pull = github.opened[number - 1];
+        if (!pull) return { status: 404, body: {} };
+        const sha = mergeShas.get(number);
+        return {
+          status: 200,
+          body: {
+            merged: sha !== undefined,
+            merge_commit_sha: sha ?? null,
+            html_url: `https://github.com/pmdroid/paws-demo/pull/${number}`,
+            base: { ref: pull.base, repo: { full_name: pull.repository } },
+          },
+        };
+      }
       if (req.method === "PUT" && req.path.endsWith("/merge")) {
         const body = req.body as { sha?: string; commit_message?: string };
         const number = Number(req.path.split("/").at(-2));
@@ -199,6 +215,7 @@ export function githubClient(
           expectedHeadSha: body.sha ?? "",
         });
         const sha = await squashBranch(bare, body.sha ?? "", body);
+        mergeShas.set(number, sha);
         return { status: 200, body: { sha, merged: true } };
       }
       return { status: 404, body: {} };

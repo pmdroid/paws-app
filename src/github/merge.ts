@@ -218,6 +218,14 @@ export async function squashPull(
   // A stop or withdrawn publication during the reads must still win.
   if (input.isCancelled?.()) return cancelled(branch);
   const merged = await squash(input, token, expectedHead, summary);
+  // A server error or an unreadable success response can arrive after GitHub committed the merge.
+  // Keep the caller's durable marker until a pull request read establishes the outcome.
+  if (
+    merged.status >= 500 ||
+    merged.status === 408 ||
+    (merged.status === 200 && (!isRecord(merged.body) || typeof merged.body.merged !== "boolean"))
+  )
+    throw new Error(`GitHub merge outcome is unknown after status ${merged.status}`);
   if (merged.status === 409)
     return {
       merged: false,
