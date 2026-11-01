@@ -2,13 +2,16 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   beginImplementRun,
   cancelOpenJobs,
+  enqueueJob,
   getWorkItem,
   insertQueuedItem,
   listJobs,
+  listOutbox,
   migrate,
   openDatabase,
   recoverOnStartup,
@@ -17,6 +20,7 @@ import {
 } from "../db";
 import { answer, findOpenQuestion } from "../questions";
 import { ask } from "./operations";
+import { reaskDeadQuestion } from "./dead-question";
 import { questionEffects } from "./question-effects";
 
 const NOW = 20_000;
@@ -130,6 +134,63 @@ test("restart intent, cancellation and enqueue commit together", () => {
         .filter((job) => job.status === "pending")
         .map((job) => job.queue),
     ).toEqual(["item.ask"]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a dead restart elicitation preserves the decision question and resumes once on answer", () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    const item = insertQueuedItem(db, { sessionKey: "ses", now: NOW });
+    beginImplementRun(db, item.id, NOW);
+    recoverOnStartup(db, NOW);
+    recoverOnStartup(db, NOW);
+    const current = getWorkItem(db, item.id)!;
+    const { question } = ask(
+      db,
+      { itemId: item.id, runId: current.currentRunId, sessionId: "ses", version: current.version },
+      "agent",
+      "Start again?",
+      { reason: "restart", options: ["Start again"], now: NOW },
+    );
+    db.run("UPDATE outbox SET status='dead',error='Linear is down' WHERE op='elicitation'");
+    const jobId = enqueueJob(db, {
+      queue: JOB_KIND.reaskQuestion,
+      payload: { itemId: item.id, questionId: question.id },
+      now: NOW,
+    });
+    expect(
+      reaskDeadQuestion(db, { itemId: item.id, questionId: question.id, jobId, now: LATER }),
+    ).toBe(question.id);
+    expect(findOpenQuestion(db, "ses")?.id).toBe(question.id);
+    expect(
+      db.query("SELECT question_id FROM restart_decision WHERE item_id=?").get(item.id),
+    ).toEqual({ question_id: question.id });
+    const deliveries = listOutbox(db, "ses").filter((row) => row.op === "elicitation");
+    expect(deliveries.map((row) => row.status)).toEqual(["dropped", "pending"]);
+    expect(deliveries[1]?.payload).toEqual(deliveries[0]?.payload);
+    expect(requeueOrphanedWork(db, LATER)).toEqual([]);
+    recoverOnStartup(db, LATER);
+    expect(
+      listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
+    ).toHaveLength(0);
+    const reply = {
+      sessionId: "ses",
+      deliveryId: "reply",
+      body: "Start again",
+      answeredBy: "pascal",
+      now: LATER,
+    };
+    const effects = questionEffects(db, { now: LATER });
+    expect(answer(db, reply, effects).status).toBe("answered");
+    expect(answer(db, reply, effects).status).toBe("duplicate");
+    expect(
+      listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
+    ).toHaveLength(1);
+    expect(db.query("SELECT * FROM restart_decision WHERE item_id=?").get(item.id)).toBeNull();
+    expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(1);
   } finally {
     db.close();
   }

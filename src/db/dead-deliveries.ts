@@ -160,6 +160,7 @@ export function dropDeadElicitations(db: Database, questionId: string, note: str
  */
 export const QUESTION_LINKS = [
   { table: "closeout_recovery", column: "question_id" },
+  { table: "restart_decision", column: "question_id" },
   { table: "work_item_repository_question", column: "question_id" },
   { table: "github_integration_hold", column: "question_id" },
   { table: "decision_memory", column: "question_id" },
