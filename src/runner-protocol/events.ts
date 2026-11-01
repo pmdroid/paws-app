@@ -2,6 +2,7 @@ import { z } from "zod";
 import { RUNNER_HANDOVER_FAILURES } from "./commands";
 import { RunnerArtifactSchema } from "./artifacts";
 import { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
+import { RunnerPreviewEventSchema } from "./preview";
 
 export const RunnerPlanStepSchema = z.strictObject({
   content: z
@@ -156,6 +157,7 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
       .regex(/^[a-f0-9]{64}$/)
       .optional(),
   }),
+  RunnerPreviewEventSchema,
   z.strictObject({ type: z.literal("completed") }),
   z.strictObject({ type: z.literal("failed"), message: z.string().max(16384) }),
 ]);

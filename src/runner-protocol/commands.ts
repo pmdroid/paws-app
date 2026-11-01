@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
+import { RunnerLivePreviewSchema } from "./preview";
 
 /** Maximum time granted by a work assignment or heartbeat renewal. */
 export const RUNNER_LEASE_MS = 60_000;
@@ -192,6 +193,7 @@ export const RunnerCommandSchema = z
       commitPolicy: RunnerCommitPolicySchema.optional(),
       checkpoint: z.literal(false).optional(),
       resumeSessionId: id.optional(),
+      livePreview: RunnerLivePreviewSchema.optional(),
       /** The sealed session snapshot to unpack before the agent starts, when the run moved. */
       restoreSession: z
         .strictObject({
