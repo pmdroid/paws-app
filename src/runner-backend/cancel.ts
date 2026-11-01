@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
+import { RunnerCapacityWait } from "../core";
 import { immediate } from "../db";
 import type { RunnerWork } from "../runner-work";
 
@@ -74,11 +75,13 @@ export function createRemoteCancellation(options: {
           }
         }
         const validUntil = previous?.expiresAt ?? expiresAt;
-        return [{ id, validUntil, deadline: performance.now() + validUntil - at }];
+        return [
+          { id, runnerId: row.runnerId, validUntil, deadline: performance.now() + validUntil - at },
+        ];
       });
     });
     await Promise.all(
-      requests.map(async ({ id, deadline, validUntil }) => {
+      requests.map(async ({ id, runnerId, deadline, validUntil }) => {
         while (performance.now() < deadline && now() < validUntil) {
           signal?.throwIfAborted();
           const command = db
@@ -89,7 +92,7 @@ export function createRemoteCancellation(options: {
           if (command?.acknowledged !== null && command?.acknowledged !== undefined) return;
           await delay(options.pollIntervalMs ?? 250, undefined, { signal });
         }
-        throw new Error("Runner teardown is not acknowledged");
+        throw new RunnerCapacityWait([runnerId]);
       }),
     );
   };

@@ -104,6 +104,10 @@ export function openExecutionJournal(root: string) {
   db.run(
     "CREATE INDEX IF NOT EXISTS delivery_waiting ON delivery(execution_id,sequence) WHERE json_extract(payload,'$.type') IN ('question','artifact','closeout_policy')",
   );
+  db.run(`CREATE TABLE IF NOT EXISTS termination (
+    command_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, generation INTEGER NOT NULL,
+    reported INTEGER NOT NULL DEFAULT 0) STRICT`);
+  db.run("CREATE INDEX IF NOT EXISTS termination_generation ON termination(run_id,generation)");
   // Recover a crash between recording Paws's decision and changing the execution phase.
   db.run(
     "UPDATE execution SET phase=(SELECT CASE WHEN accepted=1 AND failure=0 THEN 'complete' ELSE 'interrupted' END FROM result_delivery WHERE execution_id=execution.id) WHERE phase NOT IN ('complete','interrupted') AND id IN (SELECT execution_id FROM result_delivery WHERE accepted<>0)",
@@ -157,6 +161,38 @@ export function openExecutionJournal(root: string) {
     executions,
     execution,
     publication: storedPublication,
+    // Older releases could mark an execution interrupted before its broker stopped.
+    // Reconcile those rows through the same broker contract on upgrade.
+    unconfirmedTerminations() {
+      return db
+        .query<{ id: string; payload: string; phase: string }, []>(
+          `SELECT id,payload,phase FROM execution e WHERE phase IN ('complete','interrupted')
+          AND NOT EXISTS(SELECT 1 FROM termination t WHERE t.command_id=e.command_id) ORDER BY rowid`,
+        )
+        .all()
+        .map(parseExecution);
+    },
+    confirmTermination(command: { id: string; runId: string; generation: number }) {
+      db.run("INSERT OR IGNORE INTO termination(command_id,run_id,generation) VALUES(?,?,?)", [
+        command.id,
+        command.runId,
+        command.generation,
+      ]);
+    },
+    pendingTerminations() {
+      return db
+        .query<{ runId: string; generation: number; commandId: string }, []>(
+          "SELECT run_id AS runId,generation,command_id AS commandId FROM termination WHERE reported=0 ORDER BY rowid LIMIT 64",
+        )
+        .all();
+    },
+    terminationReported(entry: { runId: string; generation: number; commandId: string }) {
+      db.run("UPDATE termination SET reported=1 WHERE command_id=? AND run_id=? AND generation=?", [
+        entry.commandId,
+        entry.runId,
+        entry.generation,
+      ]);
+    },
     transcriptSealed(id: string) {
       return Boolean(
         db
@@ -250,6 +286,12 @@ export function openExecutionJournal(root: string) {
       const parsed = RunnerCommandSchema.parse(command);
       if (parsed.type !== "run" && parsed.type !== "review" && parsed.type !== "task")
         throw new Error("Work command is required");
+      if (
+        db
+          .query("SELECT 1 FROM termination WHERE run_id=? AND generation=?")
+          .get(command.runId, command.generation)
+      )
+        return null;
       const existing = db
         .query<{ payload: string }, [string]>("SELECT payload FROM execution WHERE command_id=?")
         .get(command.id);
@@ -266,7 +308,7 @@ export function openExecutionJournal(root: string) {
       ]);
       return { id, command: parsed, phase: "preparing" };
     },
-    phase(id: string, phase: "running" | "publishing" | "complete" | "interrupted") {
+    phase(id: string, phase: "running" | "publishing" | "cleaning" | "complete" | "interrupted") {
       const changed = db.run(
         "UPDATE execution SET phase=? WHERE id=? AND phase NOT IN ('complete','interrupted')",
         [phase, id],

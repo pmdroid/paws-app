@@ -32,7 +32,8 @@ export function runnerOccupancy(
       [string, string, number, string, string, number]
     >(
       `SELECT COALESCE((SELECT MIN(capacity,COALESCE(desired,16)) FROM runner_capacity WHERE runner_id=?),1) AS capacity,
-     (SELECT count(*) FROM runner_work WHERE runner_id=? AND ended_at IS NULL AND lease_until>? AND run_id<>?) +
+     (SELECT count(*) FROM runner_work WHERE runner_id=? AND ((ended_at IS NULL AND lease_until>? AND run_id<>?)
+       OR (ended_at IS NOT NULL AND teardown_confirmed_at IS NULL))) +
      (SELECT count(*) FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?) AS occupied`,
     )
     .get(runnerId, runnerId, runnerLeaseCutoff(now), excludeRunId, runnerId, now)!;
@@ -50,7 +51,8 @@ export function runnerSlotsHeldBetweenCommands(
        WHERE w.runner_id=? AND (w.ended_at IS NOT NULL OR (w.lease_until<=? AND EXISTS (
          SELECT 1 FROM runner_result result WHERE result.run_id=w.run_id
            AND result.generation=w.generation AND result.command_id=w.command_id)))
-       AND r.status IN ('active','provisioning')`,
+       AND r.status IN ('active','provisioning') AND (w.teardown_confirmed_at IS NOT NULL OR EXISTS(
+         SELECT 1 FROM runner_result r WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id))`,
     )
     .all(runnerId, runnerLeaseCutoff(now))
     .map((row) => row.runId);
@@ -238,22 +240,13 @@ export function pinnedSlotsReserved(
   ).size;
 }
 
-export const CANCEL_STILL_PENDING = `(c.expires_at>? OR COALESCE(r.live_reported_at,0)<=c.expires_at
-  OR COALESCE((SELECT MAX(confirmed_at) FROM runner_work x WHERE x.run_id=c.run_id AND x.runner_id=c.runner_id
-    AND x.generation=c.generation AND x.ended_at IS NULL),0)>c.expires_at)`;
-
-export function runnerCancelPending(db: Database, runnerId: string, now: number): boolean {
+/** Ending execution authority retains the slot until generation-bound termination is confirmed. */
+export function runnerCancelPending(db: Database, runnerId: string, _now: number): boolean {
   return (
     db
-      .query(
-        `SELECT 1 FROM runner_command c JOIN runner r ON r.id=c.runner_id
-         WHERE c.runner_id=? AND c.kind='cancel' AND c.acknowledged_at IS NULL
-         AND ${CANCEL_STILL_PENDING}
-         AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id
-         AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal
-         AND a.acknowledged_at IS NOT NULL)`,
-      )
-      .get(runnerId, now) !== null
+      .query(`SELECT 1 FROM runner_work WHERE runner_id=?
+    AND ended_at IS NOT NULL AND teardown_confirmed_at IS NULL`)
+      .get(runnerId) !== null
   );
 }
 

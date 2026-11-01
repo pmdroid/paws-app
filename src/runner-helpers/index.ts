@@ -1,3 +1,4 @@
+import { RunnerCapacityWait } from "../core";
 import { journalCaught } from "../journal";
 import { randomUUID, type KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -123,8 +124,12 @@ export function createRunnerHelpers(options: {
         if (!session) throw new HelperFencedError("Linear helper session is unavailable");
         const runner = scope(input.runnerId, input.sessionId, session.generation, input.purpose);
         if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
-        if (runnerCancelPending(db, input.runnerId, now()))
-          throw new Error("Runner cancellation teardown is still pending");
+        if (
+          runnerCancelPending(db, input.runnerId, now()) &&
+          !runnerHelperAvailability(db, input.runnerId, now(), input.purpose !== "finding_groups")
+            .available
+        )
+          throw new RunnerCapacityWait([input.runnerId]);
         if (
           !runnerHelperAvailability(db, input.runnerId, now(), input.purpose !== "finding_groups")
             .available

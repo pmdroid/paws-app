@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   RunnerHostStatusSchema,
+  RunnerTerminationSchema,
   RunnerInstalledAgentsSchema,
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
@@ -15,6 +16,7 @@ const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const generation = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const empty = z.strictObject({});
 const heartbeat = RunnerHostStatusSchema.extend({
+  terminated: z.array(RunnerTerminationSchema).max(64).optional(),
   capacity: z.number().int().min(1).max(16).optional(),
   ceiling: z.number().int().min(1).max(16).optional(),
   skills: RunnerInstalledSkillsSchema.optional(),
@@ -47,7 +49,17 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
       if (path === "/v1/commands" && request.method === "GET")
         return json({ commands: work.commands(runnerId) });
       if (path === "/v1/heartbeat" && request.method === "POST") {
-        const { capacity, ceiling, skills, runtimes, agents, live, repositories, ...host } =
+        const {
+          capacity,
+          ceiling,
+          skills,
+          runtimes,
+          agents,
+          live,
+          repositories,
+          terminated,
+          ...host
+        } =
           heartbeat.parse(await body(request));
         return json(
           work.heartbeat(
@@ -60,6 +72,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
             agents,
             live,
             repositories,
+            terminated,
           ),
         );
       }
