@@ -31,7 +31,7 @@ import { enqueueOutboxOnce } from "./outbox";
 import { getLinearSessionGeneration } from "./linear-sessions";
 import { withOpenFindings } from "./open-findings";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
-import { endMergeCall, getConfirmedRemoteMerge } from "./remote-merges";
+import { endMergeCall, getConfirmedRemoteMerge, mergeStopRequested } from "./remote-merges";
 import { immediate } from "./tx";
 import { runnerLeaseCutoff } from "./runner-lease";
 
@@ -769,7 +769,7 @@ export function completeMergedItem(
       target: "linear",
       op: "activity",
       orderingKey: sessionId,
-      delivery: "ordered",
+      delivery: mergeStopRequested(db, current.id) ? "stop" : "ordered",
       generation,
       idempotencyKey: `merged:${current.id}:${generation}`,
       payload: {

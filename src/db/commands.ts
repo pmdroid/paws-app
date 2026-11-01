@@ -70,6 +70,7 @@ export function applyLinearCommand(
           target: OUTBOX_ACTIVITY.target,
           op: OUTBOX_ACTIVITY.op,
           orderingKey: item.sessionKey ?? item.id,
+          delivery: "stop",
           idempotencyKey: `command:already-merged:${item.id}:${command.requestedAt}`,
           payload: {
             sessionId: item.sessionKey ?? item.id,
