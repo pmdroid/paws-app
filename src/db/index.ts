@@ -638,6 +638,7 @@ export {
 } from "./queue-wait";
 export type { QueuePosition } from "./queue-wait";
 export { listItemHolds, saveItemHolds } from "./item-hold";
+export { itemActivityFacts, type ItemActivityFacts } from "./item-activity";
 export { itemWaitSince, keepItemWaits } from "./item-wait";
 export {
   enqueueRunnerSetupCheck,

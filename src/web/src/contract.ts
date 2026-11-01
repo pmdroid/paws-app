@@ -140,6 +140,21 @@ export interface StatusItem {
   timeline?: StatusItemEvent[];
   /** How long the item spent in each state since it was delegated. */
   stateTimes?: StatusStateTimes;
+  doing?: StatusDoing;
+  activeMs?: number;
+}
+
+export const DOING_KINDS = ["running", "slot", "paused", "person", "idle"] as const;
+export type DoingKind = (typeof DOING_KINDS)[number];
+
+export interface StatusDoing {
+  kind: DoingKind;
+  runners: string[];
+  since: string | null;
+  until?: string;
+  agent?: string;
+  question?: string;
+  stalled?: boolean;
 }
 
 /**
@@ -1560,6 +1575,21 @@ function readItem(input: unknown, index: number): StatusItem {
     ...(body.stateTimes === undefined
       ? {}
       : { stateTimes: readStateTimes(body.stateTimes, `${path}.stateTimes`) }),
+    ...(body.doing === undefined ? {} : { doing: readDoing(body.doing, `${path}.doing`) }),
+    ...(body.activeMs === undefined ? {} : { activeMs: count(body, "activeMs", path) }),
+  };
+}
+
+function readDoing(input: unknown, path: string): StatusDoing {
+  const body = object(input, path);
+  return {
+    kind: oneOf(string(body, "kind", path), DOING_KINDS, `${path}.kind`),
+    runners: stringArray(body, "runners", path),
+    since: body.since === null ? null : dateString(body, "since", path),
+    ...(body.until === undefined ? {} : { until: dateString(body, "until", path) }),
+    ...(body.agent === undefined ? {} : { agent: text(body, "agent", path) }),
+    ...(body.question === undefined ? {} : { question: text(body, "question", path) }),
+    ...(body.stalled === undefined ? {} : { stalled: boolean(body, "stalled", path) }),
   };
 }
 

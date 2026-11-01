@@ -70,6 +70,7 @@ import {
   linearRequestsByItem,
   listIntakeQueue,
   listItemHolds,
+  itemActivityFacts,
   listJobs,
   listLinearTurnsForItem,
   listOpenQuestions,
@@ -95,6 +96,7 @@ import {
 import { isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
+import { doingOf } from "./doing";
 import { itemReviews } from "./reviews";
 import { isRuleStep, skippedRules, withRuleDetail } from "./rules";
 import { mergedTimes, stateTotals, toStateTimes, type StateTotals } from "./state-times";
@@ -613,6 +615,10 @@ function readScopedSnapshot(
   );
   const linearRequests = linearRequestsByItem(db);
   const holds = new Map(listItemHolds(db).map((hold) => [hold.itemId, hold]));
+  const changed = listLastWorkItemEventTimes(db);
+  const asked = new Map<string, string>();
+  for (const question of openQuestions)
+    if (!asked.has(question.itemId)) asked.set(question.itemId, questionLine(question.body));
   const storedRuns = new Map<string, StoredRun[]>();
   for (const run of listRuns(db))
     storedRuns.set(run.itemId, [...(storedRuns.get(run.itemId) ?? []), run]);
@@ -633,6 +639,12 @@ function readScopedSnapshot(
     ...heldOf(record, holds),
     ...sessionAttempt(db, record, visible, itemsByIssue, storedRuns, facts),
     ...historyOf(db, record, facts, now.getTime()),
+    ...doingFor(db, record, {
+      hold: holds.get(record.id),
+      question: asked.get(record.id) ?? null,
+      lastChange: changed.get(record.id) ?? facts.get(record.id)?.createdAt ?? now.getTime(),
+      now: now.getTime(),
+    }),
   }));
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
@@ -1011,6 +1023,24 @@ function mergedTimesFor(
   });
   const times = mergedTimes(merged, since);
   return times === null ? {} : { mergedTimes: times };
+}
+
+function doingFor(
+  db: Database,
+  record: WorkItemRecord,
+  input: { hold: ItemHold | undefined; question: string | null; lastChange: number; now: number },
+): Pick<StatusItem, "doing" | "activeMs"> {
+  const doing = doingOf({
+    ...input,
+    state: record.state,
+    facts: itemActivityFacts(db, record, input.now),
+  });
+  return doing === undefined ? { activeMs: record.awakeMs } : { doing, activeMs: record.awakeMs };
+}
+
+function questionLine(body: string): string {
+  const line = body.trim().split("\n", 1)[0]!.trim();
+  return line.length > 120 ? `${line.slice(0, 119)}…` : line;
 }
 
 function heldOf(
