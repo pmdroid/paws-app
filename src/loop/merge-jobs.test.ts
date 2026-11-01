@@ -47,8 +47,11 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
     });
     const loop = new JobLoop(db, clock);
     let reason: "merge_outcome" | "ci" = "merge_outcome";
+    let expired = false;
     loop.register(JOB_KIND.merge, (job) => {
-      expect(parkMerge(db, job, clock.now(), { reason })).toBe("parked");
+      const result = parkMerge(db, job, clock.now(), { reason });
+      expect(result).toBe(reason === "ci" ? "expired" : "parked");
+      expired = result === "expired";
     });
     for (const delay of [10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000]) {
       expect((await loop.tick())?.id).toBe(id);
@@ -56,7 +59,7 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
       expect(parked.status).toBe("pending");
       expect(parked.attempts).toBe(0);
       expect(parked.runAt).toBe(clock.now() + delay);
-      expect(parked.payload).not.toHaveProperty("ciWaitDeadline");
+      expect(parked.payload).toHaveProperty("ciWaitDeadline", 999);
       clock.advance(delay);
     }
     beginMergeCall(db, "eng-1", "h", clock.now());
@@ -73,10 +76,7 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
     expect(mergeCallInFlight(db, "eng-1")).toBe(true);
     reason = "ci";
     await loop.tick();
-    expect(getJob(db, id)?.payload).not.toHaveProperty("mergeOutcomeRetries");
-    expect(getJob(db, id)?.payload).toMatchObject({
-      ciWaitDeadline: clock.now() + MERGE_CI_WAIT_MS,
-    });
+    expect(expired).toBe(true);
   } finally {
     db.close();
   }

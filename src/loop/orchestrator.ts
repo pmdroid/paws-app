@@ -4238,7 +4238,11 @@ export class Orchestrator {
     const pull = getItemPullRequest(this.db, item.id);
     const repository = pull ? this.repositoryForItem(item) : null;
     const github = repository ? this.githubForRepository(repository) : null;
-    if (!pull) return mergeCallInFlight(this.db, item.id) ? "unknown" : null;
+    if (!pull) {
+      if (mergeCallInFlight(this.db, item.id))
+        throw new Error("Cannot reconcile an in-flight merge: the pull request record is missing.");
+      return null;
+    }
     if (!repository || !github) return "unknown";
     const read = await readPullMerge({
       client: github.client,

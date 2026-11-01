@@ -102,6 +102,29 @@ describe("advanceMerge", () => {
     }
   });
 
+  test("an unknown read without a durable merge marker follows normal publication handling", async () => {
+    const db = queued();
+    try {
+      const { caps } = capabilities({
+        mergedOutsideLane: async () => "unknown",
+        publish: async () => ({
+          kind: "failed",
+          reason: "no_github",
+          message: "GitHub App is not configured.",
+        }),
+      });
+      expect(
+        await advanceMerge(db, { itemId: "eng-1", payload: {}, jobId: 1 }, caps),
+      ).toMatchObject({
+        kind: "failed",
+        reason: "no_github",
+      });
+      expect(mergeCallInFlight(db, "eng-1")).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
   test("a publication that cannot go ahead is the step", async () => {
     const db = queued();
     const { caps } = capabilities({

@@ -38,6 +38,8 @@ export type SerialMergeInput = {
   gitExec?: GitExec;
   /** Observability for the host. Do not log the token. */
   onCredential?: (purpose: "push" | "merge", token: string) => void;
+  /** Runs after preparation, immediately before the squash PUT can reach GitHub. */
+  beforeMergeCall?: (head: string) => void;
   commitTitle?: string;
   commitMessage?: string;
   commitEnv?: Record<string, string>;
@@ -422,7 +424,7 @@ async function squash(
   head: string,
   summary: string,
 ): Promise<{ status: number; body: unknown }> {
-  return input.client.request({
+  const request: Parameters<GitHubClient["request"]>[0] = {
     method: "PUT",
     path: repoApiPath(input.owner, input.repo, `/pulls/${input.prNumber}/merge`),
     token,
@@ -432,7 +434,9 @@ async function squash(
       commit_title: input.commitTitle ?? input.issue,
       commit_message: `${fixesLine(input.issue)}\n\n${(input.commitMessage ?? summary).trim()}\n`,
     },
-  });
+  };
+  input.beforeMergeCall?.(head);
+  return input.client.request(request);
 }
 
 function operationToken(input: FetchUpstreamMainInput, purpose: "push" | "merge"): Promise<string> {

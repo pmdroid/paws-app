@@ -59,7 +59,6 @@ export function parkMerge(
         : 0;
     const delayMs = Math.min(MERGE_CI_POLL_MS * 2 ** retries, MERGE_BACKSTOP_POLL_MS);
     payload.mergeOutcomeRetries = retries + 1;
-    delete payload.ciWaitDeadline;
     return park(db, job, now + delayMs, payload, now);
   }
   delete payload.mergeOutcomeRetries;

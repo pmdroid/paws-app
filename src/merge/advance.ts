@@ -213,9 +213,15 @@ export async function advanceMerge(
         ),
       rebase: () => rebaseOntoMain(lane),
       squash: async (head, facts) => {
-        // A call that throws may still have reached GitHub, so its marker stays for the next start.
-        beginMergeCall(db, item.id, head, caps.now());
-        const squashed = await squashPull(lane, { head, base: facts.base }, published.summary);
+        const squashed = await squashPull(
+          {
+            ...lane,
+            beforeMergeCall: (expectedHead) =>
+              beginMergeCall(db, item.id, expectedHead, caps.now()),
+          },
+          { head, base: facts.base },
+          published.summary,
+        );
         if (!squashed.merged) endMergeCall(db, item.id);
         return squashed;
       },
@@ -385,7 +391,7 @@ async function mergedOutsideLane(
   caps: MergeCapabilities,
 ): Promise<MergeStep | null> {
   const merge = await caps.mergedOutsideLane(item);
-  if (merge === "unknown") return pendingMergeOutcome();
+  if (merge === "unknown") return mergeCallInFlight(db, item.id) ? pendingMergeOutcome() : null;
   if (merge === null || getWorkItem(db, item.id)?.state !== "merge_queue") return null;
   recordConfirmedRemoteMerge(db, { ...merge, itemId: item.id, confirmedAt: caps.now() });
   leaveMergeQueue(db, item.id);

@@ -155,6 +155,8 @@ export async function mergeHarness(
     /** GitHub merges the pull request, but its answer to the merge call never arrives. */
     dropMergeResponse: false,
     mergeResponseStatus: 200,
+    beforeMergeToken: (): void => {},
+    beforeGit: (_args: string[]): void => {},
     /** GitHub's `mergeable` before it has computed one: null reads to answer first, per pull. */
     lazyMergeable: new Map<number, number>(),
     /** Pull request reads, by number. */
@@ -218,6 +220,7 @@ export async function mergeHarness(
       if (req.method === "PUT" && req.path.endsWith("/merge")) {
         state.squashing = true;
         await state.squashGate;
+        if (state.mergeResponseStatus === 403) return { status: 403, body: {} };
         const body = req.body as { sha: string; commit_title: string };
         const number = Number(req.path.split("/").at(-2));
         const result = await github.merge({
@@ -403,8 +406,17 @@ export async function mergeHarness(
             installationId: "2",
             privateKeyPem: "unused",
             client,
-            tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
-            gitExec: defaultGitExec(),
+            tokenProvider: {
+              mode: "app",
+              tokenFor: async () => {
+                state.beforeMergeToken();
+                return "ghs_test";
+              },
+            },
+            gitExec: async (args, gitOptions) => {
+              state.beforeGit(args);
+              return defaultGitExec()(args, gitOptions);
+            },
           },
           repository: { owner: "acme", repo: "app", remoteUrl: bare },
           pull: { number: item.pull, url: `https://github.com/acme/app/pull/${item.pull}` },

@@ -56,6 +56,55 @@ function restart(h: MergeHarness): void {
 }
 
 describe("a Paws restart and the merge queue", () => {
+  test.each(["token", "fetch"])(
+    "a %s failure before the squash PUT keeps normal retry handling",
+    async (failure) => {
+      const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+      const item = await h.addItem("ENG-200");
+      let tokens = 0;
+      let fetches = 0;
+      const error = new Error("preparation failed");
+      h.state.beforeMergeToken = () => {
+        // The queue review, lane facts and lane review acquire the first three tokens.
+        if (++tokens === 4 && failure === "token") throw error;
+      };
+      h.state.beforeGit = (args) => {
+        if (
+          args.includes("fetch") &&
+          args.includes(h.bare) &&
+          ++fetches === 2 &&
+          failure === "fetch"
+        )
+          throw error;
+      };
+      await expect(h.pass(item.id)).rejects.toThrow("preparation failed");
+      expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+      expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+      expect(reverifies(h)).toEqual([]);
+      expect(h.github.merged).toEqual([]);
+      expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual([item.id]);
+      h.state.beforeMergeToken = () => {};
+      h.state.beforeGit = () => {};
+      expect(await h.pass(item.id)).toEqual({ kind: "merged" });
+      expect(reverifies(h)).toEqual([]);
+    },
+  );
+
+  test("an unknown late read does not hide a confirmed merge denial", async () => {
+    const h = (harness = await mergeHarness());
+    const item = await h.addItem("ENG-199");
+    h.state.mergeResponseStatus = 403;
+    h.state.beforeMergeToken = () => {
+      h.state.mergeReadUnknown = true;
+    };
+    expect(await h.pass(item.id)).toMatchObject({
+      kind: "failed",
+      message: "merge failed with status 403",
+    });
+    expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+    expect(h.github.merged).toEqual([]);
+  });
+
   test("tasks waiting in the queue keep their place and merge in their original order", async () => {
     const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
     const ids = ["ENG-201", "ENG-202", "ENG-203"];
