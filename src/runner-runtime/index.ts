@@ -127,6 +127,7 @@ type Active = {
   task?: Promise<void>;
   delivering?: Promise<void>;
   stopped?: Promise<void>;
+  dispatching?: Promise<void>;
   teardownConfirmed?: boolean;
   quiesced?: Promise<void>;
   publicationBranch?: string;
@@ -275,8 +276,12 @@ export async function openRunnerRuntime(options: {
       new Promise<void>((resolve) => setTimeout(resolve, waitMs).unref?.()),
     ]);
   const resumed: Execution[] = [];
-  const recovering = journal.executions(true);
-  const historical = journal.unconfirmedTerminations();
+  const restored = journal.executions(true);
+  const recovering = restored.filter((execution) => !journal.resultPending(execution.id));
+  const historical = [
+    ...restored.filter((execution) => journal.resultPending(execution.id)),
+    ...journal.unconfirmedTerminations(),
+  ];
   const concurrency = () =>
     z
       .number()
@@ -794,13 +799,8 @@ export async function openRunnerRuntime(options: {
   }
   function quiesce(entry: Active) {
     entry.quiesced ??= (async () => {
+      await entry.dispatching;
       await broker.stop(entry.execution.id);
-      // A start already in flight may complete after the first stop. Abort prevents
-      // further dispatch; stop again after preparation has settled.
-      if (entry.task) {
-        await entry.task;
-        await broker.stop(entry.execution.id);
-      }
       journal.confirmTermination(entry.execution.command);
     })().catch((error) => {
       entry.quiesced = undefined;
@@ -1080,7 +1080,12 @@ export async function openRunnerRuntime(options: {
       check(entry);
       if (entry.execution.command.expiresAt <= now())
         throw new Error("Runner command expired before dispatch");
-      const receipt = await broker.start(entry.execution.id);
+      const starting = broker.start(entry.execution.id);
+      entry.dispatching = starting.then(
+        () => undefined,
+        () => undefined,
+      );
+      const receipt = await starting;
       if (receipt.alreadyAdmitted)
         throw new Error("Runner execution identity was already consumed");
       check(entry);
@@ -1598,6 +1603,11 @@ export async function openRunnerRuntime(options: {
       }
       await options.daemon.acknowledgeCommand(command.id);
     }
+    await settle(
+      [...active.values()]
+        .filter((entry) => entry.abort.signal.aborted)
+        .flatMap((entry) => [entry.stopped, entry.task]),
+    );
     for (const entry of active.values()) {
       if (entry.abort.signal.aborted) {
         if (entry.teardownConfirmed && !entry.task) active.delete(key(entry.execution.command));
@@ -1744,17 +1754,17 @@ export async function openRunnerRuntime(options: {
   else await sweep();
   const reconciling = (async () => {
     for (const execution of historical) {
-      while (!closed) {
+      for (let confirmed = false; !confirmed;) {
+        if (closed) return;
         try {
           await broker.stop(execution.id);
           journal.confirmTermination(execution.command);
-          break;
+          confirmed = true;
         } catch (error) {
           journalCaught(error, "runner-runtime.reconcile.stop", execution.command.itemId);
           await new Promise<void>((resolve) => setTimeout(resolve, 15_000).unref?.());
         }
       }
-      if (closed) return;
     }
   })();
   const heartbeat = setInterval(() => {
