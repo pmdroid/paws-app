@@ -173,6 +173,10 @@ test("repository authorization is separate from signer trust", () => {
   );
 });
 
+test("a runner without an allowlist accepts every repository", () => {
+  expect(verifyRunnerCommand(signed(), context({ allowedRepositories: undefined })).ok).toBe(true);
+});
+
 test("atomic replay claims reject duplicate commands and fail closed on storage failure", () => {
   const verifier = context();
   const envelope = signed();

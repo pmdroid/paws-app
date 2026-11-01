@@ -104,7 +104,7 @@ export async function probeRunnerDaemon(
       if (path === "/v1/heartbeat") {
         const body = await request.json();
         heartbeatBodies.push(body);
-        if (/"waiting"|"runtimes"|"agents"/.test(JSON.stringify(body)))
+        if (/"waiting"|"runtimes"|"agents"|"repositories"/.test(JSON.stringify(body)))
           return Response.json({}, { status: 403 });
         return deliver(heartbeatResponse);
       }
@@ -417,6 +417,7 @@ export async function probeRunnerDaemon(
     const heartbeat = (await child("heartbeat")).result;
     assert.equal(heartbeat.fingerprint, renewed.fingerprint);
     assert.deepEqual(heartbeatBodies.at(-1), {});
+    assert.deepEqual(heartbeatBodies.at(-2), { repositories: ["local/fixture"] });
     const configured = openRunnerDaemon({
       ...config,
       allowedRepositories: ["local/fixture"],
@@ -458,6 +459,7 @@ export async function probeRunnerDaemon(
         attempts.map((body) => [body.skills, body.runtimes]),
         [
           [[reported], [runtime]],
+          [[reported], [runtime]],
           [[reported], undefined],
           [[pending], undefined],
         ],
@@ -474,6 +476,7 @@ export async function probeRunnerDaemon(
       assert.deepEqual(
         withAgents.map((body) => [body.skills, body.runtimes, body.agents]),
         [
+          [[reported], [runtime], [agent]],
           [[reported], [runtime], [agent]],
           [[reported], [runtime], undefined],
           [[reported], undefined, undefined],

@@ -29,7 +29,7 @@ export type RunnerCommandVerifier = {
   runnerId: string;
   workspaceId: string;
   now: number;
-  allowedRepositories: readonly string[];
+  allowedRepositories?: readonly string[];
   claimCommand: (id: string, expiresAt: number) => boolean;
 };
 
@@ -94,6 +94,7 @@ export function verifyRunnerCommand(
   const repository = target ? `${target.owner}/${target.repo}` : undefined;
   if (
     repository &&
+    context.allowedRepositories &&
     !context.allowedRepositories.some(
       (allowed) => allowed.toLowerCase() === repository.toLowerCase(),
     )

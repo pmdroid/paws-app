@@ -25,6 +25,11 @@ const heartbeat = RunnerHostStatusSchema.extend({
     .array(z.strictObject({ runId: id, generation }))
     .max(64)
     .optional(),
+  repositories: z
+    .array(z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/))
+    .max(256)
+    .nullable()
+    .optional(),
 });
 const grant = z.strictObject({ commandId: id, generation });
 const event = z.strictObject({
@@ -42,11 +47,20 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
       if (path === "/v1/commands" && request.method === "GET")
         return json({ commands: work.commands(runnerId) });
       if (path === "/v1/heartbeat" && request.method === "POST") {
-        const { capacity, ceiling, skills, runtimes, agents, live, ...host } = heartbeat.parse(
-          await body(request),
-        );
+        const { capacity, ceiling, skills, runtimes, agents, live, repositories, ...host } =
+          heartbeat.parse(await body(request));
         return json(
-          work.heartbeat(runnerId, capacity ?? 1, host, ceiling, skills, runtimes, agents, live),
+          work.heartbeat(
+            runnerId,
+            capacity ?? 1,
+            host,
+            ceiling,
+            skills,
+            runtimes,
+            agents,
+            live,
+            repositories,
+          ),
         );
       }
       const download = /^\/v1\/skills\/([^/]+)\/([^/]+)$/.exec(path);
