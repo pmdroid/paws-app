@@ -545,6 +545,18 @@ test("an execution an older release ended is confirmed only after the broker sto
     release = resolve;
   });
   const stops: string[] = [];
+  let pending: RunnerCommand[] = [
+    {
+      id: "late-cancel",
+      type: "cancel",
+      runId: "old-run",
+      generation: 1,
+      runnerId: "runner",
+      workspaceId: "workspace",
+      issuedAt: now,
+      expiresAt: now + 60_000,
+    },
+  ];
   const reports: { runId: string; generation: number }[][] = [];
   const terminations: { runId: string; generation: number; commandId: string }[][] = [];
   const runtime = await openRunnerRuntime({
@@ -570,10 +582,12 @@ test("an execution an older release ended is confirmed only after the broker sto
         return { leases: [], fenced: [], terminated: [...(terminated ?? [])] };
       },
       async pollCommands() {
-        return { commands: [], rejected: [], deniedRepositories: [] };
+        return { commands: pending, rejected: [], deniedRepositories: [] };
       },
-      pendingCommands: () => [],
-      async acknowledgeCommand() {},
+      pendingCommands: () => pending,
+      async acknowledgeCommand(id) {
+        pending = pending.filter((command) => command.id !== id);
+      },
       async issueRunGrant() {
         throw new Error("unused");
       },
@@ -605,6 +619,8 @@ test("an execution an older release ended is confirmed only after the broker sto
   });
   try {
     await runtime.tick();
+    await runtime.tick();
+    expect(pending).toEqual([]);
     expect(stops).toHaveLength(1);
     expect(reports.at(-1)).toEqual([]);
     expect(terminations.at(-1)).toEqual([]);

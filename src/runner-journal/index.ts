@@ -172,6 +172,17 @@ export function openExecutionJournal(root: string) {
         .all()
         .map(parseExecution);
     },
+    terminationPending(runId: string, generation: number) {
+      return (
+        db
+          .query(
+            `SELECT 1 FROM execution e WHERE json_extract(e.payload,'$.runId')=?
+            AND json_extract(e.payload,'$.generation')=?
+            AND NOT EXISTS(SELECT 1 FROM termination t WHERE t.command_id=e.command_id)`,
+          )
+          .get(runId, generation) !== null
+      );
+    },
     confirmTermination(command: { id: string; runId: string; generation: number }) {
       db.run("INSERT OR IGNORE INTO termination(command_id,run_id,generation) VALUES(?,?,?)", [
         command.id,

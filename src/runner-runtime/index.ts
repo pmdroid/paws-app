@@ -1580,7 +1580,11 @@ export async function openRunnerRuntime(options: {
             entry.execution.command.itemId,
           ),
         );
-      if (command.type === "cancel" && !entry) {
+      if (
+        command.type === "cancel" &&
+        !entry &&
+        !journal.terminationPending(command.runId, command.generation)
+      ) {
         // No admitted execution or in-flight preparation can start this generation.
         // Persist proof before acknowledging receipt, including across a lost heartbeat.
         journal.confirmTermination(command);
