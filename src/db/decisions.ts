@@ -21,6 +21,12 @@ import { cancelOpenJobs, enqueueJobOnce, reenqueueJob } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
 import { getRun, insertRun, markRun, releaseRunCapacity } from "./runs";
 import { getTaskMode } from "./tasks";
+import {
+  heldRestartDecision,
+  rememberRestartDecision,
+  restartDecisionQuestion,
+  bindRestartDecisionQuestion,
+} from "./restart-decisions";
 
 const RESTART_QUESTION =
   "Paws restarted twice while this task was running. Start it again from its branch in a fresh session? Stop the session to leave it.";
@@ -40,7 +46,6 @@ export function applyDecision(
   now: number,
   { stamp, runAt = now }: { stamp?: WakeStamp; runAt?: number } = {},
 ): void {
-  if (repairRestartDecision(db, item, now)) return;
   switch (decision.type) {
     case "ignore":
     case "none":
@@ -141,9 +146,7 @@ export function repairRestartDecision(db: Database, item: WorkItemRecord, now: n
     !["running", "recovering", "verifying", "awaiting_input"].includes(item.state)
   )
     return false;
-  const held = db
-    .query("SELECT 1 FROM restart_decision WHERE item_id=? AND session_id=?")
-    .get(item.id, item.sessionKey);
+  const held = heldRestartDecision(db, item);
   if (!held) return false;
   applyAskRestart(db, item, now);
   return true;
@@ -161,44 +164,73 @@ function applyAskRestart(db: Database, item: WorkItemRecord, now: number): void 
     );
     return;
   }
-  db.run("DELETE FROM restart_decision WHERE item_id=? AND session_id<>?", [
-    item.id,
-    item.sessionKey,
-  ]);
-  db.run(`INSERT OR IGNORE INTO restart_decision(item_id,session_id,job_key) VALUES (?,?,?)`, [
-    item.id,
-    item.sessionKey,
-    `restart-ask:${item.id}:${item.version}`,
-  ]);
-  const intent = db
-    .query<{ job_key: string }, [string]>("SELECT job_key FROM restart_decision WHERE item_id=?")
-    .get(item.id)!;
-  if (
-    db
+  const initial = heldRestartDecision(db, item) === null;
+  const intent = rememberRestartDecision(db, item);
+  const question = restartDecisionQuestion(db, item);
+  if (question) {
+    bindRestartDecisionQuestion(db, item, question.id);
+    // A delivery adopts the canonical question and retires older or stale-run copies.
+    const duplicate = db
       .query(`SELECT 1 FROM question WHERE item_id=? AND session_id=?
-    AND reason='restart' AND status IN ('open','queued') AND cancelled_at IS NULL LIMIT 1`)
-      .get(item.id, item.sessionKey)
-  )
-    return;
-  cancelOpenJobs(db, {
-    itemId: item.id,
-    reason: "restart_question",
-    now,
-    exceptId: db
-      .query<{ id: number }, [string, number]>(
-        "SELECT id FROM job WHERE job_key=? AND (item_version IS NULL OR item_version=?)",
+      AND reason='restart' AND id<>? AND cancelled_at IS NULL AND status IN ('open','queued') LIMIT 1`)
+      .get(item.id, item.sessionKey, question.id);
+    if (!duplicate) return;
+  }
+  const delivery = db
+    .query<
+      {
+        id: number;
+        status: string;
+        item_version: number | null;
+        payload: string;
+        max_attempts: number;
+      },
+      [string]
+    >("SELECT id,status,item_version,payload,max_attempts FROM job WHERE job_key=?")
+    .get(intent.jobKey);
+  // Dead deliveries retain their scheduler retry budget and visible manual retry.
+  if (delivery?.status === "dead") return;
+  if (initial) {
+    cancelOpenJobs(db, {
+      itemId: item.id,
+      reason: "restart_question",
+      now,
+      exceptId: delivery?.id,
+    });
+    if (item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
+  }
+  if (delivery && ["pending", "running"].includes(delivery.status)) {
+    if (delivery.item_version === null || delivery.item_version === item.version) return;
+    db.run(
+      "UPDATE job SET status='cancelled',finished_at=?,locked_by=NULL,locked_until=NULL WHERE id=?",
+      [now, delivery.id],
+    );
+  }
+  const repairs = delivery
+    ? Number(
+        (JSON.parse(delivery.payload) as { restartDeliveryRepairs?: number })
+          .restartDeliveryRepairs ?? 0,
       )
-      .get(intent.job_key, item.version)?.id,
-  });
-  if (item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
+    : 0;
+  if (delivery?.status === "done" && repairs + 1 >= delivery.max_attempts) {
+    db.run(
+      "UPDATE job SET status='dead',attempts=max_attempts,last_error='Restart question delivery completed without a question; retry delivery from the task page.' WHERE id=?",
+      [delivery.id],
+    );
+    return;
+  }
+
   reenqueueJob(db, {
     queue: "item.ask",
-    jobKey: intent.job_key,
+    jobKey: intent.jobKey,
+    maxAttempts: delivery?.max_attempts,
+    runAt: delivery?.status === "done" ? now + 60_000 : now,
     payload: {
       itemId: item.id,
       kind: "agent",
       reason: "restart",
       body: RESTART_QUESTION,
+      restartDeliveryRepairs: repairs + (delivery?.status === "done" ? 1 : 0),
       options: ["Start again"],
     },
     now,

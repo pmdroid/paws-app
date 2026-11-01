@@ -12,13 +12,17 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
+  listPendingLinearTurns,
+  recordLinearTurn,
+  insertRun,
+  setCurrentRun,
   migrate,
   openDatabase,
   recoverOnStartup,
   requeueOrphanedWork,
   restart,
 } from "../db";
-import { answer, findOpenQuestion } from "../questions";
+import { answer, findOpenQuestion, ask as rawAsk, getQuestion } from "../questions";
 import { ask } from "./operations";
 import { reaskDeadQuestion } from "./dead-question";
 import { questionEffects } from "./question-effects";
@@ -191,6 +195,178 @@ test("a dead restart elicitation preserves the decision question and resumes onc
     ).toHaveLength(1);
     expect(db.query("SELECT * FROM restart_decision WHERE item_id=?").get(item.id)).toBeNull();
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(1);
+  } finally {
+    db.close();
+  }
+});
+
+function heldFixture() {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const item = insertQueuedItem(db, { sessionKey: "ses", now: NOW });
+  beginImplementRun(db, item.id, NOW);
+  recoverOnStartup(db, NOW);
+  recoverOnStartup(db, NOW);
+  const current = getWorkItem(db, item.id)!;
+  const owner = { itemId: item.id, runId: current.currentRunId, sessionId: "ses" };
+  return { db, item, owner };
+}
+
+function replyToRestart(
+  db: ReturnType<typeof openDatabase>,
+  deliveryId: string,
+  body = "Start again",
+) {
+  return answer(
+    db,
+    { sessionId: "ses", deliveryId, body, answeredBy: "pascal", now: LATER },
+    questionEffects(db, { now: LATER }),
+  );
+}
+
+test("a legacy restart question with no run accepts its answer", () => {
+  const { db, item, owner } = heldFixture();
+  try {
+    ask(db, { ...owner, runId: null }, "agent", "Restart?", { reason: "restart", now: NOW });
+    expect(replyToRestart(db, "null-run").status).toBe("answered");
+    expect(getWorkItem(db, item.id)?.state).toBe("queued");
+    expect(
+      listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
+    ).toHaveLength(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("a stale-run restart answer consumes the turn and explains why it cannot resume", () => {
+  const { db, item, owner } = heldFixture();
+  try {
+    ask(db, owner, "agent", "Restart?", { reason: "restart", now: NOW });
+    const other = insertRun(db, { itemId: item.id, now: NOW, status: "active" });
+    setCurrentRun(db, item.id, other.id);
+    recordLinearTurn(db, {
+      sessionId: "ses",
+      eventKey: "stale-run",
+      activityId: "stale-run",
+      actorId: "pascal",
+      body: "Start again",
+      payload: "{}",
+      createdAtMs: LATER,
+    });
+    expect(replyToRestart(db, "stale-run").status).toBe("answered");
+    expect(listPendingLinearTurns(db, "ses")).toEqual([]);
+    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    expect(
+      listOutbox(db).some((row) =>
+        (row.payload as { body?: string }).body?.includes("ownership or controls changed"),
+      ),
+    ).toBe(true);
+  } finally {
+    db.close();
+  }
+});
+
+test("an answered restart decision survives repair while another question waits", () => {
+  const { db, item, owner } = heldFixture();
+  try {
+    const first = ask(db, owner, "agent", "Restart?", { reason: "restart", now: NOW });
+    const other = ask(db, owner, "agent", "Which implementation?", { now: NOW + 1 });
+    expect(replyToRestart(db, "restart-first").status).toBe("answered");
+    expect(findOpenQuestion(db, "ses")?.id).toBe(other.question.id);
+    db.run("UPDATE job SET status='done',finished_at=? WHERE queue='item.ask'", [NOW]);
+    for (let i = 0; i < 3; i++) {
+      requeueOrphanedWork(db, LATER + i);
+      recoverOnStartup(db, LATER + i);
+    }
+    const redelivery = listJobs(db).find(
+      (job) => job.queue === "item.ask" && job.status === "pending",
+    );
+    if (redelivery) ask(db, owner, "agent", "Restart?", { reason: "restart", now: LATER });
+    expect(
+      db.query("SELECT question_id FROM restart_decision WHERE item_id=?").get(item.id),
+    ).toEqual({ question_id: first.question.id });
+    expect(db.query("SELECT id FROM question").all()).toHaveLength(2);
+    expect(replyToRestart(db, "other-answer", "Use the smaller implementation").status).toBe(
+      "answered",
+    );
+    const resumes = listJobs(db).filter(
+      (job) => job.queue === "run.resume" && job.status === "pending",
+    );
+    expect(resumes).toHaveLength(1);
+    expect((resumes[0]!.payload as { handoff: string }).handoff).toContain("Start again");
+    expect((resumes[0]!.payload as { handoff: string }).handoff).toContain(
+      "Use the smaller implementation",
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("adoption chooses the newest compatible question and retires duplicate and stale copies", () => {
+  const { db, owner } = heldFixture();
+  try {
+    const old = rawAsk(db, owner, "agent", "Old restart?", { reason: "restart", now: NOW });
+    const newest = rawAsk(db, owner, "agent", "New restart?", { reason: "restart", now: NOW + 1 });
+    const stale = rawAsk(db, { ...owner, runId: null }, "agent", "Stale restart?", {
+      reason: "restart",
+      now: NOW + 2,
+    });
+    const otherRun = insertRun(db, { itemId: owner.itemId, now: NOW, status: "lost" });
+    db.run("UPDATE question SET status='queued' WHERE id=?", [old.question.id]);
+    db.run("UPDATE question SET status='open' WHERE id=?", [newest.question.id]);
+    db.run("UPDATE question SET run_id=? WHERE id=?", [otherRun.id, stale.question.id]);
+    const adopted = ask(db, owner, "agent", "Restart?", { reason: "restart", now: LATER });
+    expect(adopted.question.id).toBe(newest.question.id);
+    expect(getQuestion(db, old.question.id)?.cancelledAt).toBe(LATER);
+    expect(getQuestion(db, stale.question.id)?.cancelledAt).toBe(LATER);
+    expect(findOpenQuestion(db, "ses")?.id).toBe(newest.question.id);
+    expect(replyToRestart(db, "duplicate-owner").status).toBe("answered");
+    expect(getWorkItem(db, owner.itemId)?.state).toBe("queued");
+  } finally {
+    db.close();
+  }
+});
+
+for (const exhausted of ["dead", "completed-without-question"] as const) {
+  test(`orphan repair bounds ${exhausted} delivery and preserves other pending work`, () => {
+    const { db, item } = heldFixture();
+    try {
+      const request = listJobs(db).find((job) => job.queue === "item.ask")!;
+      const unrelated = enqueueJob(db, {
+        queue: "item.notice",
+        payload: { itemId: item.id },
+        now: NOW,
+      });
+      if (exhausted === "dead")
+        db.run("UPDATE job SET status='dead',attempts=max_attempts WHERE id=?", [request.id]);
+      for (let i = 0; i < request.maxAttempts + 2; i++) {
+        if (
+          exhausted !== "dead" &&
+          listJobs(db).find((job) => job.id === request.id)?.status !== "dead"
+        )
+          db.run("UPDATE job SET status='done',finished_at=? WHERE id=?", [NOW, request.id]);
+        requeueOrphanedWork(db, LATER + i * 60_000);
+      }
+      expect(listJobs(db).find((job) => job.id === request.id)?.status).toBe("dead");
+      expect(listJobs(db).find((job) => job.id === unrelated)?.status).toBe("pending");
+      expect(getWorkItem(db, item.id)?.state).toBe("recovering");
+      expect(
+        listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
+      ).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+}
+
+test("cancel clears delivery metadata through the work-item lifecycle", () => {
+  const { db, item } = heldFixture();
+  try {
+    applyWorkItemEvent(db, item.id, "cancel");
+    expect(db.query("SELECT * FROM restart_decision").all()).toEqual([]);
+    expect(requeueOrphanedWork(db, LATER)).toEqual([]);
+    recoverOnStartup(db, LATER);
+    expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
   } finally {
     db.close();
   }

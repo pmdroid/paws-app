@@ -2,10 +2,18 @@ import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, type RestartReason } from "../core";
 import { halt } from "./halt";
-import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
-import { reenqueueJob } from "./jobs";
+import {
+  applyWorkItemEvent,
+  getWorkItem,
+  heldHandoffs,
+  markHandoffsCarried,
+  saveCheckpoint,
+  type WorkItemRecord,
+} from "./items";
+import { enqueueJobOnce, reenqueueJob } from "./jobs";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
+import { heldRestartDecision, restartAnswerAuthorized } from "./restart-decisions";
 
 export type RestartHandoff = {
   reason: RestartReason;
@@ -14,6 +22,8 @@ export type RestartHandoff = {
   jobKey?: string;
   /** The fix-attempt limit this round's lines name, when it differs from the fix rounds. */
   limit?: number;
+  /** Set only after authorizing a new user instruction or an explicit Resume control. */
+  humanInitiated?: true;
 };
 
 /** One admission path back to the agent. Keeps the run, branch and Linear session. */
@@ -23,32 +33,54 @@ export function restart(
   handoff: RestartHandoff,
 ): number | null {
   return immediate(db, () => {
-    const held = db
-      .query("SELECT 1 FROM restart_decision WHERE item_id=? AND session_id=?")
-      .get(item.id, item.sessionKey);
-    if (held && item.state !== "failed") {
-      if (handoff.reason !== "answer") return null;
-      const authorized = db
-        .query(`SELECT 1 FROM restart_decision d JOIN question q ON q.id=d.question_id
-        WHERE d.item_id=? AND d.session_id=? AND q.status='answered' AND q.cancelled_at IS NULL
-          AND q.handoff_version IS NULL AND (q.run_id IS NULL OR q.run_id=?)`)
-        .get(item.id, item.sessionKey, item.currentRunId);
-      if (!authorized) return null;
+    if (getWorkItem(db, item.id)?.version !== item.version) return null;
+    const held = heldRestartDecision(db, item);
+    const humanInitiated =
+      handoff.humanInitiated === true && ["follow_up", "conflict"].includes(handoff.reason);
+    if (
+      held &&
+      item.state !== "failed" &&
+      !humanInitiated &&
+      !(handoff.reason === "answer" && restartAnswerAuthorized(db, item))
+    ) {
+      // Keep guidance that arrives while a person owns the next decision, without scheduling it.
+      if (handoff.reason !== "answer") {
+        const digest = createHash("sha256").update(handoff.body).digest("hex");
+        const id = enqueueJobOnce(db, {
+          queue: JOB_KIND.resume,
+          jobKey: `restart-held:${item.id}:${item.version}:${digest}`,
+          payload: { itemId: item.id, reason: "restart_hold", handoff: handoff.body },
+          now: handoff.now,
+        });
+        db.run(
+          "UPDATE job SET status='cancelled',last_error='restart_decision',finished_at=? WHERE id=? AND status='pending'",
+          [handoff.now, id],
+        );
+      }
+      return null;
     }
     if (!halt(db, item, handoff.now)) return null;
     db.run("DELETE FROM restart_decision WHERE item_id=?", [item.id]);
+    if (humanInitiated)
+      db.run(
+        `UPDATE question SET cancelled_at=? WHERE item_id=? AND reason='restart'
+      AND status IN ('open','queued') AND cancelled_at IS NULL`,
+        [handoff.now, item.id],
+      );
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
-    if (item.state === "failed")
+    if ((humanInitiated && item.cancelRequested) || item.state === "failed")
       db.run(
         "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
         [item.id],
       );
     else if (handoff.reason === "answer")
       db.run("UPDATE work_item SET turn_count=0 WHERE id=?", [item.id]);
+    const guidance = humanInitiated ? heldHandoffs(db, item.id) : [];
+    const body = [...guidance.map((entry) => entry.handoff), handoff.body].join("\n\n");
     const record = {
       kind: "restart" as const,
       reason: handoff.reason,
-      payloadDigest: createHash("sha256").update(handoff.body).digest("hex"),
+      payloadDigest: createHash("sha256").update(body).digest("hex"),
       now: handoff.now,
     };
     const queued = applyWorkItemEvent(db, item.id, "restart", record);
@@ -58,7 +90,7 @@ export function restart(
     const payload = {
       itemId: item.id,
       runId: item.currentRunId,
-      handoff: handoff.body,
+      handoff: body,
       reason: handoff.reason,
       ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
     };
@@ -86,6 +118,7 @@ export function restart(
       },
     );
     if (!job.pending) throw new Error("restart requires a pending resume job");
+    markHandoffsCarried(db, guidance);
     return job.id;
   });
 }

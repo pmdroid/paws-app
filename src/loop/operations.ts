@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
   getWorkItem,
+  restartDecisionQuestion,
+  bindRestartDecisionQuestion,
   immediate,
   saveCheckpoint,
   type WorkItemRecord,
@@ -10,6 +12,7 @@ import {
 import {
   ask as openQuestion,
   getQuestion,
+  cancelQuestion,
   type Asked,
   type QuestionAsker,
   type StoredQuestion,
@@ -43,29 +46,23 @@ export function ask(
       throw new Error("Question owner is stale");
     // A delivery retried after a crash adopts the stored decision instead of asking twice.
     if (args[2]?.reason === "restart") {
-      const existing = db
-        .query<{ id: string; status: "open" | "queued" }, [string, string]>(
-          `SELECT id,status FROM question WHERE item_id=? AND session_id=? AND reason='restart'
-         AND status IN ('open','queued') AND cancelled_at IS NULL LIMIT 1`,
+      const existing = restartDecisionQuestion(db, item);
+      // Retire older or stale-run copies before routing the next Linear reply.
+      const duplicates = db
+        .query<{ id: string }, [string, string, string]>(
+          `SELECT id FROM question WHERE item_id=? AND session_id=? AND reason='restart'
+          AND id<>? AND status IN ('open','queued') AND cancelled_at IS NULL`,
         )
-        .get(item.id, owner.sessionId);
+        .all(item.id, owner.sessionId, existing?.id ?? "");
+      for (const duplicate of duplicates) cancelQuestion(db, duplicate.id, args[2]?.now);
       if (existing) {
-        db.run("UPDATE restart_decision SET question_id=? WHERE item_id=? AND session_id=?", [
-          existing.id,
-          item.id,
-          owner.sessionId,
-        ]);
+        bindRestartDecisionQuestion(db, item, existing.id);
         const question = getQuestion(db, existing.id)!;
-        return { status: existing.status === "open" ? "asked" : "queued", question };
+        return { status: question.status === "queued" ? "queued" : "asked", question };
       }
     }
     const result = openQuestion(db, owner, ...args);
-    if (args[2]?.reason === "restart")
-      db.run("UPDATE restart_decision SET question_id=? WHERE item_id=? AND session_id=?", [
-        result.question.id,
-        item.id,
-        owner.sessionId,
-      ]);
+    if (args[2]?.reason === "restart") bindRestartDecisionQuestion(db, item, result.question.id);
     if (!pending && !workspace)
       awaitQuestion(db, item, result.question, args[2]?.now ?? Date.now());
     return result;

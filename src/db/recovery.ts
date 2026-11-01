@@ -52,6 +52,7 @@ export function recoverOnStartup(
     let resumes = 0;
     const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
     for (const item of items) {
+      if (item.cancelRequested) continue;
       if (repairRestartDecision(db, item, now)) continue;
       if (hasParkedCapacityWait(db, item)) continue;
       if (hasPendingAnswerResume(db, item.id)) continue;
@@ -199,11 +200,27 @@ const ORPHAN_GRACE_MS = 5 * 60_000;
  * a re-verify, as on startup, so Closeout checks the head before the merge job is queued again.
  */
 export function requeueOrphanedWork(db: Database, now: number): string[] {
-  return immediate(db, () => {
-    for (const item of listWorkItemsByStates(db, STARTUP_STATES))
-      repairRestartDecision(db, item, now);
-    return enqueueOrphans(db, now);
-  });
+  // Read only the decisions that need delivery repair, then repair each under a short lock.
+  const held = db
+    .query<{ id: string }, []>(`SELECT i.id FROM restart_decision d
+    JOIN work_item i ON i.id=d.item_id AND i.session_key=d.session_id
+    LEFT JOIN job j ON j.job_key=d.job_key
+    WHERE i.cancel_requested=0 AND i.state IN ('running','recovering','verifying','awaiting_input')
+      AND (j.id IS NULL OR j.status IN ('cancelled','done') OR
+        (j.status IN ('pending','running') AND j.item_version IS NOT NULL AND j.item_version<>i.version))
+      AND (EXISTS (SELECT 1 FROM question q WHERE q.item_id=i.id AND q.session_id=i.session_key
+        AND q.reason='restart' AND q.cancelled_at IS NULL AND q.status IN ('open','queued') AND q.id<>d.question_id)
+      OR NOT EXISTS (SELECT 1 FROM question q WHERE q.item_id=i.id AND q.session_id=i.session_key
+        AND q.reason='restart' AND q.cancelled_at IS NULL AND (q.run_id IS NULL OR q.run_id=i.current_run_id)
+        AND (q.status IN ('open','queued') OR (q.status='answered' AND q.handoff_version IS NULL))))
+    ORDER BY i.id LIMIT 100`)
+    .all();
+  for (const { id } of held)
+    immediate(db, () => {
+      const item = getWorkItem(db, id);
+      if (item) repairRestartDecision(db, item, now);
+    });
+  return enqueueOrphans(db, now);
 }
 
 function enqueueOrphans(db: Database, now: number): string[] {

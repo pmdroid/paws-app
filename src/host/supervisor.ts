@@ -7,6 +7,7 @@ import {
   failWorkItem,
   markRun,
   applyDecision,
+  heldRestartDecision,
   enqueueJobOnce,
   immediate,
   listInFlightItems,
@@ -80,6 +81,7 @@ export class HostSupervisor {
     immediate(this.db, () => {
       for (const item of listInFlightItems(this.db)) {
         observed.set(item.id, mono);
+        if (heldRestartDecision(this.db, item)) continue;
         if (!countsAwakeTime(item.state, item.checkpoint, item.acceptedHead)) continue;
         // Skipped ticks still advance the baseline in memory, excluding parked time.
         const since = Math.max(
@@ -109,6 +111,7 @@ export class HostSupervisor {
 
       const stamp = { fromWall: sample.fromWall, toWall: sample.toWall, sleptMs };
       for (const item of listInFlightItems(this.db)) {
+        if (heldRestartDecision(this.db, item)) continue;
         const decision = decideWake({
           sleptMs,
           itemState: item.state,

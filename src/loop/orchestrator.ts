@@ -202,6 +202,7 @@ import {
   isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
   getWorkItem,
+  heldRestartDecision,
   closeoutHeadsStarted,
   getLinkAsk,
   getPullRequestDraft,
@@ -5371,7 +5372,8 @@ export class Orchestrator {
             });
           continue;
         }
-        cancelItemQuestions(this.db, itemId, this.now());
+        const restartHeld = heldRestartDecision(this.db, item) !== null;
+        if (!restartHeld) cancelItemQuestions(this.db, itemId, this.now());
         if (item.state === "failed") {
           this.db.run(
             "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
@@ -5379,16 +5381,17 @@ export class Orchestrator {
           );
           resetAwakeTime(this.db, itemId);
         }
-        if (item.state === "paused") {
+        if (item.state === "paused" && !restartHeld) {
           cancelOpenJobs(this.db, { itemId, reason: "Linear criteria changed", now: this.now() });
           this.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [itemId]);
           continue;
         }
-        restart(this.db, item, {
+        const restartJob = restart(this.db, item, {
           reason: "follow_up",
           body: "The task criteria changed in Linear. Read the updated issue and finish the work from its branch.",
           now: this.now(),
         });
+        if (restartJob === null && !restartHeld) continue;
         enqueueOutboxOnce(this.db, {
           target: "linear",
           op: "activity",
@@ -5397,7 +5400,9 @@ export class Orchestrator {
           payload: {
             sessionId: changes.sessionId,
             kind: "thought",
-            body: `${item.linearIdentifier} changed in Linear. Its previous verification is invalidated and the updated criteria will be checked before publication.`,
+            body: restartHeld
+              ? `${item.linearIdentifier} changed in Linear. The updated criteria are saved and will be handed over after the pending restart decision is answered.`
+              : `${item.linearIdentifier} changed in Linear. Its previous verification is invalidated and the updated criteria will be checked before publication.`,
           },
           now: this.now(),
         });
@@ -5450,11 +5455,13 @@ export class Orchestrator {
     const resumed = immediate(this.db, () => {
       const item = getWorkItem(this.db, itemId);
       if (!canAct() || item?.state !== "paused" || item.cancelRequested) return false;
-      restart(this.db, item, {
+      const jobId = restart(this.db, item, {
         reason: "follow_up",
+        humanInitiated: true,
         body: "Continue the task from its branch.",
         now: this.now(),
       });
+      if (jobId === null) return false;
       onCommitted?.();
       return true;
     });
@@ -6302,20 +6309,19 @@ export class Orchestrator {
     const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
     immediate(this.db, () => {
-      if (item!.cancelRequested || item!.state === "failed") {
-        this.db.run(
-          "UPDATE work_item SET cancel_requested = 0, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
-          [item!.id],
-        );
-        resetAwakeTime(this.db, item!.id);
-        if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
-      }
       const jobId = restart(this.db, getWorkItem(this.db, item!.id)!, {
         reason: rebase ? "conflict" : "follow_up",
+        humanInitiated: true,
         body: rebase ? `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}` : handoff,
         jobKey,
         now: this.now(),
       });
+      if (jobId !== null) {
+        if (item!.cancelRequested || item!.state === "failed") {
+          resetAwakeTime(this.db, item!.id);
+          if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
+        }
+      }
       if (jobId !== null) saveHumanRetryWindow(this.db, item!.id, jobId, retryBaseline);
       if (rebase && jobId !== null)
         recordRebaseReturn(this.db, {

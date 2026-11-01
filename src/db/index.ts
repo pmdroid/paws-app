@@ -796,3 +796,10 @@ export {
 
 export { wakeMergesBehind } from "./merge-queue";
 export { mergeStopRequested } from "./remote-merges";
+
+export {
+  heldRestartDecision,
+  restartDecisionQuestion,
+  bindRestartDecisionQuestion,
+  restartAnswerAuthorized,
+} from "./restart-decisions";
