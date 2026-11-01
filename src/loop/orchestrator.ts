@@ -218,6 +218,7 @@ import {
   markJobAwakeWait,
   markRun,
   releaseRunCapacity,
+  restartHold,
   saveCheckpoint,
   recordItemBranchState,
   recordItemPullRequest,
@@ -2266,6 +2267,7 @@ export class Orchestrator {
     if (loaded === null) return;
     if (loaded.cancelRequested || loaded.state === "cancelled") return;
     if (loaded.state === "awaiting_input" || loaded.state === "paused") return;
+    if (restartHold(this.db, loaded) !== null) return;
     const sessionId = loaded.sessionKey;
     if (sessionId && getLinearSession(this.db, sessionId))
       activateLinearItem(this.db, sessionId, loaded.id);
