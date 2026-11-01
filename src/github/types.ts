@@ -134,6 +134,7 @@ export type SerialMergeResult = {
     | "push_rejected"
     | "sha_moved"
     | "merge_denied"
+    | "unknown"
     | "dirty"
     | "fix_failed"
     | "ci_failed";

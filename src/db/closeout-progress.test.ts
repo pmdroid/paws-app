@@ -1,6 +1,19 @@
 import { expect, test } from "bun:test";
-import { closeoutHeadsStarted, ensureCloseoutProgress } from "./closeout-progress";
-import { insertQueuedItem, migrate, openDatabase } from "./index";
+import {
+  acceptedCloseoutReviews,
+  closeoutHeadsStarted,
+  ensureCloseoutProgress,
+  finishCloseoutProgress,
+  closeoutPolicyDigests,
+} from "./closeout-progress";
+import {
+  insertQueuedItem,
+  migrate,
+  openDatabase,
+  markCloseoutAccepted,
+  getWorkItem,
+  recordCarriedAccept,
+} from "./index";
 
 test("each head of an item is ordered by when Closeout first evaluated it", () => {
   const db = openDatabase(":memory:");
@@ -24,4 +37,65 @@ test("each head of an item is ordered by when Closeout first evaluated it", () =
       ["h2", 20],
     ]),
   );
+});
+
+for (const changedIdentity of [false, true]) {
+  test(`a rejection retires acceptance with ${changedIdentity ? "a new" : "the same"} progress identity`, () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    insertQueuedItem(db, { id: "item" });
+    const identity = { taskId: "task", base: "b", head: "s", policyDigest: "p", policyPath: null };
+    finishCloseoutProgress(db, "item", identity, "accepted", 10);
+    markCloseoutAccepted(db, "item", "s");
+    finishCloseoutProgress(
+      db,
+      "item",
+      { ...identity, policyDigest: changedIdentity ? "q" : "p" },
+      "rejected",
+      20,
+    );
+    expect(getWorkItem(db, "item")?.acceptedHead).toBeNull();
+    expect(closeoutPolicyDigests(db, "item", "s")?.decision).toBe("rejected");
+    expect(acceptedCloseoutReviews(db, "item", "s")).toBeNull();
+    db.close();
+  });
+}
+
+for (const decision of ["exhausted", "blocked"] as const) {
+  test(`a ${decision} verdict ${decision === "exhausted" ? "retires" : "keeps"} the accepted head`, () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    insertQueuedItem(db, { id: "item" });
+    const identity = { taskId: "task", base: "b", head: "s", policyDigest: "p", policyPath: null };
+    finishCloseoutProgress(db, "item", identity, "accepted", 10);
+    markCloseoutAccepted(db, "item", "s");
+    finishCloseoutProgress(db, "item", { ...identity, base: "c" }, decision, 20);
+    expect(getWorkItem(db, "item")?.acceptedHead).toBe(decision === "exhausted" ? null : "s");
+    // Either way the older acceptance is not resurrected by the newer identity's row.
+    expect(acceptedCloseoutReviews(db, "item", "s")).toBeNull();
+    db.close();
+  });
+}
+
+test("rejecting a carried head retires its source acceptance", () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  insertQueuedItem(db, { id: "item" });
+  markCloseoutAccepted(db, "item", "s");
+  recordCarriedAccept(db, {
+    itemId: "item",
+    head: "rebased",
+    acceptedHead: "s",
+    base: "new-main",
+    now: 10,
+  });
+  finishCloseoutProgress(
+    db,
+    "item",
+    { taskId: "task", base: "new-main", head: "rebased", policyDigest: "p", policyPath: null },
+    "rejected",
+    20,
+  );
+  expect(getWorkItem(db, "item")?.acceptedHead).toBeNull();
+  db.close();
 });

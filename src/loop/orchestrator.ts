@@ -1,6 +1,10 @@
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
-import { AFTER_PULL_REQUEST_RESPONSE, hasPublishedPullRequest } from "./activity-policy";
+import {
+  AFTER_PULL_REQUEST_RESPONSE,
+  canReportProgress as canReportSessionProgress,
+  hasPublishedPullRequest,
+} from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
@@ -150,6 +154,7 @@ import {
   cancelOpenJobs,
   getLinearSessionAccess,
   getConfirmedRemoteMerge,
+  mergeCallInFlight,
   type ConfirmedRemoteMerge,
   getLinearTaskDelegation,
   getTaskModeGeneration,
@@ -4235,11 +4240,16 @@ export class Orchestrator {
   /** The merge of the item's pull request when a person merged it on GitHub, outside the lane. */
   private async mergedOutsideLane(
     item: WorkItemRecord,
-  ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null> {
+  ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null | "unknown"> {
     const pull = getItemPullRequest(this.db, item.id);
     const repository = pull ? this.repositoryForItem(item) : null;
     const github = repository ? this.githubForRepository(repository) : null;
-    if (!pull || !repository || !github) return null;
+    if (!pull) {
+      if (mergeCallInFlight(this.db, item.id))
+        throw new Error("Cannot reconcile an in-flight merge: the pull request record is missing.");
+      return null;
+    }
+    if (!repository || !github) return "unknown";
     const read = await readPullMerge({
       client: github.client,
       owner: repository.owner,
@@ -4257,7 +4267,8 @@ export class Orchestrator {
       );
       return null;
     });
-    if (!read?.merged) return null;
+    if (read === null) return "unknown";
+    if (!read.merged) return null;
     return {
       repositoryOwner: repository.owner,
       repositoryName: repository.repo,
@@ -4915,6 +4926,7 @@ export class Orchestrator {
         acceptedHead: item.acceptedHead,
         pullHead: item.acceptedHead,
         reason,
+        handoff: readString(job.payload, "handoff"),
       })
     )
       return false;
@@ -4941,7 +4953,12 @@ export class Orchestrator {
     });
     if (
       !context.isCurrent() ||
-      acceptedResumeNeedsTurn({ acceptedHead: item.acceptedHead, pullHead, reason }) ||
+      acceptedResumeNeedsTurn({
+        acceptedHead: item.acceptedHead,
+        pullHead,
+        reason,
+        handoff: readString(job.payload, "handoff"),
+      }) ||
       !mergeAcceptedWork(this.db, item.id, { now: this.now(), exceptJobId: job.id })
     )
       return false;
@@ -5371,6 +5388,37 @@ export class Orchestrator {
               },
               now: this.now(),
             });
+          continue;
+        }
+        if (item.state === "manual") {
+          // Intake saved the new brief in this transaction. Human ownership keeps its fence.
+          cancelItemQuestions(this.db, itemId, this.now(), "criteria");
+          if (
+            !canReportSessionProgress(
+              this.db,
+              changes.sessionId,
+              getLinearSessionGeneration(this.db, changes.sessionId),
+            )
+          )
+            continue;
+          const revision =
+            this.db
+              .query<{ revision: number }, [string]>(
+                "SELECT revision FROM work_item_specification WHERE item_id=?",
+              )
+              .get(itemId)?.revision ?? 0;
+          enqueueOutboxOnce(this.db, {
+            target: "linear",
+            op: "activity",
+            orderingKey: changes.sessionId,
+            idempotencyKey: `criteria-changed:${item.id}:manual:${revision}`,
+            payload: {
+              sessionId: changes.sessionId,
+              kind: "thought",
+              body: `${item.linearIdentifier} changed in Linear. The updated criteria are saved; ownership remains manual and automation will not resume.`,
+            },
+            now: this.now(),
+          });
           continue;
         }
         cancelItemQuestions(this.db, itemId, this.now());

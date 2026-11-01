@@ -56,6 +56,55 @@ function restart(h: MergeHarness): void {
 }
 
 describe("a Paws restart and the merge queue", () => {
+  test.each(["token", "fetch"])(
+    "a %s failure before the squash PUT keeps normal retry handling",
+    async (failure) => {
+      const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+      const item = await h.addItem("ENG-200");
+      let tokens = 0;
+      let fetches = 0;
+      const error = new Error("preparation failed");
+      h.state.beforeMergeToken = () => {
+        // The queue review, lane facts and lane review acquire the first three tokens.
+        if (++tokens === 4 && failure === "token") throw error;
+      };
+      h.state.beforeGit = (args) => {
+        if (
+          args.includes("fetch") &&
+          args.includes(h.bare) &&
+          ++fetches === 2 &&
+          failure === "fetch"
+        )
+          throw error;
+      };
+      await expect(h.pass(item.id)).rejects.toThrow("preparation failed");
+      expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+      expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+      expect(reverifies(h)).toEqual([]);
+      expect(h.github.merged).toEqual([]);
+      expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual([item.id]);
+      h.state.beforeMergeToken = () => {};
+      h.state.beforeGit = () => {};
+      expect(await h.pass(item.id)).toEqual({ kind: "merged" });
+      expect(reverifies(h)).toEqual([]);
+    },
+  );
+
+  test("an unknown late read does not hide a confirmed merge denial", async () => {
+    const h = (harness = await mergeHarness());
+    const item = await h.addItem("ENG-199");
+    h.state.mergeResponseStatus = 403;
+    h.state.beforeMergeToken = () => {
+      h.state.mergeReadUnknown = true;
+    };
+    expect(await h.pass(item.id)).toMatchObject({
+      kind: "failed",
+      message: "merge failed with status 403",
+    });
+    expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+    expect(h.github.merged).toEqual([]);
+  });
+
   test("tasks waiting in the queue keep their place and merge in their original order", async () => {
     const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
     const ids = ["ENG-201", "ENG-202", "ENG-203"];
@@ -86,7 +135,10 @@ describe("a Paws restart and the merge queue", () => {
     const item = await h.addItem("ENG-210");
     enqueueMerges(h, [item.id]);
     h.state.dropMergeResponse = true;
-    await expect(h.pass(item.id, openMergeJob(h, item.id))).rejects.toThrow();
+    expect(await h.pass(item.id, openMergeJob(h, item.id))).toMatchObject({
+      kind: "wait",
+      reason: "merge_outcome",
+    });
     expect(h.github.merged).toHaveLength(1);
     expect(getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
     expect(mergeCallInFlight(h.db, item.id)).toBe(true);
@@ -113,6 +165,41 @@ describe("a Paws restart and the merge queue", () => {
     ).toEqual({ n: 1 });
   });
 
+  test.each(["timeout", "502"])(
+    "%s: unknown reads retain a possibly successful merge until a positive read, without a payload flag",
+    async (fault) => {
+      const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
+      const item = await h.addItem("ENG-215");
+      enqueueMerges(h, [item.id]);
+      h.state.dropMergeResponse = fault === "timeout";
+      h.state.mergeResponseStatus = fault === "502" ? 502 : 200;
+      expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "merge_outcome" });
+      restart(h);
+      h.state.mergeReadUnknown = true;
+      const published = h.published.length;
+      const queue = listMergeQueues(h.db);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        expect(await h.pass(item.id, { itemId: item.id })).toMatchObject({
+          kind: "wait",
+          reason: "merge_outcome",
+        });
+        expect(mergeCallInFlight(h.db, item.id)).toBe(true);
+        expect(listMergeQueues(h.db)).toEqual(queue);
+        expect(getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
+        expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+        expect(reverifies(h)).toEqual([]);
+        expect(h.published).toHaveLength(published);
+        h.clock.advance(300_000);
+      }
+      h.state.mergeReadUnknown = false;
+      expect(await h.pass(item.id, { itemId: item.id })).toEqual({ kind: "merged" });
+      expect(await h.pass(item.id, { itemId: item.id })).toEqual({ kind: "obsolete" });
+      expect(h.completed).toEqual([item.id]);
+      expect(h.github.merged).toHaveLength(1);
+      expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+    },
+  );
+
   test("a merge call GitHub never saw re-verifies the task, which keeps its place", async () => {
     const h = (harness = await mergeHarness({ settings: { order: "queue" } }));
     const first = await h.addItem("ENG-220");
@@ -131,7 +218,15 @@ describe("a Paws restart and the merge queue", () => {
 
     restart(h);
 
-    expect(await h.pass(first.id, openMergeJob(h, first.id))).toEqual({ kind: "returned" });
+    h.state.mergeReadUnknown = true;
+    expect(await h.pass(first.id, { itemId: first.id })).toMatchObject({
+      kind: "wait",
+      reason: "merge_outcome",
+    });
+    expect(mergeCallInFlight(h.db, first.id)).toBe(true);
+    expect(reverifies(h)).toEqual([]);
+    h.state.mergeReadUnknown = false;
+    expect(await h.pass(first.id, { itemId: first.id })).toEqual({ kind: "returned" });
     expect(getWorkItem(h.db, first.id)?.state).toBe("verifying");
     expect(reverifies(h).map((job) => job.payload)).toEqual([{ itemId: first.id }]);
     expect(mergeCallInFlight(h.db, first.id)).toBe(false);
@@ -185,8 +280,13 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
   const h = (harness = await mergeHarness());
   const item = await h.addItem("ENG-231");
   let stopped = false;
+  let squashing = false;
+  // The squash acquires its merge token before its final fetch and readiness reads.
+  h.state.beforeMergeToken = (purpose) => {
+    if (purpose === "merge") squashing = true;
+  };
   h.state.pullHead = (head) => {
-    if (mergeCallInFlight(h.db, item.id) && !stopped) {
+    if (squashing && !stopped) {
       stopped = true;
       applyLinearCommand(h.db, {
         type: "stop",

@@ -88,11 +88,12 @@ export type MergeCapabilities = OrderCapabilities & {
   askRiskApproval(item: WorkItemRecord, published: MergePublication): Promise<MergeStep>;
   /**
    * The merge GitHub reports for the pull request Paws opened for the item, when it merged by
-   * hand outside the lane. Null when there is none, it is not merged, or GitHub could not say.
+   * hand outside the lane. Null confirms it is unmerged or has no pull; `unknown` means
+   * GitHub could not confirm either outcome.
    */
   mergedOutsideLane(
     item: WorkItemRecord,
-  ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null>;
+  ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null | "unknown">;
   completed(): void;
 };
 
@@ -117,13 +118,14 @@ export async function advanceMerge(
   )
     return { kind: "obsolete" };
   if (getConfirmedRemoteMerge(db, item.id)) {
+    endMergeCall(db, item.id);
     if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
     return { kind: "obsolete" };
   }
   // A pull request merged by hand on GitHub merges the item: publishing again would open another.
   const outside = await mergedOutsideLane(db, item, caps);
   if (outside) return outside;
-  if (restartedDuringMergeCall(db, item.id, input.payload)) {
+  if (mergeCallInFlight(db, item.id)) {
     reverifyAfterRestart(db, item, input.jobId, caps.now());
     return { kind: "returned" };
   }
@@ -209,13 +211,19 @@ export async function advanceMerge(
       ),
     rebase: () => rebaseOntoMain(lane),
     squash: async (head, facts) => {
-      // A call that throws may still have reached GitHub, so its marker stays for the next start.
-      beginMergeCall(db, item.id, head, caps.now());
-      const squashed = await squashPull(lane, { head, base: facts.base }, published.summary);
-      if (!squashed.merged) endMergeCall(db, item.id);
+      const squashed = await squashPull(
+        {
+          ...lane,
+          beforeMergeCall: (expectedHead) => beginMergeCall(db, item.id, expectedHead, caps.now()),
+        },
+        { head, base: facts.base },
+        published.summary,
+      );
+      if (!squashed.merged && squashed.outcome !== "unknown") endMergeCall(db, item.id);
       return squashed;
     },
   });
+  if (turn.kind === "stopped" && turn.result.outcome === "unknown") return pendingMergeOutcome();
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
   if ((turn.kind === "stopped" || turn.kind === "blocked") && !caps.stopped()) {
@@ -375,6 +383,7 @@ async function mergedOutsideLane(
   caps: MergeCapabilities,
 ): Promise<MergeStep | null> {
   const merge = await caps.mergedOutsideLane(item);
+  if (merge === "unknown") return mergeCallInFlight(db, item.id) ? pendingMergeOutcome() : null;
   if (merge === null || getWorkItem(db, item.id)?.state !== "merge_queue") return null;
   recordConfirmedRemoteMerge(db, { ...merge, itemId: item.id, confirmedAt: caps.now() });
   leaveMergeQueue(db, item.id);
@@ -389,13 +398,13 @@ async function mergedOutsideLane(
   return { kind: "merged" };
 }
 
-/** Paws stopped while the lane's merge call for the item may have been in flight. */
-function restartedDuringMergeCall(db: Database, itemId: string, payload: unknown): boolean {
-  const flagged =
-    typeof payload === "object" &&
-    payload !== null &&
-    (payload as { mergeCallInFlight?: unknown }).mergeCallInFlight === true;
-  return flagged && mergeCallInFlight(db, itemId);
+/** Unknown remote outcomes wait without spending the CI deadline or leaving the queue. */
+function pendingMergeOutcome(): MergeStep {
+  return {
+    kind: "wait",
+    reason: "merge_outcome",
+    message: "Waiting for GitHub to confirm the previous merge outcome.",
+  };
 }
 
 /**
@@ -475,11 +484,14 @@ function mergeFacts(
     acceptedHead !== null &&
     acceptedHead !== pull.head &&
     carriedAcceptFor(db, itemId, pull.head) === acceptedHead;
+  const headVerdict = carried ? closeoutPolicyDigests(db, itemId, pull.head) : null;
   return {
     head: pull.head,
     headMoved: readiness.outcome === "sha_moved",
     accept:
-      acceptedHead === null
+      acceptedHead === null ||
+      (accepted !== null && accepted.decision !== "accepted") ||
+      (headVerdict !== null && headVerdict.decision !== "accepted")
         ? null
         : {
             head: carried ? pull.head : acceptedHead,

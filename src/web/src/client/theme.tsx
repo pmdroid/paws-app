@@ -362,7 +362,9 @@ function replace(node: DOMNode): ReactElement | undefined {
           ? has("high")
             ? "bg-main"
             : "bg-gauge"
-          : "border-dashed bg-secondary-background",
+          : has("held")
+            ? "bg-secondary-background"
+            : "border-dashed bg-secondary-background",
       ),
     );
   if (has("slot-facts")) return styled("flex items-center gap-2 text-sm");

@@ -4,6 +4,7 @@ import { JOB_KIND, type RestartReason } from "../core";
 import { halt } from "./halt";
 import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
 import { reenqueueJob } from "./jobs";
+import { mergeCallInFlight } from "./remote-merges";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
 
@@ -16,13 +17,18 @@ export type RestartHandoff = {
   limit?: number;
 };
 
-/** One admission path back to the agent. Keeps the run, branch and Linear session. */
+/**
+ * One admission path back to the agent. Keeps the run, branch and Linear session. Returns null,
+ * like a stale item, while a squash for the item may have reached GitHub: the merge lane owns the
+ * item until GitHub confirms that outcome.
+ */
 export function restart(
   db: Database,
   item: WorkItemRecord,
   handoff: RestartHandoff,
 ): number | null {
   return immediate(db, () => {
+    if (mergeCallInFlight(db, item.id)) return null;
     if (!halt(db, item, handoff.now)) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
     if (item.state === "failed")
@@ -113,4 +119,27 @@ export function restartLimit(db: Database, itemId: string): number | null {
   `)
     .get(JOB_KIND.resume, itemId);
   return typeof row?.limit === "number" ? row.limit : null;
+}
+
+/**
+ * Recover the latest unfinished agent input. Inspect the latest activation before its handoff
+ * so an older cancelled job cannot resurrect input after a newer turn completed.
+ */
+export function pendingRestartHandoff(
+  db: Database,
+  itemId: string,
+): { handoff?: string; limit?: number } {
+  const row = db
+    .query<
+      { status: string; handoff: string | null; limit: number | null },
+      [string, string, string]
+    >(`
+    SELECT status, json_extract(payload, '$.handoff') AS handoff,
+      json_extract(payload, '$.limit') AS "limit" FROM job
+    WHERE queue IN (?, ?) AND json_extract(payload, '$.itemId') = ?
+    ORDER BY activation_id DESC LIMIT 1
+  `)
+    .get(JOB_KIND.start, JOB_KIND.resume, itemId);
+  if (!row || row.status === "done" || !row.handoff?.trim()) return {};
+  return { handoff: row.handoff, ...(typeof row.limit === "number" ? { limit: row.limit } : {}) };
 }

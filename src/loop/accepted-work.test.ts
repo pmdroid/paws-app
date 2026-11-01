@@ -4,6 +4,7 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   enqueueJob,
+  finishCloseoutProgress,
   getRun,
   getWorkItem,
   insertQueuedItem,
@@ -145,4 +146,52 @@ test("an accepted item queued again by a restart leaves that restart for the mer
   expect(mergeAcceptedWork(db, itemId, { now: 3_000, exceptJobId: job })).toBe(true);
   expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
   expect(listJobs(db).find((entry) => entry.id === job)?.status).toBe("pending");
+});
+
+for (const reason of ["ci", "review"] as const) {
+  test(`a rejected push of a turn carrying ${reason} input goes to the question, not the merge queue`, () => {
+    const { db, itemId } = acceptedItem();
+    const job = restart(db, getWorkItem(db, itemId)!, {
+      reason,
+      body: `fix ${reason}`,
+      now: 2_000,
+    })!;
+    beginImplementRun(db, itemId, 2_500);
+    db.run("UPDATE job SET status = 'running' WHERE id = ?", [job]);
+    expect(
+      settleRejectedPush(db, itemId, { remoteHead: ACCEPTED, containsAccepted: true, now: 3_000 }),
+    ).toBe(false);
+    expect(getWorkItem(db, itemId)?.state).toBe("running");
+    expect(mergeJobs(db)).toEqual([]);
+  });
+}
+
+for (const decision of ["rejected", "blocked"] as const) {
+  test(`accepted work whose latest Closeout run on that head is ${decision} is not merged`, () => {
+    const { db, itemId } = acceptedItem();
+    const identity = {
+      taskId: itemId,
+      base: "base",
+      head: ACCEPTED,
+      policyDigest: "p",
+      policyPath: null,
+    };
+    finishCloseoutProgress(db, itemId, identity, "accepted", 1_500);
+    finishCloseoutProgress(db, itemId, { ...identity, base: "newer" }, decision, 1_600);
+    // A database written before rejection retired accepted_head can still carry it.
+    markCloseoutAccepted(db, itemId, ACCEPTED);
+    expect(mergeAcceptedWork(db, itemId, { now: 2_000 })).toBe(false);
+    expect(mergeJobs(db)).toEqual([]);
+  });
+}
+
+test("a deferred handoff still needs a turn when its reason became transient", () => {
+  expect(
+    acceptedResumeNeedsTurn({
+      acceptedHead: ACCEPTED,
+      pullHead: ACCEPTED,
+      reason: "transient_failure",
+      handoff: "Fix the Closeout findings",
+    }),
+  ).toBe(true);
 });

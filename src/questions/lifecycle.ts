@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+  closeLinkAsk,
   enqueueOutboxOnce,
   getLinkAsk,
   getWorkItem,
@@ -8,9 +9,10 @@ import {
   latestCloseoutIdentity,
   listCloseoutRecoveries,
   type WorkItemRecord,
+  type LinkAskKind,
 } from "../db";
 import type { QuestionOption } from "./channel";
-import { addLinkAskUrl } from "./link-ask";
+import { addLinkAskUrl, removeLinkAskUrl } from "./link-ask";
 import { elicitationBody } from "./note";
 import type { VisualReviewShown } from "./visual-review";
 import {
@@ -170,20 +172,63 @@ export function cancelQuestion(db: Database, id: string, now = Date.now()): void
   });
 }
 
-export function cancelItemQuestions(db: Database, itemId: string, now = Date.now()): void {
+// Opaque agent questions and infrastructure/human holds are not known to be obsolete.
+const CRITERIA_QUESTIONS: Record<QuestionKind, boolean> = {
+  agent: false,
+  clarification: false,
+  repository: false,
+  "runner-wait": false,
+  "closeout-help": true,
+  "ci-help": true,
+  "time-limit": false,
+  "visual-review": true,
+  "github-auth": false,
+  "plan-approval": true,
+  link: false,
+  "push-outage": false,
+};
+
+const CRITERIA_LINK_ASKS: Record<LinkAskKind, boolean> = {
+  bypass: true,
+  screenshots: true,
+  risk: true,
+  question: false,
+  rounds: true,
+  rule: true,
+};
+
+/** The criteria scope retires candidate/plan decisions and preserves unrelated holds. */
+export function cancelItemQuestions(
+  db: Database,
+  itemId: string,
+  now = Date.now(),
+  scope: "all" | "criteria" = "all",
+): void {
   immediate(db, () => {
-    const sessions = db
-      .query<{ sessionId: string }, [string]>(
-        `SELECT DISTINCT session_id AS sessionId FROM question
+    const questions = db
+      .query<{ id: string; kind: QuestionKind; sessionId: string }, [string]>(
+        `SELECT id,kind,session_id AS sessionId FROM question
          WHERE item_id = ? AND status IN ('open', 'queued') AND cancelled_at IS NULL`,
       )
-      .all(itemId);
-    db.run(
-      `UPDATE question SET cancelled_at = ?
-       WHERE item_id = ? AND status IN ('open', 'queued') AND cancelled_at IS NULL`,
-      [now, itemId],
-    );
-    for (const { sessionId } of sessions) promoteNext(db, sessionId, now);
+      .all(itemId)
+      .filter((question) => {
+        if (scope === "all" || CRITERIA_QUESTIONS[question.kind]) return true;
+        const link = question.kind === "link" ? getLinkAsk(db, question.id) : null;
+        return link !== null && CRITERIA_LINK_ASKS[link.kind];
+      });
+    for (const question of questions) {
+      db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [now, question.id]);
+      db.run(
+        `UPDATE outbox SET status = 'dropped', error = 'Question cancelled.'
+         WHERE target = 'linear' AND op = 'elicitation' AND status IN ('pending', 'dead')
+           AND json_extract(payload, '$.questionId') = ?`,
+        [question.id],
+      );
+      if (question.kind === "link" && closeLinkAsk(db, question.id, { reason: "cancelled", now }))
+        removeLinkAskUrl(db, question.id, now);
+    }
+    for (const sessionId of new Set(questions.map((question) => question.sessionId)))
+      promoteNext(db, sessionId, now);
   });
 }
 
