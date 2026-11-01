@@ -170,17 +170,30 @@ export function cancelQuestion(db: Database, id: string, now = Date.now()): void
   });
 }
 
-export function cancelItemQuestions(db: Database, itemId: string, now = Date.now()): void {
+/** Criteria edits retire candidate/plan decisions, while access, budget and human holds remain. */
+export function cancelItemQuestions(
+  db: Database,
+  itemId: string,
+  now = Date.now(),
+  scope: "all" | "criteria" = "all",
+): void {
+  const criteria =
+    scope === "criteria"
+      ? ` AND (kind IN ('plan-approval','visual-review','closeout-help','ci-help')
+         OR (kind = 'link' AND EXISTS (
+           SELECT 1 FROM link_ask WHERE question_id = question.id AND kind <> 'question'
+         )))`
+      : "";
   immediate(db, () => {
     const sessions = db
       .query<{ sessionId: string }, [string]>(
         `SELECT DISTINCT session_id AS sessionId FROM question
-         WHERE item_id = ? AND status IN ('open', 'queued') AND cancelled_at IS NULL`,
+         WHERE item_id = ? AND status IN ('open', 'queued') AND cancelled_at IS NULL${criteria}`,
       )
       .all(itemId);
     db.run(
       `UPDATE question SET cancelled_at = ?
-       WHERE item_id = ? AND status IN ('open', 'queued') AND cancelled_at IS NULL`,
+       WHERE item_id = ? AND status IN ('open', 'queued') AND cancelled_at IS NULL${criteria}`,
       [now, itemId],
     );
     for (const { sessionId } of sessions) promoteNext(db, sessionId, now);

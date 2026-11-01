@@ -5371,6 +5371,29 @@ export class Orchestrator {
             });
           continue;
         }
+        if (item.state === "manual") {
+          // Intake saved the new brief in this transaction. Human ownership keeps its fence.
+          cancelItemQuestions(this.db, itemId, this.now(), "criteria");
+          const revision =
+            this.db
+              .query<{ revision: number }, [string]>(
+                "SELECT revision FROM work_item_specification WHERE item_id=?",
+              )
+              .get(itemId)?.revision ?? 0;
+          enqueueOutboxOnce(this.db, {
+            target: "linear",
+            op: "activity",
+            orderingKey: changes.sessionId,
+            idempotencyKey: `criteria-changed:${item.id}:manual:${revision}`,
+            payload: {
+              sessionId: changes.sessionId,
+              kind: "thought",
+              body: `${item.linearIdentifier} changed in Linear. The updated criteria are saved; ownership remains manual and automation will not resume.`,
+            },
+            now: this.now(),
+          });
+          continue;
+        }
         cancelItemQuestions(this.db, itemId, this.now());
         if (item.state === "failed") {
           this.db.run(
