@@ -687,7 +687,10 @@ export function createRunnerWork(options: {
         // A run Paws already ended that the runner still names keeps its process alive there, so
         // a conversation blocked on its cleanup stays blocked until a report leaves it out.
         if (reported && terminated)
-          db.run("UPDATE runner SET terminations_reported_at=? WHERE id=?", [at, runnerId]);
+          db.run("UPDATE runner SET terminations_since=COALESCE(terminations_since,?) WHERE id=?", [
+            at,
+            runnerId,
+          ]);
         if (reported) {
           db.run("UPDATE runner SET live_reported_at=? WHERE id=?", [at, runnerId]);
           for (const { runId, generation } of reported)

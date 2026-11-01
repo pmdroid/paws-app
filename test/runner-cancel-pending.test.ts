@@ -92,6 +92,19 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     work.assign(command);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
     work.acknowledge("box", command.id);
+    work.heartbeat(
+      "box",
+      1,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [{ runId: run.id, generation: 1 }],
+      undefined,
+      [],
+    );
+    now++;
     const cancel = {
       id: "cancel-1",
       type: "cancel" as const,
@@ -235,5 +248,37 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
   } finally {
     db.close();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a runner that never reported terminations keeps the legacy release on cancel receipt or loss", () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    db.run("PRAGMA foreign_keys=OFF");
+    db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('old',1)");
+    const ended = (runId: string, lostAt: number | null) =>
+      db.run(
+        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,lost_at) VALUES(?,'old','ws',1,0,?,2000,1000,?)",
+        [runId, `work-${runId}`, lostAt],
+      );
+    db.run(
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('old','ws','me','old','active',0,1000)",
+    );
+    ended("cancelled", null);
+    db.run(
+      "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('cancel','old','cancelled',1,'cancel','{}',5000,1100)",
+    );
+    expect(runnerCancelPending(db, "old")).toBe(false);
+    ended("lost", 1200);
+    expect(runnerCancelPending(db, "old")).toBe(false);
+    db.run("UPDATE runner SET terminations_since=1050");
+    expect(runnerOccupancy(db, "old", 1300).occupied).toBe(2);
+    db.run("UPDATE runner SET terminations_since=1150");
+    expect(runnerOccupancy(db, "old", 1300).occupied).toBe(1);
+    db.run("UPDATE runner SET terminations_since=1250");
+    expect(runnerCancelPending(db, "old")).toBe(false);
+  } finally {
+    db.close();
   }
 });

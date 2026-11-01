@@ -7,10 +7,15 @@ import { auditWorkspaceAccess } from "./workspace";
 const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confirmed_at IS NULL
   AND NOT EXISTS(SELECT 1 FROM runner_result exited WHERE exited.run_id=w.run_id
     AND exited.generation=w.generation AND exited.command_id=w.command_id)
-  AND NOT (w.confirmed_at IS NULL AND EXISTS(SELECT 1 FROM runner_command undelivered
-    JOIN runner reporter ON reporter.id=undelivered.runner_id
-    WHERE undelivered.id=w.command_id AND undelivered.acknowledged_at IS NULL
-    AND reporter.terminations_reported_at>undelivered.expires_at)))`;
+  AND NOT EXISTS(SELECT 1 FROM runner owner WHERE owner.id=w.runner_id AND (
+    (w.confirmed_at IS NULL AND owner.terminations_since IS NOT NULL
+      AND owner.live_reported_at>=owner.terminations_since AND EXISTS(
+        SELECT 1 FROM runner_command undelivered WHERE undelivered.id=w.command_id
+        AND undelivered.acknowledged_at IS NULL AND owner.live_reported_at>undelivered.expires_at))
+    OR (w.lost_at IS NOT NULL AND w.lost_at<COALESCE(owner.terminations_since,w.lost_at+1))
+    OR EXISTS(SELECT 1 FROM runner_command stopped WHERE stopped.runner_id=w.runner_id
+      AND stopped.run_id=w.run_id AND stopped.generation=w.generation AND stopped.kind='cancel'
+      AND stopped.acknowledged_at<COALESCE(owner.terminations_since,stopped.acknowledged_at+1)))))`;
 /**
  * Slots Paws may fill on a runner. A lowered desired value applies at once; a raised one waits
  * until the runner reports it applied the value.
