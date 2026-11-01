@@ -61,7 +61,7 @@ export type WorkItemRecord = {
   turnCount: number;
   maxTurns: number;
   maxAwakeMs: number;
-  /** The head Closeout last accepted. Set until the task restarts from fresh main. */
+  /** The head Closeout last accepted. Cleared when a later verdict on that work retires it. */
   acceptedHead: string | null;
   agentMs: number;
   closeoutMs: number;
@@ -340,26 +340,6 @@ export function markResumed(db: Database, id: string, now: number): void {
 
 export function setCurrentRun(db: Database, id: string, runId: string | null): void {
   db.run("UPDATE work_item SET current_run_id = ? WHERE id = ?", [runId, id]);
-}
-
-export function clearProgress(db: Database, id: string): void {
-  db.run(
-    `UPDATE work_item
-     SET checkpoint = NULL,
-         recovery_attempts = 0,
-         awake_ms = 0,
-         agent_ms = 0,
-         closeout_ms = 0,
-         waiting_ms = 0,
-         recheck_ms = 0,
-         accepted_head = NULL,
-         last_mono_ms = NULL,
-         turn_count = 0,
-         cancel_requested = 0,
-         current_run_id = NULL
-     WHERE id = ?`,
-    [id],
-  );
 }
 
 export function syncClock(db: Database, id: string, mono: number): void {

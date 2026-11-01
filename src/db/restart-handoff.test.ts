@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
-  applyDecision,
   applyWorkItemEvent,
   beginImplementRun,
   deferWorkItem,
@@ -23,7 +22,7 @@ import {
 const checkpoint = { phase: "running" as const, baseSha: "base", wipCommit: "s" };
 
 for (const reason of ["findings", "review", "ci"] as const) {
-  for (const recovery of ["transient", "startup", "orphan", "wake", "fresh_main"] as const) {
+  for (const recovery of ["transient", "startup", "orphan"] as const) {
     test(`${reason} input survives ${recovery} recovery`, () => {
       const db = openDatabase(":memory:");
       migrate(db);
@@ -50,17 +49,8 @@ for (const reason of ["findings", "review", "ci"] as const) {
         deferWorkItem(db, item, { retry: 1, delayMs: 1, handoff: null, message: null, now: 10 });
       } else if (recovery === "startup") {
         recoverOnStartup(db, 10);
-      } else if (recovery === "orphan") {
-        expect(requeueOrphanedWork(db, 400_000)).toEqual(["item"]);
       } else {
-        applyDecision(
-          db,
-          item,
-          recovery === "wake"
-            ? { type: "restart_session", checkpoint }
-            : { type: "restart_from_main" },
-          10,
-        );
+        expect(requeueOrphanedWork(db, 400_000)).toEqual(["item"]);
       }
       const job = listJobs(db).at(-1)!;
       expect(job.payload).toMatchObject({ handoff: body, limit: 4 });

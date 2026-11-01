@@ -40,7 +40,6 @@ import {
   commitCheckpointSync,
   git,
   mirrorFiles,
-  restartFromFreshMain,
   runAgent,
   worktreePath,
 } from "./acp";
@@ -73,7 +72,6 @@ import {
   type AppBotIdentity,
   type Clock,
   isTransient,
-  policyCoauthors,
 } from "./core";
 import {
   enqueueCommand,
@@ -169,7 +167,6 @@ import {
   createRepositoryGit,
   itemPathId,
   repositoryAnswer,
-  worktreeBranch,
   LinearTaskAccess,
   authorizeLinearTask,
   handleLinearAdministration,
@@ -1516,37 +1513,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db,
     clock: options?.hostClock,
     signal: abort.signal,
-    agentAlive: (runId) => orchestrator?.agentAlive(runId) ?? false,
     stopAgent: (itemId) => {
       void orchestrator?.stopAgent(itemId).catch((caughtError9) => {
         journalCaught(caughtError9, "index.stopAgent", itemId);
         return undefined;
-      });
-    },
-    restartFromMainBlocked: (item) => {
-      const policy = getItemRunCommitPolicy(db, item.id);
-      try {
-        if (policy) {
-          policyCoauthors(policy);
-          return null;
-        }
-      } catch (caughtError10) {
-        journalCaught(caughtError10, "index.restartFromMainBlocked.policyCoauthors", item?.id);
-      }
-      return "Restart stopped: a valid GitHub App commit policy is missing. WIP is preserved. Restore the run policy before retrying.";
-    },
-    restartFromMain: (item) => {
-      const selected = getWorkItemRepository(db, item.id);
-      if (selected === null) return;
-      const policy = getItemRunCommitPolicy(db, item.id);
-      if (!policy) return;
-      restartFromFreshMain({
-        pawsRoot: paths.home,
-        owner: selected.owner,
-        repo: selected.repo,
-        itemId: itemPathId(item),
-        wipBranch: worktreeBranch(item),
-        commitPolicy: policy,
       });
     },
   });

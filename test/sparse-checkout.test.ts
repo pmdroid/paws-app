@@ -4,12 +4,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import {
-  createWorktree,
-  ensureBareMirror,
-  commitCheckpoint,
-  restartFromFreshMain,
-} from "../src/acp";
+import { createWorktree, ensureBareMirror, commitCheckpoint } from "../src/acp";
 import { parseConfigToml, renderConfigToml, writeConfigFile } from "../src/config";
 import { checkoutPatterns, exclusionPatterns } from "../src/worktree-checkout";
 
@@ -111,7 +106,7 @@ test("worktree settings do not bleed and config changes preserve dirty files", a
   expect(git(two.path, "status", "--porcelain")).toBe("");
 });
 
-test("fresh-main recovery and detached verification apply configured exclusions", async () => {
+test("detached verification applies configured exclusions", async () => {
   const f = await fixture();
   await f.settings(["large"]);
   const one = await f.create();
@@ -121,16 +116,6 @@ test("fresh-main recovery and detached verification apply configured exclusions"
   expect(existsSync(join(detached, "large"))).toBe(false);
   expect(existsSync(join(detached, "README.md"))).toBe(true);
   expect(git(detached, "status", "--porcelain")).toBe("");
-  const result = restartFromFreshMain({
-    pawsRoot: f.pawsRoot,
-    owner: "acme",
-    repo: "demo",
-    itemId: "ONE",
-    wipBranch: one.branch,
-  });
-  expect(result.restarted).toBe(true);
-  expect(existsSync(join(one.path, "large"))).toBe(false);
-  expect(git(one.path, "status", "--porcelain")).toBe("");
 });
 
 test("reuse finishes a worktree left unpopulated during creation", async () => {
@@ -220,44 +205,4 @@ test("legacy config without sparse settings retains its existing parsing behavio
   const config = parseConfigToml("[caps]\nmax_turns = 3\nmax_turns = 7\n");
   expect(config.maxTurns).toBe(7);
   expect(config.checkoutProjects).toBeUndefined();
-});
-
-test("failed fresh-main population preserves saved WIP through retry", async () => {
-  const f = await fixture();
-  await writeFile(join(f.source, ".gitattributes"), "README.md filter=probe\n");
-  git(f.source, "add", ".gitattributes");
-  git(
-    f.source,
-    "-c",
-    "user.name=Test",
-    "-c",
-    "user.email=test@example.com",
-    "commit",
-    "-m",
-    "filter",
-  );
-  await ensureBareMirror({
-    remoteUrl: f.source,
-    owner: "acme",
-    repo: "demo",
-    pawsRoot: f.pawsRoot,
-  });
-  const tree = await f.create();
-  await writeFile(join(tree.path, "README.md"), "saved work");
-  git(f.mirror.path, "config", "filter.probe.clean", "cat");
-  git(f.mirror.path, "config", "filter.probe.smudge", "false");
-  git(f.mirror.path, "config", "filter.probe.required", "true");
-  const restart = () =>
-    restartFromFreshMain({
-      pawsRoot: f.pawsRoot,
-      owner: "acme",
-      repo: "demo",
-      itemId: "ONE",
-      wipBranch: tree.branch,
-    });
-  expect(restart).toThrow();
-  expect(git(f.mirror.path, "worktree", "list", "--porcelain")).not.toContain(tree.path);
-  git(f.mirror.path, "config", "filter.probe.smudge", "cat");
-  expect(restart().restarted).toBe(true);
-  expect(git(f.mirror.path, "show", `${tree.branch}:README.md`)).toBe("saved work");
 });

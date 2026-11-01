@@ -78,10 +78,8 @@ export {
 export {
   commitCheckpoint,
   commitCheckpointSync,
-  restartFromFreshMain,
   snapshotWorktree,
   type CheckpointResult,
-  type FreshMainCheckout,
   type WorktreeSnapshot,
 } from "./checkpoint";
 export { createAcpRunner, type AcpRunnerOptions } from "./client";

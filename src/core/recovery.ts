@@ -1,4 +1,4 @@
-import { LONG_SLEEP_MS, RESUME_AGAIN_AFTER_MS } from "./limits";
+import { RESUME_AGAIN_AFTER_MS } from "./limits";
 import { IN_FLIGHT_ITEM_STATES, type WorkItemState } from "./states";
 import type { Checkpoint } from "./types";
 
@@ -27,7 +27,7 @@ export function isAwakeItemState(state: WorkItemState): boolean {
 /**
  * Where an in-flight item's time goes. Only `agent` and `closeout` count toward the
  * awake-time cap. `recheck` is Paws checking a candidate Closeout already accepted
- * again: in the merge queue (PAS-470), or after a restart or wake re-verifies it.
+ * again: in the merge queue (PAS-470), or after a restart re-verifies it.
  */
 export type AwakeCategory = "agent" | "closeout" | "waiting" | "recheck";
 
@@ -68,14 +68,6 @@ export function hasVerificationCandidate(checkpoint: Checkpoint | null): boolean
   );
 }
 
-export type WakeDecision =
-  | { type: "ignore" }
-  | { type: "continue" }
-  | { type: "reverify" }
-  | { type: "restart_session"; checkpoint: Checkpoint }
-  | { type: "restart_from_main" }
-  | { type: "fail"; reason: "no_checkpoint" };
-
 function mergeWasInProgress(state: WorkItemState, checkpoint: Checkpoint | null): boolean {
   return state === "merge_queue" || checkpoint?.phase === "merge_queue";
 }
@@ -111,52 +103,4 @@ export function decideStartup(input: {
   if (input.itemState === "verifying" && hasVerificationCandidate(input.checkpoint))
     return { type: "reverify", resumed: true };
   return { type: "resume", freshSession: true, checkpoint: input.checkpoint };
-}
-
-/**
- * Lid-open policy. More than two hours asleep restarts from fresh main.
- * Any sleep during merge fails closed into a re-verify. A live agent keeps going.
- * A dead agent restarts from the last checkpoint with a fresh session.
- */
-export function decideWake(input: {
-  sleptMs: number;
-  itemState: WorkItemState;
-  agentAlive: boolean;
-  checkpoint: Checkpoint | null;
-}): WakeDecision {
-  if (!isInFlightItemState(input.itemState)) return { type: "ignore" };
-  if (input.sleptMs > LONG_SLEEP_MS) return { type: "restart_from_main" };
-  if (mergeWasInProgress(input.itemState, input.checkpoint)) return { type: "reverify" };
-  if (input.itemState === "awaiting_input" || input.itemState === "paused")
-    return { type: "continue" };
-  if (
-    input.agentAlive &&
-    (input.itemState === "running" ||
-      input.itemState === "verifying" ||
-      input.itemState === "recovering")
-  ) {
-    return { type: "continue" };
-  }
-  if (input.checkpoint) return { type: "restart_session", checkpoint: input.checkpoint };
-  return { type: "fail", reason: "no_checkpoint" };
-}
-
-export function formatPauseNote(sleptMs: number, outcome: "resuming" | "fresh_main"): string {
-  const minutes = Math.max(1, Math.round(sleptMs / 60_000));
-  if (outcome === "fresh_main") {
-    return `Paused for ${minutes} min (laptop asleep). Restarting from fresh main.`;
-  }
-  return `Paused for ${minutes} min (laptop asleep), resuming.`;
-}
-
-export function pauseOutcome(decision: WakeDecision): "resuming" | "fresh_main" | null {
-  switch (decision.type) {
-    case "restart_from_main":
-      return "fresh_main";
-    case "ignore":
-    case "fail":
-      return null;
-    default:
-      return "resuming";
-  }
 }

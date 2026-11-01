@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { commitCheckpoint, commitCheckpointSync, restartFromFreshMain } from "./checkpoint";
+import { commitCheckpoint, commitCheckpointSync } from "./checkpoint";
 import { git } from "./git";
 import * as gitCommands from "./git";
 import { createWorktree, ensureBareMirror } from "./worktree";
@@ -230,64 +230,6 @@ test("async checkpoint commits a same-size rewrite in the index timestamp", asyn
   expect(await git(["-C", tree, "show", `${checkpoint.sha}:ok.txt`])).toBe("revision-2\n");
   expect(await git(["-C", tree, "status", "--porcelain"])).toBe("");
 });
-
-test("a long sleep checks out fresh main and keeps the WIP branch", async () => {
-  const layout = await itemWorktree("ENG-21");
-  await writeFile(join(layout.worktree.path, "notes.txt"), "wip\n");
-
-  const checkout = restartFromFreshMain({
-    pawsRoot: layout.pawsRoot,
-    owner: "acme",
-    repo: "demo",
-    itemId: "ENG-21",
-    wipBranch: "paws/eng-21",
-    commitIdentity: { name: "paws-test[bot]", email: "88+paws-test[bot]@users.noreply.github.com" },
-  });
-
-  expect(checkout.restarted).toBe(true);
-  expect(
-    (
-      await git([
-        "--git-dir",
-        layout.mirror.path,
-        "show",
-        "-s",
-        "--format=%an%n%ae%n%cn%n%ce",
-        "paws/eng-21",
-      ])
-    ).trim(),
-  ).toBe(
-    "paws-test[bot]\n88+paws-test[bot]@users.noreply.github.com\npaws-test[bot]\n88+paws-test[bot]@users.noreply.github.com",
-  );
-  expect(checkout.wipBranch).toBe("paws/eng-21");
-  expect(checkout.startRef).toBe("origin/main");
-  expect(checkout.branch).toBe("paws/eng-21-fresh");
-  const head = (await git(["-C", checkout.worktreePath, "rev-parse", "HEAD"])).trim();
-  const main = (await git(["--git-dir", layout.mirror.path, "rev-parse", "origin/main"])).trim();
-  expect(head).toBe(main);
-  expect((await git(["-C", checkout.worktreePath, "branch", "--show-current"])).trim()).toBe(
-    "paws/eng-21-fresh",
-  );
-  expect(await readFile(join(checkout.worktreePath, "README.md"), "utf8")).toBe("hello\n");
-  await expect(readFile(join(checkout.worktreePath, "notes.txt"), "utf8")).rejects.toThrow();
-  expect(
-    (
-      await git(["--git-dir", layout.mirror.path, "log", "-1", "--format=%s", "paws/eng-21"])
-    ).trim(),
-  ).toBe("wip: paused");
-  expect(await git(["--git-dir", layout.mirror.path, "show", "paws/eng-21:notes.txt"])).toBe(
-    "wip\n",
-  );
-
-  const again = await createWorktree({
-    owner: "acme",
-    repo: "demo",
-    itemId: "ENG-21",
-    pawsRoot: layout.pawsRoot,
-  });
-  expect(again.path).toBe(checkout.worktreePath);
-  expect((await git(["-C", again.path, "rev-parse", "HEAD"])).trim()).toBe(main);
-}, 20_000);
 
 async function itemWorktree(itemId: string) {
   const root = await mkdtemp(join(tmpdir(), "paws-ckpt-"));

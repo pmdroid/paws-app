@@ -409,9 +409,7 @@ describe("restart recovery", () => {
             for (let repeat = 0; repeat < 2; repeat++) {
               clock.advance(1);
               recoverOnStartup(db, clock.now());
-              applyDecision(db, getWorkItem(db, "reverify")!, { type: "reverify" }, clock.now(), {
-                stamp: { fromWall: clock.now() - 1, toWall: clock.now(), sleptMs: 1 },
-              });
+              applyDecision(db, getWorkItem(db, "reverify")!, { type: "reverify" }, clock.now());
               expect(getJob(db, mergeId)).toEqual(savedJob);
               expect(getWorkItem(db, "keep")).toEqual(savedItem);
               expect(db.query("SELECT * FROM merge_call WHERE item_id = ?").get("keep")).toEqual(
