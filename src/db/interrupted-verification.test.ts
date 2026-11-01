@@ -15,6 +15,7 @@ import {
   prepareShutdown,
   recoverOnStartup,
   requeueOrphanedWork,
+  restartHold,
   saveCheckpoint,
 } from "./index";
 
@@ -50,7 +51,9 @@ describe("interrupted verification", () => {
     expect(recoverOnStartup(db, NOW + 1)).toEqual([{ type: "reverify", resumed: true }]);
     expect(recoverOnStartup(db, NOW + 2)).toEqual([{ type: "ask_restart" }]);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
-    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+    const held = getWorkItem(db, item.id)!;
+    expect(held.state).toBe("recovering");
+    expect(restartHold(db, held)).not.toBeNull();
   });
 
   test("a start leaves a backed-off re-verify of a deferred candidate where it is", () => {
