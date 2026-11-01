@@ -89,7 +89,6 @@ export type PawsConfigFile = {
   githubRepos: string[];
   publicUrl: string | null;
   checkout: string | null;
-  maxTurns: number | null;
   maxAwakeMs: number | null;
   closeoutProjects?: Record<string, string>;
   agents: AgentsConfig;
@@ -140,7 +139,6 @@ export type PawsSetupConfig = {
   repo: string;
   githubRepos?: readonly string[];
   checkout: string;
-  maxTurns: number;
   maxAwakeMs: number;
   implementer: ImplementerName;
   closeoutProjects?: Record<string, string>;
@@ -160,7 +158,6 @@ export function emptyConfigFile(): PawsConfigFile {
     githubRepos: [],
     publicUrl: null,
     checkout: null,
-    maxTurns: null,
     maxAwakeMs: null,
     agents: defaultAgents(),
   };
@@ -243,7 +240,6 @@ export function renderConfigToml(config: PawsSetupConfig): string {
     `path = ${tomlString(config.checkout)}`,
     "",
     "[caps]",
-    `max_turns = ${tomlInt(config.maxTurns)}`,
     `max_awake_ms = ${tomlInt(config.maxAwakeMs)}`,
     "",
     "[agents]",
@@ -561,8 +557,7 @@ function assignConfig(
     return;
   }
   if (section === "caps") {
-    if (key === "max_turns") config.maxTurns = asInt(value, line);
-    else if (key === "max_awake_ms") config.maxAwakeMs = asInt(value, line);
+    if (key === "max_awake_ms") config.maxAwakeMs = asInt(value, line);
     return;
   }
   if (section === "agents") {

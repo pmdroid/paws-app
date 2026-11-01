@@ -602,7 +602,7 @@ export type OrchestratorOptions = {
     now: number,
   ) => { id: string; name: string } | null;
   clock?: Clock;
-  caps?: { maxTurns: number; maxAwakeMs: number };
+  caps?: { maxAwakeMs: number };
   retryBaseMs?: number;
   placementPollMs?: number;
   random?: () => number;
@@ -1027,7 +1027,6 @@ export class Orchestrator {
       if (caps !== undefined) {
         for (const saved of result.items) {
           configureWorkItem(this.db, saved.id, {
-            maxTurns: caps.maxTurns,
             maxAwakeMs: caps.maxAwakeMs,
           });
         }
@@ -1281,7 +1280,6 @@ export class Orchestrator {
           if (redirect && accepted.ok && this.options.caps)
             for (const child of accepted.items)
               configureWorkItem(this.db, child.id, {
-                maxTurns: this.options.caps.maxTurns,
                 maxAwakeMs: this.options.caps.maxAwakeMs,
               });
         });
@@ -5423,10 +5421,9 @@ export class Orchestrator {
         }
         cancelItemQuestions(this.db, itemId, this.now());
         if (item.state === "failed") {
-          this.db.run(
-            "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
-            [itemId],
-          );
+          this.db.run("UPDATE work_item SET cancel_requested=0,recovery_attempts=0 WHERE id=?", [
+            itemId,
+          ]);
           resetAwakeTime(this.db, itemId);
         }
         if (item.state === "paused") {
@@ -6354,7 +6351,7 @@ export class Orchestrator {
     immediate(this.db, () => {
       if (item!.cancelRequested || item!.state === "failed") {
         this.db.run(
-          "UPDATE work_item SET cancel_requested = 0, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
+          "UPDATE work_item SET cancel_requested = 0, recovery_attempts = 0 WHERE id = ?",
           [item!.id],
         );
         resetAwakeTime(this.db, item!.id);

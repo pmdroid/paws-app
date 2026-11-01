@@ -69,13 +69,12 @@ describe("restart and ask", () => {
   test("a failed item restarted with a stale cancel request is queued ready to start", () => {
     const { db } = fixture();
     db.run(
-      "UPDATE work_item SET state='failed',cancel_requested=1,turn_count=5,recovery_attempts=2 WHERE id='item'",
+      "UPDATE work_item SET state='failed',cancel_requested=1,recovery_attempts=2 WHERE id='item'",
     );
     restart(db, getWorkItem(db, "item")!, { reason: "answer", body: "Try again.", now: 2 });
     expect(getWorkItem(db, "item")).toMatchObject({
       state: "queued",
       cancelRequested: false,
-      turnCount: 0,
       recoveryAttempts: 0,
     });
     expect(itemReadiness(db, "item", "start")).not.toBe("cancelled");

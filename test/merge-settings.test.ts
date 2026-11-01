@@ -79,7 +79,7 @@ describe("resolveMergeSettings", () => {
 describe("config.toml [merge]", () => {
   test("projects and rules round-trip next to the other settings", () => {
     const text = `[caps]
-max_turns = 40
+max_awake_ms = 40
 
 [merge]
 order = "ci-green"
@@ -103,7 +103,7 @@ label = "Needs \\"care\\""
 packages = ["apps/*", "packages/*"]
 `;
     const config = parseConfigToml(text);
-    expect(config.maxTurns).toBe(40);
+    expect(config.maxAwakeMs).toBe(40);
     expect(readMergeSettings(config)).toEqual({
       default: { order: "ci-green", mainMoved: "overlap" },
       projects: { [PAWS]: {}, [PAYMENTS]: { mainMoved: "closeout" } },

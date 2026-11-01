@@ -32,12 +32,7 @@ export function restart(
     if (!halt(db, item, handoff.now)) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
     if (item.state === "failed")
-      db.run(
-        "UPDATE work_item SET cancel_requested=0,turn_count=0,recovery_attempts=0 WHERE id=?",
-        [item.id],
-      );
-    else if (handoff.reason === "answer")
-      db.run("UPDATE work_item SET turn_count=0 WHERE id=?", [item.id]);
+      db.run("UPDATE work_item SET cancel_requested=0,recovery_attempts=0 WHERE id=?", [item.id]);
     const record = {
       kind: "restart" as const,
       reason: handoff.reason,

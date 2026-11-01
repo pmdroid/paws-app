@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import { existsSync } from "node:fs";
 import { readSecretFile } from "../credentials";
 import { isAbsolute, join } from "node:path";
-import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../core";
+import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import { loadEnv, type EnvSource, type PawsEnv } from "./env";
 import {
   emptyConfigFile,
@@ -40,7 +40,6 @@ export type RuntimeConfig = {
   /** Repositories named in `config.toml`. Workspaces choose theirs in the dashboard. */
   repos: string[];
   publicUrl: string | null;
-  maxTurns: number;
   maxAwakeMs: number;
   webhooks: boolean;
 };
@@ -96,7 +95,6 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     trackerKind: "linear",
     repos: [...new Set([file.repo, ...file.githubRepos].filter((repo) => repo !== null))],
     publicUrl: optional(source, "PAWS_PUBLIC_URL") ?? file.publicUrl,
-    maxTurns: positiveInt(optional(source, "PAWS_MAX_TURNS")) ?? file.maxTurns ?? DEFAULT_MAX_TURNS,
     maxAwakeMs:
       positiveInt(optional(source, "PAWS_MAX_AWAKE_MS")) ?? file.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS,
     webhooks: resolveWebhooks(file, source),

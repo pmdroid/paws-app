@@ -1,12 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import {
+  accrueAwake,
   applyWorkItemEvent,
   configureWorkItem,
   failWorkItem,
   getWorkItem,
   insertQueuedItem,
-  recordTurn,
 } from "../src/db";
 import { tempDb } from "./helpers";
 
@@ -39,12 +39,14 @@ test("a retried task that fails again with the same reason posts a second error"
 test("a retried task that hits the same cap again posts a second error", () => {
   const db = tempDb();
   databases.push(db);
-  const { id } = insertQueuedItem(db, { sessionKey: "session", maxTurns: 1 });
+  const { id } = insertQueuedItem(db, { sessionKey: "session", maxAwakeMs: 10 });
   applyWorkItemEvent(db, id, "dispatched");
-  expect(recordTurn(db, id, 1).capped).toBe(true);
+  accrueAwake(db, id, 0, 1, undefined, true);
+  expect(accrueAwake(db, id, 10, 2, undefined, true).capped).toBe(true);
   applyWorkItemEvent(db, id, "restart");
-  configureWorkItem(db, id, { maxTurns: 2 });
+  configureWorkItem(db, id, { maxAwakeMs: 20 });
   applyWorkItemEvent(db, id, "dispatched");
-  expect(recordTurn(db, id, 2).capped).toBe(true);
+  accrueAwake(db, id, 100, 3, undefined, true);
+  expect(accrueAwake(db, id, 110, 4, undefined, true).capped).toBe(true);
   expect(errorBodies(db)).toHaveLength(2);
 });

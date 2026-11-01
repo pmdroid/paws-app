@@ -1,12 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import {
-  DEFAULT_MAX_AWAKE_MS,
-  DEFAULT_MAX_TURNS,
-  FakeClock,
-  JOB_KIND,
-  type Checkpoint,
-  type Clock,
-} from "../core";
+import { DEFAULT_MAX_AWAKE_MS, FakeClock, JOB_KIND, type Checkpoint, type Clock } from "../core";
 import {
   applyWorkItemEvent as applyEvent,
   beginImplementRun as beginRun,
@@ -25,7 +18,6 @@ import {
   migrate,
   openDatabase,
   prepareShutdown,
-  recordTurn,
 } from "../db";
 import { startHost } from "./index";
 import { HostSupervisor } from "./supervisor";
@@ -82,14 +74,13 @@ function boot() {
 function startRun(
   db: ReturnType<typeof boot>["db"],
   clock: FakeClock,
-  overrides: { maxAwakeMs?: number; maxTurns?: number } = {},
+  overrides: { maxAwakeMs?: number } = {},
 ) {
   insertQueuedItem(db, {
     id: "eng-9",
     sessionKey: "linear-session",
     branchName: "paws/eng-9",
     maxAwakeMs: overrides.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS,
-    maxTurns: overrides.maxTurns ?? DEFAULT_MAX_TURNS,
     now: clock.now(),
   });
   return beginImplementRun(db, "eng-9", clock.now(), checkpoint);
@@ -520,30 +511,4 @@ test("the supervisor stops the live agent when the time limit asks instead of fa
   expect(getRun(db, run.id)?.status).toBe("ended");
   host.tick();
   expect(stopped).toEqual(["eng-9"]);
-});
-
-test("a turn recorded past the time limit leaves the ask and the stop to the supervisor", () => {
-  const clock = new FakeClock(1_000_000);
-  const db = openDatabase(":memory:");
-  migrate(db);
-  const stopped: string[] = [];
-  const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250, (itemId) =>
-    stopped.push(itemId),
-  );
-  insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", maxAwakeMs: 1_000, now: 0 });
-  const { run } = beginImplementRun(db, "eng-9", clock.now(), checkpoint);
-  markCloseoutAccepted(db, "eng-9", "wip");
-  db.run("UPDATE work_item SET awake_ms = 2000 WHERE id = 'eng-9'");
-
-  const turn = recordTurn(db, "eng-9", clock.now());
-  expect(turn).toMatchObject({ capped: false, item: { state: "running" } });
-  expect(turn.stopAgent).toBeUndefined();
-  expect(getRun(db, run.id)?.status).toBe("active");
-  expect(stopped).toEqual([]);
-
-  host.tick();
-  expect(stopped).toEqual(["eng-9"]);
-  expect(getWorkItem(db, "eng-9")?.state).toBe("running");
-  expect(listJobs(db).filter((job) => job.queue === "item.ask")).toHaveLength(1);
-  expect(getRun(db, run.id)?.status).toBe("ended");
 });

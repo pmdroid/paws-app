@@ -30,7 +30,6 @@ import {
   prepareShutdown,
   recordItemBranchState,
   recordItemPullRequest,
-  recordTurn,
   recoverOnStartup,
   saveCheckpoint,
   saveRunResult,
@@ -565,24 +564,16 @@ describe("restart recovery", () => {
 });
 
 describe("hard caps", () => {
-  test("the turn cap fails the item", () => {
+  test("stored turn columns from older installs do not cap work", () => {
     const { db, clock } = harness();
-    const item = insertQueuedItem(db, { sessionKey: "ses", maxTurns: 2, now: clock.now() });
+    const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
-    expect(recordTurn(db, item.id, clock.now()).capped).toBe(false);
-    expect(recordTurn(db, item.id, clock.now()).capped).toBe(true);
-    expect(getWorkItem(db, item.id)).toMatchObject({
-      state: "failed",
-      turnCount: 2,
-      cancelRequested: true,
-    });
-    expect(recordTurn(db, item.id, clock.now()).item.turnCount).toBe(2);
-    expect(listOutbox(db)).toHaveLength(1);
-    expect(listOutbox(db)[0]?.payload).toEqual({
-      sessionId: "ses",
-      kind: "error",
-      body: "Run hit the turn cap (2).",
-    });
+    db.run("UPDATE work_item SET turn_count = 100, max_turns = 1 WHERE id = ?", [item.id]);
+    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+    clock.advance(400);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).capped).toBe(false);
+    expect(getWorkItem(db, item.id)?.state).toBe("running");
+    expect(listOutbox(db)).toHaveLength(0);
   });
 
   test("awake time counts monotonic time and ignores a wall-clock sleep", () => {

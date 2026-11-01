@@ -1360,7 +1360,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         },
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
-        caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
+        caps: { maxAwakeMs: runtime.maxAwakeMs },
       });
       orchestrator = attached;
       executionControls = createExecutionControls({

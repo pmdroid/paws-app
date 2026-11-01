@@ -156,7 +156,6 @@ test("checkout config rejects unsafe folders and setup preserves project exclusi
     githubAuth: "app" as const,
     repo: "acme/demo",
     checkout: f.source,
-    maxTurns: 5,
     maxAwakeMs: 5000,
     implementer: "claude" as const,
   };
@@ -202,7 +201,7 @@ test("excluded files are never passed through checkout filters", async () => {
 });
 
 test("legacy config without sparse settings retains its existing parsing behavior", () => {
-  const config = parseConfigToml("[caps]\nmax_turns = 3\nmax_turns = 7\n");
-  expect(config.maxTurns).toBe(7);
+  const config = parseConfigToml("[caps]\nmax_awake_ms = 3\nmax_awake_ms = 7\n");
+  expect(config.maxAwakeMs).toBe(7);
   expect(config.checkoutProjects).toBeUndefined();
 });

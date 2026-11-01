@@ -172,7 +172,6 @@ describe("agent settings config", () => {
       githubAuth: "app" as const,
       repo: "pmdroid/barkvisor",
       checkout: "/tmp/checkout",
-      maxTurns: 40,
       maxAwakeMs: 1_000,
       implementer: "claude" as const,
     };
