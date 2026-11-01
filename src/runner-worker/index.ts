@@ -1,4 +1,10 @@
 import { journalCaught } from "../journal";
+import {
+  createLivePreviewSystem,
+  startLivePreview,
+  type LivePreview,
+  type LivePreviewSystem,
+} from "../live-preview";
 import { runProviderLogin } from "../runner-login-worker";
 import type { RunnerLoginUpdate } from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
@@ -184,6 +190,7 @@ export interface RunnerWorkerOptions {
   checkpointPublished?: (sequence: number) => string | null;
   /** How often a running turn publishes a WIP commit when its worktree changed. Tests lower it. */
   checkpointIntervalMs?: number;
+  livePreviewSystem?: LivePreviewSystem;
 }
 
 /** A turn that runs this long loses at most this much work to a runner crash or upgrade. */
@@ -311,7 +318,8 @@ export type RunnerWorkerEvent =
           | "session_restore"
           | "handover"
           | "handover_interrupted"
-          | "checkpoint";
+          | "checkpoint"
+          | "preview";
       }
     >;
 
@@ -666,6 +674,7 @@ export async function executeRunnerCommand(
     journalSize += length;
   }
   let skillsRoot: string | undefined;
+  let preview: Promise<LivePreview | null> | undefined;
   try {
     if (command.type === "login") {
       if (!options.answer || !options.signal) throw new Error("Login lifecycle is unavailable");
@@ -1521,6 +1530,25 @@ export async function executeRunnerCommand(
             ]),
           }
         : agent;
+    if (runCommand?.livePreview && installFailure === undefined)
+      preview = startLivePreview({
+        preview: runCommand.livePreview,
+        worktree,
+        path: agentEnv.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+        system:
+          options.livePreviewSystem ??
+          createLivePreviewSystem({ lockDirectory: join(options.workRoot, ".paws-preview") }),
+        emit(event) {
+          try {
+            emit(event);
+          } catch (error) {
+            journalCaught(error, "runner-worker.livePreview.emit", runCommand.itemId);
+          }
+        },
+      }).catch((error: unknown) => {
+        journalCaught(error, "runner-worker.livePreview.start", runCommand.itemId);
+        return null;
+      });
     let run: RunAgentResult =
       installFailure !== undefined
         ? {
@@ -1783,6 +1811,7 @@ export async function executeRunnerCommand(
     }
     return result;
   } finally {
+    await (await preview)?.stop("run_ended");
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
     closeSync(eventJournal);
   }

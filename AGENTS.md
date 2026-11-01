@@ -50,6 +50,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/journal`                                            | Durable journal lines for process and workflow events                 |
 | `src/linear`                                             | Tracker adapter, webhooks, polling, sessions and workspace access     |
 | `src/loop`                                               | Agent turns, `restart()` and `ask()`, Closeout, publication, recovery |
+| `src/live-preview`                                       | Runner live preview: start, owner check, Tailscale service and stop   |
 | `src/member-vm`                                          | Member VM provisioning, persistence and HTTP routes                   |
 | `src/merge`                                              | Merge lane: `mergeable(S)`, squash at head S, rebase returns, CI      |
 | `src/onboarding`                                         | Onboarding routes and reconnection                                    |

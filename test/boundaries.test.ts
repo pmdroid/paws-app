@@ -77,6 +77,7 @@ const MODULES = [
   "member-vm",
   "review-score",
   "finding-issues",
+  "live-preview",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -128,6 +129,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   settings: ["journal", "config", "core", "db", "skills", "workspace", "worktree-checkout"],
   skills: ["journal", "core", "db", "runner-protocol"],
   runtimes: ["journal"],
+  "live-preview": ["journal", "runner-protocol"],
   "agent-catalog": ["journal", "db"],
   host: ["journal", "core", "db"],
   loop: [
@@ -191,6 +193,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-worker": [
     "journal",
+    "live-preview",
     "closeout-spec",
     "runner-login-worker",
     "worktree-checkout",
