@@ -476,7 +476,7 @@ test.skipIf(!linux)(
     );
     journal.sessionUploaded(id, 0, 524_288);
     journal.close();
-    context.finishWorker(id, bundle);
+    context.finishWorker(id, bundle, { stopReason: "error", errorMessage: "The agent failed." });
     // An optional snapshot must not delay failure delivery beyond five upload attempts.
     context.failUploads(6);
     const runtime = await context.open();
@@ -485,6 +485,7 @@ test.skipIf(!linux)(
       expect(context.chunks.filter((chunk) => chunk.offset === 524_288)).toHaveLength(5);
       expect(context.finishes).toHaveLength(0);
       expect(context.posted).toHaveLength(1);
+      expect(context.posted[0]!.errorMessage).toBe("The agent failed.");
     } finally {
       await runtime.stop();
       context.cleanup();

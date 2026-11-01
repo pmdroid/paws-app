@@ -273,13 +273,7 @@ export async function openRunnerRuntime(options: {
     for (const previous of journal.executions(true)) {
       await broker.stop(previous.id);
       if (journal.resultPending(previous.id)) continue;
-      report(
-        new Error(
-          `Runner interrupted execution ${previous.id} for run ${previous.command.runId}: runner restarted`,
-        ),
-      );
-      await fail(previous, "the runner restarted while it was running");
-      journal.phase(previous.id, "interrupted");
+      await recoverInterrupted(previous);
     }
     const leftover = (await broker.sweep?.()) ?? 0;
     if (leftover)
@@ -447,6 +441,67 @@ export async function openRunnerRuntime(options: {
       true,
     );
     await deliverResult(execution);
+  }
+  function readWorkerResult(execution: Execution) {
+    const worker = workerResult.parse(
+      JSON.parse(
+        readRunnerResultFile(options.results, execution.id, "result.json").toString("utf8"),
+      ),
+    );
+    if (
+      worker.executionId !== execution.id ||
+      worker.commandId !== execution.command.id ||
+      worker.run.role !== (execution.command.type === "review" ? "reviewer" : "implementer") ||
+      (execution.command.type === "task" &&
+        (worker.candidateSha !== undefined || worker.reviewText !== undefined))
+    )
+      throw new Error("Runner result identity mismatch");
+    return worker;
+  }
+  async function recoverInterrupted(execution: Execution) {
+    let worker: z.infer<typeof workerResult> | undefined;
+    try {
+      worker = readWorkerResult(execution);
+    } catch (error) {
+      journalCaught(
+        error,
+        "runner-runtime.recoverInterrupted.readWorkerResult",
+        execution.command.itemId,
+        "optional file may be absent",
+      );
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        report(error);
+        await fail(execution, "the runner restarted and the worker result is invalid");
+        journal.phase(execution.id, "interrupted");
+        return;
+      }
+    }
+    const { run } = worker ?? {};
+    if (
+      run &&
+      (run.stopReason !== "end_turn" ||
+        run.errorMessage !== undefined ||
+        run.authRequired ||
+        run.timedOut ||
+        run.cancelled)
+    ) {
+      journal.saveResult(
+        execution.id,
+        RunnerResultSchema.parse({
+          ...run,
+          executionId: execution.id,
+          commandId: execution.command.id,
+        }),
+        true,
+      );
+      return;
+    }
+    report(
+      new Error(
+        `Runner interrupted execution ${execution.id} for run ${execution.command.runId}: the runner restarted; Paws recovers the run from its branch`,
+      ),
+    );
+    journal.phase(execution.id, "interrupted");
   }
   function deliverResult(execution: Execution): Promise<void> {
     if (closed) return Promise.resolve();
@@ -1306,20 +1361,7 @@ export async function openRunnerRuntime(options: {
     collectRuntimes(entry);
     check(entry);
     await deliver(entry);
-    const worker = workerResult.parse(
-      JSON.parse(
-        readRunnerResultFile(options.results, entry.execution.id, "result.json").toString("utf8"),
-      ),
-    );
-    if (
-      worker.executionId !== entry.execution.id ||
-      worker.commandId !== entry.execution.command.id ||
-      worker.run.role !==
-        (entry.execution.command.type === "review" ? "reviewer" : "implementer") ||
-      (entry.execution.command.type === "task" &&
-        (worker.candidateSha !== undefined || worker.reviewText !== undefined))
-    )
-      throw new Error("Runner result identity mismatch");
+    const worker = readWorkerResult(entry.execution);
     const result: RunnerResult = RunnerResultSchema.parse({
       ...worker.run,
       executionId: worker.executionId,

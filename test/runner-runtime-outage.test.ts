@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,6 +28,7 @@ async function fixture(
   let clock = 0;
   let wall = now;
   let stops = 0;
+  let stopFailure = false;
   let missing = false;
   let postFailures = 0;
   let postAttempts = 0;
@@ -112,6 +114,7 @@ async function fixture(
         return { alreadyAdmitted: false };
       },
       async stop() {
+        if (stopFailure) throw new Error("Worker cleanup unavailable");
         stops++;
       },
       alive: () => !finished,
@@ -212,6 +215,7 @@ async function fixture(
   };
   await tickUntil(() => execution !== "");
   return {
+    root,
     posted,
     daemon: runtimeOptions.daemon,
     wall: () => wall,
@@ -249,6 +253,14 @@ async function fixture(
       await runtime.stop();
       runtime = await openRunnerRuntime(runtimeOptions);
     },
+    crash: async (cleanupFails = false) => {
+      await runtime.stop();
+      const journal = new Database(join(root, "executions.db"));
+      journal.run("UPDATE execution SET phase='running' WHERE phase='interrupted'");
+      journal.close();
+      stopFailure = cleanupFails;
+      runtime = await openRunnerRuntime(runtimeOptions);
+    },
     tick,
     tickUntil,
     goDown: () => (down = true),
@@ -258,7 +270,7 @@ async function fixture(
     refuse: (status: number, times: number) => (refusal = { status, times, sent: 0 }),
     refused: () => refusal.sent,
     advance: (ms: number) => (clock += ms),
-    finish() {
+    finish(run: Partial<RunnerResult> = {}) {
       writeFileSync(
         join(results.root, execution, "result.json"),
         JSON.stringify({
@@ -271,6 +283,7 @@ async function fixture(
             cancelled: false,
             authRequired: false,
             agentExited: true,
+            ...run,
           },
         }),
       );
@@ -565,6 +578,65 @@ test("a prepared success survives an unavailable result endpoint and a runner re
     expect(f.posted.map((result) => result.stopReason)).toEqual(["end_turn"]);
     expect(f.postAttempts()).toBe(2);
     expect(f.errors.join("\n")).not.toContain("runner restarted");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const stop of ["crash", "restart"] as const)
+  test(`a runner ${stop} mid-turn leaves the run to Paws's lost-run recovery`, async () => {
+    const f = await fixture();
+    try {
+      f.event({ type: "progress", text: "working" });
+      await f.tick();
+      const stopped = f.stopped();
+      await f[stop]();
+      expect(f.stopped()).toBeGreaterThan(stopped);
+      for (let i = 0; i < 5; i++) await f.tick();
+      expect(f.posted).toEqual([]);
+      expect(f.reports.at(-1)).toEqual([]);
+      expect(f.errors.join("\n")).not.toContain("the runner restarted while it was running");
+      if (stop === "crash")
+        expect(f.errors.join("\n")).toContain("Paws recovers the run from its branch");
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+test("a crash after a finished but unpublished turn leaves it to lost-run recovery", async () => {
+  const f = await fixture();
+  try {
+    f.finish();
+    await f.crash();
+    for (let i = 0; i < 5; i++) await f.tick();
+    expect(f.posted).toEqual([]);
+    expect(f.reports.at(-1)).toEqual([]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a crash whose worker cannot be stopped fails startup instead of leaving the work out", async () => {
+  const f = await fixture();
+  try {
+    await f.tick();
+    const reports = f.reports.length;
+    await expect(f.crash(true)).rejects.toThrow("Worker cleanup unavailable");
+    expect(f.reports).toHaveLength(reports);
+    expect(f.posted).toEqual([]);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("a crash after the worker saved an agent error delivers that error unchanged", async () => {
+  const f = await fixture();
+  try {
+    f.finish({ stopReason: "error", errorMessage: "The agent failed." });
+    await f.crash();
+    await f.tickUntil(() => f.posted.length > 0);
+    expect(f.posted).toHaveLength(1);
+    expect(f.posted[0]).toMatchObject({ stopReason: "error", errorMessage: "The agent failed." });
   } finally {
     await f.cleanup();
   }
