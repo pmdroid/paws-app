@@ -3,6 +3,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
+  finishCloseoutProgress,
+  markCloseoutAccepted,
   completeMergedItem,
   enqueueJob,
   getConfirmedRemoteMerge,
@@ -13,6 +15,7 @@ import {
 } from "../db";
 import {
   CLOSEOUT_RECHECK_DIGEST,
+  CLOSEOUT_DIGEST,
   mergeHarness,
   pendingCi,
   type MergeHarness,
@@ -488,3 +491,29 @@ describe('advanceMerge and "When main moved before the merge"', () => {
     expect(reverifyJobs(h)).toEqual([]);
   });
 });
+
+for (const changedIdentity of [false, true]) {
+  test(`latest rejection blocks a stale accepted head with ${changedIdentity ? "a newer" : "an overwritten"} identity`, async () => {
+    const h = await start();
+    const item = await h.addItem("ENG-1");
+    finishCloseoutProgress(
+      h.db,
+      item.id,
+      {
+        taskId: item.id,
+        base: item.base,
+        head: item.accepted,
+        policyDigest: changedIdentity ? "changed-policy" : CLOSEOUT_DIGEST,
+        policyPath: null,
+        recheckDigest: CLOSEOUT_RECHECK_DIGEST,
+      },
+      "rejected",
+      Date.now(),
+    );
+    // An old database can still contain the superseded accepted_head.
+    markCloseoutAccepted(h.db, item.id, item.accepted);
+    expect(await h.pass(item.id)).toEqual({ kind: "returned" });
+    expect(h.github.merged).toEqual([]);
+    expect(getWorkItem(h.db, item.id)?.state).toBe("verifying");
+  });
+}
