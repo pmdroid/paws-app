@@ -2,6 +2,7 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   decideStartup,
+  hasVerificationCandidate,
   JOB_KIND,
   OUTBOX_ACTIVITY,
   type StartupDecision,
@@ -55,7 +56,7 @@ export function recoverOnStartup(
     for (const item of items) {
       if (hasParkedCapacityWait(db, item)) continue;
       if (hasPendingAnswerResume(db, item.id)) continue;
-      if (hasPendingResume(db, item.id, "transient_failure")) continue;
+      if (hasPendingTransientRetry(db, item.id)) continue;
       const holds = runnerHoldsWork(db, item, now);
       const decision = decideStartup({
         itemState: item.state,
@@ -129,6 +130,21 @@ function hasOpenReverify(db: Database, itemId: string): boolean {
   );
 }
 
+function hasPendingTransientRetry(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM job WHERE queue IN (?, ?) AND status = 'pending'
+         AND json_extract(payload, '$.itemId') = ? AND json_extract(payload, '$.reason') = ?`,
+      )
+      .get(JOB_KIND.resume, JOB_KIND.reverify, itemId, "transient_failure") !== null
+  );
+}
+
+function keepsVerification(item: WorkItemRecord): boolean {
+  return item.state === "verifying" && hasVerificationCandidate(item.checkpoint);
+}
+
 function hasPendingResume(db: Database, itemId: string, reason: string): boolean {
   return (
     db
@@ -169,7 +185,7 @@ export function prepareShutdown(
     for (const item of running) {
       if (hasParkedCapacityWait(db, item) || runnerHoldsWork(db, item, now)) continue;
       if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
-      applyWorkItemEvent(db, item.id, "lease_expired");
+      if (!keepsVerification(item)) applyWorkItemEvent(db, item.id, "lease_expired");
     }
     for (const item of listWorkItemsByStates(db, ["merge_queue"])) {
       if (!runActive(db, item)) continue;
@@ -277,7 +293,8 @@ export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
       const item = getWorkItem(db, run.itemId);
       if (
         item?.currentRunId === row.runId &&
-        ["running", "verifying", "merge_queue"].includes(item.state)
+        ["running", "verifying", "merge_queue"].includes(item.state) &&
+        !keepsVerification(item)
       )
         applyWorkItemEvent(db, item.id, "lease_expired");
       markRun(db, row.runId, "lost", now);
