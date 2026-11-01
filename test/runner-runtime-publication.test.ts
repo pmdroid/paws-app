@@ -86,7 +86,7 @@ async function fixture(options: { crashAt?: CrashPoint; moved?: boolean; freeze?
     mkdirSync(directory);
     chmodSync(directory, 0o750);
   }
-  const command: RunnerCommand = {
+  const command: Extract<RunnerCommand, { type: "run" }> = {
     id: "command",
     type: "run",
     runnerId: "runner",
