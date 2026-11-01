@@ -55,6 +55,16 @@ JSON
 
 `concurrency` sets the most simultaneous tasks this host accepts, from 1 to 16, and defaults to 2. Each task has its own private workspace. The value is the host's ceiling: change it in `/etc/paws-runner/config.json` and restart `paws-runner.service` to apply it. Below that ceiling, workspace admins set the runner's concurrency on its runner page. Paws returns that value in the heartbeat reply and the runner applies it to new work right away, with no restart. Lowering it does not stop running work; the runner takes no new work until it is under the new limit. The runner reports its ceiling and its applied value with each authenticated heartbeat. Runner releases from before this change ignore the setting and keep their config value. Pull request merges remain serialized.
 
+Runner cleanup is generation scoped. Paws records cancellation by ending execution authority, but keeps the slot until teardown is confirmed. The runner records `cleaning` before stopping its worker, retains that entry across restart, and keeps it in heartbeat `live` reports while stopping rejects or hangs. Admission counts that entry, and cleanup retries continue alongside heartbeats.
+
+Runner 0.1.55 adds durable `terminated` heartbeat reports. Each report names the run, generation and work command, or a cancel command for a generation that never started. The broker must confirm that the worker and its processes have stopped before the runner records this report. Paws matches all these fields, saves `runner_work.teardown_confirmed_at`, and echoes the report. The runner retries reports until that echo arrives. An old acknowledgement cannot confirm a newer generation. Command receipt, cancellation expiry and absence from `live` do not confirm teardown on their own.
+
+Two other facts also resolve cleanup. A stored worker result for the same run, generation and command means the worker exited, because the runner saves a result only after its worker exits or its stop resolves. A work command the runner never acknowledged and never named in `live` is resolved once the runner sends a heartbeat with termination reports after that command expired. Such a runner journals every command it admits and keeps it in `live` until the broker confirms termination. A missing command row stays held. Paws records `runner.terminations_since` at a runner's first heartbeat with termination reports. Until then the runner keeps the earlier release behaviour: it acknowledges a cancel only after its worker stop resolves, so that acknowledgement resolves cleanup, as does work Paws fenced because the runner stopped reporting it. Neither applies to events after `terminations_since`. On upgrade the runner stops each execution an older release had already ended, and any execution whose result is still waiting for delivery, one at a time through the broker. It reports each termination once the stop resolves. A cancel for a generation that has no running entry is confirmed at once only when no journaled execution of that generation still awaits a confirmed stop. Those executions take no local slot and are not reported in `live`. Between-command reservations continue until the owning run ends.
+
+A runner with unresolved cleanup stays online for placement. Its unresolved work counts against the runner's capacity, so a runner with a free slot still takes other work.
+
+Unresolved teardown uses the existing runner capacity wait. It defers admission without spending execution retries or failing the item. This contract is the basis for the cancellation responsiveness and liveness follow-ups in PAS-961 and PAS-964.
+
 For a private server certificate authority, add `serverCa` containing its PEM certificate text as a JSON string. Certificates issued by a publicly trusted authority use the default trust store.
 
 Check dashboard connectivity from the VM:
@@ -130,9 +140,11 @@ reuse the execution and command identifiers so Paws recognizes repeated delivery
 
 A crash and a graceful stop of `paws-runner.service` end an unfinished turn the
 same way. A graceful stop interrupts the worker. After a crash, the runner stops
-the worker left behind before it sends its first heartbeat, and a failed stop
-fails startup. Neither stop posts a result for an unfinished turn, so the next
-heartbeat leaves the work out. Paws fences that work as lost and retries it
+the worker left behind in the background, so heartbeats continue. While that
+stop is pending or failing, the runner keeps naming the run in `live`, keeps its
+slot, and retries the stop. Neither stop posts a result for an unfinished turn,
+so once the stop succeeds the next heartbeat leaves the work out. Paws fences
+that work as lost and retries it
 through its usual infrastructure retries, continuing from the item's branch.
 Linear shows "The runner lost this run after it restarted; continuing from the
 branch." A result the runner had saved is delivered unchanged. An agent error
@@ -145,8 +157,9 @@ A finished turn starts publishing by recording the worker's outcome in the
 runner's execution journal. Publishing uploads the agent session, pushes the
 candidate and drains the transcript. After the push, the journal records the
 commit the branch got. A crash or a graceful stop during publishing keeps that
-record. On the next start, the runner names the run in its first heartbeat and
-resumes publishing from the stored session and transcript offsets. The turn is
+record. On the next start, the runner names the run in its first heartbeat,
+stops any worker left behind, and then resumes publishing from the stored
+session and transcript offsets. The turn is
 not run again. A push whose result was not recorded is sent again. It finds the
 candidate, or its copy rebased onto a moved branch, already there and records
 that commit. Paws then gets the worker's own outcome with the published commit.

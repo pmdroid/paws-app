@@ -278,7 +278,10 @@ test("a continuing task lands on the runner of its last session, or elsewhere af
     }
     expect(await placed.ids(session)).toEqual(["own", "second"]);
 
-    placed.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [Date.now(), run.id]);
+    placed.db.run("UPDATE runner_work SET teardown_confirmed_at=1,ended_at=? WHERE run_id=?", [
+      Date.now(),
+      run.id,
+    ]);
     // An active run retains its slot between commands until its lifetime ends.
     expect(await placed.ids(session)).toEqual(["own", "second"]);
     placed.db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
@@ -305,6 +308,7 @@ test("session affinity waits for other runs' held slots and unassigned reservati
         "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence,ended_at) VALUES(?,'second',?,1,0,?,?,0,?)",
         [runId, placed.workspaceId, `work-${runId}`, placed.now() + 3_600_000, ended],
       );
+    db.run("UPDATE runner_work SET teardown_confirmed_at=1 WHERE ended_at IS NOT NULL");
     const session = { session: { runnerId: "second" } };
     // One held slot and one in-flight reservation fill the holder, excluding our own work.
     expect(await placed.ids({ ...session, reserved: new Map([["second", 1]]) })).toEqual([

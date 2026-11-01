@@ -87,7 +87,11 @@ test("a task between its run and Closeout keeps its runner slot until the run en
   const { db, second } = fixture();
   try {
     expect(workspaceDispatch(db, { now: NOW })).toHaveLength(3);
-    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [NOW + 2, second]);
+    db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
+      NOW + 2,
+      NOW + 2,
+      second,
+    ]);
     expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
     expect(runnerSlotFree(db, ["goldbox"], NOW + 2)).toBe(false);
     db.run("UPDATE run SET status='ended' WHERE id=?", [second]);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   RUNNER_OFFLINE_BUDGET_MS,
+  RunnerTerminationSchema,
   RunnerAgentTargetsSchema,
   RunnerEventSchema,
   RunnerResultSchema,
@@ -13,6 +14,7 @@ const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const assignment = z.strictObject({ runId: identifier, generation });
 
 export const RunnerHeartbeatSchema = z.strictObject({
+  terminated: z.array(RunnerTerminationSchema).max(64).optional(),
   leases: z.array(z.strictObject({ ...assignment.shape, expiresAt: timestamp })),
   fenced: z.array(assignment),
   /** Concurrency chosen in Paws, sent only to runners that report a ceiling. */

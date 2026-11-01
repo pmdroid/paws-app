@@ -488,3 +488,47 @@ test("a publication keeps its first outcome, published commit and refusal across
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("termination survives reopen and receipt replay cannot admit a canceled generation", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-termination-"));
+  let journal = openExecutionJournal(root);
+  const cancellation = { id: "cancel", runId: command.runId, generation: command.generation };
+  try {
+    journal.confirmTermination(cancellation);
+    journal.close();
+    journal = openExecutionJournal(root);
+    const report = { runId: command.runId, generation: command.generation, commandId: "cancel" };
+    expect(journal.pendingTerminations()).toEqual([report]);
+    expect(journal.admit(command, 1000)).toBeNull();
+    // A different generation has its own authority and termination obligation.
+    expect(journal.admit({ ...command, id: "new-command", generation: 2 }, 1001)).not.toBeNull();
+    journal.terminationReported({ ...report, generation: 2 });
+    expect(journal.pendingTerminations()).toEqual([report]);
+    journal.terminationReported(report);
+    expect(journal.pendingTerminations()).toEqual([]);
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("upgrade reconciles historical terminal executions through the broker contract", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-legacy-cleanup-"));
+  let journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    journal.phase(execution.id, "interrupted");
+    journal.close();
+    journal = openExecutionJournal(root);
+    expect(journal.executions(true)).toEqual([]);
+    expect(journal.unconfirmedTerminations().map((entry) => entry.id)).toEqual([execution.id]);
+    journal.confirmTermination(command);
+    expect(journal.unconfirmedTerminations()).toEqual([]);
+    expect(journal.pendingTerminations()).toEqual([
+      { runId: command.runId, generation: 1, commandId: command.id },
+    ]);
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

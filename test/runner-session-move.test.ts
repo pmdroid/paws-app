@@ -680,7 +680,11 @@ async function mergeQueueItemOnFullRunner() {
     [busy, runners.a, `busy-${record.id}`, context.now + 60 * 60_000, runners.a],
   );
   const freeA = () => {
-    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [context.now, busy]);
+    db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
+      context.now,
+      context.now,
+      busy,
+    ]);
     db.run("UPDATE run SET status='ended' WHERE id=?", [busy]);
   };
   return { record, turn, freeA };

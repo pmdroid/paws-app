@@ -185,6 +185,38 @@ export async function probeRunnerBackend(
   };
   const backend = createRemoteAgentRunner(backendOptions);
   const seen = new Set<string>();
+  function terminated(
+    selectedRunnerId: string,
+    command: { id: string; runId: string; generation: number },
+  ) {
+    const lastSeen = db
+      .query<{ at: number | null }, [string]>("SELECT last_seen_at AS at FROM runner WHERE id=?")
+      .get(selectedRunnerId)?.at;
+    work.heartbeat(
+      selectedRunnerId,
+      1,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [{ runId: command.runId, generation: command.generation, commandId: command.id }],
+    );
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [lastSeen ?? null, selectedRunnerId]);
+  }
+  function drainCancels(selectedRunnerId: string) {
+    for (const envelope of work.commands(selectedRunnerId)) {
+      const command = JSON.parse(
+        Buffer.from(envelope.payload, "base64url").toString(),
+      ) as RunnerCommand;
+      if (command.type !== "cancel") continue;
+      seen.add(command.id);
+      work.acknowledge(selectedRunnerId, command.id);
+      terminated(selectedRunnerId, command);
+    }
+  }
   async function next(selectedRunnerId = runnerId, acknowledge = true) {
     // Measured in time, not polls: four test files run at once and can starve a 1 ms poll.
     const until = performance.now() + 10_000;
@@ -204,6 +236,7 @@ export async function probeRunnerBackend(
         });
         if (v.ok) {
           if (acknowledge) work.acknowledge(selectedRunnerId, v.command.id);
+          if (acknowledge && v.command.type === "cancel") terminated(selectedRunnerId, v.command);
           return v.command;
         }
       }
@@ -212,10 +245,13 @@ export async function probeRunnerBackend(
     throw new Error("No dispatched runner command");
   }
   let sequence = 0;
-  const finishRuns = () =>
+  const finishRuns = () => {
+    for (const { id } of db.query<{ id: string }, []>("SELECT id FROM runner").all())
+      drainCancels(id);
     db.run(
       "UPDATE run SET status='ended' WHERE status='active' AND id IN (SELECT run_id FROM runner_work WHERE ended_at IS NOT NULL)",
     );
+  };
   function item() {
     const id = `item-${++sequence}`,
       sessionId = `session-${sequence}`;
@@ -2128,7 +2164,10 @@ export async function probeRunnerBackend(
       const command = JSON.parse(
         Buffer.from(envelope.payload, "base64url").toString(),
       ) as RunnerCommand;
-      if (command.type === "cancel") work.acknowledge(runnerId, command.id);
+      if (command.type === "cancel") {
+        work.acknowledge(runnerId, command.id);
+        terminated(runnerId, command);
+      }
     }
     const hostIds = [runnerId];
     for (const name of ["second", "third"]) {
@@ -2483,7 +2522,10 @@ export async function probeRunnerBackend(
       const command = JSON.parse(
         Buffer.from(envelope.payload, "base64url").toString(),
       ) as RunnerCommand;
-      if (command.type === "cancel") work.acknowledge(hostIds[0]!, command.id);
+      if (command.type === "cancel") {
+        work.acknowledge(hostIds[0]!, command.id);
+        terminated(hostIds[0]!, command);
+      }
     }
     const secondAttempt = await next(hostIds[1]!);
     if (secondAttempt.type !== "run") throw new Error("Expected second failover work");
@@ -2526,7 +2568,10 @@ export async function probeRunnerBackend(
       const command = JSON.parse(
         Buffer.from(envelope.payload, "base64url").toString(),
       ) as RunnerCommand;
-      if (command.type === "cancel") work.acknowledge(hostIds[1]!, command.id);
+      if (command.type === "cancel") {
+        work.acknowledge(hostIds[1]!, command.id);
+        terminated(hostIds[1]!, command);
+      }
     }
     // An online pin waits out its quota instead of taking the idle third runner.
     for (let poll = 0; poll < 500 && !usagePause(db, failoverItem.run.id); poll++) await delay(1);
@@ -2711,7 +2756,10 @@ export async function probeRunnerBackend(
       const command = JSON.parse(
         Buffer.from(envelope.payload, "base64url").toString(),
       ) as RunnerCommand;
-      if (command.type === "cancel") work.acknowledge(hostIds[0]!, command.id);
+      if (command.type === "cancel") {
+        work.acknowledge(hostIds[0]!, command.id);
+        terminated(hostIds[0]!, command);
+      }
     }
     for (let index = 0; index < 1000 && !continuationState.questionId; index++) await delay(1);
     assert(continuationState.questionId);
@@ -2810,7 +2858,10 @@ export async function probeRunnerBackend(
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
-        if (command.type === "cancel") work.acknowledge(continuationHost, command.id);
+        if (command.type === "cancel") {
+          work.acknowledge(continuationHost, command.id);
+          terminated(continuationHost, command);
+        }
       }
       const independentHost = continuationHost;
       const independent = await next(independentHost);
@@ -3046,7 +3097,15 @@ export async function probeRunnerBackend(
       assert(fullWait instanceof RunnerCapacityWait);
       assert(fullWait.runnerIds.length > 0);
       assert(fullWait.runnerIds.every((id) => hostIds.includes(id)));
-      db.run("UPDATE runner_work SET ended_at=? WHERE command_id=?", [Date.now(), occupied[0]!]);
+      db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE command_id=?", [
+        Date.now(),
+        Date.now(),
+        occupied[0]!,
+      ]);
+      db.run(
+        "UPDATE run SET status='ended' WHERE id=(SELECT run_id FROM runner_work WHERE command_id=?)",
+        [occupied[0]!],
+      );
       const waitAbort = new AbortController();
       const waitingRun = placedBackend.forItem(queued.id)(
         input(queued, { signal: waitAbort.signal }),
@@ -3056,8 +3115,8 @@ export async function probeRunnerBackend(
       waitAbort.abort();
       await waitingRun.catch(() => undefined);
       db.run(
-        `UPDATE runner_work SET ended_at=? WHERE command_id IN (${occupied.map(() => "?").join(",")})`,
-        [Date.now(), ...occupied],
+        `UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE command_id IN (${occupied.map(() => "?").join(",")})`,
+        [Date.now(), Date.now(), ...occupied],
       );
       observe(
         "a full runner ends placement with a wait naming the busy runners, and places once a slot frees",
@@ -3243,8 +3302,8 @@ export async function probeRunnerBackend(
       await racedRun.catch((error: unknown) => (racedFailure = error));
       assert(racedFailure instanceof RunnerCapacityWait);
       db.run(
-        `UPDATE runner_work SET ended_at=? WHERE command_id IN (${filled.map(() => "?").join(",")})`,
-        [Date.now(), ...filled],
+        `UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE command_id IN (${filled.map(() => "?").join(",")})`,
+        [Date.now(), Date.now(), ...filled],
       );
       finishRuns();
       const retriedRun = placedBackend.forItem(raced.id)(

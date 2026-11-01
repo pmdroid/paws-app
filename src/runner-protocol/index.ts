@@ -140,6 +140,7 @@ export {
   CANDIDATE_REBASE_RUNNER_VERSION,
   OFFLINE_LEASE_RUNNER_VERSION,
   DURABLE_RESULTS_RUNNER_VERSION,
+  CONFIRMED_TEARDOWN_RUNNER_VERSION,
   FINDING_GROUPS_RUNNER_VERSION,
   CLOSEOUT_CI_KEY_RUNNER_VERSION,
   CLOSEOUT_POLICY_KEYS_RUNNER_VERSION,
@@ -151,3 +152,5 @@ export {
   runnerVersionAtLeast,
   type PolicyKeyNeed,
 } from "./policy-keys";
+
+export { RunnerTerminationSchema, type RunnerTermination } from "./teardown";

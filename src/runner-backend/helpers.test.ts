@@ -224,7 +224,10 @@ test("a helper waits while task work fills the runner and starts once a slot fre
   );
   await Bun.sleep(30);
   expect(settled).toBe(false);
-  f.db.run("UPDATE runner_work SET ended_at=? WHERE command_id='busy'", [Date.now()]);
+  f.db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE command_id='busy'", [
+    Date.now(),
+    Date.now(),
+  ]);
   for (let attempt = 0; attempt < 200; attempt++) {
     if (settled || f.db.query("SELECT 1 FROM runner_helper").get()) break;
     await Bun.sleep(2);

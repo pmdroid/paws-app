@@ -52,7 +52,7 @@ import {
   encodePolicyFiles,
   encodePolicyChunk,
 } from "../acp";
-import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
+import { RunnerTeardownPending, RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
@@ -1456,6 +1456,8 @@ export function createRemoteAgentRunner(options: {
               } catch (error) {
                 if (error instanceof PlacementRaceError)
                   throw placementRace(itemId, selected.id, error);
+                if (error instanceof RunnerTeardownPending)
+                  throw new RunnerCapacityWait(error.runnerIds);
                 throw error;
               }
               for (const notice of runtimeNotices)
