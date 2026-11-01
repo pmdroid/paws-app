@@ -675,6 +675,7 @@ export async function executeRunnerCommand(
   }
   let skillsRoot: string | undefined;
   let preview: Promise<LivePreview | null> | undefined;
+  const previewStart = new AbortController();
   try {
     if (command.type === "login") {
       if (!options.answer || !options.signal) throw new Error("Login lifecycle is unavailable");
@@ -1533,7 +1534,9 @@ export async function executeRunnerCommand(
     if (runCommand?.livePreview && installFailure === undefined)
       preview = startLivePreview({
         preview: runCommand.livePreview,
+        runner: runCommand.runnerId,
         worktree,
+        signal: previewStart.signal,
         path: agentEnv.PATH ?? "/usr/local/bin:/usr/bin:/bin",
         system:
           options.livePreviewSystem ??
@@ -1811,6 +1814,7 @@ export async function executeRunnerCommand(
     }
     return result;
   } finally {
+    previewStart.abort();
     await (await preview)?.stop("run_ended");
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
     closeSync(eventJournal);

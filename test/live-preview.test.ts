@@ -34,29 +34,35 @@ test("a preview starts, reports ready at its HTTPS name and stops at the time li
   const { seen, emit } = events();
   const started = await startLivePreview({
     preview,
+    runner: "01RUNNERA",
     worktree: "/work/run",
     path: "/usr/bin:/bin",
     system,
     emit,
     timeLimitMs: 20,
   });
-  expect(started?.url).toBe("https://paws-preview-1.tail0.ts.net/items");
+  expect(started?.url).toBe("https://paws-preview-01runnera-1.tail0.ts.net/items");
   expect(await started!.stopped).toBe("time_limit");
   expect(seen).toEqual([
-    { type: "preview", state: "starting", service: "paws-preview-1" },
+    { type: "preview", state: "starting", service: "paws-preview-01runnera-1" },
     {
       type: "preview",
       state: "ready",
-      service: "paws-preview-1",
-      url: "https://paws-preview-1.tail0.ts.net/items",
+      service: "paws-preview-01runnera-1",
+      url: "https://paws-preview-01runnera-1.tail0.ts.net/items",
     },
-    { type: "preview", state: "stopped", service: "paws-preview-1", reason: "time_limit" },
+    {
+      type: "preview",
+      state: "stopped",
+      service: "paws-preview-01runnera-1",
+      reason: "time_limit",
+    },
   ]);
   expect(system.spawned[0]).toMatchObject({ command: "bun run dev", cwd: "/work/run" });
   expect(system.tailscaleCalls).toEqual([
     ["status", "--json"],
-    ["serve", "--service=svc:paws-preview-1", "--https=443", "http://127.0.0.1:5173"],
-    ["serve", "clear", "svc:paws-preview-1"],
+    ["serve", "--service=svc:paws-preview-01runnera-1", "--https=443", "http://127.0.0.1:5173"],
+    ["serve", "clear", "svc:paws-preview-01runnera-1"],
   ]);
   expect(system.killed).toEqual([4100]);
   expect(system.released).toEqual([1]);
@@ -70,6 +76,7 @@ test("a listener the preview command did not start fails the start", async () =>
     const { seen, emit } = events();
     const started = await startLivePreview({
       preview,
+      runner: "01RUNNERA",
       worktree: "/work/run",
       path: "/usr/bin:/bin",
       system,
@@ -84,12 +91,13 @@ test("a listener the preview command did not start fails the start", async () =>
   const child = createFakeLivePreviewSystem({ children: [4101], listenerPids: [4101] });
   const started = await startLivePreview({
     preview,
+    runner: "01RUNNERA",
     worktree: "/work/run",
     path: "/usr/bin:/bin",
     system: child,
     emit: () => {},
   });
-  expect(started?.service).toBe("paws-preview-1");
+  expect(started?.service).toBe("paws-preview-01runnera-1");
   await started!.stop("run_ended");
 });
 
@@ -110,6 +118,7 @@ test("the preview environment has no Paws secrets or agent credentials", async (
       ...preview,
       fixtures: { DATABASE_URL: "file:fixture.db", PAWS_SECRET: "x", OPENAI_API_KEY: "x" },
     },
+    runner: "01RUNNERA",
     worktree: "/work/run",
     path: "/usr/bin:/bin",
     system,
@@ -128,7 +137,14 @@ test("a command that exits before the port answers fails the start", async () =>
   system.exit();
   const { seen, emit } = events();
   expect(
-    await startLivePreview({ preview, worktree: "/w", path: "/bin", system, emit }),
+    await startLivePreview({
+      preview,
+      runner: "01RUNNERA",
+      worktree: "/w",
+      path: "/bin",
+      system,
+      emit,
+    }),
   ).toBeNull();
   expect(seen.at(-1)).toMatchObject({ reason: "failed" });
 });
@@ -141,4 +157,51 @@ test("listening sockets are read from the kernel table by port", () => {
     "   2: 00000000:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4444 1",
   ].join("\n");
   expect(listeningInodes(table, 5173)).toEqual(["4242"]);
+});
+
+test("two runners name their first preview services apart", async () => {
+  const services = [];
+  for (const runner of ["01RUNNERA", "01RUNNERB"]) {
+    const started = await startLivePreview({
+      preview,
+      runner,
+      worktree: "/w",
+      path: "/bin",
+      system: createFakeLivePreviewSystem(),
+      emit: () => {},
+    });
+    services.push(started!.service);
+    await started!.stop("run_ended");
+  }
+  expect(services).toEqual(["paws-preview-01runnera-1", "paws-preview-01runnerb-1"]);
+});
+
+test("a run that ends while the preview starts stops it without waiting for readiness", async () => {
+  const ending = new AbortController();
+  let sleeps = 0;
+  const system = createFakeLivePreviewSystem({
+    answersAfter: 1_000_000,
+    onSleep: () => void (++sleeps === 3 && ending.abort()),
+  });
+  const { seen, emit } = events();
+  expect(
+    await startLivePreview({
+      preview,
+      runner: "01RUNNERA",
+      worktree: "/w",
+      path: "/bin",
+      system,
+      emit,
+      signal: ending.signal,
+    }),
+  ).toBeNull();
+  expect(sleeps).toBe(3);
+  expect(seen.at(-1)).toEqual({
+    type: "preview",
+    state: "stopped",
+    service: "paws-preview-01runnera-1",
+    reason: "run_ended",
+  });
+  expect(system.killed).toEqual([4100]);
+  expect(system.released).toEqual([1]);
 });

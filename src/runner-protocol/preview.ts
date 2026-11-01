@@ -40,7 +40,7 @@ export const RunnerLivePreviewSchema = z.strictObject({
 
 export const LIVE_PREVIEW_STOP_REASONS = ["time_limit", "run_ended", "exited", "failed"] as const;
 
-const service = z.string().regex(/^paws-preview-[1-9][0-9]{0,2}$/);
+const service = z.string().regex(/^paws-preview-[a-z0-9]{1,40}-[1-9][0-9]{0,2}$/);
 
 export const RunnerPreviewEventSchema = z
   .strictObject({
@@ -50,7 +50,9 @@ export const RunnerPreviewEventSchema = z
     url: z
       .string()
       .max(2048)
-      .regex(/^https:\/\/paws-preview-[1-9][0-9]{0,2}\.[A-Za-z0-9.-]+\/[\x21-\x7e]*$/)
+      .regex(
+        /^https:\/\/paws-preview-[a-z0-9]{1,40}-[1-9][0-9]{0,2}\.[A-Za-z0-9.-]+\/[\x21-\x7e]*$/,
+      )
       .optional(),
     reason: z.enum(LIVE_PREVIEW_STOP_REASONS).optional(),
     message: z.string().min(1).max(1024).optional(),
