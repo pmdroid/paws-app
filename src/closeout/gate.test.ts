@@ -1281,6 +1281,7 @@ describe("closeout gate", () => {
 
   for (const [message, held] of [
     ["Invalid review findings: expected array", false],
+    ["ENOENT: no such file or directory, open evidence.json", false],
     ["review command is not supported", true],
   ] as const) {
     test(`reviewer error classification: ${message}`, async () => {
@@ -1299,7 +1300,10 @@ describe("closeout gate", () => {
           pawsHome: repo.pawsHome,
           reviewer: {
             async review() {
-              throw new Error(message);
+              throw Object.assign(
+                new Error(message),
+                message.startsWith("ENOENT") ? { code: "ENOENT" } : {},
+              );
             },
           },
         });

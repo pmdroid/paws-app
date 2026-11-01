@@ -475,7 +475,7 @@ export async function probeRunnerOrchestration(
               if (runnerWait) assert(runnerResumed, "checks wait until the runner resumes");
               assert(options.closeoutPolicy);
               if (scenario === "rebase-unreachable" && reverifying)
-                throw new Error("fixture runner is offline");
+                throw new Error("worker exited without a result");
               if (scenario === "rebase-policy-transfer" && reverifying)
                 throw new Error("Closeout policy exceeds runner transfer limit");
               if (scenario === "rebase-rate-limited" && reverifying && rateLimited < 2) {
@@ -981,7 +981,7 @@ export async function probeRunnerOrchestration(
               "rebase-check-error",
             ].includes(scenario)
           ) {
-            const held = scenario === "rebase-unreachable" || scenario === "rebase-policy-transfer";
+            const held = scenario === "rebase-policy-transfer";
             assert.equal(verified.state, held ? "verifying" : "awaiting_input");
             assert.equal(reverifyChecks.length, held ? 1 : 2);
             assert.equal(reviewRunId, "");
@@ -993,11 +993,13 @@ export async function probeRunnerOrchestration(
               );
             } else {
               const reason =
-                scenario === "rebase-empty-report"
-                  ? "the runner's Closeout listed no checks"
-                  : scenario === "rebase-head-moved"
-                    ? "the checks run changed the commit"
-                    : "deterministic check runner error";
+                scenario === "rebase-unreachable"
+                  ? "worker exited without a result"
+                  : scenario === "rebase-empty-report"
+                    ? "the runner's Closeout listed no checks"
+                    : scenario === "rebase-head-moved"
+                      ? "the checks run changed the commit"
+                      : "deterministic check runner error";
               assert(question?.body.includes(reason));
               assert.equal(listSystemFaults(db).length, 0);
             }
