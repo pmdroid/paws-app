@@ -84,14 +84,20 @@ export function questionEffects(
           }),
     );
     const answers = handoffs.length ? handoffs : [body];
+    const guidance = [
+      ...held,
+      ...heldHandoffs(db, item.id).filter(
+        (entry) => !held.some((prior) => prior.jobId === entry.jobId),
+      ),
+    ];
     const jobId = restart(db, item, {
       reason: "answer",
-      body: [...held.map((entry) => entry.handoff), ...answers].join("\n\n"),
+      body: [...guidance.map((entry) => entry.handoff), ...answers].join("\n\n"),
       jobKey,
       now: input.now,
     });
     if (jobId !== null) {
-      markHandoffsCarried(db, held);
+      markHandoffsCarried(db, guidance);
       const version = getWorkItem(db, item.id)!.version;
       for (const entry of pending)
         db.run("UPDATE question SET handoff_version=? WHERE id=?", [version, entry.id]);
@@ -129,12 +135,7 @@ export function questionEffects(
         answer: question.answer ?? "",
       }),
       `resume:answer:${question.id}`,
-      [
-        ...held,
-        ...heldHandoffs(db, question.itemId).filter(
-          (entry) => !held.some((prior) => prior.jobId === entry.jobId),
-        ),
-      ],
+      held,
     );
   };
   /** A reply is guidance for the agent. It never bypasses a check: that is decided on the item page. */

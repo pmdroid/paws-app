@@ -11,6 +11,7 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
+  saveCloseoutRecovery,
   recoverOnStartup,
   requeueOrphanedWork,
 } from "../src/db";
@@ -100,65 +101,103 @@ test("an authorized Linear follow-up releases a stopped undelivered decision and
   }
 });
 
-test("criteria edits preserve the restart question and reach the agent with its answer", async () => {
-  const { db, clock, item, orchestrator } = fixture();
-  try {
-    const current = getWorkItem(db, item.id)!;
-    const first = ask(
-      db,
-      { itemId: item.id, runId: current.currentRunId, sessionId: "session" },
-      "agent",
-      "Restart?",
-      { reason: "restart", now: clock.now() },
-    );
-    orchestrator.applyDelegationChanges({
-      delegationId: item.delegationId,
-      sessionId: "session",
-      addedItemIds: [],
-      removedItemIds: [],
-      specChangedItemIds: [item.id],
-      canceledItemIds: [],
-      parentCanceled: false,
-    });
-    expect(findOpenQuestion(db, "session")?.id).toBe(first.question.id);
-    expect(
-      listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
-    ).toHaveLength(0);
-    expect(
-      listOutbox(db).some((row) =>
-        (row.payload as { body?: string }).body?.includes("after the pending restart decision"),
-      ),
-    ).toBe(true);
-    clock.advance(45 * 60_000);
-    requeueOrphanedWork(db, clock.now());
-    recoverOnStartup(db, clock.now());
-    expect(
-      answer(
+test.each(["agent", "closeout-help"] as const)(
+  "criteria edits reach the agent after the restart answer and a queued %s answer",
+  async (kind) => {
+    const { db, clock, item, orchestrator } = fixture();
+    try {
+      const current = getWorkItem(db, item.id)!;
+      const first = ask(
         db,
-        {
-          sessionId: "session",
-          deliveryId: "answer",
-          body: "Start again",
-          answeredBy: "human",
-          now: clock.now(),
-        },
-        questionEffects(db, { now: clock.now() }),
-      ).status,
-    ).toBe("answered");
-    const resumes = listJobs(db).filter(
-      (job) => job.queue === "run.resume" && job.status === "pending",
-    );
-    expect(resumes).toHaveLength(1);
-    expect((resumes[0]!.payload as { handoff: string }).handoff).toContain(
-      "The task criteria changed in Linear",
-    );
-    expect((resumes[0]!.payload as { handoff: string }).handoff).toContain("Start again");
-    expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(1);
-  } finally {
-    await orchestrator.shutdown();
-    db.close();
-  }
-});
+        { itemId: item.id, runId: current.currentRunId, sessionId: "session" },
+        "agent",
+        "Restart?",
+        { reason: "restart", now: clock.now() },
+      );
+      const other = ask(
+        db,
+        { itemId: item.id, runId: current.currentRunId, sessionId: "session" },
+        kind,
+        "Which implementation?",
+        { now: clock.now() + 1 },
+      );
+      if (kind === "closeout-help")
+        saveCloseoutRecovery(db, {
+          questionId: other.question.id,
+          taskId: "task",
+          itemId: item.id,
+          base: "base",
+          head: "",
+          policyDigest: "policy",
+          failedChecks: [],
+          retryBaseline: [],
+          summary: "Implementation guidance",
+        });
+      orchestrator.applyDelegationChanges({
+        delegationId: item.delegationId,
+        sessionId: "session",
+        addedItemIds: [],
+        removedItemIds: [],
+        specChangedItemIds: [item.id],
+        canceledItemIds: [],
+        parentCanceled: false,
+      });
+      expect(findOpenQuestion(db, "session")?.id).toBe(first.question.id);
+      expect(
+        listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
+      ).toHaveLength(0);
+      expect(
+        listOutbox(db).some((row) =>
+          (row.payload as { body?: string }).body?.includes("after the pending restart decision"),
+        ),
+      ).toBe(true);
+      clock.advance(45 * 60_000);
+      requeueOrphanedWork(db, clock.now());
+      recoverOnStartup(db, clock.now());
+      expect(
+        answer(
+          db,
+          {
+            sessionId: "session",
+            deliveryId: "answer",
+            body: "Start again",
+            answeredBy: "human",
+            now: clock.now(),
+          },
+          questionEffects(db, { now: clock.now() }),
+        ).status,
+      ).toBe("answered");
+      expect(
+        listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
+      ).toHaveLength(0);
+      expect(
+        answer(
+          db,
+          {
+            sessionId: "session",
+            deliveryId: "other-answer",
+            body: "Use the smaller implementation",
+            answeredBy: "human",
+            now: clock.now(),
+          },
+          questionEffects(db, { now: clock.now() }),
+        ).status,
+      ).toBe("answered");
+      const resumes = listJobs(db).filter(
+        (job) => job.queue === "run.resume" && job.status === "pending",
+      );
+      expect(resumes).toHaveLength(1);
+      expect((resumes[0]!.payload as { handoff: string }).handoff).toContain(
+        "The task criteria changed in Linear",
+      );
+      expect((resumes[0]!.payload as { handoff: string }).handoff).toContain("Start again");
+      expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(1);
+    } finally {
+      await orchestrator.shutdown();
+      db.close();
+    }
+  },
+);
 
 test("an authorized Resume releases a paused decision and carries criteria saved while paused", async () => {
   const { db, item, orchestrator } = fixture();
