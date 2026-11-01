@@ -56,7 +56,7 @@ export function applyDecision(
       applyRestartFromMain(db, item, now, stamp);
       return;
     case "reverify":
-      applyReverify(db, item, now, stamp);
+      applyReverify(db, item, now, stamp, "resumed" in decision && decision.resumed === true);
       return;
     case "keep_place":
       applyKeepPlace(db, item, decision.mergeCallInFlight, now);
@@ -236,8 +236,19 @@ function applyRestartFromMain(
   });
 }
 
-function applyReverify(db: Database, item: WorkItemRecord, now: number, stamp?: WakeStamp): void {
-  cancelOpenJobs(db, { itemId: item.id, reason: "sleep_interrupted_merge", now });
+function applyReverify(
+  db: Database,
+  item: WorkItemRecord,
+  now: number,
+  stamp: WakeStamp | undefined,
+  resumed: boolean,
+): void {
+  cancelOpenJobs(db, {
+    itemId: item.id,
+    reason: resumed ? "interrupted_verification" : "sleep_interrupted_merge",
+    now,
+  });
+  if (resumed) markResumed(db, item.id, now);
   if (item.checkpoint?.phase === "merge_queue") {
     saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
   }

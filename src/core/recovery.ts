@@ -57,8 +57,16 @@ export type StartupDecision =
   | { type: "none" }
   | { type: "resume"; freshSession: true; checkpoint: Checkpoint | null; reattach?: true }
   | { type: "ask_restart" }
-  | { type: "reverify" }
+  | { type: "reverify"; resumed?: true }
   | { type: "keep_place"; mergeCallInFlight: boolean };
+
+export function hasVerificationCandidate(checkpoint: Checkpoint | null): boolean {
+  return (
+    checkpoint?.phase === "verifying" &&
+    typeof checkpoint.wipCommit === "string" &&
+    checkpoint.wipCommit !== ""
+  );
+}
 
 export type WakeDecision =
   | { type: "ignore" }
@@ -100,6 +108,8 @@ export function decideStartup(input: {
     return { type: "resume", freshSession: true, checkpoint: input.checkpoint, reattach: true };
   if (input.recoveryAttempts >= 1 && (input.sinceResumeMs ?? 0) < RESUME_AGAIN_AFTER_MS)
     return { type: "ask_restart" };
+  if (input.itemState === "verifying" && hasVerificationCandidate(input.checkpoint))
+    return { type: "reverify", resumed: true };
   return { type: "resume", freshSession: true, checkpoint: input.checkpoint };
 }
 

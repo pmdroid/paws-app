@@ -145,6 +145,8 @@ The handoff ends with a reply list: every review thread, review body and convers
 
 Two other reasons send an item back without spending a fix round: `conflict`, a rebase return from the merge lane (see [After acceptance](#after-acceptance)), and `follow_up` or `answer`, a person's message in the session. Setup faults retry once and then ask, without spending a fix round. Infrastructure faults spend nothing.
 
+An evaluation cut short does not send the item back to the agent. This covers a transient error that escapes Closeout, a Paws shutdown or crash, and a runner lease that expires during the evaluation. The item stays in `verifying` with the candidate head its checkpoint records, and a re-verify evaluates that head again. A transient error re-verifies with backoff, within the same five transient retries a run start gets. A process start re-verifies once and asks on the next start, as a resume does. Work a runner still holds is reattached, not started again, and Stop wins. Without a recorded candidate, the item resumes as before.
+
 ### When Paws asks the team
 
 Paws asks through `ask(item, question)`, the one operation that asks a person. It opens one Linear elicitation in the item's session and moves the item to `awaiting_input`. It is also the only activity that reopens a session after its pull request response, because a person must see it. Paws asks when:

@@ -13,10 +13,12 @@ import {
   TIME_LIMIT_OPTIONS,
   type AwakeBreakdown,
   type AwakeCategory,
+  hasVerificationCandidate,
   IN_FLIGHT_ITEM_STATES,
   isAwakeItemState,
   isTerminalWorkItemState,
   JOB_KIND,
+  MAX_TRANSIENT_RETRIES,
   OUTBOX_ACTIVITY,
   transition,
   type Checkpoint,
@@ -837,30 +839,53 @@ export function deferWorkItem(
   },
 ): void {
   immediate(db, () => {
-    if (item.state === "running" || item.state === "verifying")
+    const before = getWorkItem(db, item.id) ?? item;
+    const reverify = before.state === "verifying" && hasVerificationCandidate(before.checkpoint);
+    if (!reverify && (item.state === "running" || item.state === "verifying"))
       applyWorkItemEvent(db, item.id, "lease_expired");
     const current = getWorkItem(db, item.id) ?? item;
-    journal(`item ${item.linearIdentifier} deferred: retry ${input.retry} in ${input.delayMs} ms`);
+    journal(
+      `item ${item.linearIdentifier} deferred: ${reverify ? "re-verify" : "retry"} ${input.retry} in ${input.delayMs} ms`,
+    );
     if (current.currentRunId !== null) {
       const run = getRun(db, current.currentRunId);
       if (run && (run.status === "active" || run.status === "provisioning"))
         markRun(db, run.id, "lost", input.now);
     }
-    enqueueJobOnce(db, {
-      queue: JOB_KIND.resume,
-      jobKey: `resume:${item.id}:${current.version}`,
-      runAt: input.now + input.delayMs,
-      payload: {
-        itemId: item.id,
-        runId: current.currentRunId,
-        reason: "transient_failure",
-        retry: input.retry,
-        ...pendingRestartHandoff(db, item.id),
-        ...(input.handoff === null ? {} : { handoff: input.handoff }),
-        ...(input.capacityWait ? { capacityWait: input.capacityWait } : {}),
-      },
-      now: input.now,
-    });
+    const capacityWait = input.capacityWait ? { capacityWait: input.capacityWait } : {};
+    if (reverify)
+      enqueueJobOnce(db, {
+        queue: JOB_KIND.reverify,
+        jobKey: `reverify:retry:${item.id}:${current.version}:${input.retry}`,
+        runAt: input.now + input.delayMs,
+        maxAttempts: Math.max(1, MAX_TRANSIENT_RETRIES - input.retry + 1),
+        payload: {
+          itemId: item.id,
+          runId: current.currentRunId,
+          reason: "transient_failure",
+          retry: input.retry,
+          recheckHead: true,
+          failClosed: true,
+          ...capacityWait,
+        },
+        now: input.now,
+      });
+    else
+      enqueueJobOnce(db, {
+        queue: JOB_KIND.resume,
+        jobKey: `resume:${item.id}:${current.version}`,
+        runAt: input.now + input.delayMs,
+        payload: {
+          itemId: item.id,
+          runId: current.currentRunId,
+          reason: "transient_failure",
+          retry: input.retry,
+          ...pendingRestartHandoff(db, item.id),
+          ...(input.handoff === null ? {} : { handoff: input.handoff }),
+          ...capacityWait,
+        },
+        now: input.now,
+      });
     if (input.message !== null)
       enqueueOutboxOnce(db, {
         target: OUTBOX_ACTIVITY.target,

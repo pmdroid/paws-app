@@ -461,15 +461,20 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
     expect(f.commandCount("cancel")).toBe(0);
     const later = Date.now() + 60_001 + RUNNER_LEASE_GRACE_MS;
     prepareShutdown(f.db, later);
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("recovering");
+    expect(getWorkItem(f.db, f.item.id)).toMatchObject({
+      state: "verifying",
+      checkpoint: { phase: "verifying", wipCommit: f.head },
+    });
+    expect(getRun(f.db, f.run.id)?.status).toBe("lost");
     f.restart();
-    expect(recoverOnStartup(f.db, later)).toEqual([
-      {
-        type: "resume",
-        freshSession: true,
-        checkpoint: { phase: "verifying", baseSha: expect.any(String), wipCommit: f.head },
-      },
-    ]);
+    expect(recoverOnStartup(f.db, later)).toEqual([{ type: "reverify", resumed: true }]);
+    expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 1 });
+    const open = listJobs(f.db).filter((job) => job.status === "pending");
+    expect(open.map((job) => job.queue)).toEqual(["run.reverify"]);
+    expect(open[0]!.payload).toMatchObject({ itemId: f.item.id, recheckHead: true });
+    f.restart();
+    expect(recoverOnStartup(f.db, later + 1_000)).toEqual([{ type: "ask_restart" }]);
+    expect(listJobs(f.db).some((job) => job.queue === "run.resume")).toBe(false);
   } finally {
     await f.close();
   }
