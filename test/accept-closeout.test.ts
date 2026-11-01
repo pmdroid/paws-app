@@ -5,6 +5,9 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   getWorkItem,
+  getJob,
+  recordConfirmedRemoteMerge,
+  jobVersionCurrent,
   insertQueuedItem,
   insertRun,
   joinMergeQueue,
@@ -132,4 +135,56 @@ test("a reopened database finds the accepted candidate's merge job", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test.each(["merged", "completed", "cancelled", "failed"])(
+  "a %s item cannot revive a done merge job",
+  (state) => {
+    const db = tempDb();
+    const expected = verifying(db);
+    const id = accept(db, expected)!;
+    db.run("UPDATE job SET status='done' WHERE id=?", [id]);
+    db.run("UPDATE work_item SET state=? WHERE id='item'", [state]);
+    const item = getWorkItem(db, "item")!;
+    expect(accept(db, { version: item.version, runId: item.currentRunId })).toBeNull();
+    expect(getJob(db, id)?.status).toBe("done");
+    db.close();
+  },
+);
+
+test("re-acceptance revives a done merge job with the current item fence", () => {
+  const db = tempDb();
+  const id = accept(db, verifying(db))!;
+  db.run("UPDATE job SET status='done', attempts=3 WHERE id=?", [id]);
+  db.run("UPDATE work_item SET state='verifying', version=version+1 WHERE id='item'");
+  const item = getWorkItem(db, "item")!;
+  expect(accept(db, { version: item.version, runId: item.currentRunId })).toBe(id);
+  expect(getJob(db, id)).toMatchObject({ status: "pending", attempts: 0 });
+  expect(jobVersionCurrent(db, getJob(db, id)!)).toBe(true);
+  db.run("UPDATE job SET status='done' WHERE id=?", [id]);
+  db.run("UPDATE work_item SET cancel_requested=1 WHERE id='item'");
+  const cancelled = getWorkItem(db, "item")!;
+  expect(accept(db, { version: cancelled.version, runId: cancelled.currentRunId })).toBeNull();
+  expect(getJob(db, id)?.status).toBe("done");
+  db.close();
+});
+
+test("a confirmed merge cannot be revived while the merged item edge is still pending", () => {
+  const db = tempDb();
+  const id = accept(db, verifying(db))!;
+  db.run("UPDATE job SET status='done' WHERE id=?", [id]);
+  recordConfirmedRemoteMerge(db, {
+    itemId: "item",
+    repositoryOwner: "acme",
+    repositoryName: "platform",
+    pullNumber: 1,
+    pullUrl: null,
+    mergeSha: "merged",
+    confirmedAt: 11,
+  });
+  const item = getWorkItem(db, "item")!;
+  expect(item.state).toBe("merge_queue");
+  expect(accept(db, { version: item.version, runId: item.currentRunId })).toBeNull();
+  expect(getJob(db, id)?.status).toBe("done");
+  db.close();
 });

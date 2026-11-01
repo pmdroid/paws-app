@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND, type RestartReason } from "../core";
 import { halt } from "./halt";
 import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
-import { enqueueJobOnce } from "./jobs";
+import { reenqueueJob } from "./jobs";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
 
@@ -40,34 +40,66 @@ export function restart(
     };
     const queued = applyWorkItemEvent(db, item.id, "restart", record);
     if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "running" });
-    return enqueueJobOnce(db, {
-      queue: JOB_KIND.resume,
-      jobKey: handoff.jobKey ?? `restart:${item.id}:${queued.version}`,
-      payload: {
-        itemId: item.id,
-        runId: item.currentRunId,
-        handoff: handoff.body,
-        reason: handoff.reason,
-        ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
+    const jobKey = handoff.jobKey ?? `restart:${item.id}:${queued.version}`;
+    const after = latestHumanTurn(db, item.id);
+    const payload = {
+      itemId: item.id,
+      runId: item.currentRunId,
+      handoff: handoff.body,
+      reason: handoff.reason,
+      ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
+    };
+    const job = reenqueueJob(
+      db,
+      {
+        queue: JOB_KIND.resume,
+        jobKey,
+        payload,
+        now: handoff.now,
       },
-      now: handoff.now,
-    });
+      (previous) => {
+        if (!["findings", "ci", "review"].includes(handoff.reason)) return payload;
+        const old = previous?.payload as
+          | { fixRoundsAfter?: number; fixRounds?: number }
+          | undefined;
+        const inWindow =
+          old?.fixRoundsAfter === after ||
+          (old?.fixRoundsAfter === undefined && previous !== null && previous.activationId > after);
+        return {
+          ...payload,
+          fixRounds: (inWindow ? (old?.fixRounds ?? 1) : 0) + 1,
+          fixRoundsAfter: after,
+        };
+      },
+    );
+    if (!job.pending) throw new Error("restart requires a pending resume job");
+    return job.id;
   });
 }
 
-/** Fix restarts since the latest human turn, across findings, CI and review. */
-export function fixRounds(db: Database, itemId: string): number {
-  return (
-    db
-      .query<{ count: number }, [string, string, string, string]>(`
-    SELECT COUNT(*) AS count FROM job WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-      AND json_extract(payload, '$.reason') IN ('findings','ci','review')
-      AND id > COALESCE((SELECT MAX(id) FROM job
-        WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-          AND (job_key LIKE 'linear-turn:%' OR json_extract(payload, '$.reason') = 'answer')), 0)
+/** Latest human retry window, ordered by activation rather than reusable row id. */
+export function latestHumanTurn(db: Database, itemId: string): number {
+  return db
+    .query<{ id: number }, [string, string]>(`
+    SELECT COALESCE(MAX(activation_id), 0) AS id FROM job
+    WHERE queue=? AND json_extract(payload,'$.itemId')=?
+      AND (job_key LIKE 'linear-turn:%' OR json_extract(payload,'$.reason')='answer')
   `)
-      .get(JOB_KIND.resume, itemId, JOB_KIND.resume, itemId)?.count ?? 0
-  );
+    .get(JOB_KIND.resume, itemId)!.id;
+}
+
+/** Fix restarts since the latest human turn, including repeated uses of one job row. */
+export function fixRounds(db: Database, itemId: string): number {
+  const after = latestHumanTurn(db, itemId);
+  return db
+    .query<{ count: number }, [string, string, number, number]>(`
+    SELECT COALESCE(SUM(COALESCE(json_extract(payload,'$.fixRounds'),1)),0) AS count
+    FROM job WHERE queue=? AND json_extract(payload,'$.itemId')=?
+      AND json_extract(payload,'$.reason') IN ('findings','ci','review')
+      AND (json_extract(payload,'$.fixRoundsAfter')=? OR
+        (json_extract(payload,'$.fixRoundsAfter') IS NULL AND activation_id>?))
+  `)
+    .get(JOB_KIND.resume, itemId, after, after)!.count;
 }
 
 /** The limit the latest restart of `itemId` recorded for its fix-attempt lines, if any. */
@@ -77,7 +109,7 @@ export function restartLimit(db: Database, itemId: string): number | null {
     SELECT json_extract(payload, '$.limit') AS "limit" FROM job
     WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
       AND json_extract(payload, '$.reason') IS NOT NULL
-    ORDER BY id DESC LIMIT 1
+    ORDER BY activation_id DESC LIMIT 1
   `)
     .get(JOB_KIND.resume, itemId);
   return typeof row?.limit === "number" ? row.limit : null;

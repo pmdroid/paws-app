@@ -1,5 +1,6 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { writeFileSync, rmSync } from "node:fs";
+import * as fs from "node:fs";
 import { join } from "node:path";
 import { RiskDisplayReader, riskApprovalFor } from "../src/loop";
 import { createLiveStatusProvider } from "../src/web";
@@ -364,6 +365,31 @@ test("policy file edits invalidate display evidence, including across a reader r
   });
   cleanup.push(() => restarted.close());
   expect(restarted.read(f.item.id)?.detail).toContain("policy evidence is unavailable");
+});
+
+test("filesystem events invalidate policy evidence while stat polling is delayed", async () => {
+  const watchFile = fs.watchFile;
+  const polling = spyOn(fs, "watchFile").mockImplementation((...args: unknown[]): fs.StatWatcher =>
+    Reflect.apply(watchFile, fs, [args[0], { persistent: false, interval: 60_000 }, args.at(-1)]),
+  );
+  try {
+    const f = fixture();
+    const home = tempHome();
+    cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+    const path = join(home, "rules.ts");
+    writeFileSync(path, "old rules");
+    f.reader.remember(f.item.id, "head", {
+      ...f.context,
+      policyFiles: f.reader.observeFiles([path]),
+    });
+    expect(f.reader.read(f.item.id)?.detail).toContain("Passes automatically");
+    writeFileSync(path, "new rules");
+    await waitFor(
+      () => f.reader.read(f.item.id)?.detail.includes("policy evidence is unavailable") ?? false,
+    );
+  } finally {
+    polling.mockRestore();
+  }
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {

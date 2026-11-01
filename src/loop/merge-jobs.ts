@@ -3,8 +3,9 @@ import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   jobVersionCurrent,
-  enqueueJobOnce,
+  reenqueueJob,
   getWorkItem,
+  getConfirmedRemoteMerge,
   immediate,
   saveCheckpoint,
   parkLeasedJob,
@@ -84,8 +85,8 @@ export function acceptGitHubDelivery(
   if (moved) mainMoved(db, { ...moved, now });
   const facts = deliveryFacts(delivery.event, body);
   const jobs = db
-    .query<{ id: number; payload: string }, [string]>(
-      "SELECT id, payload FROM job WHERE queue = ? AND status IN ('pending', 'running')",
+    .query<{ id: number; activationId: number; payload: string }, [string]>(
+      "SELECT id, activation_id AS activationId, payload FROM job WHERE queue = ? AND status IN ('pending', 'running')",
     )
     .all(JOB_KIND.merge);
   for (const job of jobs) {
@@ -178,18 +179,12 @@ export function enqueueVerifiedMerge(
   const suffix = input.reverifyJobId === undefined ? "" : `:reverify:${input.reverifyJobId}`;
   const jobKey = `merge:${input.itemId}:${input.head}${suffix}`;
   const payload = { itemId: input.itemId, summary: input.summary, head: input.head };
-  db.run(
-    `UPDATE job SET status = 'pending', attempts = 0, last_error = NULL, finished_at = NULL,
-       locked_by = NULL, locked_until = NULL, item_version=(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId')), run_at = ?, payload = ?
-     WHERE job_key = ? AND status IN ('cancelled', 'dead')`,
-    [input.now, JSON.stringify(payload), jobKey],
-  );
-  return enqueueJobOnce(db, {
+  return reenqueueJob(db, {
     queue: JOB_KIND.merge,
     jobKey,
     payload,
     now: input.now,
-  });
+  }).id;
 }
 
 export type VerificationOwner = { version: number; runId: string | null };
@@ -204,6 +199,7 @@ export function applyCloseoutAcceptance(
     if (
       !current ||
       current.cancelRequested ||
+      getConfirmedRemoteMerge(db, itemId) !== null ||
       current.version !== expected.version ||
       current.currentRunId !== expected.runId ||
       (current.state !== "verifying" && current.state !== "merge_queue")
