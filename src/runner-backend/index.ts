@@ -18,7 +18,6 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
-  endUsagePause,
   getTaskMode,
   getWorkItem,
   immediate,
@@ -30,8 +29,6 @@ import {
   runnerHasCapacity,
   runnerSlotsHeldBetweenCommands,
   saveCheckpoint,
-  startUsagePause,
-  usagePause,
   runnerLeaseCutoff,
   clearRunnerSessionMove,
   noteRunnerSessionMove,
@@ -72,6 +69,7 @@ import {
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { fastForwardToBranchTip } from "./candidate";
+import { agentName, usageLimitWait } from "./usage-limit-wait";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
@@ -89,7 +87,6 @@ import {
   UsageLimitPause,
   type FailoverAttempt,
   type UsageLimit,
-  type UsageLimitWait,
 } from "./failover";
 import {
   isReadOnlyTaskMode,
@@ -679,53 +676,6 @@ export function createRemoteAgentRunner(options: {
   const checkpointBeforeStop = createRemoteCheckpoint(options);
   const cancelItem = createRemoteCancellation({ ...options, checkpoint: checkpointBeforeStop });
   const handOverItem = createRemoteHandover(options);
-  function usageLimitWait(itemId: string, input: RunAgentOptions): UsageLimitWait {
-    return {
-      now,
-      async pause(limit, profilesChanged) {
-        const runId = getWorkItem(db, itemId)?.currentRunId;
-        if (!runId) throw limit;
-        const agent = agentName(limit.agent);
-        startUsagePause(
-          db,
-          {
-            runId,
-            itemId,
-            agent: limit.agent,
-            runnerId: limit.runnerId,
-            resetsAt: limit.resetsAt,
-            resumeAt: limit.resumeAt,
-            pausedAt: now(),
-          },
-          mono(),
-        );
-        let changed = false;
-        try {
-          await input.onEvent?.({
-            type: "progress",
-            text: `Paused: ${agent} reached its usage limit. Paws continues at ${clockTime(limit.resumeAt, now())}.`,
-          });
-          // Resume now moves resume_at forward; Stop aborts the signal.
-          for (;;) {
-            const wait = (usagePause(db, runId)?.resumeAt ?? 0) - now();
-            changed = profilesChanged?.() ?? false;
-            if (wait <= 0 || changed) break;
-            if ((await limit.readyRunners?.())?.length) break;
-            await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
-          }
-        } finally {
-          endUsagePause(db, runId, mono(), now());
-        }
-        input.signal?.throwIfAborted();
-        await input.onEvent?.({
-          type: "progress",
-          text: changed
-            ? "Continuing: Paws is trying the updated agent settings."
-            : `Continuing: Paws is trying ${agent} again after its usage limit.`,
-        });
-      },
-    };
-  }
   return {
     cancelItem,
     handOverItem,
@@ -2216,7 +2166,14 @@ export function createRemoteAgentRunner(options: {
             input,
             moving,
             async () => cancelItem(itemId, input.signal),
-            usageLimitWait(itemId, input),
+            usageLimitWait(
+              { db, now, mono, interval },
+              () => {
+                const current = getWorkItem(db, itemId)?.currentRunId;
+                return current ? { itemId, runId: current } : null;
+              },
+              input,
+            ),
           );
         } finally {
           if (runId) readers.delete(runId);
@@ -2322,17 +2279,6 @@ function handoverWaitNotice(db: Database, move: HandoverMove, why: string): stri
         ?.name ?? move.from)
     : "its runner";
   return `Waiting to move this session from ${from}: ${why} Paws moves it as soon as a runner fits.\n`;
-}
-
-function agentName(agent: string): string {
-  return agent.charAt(0).toUpperCase() + agent.slice(1);
-}
-
-function clockTime(at: number, now: number): string {
-  const time = new Date(at).toISOString();
-  const day =
-    time.slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? "" : `${time.slice(0, 10)} `;
-  return `${day}${time.slice(11, 16)} UTC`;
 }
 
 export { UsageLimitExhaustedError } from "./failover";
