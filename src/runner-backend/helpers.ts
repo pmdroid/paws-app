@@ -5,12 +5,18 @@ import type { Database } from "bun:sqlite";
 import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from "../acp";
 import type { RunnerHelpers } from "../runner-helpers";
 import type { RunnerPlacement } from "../runner-placement";
-import { RunnerSlotsBusyError, UserFacingError } from "../core";
+import { RunnerSlotsBusyError, systemClock, UserFacingError } from "../core";
 import { immediate, runnerHasCapacity, workspaceSessionIds } from "../db";
 import { FINDING_GROUPS_RUNNER_VERSION, type RunnerCommand } from "../runner-protocol";
 import { versionAtLeast } from "./session-restore";
+import { usageLimitWait } from "./usage-limit-wait";
 
-import { RetryableRunnerError, runWithFailover } from "./failover";
+import {
+  RetryableRunnerError,
+  runWithFailover,
+  USAGE_LIMIT_RESUME_SLACK_MS,
+  UsageLimitPause,
+} from "./failover";
 
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
 
@@ -18,10 +24,32 @@ export function createRemoteSessionAgentRunner(options: {
   db: Database;
   helpers: RunnerHelpers;
   now?: () => number;
+  mono?: () => number;
   pollIntervalMs?: number;
   placement?: RunnerPlacement;
 }) {
   const now = options.now ?? Date.now;
+  const mono = options.mono ?? systemClock.mono;
+  const earliestCooldown = (runnerIds: readonly string[], agent: string) =>
+    runnerIds.length === 0
+      ? null
+      : options.db
+          .query<{ runnerId: string; until: number }, [string, number, string]>(
+            `SELECT runner_id AS runnerId,cooldown_until AS until FROM runner_agent_policy
+             WHERE agent=? AND cooldown_until>? AND runner_id IN (SELECT value FROM json_each(?))
+             ORDER BY cooldown_until,runner_id LIMIT 1`,
+          )
+          .get(agent, now(), JSON.stringify(runnerIds));
+  const sessionRun = (sessionId: string) => {
+    const rows = options.db
+      .query<{ itemId: string; runId: string }, [string]>(
+        `SELECT id AS itemId,current_run_id AS runId FROM work_item
+         WHERE session_key=? AND current_run_id IS NOT NULL AND state IN ('running','verifying','recovering')
+         LIMIT 2`,
+      )
+      .all(sessionId);
+    return rows.length === 1 ? rows[0]! : null;
+  };
   return {
     forSession(sessionId: string, purpose: HelperCommand["purpose"]) {
       const attempt = async (
@@ -45,16 +73,24 @@ export function createRemoteSessionAgentRunner(options: {
         const profile = { ...input.profile, model: input.profile.model ?? null };
         const waitUntil = now() + (input.timeoutMs ?? 60_000);
         let command: HelperCommand | undefined;
+        const cooling: string[] = [];
+        const request = {
+          sessionId,
+          ...(purpose === "finding_groups" ? { findingGroups: true } : {}),
+          profile,
+          role: input.role,
+          purpose: "helper" as const,
+          excludeRunnerIds: excluded,
+          signal: input.signal,
+        };
         while (!command) {
+          cooling.length = 0;
           const runners = options.placement
             ? await options.placement.candidates({
-                sessionId,
-                ...(purpose === "finding_groups" ? { findingGroups: true } : {}),
-                profile,
-                role: input.role,
-                purpose: "helper",
-                excludeRunnerIds: excluded,
-                signal: input.signal,
+                ...request,
+                onRejected: (runnerId, reason) => {
+                  if (reason === "agent quota cooldown") cooling.push(runnerId);
+                },
               })
             : options.db
                 .query<{ id: string }, [number]>(
@@ -130,10 +166,21 @@ export function createRemoteSessionAgentRunner(options: {
             .all()
             .some((runner) => !runnerHasCapacity(options.db, runner.id, now()));
           if (workFull && now() >= waitUntil) throw new RunnerSlotsBusyError();
-          if ((!helperBusy && !workFull) || now() >= waitUntil)
+          if ((!helperBusy && !workFull) || now() >= waitUntil) {
+            const cooldown = earliestCooldown(cooling, profile.agent);
+            if (cooldown)
+              throw new UsageLimitPause(
+                profile.agent,
+                cooldown.until + USAGE_LIMIT_RESUME_SLACK_MS,
+                cooldown.until,
+                cooldown.runnerId,
+                async () =>
+                  (await options.placement!.candidates(request)).map((runner) => runner.id),
+              );
             throw new UserFacingError(
               `No paired runner can run ${profile.agent} for this issue right now. Check runner availability and usage limits, then retry.`,
             );
+          }
           await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
         }
         let accounted = false;
@@ -256,6 +303,11 @@ export function createRemoteSessionAgentRunner(options: {
               { ...input, timeoutMs: input.timeoutMs ?? 60_000 },
               attempt,
               async () => {},
+              usageLimitWait(
+                { db: options.db, now, mono, interval: options.pollIntervalMs ?? 250 },
+                () => sessionRun(sessionId),
+                input,
+              ),
             );
     },
   };

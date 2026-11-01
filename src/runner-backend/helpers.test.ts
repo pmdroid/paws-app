@@ -9,16 +9,22 @@ import {
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   migrate,
+  usagePause,
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
 } from "../db";
-import { RunnerSlotsBusyError } from "../core";
+import { RunnerSlotsBusyError, UserFacingError } from "../core";
 import { DEFAULT_RUN_TIMEOUT_MS, recoverAcpConversation, type RunAgentOptions } from "../acp";
 import { createRunnerHelpers } from "../runner-helpers";
 import { workspaceId, workspaceTokenHash, issueWorkspaceBootstrap } from "../workspace";
 import { createRemoteSessionAgentRunner } from "./helpers";
-import { RetryableRunnerError, runWithFailover } from "./failover";
+import {
+  RetryableRunnerError,
+  runWithFailover,
+  USAGE_LIMIT_RESUME_SLACK_MS,
+  UsageLimitPause,
+} from "./failover";
 import { quotaSignal, type RunnerPlacement } from "../runner-placement";
 
 const cleanup: Array<() => void> = [];
@@ -492,4 +498,103 @@ test("a helper waits for the runner's busy helper slot instead of failing", asyn
   while (helperCount() < 2) await Bun.sleep(1);
   f.reply();
   expect((await second).stopReason).toBe("end_turn");
+});
+
+function coolingRunner(rejection = "agent quota cooldown") {
+  return (db: ReturnType<typeof openDatabase>, now: () => number): RunnerPlacement => ({
+    async candidates(request) {
+      const cooldown =
+        db
+          .query<{ until: number }, []>(
+            "SELECT cooldown_until AS until FROM runner_agent_policy WHERE runner_id='runner' AND agent='codex'",
+          )
+          .get()?.until ?? 0;
+      if (cooldown > now() || rejection !== "agent quota cooldown") {
+        request.onRejected?.("runner", rejection);
+        return [];
+      }
+      return [{ id: "runner", workspaceId: "unused" }];
+    },
+    started() {},
+    finished() {
+      return { retryable: false };
+    },
+  });
+}
+
+function coolDown(f: ReturnType<typeof fixture>, until: number) {
+  f.db.run(
+    "INSERT INTO runner_agent_policy(runner_id,agent,quota_state,cooldown_until) VALUES('runner','codex','exhausted',?)",
+    [until],
+  );
+}
+
+test("a runner only in its quota cooldown pauses the helper until the reset", async () => {
+  const f = fixture(coolingRunner());
+  const resetsAt = Date.now() + 30 * 60_000;
+  coolDown(f, resetsAt);
+  const pause = await f.backend
+    .forSession(
+      "session",
+      "classify",
+    )(f.input)
+    .catch((error: unknown) => error);
+  expect(pause).toBeInstanceOf(UsageLimitPause);
+  expect(pause).toMatchObject({
+    agent: "codex",
+    runnerId: "runner",
+    resetsAt,
+    resumeAt: resetsAt + USAGE_LIMIT_RESUME_SLACK_MS,
+  });
+  expect(f.db.query("SELECT 1 FROM runner_helper").get()).toBeNull();
+});
+
+test("a session item waits in a usage pause and places the helper once the cooldown passes", async () => {
+  const f = fixture(coolingRunner());
+  const resetsAt = Date.now() + 30 * 60_000;
+  coolDown(f, resetsAt);
+  insertQueuedItem(f.db, { id: "item", now: Date.now(), sessionKey: "session" });
+  const { run } = beginImplementRun(f.db, "item", Date.now());
+  let settled = false;
+  const pending = f.backend.forSession("session", "classify")(f.input);
+  void pending.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  for (let attempt = 0; attempt < 500 && !usagePause(f.db, run.id); attempt++) await Bun.sleep(1);
+  expect(usagePause(f.db, run.id)).toMatchObject({
+    itemId: "item",
+    agent: "codex",
+    runnerId: "runner",
+    resetsAt,
+    resumeAt: resetsAt + USAGE_LIMIT_RESUME_SLACK_MS,
+  });
+  expect(settled).toBe(false);
+  f.advance(31 * 60_000 + USAGE_LIMIT_RESUME_SLACK_MS);
+  for (
+    let attempt = 0;
+    attempt < 500 && !f.db.query("SELECT 1 FROM runner_helper").get();
+    attempt++
+  )
+    await Bun.sleep(1);
+  expect(f.current().runnerId).toBe("runner");
+  expect(usagePause(f.db, run.id)).toBeNull();
+  f.reply();
+  expect((await pending).stopReason).toBe("end_turn");
+  expect(f.db.query<{ state: string }, []>("SELECT state FROM work_item").get()!.state).toBe(
+    "running",
+  );
+});
+
+test("a helper with no runner in a cooldown keeps the unavailable-runner error", async () => {
+  const f = fixture(coolingRunner("offline"));
+  coolDown(f, Date.now() + 30 * 60_000);
+  const error = await f.backend
+    .forSession(
+      "session",
+      "classify",
+    )(f.input)
+    .catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(UserFacingError);
+  expect((error as Error).message).toMatch(/No paired runner can run codex/);
 });
