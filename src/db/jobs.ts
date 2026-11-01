@@ -437,7 +437,9 @@ export function noteJobError(db: Database, id: number, message: string): void {
 }
 
 /**
- * Cancel open work so a leased merge cannot complete after stop, sleep, or restart.
+ * Cancel open jobs for an item, the global merge lane, or the union of both scopes.
+ * `itemId` alone cancels only that item; `mergeLane: true` includes every item's merge work.
+ * Cancelling a job does not resolve a remote merge outcome or clear its durable marker.
  * `core.command` rows are left for the drain that is applying the command.
  */
 export function cancelOpenJobs(
