@@ -17,6 +17,7 @@ import {
   runnerHistoryMarkup,
   runnerRowMarkup,
   runnerRunningMarkup,
+  runnerSlotsLabel,
   type Runner,
   type RunningSession,
   type Usage,
@@ -462,6 +463,28 @@ describe("what a runner is running now", () => {
     expect(prepare).toContain(">2 more slots busy</span>");
     expect(prepare).toContain(">1 slot free</span>");
     expect(runnerRunningMarkup([], now, { used: 1, total: 1 })).toContain(">1 slot busy</span>");
+  });
+
+  test("a runner with 2 live commands and 2 holds shows them separately", () => {
+    const live = [
+      { ...working, movable: true },
+      { ...closeout, movable: true },
+    ];
+    const held = [
+      { ...working, runId: "run-3", identifier: "ENG-11", movable: false },
+      { ...working, runId: "run-4", identifier: "ENG-12", movable: false },
+    ];
+    const slots = { used: 4, total: 2 };
+    expect(runnerSlotsLabel([...live, ...held], slots)).toBe(
+      "2 running · 2 waiting for this runner · 2 slots",
+    );
+    expect(runnerSlotsLabel(live, { used: 2, total: 2 })).toBe("2 of 2 slots in use");
+    const html = runnerRunningMarkup([...held, ...live], now, slots);
+    expect(html.match(/data-running-run=/g)).toHaveLength(2);
+    expect(html.match(/data-waiting-run=/g)).toHaveLength(2);
+    expect(html.match(/Waiting for this runner/g)).toHaveLength(2);
+    expect(html).toContain(`href="${routeHref({ view: "issues", id: "ENG-11" })}"`);
+    expect(html).not.toContain('data-running-run="run-3"');
   });
 });
 

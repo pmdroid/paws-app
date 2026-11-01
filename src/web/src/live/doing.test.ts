@@ -13,7 +13,6 @@ import {
 import { JOB_KIND } from "../../../core";
 import type { StatusItem } from "../contract";
 import { doingTimeLine, itemPill } from "../client/doing";
-import { runnerRunningMarkup, runnerSlotsLabel } from "../client/runners";
 import { createLiveStatusProvider } from "./provider";
 import { STALL_MS } from "./doing";
 
@@ -30,13 +29,10 @@ function database(): Database {
   migrate(db);
   db.run("PRAGMA foreign_keys=OFF");
   open.push(db);
-  for (const [id, name] of [
-    ["agentbox", "agentbox"],
-    ["spare", "spare"],
-  ])
+  for (const name of ["agentbox", "spare"])
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'workspace','owner',?,'active',0,?)",
-      [id, name, START],
+      [name, name, START],
     );
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('agentbox',2)");
   return db;
@@ -125,9 +121,7 @@ describe("what an item does now", () => {
     const agentbox = listRunnerOverview(db, "workspace", now).find((r) => r.id === "agentbox")!;
     const pinned = agentbox.running.find((session) => session.title === "pinned")!;
     expect(pinned.movable).toBe(false);
-    const html = runnerRunningMarkup(agentbox.running, now, agentbox.slots);
-    expect(html).toContain(`data-waiting-run="${pinned.runId}"`);
-    expect(html).not.toContain(`data-running-run="${pinned.runId}"`);
+    expect(agentbox.running.filter((session) => session.movable)).toHaveLength(2);
   });
 
   test("an item with no live work and no transition for 30 minutes shows Stalled", () => {
@@ -143,19 +137,18 @@ describe("what an item does now", () => {
 });
 
 describe("runner slots", () => {
-  test("a runner with 2 live commands and 2 holds shows them separately", () => {
+  test("live commands and holds between commands stay apart in the runner overview", () => {
     const db = database();
     const now = START + 10 * MINUTE;
     for (const id of ["a", "b"]) work(db, running(db, id), "agentbox", true, now);
     for (const id of ["c", "d"]) work(db, running(db, id), "agentbox", false, now);
     const agentbox = listRunnerOverview(db, "workspace", now).find((r) => r.id === "agentbox")!;
     expect(agentbox.slots).toEqual({ used: 4, total: 2 });
-    expect(runnerSlotsLabel(agentbox.running, agentbox.slots)).toBe(
-      "2 running · 2 waiting for this runner · 2 slots",
-    );
-    const html = runnerRunningMarkup(agentbox.running, now, agentbox.slots);
-    expect(html.match(/data-running-run=/g)).toHaveLength(2);
-    expect(html.match(/data-waiting-run=/g)).toHaveLength(2);
-    expect(html).toContain('href="/issues/c"');
+    expect(agentbox.running.map((session) => [session.title, session.movable]).sort()).toEqual([
+      ["a", true],
+      ["b", true],
+      ["c", false],
+      ["d", false],
+    ]);
   });
 });
