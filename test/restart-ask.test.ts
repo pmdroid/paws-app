@@ -6,6 +6,9 @@ import {
   applyDecision,
   applyWorkItemEvent,
   beginImplementRun,
+  beginMergeCall,
+  endMergeCall,
+  listMergeQueues,
   bindWorkItemRepository,
   claimNextJob,
   enqueueJob,
@@ -43,6 +46,26 @@ function fixture() {
 }
 
 describe("restart and ask", () => {
+  test("a durable merge marker fences restart until the lane settles the merge call", () => {
+    const { db } = fixture();
+    db.run("UPDATE work_item SET state='merge_queue' WHERE id='item'");
+    joinMergeQueue(db, { itemId: "item", repository: "owner/repo", now: 2 });
+    const jobs = listJobs(db).length;
+    const queue = listMergeQueues(db);
+    beginMergeCall(db, "item", "head", 3);
+    expect(
+      restart(db, getWorkItem(db, "item")!, { reason: "review", body: "Fix it.", now: 4 }),
+    ).toBeNull();
+    expect(getWorkItem(db, "item")?.state).toBe("merge_queue");
+    expect(listJobs(db)).toHaveLength(jobs);
+    expect(listMergeQueues(db)).toEqual(queue);
+    endMergeCall(db, "item");
+    expect(
+      restart(db, getWorkItem(db, "item")!, { reason: "review", body: "Fix it.", now: 5 }),
+    ).not.toBeNull();
+    expect(getWorkItem(db, "item")?.state).toBe("queued");
+  });
+
   test("a failed item restarted with a stale cancel request is queued ready to start", () => {
     const { db } = fixture();
     db.run(

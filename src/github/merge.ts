@@ -38,6 +38,8 @@ export type SerialMergeInput = {
   gitExec?: GitExec;
   /** Observability for the host. Do not log the token. */
   onCredential?: (purpose: "push" | "merge", token: string) => void;
+  /** Runs after preparation, immediately before the squash PUT can reach GitHub. */
+  beforeMergeCall?: (head: string) => void;
   commitTitle?: string;
   commitMessage?: string;
   commitEnv?: Record<string, string>;
@@ -218,6 +220,21 @@ export async function squashPull(
   // A stop or withdrawn publication during the reads must still win.
   if (input.isCancelled?.()) return cancelled(branch);
   const merged = await squash(input, token, expectedHead, summary);
+  // A server error or an unreadable success response can arrive after GitHub committed the merge.
+  // Keep the caller's durable marker until a pull request read establishes the outcome.
+  if (
+    merged === null ||
+    merged.status >= 500 ||
+    merged.status === 408 ||
+    (merged.status === 200 && (!isRecord(merged.body) || typeof merged.body.merged !== "boolean"))
+  )
+    return {
+      merged: false,
+      outcome: "unknown",
+      branch,
+      head: expectedHead,
+      message: "Waiting for GitHub to confirm the squash outcome.",
+    };
   if (merged.status === 409)
     return {
       merged: false,
@@ -413,8 +430,8 @@ async function squash(
   token: string,
   head: string,
   summary: string,
-): Promise<{ status: number; body: unknown }> {
-  return input.client.request({
+): Promise<{ status: number; body: unknown } | null> {
+  const request: Parameters<GitHubClient["request"]>[0] = {
     method: "PUT",
     path: repoApiPath(input.owner, input.repo, `/pulls/${input.prNumber}/merge`),
     token,
@@ -424,7 +441,18 @@ async function squash(
       commit_title: input.commitTitle ?? input.issue,
       commit_message: `${fixesLine(input.issue)}\n\n${(input.commitMessage ?? summary).trim()}\n`,
     },
-  });
+  };
+  input.beforeMergeCall?.(head);
+  try {
+    return await input.client.request(request);
+  } catch (error) {
+    // Cancellation belongs to the owner. It must retain the marker and propagate normally.
+    if (input.isCancelled?.() || (error instanceof Error && error.name === "AbortError"))
+      throw error;
+    // Only the PUT was attempted here. Preparation and request construction errors propagate.
+    journalCaught(error, "merge.squash.request", input.issue);
+    return null;
+  }
 }
 
 function operationToken(input: FetchUpstreamMainInput, purpose: "push" | "merge"): Promise<string> {

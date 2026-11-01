@@ -4,6 +4,7 @@ import { JOB_KIND, type RestartReason } from "../core";
 import { halt } from "./halt";
 import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
 import { reenqueueJob } from "./jobs";
+import { mergeCallInFlight } from "./remote-merges";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
 
@@ -16,13 +17,18 @@ export type RestartHandoff = {
   limit?: number;
 };
 
-/** One admission path back to the agent. Keeps the run, branch and Linear session. */
+/**
+ * One admission path back to the agent. Keeps the run, branch and Linear session. Returns null,
+ * like a stale item, while a squash for the item may have reached GitHub: the merge lane owns the
+ * item until GitHub confirms that outcome.
+ */
 export function restart(
   db: Database,
   item: WorkItemRecord,
   handoff: RestartHandoff,
 ): number | null {
   return immediate(db, () => {
+    if (mergeCallInFlight(db, item.id)) return null;
     if (!halt(db, item, handoff.now)) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
     if (item.state === "failed")
