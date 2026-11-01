@@ -128,7 +128,7 @@ describe("closeout spec schemas", () => {
 
     const decision: DecisionDocument = {
       specVersion: "0.1",
-      decision: "accepted",
+      decision: "blocked",
       gate: "beforePR",
       base: "a".repeat(40),
       head: "b".repeat(40),

@@ -2953,6 +2953,104 @@ test("a task from start to merge reads its Linear issue context once", async () 
   expect(result.linearCalls.length, result.linearCalls.join(", ")).toBeLessThanOrEqual(15);
 }, 120_000);
 
+test("a missing Closeout policy asks once and resumes after a policy lands on main", async () => {
+  const layout = await repoLayout("paws-no-policy-");
+  const seed = path.join(layout.root, "seed");
+  await exec("git", ["-C", seed, "rm", ".agents/closeout.yaml"]);
+  await exec("git", ["-C", seed, "commit", "-m", "remove policy"]);
+  await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "no-policy",
+      identifier: "ENG-975",
+      title: "Write ok.txt",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  let launches = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    admission: workspaceAdmission(db),
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: githubClient(layout.bare, github),
+    }),
+    launch(input) {
+      const script = path.join(layout.root, `no-policy-${++launches}.json`);
+      writeFileSync(
+        script,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps:
+            input.purpose === "review"
+              ? emptyReview().steps
+              : [writeOk(input.worktree), { type: "end" }],
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, path.join(layout.root, `result-${launches}.json`), script],
+        env: process.env,
+      };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "no-policy"));
+    await tickWithRestarts(jobs, orchestrator, db);
+    expect(stateOf(db, "ENG-975"), debug(layout, db)).toBe("awaiting_input");
+    const item = listWorkItems(db)[0]!;
+    expect(findOpenQuestion(db, item.sessionKey!)?.kind).toBe("closeout-help");
+    while (outbox.tick().length > 0) await outbox.idle();
+    expect(tracker.questions).toHaveLength(1);
+    expect(tracker.questions[0]?.body).toContain(
+      "Add `.agents/closeout.yaml` to the repository's main branch",
+    );
+    const heldJobs = listJobs(db);
+    for (let i = 0; i < 3; i++) await tickWithRestarts(jobs, orchestrator, db);
+    expect(listJobs(db)).toEqual(heldJobs);
+    expect(
+      heldJobs.filter((job) => job.queue === JOB_KIND.merge || job.queue === JOB_KIND.reverify),
+    ).toEqual([]);
+    expect(listCloseoutRecoveries(db, item.id)).toHaveLength(1);
+    expect(github.merged).toHaveLength(0);
+
+    await withGitIdentity(() =>
+      commitOnMain(layout.bare, CLOSEOUT_POLICY, ".agents/closeout.yaml"),
+    );
+    await orchestrator.onLinearEvent(
+      linearEvent("prompted", "Policy is on main, retry", null, "no-policy"),
+    );
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && stateOf(db, "ENG-975") !== "merged") {
+      await tickWithRestarts(jobs, orchestrator, db);
+      db.run("UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'", [JOB_KIND.merge]);
+      await Bun.sleep(25);
+    }
+    expect(stateOf(db, "ENG-975"), debug(layout, db)).toBe("merged");
+    expect(github.merged).toHaveLength(1);
+    expect(tracker.questions).toHaveLength(1);
+    expect(listCloseoutRecoveries(db, item.id)).toHaveLength(1);
+  } finally {
+    await orchestrator.shutdown();
+    db.close();
+    await layout.cleanup();
+  }
+}, 120_000);
+
 test("a Closeout policy without a review check never starts the reviewer", async () => {
   const result = await runCiFix({ failRounds: 0, withoutReview: true });
   expect(result.state, result.detail).toBe("merged");
