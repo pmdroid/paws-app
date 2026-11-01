@@ -83,6 +83,9 @@ export function openExecutionJournal(root: string) {
   db.run(
     "CREATE TABLE IF NOT EXISTS result_delivery (execution_id TEXT PRIMARY KEY REFERENCES execution(id), payload TEXT NOT NULL, failure INTEGER NOT NULL, accepted INTEGER NOT NULL DEFAULT 0) STRICT",
   );
+  db.run(
+    "CREATE TABLE IF NOT EXISTS publication (execution_id TEXT PRIMARY KEY REFERENCES execution(id), payload TEXT NOT NULL, lease TEXT, published_sha TEXT, refused TEXT) STRICT",
+  );
   const columns = new Set(
     db
       .query<{ name: string }, []>("PRAGMA table_info(execution)")
@@ -127,9 +130,33 @@ export function openExecutionJournal(root: string) {
       .all(Number(active))
       .map(parseExecution);
   }
+  function storedPublication(id: string) {
+    const row = db
+      .query<
+        {
+          payload: string;
+          lease: string | null;
+          publishedSha: string | null;
+          refused: string | null;
+        },
+        [string]
+      >(
+        "SELECT payload,lease,published_sha AS publishedSha,refused FROM publication WHERE execution_id=?",
+      )
+      .get(id);
+    return (
+      row && {
+        result: RunnerResultSchema.parse(JSON.parse(row.payload)),
+        ...(row.lease === null ? {} : { lease: row.lease }),
+        ...(row.publishedSha === null ? {} : { publishedSha: row.publishedSha }),
+        ...(row.refused === null ? {} : { refused: row.refused }),
+      }
+    );
+  }
   return {
     executions,
     execution,
+    publication: storedPublication,
     transcriptSealed(id: string) {
       return Boolean(
         db
@@ -150,6 +177,33 @@ export function openExecutionJournal(root: string) {
         id,
         JSON.stringify(RunnerResultSchema.parse(result)),
         Number(failure),
+      ]);
+    },
+    beginPublication(id: string, result: RunnerResult, lease?: string) {
+      immediate(db, () => {
+        db.run("INSERT OR IGNORE INTO publication(execution_id,payload,lease) VALUES (?,?,?)", [
+          id,
+          JSON.stringify(RunnerResultSchema.parse(result)),
+          lease ?? null,
+        ]);
+        db.run(
+          "UPDATE execution SET phase='publishing' WHERE id=? AND phase NOT IN ('complete','interrupted')",
+          [id],
+        );
+      });
+      return storedPublication(id)!;
+    },
+    published(id: string, sha: string) {
+      if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Runner published commit is invalid");
+      db.run("UPDATE publication SET published_sha=? WHERE execution_id=? AND refused IS NULL", [
+        sha,
+        id,
+      ]);
+    },
+    refusePublication(id: string, reason: string) {
+      db.run("UPDATE publication SET refused=? WHERE execution_id=? AND refused IS NULL", [
+        reason.slice(0, 4096),
+        id,
       ]);
     },
     pendingResults() {

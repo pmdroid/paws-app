@@ -160,6 +160,10 @@ const SessionMetadataSchema = AgentSessionFinishSchema.omit({
   agentVersion: true,
 }).extend({ agent: z.enum(["claude", "codex", "grok"]) });
 const SESSION_UPLOAD_TRIES = 5;
+const LEASE_PASSED = "lease deadline passed";
+const fencedRefusal = (error: unknown): error is RunnerRequestError =>
+  error instanceof RunnerRequestError &&
+  (error.status === 409 || (error.status === 403 && /\bfenced\b/i.test(error.reason ?? "")));
 
 export async function openRunnerRuntime(options: {
   root: string;
@@ -269,11 +273,16 @@ export async function openRunnerRuntime(options: {
       Promise.allSettled(work),
       new Promise<void>((resolve) => setTimeout(resolve, waitMs).unref?.()),
     ]);
+  const resumed: Execution[] = [];
   try {
     for (const previous of journal.executions(true)) {
       await broker.stop(previous.id);
       if (journal.resultPending(previous.id)) continue;
-      await recoverInterrupted(previous);
+      const publication =
+        previous.phase === "publishing" ? journal.publication(previous.id) : undefined;
+      if (publication?.refused !== undefined) journal.phase(previous.id, "interrupted");
+      else if (publication) resumed.push(previous);
+      else await recoverInterrupted(previous);
     }
     const leftover = (await broker.sweep?.()) ?? 0;
     if (leftover)
@@ -307,6 +316,22 @@ export async function openRunnerRuntime(options: {
   let agreedWallAt: number | undefined;
   const key = (command: { runId: string; generation: number }) =>
     `${command.runId}:${command.generation}`;
+  for (const execution of resumed) {
+    report(
+      new Error(
+        `Runner resumes publishing the finished turn of execution ${execution.id} for run ${execution.command.runId} after a restart`,
+      ),
+    );
+    active.set(key(execution.command), {
+      execution,
+      abort: new AbortController(),
+      deadline: monotonic(),
+      accountedAt: monotonic(),
+      idleMs: 0,
+      workMs: 0,
+      workLimitMs: Math.max(0, execution.command.expiresAt - now()),
+    });
+  }
   /**
    * While Paws is unreachable, move the deadline with `creditedLeaseUntil` and the alive mark
    * from the last heartbeat. No credit leaves the clamped deadline from that heartbeat.
@@ -407,7 +432,19 @@ export async function openRunnerRuntime(options: {
       );
     entry.stopped ??= (async () => {
       await quiesce(entry);
-      if (notify) await fail(entry.execution, reason, pushFailure);
+      const publication =
+        !pushFailure && !journal.hasResult(entry.execution.id)
+          ? journal.publication(entry.execution.id)
+          : undefined;
+      if (publication && closed) return;
+      if (publication && (!notify || reason === LEASE_PASSED)) {
+        journal.refusePublication(entry.execution.id, reason);
+        report(
+          new Error(
+            `Runner kept the finished turn of execution ${entry.execution.id} for run ${entry.execution.command.runId} without delivering it: ${reason}`,
+          ),
+        );
+      } else if (notify) await fail(entry.execution, reason, pushFailure);
       journal.phase(entry.execution.id, "interrupted");
       entry.execution.phase = "interrupted";
     })();
@@ -569,10 +606,7 @@ export async function openRunnerRuntime(options: {
       resultRetries.delete(execution.id);
     } catch (error) {
       if (closed) return;
-      const refused =
-        (granting || posting) &&
-        error instanceof RunnerRequestError &&
-        (error.status === 409 || (error.status === 403 && /\bfenced\b/i.test(error.reason ?? "")));
+      const refused = (granting || posting) && fencedRefusal(error);
       if (refused) {
         journal.resultRejected(execution.id);
         journal.phase(execution.id, "interrupted");
@@ -784,7 +818,7 @@ export async function openRunnerRuntime(options: {
   function check(entry: Active) {
     holdOffline(entry);
     if (closed || expired(entry)) {
-      void interrupt(entry, closed ? "runner stopping" : "lease deadline passed", !closed).catch(
+      void interrupt(entry, closed ? "runner stopping" : LEASE_PASSED, !closed).catch(
         journalRejection("runner-runtime.check.interrupt", report, entry.execution.command.itemId),
       );
       throw new Error("Runner lease expired");
@@ -1332,7 +1366,7 @@ export async function openRunnerRuntime(options: {
     await broker.resume(id);
     return true;
   }
-  async function complete(entry: Active) {
+  async function workerFinished(entry: Active): Promise<boolean> {
     let raw: Buffer;
     try {
       raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
@@ -1344,7 +1378,7 @@ export async function openRunnerRuntime(options: {
         entry.execution.command.itemId,
         "optional file may be absent",
       );
-      if (broker.alive?.(entry.execution.id) !== false) return;
+      if (broker.alive?.(entry.execution.id) !== false) return false;
       try {
         raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
       } catch {
@@ -1355,22 +1389,35 @@ export async function openRunnerRuntime(options: {
       JSON.parse(raw.toString("utf8"));
     } catch (caughtError3) {
       journalCaught(caughtError3, "runner-runtime.complete.parse", entry.execution.command.itemId);
-      return;
+      return false;
     }
-    await quiesce(entry);
-    collectRuntimes(entry);
-    check(entry);
-    await deliver(entry);
-    const worker = readWorkerResult(entry.execution);
-    const result: RunnerResult = RunnerResultSchema.parse({
+    return true;
+  }
+  function workerOutcome(execution: Execution): RunnerResult {
+    const worker = readWorkerResult(execution);
+    return RunnerResultSchema.parse({
       ...worker.run,
       executionId: worker.executionId,
       commandId: worker.commandId,
       ...(worker.candidateSha ? { candidateSha: worker.candidateSha } : {}),
       ...(worker.reviewText !== undefined ? { reviewText: worker.reviewText } : {}),
     });
-    journal.phase(entry.execution.id, "publishing");
+  }
+  async function complete(entry: Active) {
+    if (!journal.publication(entry.execution.id) && !(await workerFinished(entry))) return;
+    await quiesce(entry);
+    collectRuntimes(entry);
+    check(entry);
+    await deliver(entry);
+    const publication =
+      journal.publication(entry.execution.id) ??
+      journal.beginPublication(
+        entry.execution.id,
+        workerOutcome(entry.execution),
+        entry.checkpointSha,
+      );
     entry.execution.phase = "publishing";
+    const result: RunnerResult = { ...publication.result };
     try {
       await uploadSession(
         entry.execution,
@@ -1394,7 +1441,8 @@ export async function openRunnerRuntime(options: {
       delete result.handedOver;
       result.handoverFailure = "publication";
     }
-    if (
+    if (publication.publishedSha) result.candidateSha = publication.publishedSha;
+    else if (
       result.candidateSha &&
       entry.execution.command.type !== "task" &&
       result.candidateSha !== entry.execution.command.repository.baseSha
@@ -1425,8 +1473,9 @@ export async function openRunnerRuntime(options: {
             rebase: true,
           },
           entry.abort.signal,
-          entry.checkpointSha,
+          publication.lease,
         );
+        journal.published(entry.execution.id, result.candidateSha);
       } catch (error) {
         if (error instanceof CandidateRebaseConflict) {
           journalCaught(error, "runner-runtime.complete.rebase", entry.execution.command.itemId);
@@ -1623,7 +1672,12 @@ export async function openRunnerRuntime(options: {
     } catch (error) {
       journalCaught(error, "runner-runtime.advance.deliver", entry.execution.command.itemId);
       if (error instanceof RemoteFailure) return report(error);
-      await interrupt(entry, error instanceof Error ? error.message : "runner error", true).catch(
+      const refused = journal.publication(entry.execution.id) !== undefined && fencedRefusal(error);
+      await interrupt(
+        entry,
+        error instanceof Error ? error.message : "runner error",
+        !refused,
+      ).catch(
         journalRejection(
           "runner-runtime.advance.interrupt",
           report,
@@ -1639,7 +1693,7 @@ export async function openRunnerRuntime(options: {
     for (const entry of active.values()) {
       holdOffline(entry);
       if (expired(entry))
-        void interrupt(entry, "lease deadline passed", true).catch(
+        void interrupt(entry, LEASE_PASSED, true).catch(
           journalRejection(
             "runner-runtime.openRunnerRuntime.interrupt",
             report,
