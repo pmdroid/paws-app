@@ -69,11 +69,22 @@ export function recordCommentDelivery(
   now: number,
   filter: PullCommentFilter = NO_FILTER,
 ): boolean {
+  return prepareCommentDelivery(db, event, body, now, filter)?.() ?? false;
+}
+
+/** Resolve filtering before the receipt transaction; callbacks may start provider work. */
+export function prepareCommentDelivery(
+  db: Database,
+  event: string,
+  body: unknown,
+  now: number,
+  filter: PullCommentFilter = NO_FILTER,
+): (() => boolean) | null {
   const payload = record(body);
   const repository = record(payload.repository);
   const owner = record(repository.owner).login;
   const repo = repository.name;
-  if (typeof owner !== "string" || typeof repo !== "string") return false;
+  if (typeof owner !== "string" || typeof repo !== "string") return null;
   const name = `${owner}/${repo}`;
   const comment =
     event === "pull_request_review"
@@ -81,56 +92,58 @@ export function recordCommentDelivery(
       : event === "pull_request_review_comment" || event === "issue_comment"
         ? record(payload.comment)
         : null;
-  if (comment === null) return false;
+  if (comment === null) return null;
   const expected = event === "pull_request_review" ? "submitted" : "created";
-  if (payload.action !== expected) return false;
+  if (payload.action !== expected) return null;
   if (
     event === "pull_request_review" &&
     (typeof comment.state !== "string" || comment.state.toLowerCase() !== "commented")
   )
-    return false;
+    return null;
   const commentId = comment.id;
-  if (typeof commentId !== "number") return false;
+  if (typeof commentId !== "number") return null;
   const user = record(comment.user);
   const author = typeof user.login === "string" ? user.login : null;
   const viaApp = record(comment.performed_via_github_app).id;
   const appId = filter.appId(name);
   const appLogin = filter.appLogin(name);
-  if (appId !== null && viaApp !== undefined && String(viaApp) === appId) return false;
+  if (appId !== null && viaApp !== undefined && String(viaApp) === appId) return null;
   if (author !== null) {
     const login = author.toLowerCase();
-    if (appLogin !== null && login === appLogin.toLowerCase()) return false;
-    if (filter.ignoredBots(name).includes(login)) return false;
+    if (appLogin !== null && login === appLogin.toLowerCase()) return null;
+    if (filter.ignoredBots(name).includes(login)) return null;
   }
+  const wait = filter.commentWait?.();
   const text = typeof comment.body === "string" ? comment.body : "";
   // Paws' own replies to handed-off comments, posted with a token that is not the App's.
-  if (text.includes(REVIEW_REPLY_MARKER)) return false;
+  if (text.includes(REVIEW_REPLY_MARKER)) return null;
   if (event === "issue_comment") {
     const issue = record(payload.issue);
-    if (typeof issue.number !== "number" || issue.pull_request === undefined) return false;
+    if (typeof issue.number !== "number" || issue.pull_request === undefined) return null;
     const pullNumber = issue.number;
-    return immediate(db, () => {
-      // A conversation comment names no branch; only a pull request Paws recorded opening counts,
-      // which also leaves out every fork.
-      const item = itemForPull(db, owner, repo, pullNumber);
-      if (item === null) return false;
-      return recordPullComment(
-        db,
-        {
-          source: "conversation",
-          commentId,
-          itemId: item.id,
-          pullNumber,
-          reviewId: null,
-          author,
-          body: text,
-          path: null,
-          line: null,
-          receivedAt: now,
-        },
-        filter.commentWait?.(),
-      );
-    });
+    return () =>
+      immediate(db, () => {
+        // A conversation comment names no branch; only a pull request Paws recorded opening counts,
+        // which also leaves out every fork.
+        const item = itemForPull(db, owner, repo, pullNumber);
+        if (item === null) return false;
+        return recordPullComment(
+          db,
+          {
+            source: "conversation",
+            commentId,
+            itemId: item.id,
+            pullNumber,
+            reviewId: null,
+            author,
+            body: text,
+            path: null,
+            line: null,
+            receivedAt: now,
+          },
+          wait,
+        );
+      });
   }
   const pull = record(payload.pull_request);
   const head = record(pull.head);
@@ -143,32 +156,33 @@ export function recordCommentDelivery(
     typeof record(head.repo).id !== "number" ||
     record(head.repo).id !== repository.id
   )
-    return false;
+    return null;
   const inline = event === "pull_request_review_comment";
-  return immediate(db, () => {
-    const item = itemForBranch(db, owner, repo, branch);
-    if (item === null) return false;
-    const opened = getItemPullRequest(db, item.id);
-    if (opened !== null && opened.pullNumber !== pullNumber) return false;
-    const reviewId = inline ? comment.pull_request_review_id : commentId;
-    const line = comment.line ?? comment.original_line;
-    return recordPullComment(
-      db,
-      {
-        source: inline ? "inline" : "review",
-        commentId,
-        itemId: item.id,
-        pullNumber,
-        reviewId: typeof reviewId === "number" ? reviewId : null,
-        author,
-        body: text,
-        path: inline && typeof comment.path === "string" ? comment.path : null,
-        line: inline && typeof line === "number" ? line : null,
-        receivedAt: now,
-      },
-      filter.commentWait?.(),
-    );
-  });
+  return () =>
+    immediate(db, () => {
+      const item = itemForBranch(db, owner, repo, branch);
+      if (item === null) return false;
+      const opened = getItemPullRequest(db, item.id);
+      if (opened !== null && opened.pullNumber !== pullNumber) return false;
+      const reviewId = inline ? comment.pull_request_review_id : commentId;
+      const line = comment.line ?? comment.original_line;
+      return recordPullComment(
+        db,
+        {
+          source: inline ? "inline" : "review",
+          commentId,
+          itemId: item.id,
+          pullNumber,
+          reviewId: typeof reviewId === "number" ? reviewId : null,
+          author,
+          body: text,
+          path: inline && typeof comment.path === "string" ? comment.path : null,
+          line: inline && typeof line === "number" ? line : null,
+          receivedAt: now,
+        },
+        wait,
+      );
+    });
 }
 
 function itemForPull(

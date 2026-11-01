@@ -17,7 +17,7 @@ import {
   markCloseoutAccepted,
 } from "../db";
 import { githubQueueWatch, mainMoved, type QueueConflictSweep } from "../merge";
-import { recordCommentDelivery, type PullCommentFilter } from "./pull-comments";
+import { prepareCommentDelivery, type PullCommentFilter } from "./pull-comments";
 import { recordReviewDelivery } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
 
@@ -77,37 +77,47 @@ export function acceptGitHubDelivery(
   now: number,
   comments?: PullCommentFilter,
 ): boolean {
-  if (!recordGitHubDelivery(db, delivery, now)) return false;
+  // Avoid provider callbacks for successful duplicates. The transactional insert remains
+  // authoritative when another connection accepts this delivery after the read.
+  if (db.query("SELECT 1 FROM github_delivery WHERE delivery_id = ?").get(delivery.deliveryId))
+    return false;
   const body: unknown = JSON.parse(delivery.payload);
-  recordReviewDelivery(db, delivery.event, body, now, comments?.commentWait?.());
-  recordCommentDelivery(db, delivery.event, body, now, comments);
-  const moved = mainMove(delivery.event, body);
-  if (moved) mainMoved(db, { ...moved, now });
-  const facts = deliveryFacts(delivery.event, body);
-  const jobs = db
-    .query<{ id: number; activationId: number; payload: string }, [string]>(
-      "SELECT id, activation_id AS activationId, payload FROM job WHERE queue = ? AND status IN ('pending', 'running')",
-    )
-    .all(JOB_KIND.merge);
-  for (const job of jobs) {
-    const payload = payloadRecord(JSON.parse(job.payload));
-    if (!jobVersionCurrent(db, job)) continue;
-    const item = typeof payload.itemId === "string" ? getWorkItem(db, payload.itemId) : null;
-    const matches =
-      delivery.event === "merge_group"
-        ? githubQueueWatch(payload)?.queued === true
-        : [payload.head, payload.ciWaitHead].some(
-            (sha) => typeof sha === "string" && facts.shas.has(sha),
-          ) ||
-          (item !== null && facts.branches.has(worktreeBranch(item)));
-    if (matches)
-      db.run(
-        `UPDATE job SET run_at = CASE WHEN status = 'running' THEN MAX(run_at, ?) ELSE MIN(run_at, ?) END
-         WHERE id = ?`,
-        [now, now, job.id],
-      );
-  }
-  return true;
+  // Callbacks can resolve credentials and start an identity-cache refresh. Run them
+  // before taking the write lock; only synchronous database effects belong below.
+  const wait = comments?.commentWait?.();
+  const recordComment = prepareCommentDelivery(db, delivery.event, body, now, comments);
+  return immediate(db, () => {
+    if (!recordGitHubDelivery(db, delivery, now)) return false;
+    recordReviewDelivery(db, delivery.event, body, now, wait);
+    recordComment?.();
+    const moved = mainMove(delivery.event, body);
+    if (moved) mainMoved(db, { ...moved, now });
+    const facts = deliveryFacts(delivery.event, body);
+    const jobs = db
+      .query<{ id: number; activationId: number; payload: string }, [string]>(
+        "SELECT id, activation_id AS activationId, payload FROM job WHERE queue = ? AND status IN ('pending', 'running')",
+      )
+      .all(JOB_KIND.merge);
+    for (const job of jobs) {
+      const payload = payloadRecord(JSON.parse(job.payload));
+      if (!jobVersionCurrent(db, job)) continue;
+      const item = typeof payload.itemId === "string" ? getWorkItem(db, payload.itemId) : null;
+      const matches =
+        delivery.event === "merge_group"
+          ? githubQueueWatch(payload)?.queued === true
+          : [payload.head, payload.ciWaitHead].some(
+              (sha) => typeof sha === "string" && facts.shas.has(sha),
+            ) ||
+            (item !== null && facts.branches.has(worktreeBranch(item)));
+      if (matches)
+        db.run(
+          `UPDATE job SET run_at = CASE WHEN status = 'running' THEN MAX(run_at, ?) ELSE MIN(run_at, ?) END
+           WHERE id = ?`,
+          [now, now, job.id],
+        );
+    }
+    return true;
+  });
 }
 
 /** A push to the default branch, or a pull request merged into it: main's new commit. */
