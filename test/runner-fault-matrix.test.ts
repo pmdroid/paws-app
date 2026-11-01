@@ -344,7 +344,7 @@ async function runRemoteFault(fault: Fault) {
     string,
     { command: Extract<RunnerCommand, { type: "run" }>; at: number; hung?: boolean }
   >();
-  const terminated: {runId: string; generation: number; commandId: string}[] = [];
+  const terminated: { runId: string; generation: number; commandId: string }[] = [];
   const heartbeat = () =>
     work.heartbeat(
       runnerId,
@@ -360,6 +360,7 @@ async function runRemoteFault(fault: Fault) {
             generation: command.generation,
           }))
         : undefined,
+      undefined,
       terminated,
     );
   const backend = createRemoteAgentRunner({
@@ -554,7 +555,11 @@ async function runRemoteFault(fault: Fault) {
             )
           ) {
             live.delete(key);
-            terminated.push({runId: entry.command.runId,generation: entry.command.generation,commandId: entry.command.id});
+            terminated.push({
+              runId: entry.command.runId,
+              generation: entry.command.generation,
+              commandId: entry.command.id,
+            });
             runner.hungStopped = Date.now() - entry.at >= HUNG_RUN_MS;
           }
       }
@@ -567,7 +572,11 @@ async function runRemoteFault(fault: Fault) {
         work.acknowledge(runnerId, command.id);
         if (command.type === "cancel") {
           live.delete(command.id);
-          terminated.push({runId: command.runId,generation: command.generation,commandId: command.id});
+          terminated.push({
+            runId: command.runId,
+            generation: command.generation,
+            commandId: command.id,
+          });
           heartbeat();
           runner.stale = false;
         }
@@ -606,7 +615,11 @@ async function runRemoteFault(fault: Fault) {
           // The runner ran the command for a while, then restarted and came back without it.
           runner.faultedAttempts++;
           runner.faulty = false;
-          terminated.push({runId: command.runId,generation: command.generation,commandId: command.id});
+          terminated.push({
+            runId: command.runId,
+            generation: command.generation,
+            commandId: command.id,
+          });
           db.run("UPDATE runner_command SET acknowledged_at=? WHERE id=?", [
             Date.now() - 2 * RUNNER_LIVE_GRACE_MS,
             command.id,

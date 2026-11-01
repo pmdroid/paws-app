@@ -103,17 +103,9 @@ export async function probeRunnerWork(
     runnerId: string,
     command: { runId: string; generation: number; id: string },
   ) =>
-    work.heartbeat(
-      runnerId,
-      1,
-      {},
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      [],
-      [{ runId: command.runId, generation: command.generation, commandId: command.id }],
-    );
+    work.heartbeat(runnerId, 1, {}, undefined, undefined, undefined, undefined, [], undefined, [
+      { runId: command.runId, generation: command.generation, commandId: command.id },
+    ]);
   const item = insertQueuedItem(db, { id: "fixture-item", now, sessionKey: "fixture-session" });
   const { run } = beginImplementRun(db, item.id, now);
   recordLinearInstallation(db, {
