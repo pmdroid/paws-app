@@ -663,7 +663,7 @@ export function runnerRowMarkup(
     os,
     runner.version ? `Runner ${runner.version}` : "",
     runner.slots && runner.status !== "revoked"
-      ? `${runner.slots.used} of ${runner.slots.total} slots in use`
+      ? runnerSlotsLabel(runner.running ?? [], runner.slots)
       : "",
     runner.status === "revoked"
       ? ""
@@ -814,6 +814,8 @@ export function runnerRunningMarkup(
   const full = total > 0 && free <= 0;
   const rows = sessions
     .map((session) => {
+      if (session.movable === false)
+        return `<li class="slot-row" data-waiting-run="${esc(session.runId)}"><span class="slot-mark held" aria-hidden="true"></span>${issueLink(session.identifier, session.title)}<span class="slot-facts">${statePill("queued", "Waiting for this runner")}</span>${sessionMoveMarkup(session, move)}</li>`;
       const [tone, phase] = PHASES[session.phase] ?? PHASES.working;
       return `<li class="slot-row" data-running-run="${esc(session.runId)}"><span class="slot-mark used${full ? " high" : ""}" aria-hidden="true"></span>${issueLink(session.identifier, session.title)}<span class="slot-facts">${statePill(tone, phase)}<span class="muted" title="Started ${esc(new Date(session.startedAt).toLocaleString())}">${esc(elapsedLabel(now - session.startedAt))}</span></span>${sessionMoveMarkup(session, move)}</li>`;
     })
@@ -827,6 +829,16 @@ export function runnerRunningMarkup(
       ? `<li class="slot-row"><span class="slot-mark" aria-hidden="true"></span><span class="muted">${free === total ? "Nothing running · " : ""}${free} ${free === 1 ? "slot" : "slots"} free</span></li>`
       : "";
   return `<ul class="slot-list" role="list" aria-label="Running issues">${rows}${busy}${idle}</ul>`;
+}
+
+export function runnerSlotsLabel(
+  sessions: readonly RunningSession[],
+  slots: { used: number; total: number },
+): string {
+  const waiting = sessions.filter((session) => session.movable === false).length;
+  if (!waiting) return `${slots.used} of ${slots.total} slots in use`;
+  const running = Math.max(0, slots.used - waiting);
+  return `${running} running · ${waiting} waiting for this runner · ${slots.total} ${slots.total === 1 ? "slot" : "slots"}`;
 }
 
 /** A draining runner nothing runs on any more, not even a check or helper: safe to remove. */
@@ -1136,7 +1148,7 @@ export function runnerDetailMarkup(
     : `<button class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button>`;
   const slots = runner.slots;
   const capacity = slots
-    ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(`${slots.used} of ${slots.total} slots in use`)}</span>`
+    ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(runnerSlotsLabel(runner.running ?? [], slots))}</span>`
     : "";
   const head = `<div class="runner-head"><div class="runner-title"><h2 id="runner-${id}-name">${esc(runner.name)}</h2>${statusLine(runner, view)}<p class="runner-meta" title="${esc(metrics ? new Date(metrics.reportedAt).toLocaleString() : "")}">${meta}</p></div>${pauseMarkup(runner, { manages: manages || owns, busy: view.busy })}</div>`;
   const block = (key: string, title: string, aside: string, body: string) =>
