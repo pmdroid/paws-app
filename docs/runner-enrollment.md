@@ -136,5 +136,22 @@ heartbeat leaves the work out. Paws fences that work as lost and retries it
 through its usual infrastructure retries, continuing from the item's branch.
 Linear shows "The runner lost this run after it restarted; continuing from the
 branch." A result the runner had saved is delivered unchanged. An agent error
-the worker wrote before the crash is delivered as that error. A finished turn
-whose publication was cut short is recovered as lost work too.
+the worker wrote before the crash is delivered as that error. A turn that
+finished but never started publishing is recovered as lost work too.
+
+## Restarting the runner while it publishes
+
+A finished turn starts publishing by recording the worker's outcome in the
+runner's execution journal. Publishing uploads the agent session, pushes the
+candidate and drains the transcript. After the push, the journal records the
+commit the branch got. A crash or a graceful stop during publishing keeps that
+record. On the next start, the runner names the run in its first heartbeat and
+resumes publishing from the stored session and transcript offsets. The turn is
+not run again. A push whose result was not recorded is sent again. It finds the
+candidate, or its copy rebased onto a moved branch, already there and records
+that commit. Paws then gets the worker's own outcome with the published commit.
+
+Paws's answer still decides. A fence, a cancellation, a missing lease, a lease
+that lapses while Paws is unreachable, or a fence refusal of a request ends the
+publication. None of them posts an error. The journal keeps the outcome marked
+refused, with the reason, so a refused outcome stays distinct from a lost one.

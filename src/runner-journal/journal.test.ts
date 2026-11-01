@@ -444,3 +444,47 @@ test("the session upload cursor survives a reopen and stops once the snapshot is
     rmSync(root, { recursive: true, force: true });
   }
 });
+test("a publication keeps its first outcome, published commit and refusal across reopening", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-publication-journal-"));
+  let journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const outcome = {
+      executionId: execution.id,
+      commandId: command.id,
+      role: "implementer" as const,
+      stopReason: "end_turn" as const,
+      timedOut: false,
+      cancelled: false,
+      authRequired: false,
+      agentExited: true,
+      candidateSha: "b".repeat(40),
+      tokens: 7,
+    };
+    expect(journal.beginPublication(execution.id, outcome, "c".repeat(40))).toEqual({
+      result: outcome,
+      lease: "c".repeat(40),
+    });
+    expect(journal.execution(execution.id)?.phase).toBe("publishing");
+    journal.beginPublication(execution.id, { ...outcome, stopReason: "error" });
+    expect(journal.publication(execution.id)?.result.stopReason).toBe("end_turn");
+    expect(() => journal.published(execution.id, "not a sha")).toThrow();
+    journal.published(execution.id, "d".repeat(40));
+    journal.close();
+    journal = openExecutionJournal(root);
+    expect(journal.executions(true).map((entry) => entry.phase)).toEqual(["publishing"]);
+    journal.refusePublication(execution.id, "fenced by Paws");
+    journal.refusePublication(execution.id, "cancelled by Paws");
+    journal.published(execution.id, "e".repeat(40));
+    expect(journal.publication(execution.id)).toEqual({
+      result: outcome,
+      lease: "c".repeat(40),
+      publishedSha: "d".repeat(40),
+      refused: "fenced by Paws",
+    });
+    expect(journal.hasResult(execution.id)).toBe(false);
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
