@@ -12,7 +12,7 @@ import {
 } from "../../../db";
 import { JOB_KIND } from "../../../core";
 import type { StatusItem } from "../contract";
-import { doingTimeLine, itemPill } from "../client/doing";
+import { doingTimeLine, itemPill, itemTime } from "../client/doing";
 import { createLiveStatusProvider } from "./provider";
 import { STALL_MS } from "./doing";
 
@@ -67,7 +67,8 @@ describe("what an item does now", () => {
     work(db, running(db, "live"), "agentbox", true, now);
     const shown = item(db, "live", now);
     expect(shown.doing).toEqual({ kind: "running", runners: ["agentbox"], since: null });
-    expect(itemPill(shown)).toContain("Running on agentbox");
+    expect(itemPill(shown)).toContain(">Running<");
+    expect(itemTime(shown, now)).toContain("Running on agentbox");
   });
 
   test("an item parked in a slot wait shows Waiting for a slot with its runners and wait time", () => {
@@ -86,7 +87,8 @@ describe("what an item does now", () => {
     });
     const shown = item(db, "parked", now);
     expect(shown.doing).toMatchObject({ kind: "slot", runners: ["agentbox", "spare"] });
-    expect(itemPill(shown)).toContain("Waiting for a slot on agentbox, spare");
+    expect(itemPill(shown)).toContain(">Waiting for a slot<");
+    expect(itemTime(shown, now)).toContain("Waiting for a slot on agentbox, spare · 1.9 h active");
     expect(doingTimeLine(shown, now)).toBe("1.9 h active · waiting 26 min");
   });
 
@@ -104,7 +106,10 @@ describe("what an item does now", () => {
     });
     const shown = item(db, "paused", START + 2 * MINUTE);
     expect(shown.doing).toMatchObject({ kind: "paused", until: "2026-11-01T15:00:00.000Z" });
-    expect(itemPill(shown)).toContain("Paused: claude usage limit until 15:00 UTC");
+    expect(itemPill(shown)).toContain(">Usage limit<");
+    expect(itemTime(shown, START + 2 * MINUTE)).toContain(
+      "Paused: claude usage limit until 15:00 UTC",
+    );
   });
 
   test("a running item whose pinned run waits for its busy runner shows Waiting, not Running", () => {
@@ -117,7 +122,7 @@ describe("what an item does now", () => {
     const shown = item(db, "pinned", now);
     expect(shown.state).toBe("running");
     expect(shown.doing).toMatchObject({ kind: "slot", runners: ["agentbox"] });
-    expect(itemPill(shown)).toContain("Waiting for a slot on agentbox");
+    expect(itemTime(shown, now)).toContain("Waiting for a slot on agentbox");
     const agentbox = listRunnerOverview(db, "workspace", now).find((r) => r.id === "agentbox")!;
     const pinned = agentbox.running.find((session) => session.title === "pinned")!;
     expect(pinned.movable).toBe(false);

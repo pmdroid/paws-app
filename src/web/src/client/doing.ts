@@ -22,18 +22,18 @@ export function doingLabel(item: StatusItem): string | null {
   }
 }
 
+const PILLS = {
+  running: ["running", "Running"],
+  slot: ["queued", "Waiting for a slot"],
+  paused: ["running usage-limit", "Usage limit"],
+  person: ["awaiting_input", "Waiting for a person"],
+} as const;
+
 export function itemPill(item: StatusItem): string {
   const doing = item.doing;
   if (doing?.stalled) return statePill("stopped", "Stalled");
-  const label = doingLabel(item);
-  if (!doing || label === null) return statePill(item.state, itemLabel(item.state));
-  const tone = {
-    running: "running",
-    slot: "queued",
-    paused: "running usage-limit",
-    person: "awaiting_input",
-    idle: item.state,
-  }[doing.kind];
+  if (!doing || doing.kind === "idle") return statePill(item.state, itemLabel(item.state));
+  const [tone, label] = PILLS[doing.kind];
   return statePill(tone, label);
 }
 
@@ -55,7 +55,8 @@ export function doingTimeLine(item: StatusItem, now: number): string | null {
 export function itemTime(item: StatusItem, now: number): string {
   const line = doingTimeLine(item, now);
   if (line === null) return itemAge(item);
-  const detail = item.doing?.stalled ? `${doingLabel(item) ?? "No live work"} · ${line}` : line;
+  const label = doingLabel(item) ?? (item.doing?.stalled ? "No live work" : null);
+  const detail = label === null ? line : `${label} · ${line}`;
   return `<span class="muted item-age" data-item-time>${esc(detail)}</span>`;
 }
 
@@ -70,4 +71,10 @@ export function itemNowLine(item: StatusItem, now: number): string {
 
 export function isRunningNow(item: StatusItem): boolean {
   return item.doing === undefined || (item.doing.kind === "running" && !item.doing.stalled);
+}
+
+export function isWaitingNow(item: StatusItem): boolean {
+  return (
+    item.doing?.stalled === true || item.doing?.kind === "slot" || item.doing?.kind === "paused"
+  );
 }

@@ -54,7 +54,7 @@ import { renderIntake } from "./intake";
 import { renderPushOutages } from "./push-outage";
 import { renderPolicyRunnerWarnings } from "./policy-runners";
 import { itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
-import { isRunningNow, itemNowLine, itemPill, itemTime } from "./doing";
+import { isRunningNow, isWaitingNow, itemNowLine, itemPill, itemTime } from "./doing";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection, waitingVisualReview } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
@@ -419,7 +419,7 @@ function issuePage(
   const blocked = snapshot.blocks;
   return `${pageHeading("issues")}<article class="run-page issue-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
-    <header class="run-heading"><div class="row wrap">${run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span></div>
+    <header class="run-heading"><div class="row wrap">${isWaitingNow(item) ? itemPill(item) : run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span></div>
       <h1><span class="lin-id">${esc(item.id)}</span> ${esc(item.title)}</h1>
       ${itemNowLine(item, Date.parse(snapshot.generatedAt))}
       ${issueFacts(snapshot, item, run, blocked)}
