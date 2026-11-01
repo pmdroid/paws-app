@@ -176,6 +176,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
         )
         .get()!.confirmed,
     ).toBe(confirmed);
+    db.run("UPDATE runner_work SET lost_at=1 WHERE run_id=?", [run.id]);
     work.assign(next);
     work.enqueue({
       ...cancel,
