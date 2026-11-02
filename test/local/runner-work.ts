@@ -783,12 +783,18 @@ export async function probeRunnerWork(
           () => work.assign({ ...review, id: workspaceId(), generation: 6 }),
           /(?:cancellation|free slot)/,
         );
-      } finally {
         work.acknowledge(firstRunner, pendingCancellation.id);
+        await delay(5);
+        assert.equal(cancellationJoined, false, "a receipt acknowledgement is not termination");
+        assert.throws(
+          () => work.assign({ ...review, id: workspaceId(), generation: 6 }),
+          /(?:cancellation|free slot)/,
+        );
+      } finally {
+        confirmStopped(firstRunner, { ...review, id: pendingCancellation.id, generation: 5 });
         await Promise.all([cancelTask, repeatedCancelTask]);
       }
       assert.equal(cancellationJoined, true);
-      confirmStopped(firstRunner, { ...review, id: pendingCancellation.id, generation: 5 });
       work.assign({ ...review, id: workspaceId(), generation: 6 });
       work.finish(waiting.runId, 6);
       work.assign({ ...review, id: workspaceId(), generation: 7 });
@@ -821,6 +827,7 @@ export async function probeRunnerWork(
         .get(waiting.runId)!;
       assert.notEqual(replacementCancellation.id, expiredCancel.id);
       work.acknowledge(firstRunner, replacementCancellation.id);
+      confirmStopped(firstRunner, { ...review, id: replacementCancellation.id, generation: 7 });
       await retriedCancel;
       assert.equal(
         db
@@ -831,7 +838,6 @@ export async function probeRunnerWork(
         null,
       );
       await backend.cancelItem(waiting.itemId);
-      confirmStopped(firstRunner, { ...review, id: replacementCancellation.id, generation: 7 });
       work.assign({
         ...review,
         id: workspaceId(),
@@ -857,10 +863,10 @@ export async function probeRunnerWork(
         true,
         { acknowledgement: false, replacementDenied: true, helperDenied: true },
       );
-      observe("Coordinator cancellation joins the persisted daemon teardown acknowledgment", true, {
+      observe("Coordinator cancellation joins the confirmed termination, not the receipt", true, {
         commandId: pendingCancellation.id,
-        replacementDeniedBeforeAck: true,
-        joinedAfterAck: cancellationJoined,
+        replacementDeniedBeforeTermination: true,
+        joinedAfterTermination: cancellationJoined,
         repeatedCancellationUsesOneCommand: true,
       });
       observe(

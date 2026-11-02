@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { RunnerCapacityWait } from "../core";
-import { immediate } from "../db";
+import { immediate, runTeardownOwner } from "../db";
 import type { RunnerWork } from "../runner-work";
 
 export function createRemoteCancellation(options: {
@@ -76,20 +76,20 @@ export function createRemoteCancellation(options: {
         }
         const validUntil = previous?.expiresAt ?? expiresAt;
         return [
-          { id, runnerId: row.runnerId, validUntil, deadline: performance.now() + validUntil - at },
+          {
+            runId: row.runId,
+            runnerId: row.runnerId,
+            validUntil,
+            deadline: performance.now() + validUntil - at,
+          },
         ];
       });
     });
     await Promise.all(
-      requests.map(async ({ id, runnerId, deadline, validUntil }) => {
+      requests.map(async ({ runId, runnerId, deadline, validUntil }) => {
         while (performance.now() < deadline && now() < validUntil) {
           signal?.throwIfAborted();
-          const command = db
-            .query<{ acknowledged: number | null }, [string]>(
-              "SELECT acknowledged_at AS acknowledged FROM runner_command WHERE id=?",
-            )
-            .get(id);
-          if (command?.acknowledged !== null && command?.acknowledged !== undefined) return;
+          if (runTeardownOwner(db, runId) === null) return;
           await delay(options.pollIntervalMs ?? 250, undefined, { signal });
         }
         throw new RunnerCapacityWait([runnerId]);
