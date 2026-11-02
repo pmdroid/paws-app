@@ -87,4 +87,4 @@ bun run knip          # unused files, dependencies and duplicate exports
 bun run check         # all of the above
 ```
 
-Module boundaries, how to extend them, and which issue owns which directory are in `AGENTS.md`.
+Module boundaries, how to extend them, and which issue owns which directory are in `AGENTS.md`. What the crash and recovery suite covers, and what it does not, is in [Recovery invariants](docs/recovery-invariants.md).
