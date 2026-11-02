@@ -101,6 +101,7 @@ The scenario file covers these cases:
 - A rejected head goes through a transient retry and two restarts (PAS-950). A stale `accepted_head` cannot send it to the merge queue either.
 - A merge outcome is unknown through a Stop and three restarts (PAS-956). After GitHub confirms the merge, a stale Stop, restart or second merge confirmation cannot revive the item.
 - A GitHub review is delivered before a crash and replayed after each restart (PAS-942). It is applied once, and the startup re-verify of another item keeps this item's merge place (PAS-953).
+- Runner leases lapse for running work, a verifying candidate and a merge-queue run (PAS-965). One sweep gives each a single follow-up on the transient retry budget, without the orphan grace: a resume, a re-verify and a re-verify. A crash and a SIGTERM restart add no job and spend no recovery attempt.
 - The clock steps back, so a dead job's lease looks live. No second agent job is claimed until the old lease passes.
 - Runner control runs the real control-plane code, `createRunnerWork`, for two cases (PAS-943). A Stop whose runner teardown is unconfirmed keeps the item cancelled and the runner slot occupied through restarts, sweeps, the cancel receipt and its expiry, until the runner confirms termination. After a runner lease is fenced, a runner that reconnects cannot act for the old generation across restarts.
 
@@ -113,7 +114,7 @@ These scenarios fail today. Each is a `test.failing` reproducer in `test/workflo
 
 ## Not covered here
 
-- **Runner offline authority (PAS-960), cancellation while the worker stop hangs (PAS-961), runner liveness ordering (PAS-964) and lease-expiry follow-up jobs (PAS-965).** Their fixes have not landed, so the suite has no desired-behavior scenarios for them yet. The partition entry shows today's behavior: a lapsed runner lease is picked up by the orphan sweep, not by a follow-up job.
+- **Runner offline authority (PAS-960), cancellation while the worker stop hangs (PAS-961) and runner liveness ordering (PAS-964).** The suite has no desired-behavior scenarios for them yet.
 - **Runner daemon restarts mid-turn and inside the publishing phase (PAS-951, PAS-957).** Runner-side process tests cover these: `test/runner-paws-restart.test.ts` (through `test/fixtures/runner-paws-restart.ts`), `test/runner-runtime-outage.test.ts` and `test/runner-runtime-publication.test.ts`. The real-provider restart proof is PAS-751.
 - **Job handlers and the merge lane's GitHub calls.** The lane's in-flight reads have their own regression tests in `src/merge/advance-restart.test.ts` and `src/loop/merge-outcome.test.ts`.
 - **Clock gaps the host observes while Paws stays up (PAS-940, PAS-954, PAS-955).** These are in `test/clock-gap-holds.test.ts` and `test/clock-gap-parked-waits.test.ts`. This suite only steps the wall clock between process starts.

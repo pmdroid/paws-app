@@ -223,16 +223,22 @@ function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boole
 
 const ORPHAN_GRACE_MS = 5 * 60_000;
 
-function progressJobSql(item: string): string {
+function progressJobSql(item: string, running = "j.status = 'running'"): string {
   return `EXISTS (SELECT 1 FROM job j WHERE json_extract(j.payload,'$.itemId') = ${item}.id
-    AND (j.status = 'running' OR (j.status = 'pending' AND (j.item_version IS NULL
+    AND (${running} OR (j.status = 'pending' AND (j.item_version IS NULL
       OR j.item_version = ${item}.version OR j.queue IN ('${JOB_KIND.command}', '${JOB_KIND.reverify}')))))`;
 }
 
-function jobOwnsProgress(db: Database, itemId: string): boolean {
+const RECLAIMABLE_RUNNING_JOB_SQL = `(j.status = 'running' AND (j.locked_until IS NULL
+  OR j.locked_until > ?2 OR j.item_version IS NULL OR j.item_version = i.version))`;
+
+function jobOwnsProgress(db: Database, itemId: string, now: number): boolean {
   return (
-    db.query(`SELECT 1 FROM work_item i WHERE i.id = ? AND ${progressJobSql("i")}`).get(itemId) !==
-    null
+    db
+      .query(
+        `SELECT 1 FROM work_item i WHERE i.id = ?1 AND ${progressJobSql("i", RECLAIMABLE_RUNNING_JOB_SQL)}`,
+      )
+      .get(itemId, now) !== null
   );
 }
 
@@ -342,7 +348,7 @@ function followExpiredLease(
   const item = getWorkItem(db, before.id);
   if (!item || item.cancelRequested || item.currentRunId !== before.currentRunId) return;
   if (ensureRestartQuestion(db, item, now)) return;
-  if (jobOwnsProgress(db, item.id) || hasPendingAnswerResume(db, item.id)) return;
+  if (jobOwnsProgress(db, item.id, now) || hasPendingAnswerResume(db, item.id)) return;
   const verify = before.state === "merge_queue" || keepsVerification(before);
   if (verify !== (item.state === "verifying")) return;
   const retry = lastAdvancingRetry(db, item.id) + 1;

@@ -147,6 +147,18 @@ describe("follow-up after an expired runner lease", () => {
     expect(pending(db)).toEqual([]);
   });
 
+  test("a claimed job whose lock lapsed before the transition does not block the follow-up", () => {
+    const { db, item, run } = leased();
+    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: START });
+    expect(
+      claimNextJob(db, { now: START, leaseMs: 1_000, queues: [JOB_KIND.resume] }),
+    ).not.toBeNull();
+    expect(closeExpiredRunnerLeases(db, START + PAST)).toEqual([run.id]);
+    expect(pending(db)).toMatchObject([
+      { queue: JOB_KIND.resume, payload: { reason: "transient_failure", retry: 1 } },
+    ]);
+  });
+
   test("a delivered result is left for import", () => {
     const { db, item, run } = leased();
     db.run(
