@@ -76,7 +76,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
-    await page.goto(`http://127.0.0.1:${server.port}/status/settings/merging`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/merging`);
     const section = page.locator("#merge-hot-files");
     await expect(section.getByRole("heading", { name: "Conflict-prone files" })).toBeVisible();
     await expect(section).toContainText("src/dashboard/src/live/provider.ts");
@@ -88,7 +88,7 @@ try {
     await section.scrollIntoViewIfNeeded();
     await section.screenshot({ path: join(directory, `hot-files-${width}.png`) });
 
-    await page.goto(`http://127.0.0.1:${server.port}/status/issues/${held.id}`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/${held.id}`);
     await expect(
       page.getByText("Held: waiting for PAS-785 to merge (both change provider.ts)").first(),
     ).toBeVisible();

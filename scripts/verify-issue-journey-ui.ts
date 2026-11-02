@@ -81,7 +81,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: scheme });
-    await page.goto(`http://127.0.0.1:${server.port}/status/issues/ENG-101`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-101`);
     await expect(page.getByRole("heading", { level: 1, name: /Export job worker/ })).toBeVisible();
     if (!before) {
       const stepper = page.getByRole("list", { name: "Issue progress" });
@@ -104,7 +104,7 @@ try {
       fullPage: true,
     });
     if (width === 1440 && scheme === "light") {
-      await page.goto(`http://127.0.0.1:${server.port}/status/issues/ENG-100`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-100`);
       await expect(page.getByRole("heading", { level: 1, name: /Retention policy/ })).toBeVisible();
       if (!before) {
         const stepper = page.getByRole("list", { name: "Issue progress" });

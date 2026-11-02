@@ -235,7 +235,7 @@ writeFileSync(
     bootstrap: issueWorkspaceBootstrap(db, "fixture-org"),
   }),
 );
-console.log(`Workspace browser fixture: ${origin}/status/`);
+console.log(`Workspace browser fixture: ${origin}/dashboard/`);
 const stopped = Promise.withResolvers<void>();
 const stop = () => stopped.resolve();
 process.on("SIGINT", stop);

@@ -100,7 +100,7 @@ function checkFile(file: string): Broken[] {
       broken.push({ file, dest, reason: "invalid encoding" });
       continue;
     }
-    // A leading slash is a site route such as `/status/`, not a repository path.
+    // A leading slash is a site route such as `/dashboard/`, not a repository path.
     if (decoded.startsWith("/")) continue;
     const absolute = path.resolve(path.dirname(file), decoded);
     const relative = path.relative(ROOT, absolute);

@@ -46,7 +46,7 @@ const linkAsk = (
     head,
     title,
     detail,
-    link: `https://paws.example/status/issues/${itemId}#${anchor}`,
+    link: `https://paws.example/dashboard/issues/${itemId}#${anchor}`,
   },
 });
 const questions = [
@@ -159,7 +159,7 @@ try {
       const page = await browser.newPage({ viewport: { width, height: 1000 } });
       page.on("pageerror", (error) => errors.push(error.message));
       await page.emulateMedia({ colorScheme: scheme });
-      await page.goto(`http://127.0.0.1:${server.port}/status/`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/`);
       for (const name of ["Review bypass", "Review screenshots", "Review risk", "Answer question"])
         await expect(page.getByRole("link", { name: new RegExp(`^${name}`) })).toBeVisible();
       await expect
@@ -170,7 +170,7 @@ try {
         fullPage: true,
       });
       await page.getByRole("link", { name: /^Review bypass/ }).click();
-      await expect(page).toHaveURL(/\/status\/issues\/ENG-103#closeout$/);
+      await expect(page).toHaveURL(/\/dashboard\/issues\/ENG-103#closeout$/);
       const card = page.locator("#closeout");
       await expect(card.getByRole("heading", { name: "Closeout needs your help" })).toBeVisible();
       await expect(card.getByRole("checkbox", { name: /independent-review/ })).toBeChecked();
@@ -190,9 +190,9 @@ try {
         path: join(directory, `closeout-help-${scheme}-${width}.png`),
         fullPage: true,
       });
-      await page.goto(`http://127.0.0.1:${server.port}/status/`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/`);
       await page.getByRole("link", { name: /^Review risk/ }).click();
-      await expect(page).toHaveURL(/\/status\/issues\/ENG-106#risk$/);
+      await expect(page).toHaveURL(/\/dashboard\/issues\/ENG-106#risk$/);
       const risk = page.locator("#risk");
       await expect(risk.getByRole("heading", { name: "Risk", exact: true })).toBeVisible();
       await expect(risk.getByText("src/auth/session.ts", { exact: true })).toBeVisible();
@@ -209,7 +209,7 @@ try {
         path: join(directory, `risk-card-${scheme}-${width}.png`),
         fullPage: true,
       });
-      await page.goto(`http://127.0.0.1:${server.port}/status/settings/merging`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/merging`);
       const gate = page.locator("#merge-risk-gate");
       await expect(gate.getByRole("heading", { name: "High-risk approval" })).toBeVisible();
       await expect(gate).toContainText("Set PAWS_PUBLIC_URL to an https address.");

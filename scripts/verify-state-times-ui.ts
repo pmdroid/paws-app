@@ -107,7 +107,7 @@ try {
       page.on("pageerror", (error) => errors.push(error.message));
       await page.emulateMedia({ colorScheme: scheme });
 
-      await page.goto(`http://127.0.0.1:${server.port}/status/issues/ENG-101`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-101`);
       const bar = page.locator("section.state-times");
       await expect(bar).toBeVisible();
       await expect(bar).toContainText("10 h 21 min since delegation");
@@ -118,7 +118,7 @@ try {
       await page.screenshot({ path: join(directory, `state-times-issue-${scheme}-${width}.png`) });
       await bar.screenshot({ path: join(directory, `state-times-bar-${scheme}-${width}.png`) });
 
-      await page.goto(`http://127.0.0.1:${server.port}/status`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard`);
       await expect(page.getByText("3 h 10 min · 2 h recovering").first()).toBeVisible();
       const recent = page.locator("section.merged-times");
       await expect(recent).toContainText("19 merged · median 10 h 2 min · p90 14 h");

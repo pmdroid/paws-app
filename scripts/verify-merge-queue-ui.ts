@@ -44,7 +44,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
-    await page.goto(`http://127.0.0.1:${server.port}/status/runs/${run.id}`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/runs/${run.id}`);
     await expect(
       page.getByRole("heading", { name: "Second in the acme/platform queue" }),
     ).toBeVisible();

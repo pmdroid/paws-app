@@ -386,7 +386,7 @@ async function scenario(
     save(`${name}.json`, result);
     if (mode === "serve" && !interrupted) {
       console.log(
-        `Throwaway dashboard: ${origin}/status\nFake issue thread: ${origin}/__fixture\nPID ${process.pid}; HOME ${process.env.HOME}; root ${process.env.KYOTOAGENT_ROOT}; expires in 300 seconds.`,
+        `Throwaway dashboard: ${origin}/dashboard\nFake issue thread: ${origin}/__fixture\nPID ${process.pid}; HOME ${process.env.HOME}; root ${process.env.KYOTOAGENT_ROOT}; expires in 300 seconds.`,
       );
       await new Promise<void>((done) => {
         const timer = setTimeout(finish, 300_000);
@@ -422,7 +422,7 @@ try {
     const source = parsed.ok ? parsed.snapshot.source : null;
     const healthy =
       typeof health === "object" && health !== null && "ok" in health && health.ok === true;
-    const page = await fetch(`${origin}/status`);
+    const page = await fetch(`${origin}/dashboard`);
     const pageText = await page.text();
     const agentSettingsResponse = await fetch(`${origin}/api/settings/agents`);
     const agentSettings: unknown = await agentSettingsResponse.json();

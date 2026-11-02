@@ -89,13 +89,13 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
-    await page.goto(`http://127.0.0.1:${server.port}/status/merge-queue`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/merge-queue`);
     // Narrow screens drop the Detail column and keep the step.
     await expect(
       page.getByText(width > 600 ? "Re-checking, keeps its place" : "Closeout re-check").first(),
     ).toBeVisible();
     await page.screenshot({ path: join(directory, `merge-queue-${width}.png`), fullPage: true });
-    await page.goto(`http://127.0.0.1:${server.port}/status/issues/ENG-101`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-101`);
     await expect(
       page.getByText("Re-checking, keeps its place.", { exact: false }).first(),
     ).toBeVisible();

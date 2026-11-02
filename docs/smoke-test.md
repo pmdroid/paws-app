@@ -8,7 +8,7 @@ bun run build:dashboard
 bun run paws
 ```
 
-Paws needs a configured Linear workspace. Configure [HTTPS workspace access](workspace-access.md), with `PAWS_PUBLIC_DASHBOARD=1`, then open the dashboard. Sign in as a Linear workspace admin and authorize Paws. Connect GitHub in Integrations, select the demo repository, and map it to the sandbox Linear team. Configure a [local Closeout policy](local-closeout.md), or commit `.agents/closeout.yaml` on the repository's `origin/main`. The configured HTTPS origin serves the dashboard at `/status` and health at `/health`.
+Paws needs a configured Linear workspace. Configure [HTTPS workspace access](workspace-access.md), with `PAWS_PUBLIC_DASHBOARD=1`, then open the dashboard. Sign in as a Linear workspace admin and authorize Paws. Connect GitHub in Integrations, select the demo repository, and map it to the sandbox Linear team. Configure a [local Closeout policy](local-closeout.md), or commit `.agents/closeout.yaml` on the repository's `origin/main`. The configured HTTPS origin serves the dashboard at `/dashboard` and health at `/health`.
 
 Check the prerequisites before delegating:
 

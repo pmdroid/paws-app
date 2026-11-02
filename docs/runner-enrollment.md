@@ -98,7 +98,7 @@ Follow the provider's browser instructions. Provider credentials stay in `/var/l
 
 ## Add the host
 
-1. Open your Paws dashboard at `https://paws.example.com:8787/status/runners` and sign in. Any workspace member can add a host and owns the runner it adds.
+1. Open your Paws dashboard at `https://paws.example.com:8787/dashboard/runners` and sign in. Any workspace member can add a host and owns the runner it adds.
 2. Select **Add a runner**, enter the name you want to see in Paws, and select **Create command**.
 3. Copy the command and run it on the VM. It installs the runner, writes `/etc/paws-runner/config.json` for this Paws, stores a single-use enrollment token in a root-owned mode 0600 file, enrolls, and starts `paws-runner.service`.
 

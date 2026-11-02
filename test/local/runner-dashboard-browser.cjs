@@ -127,7 +127,7 @@ const assert = require("node:assert/strict");
           csrf: !!request.headers()["x-paws-csrf"],
         });
     });
-    await page.goto(manifest.origin + "/status/#/runners");
+    await page.goto(manifest.origin + "/dashboard/#/runners");
     await page.getByRole("heading", { name: "Runners", exact: true }).waitFor();
     await page.getByRole("button", { name: "Refresh runners" }).waitFor({ state: "visible" });
     return page;

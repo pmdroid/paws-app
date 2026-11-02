@@ -38,7 +38,7 @@ async function inspect(page, name) {
     await context.route("**/*", (route) =>
       new URL(route.request().url()).origin === origin ? route.continue() : route.abort(),
     );
-    await page.goto(`${origin}/status`);
+    await page.goto(`${origin}/dashboard`);
     await page.locator(".live-bar").waitFor();
     assert.equal(await page.locator("#side .nav").count(), 2);
     const snapshot = await page.evaluate(async () => (await fetch("/api/status")).json());
@@ -135,7 +135,7 @@ async function inspect(page, name) {
           headers: { ...response.headers(), location: callback.href },
         });
       });
-      await account.goto(`${fixture.origin}/status/`);
+      await account.goto(`${fixture.origin}/dashboard/`);
       await account.getByRole("heading", { name: "Sign in to Paws" }).waitFor();
       await account.locator("summary").filter({ hasText: "Set up your first workspace" }).click();
       await account.locator("input[name=bootstrap]").fill(fixture.bootstrap);

@@ -28,7 +28,7 @@ const observations = [];
         });
       });
       const page = await context.newPage();
-      await page.goto(`${fixture.origin}/status/`);
+      await page.goto(`${fixture.origin}/dashboard/`);
       await page.getByRole("heading", { name: "Sign in to Paws" }).waitFor();
       if (identity === "owner") {
         await page.locator("summary").filter({ hasText: "Set up your first workspace" }).click();

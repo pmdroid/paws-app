@@ -36,7 +36,7 @@ assert.equal(new URL(origin).hostname, "127.0.0.1");
       });
       const page = await context.newPage();
       page.on("pageerror", (error) => errors.push(String(error)));
-      await page.goto(`${origin}/status/#/runners`);
+      await page.goto(`${origin}/dashboard/#/runners`);
       await page.getByRole("heading", { name: "Set up remote runners" }).waitFor();
       assert.equal(await page.getByRole("alert").count(), 0);
       assert.equal(requests.filter((p) => p === "/api/auth/session").length, 1);

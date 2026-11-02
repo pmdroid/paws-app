@@ -51,7 +51,7 @@ snapshot.questions = [
       head: "5eed5a1dd4",
       title,
       detail,
-      link: "https://paws.example/status/issues/ENG-107#risk",
+      link: "https://paws.example/dashboard/issues/ENG-107#risk",
       risk: {
         paths: ["src/auth/session.ts"],
         since: "c0ffee1cc3",
@@ -96,7 +96,7 @@ try {
           .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
           .toBe(true);
 
-      await page.goto(`http://127.0.0.1:${server.port}/status/issues/ENG-106#risk`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-106#risk`);
       const carried = page.locator("#risk");
       await expect(carried.getByRole("heading", { name: "Risk", exact: true })).toBeVisible();
       await expect(carried.getByText("Approved", { exact: true })).toBeVisible();
@@ -108,9 +108,9 @@ try {
       await carried.scrollIntoViewIfNeeded();
       await page.screenshot({ path: join(directory, `risk-carried-over-${scheme}-${width}.png`) });
 
-      await page.goto(`http://127.0.0.1:${server.port}/status/`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/`);
       await page.getByRole("link", { name: /^Review risk/ }).click();
-      await expect(page).toHaveURL(/\/status\/issues\/ENG-107#risk$/);
+      await expect(page).toHaveURL(/\/dashboard\/issues\/ENG-107#risk$/);
       const asked = page.locator("#risk");
       await expect(asked).toContainText(
         "High-risk paths the fix changed since the approved c0ffee1:",

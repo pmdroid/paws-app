@@ -51,8 +51,8 @@ const browser = await chromium.launch({
 const errors: string[] = [];
 try {
   for (const [name, path] of [
-    ["overview", "/status"],
-    ["merge-queue", "/status/merge-queue"],
+    ["overview", "/dashboard"],
+    ["merge-queue", "/dashboard/merge-queue"],
   ] as const) {
     for (const width of [1440, 390]) {
       const page = await browser.newPage({ viewport: { width, height: 1000 } });

@@ -64,7 +64,7 @@ try {
       await page.emulateMedia({ colorScheme: scheme });
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(`http://127.0.0.1:${server.port}/status/#/runs/r-102`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/#/runs/r-102`);
       await page.getByRole("button", { name: "Clear stuck agent", exact: true }).waitFor();
       await page.getByText(CLEANUP_BLOCKED_NOTICE).waitFor();
       // A string expression, because this file type-checks without the DOM library.

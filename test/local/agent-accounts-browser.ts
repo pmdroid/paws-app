@@ -31,7 +31,7 @@ const server = Bun.serve({
     const asset = url.pathname.replace(/^\/(status\/)?assets\//, "");
     if (asset !== url.pathname && !asset.includes("/"))
       return new Response(Bun.file(`${root}/src/dashboard/dist/assets/${asset}`));
-    if (["/status/", "/", "/runners/runner-a"].includes(url.pathname))
+    if (["/dashboard/", "/", "/runners/runner-a"].includes(url.pathname))
       return new Response(
         (await Bun.file(`${root}/src/dashboard/dist/index.html`).text()).replace(
           "</head>",

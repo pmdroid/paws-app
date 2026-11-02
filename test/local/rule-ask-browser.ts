@@ -34,7 +34,7 @@ snapshot.questions = [
       head: "7f65200aa1",
       title,
       detail,
-      link: "https://paws.example/status/issues/ENG-103#rule",
+      link: "https://paws.example/dashboard/issues/ENG-103#rule",
       bypass: {
         policyDigest: "sha256:0eadf4c9d1e2f3",
         passed: ["install", "lint", "format", "typecheck", "test"],
@@ -87,9 +87,9 @@ try {
       const page = await browser.newPage({ viewport: { width, height: 2800 } });
       page.on("pageerror", (error) => errors.push(error.message));
       await page.emulateMedia({ colorScheme: scheme });
-      await page.goto(`http://127.0.0.1:${server.port}/status/`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/`);
       await page.getByRole("link", { name: /^Review rule/ }).click();
-      await expect(page).toHaveURL(/\/status\/issues\/ENG-103#rule$/);
+      await expect(page).toHaveURL(/\/dashboard\/issues\/ENG-103#rule$/);
       const card = page.locator("#rule");
       await expect(card.getByRole("heading", { name: "Rule break" })).toBeVisible();
       await expect(card.getByText("StatusTask.title was removed")).toBeVisible();

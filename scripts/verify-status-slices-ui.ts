@@ -34,7 +34,7 @@ const browser = await chromium.launch({
     ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE }
     : {}),
 });
-const base = `http://127.0.0.1:${server.port}/status`;
+const base = `http://127.0.0.1:${server.port}/dashboard`;
 const errors: string[] = [];
 
 async function visit(page: Page, path: string): Promise<{ path: string; status: number }[]> {

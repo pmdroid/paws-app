@@ -354,7 +354,7 @@ export async function probeRunnerOrchestration(
               },
               identity: () => "workspace-installation-repository",
               administrators: () => [],
-              recoveryUrl: "https://paws.example/status/#/settings/integrations",
+              recoveryUrl: "https://paws.example/dashboard/#/settings/integrations",
             },
             repositoryToken: async () => "fixture",
           }

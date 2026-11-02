@@ -104,7 +104,7 @@ ready.resolve(
   }),
 );
 writeFileSync(join(root, "workspace-ui.json"), JSON.stringify({ origin }));
-console.log(`Workspace browser fixture: ${origin}/status/`);
+console.log(`Workspace browser fixture: ${origin}/dashboard/`);
 const stopped = Promise.withResolvers<void>();
 const stop = () => stopped.resolve();
 process.on("SIGINT", stop);

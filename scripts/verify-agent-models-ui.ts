@@ -67,7 +67,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
-    await page.goto(`http://127.0.0.1:${server.port}/status/settings/agents`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/agents`);
     const model = page.locator("#defaults-implementer-model");
     const hint = page.getByText("1M context uses more of your Claude usage.");
     await expect(model).toBeEnabled();

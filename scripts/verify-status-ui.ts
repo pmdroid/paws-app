@@ -93,7 +93,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
-    await page.goto(`http://127.0.0.1:${server.port}/status/`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/`);
     await expect(page.locator("#content h1")).toHaveText("Overview");
     await expect(page.locator("#content h1")).toHaveClass(/sr-only/);
     await expect(page.locator("#linear-session-start")).not.toBeVisible();
@@ -112,7 +112,7 @@ try {
     await expect(page).toHaveURL(/\/questions\/Q-40$/);
     await expect(page.locator("#q-Q-40")).toBeVisible();
     await page.goBack();
-    await page.locator('.overview-work a[href="/status/runs/r-102"]').click();
+    await page.locator('.overview-work a[href="/dashboard/runs/r-102"]').click();
     await expect(page).toHaveURL(/\/runs\/r-102$/);
     await expect(
       page.getByText("Task activity and agent transcript", { exact: true }),
@@ -180,7 +180,7 @@ try {
       fullPage: true,
     });
     await page.locator(".issue-list a").first().click();
-    await expect(page).toHaveURL(/\/status\/issues\//);
+    await expect(page).toHaveURL(/\/dashboard\/issues\//);
     await expect(page.locator(".issue-head")).toBeVisible();
     await page.screenshot({
       path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `issue-detail-${width}.png`),
@@ -204,7 +204,7 @@ try {
     await expect(runRows).toHaveCount(snapshot.runs.length);
     await page.locator("summary", { hasText: /^Lead/ }).click();
     await page.getByRole("checkbox", { name: "Jonas Berg", exact: true }).check();
-    await expect(page).toHaveURL(/\/status\/runs\?lead=Jonas\+Berg$/);
+    await expect(page).toHaveURL(/\/dashboard\/runs\?lead=Jonas\+Berg$/);
     await page.locator("summary", { hasText: /^Phase/ }).click();
     await page.getByRole("checkbox", { name: "Implementation", exact: true }).check();
     await page.getByRole("checkbox", { name: "Waiting to merge", exact: true }).check();
@@ -229,12 +229,14 @@ try {
       path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `runs-filtered-${width}.png`),
       fullPage: true,
     });
-    await page.goto(`http://127.0.0.1:${server.port}/status/runs?lead=Aisha+Khan&phase=complete`);
+    await page.goto(
+      `http://127.0.0.1:${server.port}/dashboard/runs?lead=Aisha+Khan&phase=complete`,
+    );
     await expect(page.getByText("No runs match these filters.")).toBeVisible();
     await page.getByRole("link", { name: "Clear filters" }).click();
-    await expect(page).toHaveURL(/\/status\/runs$/);
+    await expect(page).toHaveURL(/\/dashboard\/runs$/);
     await expect(runRows).toHaveCount(snapshot.runs.length);
-    await page.locator(`a[href="/status/runs/${snapshot.runs[0]!.id}"]`).click();
+    await page.locator(`a[href="/dashboard/runs/${snapshot.runs[0]!.id}"]`).click();
     await page.getByRole("button", { name: "Pause item", exact: true }).click();
     await expect.poll(() => actions.includes("pause")).toBe(true);
     await page.getByText("Stop this item", { exact: true }).click();
@@ -248,8 +250,8 @@ try {
     const verified = snapshot.runs.find((run) =>
       snapshot.verdicts.some((verdict) => verdict.itemId === run.itemId),
     )!;
-    await page.goto(`http://127.0.0.1:${server.port}/status/#/runs/${verified.id}`);
-    await expect(page).toHaveURL(new RegExp(`/status/runs/${verified.id}$`));
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/#/runs/${verified.id}`);
+    await expect(page).toHaveURL(new RegExp(`/dashboard/runs/${verified.id}$`));
     await expect(page.getByRole("heading", { name: "Closeout", exact: true })).toBeVisible();
     await page.getByText("Task activity and agent transcript", { exact: true }).click();
     await expect(page.getByRole("log", { name: "Agent transcript" })).toHaveCount(0);
@@ -264,8 +266,8 @@ try {
     await expect(
       page.locator('[data-action="toggle-check"][aria-expanded="true"]').first(),
     ).toBeVisible();
-    await page.goto(`http://127.0.0.1:${server.port}/status/sessions`);
-    await expect(page).toHaveURL(/\/status\/issues$/);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/sessions`);
+    await expect(page).toHaveURL(/\/dashboard\/issues$/);
     await expect(page.getByRole("link", { name: "Conversations" })).toHaveCount(0);
     await expect(page.locator("#linear-session-start")).toBeVisible();
     expect(
@@ -299,9 +301,9 @@ try {
     await expect(page.locator('input[name="0-implementer-inherit"]')).not.toBeChecked();
     await inherit.click();
     await expect(page.getByRole("button", { name: "Test connection" })).toHaveCount(0);
-    await expect(page.locator('#agent-settings a[href="/status/runners"]')).toBeVisible();
+    await expect(page.locator('#agent-settings a[href="/dashboard/runners"]')).toBeVisible();
     if (width >= 768) {
-      await page.goto(`http://127.0.0.1:${server.port}/status/runners`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners`);
       await expect(page.getByRole("heading", { name: "Set up remote runners" })).toBeVisible();
       const reads = statusReads;
       await navigate(page, "Agents", width);
@@ -322,7 +324,7 @@ try {
     await expect(
       page.getByRole("status").filter({ hasText: "Agent settings saved" }),
     ).toBeVisible();
-    await page.goto(`http://127.0.0.1:${server.port}/status/runs/missing`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/runs/missing`);
     await expect(page.locator("#content")).toContainText("Run not found");
     await page.getByRole("combobox", { name: "Run", exact: true }).selectOption({ index: 1 });
     await expect(page.locator("#content")).not.toContainText("Run not found");
@@ -379,7 +381,7 @@ try {
   ]) {
     const page = await browser.newPage({ viewport });
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(`http://127.0.0.1:${server.port}/status/`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/`);
     await expect(page.locator("#content h1")).toHaveText("Overview");
     await expect(page.locator("#content h1")).toHaveClass(/sr-only/);
     for (const [name] of pages) {

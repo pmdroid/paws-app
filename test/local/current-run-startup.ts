@@ -50,7 +50,7 @@ export async function probeCurrentRunStartup(root: string) {
       check: async () => ++probes === 1 && mode === "artifact",
       identity: () => "workspace-installation-repository",
       administrators: () => [],
-      recoveryUrl: "https://paws.example/status/#/settings/integrations",
+      recoveryUrl: "https://paws.example/dashboard/#/settings/integrations",
     };
     const orchestrator = new Orchestrator({
       db,

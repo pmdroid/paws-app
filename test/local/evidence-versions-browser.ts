@@ -85,7 +85,7 @@ try {
       const page = await browser.newPage({ viewport: { width, height: 1000 } });
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(`http://127.0.0.1:${server.port}/status/runs/r-102`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/runs/r-102`);
       const gallery = page.getByRole("region", { name: "Evidence" });
       await gallery.waitFor();
       const tiles = await gallery.locator("[data-evidence-tile]").count();

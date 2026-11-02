@@ -33,7 +33,7 @@ snapshot.questions = [
       head: "4b317d5bb2",
       title,
       detail,
-      link: "https://paws.example/status/issues/ENG-103#review-rounds",
+      link: "https://paws.example/dashboard/issues/ENG-103#review-rounds",
       rounds: {
         rounds: [
           { head: "7f65200aa1", findings: 5 },
@@ -82,7 +82,7 @@ try {
       const page = await browser.newPage({ viewport: { width, height: 1000 } });
       page.on("pageerror", (error) => errors.push(error.message));
       await page.emulateMedia({ colorScheme: scheme });
-      await page.goto(`http://127.0.0.1:${server.port}/status/`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/`);
       await expect(page.getByRole("link", { name: /^Answer question/ })).toBeVisible();
       await expect
         .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
@@ -92,7 +92,7 @@ try {
         fullPage: true,
       });
       await page.getByRole("link", { name: /^Answer question/ }).click();
-      await expect(page).toHaveURL(/\/status\/issues\/ENG-103#review-rounds$/);
+      await expect(page).toHaveURL(/\/dashboard\/issues\/ENG-103#review-rounds$/);
       const card = page.locator("#review-rounds");
       await expect(card.getByRole("heading", { name: "Review rounds" })).toBeVisible();
       for (const name of ["Rethink the approach", "Keep going", "Stop"])

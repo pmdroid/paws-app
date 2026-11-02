@@ -42,7 +42,7 @@ const assert = require("node:assert/strict");
       );
       const page = await context.newPage();
       page.on("pageerror", (error) => errors.push(String(error)));
-      await page.goto(`${manifest.origin}/status/runs/${manifest.runId}`);
+      await page.goto(`${manifest.origin}/dashboard/runs/${manifest.runId}`);
       const link = page.getByRole("link", { name: "Open full agent transcript" });
       await link.waitFor();
       assert.equal(await page.getByRole("log", { name: "Agent transcript" }).count(), 0);
@@ -52,7 +52,7 @@ const assert = require("node:assert/strict");
       if (name === "desktop") await page.request.post(`${manifest.origin}/__append`);
       const [fullTranscript] = await Promise.all([context.waitForEvent("page"), link.click()]);
       await fullTranscript.waitForURL(
-        `${manifest.origin}/status/runs/${manifest.runId}/transcript`,
+        `${manifest.origin}/dashboard/runs/${manifest.runId}/transcript`,
       );
       fullTranscript.on("pageerror", (error) => errors.push(String(error)));
       const log = fullTranscript.getByRole("log", { name: "Agent transcript" });
