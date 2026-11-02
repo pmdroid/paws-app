@@ -390,7 +390,7 @@ test("the Settings link returns to Settings, and a forged return_path never leav
       "&return_path=%2Fonboard%2FAAAAAAAAAAAAAAAAAAAAAAAAAA",
     );
     expect(back.headers.get("location")).toBe(
-      `${new URL(pending.target.searchParams.get("redirect_uri")!).origin}/status/settings/account`,
+      `${new URL(pending.target.searchParams.get("redirect_uri")!).origin}/dashboard/settings/account`,
     );
 
     const onboarding = "/onboard/ABCDEFGHJKMNPQRSTVWXYZ0123";
@@ -402,9 +402,12 @@ test("the Settings link returns to Settings, and a forged return_path never leav
       "/onboard/ABCDEFGHJKMNPQRSTVWXYZ012?x=1",
       "/status/settings/account/../../admin",
       "/status",
+      "/status/settings/account",
+      "/dashboard",
+      "/dashboard/settings/account/../../admin",
       "",
     ]) {
-      expect(attributionReturnPath(forged)).toBe("/status/settings/account");
+      expect(attributionReturnPath(forged)).toBe("/dashboard/settings/account");
       expect(() =>
         beginGitHubAttribution(f.db, binding(f), {
           stateHash: "s".repeat(43),
@@ -415,8 +418,10 @@ test("the Settings link returns to Settings, and a forged return_path never leav
       ).toThrow();
     }
     expect(attributionReturnPath(onboarding)).toBe(onboarding);
-    expect(attributionReturnPath("/status/settings/account")).toBe("/status/settings/account");
-    expect(attributionReturnPath(null)).toBe("/status/settings/account");
+    expect(attributionReturnPath("/dashboard/settings/account")).toBe(
+      "/dashboard/settings/account",
+    );
+    expect(attributionReturnPath(null)).toBe("/dashboard/settings/account");
 
     // SQLite refuses a forged path written past the helpers, and a damaged row reads as Settings.
     beginGitHubAttribution(f.db, binding(f), {

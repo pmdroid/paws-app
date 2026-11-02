@@ -1490,7 +1490,7 @@ for (const recovery of [
       expect(question.body).toContain(
         recovery === "guidance"
           ? "same Closeout retry limit"
-          : "Decide in Paws: https://paws.example/status/issues/ENG-8#closeout",
+          : "Decide in Paws: https://paws.example/dashboard/issues/ENG-8#closeout",
       );
       expect(question.body).not.toContain("/paws bypass");
       db.close();
@@ -1544,7 +1544,7 @@ for (const recovery of [
         expect(
           listOutbox(db).some((row) =>
             JSON.stringify(row.payload).includes(
-              "Bypass a check with a reason on the item page in Paws: https://paws.example/status/issues/ENG-8#closeout",
+              "Bypass a check with a reason on the item page in Paws: https://paws.example/dashboard/issues/ENG-8#closeout",
             ),
           ),
         ).toBe(true);
@@ -4913,7 +4913,7 @@ test("open findings at the accepted head are in the PR body, the PR response and
     findings: (round) => (round === 1 ? [PRE_EXISTING_P1, BELOW_FAIL_ON_P2] : [PRE_EXISTING_P1]),
   });
   expect(result.state, result.detail).toBe("merged");
-  const link = "https://paws.example/status/issues/ENG-94";
+  const link = "https://paws.example/dashboard/issues/ENG-94";
   const first = result.pullBodies[0]!;
   expect(first, result.detail).toContain(
     `## Open findings\n\n2 findings still open (1 P1 pre-existing, 1 P2 below failOn). Check them: ${link}`,
@@ -4956,7 +4956,7 @@ test("without a public URL the open findings say where to check them, with no li
   expect(result.state, result.detail).toBe("merged");
   const line = "1 finding still open (1 P2 below failOn). Check them on the Paws dashboard.";
   expect(result.pullBodies[0]).toContain(`## Open findings\n\n${line}`);
-  expect(result.pullBodies[0]).not.toContain("/status/issues/");
+  expect(result.pullBodies[0]).not.toContain("/dashboard/issues/");
   const responses = result.activities.filter((activity) => activity.kind === "response");
   expect(responses[0]!.body).toEndWith(`\n\n${line}`);
   expect(responses[1]!.body).toEndWith(`is Done.\n\n${line}`);

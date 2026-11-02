@@ -25,7 +25,7 @@ import { workspaceAdmission } from "./fake-workspace";
 
 const DAY = 24 * 60 * 60 * 1000;
 const START = 1_000;
-const RUNNERS_URL = "https://paws.example/status/runners";
+const RUNNERS_URL = "https://paws.example/dashboard/runners";
 
 /** A workspace where `other` owns one online, free runner and `me` delegates PAS-1. */
 function workspace(db: Database) {
@@ -178,7 +178,7 @@ test("a delegator whose own runner needs its agent signed in hears the runner an
     });
     expect(thoughts(db)).toHaveLength(1);
     expect(thoughts(db)[0]).toMatch(
-      /^Your runner member-vm needs (Claude|Codex) signed in\. Sign in on the \[Runners page\]\(https:\/\/paws\.example\/status\/runners\); I'll start right after\.$/,
+      /^Your runner member-vm needs (Claude|Codex) signed in\. Sign in on the \[Runners page\]\(https:\/\/paws\.example\/dashboard\/runners\); I'll start right after\.$/,
     );
   } finally {
     await paws.shutdown();

@@ -1,12 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess, workspaceMember } from "./workspace";
+import { dashboardPath } from "../dashboard-links";
 
 export type VerifiedGitHubAttribution = { id: number; login: string; name: string; email: string };
 export type AttributionBinding = { workspaceId: string; userId: string; sessionHash: string };
 
 /** Where a GitHub credit link returns when nothing else is stored. */
-export const ATTRIBUTION_SETTINGS_PATH = "/status/settings/account";
+export const ATTRIBUTION_SETTINGS_PATH = dashboardPath("/settings/account");
 const ONBOARDING_RETURN = /^\/onboard\/[A-Za-z0-9]{26}$/;
 
 /**

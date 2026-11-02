@@ -1,3 +1,4 @@
+import { dashboardUrl } from "../dashboard-links";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
 import {
@@ -2191,7 +2192,7 @@ export class Orchestrator {
   }
 
   private runnerSetupLine(need: RunnerSetupNeed): string {
-    const url = this.options.runnersUrl ?? "http://127.0.0.1:8787/status/runners";
+    const url = this.options.runnersUrl ?? dashboardUrl("http://127.0.0.1:8787", "/runners");
     return need.reason === "no-runner"
       ? `You don't have a runner Paws can use yet. Create a VM or add a host here: ${url}. I'll start on my own once it's ready.`
       : `Your runner ${need.runnerName} needs ${runnerAgentName(need.agent)} signed in. Sign in on the [Runners page](${url}); I'll start right after.`;

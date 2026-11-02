@@ -8,7 +8,7 @@ import type { GitHubDenial, GitHubIntegration } from "./github-integration";
 export class FakeGitHubIntegration implements GitHubIntegration {
   installed = true;
   permitted: boolean | GitHubDenial = true;
-  recoveryUrl = "http://127.0.0.1:8787/status/settings/integrations";
+  recoveryUrl = "http://127.0.0.1:8787/dashboard/settings/integrations";
   admins: string[] = [];
   readonly checks: { itemId: string; kind: "installation" | "member" }[] = [];
 

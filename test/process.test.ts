@@ -53,7 +53,7 @@ describe("process", () => {
     await proc.exited;
     expect(text).toContain("paws ready · http://127.0.0.1:");
     expect(text).toContain("dashboard http://127.0.0.1:");
-    expect(text).toMatch(/dashboard http:\/\/127\.0\.0\.1:\d+\/status/);
+    expect(text).toMatch(/dashboard http:\/\/127\.0\.0\.1:\d+\/dashboard/);
   });
 
   test("a setup-written config listens on loopback and serves live status", async () => {

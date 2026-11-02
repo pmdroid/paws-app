@@ -68,7 +68,7 @@ test("a link ask opens one elicitation without options and puts the link on the 
   expect(linkAsk).toMatchObject({
     kind: "bypass",
     headCommit: HEAD,
-    link: "https://paws.example/status/issues/PAS-633#closeout",
+    link: "https://paws.example/dashboard/issues/PAS-633#closeout",
     answerers: ["delegator", "lead"],
   });
   const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
@@ -80,7 +80,7 @@ test("a link ask opens one elicitation without options and puts the link on the 
     options: [],
     body: [
       "**Closeout needs your decision on 7f65200.**\nindependent-review failed (P1, docs/smoke-test.md). 7 other checks passed.",
-      "Decide in Paws: https://paws.example/status/issues/PAS-633#closeout",
+      "Decide in Paws: https://paws.example/dashboard/issues/PAS-633#closeout",
       "Reply here to send the agent guidance instead. A reply here cannot bypass a check.",
     ].join("\n\n"),
   });
@@ -89,7 +89,7 @@ test("a link ask opens one elicitation without options and puts the link on the 
     {
       sessionId: "ses_1",
       addedExternalUrls: [
-        { label: "Review bypass", url: "https://paws.example/status/issues/PAS-633#closeout" },
+        { label: "Review bypass", url: "https://paws.example/dashboard/issues/PAS-633#closeout" },
       ],
     },
   ]);
@@ -217,7 +217,7 @@ test("the reminder fires once after 24 hours", () => {
   expect(reminders).toHaveLength(1);
   expect((reminders[0]!.payload as { body: string; options: unknown[] }).options).toEqual([]);
   expect((reminders[0]!.payload as { body: string }).body).toContain(
-    "Decide in Paws: https://paws.example/status/issues/PAS-633#closeout",
+    "Decide in Paws: https://paws.example/dashboard/issues/PAS-633#closeout",
   );
 });
 

@@ -29,7 +29,7 @@ import {
 
 const NOW = 1_700_000_000_000;
 const HEAD = "7f65200aa1b2c3d4e5f6";
-const LINK = "https://paws.example/status/issues/PAS-633#closeout";
+const LINK = "https://paws.example/dashboard/issues/PAS-633#closeout";
 
 function blocked(publicUrl: string | null = "https://paws.example") {
   const db = openDatabase(":memory:");

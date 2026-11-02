@@ -107,7 +107,7 @@ test("the visual review is a link ask without options, reminded once from the sh
   expect(getLinkAsk(db, question.id)).toMatchObject({
     kind: "screenshots",
     headCommit: HEAD,
-    link: "https://paws.example/status/issues/ENG-103#visual-review",
+    link: "https://paws.example/dashboard/issues/ENG-103#visual-review",
     answerers: ["delegator", "lead"],
     detail:
       "2 changed screens for visual-proof: Settings · Audit · 1440px, Settings · Audit · 390px.",
@@ -123,7 +123,7 @@ test("the visual review is a link ask without options, reminded once from the sh
   const payload = elicitations[0]!.payload as { options: unknown[]; body: string };
   expect(payload.options).toEqual([]);
   expect(payload.body).toContain(
-    "Decide in Paws: https://paws.example/status/issues/ENG-103#visual-review",
+    "Decide in Paws: https://paws.example/dashboard/issues/ENG-103#visual-review",
   );
   expect(payload.body).toContain("A reply here cannot approve the screens.");
   expect(listJobs(db).map((job) => [job.queue, job.runAt])).toEqual([

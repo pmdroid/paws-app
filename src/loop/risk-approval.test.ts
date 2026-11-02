@@ -268,7 +268,7 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
   expect(getLinkAsk(db, question.id)).toMatchObject({
     kind: "risk",
     headCommit: heads.s,
-    link: "https://paws.example/status/issues/ENG-106#risk",
+    link: "https://paws.example/dashboard/issues/ENG-106#risk",
     answerers: ["delegator", "lead"],
     detail: "High-risk paths changed: `session.ts`.",
   });
@@ -278,7 +278,9 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
   expect(payload.options).toEqual([]);
   expect(payload.body).toContain(`High-risk changes in ${heads.s.slice(0, 7)} need your approval.`);
   expect(payload.body).toContain("High-risk paths changed: `session.ts`.");
-  expect(payload.body).toContain("Decide in Paws: https://paws.example/status/issues/ENG-106#risk");
+  expect(payload.body).toContain(
+    "Decide in Paws: https://paws.example/dashboard/issues/ENG-106#risk",
+  );
   expect(payload.body).toContain("A reply here cannot approve the risk.");
   expect(listJobs(db).find((job) => job.queue === JOB_KIND.linkAskReminder)?.runAt).toBe(
     NOW + LINK_ASK_REMINDER_MS,
@@ -493,7 +495,7 @@ test("the ask, its link and the decision reach Linear after the pull request res
   expect(tracker.sessionUpdates).toContainEqual(
     expect.objectContaining({
       addedExternalUrls: [
-        { label: "Review risk", url: "https://paws.example/status/issues/ENG-106#risk" },
+        { label: "Review risk", url: "https://paws.example/dashboard/issues/ENG-106#risk" },
       ],
     }),
   );

@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { reviewRecordsAt, type Finding } from "../closeout";
 import { riskLine, type RiskClassification } from "../core";
 import { acceptedCloseoutReviews, type AcceptedCloseoutReviews, type WorkItemRecord } from "../db";
+import { dashboardIssuePath } from "../dashboard-links";
 
 const SEVERITIES: readonly Finding["severity"][] = ["P0", "P1", "P2", "P3"];
 
@@ -89,14 +90,14 @@ export function nonBlockingFindings(
   });
 }
 
-/** `<publicUrl>/status/issues/<identifier>`, or null without a public URL. */
+/** `<publicUrl>/dashboard/issues/<identifier>`, or null without a public URL. */
 export function pawsIssueUrl(
   publicUrl: string | null | undefined,
   item: WorkItemRecord,
 ): string | null {
   const base = publicUrl?.trim().replace(/\/+$/, "");
   if (!base) return null;
-  return `${base}/status/issues/${encodeURIComponent(item.linearIdentifier ?? item.id)}`;
+  return `${base}${dashboardIssuePath(item.linearIdentifier ?? item.id)}`;
 }
 
 /**

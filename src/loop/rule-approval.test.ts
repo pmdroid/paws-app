@@ -27,7 +27,7 @@ import {
 
 const NOW = 1_700_000_000_000;
 const HEAD = "7f65200aa1b2c3d4e5f6";
-const LINK = "https://paws.example/status/issues/PAS-633#rule";
+const LINK = "https://paws.example/dashboard/issues/PAS-633#rule";
 const FEEDBACK =
   "Closeout rejected at 7f65200aa1b2c3d4e5f6.\n- api-contract (rule): failed — probe exited 1; P1 finding\n\napi-contract output:\nremoved field Task.title";
 

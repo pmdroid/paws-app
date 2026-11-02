@@ -101,7 +101,7 @@ test("one elicitation without options names the recurring bug class and links to
   expect(payload.body).toBe(
     [
       '**Review rounds ran out on 4b317d5.**\nThe independent review failed 4 rounds and 2 findings are still open. The class of bug that keeps coming back is "unchecked null" (1 of 2 open findings). Rethink the approach, keep going, or stop.',
-      "Decide in Paws: https://paws.example/status/issues/PAS-759#review-rounds",
+      "Decide in Paws: https://paws.example/dashboard/issues/PAS-759#review-rounds",
       "A reply here asks the agent to rethink the approach, with your reply as the note and the open findings.",
     ].join("\n\n"),
   );
@@ -112,7 +112,7 @@ test("one elicitation without options names the recurring bug class and links to
       addedExternalUrls: [
         {
           label: "Answer question",
-          url: "https://paws.example/status/issues/PAS-759#review-rounds",
+          url: "https://paws.example/dashboard/issues/PAS-759#review-rounds",
         },
       ],
     },

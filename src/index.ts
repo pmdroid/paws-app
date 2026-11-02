@@ -198,6 +198,7 @@ import {
 } from "./review-score";
 import { handleLinkAskAnswer } from "./questions";
 import { createFindingIssueRoute } from "./finding-issues";
+import { dashboardUrl } from "./dashboard-links";
 import {
   createItemReconciler,
   createParentDelegations,
@@ -1165,7 +1166,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         linearAccess: linearTaskAccess ?? undefined,
         admission,
         journal,
-        runnersUrl: `${runtime.publicUrl ?? "http://127.0.0.1:8787"}/status/runners`,
+        runnersUrl: dashboardUrl(runtime.publicUrl ?? "http://127.0.0.1:8787", "/runners"),
         publicUrl: runtime.publicUrl,
         authorizeLinearIntake: (sessionId, spec) =>
           (parents?.authorizeIntake(sessionId, spec) ?? true) &&
@@ -1850,7 +1851,10 @@ export function createGitHubIntegration(input: {
     ...(input.resolveApp ? { resolve: input.resolveApp } : {}),
   });
   return {
-    recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status/settings/integrations`,
+    recoveryUrl: dashboardUrl(
+      input.runtime.publicUrl ?? "http://127.0.0.1:8787",
+      "/settings/integrations",
+    ),
     administrators: input.administratorsForItem ?? (() => []),
     current: input.currentIntegrationItem ?? (() => true),
     unavailableRetryMs: [2_000, 5_000, 10_000, 20_000, 30_000],
@@ -2115,7 +2119,7 @@ if (import.meta.main) {
   }
   const origin = `${paws.server.protocol}://${paws.server.hostname}:${paws.server.port}`;
   // One write so a piped reader cannot observe the ready line before the dashboard line exists.
-  console.log(`paws ready · ${origin}\ndashboard ${origin}/status`);
+  console.log(`paws ready · ${origin}\ndashboard ${dashboardUrl(origin)}`);
 }
 
 /** One signed-in provider, shared by issues, comments, and git. */

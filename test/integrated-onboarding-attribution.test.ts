@@ -303,7 +303,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       {
         check: (_item, signal) => installation("acme/widgets", "write", signal),
         administrators: () => ["owner"],
-        recoveryUrl: `${origin}/status`,
+        recoveryUrl: `${origin}/dashboard`,
         identity: () => "creator:acme/widgets",
       },
       now,

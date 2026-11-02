@@ -162,7 +162,7 @@ test("filing creates one issue in the item's team and project, in Triage, labell
   expect(body).toContain("- **Class of bug:** `unchecked null`");
   expect(body).toContain("- **Review:** `independent-review`");
   expect(body).toContain("- **Found at:** `91fd0c4e5b2a` in `acme/widgets`");
-  expect(body).toContain(`- **Paws issue:** [PAS-633 in Paws](${ORIGIN}/status/issues/PAS-633)`);
+  expect(body).toContain(`- **Paws issue:** [PAS-633 in Paws](${ORIGIN}/dashboard/issues/PAS-633)`);
   // Model text sits in code blocks, where Linear makes no mention or link of it.
   expect(body).toContain(`\`\`\`text\n${OLD.explanation}\n\`\`\``);
   expect(body).toContain(`\`\`\`text\n${OLD.evidence}\n\`\`\``);

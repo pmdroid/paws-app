@@ -65,12 +65,12 @@ test("explicit issue creation persists authoritative context and links Linear to
   const env = setup();
   const signal = new AbortController().signal;
   expect(
-    await env.start({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1:8787/status/", signal),
+    await env.start({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1:8787/dashboard/", signal),
   ).toEqual({ id: "session", url: "https://linear.app/team/issue/ENG-1/example" });
   expect(env.calls[0]?.variables).toEqual({
     input: {
       issueId: "ENG-1",
-      externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/status/" }],
+      externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/dashboard/" }],
     },
   });
   expect(env.calls[0]?.signal).toBe(signal);
@@ -78,7 +78,7 @@ test("explicit issue creation persists authoritative context and links Linear to
   expect(env.calls[1]?.variables).toEqual({
     id: "session",
     input: {
-      externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/status/issues/ENG-1" }],
+      externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/dashboard/issues/ENG-1" }],
     },
   });
   expect(env.seen).toHaveLength(1);
@@ -90,14 +90,14 @@ test("explicit issue creation persists authoritative context and links Linear to
   });
   expect(payload.promptContext).toContain("Explain the screenshot");
   await Promise.resolve();
-  await env.start({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1:8787/status/");
+  await env.start({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1:8787/dashboard/");
   expect(env.seen).toHaveLength(1);
   env.db.close();
 });
 
 test("comment creation keeps selected thread text and assets and interrupted intake replays", async () => {
   const env = setup({ fail: true });
-  await env.start({ kind: "comment", id: commentId }, "http://localhost/status/");
+  await env.start({ kind: "comment", id: commentId }, "http://localhost/dashboard/");
   expect(env.calls[0]?.query).toContain("$input: AgentSessionCreateOnComment!");
   expect(env.calls[0]?.variables).toMatchObject({ input: { commentId } });
   await Promise.resolve();
@@ -118,7 +118,7 @@ test("wrong app, mismatched thread and unsuccessful mutation never enter intake"
   ]) {
     const env = setup({ returned });
     await expect(
-      env.start({ kind: "comment", id: commentId }, "http://localhost/status/"),
+      env.start({ kind: "comment", id: commentId }, "http://localhost/dashboard/"),
     ).rejects.toThrow();
     expect(env.store.listUnhandled()).toHaveLength(0);
     expect(env.seen).toHaveLength(0);
@@ -149,7 +149,7 @@ test("production explicit session intake stays pending when follow-up fails and 
       throw new Error("interrupted intake");
     },
   });
-  await first.startSession!({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1/status/");
+  await first.startSession!({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1/dashboard/");
   for (let attempt = 0; attempt < 50 && attempts.length === 0; attempt++) await Bun.sleep(1);
   await Bun.sleep(5);
   const reopened = createInboxStore(db);
