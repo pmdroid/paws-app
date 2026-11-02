@@ -4,6 +4,7 @@ import { insertQueuedItem, insertRun, migrate, openDatabase, saveEvidence } from
 import type { EvidenceMediaType } from "../src/db";
 import { handleStatusRequest } from "../src/dashboard";
 import {
+  parseEvidenceMetadataResponse,
   parseStatusSnapshot,
   type StatusItemDetail,
   type StatusSnapshot,
@@ -82,16 +83,31 @@ function runPage(db: ReturnType<typeof seeded>["db"], runId: string): string {
   return page(snapshot, { view: "issues", id: itemId }, provider.item(itemId));
 }
 
+function evidencePage(db: ReturnType<typeof seeded>["db"], id: string): string {
+  const response = createLiveStatusProvider(db, {
+    sessionIds: ["visible"],
+    now: () => new Date(1_700_000_010_000),
+  }).evidenceMetadata(id);
+  const parsed = response === null ? null : parseEvidenceMetadataResponse(response);
+  if (parsed !== null && !parsed.ok) throw new Error(parsed.error);
+  return page(snapshotFor(db), { view: "evidence", id }, null, {
+    evidence: parsed === null ? null : parsed.response,
+    missingEvidence: parsed === null ? id : null,
+  });
+}
+
 function page(
   snapshot: StatusSnapshot,
   route: RenderModel["route"],
   detail: StatusItemDetail | null = null,
+  evidence: Pick<RenderModel, "evidence" | "missingEvidence"> = {},
 ): string {
   return render({
     route,
     phase: "ready",
     snapshot,
     issue: issueOf(detail),
+    ...evidence,
     error: null,
     engineUrl: null,
     mediaInfo: new Map([
@@ -130,7 +146,7 @@ describe("live evidence", () => {
   test("the evidence page shows the file details and the rest of the run", () => {
     const { db } = seeded();
     const snapshot = snapshotFor(db);
-    const html = page(snapshot, { view: "evidence", id: VIDEO });
+    const html = evidencePage(db, VIDEO);
     const item = snapshot.evidence![0]!.itemId;
     for (const text of [
       item,
@@ -153,15 +169,14 @@ describe("live evidence", () => {
     ])
       expect(html).toContain(text);
     expect(html).toContain(OTHER_RUN);
-    const image = page(snapshot, { view: "evidence", id: IMAGE });
+    const image = evidencePage(db, IMAGE);
     expect(image).toContain("1280×720");
   });
 
   test("evidence the reader cannot see shows the no-access state and nothing about it", () => {
     const { db } = seeded();
-    const snapshot = snapshotFor(db);
     for (const id of [HIDDEN, "01JAZZZZZZZZZZZZZZZZZZZZZZ"]) {
-      const html = page(snapshot, { view: "evidence", id });
+      const html = evidencePage(db, id);
       expect(html).toContain("You don't have access to this evidence");
       for (const leak of ["secret", "Secret project", "secret-file.png", "evidence-player"])
         expect(html).not.toContain(leak);
