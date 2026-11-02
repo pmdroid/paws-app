@@ -1,7 +1,7 @@
 import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 // The issue page's time bar, the overview's ages and its Last 24 hours, against the real status
 // handler, in light and dark mode.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-state-times-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-state-times-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

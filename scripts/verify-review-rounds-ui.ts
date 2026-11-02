@@ -1,7 +1,7 @@
 import { statusFixture } from "../src/dashboard/test/fixtures";
 // The overview's Needs you list with a review-rounds ask, and its card on the issue page,
 // against the real status handler.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-review-rounds-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-review-rounds-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

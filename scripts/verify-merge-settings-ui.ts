@@ -1,7 +1,7 @@
 import { statusFixture } from "../src/dashboard/test/fixtures";
 // Settings → Merging against the real settings handler and a temporary config.toml, and a run
 // page whose pull request waits in the GitHub merge queue.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-merge-settings-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-merge-settings-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

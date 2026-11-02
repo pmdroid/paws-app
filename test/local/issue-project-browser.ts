@@ -1,7 +1,7 @@
 import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 // Captures an issue page showing its Linear project and the Issues page filtered by project,
 // at desktop and 390 px, for visual proof.
-// Usage: bun run build:status && bun --no-env-file test/local/issue-project-browser.ts <evidence-directory>
+// Usage: bun run build:dashboard && bun --no-env-file test/local/issue-project-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";

@@ -1,7 +1,7 @@
 import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 // Captures the run page while the agent waits for its usage limit, at desktop and 390 px in light
 // and dark, and fails on horizontal scroll or page errors.
-// Usage: bun run build:status && bun --no-env-file test/local/usage-pause-browser.ts <evidence-directory>
+// Usage: bun run build:dashboard && bun --no-env-file test/local/usage-pause-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";

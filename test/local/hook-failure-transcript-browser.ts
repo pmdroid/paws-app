@@ -1,5 +1,5 @@
 // Screenshots the full agent transcript with a failed workspace hook at desktop width and 390 px.
-// Run `bun run build:status` first. Prints the output directory.
+// Run `bun run build:dashboard` first. Prints the output directory.
 import { chromium } from "@playwright/test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

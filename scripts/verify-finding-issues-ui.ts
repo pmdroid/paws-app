@@ -1,6 +1,6 @@
 // The issue page's Review findings card: File an issue on a pre-existing finding, Linear's
 // error beside the button, then the "PAS-123 filed" link, against the real status handler.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-finding-issues-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-finding-issues-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

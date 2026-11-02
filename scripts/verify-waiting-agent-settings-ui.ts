@@ -1,5 +1,5 @@
 // Real Settings save against disposable SQLite and profile snapshots. No external services.
-// bun run build:status && bun scripts/verify-waiting-agent-settings-ui.ts <proof directory>
+// bun run build:dashboard && bun scripts/verify-waiting-agent-settings-ui.ts <proof directory>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

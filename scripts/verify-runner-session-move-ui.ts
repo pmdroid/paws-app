@@ -1,5 +1,5 @@
 // Move a running session from the runner card, as an owner and as a member.
-// Usage: bun run build:status && bun scripts/verify-runner-session-move-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun scripts/verify-runner-session-move-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

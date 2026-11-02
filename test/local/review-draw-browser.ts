@@ -2,7 +2,7 @@ import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fix
 // Draws on the screenshots of a waiting visual review at desktop (mouse) and 390 px (touch), sends
 // Request changes, and checks the marked PNGs keep each screenshot's size, then captures the pages.
 // Fails on horizontal scroll, page errors, or a missing or misplaced mark.
-// Usage: bun run build:status && bun --no-env-file test/local/review-draw-browser.ts <evidence-directory>
+// Usage: bun run build:dashboard && bun --no-env-file test/local/review-draw-browser.ts <evidence-directory>
 import { chromium, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";

@@ -2,7 +2,7 @@ import { fullStatusFixture, itemDetail, statusList } from "../src/dashboard/test
 // The Risk card on the issue page from the item detail, and Settings › Merging › High-risk paths
 // against the real settings handler and a temporary config.toml: edit, save, reload, and the
 // repository file read-only. Light and dark, at 1440 and 390 px.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-risk-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-risk-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

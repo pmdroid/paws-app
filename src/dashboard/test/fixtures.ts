@@ -392,7 +392,7 @@ function agentCloseout(): StatusAgentCloseout {
     passed("typecheck", "command", "bun run typecheck", 31_000, "$ tsc --noEmit\n"),
   ];
   const later = [
-    check("build-status", "command", "pending", "bun run build:status", null),
+    check("build-dashboard", "command", "pending", "bun run build:dashboard", null),
     check("links", "command", "pending", "bun run links", null),
   ];
   const failed = ran(check("test", "command", "failed", "bun test", null), {

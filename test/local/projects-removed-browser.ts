@@ -1,7 +1,7 @@
 import { statusFixture } from "../../src/dashboard/test/fixtures";
 // Captures the dashboard navigation without a Projects entry, at desktop and 390 px, and checks
 // that /status/projects answers 404, for visual proof.
-// Usage: bun run build:status && bun --no-env-file test/local/projects-removed-browser.ts <evidence-directory>
+// Usage: bun run build:dashboard && bun --no-env-file test/local/projects-removed-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";

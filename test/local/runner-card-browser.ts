@@ -1,6 +1,6 @@
 import { statusFixture } from "../../src/dashboard/test/fixtures";
 // Captures the runner card at desktop and 390 px in light and dark, for visual proof.
-// Usage: bun run build:status && bun --no-env-file test/local/runner-card-browser.ts <evidence-directory> [prefix]
+// Usage: bun run build:dashboard && bun --no-env-file test/local/runner-card-browser.ts <evidence-directory> [prefix]
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";

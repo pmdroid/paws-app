@@ -1,6 +1,6 @@
 import { statusFixture } from "../../src/dashboard/test/fixtures";
 // Screenshots Settings → Agents → Skills at desktop width and 390 px, after adding a skill
-// through the form. Run `bun run build:status` first. Prints the output directory.
+// through the form. Run `bun run build:dashboard` first. Prints the output directory.
 import { chromium } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";

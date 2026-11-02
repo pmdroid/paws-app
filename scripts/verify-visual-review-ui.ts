@@ -1,7 +1,7 @@
 import { statusFixture } from "../src/dashboard/test/fixtures";
 // The Visual review card on the issue page while its screenshots link ask is open, against the
 // real status handler: the changed screens, a mark drawn on one, and the three decisions.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-visual-review-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-visual-review-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

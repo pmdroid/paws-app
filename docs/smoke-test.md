@@ -4,7 +4,7 @@ Run Paws against a delegated parent issue with three sub-issues, GitHub pull req
 
 ```sh
 bun install
-bun run build:status
+bun run build:dashboard
 bun run paws
 ```
 

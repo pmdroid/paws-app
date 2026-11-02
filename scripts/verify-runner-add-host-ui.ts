@@ -1,6 +1,6 @@
 import { statusFixture } from "../src/dashboard/test/fixtures";
 // Runners → Add a host for a workspace member: the button, the dialog and its one command.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-runner-add-host-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-runner-add-host-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

@@ -2,7 +2,7 @@ import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtur
 // The Risk card on the issue page after a person approved a high-risk head: a fix that changed
 // no high-risk path keeps the approval, and a fix that changed one asks again with only its own
 // high-risk paths since the approved head. Against the real status handler.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-risk-carry-over-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-risk-carry-over-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

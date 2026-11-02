@@ -10,7 +10,7 @@ Configure the server's HTTPS origin, certificate, Linear OAuth app credentials, 
 
 ```sh
 bun install
-bun run build:status
+bun run build:dashboard
 bun run paws
 ```
 
@@ -47,7 +47,7 @@ exclude = ["large-assets", "packages/archived"]
 
 Paws applies these exclusions before checking out files, including in detached Closeout verification worktrees. The same per-repository settings travel in signed commands to enrolled runners and apply to their agent worktrees, trusted verification workspaces, and task source snapshots. Excluded files remain tracked in Git. The developer's checkout stays unchanged. Updated settings take effect when Paws next prepares an item worktree; an empty list restores a full checkout. Git preserves edited files when their folder becomes excluded.
 
-`GET /health` returns JSON with `ok`, `checks`, and `failedChecks`, using HTTP 200 when healthy and 503 when a check fails. Checks read the database, expired or missing running-job leases, dead jobs and outbox rows, and active runner heartbeats. A runner is stale after the one-minute offline window plus the five-minute lease grace; paused and revoked runners are excluded, and no active runners is reported as skipped. When webhook routes and a provider's signing secret are configured, its last verified Linear or accepted GitHub delivery must be no more than one hour old; no delivery yet fails that check. Disabled providers are reported as skipped. Health failures and recovery are written to the journal. The response is not cached. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
+`GET /health` returns JSON with `ok`, `checks`, and `failedChecks`, using HTTP 200 when healthy and 503 when a check fails. Checks read the database, expired or missing running-job leases, dead jobs and outbox rows, and active runner heartbeats. A runner is stale after the one-minute offline window plus the five-minute lease grace; paused and revoked runners are excluded, and no active runners is reported as skipped. When webhook routes and a provider's signing secret are configured, its last verified Linear or accepted GitHub delivery must be no more than one hour old; no delivery yet fails that check. Disabled providers are reported as skipped. Health failures and recovery are written to the journal. The response is not cached. `GET /status` serves the status dashboard (run `bun run build:dashboard` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
 
 ## Deploys
 
@@ -59,7 +59,7 @@ Paws never changes its own checkout or restarts itself. To deploy a new commit, 
 cd ~/.local/share/paws/app
 git fetch && git checkout <commit>
 bun install --frozen-lockfile
-bun run build:status
+bun run build:dashboard
 systemctl --user restart paws.service
 ```
 
@@ -69,9 +69,9 @@ Shared workspaces use [Linear sign-in and workspace access](docs/workspace-acces
 
 To connect a Linux VM, follow [Enroll a remote Linux runner](docs/runner-enrollment.md) for package installation, configuration, agent login and enrollment.
 
-The status page lives in [`src/dashboard`](src/dashboard/README.md). It is read-only: items, current runs, open questions, Closeout verdicts, and the merge queue. It does not import the rest of the engine.
+The dashboard lives in [`src/dashboard`](src/dashboard/README.md). It is read-only: items, current runs, open questions, Closeout verdicts, and the merge queue. It does not import the rest of the engine.
 
-The dashboard reads `/api/status` from the Paws process that serves it. Build it with `bun run build:status`, then start Paws with `bun run paws` and open `http://127.0.0.1:8787/status`. An empty database shows no items.
+The dashboard reads `/api/status` from the Paws process that serves it. Build it with `bun run build:dashboard`, then start Paws with `bun run paws` and open `http://127.0.0.1:8787/status`. An empty database shows no items.
 
 ## Checks
 
@@ -81,7 +81,7 @@ bun run fmt           # oxfmt, writes
 bun run fmt:check     # oxfmt, check only
 bun run typecheck     # tsc --noEmit, plus the browser client
 bun run test          # bun test --parallel=4 --timeout=20000
-bun run build:status  # static dashboard → src/dashboard/dist
+bun run build:dashboard  # static dashboard → src/dashboard/dist
 bun run links         # docs links, orphaned docs and dead source paths
 bun run knip          # unused files, dependencies and duplicate exports
 bun run check         # all of the above

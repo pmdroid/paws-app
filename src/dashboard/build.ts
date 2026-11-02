@@ -71,4 +71,4 @@ for (const [page, script] of [
   await Bun.write(join(dist, page), html);
 }
 
-console.log(`Built status dashboard → ${dist}`);
+console.log(`Built dashboard → ${dist}`);

@@ -97,7 +97,7 @@ const server = Bun.serve({
     if (path === "/style.css") {
       const assets = new URL("../../src/dashboard/dist/assets/", import.meta.url).pathname;
       const css = [...new Bun.Glob("*.css").scanSync(assets)][0];
-      if (!css) return new Response("Run bun run build:status first", { status: 503 });
+      if (!css) return new Response("Run bun run build:dashboard first", { status: 503 });
       return new Response(Bun.file(join(assets, css)), { headers: { "content-type": "text/css" } });
     }
     if (path === "/api/auth/session") return Response.json(principal);

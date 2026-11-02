@@ -1,5 +1,5 @@
 // Sign in an agent on a runner that is working, and see the account-switch notice first.
-// Usage: bun run build:status && bun scripts/verify-runner-signin-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun scripts/verify-runner-signin-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

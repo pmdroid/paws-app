@@ -1,7 +1,7 @@
 import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 // Settings → Merging lists the conflict-prone files read-only, and an issue the scheduler holds
 // for one shows which item it waits for.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-hot-files-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-hot-files-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

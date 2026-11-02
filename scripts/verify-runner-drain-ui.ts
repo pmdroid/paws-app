@@ -1,5 +1,5 @@
 // Move running work off a draining runner until it shows Drained, as an owner and an observer.
-// Usage: bun run build:status && bun scripts/verify-runner-drain-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun scripts/verify-runner-drain-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

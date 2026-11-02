@@ -1,7 +1,7 @@
 // Create VM on the Runners page against a real Paws with the fake exe.dev client and bootstrap.
 // Drives create, an install failure, Retry and ready, then the owner row and agent sign-in, a
 // Paws without an exe.dev token, and phone width.
-// Usage: bun run build:status && bun --no-env-file test/local/member-vm-browser.ts [evidence-directory]
+// Usage: bun run build:dashboard && bun --no-env-file test/local/member-vm-browser.ts [evidence-directory]
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

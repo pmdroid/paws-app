@@ -5,7 +5,7 @@ import {
 } from "../src/dashboard/test/fixtures";
 // The issue page of a task fixing a merge conflict after Closeout accepted it, against the real
 // status handler: the stepper names the phase and the details stay folded until opened.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-issue-journey-ui.ts <screenshot dir> [--before]
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-issue-journey-ui.ts <screenshot dir> [--before]
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

@@ -1,5 +1,5 @@
 // The issue page listing a dead Linear question and a dead job, against the real status handler.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-dead-deliveries-page.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-dead-deliveries-page.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

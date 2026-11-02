@@ -12,7 +12,7 @@ The loop lives in `src/loop` and is wired from `src/index.ts`. A real run is `do
 bun install
 bun run paws doctor  # prerequisites for a real Linear / GitHub / Closeout run
 bun run paws          # 127.0.0.1:8787, data in ~/.paws
-bun run check         # lint, fmt:check, typecheck, test, build:status, links, knip
+bun run check         # lint, fmt:check, typecheck, test, build:dashboard, links, knip
 ```
 
 Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`), `links` (documentation links, orphaned docs and source paths), `knip` (unused files, dependencies and duplicate exports). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`); Closeout's `test` check runs only the tests the change affects (`scripts/affected-tests.ts`); CI always runs the full suite.
@@ -34,6 +34,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/config`                                             | Home paths, environment, config.toml, agent and merge settings        |
 | `src/core`                                               | Domain types, states, pure transition() and execution policies        |
 | `src/credentials`                                        | Secret file access and credential refresh                             |
+| `src/dashboard`                                          | Dashboard client, server contract and build                           |
 | `src/db`                                                 | SQLite migrations, domain rows, jobs, outbox and transactional writes |
 | `src/decisions`                                          | Workspace decisions and repository access choices                     |
 | `src/deployment`                                         | Deployment configuration, TLS certificates and renewal                |
@@ -94,7 +95,6 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/settings`                                           | Settings API for agents, merge policy, hooks and skills               |
 | `src/skills`                                             | Skill discovery, sources, bundles, hooks and updates                  |
 | `src/slack`                                              | Slack OAuth, identity, authorization and webhooks                     |
-| `src/dashboard`                                          | Status dashboard client, server contract and build                    |
 | `src/webhook-body`                                       | Bounded webhook request bodies and raw signature checks               |
 | `src/workspace`                                          | Workspace membership, integrations, assignments and policies          |
 | `src/worktree-checkout`                                  | Worktree checkout and folder exclusion policies                       |
@@ -118,7 +118,7 @@ Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not
 - Fakes live next to the interface they implement and are exported from that module. They record calls in memory.
 - Identifiers are ULIDs (`src/intake/ulid.ts`).
 - Secrets stay in `~/.paws/secrets` (directory mode `0700`). Never log them, never put them in the agent environment, and never commit them.
-- The status page is static files under `src/dashboard` so it can ship on its own. The process serves them on localhost at `/status` and `GET /api/status`.
+- The dashboard is static files under `src/dashboard` so it can ship on its own. The process serves them on localhost at `/status` and `GET /api/status`.
 - Documentation describes the code as it is now. Delete a page that no longer matches instead of keeping it for history; `bun run links` fails on an orphaned doc, a broken local link or an inline `src/...` path that no longer exists. `bun run knip` fails on an unused file, dependency or duplicate export.
 
 ## Parallel work
