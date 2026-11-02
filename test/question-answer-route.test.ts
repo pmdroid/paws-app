@@ -8,11 +8,12 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
+  enqueueOutboxOnce,
   listOutbox,
   syncWorkspaceMember,
 } from "../src/db";
-import { parseAgentEvent } from "../src/linear";
-import { attachOrchestrator } from "../src/loop";
+import { createFakeTracker, parseAgentEvent } from "../src/linear";
+import { attachOrchestrator, deliverLinearOutbox } from "../src/loop";
 import {
   QUESTION_ANSWER_PATH,
   getQuestion,
@@ -84,6 +85,24 @@ function setup(active = true) {
     );
   return { db, item, question, orchestrator, submit };
 }
+
+const linearReply = (body: string, id = "reply-1") =>
+  parseAgentEvent(
+    JSON.stringify({
+      type: "AgentSessionEvent",
+      action: "prompted",
+      webhookTimestamp: NOW + 100,
+      agentSession: { id: "ses_1", issue: { id: "lin-item-PAS-1003" } },
+      agentActivity: {
+        id,
+        createdAt: new Date(NOW + 1).toISOString(),
+        userId: "linear-1",
+        content: { type: "prompt", body },
+      },
+    }),
+    `delivery:${id}`,
+    NOW + 100,
+  )!;
 
 const history = (db: ReturnType<typeof tempDb>, itemId: string) =>
   db
@@ -168,24 +187,7 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
       answeredBy: "linear-1",
     });
 
-    await linear.orchestrator.onLinearEvent(
-      parseAgentEvent(
-        JSON.stringify({
-          type: "AgentSessionEvent",
-          action: "prompted",
-          webhookTimestamp: NOW + 100,
-          agentSession: { id: "ses_1", issue: { id: "iss_1" } },
-          agentActivity: {
-            id: "reply-1",
-            createdAt: new Date(NOW + 1).toISOString(),
-            userId: "linear-1",
-            content: { type: "prompt", body: OPTIONS[0] },
-          },
-        }),
-        "delivery:reply-1",
-        NOW + 100,
-      )!,
-    );
+    await linear.orchestrator.onLinearEvent(linearReply(OPTIONS[0]!));
     expect(getQuestion(linear.db, linear.question.id)?.answeredBy).toBe("linear-1");
     expect(history(paws.db, paws.item.id)).toEqual(history(linear.db, linear.item.id));
     expect(getWorkItem(paws.db, paws.item.id)?.state).toBe(
@@ -217,5 +219,88 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
   } finally {
     paws.db.close();
     linear.db.close();
+  }
+});
+
+test("a rejected answer leaves the question open and a corrected answer closes it", async () => {
+  const { db, question, submit } = setup();
+  try {
+    const rejected = await submit({ questionId: question.id, answer: "/paws decision expired" });
+    expect(rejected?.status).toBe(409);
+    expect(getQuestion(db, question.id)?.status).toBe("open");
+    expect(resumes(db)).toEqual([]);
+    expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(200);
+    expect(getQuestion(db, question.id)).toMatchObject({ status: "answered", answer: OPTIONS[0] });
+    expect(resumes(db)).toHaveLength(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("a cancelled question is not answered and nothing restarts", async () => {
+  const { db, question, submit } = setup();
+  try {
+    db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [NOW + 2, question.id]);
+    expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(409);
+    expect(resumes(db)).toEqual([]);
+    expect(db.query("SELECT event_key FROM linear_turn").all()).toEqual([]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a Linear reply racing a Paws answer answers the question once", async () => {
+  const { db, question, orchestrator } = setup();
+  try {
+    const [, paws] = await Promise.allSettled([
+      orchestrator.onLinearEvent(linearReply(OPTIONS[1]!)),
+      orchestrator.answerFromPaws({
+        questionId: question.id,
+        answer: OPTIONS[0]!,
+        answeredBy: "linear-1",
+        answeredByName: "Sam",
+      }),
+    ]);
+    const answered = paws.status === "fulfilled" && paws.value === "answered";
+    const stored = getQuestion(db, question.id)!;
+    expect(stored.status).toBe("answered");
+    expect(stored.answer).toBe(answered ? OPTIONS[0]! : OPTIONS[1]!);
+    expect(resumes(db)).toHaveLength(1);
+    expect(pawsNotes(db)).toHaveLength(answered ? 1 : 0);
+    expect(
+      db.query("SELECT state FROM linear_turn WHERE event_key LIKE 'paws-answer:%'").all(),
+    ).toHaveLength(answered ? 1 : 0);
+  } finally {
+    db.close();
+  }
+});
+
+test("the answer record reaches Linear after the pull request response", async () => {
+  const { db, question, submit } = setup();
+  try {
+    for (const [key, kind] of [
+      ["pull-request-ready:PAS-1003", "response"],
+      ["late-thought", "thought"],
+    ] as const)
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: "ses_1",
+        idempotencyKey: key,
+        payload: { id: key, sessionId: "ses_1", kind, body: key },
+        now: NOW,
+      });
+    db.run(
+      "UPDATE outbox SET status = 'sent' WHERE idempotency_key = 'pull-request-ready:PAS-1003'",
+    );
+    expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(200);
+    const tracker = createFakeTracker();
+    for (const row of listOutbox(db).filter((entry) => entry.status !== "sent"))
+      await deliverLinearOutbox(row, tracker, async () => {}, undefined, db);
+    expect(tracker.progress.map((update) => update.body)).toEqual([
+      "Answered in Paws by Sam: Fix the policy",
+    ]);
+  } finally {
+    db.close();
   }
 });

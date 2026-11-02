@@ -7250,37 +7250,48 @@ export class Orchestrator {
     answeredBy: string;
     answeredByName: string;
   }): Promise<"answered" | "rejected"> {
-    if (this.shuttingDown) return "rejected";
-    const open = getQuestion(this.db, input.questionId);
-    const item = open ? getWorkItem(this.db, open.itemId) : null;
-    if (open?.status !== "open" || !isPawsAnswerKind(open.kind) || item === null) return "rejected";
-    const at = Math.max(this.now(), open.createdAt + 1);
-    const event: AcceptedLinearEvent = {
-      dedupeKey: `paws-answer:${open.id}`,
-      deliveryId: null,
-      source: "webhook",
-      action: "prompted",
-      sessionId: open.sessionId,
-      issueId: item.linearIssueId,
-      activityId: null,
-      actorId: input.answeredBy,
-      activityCreatedAtMs: at,
-      body: input.answer,
-      signal: null,
-      updatedAtMs: at,
-      payload: JSON.stringify({ questionId: open.id, answeredBy: input.answeredBy }),
+    const waiting = () => {
+      if (this.shuttingDown) return null;
+      const open = getQuestion(this.db, input.questionId);
+      const item = open ? getWorkItem(this.db, open.itemId) : null;
+      if (open?.status !== "open" || !isPawsAnswerKind(open.kind) || item === null) return null;
+      return findOpenQuestion(this.db, open.sessionId)?.id === open.id ? { open, item } : null;
     };
-    const key = open.sessionId;
-    const answered = (this.sessionEvents.get(key) ?? Promise.resolve())
+    const sessionId = waiting()?.open.sessionId;
+    if (sessionId === undefined) return "rejected";
+    const answered = (this.sessionEvents.get(sessionId) ?? Promise.resolve())
       .catch(() => undefined)
       .then(async () => {
-        await this.handleLinearEvent(event);
-        if (getQuestion(this.db, open.id)?.answerEventKey !== event.dedupeKey) return false;
+        const current = waiting();
+        if (current === null) return false;
+        const { open, item } = current;
+        const dedupeKey = `paws-answer:${open.id}`;
+        this.db.run(
+          "DELETE FROM linear_turn WHERE session_id = ? AND event_key = ? AND state = 'cancelled'",
+          [open.sessionId, dedupeKey],
+        );
+        const at = Math.max(this.now(), open.createdAt + 1);
+        await this.handleLinearEvent({
+          dedupeKey,
+          deliveryId: null,
+          source: "webhook",
+          action: "prompted",
+          sessionId: open.sessionId,
+          issueId: getLinearSession(this.db, open.sessionId)?.issueId ?? item.linearIssueId,
+          activityId: null,
+          actorId: input.answeredBy,
+          activityCreatedAtMs: at,
+          body: input.answer,
+          signal: null,
+          updatedAtMs: at,
+          payload: JSON.stringify({ questionId: open.id, answeredBy: input.answeredBy }),
+        });
+        if (getQuestion(this.db, open.id)?.answerEventKey !== dedupeKey) return false;
         enqueueOutboxOnce(this.db, {
           target: "linear",
           op: "activity",
           orderingKey: open.sessionId,
-          idempotencyKey: event.dedupeKey,
+          idempotencyKey: dedupeKey,
           delivery: "critical",
           payload: {
             id: crypto.randomUUID(),
@@ -7296,11 +7307,11 @@ export class Orchestrator {
         await this.flush();
         return true;
       });
-    this.sessionEvents.set(key, answered);
+    this.sessionEvents.set(sessionId, answered);
     try {
       return (await answered) ? "answered" : "rejected";
     } finally {
-      if (this.sessionEvents.get(key) === answered) this.sessionEvents.delete(key);
+      if (this.sessionEvents.get(sessionId) === answered) this.sessionEvents.delete(sessionId);
     }
   }
 
