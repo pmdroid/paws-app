@@ -105,7 +105,9 @@ try {
       if (!before) {
         const stepper = page.getByRole("list", { name: "Issue progress" });
         await expect(stepper.locator('[aria-current="step"]')).toHaveClass(/needs/);
-        await expect(page.getByRole("heading", { level: 2, name: "Closeout exhausted" })).toBeVisible();
+        await expect(
+          page.getByRole("heading", { level: 2, name: "Closeout exhausted" }),
+        ).toBeVisible();
         const rules = page.getByRole("button", { name: /^Rules/ });
         if ((await rules.getAttribute("aria-expanded")) === "false") await rules.click();
         await expect(page.getByRole("button", { name: /^Rules/ })).toHaveAttribute(
