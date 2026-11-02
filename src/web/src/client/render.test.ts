@@ -193,7 +193,8 @@ describe("status views", () => {
     run.state = "verifying";
     verdict.decision = "exhausted";
     const verifying = render(model({ snapshot })).content;
-    expect(verifying).toContain("0 need you · 1 working");
+    expect(verifying).toContain('Needs you <span class="cnt">0</span>');
+    expect(verifying).toContain('In progress <span class="cnt">1</span>');
     expect(verifying).not.toContain("Automatic retries are used up.");
     item.state = "awaiting_input";
     run.state = "awaiting_input";
