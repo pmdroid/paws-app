@@ -81,7 +81,17 @@ export function parseAgentSettings(value: unknown): AgentSettings {
   return settings;
 }
 
+const REVIEW_PATHS: Partial<Record<ImplementerName, "review command" | "ACP reviewer">> = {
+  claude: "review command",
+  codex: "review command",
+  grok: "ACP reviewer",
+  opencode: "ACP reviewer",
+};
+
 function validateIndependence(profiles: AgentProfiles): void {
+  for (const reviewer of [profiles.reviewer, profiles.reviewerFallback])
+    if (reviewer && REVIEW_PATHS[reviewer.agent] === undefined)
+      throw new Error(`Paws has no review path for ${reviewer.agent}; choose another reviewer`);
   if (
     profiles.implementer.agent === profiles.reviewer.agent &&
     profiles.implementer.model === profiles.reviewer.model
