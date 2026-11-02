@@ -85,7 +85,7 @@ function issueUpdate(stateType: string, updatedFrom: Record<string, unknown> = {
       stateId: "closed",
       state: { id: "closed", type: stateType, name: stateType },
       ...(stateType === "completed" ? { completedAt: at } : {}),
-      ...(stateType === "canceled" ? { canceledAt: at } : {}),
+      ...(stateType === "canceled" || stateType === "duplicate" ? { canceledAt: at } : {}),
     },
     updatedFrom,
   };
@@ -207,6 +207,26 @@ test("an issue moved to Canceled cancels a queued task", async () => {
     ISSUE_CLOSED_RESPONSE.canceled,
   ]);
   expect(f.journal.some((line) => line.includes("ENG-1 cancelled"))).toBe(true);
+});
+
+test("a failed task whose issue moves to Duplicate is cancelled with the canceled response", async () => {
+  const f = await fixture();
+  applyWorkItemEvent(f.db, f.item.id, "start_timed_out");
+  expect(getWorkItem(f.db, f.item.id)?.state).toBe("failed");
+  const closed = parseLinearIssueClosed(
+    parseAgentEvent(JSON.stringify(issueUpdate("duplicate")), "issue-duplicate", Date.now())!,
+  )!;
+  expect(closed.stateType).toBe("canceled");
+  expect(await closeClosedIssueTasks(f.db, closed, { notify: () => {} })).toEqual([
+    { itemId: f.item.id, outcome: "cancelled" },
+  ]);
+  expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+  const responses = listOutbox(f.db).filter(
+    (row) => (row.payload as { kind?: string }).kind === "response",
+  );
+  expect(responses.map((row) => (row.payload as { body: string }).body)).toEqual([
+    ISSUE_CLOSED_RESPONSE.canceled,
+  ]);
 });
 
 test("a confirmed merge from the task's own branch completes the task as merged", async () => {
