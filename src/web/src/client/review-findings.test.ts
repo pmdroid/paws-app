@@ -1,4 +1,4 @@
-import { fullStatusFixture, itemDetail, type FullStatus } from "../../test/fixtures";
+import { openedView, fullStatusFixture, itemDetail, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -8,7 +8,7 @@ import {
   type StatusReview,
   type StatusReviewFinding,
 } from "../contract";
-import { emptyCloseoutView, type CloseoutView } from "./closeout";
+import { type CloseoutView } from "./closeout";
 import { render } from "./render";
 import { earlierRoundsKey, findingIssueKey } from "./review-findings";
 import { themedMarkup } from "./theme";
@@ -97,7 +97,7 @@ function detailOf(full: FullStatus): StatusItemDetail {
   return parsed.detail;
 }
 
-function page(detail: StatusItemDetail, closeout: CloseoutView = emptyCloseoutView()): string {
+function page(detail: StatusItemDetail, closeout: CloseoutView = openedView()): string {
   return render({
     route: { view: "issues", id: "ENG-100" },
     phase: "ready",
@@ -152,7 +152,7 @@ describe("review findings on the issue page", () => {
     expect(closed).toContain("Show earlier rounds (1)");
     expect(closed).not.toContain("src/retention/job.ts:40");
 
-    const view = emptyCloseoutView();
+    const view = openedView();
     view.open[earlierRoundsKey("ENG-100", "independent-review")] = true;
     const open = page(snapshot, view);
     expect(open).toContain("Hide earlier rounds (1)");
@@ -218,7 +218,7 @@ describe("review findings on the issue page", () => {
       explanation: "<script>alert(1)</script> in old code",
     };
     const key = findingIssueKey("ENG-100", "independent-review", legacy);
-    const view = emptyCloseoutView();
+    const view = openedView();
     view.filing = { [key]: { state: "filed", identifier: "PAS-123", url: null } };
     expect(findingHtml(page(detail, view), legacy.location)).toContain("PAS-123 filed");
 

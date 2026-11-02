@@ -1,6 +1,5 @@
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
-  StatusAgentCloseout,
   StatusItem,
   StatusItemDetail,
   StatusItemEvent,
@@ -28,11 +27,8 @@ import {
   capLine,
   heldLine,
   waitReason,
-  runLabel,
   skillVersionLabel,
-  PHASE_NAMES,
   statePill,
-  taskPhase,
   utcClock,
 } from "./format";
 import { needsSnapshot, routeHref, type Route } from "./route";
@@ -54,9 +50,10 @@ import { renderIntake } from "./intake";
 import { renderPushOutages } from "./push-outage";
 import { renderPolicyRunnerWarnings } from "./policy-runners";
 import { itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
-import { isRunningNow, isWaitingNow, itemNowLine, itemPill, itemTime } from "./doing";
+import { doingTimeLine, isRunningNow, itemPill, itemTime } from "./doing";
+import { journey, journeyPill, journeyStepper } from "./journey";
 import { deadDeliveriesSection } from "./dead-deliveries";
-import { visualReviewSection, waitingVisualReview } from "./visual-review";
+import { visualReviewSection } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
 import { riskCard } from "./risk";
 
@@ -417,17 +414,30 @@ function issuePage(
         ? transcriptPath
         : new URL(transcriptPath, engine).href;
   const blocked = snapshot.blocks;
+  const now = journey(item, run, verdict);
+  const time = doingTimeLine(item, Date.parse(snapshot.generatedAt));
+  const checks = verdict?.checks ?? [];
+  const passed = checks.filter((check) => check.state === "passed").length;
+  const rules = checks.filter((check) => check.kind === "rule");
+  const brokenRules = rules.filter((check) => check.state === "failed").length;
+  const reviews = (verdict as { reviews?: { rounds: unknown[] }[] } | undefined)?.reviews ?? [];
+  const activity = run?.activity?.length ?? 0;
   return `${pageHeading("issues")}<article class="run-page issue-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "issues", id: null })}">Issues</a><span>/</span><span class="lin-id">${esc(item.id)}</span></nav>
-    <header class="run-heading"><div class="row wrap">${isWaitingNow(item) ? itemPill(item) : run ? phasePill(item, run, verdict) : statePill(item.state, itemLabel(item.state))}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span></div>
+    <header class="run-heading"><div class="row wrap">${journeyPill(now)}<span class="mono muted min-w-0"${item.branch ? ` title="${esc(`Branch ${item.branch}`)}"` : ""}>${esc(snapshot.project.repo)}</span>${time ? `<span class="muted" data-item-now>${esc(time)}</span>` : ""}</div>
       <h1><span class="lin-id">${esc(item.id)}</span> ${esc(item.title)}</h1>
-      ${itemNowLine(item, Date.parse(snapshot.generatedAt))}
       ${issueFacts(snapshot, item, run, blocked)}
       ${item.links.length ? `<div class="row wrap">${linkButtons(item.links)}</div>` : ""}
     </header>
-    ${run ? phaseStrip(item, run, verdict, agent) : ""}
+    ${journeyStepper(now, {
+      ...(agent?.attempts.at(-1)?.checks.length
+        ? { implementing: `Agent Closeout ${agentProgress(agent)}` }
+        : {}),
+      ...(item.state === "merge_queue" && item.mergeQueue
+        ? { queue: item.mergeQueue.position }
+        : {}),
+    })}
     ${queueNotice(item)}
-    ${stateTimeBar(item.stateTimes)}
     ${deadDeliveriesSection(snapshot, item.id)}
     ${run ? (run.usagePause ? usagePauseSection(item, run, run.usagePause) : executionControls(item, run)) : ""}
     ${snapshot.questions
@@ -443,30 +453,89 @@ function issuePage(
           : `<section class="closeout-result blocked"><div class="min-w-0"><h2>${esc(question.title)}</h2><p>${esc(plainTask(question.body))}</p><div class="row wrap">${linkList(question.links)}</div></div></section>`,
       )
       .join("")}
-    ${riskCarryOverSection(snapshot, item)}
     ${visualReviewSection(snapshot, item, engineUrl, run?.itemId)}
-    ${"risk" in snapshot ? riskCard((snapshot as StatusItemDetail).risk) : ""}
-    ${verdict ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>` : ""}
-    ${verdict ? reviewFindingsSection(verdict, closeout) : ""}
-    ${verdict ? renderRuleResults(verdict, closeout, engineUrl) : ""}
-    ${agent ? renderAgentCloseout(agent, closeout, engineUrl, verdict !== undefined && !IMPLEMENTING.has(item.state)) : ""}
-    ${run ? evidenceSlot(snapshot, run.id) : ""}
-    ${fixRounds(snapshot, item, run)}
-    ${pullRequestSection(snapshot, item)}
-    ${
+    <div class="issue-folds">
+    ${fold(
+      closeout,
+      `closeout:${item.id}`,
+      "Closeout",
+      verdict
+        ? `${verdict.decision[0]!.toUpperCase()}${verdict.decision.slice(1)} · attempt ${verdict.attempt} of ${verdict.maxAttempts} · ${passed} of ${checks.length} checks passed`
+        : "",
+      verdict
+        ? `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(verdict, closeout, engineUrl, item.pr, item.state)}</section>${agent ? renderAgentCloseout(agent, closeout, engineUrl, !IMPLEMENTING.has(item.state)) : ""}${run ? evidenceSlot(snapshot, run.id) : ""}`
+        : "",
+    )}
+    ${verdict ? "" : `${agent ? renderAgentCloseout(agent, closeout, engineUrl, false) : ""}${run ? evidenceSlot(snapshot, run.id) : ""}`}
+    ${fold(
+      closeout,
+      `findings:${item.id}`,
+      "Review findings",
+      `${reviews.length} review${reviews.length === 1 ? "" : "s"}`,
+      verdict ? reviewFindingsSection(verdict, closeout) : "",
+    )}
+    ${fold(
+      closeout,
+      `rules:${item.id}`,
+      "Rules",
+      brokenRules ? `${brokenRules} broke` : `${rules.length} checked`,
+      verdict ? renderRuleResults(verdict, closeout, engineUrl) : "",
+      snapshot.questions.some(
+        (question) => question.itemId === item.id && question.linkAsk?.kind === "rule",
+      ),
+    )}
+    ${fold(
+      closeout,
+      `risk:${item.id}`,
+      "Risk",
+      "",
+      `${riskCarryOverSection(snapshot, item)}${"risk" in snapshot ? riskCard((snapshot as StatusItemDetail).risk) : ""}`,
+      snapshot.questions.some(
+        (question) => question.itemId === item.id && question.linkAsk?.kind === "risk",
+      ),
+    )}
+    ${fold(
+      closeout,
+      `fixes:${item.id}`,
+      "Fix rounds",
+      `${now.fixRounds} round${now.fixRounds === 1 ? "" : "s"}`,
+      fixRounds(snapshot, item, run),
+    )}
+    ${fold(closeout, `pr:${item.id}`, "Pull request and merge", item.pr ? `#${item.pr.number}` : "", pullRequestSection(snapshot, item))}
+    ${fold(
+      closeout,
+      `timeline:${item.id}`,
+      "Timeline",
+      `${activity} event${activity === 1 ? "" : "s"}`,
       run
-        ? `<section class="run-activity" aria-labelledby="activity-heading"><h2 id="activity-heading">Timeline</h2>
-      ${activityActions(
-        transcriptHref,
-        run.links.filter((link) => !item.links.some((shown) => shown.href === link.href)),
-      )}
-      ${activityLog(`activity-${run.id}`, run)}
-    </section>`
-        : `<p class="muted">No agent activity yet.</p>`
-    }
+        ? `${stateTimeBar(item.stateTimes)}${activityActions(
+            transcriptHref,
+            run.links.filter((link) => !item.links.some((shown) => shown.href === link.href)),
+          )}${activityLog(`activity-${run.id}`, run)}`
+        : "",
+      false,
+      "activity-heading",
+    )}
     ${runDetails(item, run, closeout)}
+    </div>
     ${earlier.map((entry, index) => earlierAttempt(snapshot, entry, index, attempts)).join("")}
   </article>`;
+}
+
+/** A collapsed section: its title and one-line summary, the body only once opened. */
+function fold(
+  view: CloseoutView,
+  key: string,
+  title: string,
+  summary: string,
+  body: string,
+  pending = false,
+  headingId = "",
+): string {
+  if (!body.trim()) return "";
+  const open = sectionOpen(view, key, pending);
+  const heading = `<h2${headingId ? ` id="${headingId}"` : ""}>${esc(title)}</h2>`;
+  return `<section class="issue-fold" aria-label="${esc(title)}">${sectionToggle(key, open, heading, summary)}${open ? `<div class="issue-fold-body">${body}</div>` : ""}</section>`;
 }
 
 /** The kept approval, unless a risk ask on the item is open again. */
@@ -856,84 +925,6 @@ function questionCard(
       ${options ? `<div class="opts">${options}</div>` : ""}
       <div class="row">${question.links.length ? linkList(question.links) : '<span class="dim">Answer in the source conversation to continue.</span>'}</div>
     </div></article>`;
-}
-
-function phaseStrip(
-  item: StatusItem | undefined,
-  run: StatusRun | undefined,
-  verdict?: StatusVerdict,
-  agent?: StatusAgentCloseout,
-): string {
-  const phase = taskPhase(item?.state ?? null, run?.state ?? "running", verdict?.decision);
-  const paused = run?.usagePause ? `paused until ${utcClock(run.usagePause.resumeAt)}` : "";
-  const names = PHASE_NAMES.map((name, index) =>
-    paused && index === phase.current
-      ? `${name} · ${paused}`
-      : index === 0 && agent?.attempts.at(-1)?.checks.length
-        ? `${name} · Agent Closeout ${agentProgress(agent)}`
-        : index === 1 && verdict
-          ? `${name} · ${verdict.attempt} of ${verdict.maxAttempts}`
-          : index === 2 && item?.state === "merge_queue" && item.mergeQueue
-            ? `${name} · #${item.mergeQueue.position} in queue`
-            : name,
-  );
-  const steps = names.map((name, index) => {
-    const failed =
-      index === 1 && verdict && ["exhausted", "rejected", "blocked"].includes(verdict.decision);
-    const cls = failed
-      ? "failed"
-      : index < phase.current || (index === 1 && verdict?.decision === "accepted")
-        ? "done"
-        : index === phase.current
-          ? "now"
-          : "wait";
-    return { name, cls, current: index === phase.current };
-  });
-  const review = item?.visualReviews?.at(-1);
-  const waiting = waitingVisualReview(item);
-  if (review) {
-    if (waiting) steps[0] = { ...steps[0]!, cls: "done", current: false };
-    steps.splice(1, 0, {
-      name: waiting ? `Visual review · round ${waiting.round}` : "Visual review",
-      cls: waiting ? "now" : review.state === "accepted" || phase.current > 0 ? "done" : "wait",
-      current: waiting !== undefined,
-    });
-  }
-  const marks = steps
-    .map(
-      ({ name, cls, current }) =>
-        `<li class="run-step ${cls}"${current ? ' aria-current="step"' : ""}>${cls === "done" ? "✓ " : cls === "failed" ? "✕ " : ""}${esc(name)}</li>`,
-    )
-    .join("");
-  return `<ol class="run-stepper${review ? " with-review" : ""}" aria-label="Run progress" title="${esc(waiting ? "Waiting for a visual review. The item is not complete." : phase.detail)}">${marks}</ol>`;
-}
-
-function phasePill(
-  item: StatusItem | undefined,
-  run: StatusRun,
-  verdict?: StatusVerdictSummary,
-): string {
-  const recheck =
-    verdict?.decision === "running" &&
-    item?.state !== "running" &&
-    item?.state !== "queued" &&
-    item?.state !== "planning" &&
-    item?.state !== "awaiting_input";
-  if (item?.state === "completed") return statePill("completed", "Complete");
-  if (item?.state === "merged") return statePill("merged", "Complete");
-  if (run.usagePause) return statePill("running usage-limit", "Paused · usage limit");
-  if (item?.state === "queued") return statePill("queued", "Queued");
-  if (waitingVisualReview(item)) return statePill("awaiting_input", "Waiting for visual review");
-  if (recheck) return statePill("verifying", "Closeout");
-  if (verdict?.decision === "blocked") return statePill("needs_human", "Closeout blocked");
-  if (verdict?.decision === "exhausted") return statePill("exhausted", "Closeout exhausted");
-  if (verdict?.decision === "rejected") return statePill("stopped", "Closeout failed");
-  if (item?.state === "needs_human") return statePill("needs_human", "Needs a person");
-  if (verdict?.decision === "accepted") return statePill("accepted", "Closeout accepted");
-  if (item?.state === "merge_queue") return statePill("merge_queue", "Waiting to merge");
-  if (item?.state === "verifying" || run.state === "verifying")
-    return statePill("verifying", "Closeout");
-  return statePill(run.state, runLabel(run.state));
 }
 
 function itemVerdict(snapshot: StatusSnapshot, itemId: string): StatusVerdictSummary | undefined {

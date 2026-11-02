@@ -1,10 +1,10 @@
-import { fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
+import { openedView, fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { StatusAgentCloseout } from "../contract";
 import { agentSectionKey, agentVerdict, renderAgentCloseout } from "./agent-closeout";
-import { checkKey, emptyCloseoutView } from "./closeout";
+import { checkKey } from "./closeout";
 import { render } from "./render";
 import { routeHref } from "./route";
 import { themedMarkup } from "./theme";
@@ -18,7 +18,7 @@ function runPage(snapshot: FullStatus, open: Record<string, boolean> = {}, id = 
     phase: "ready",
     error: null,
     engineUrl: null,
-    closeout: { ...emptyCloseoutView(), open },
+    closeout: openedView(open),
     ...pageData(snapshot, { view: "runs", id }),
   }).content;
 }
@@ -29,7 +29,7 @@ describe("Agent Closeout", () => {
     expect(html).toContain('aria-label="Agent Closeout"');
     expect(html).toContain("<h2>Agent Closeout</h2>");
     expect(html).not.toContain('aria-label="Closeout"');
-    expect(html).toContain("Implementation · Agent Closeout 4 of 7 passed");
+    expect(html).toContain("Implementing · Agent Closeout 4 of 7 passed");
     expect(html).toContain("test is running · attempt 2 of 3");
     expect(html).toContain(
       "The agent fixed the failing check and is running it again on head 4be81d0 for 1m 14s. 4 of 7 passed, 2 pending.",
@@ -48,7 +48,7 @@ describe("Agent Closeout", () => {
     const agent = demoAgent();
     const html = renderAgentCloseout(
       agent,
-      { ...emptyCloseoutView(), attempt: { "agent:r-102": 1 } },
+      { ...openedView(), attempt: { "agent:r-102": 1 } },
       null,
       false,
     );
@@ -83,7 +83,7 @@ describe("Agent Closeout", () => {
           : check,
       ),
     });
-    const html = renderAgentCloseout(agent, emptyCloseoutView(), null, false);
+    const html = renderAgentCloseout(agent, openedView(), null, false);
     expect(html).toContain("test is exhausted · attempt 3 of 3");
     expect(html).toContain(
       "The agent stopped retrying on head 4be81d0. Paws asks the team how to continue.",
@@ -122,14 +122,14 @@ describe("Agent Closeout", () => {
     const agent = demoAgent();
     const closed = renderAgentCloseout(
       agent,
-      { ...emptyCloseoutView(), open: { [checkKey("agent:r-102", 2, "test")]: false } },
+      openedView({ [checkKey("agent:r-102", 2, "test")]: false }),
       null,
       false,
     );
     expect(closed).not.toContain('id="agent-check-2-test-out"');
     const pawsOnly = renderAgentCloseout(
       agent,
-      { ...emptyCloseoutView(), open: { [checkKey("ENG-102", 2, "test")]: false } },
+      openedView({ [checkKey("ENG-102", 2, "test")]: false }),
       null,
       false,
     );

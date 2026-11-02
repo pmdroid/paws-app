@@ -9,6 +9,7 @@ import {
   type StatusItemEvent,
   type StatusSnapshot,
 } from "../src/contract";
+import type { CloseoutView } from "../src/client/closeout";
 import type { Route } from "../src/client/route";
 
 /** Every field of the fixture items, as the provider reads them before the list trims them. */
@@ -748,4 +749,20 @@ export function fixtureProvider(full: FullStatus | (() => FullStatus)): {
       return found ? { stdout: found.stdout ?? "", stderr: found.stderr ?? "" } : null;
     },
   };
+}
+
+const ISSUE_FOLDS = /^section\n(closeout|findings|rules|risk|fixes|pr|timeline):/;
+
+/** A Closeout view with the issue page's folded sections open, as after a person opens them. */
+export function openedView(given: Record<string, boolean> = {}): CloseoutView {
+  const open = new Proxy(
+    { ...given },
+    {
+      get: (target, key) =>
+        typeof key === "string" && ISSUE_FOLDS.test(key) && !(key in target)
+          ? true
+          : target[key as string],
+    },
+  );
+  return { attempt: {}, open, wrap: {} };
 }

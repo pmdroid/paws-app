@@ -1,4 +1,5 @@
 import {
+  openedView,
   FIXTURE_PROBE_SHA,
   fullStatusFixture,
   itemDetail,
@@ -7,11 +8,11 @@ import {
 } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { parseStatusItemDetail } from "../contract";
-import { emptyCloseoutView, type CloseoutView } from "./closeout";
+import { type CloseoutView } from "./closeout";
 import { render } from "./render";
 import { ruleResult } from "./rules";
 
-function page(closeout: CloseoutView = emptyCloseoutView()): string {
+function page(closeout: CloseoutView = openedView()): string {
   return render({
     phase: "ready",
     error: null,
@@ -118,7 +119,7 @@ describe("repository rules on the run page", () => {
   });
 
   test("an earlier attempt without rules has no rules section", () => {
-    const closeout = emptyCloseoutView();
+    const closeout = openedView();
     closeout.attempt["ENG-100"] = 1;
     expect(page(closeout)).not.toContain("Repository rules");
   });

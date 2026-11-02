@@ -1,10 +1,10 @@
-import { fullStatusFixture, pageData, statusFixture } from "../../test/fixtures";
+import { openedView, fullStatusFixture, pageData, statusFixture } from "../../test/fixtures";
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { themedMarkup } from "./theme";
 import { render } from "./render";
-import { checkListKey, emptyCloseoutView } from "./closeout";
+import { checkListKey } from "./closeout";
 import { identityLinkMarkup } from "./workspace-identities";
 import { linearConnectionMarkup } from "./workspace";
 import { runnerDetailMarkup, type Runner } from "./runners";
@@ -16,7 +16,7 @@ function markup(html: string) {
 function ready(
   view: "overview" | "questions" | "runs",
   id: string | null = null,
-  closeout = emptyCloseoutView(),
+  closeout = openedView(),
 ) {
   return render({
     phase: "ready",
@@ -91,7 +91,7 @@ test("overview keeps action rows responsive without delivery columns", () => {
 });
 
 test("run checks, transcripts, and stop controls keep their columns aligned", () => {
-  const closeout = emptyCloseoutView();
+  const closeout = openedView();
   closeout.open[`section\n${checkListKey("ENG-101", 1)}`] = true;
   const html = markup(ready("runs", "r-101", closeout).content);
   const checks = classNames(html, "chk").filter((value) => !value.includes("section-toggle"));

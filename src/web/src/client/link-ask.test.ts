@@ -1,4 +1,4 @@
-import { fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
+import { openedView, fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import { bypassLabel } from "./link-ask";
 import { render, type RenderModel } from "./render";
@@ -24,6 +24,7 @@ function model(
     phase: "ready",
     error: null,
     engineUrl: null,
+    closeout: openedView(),
     ...rest,
     ...pageData(snapshot, route),
   };
