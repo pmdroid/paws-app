@@ -49,9 +49,9 @@ import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
 import { renderPushOutages } from "./push-outage";
 import { renderPolicyRunnerWarnings } from "./policy-runners";
-import { itemAge, mergedTimesSection, stateTimeBar } from "./state-times";
-import { doingTimeLine, isRunningNow, itemPill, itemTime } from "./doing";
-import { journey, journeyPill, journeyStepper } from "./journey";
+import { itemAge, itemAgeLine, mergedTimesSection, stateTimeBar } from "./state-times";
+import { doingTimeLine, itemPill, itemTime } from "./doing";
+import { JOURNEY_ORDER, journey, journeyPill, journeyStepper } from "./journey";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
@@ -176,11 +176,7 @@ type NeedsYou = {
   primary?: boolean;
 };
 
-function viewOverview(snapshot: StatusSnapshot): string {
-  const intake = `${renderPushOutages(snapshot)}${renderPolicyRunnerWarnings(snapshot)}${renderIntake(snapshot)}`;
-  if (!snapshot.items.length && !snapshot.questions.length)
-    return `${pageHeading("overview")}${intake}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
-  const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
+function needsYou(snapshot: StatusSnapshot, runs: ReadonlyMap<string, StatusRun>): NeedsYou[] {
   const attention = snapshot.items.flatMap((item): NeedsYou[] => {
     const run = item.runId ? runs.get(item.runId) : undefined;
     const question = snapshot.questions.find((entry) => entry.itemId === item.id);
@@ -205,7 +201,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
           href: routeHref({ view: "questions", id: question.id }),
         },
       ];
-    if (["merged", "completed", "stopped"].includes(item.state)) return [];
+    if (DONE_STATES.includes(item.state)) return [];
     const stopped = ["verifying", "awaiting_input", "needs_human"].includes(item.state);
     const verdict = stopped ? itemVerdict(snapshot, item.id) : undefined;
     const reason =
@@ -240,49 +236,96 @@ function viewOverview(snapshot: StatusSnapshot): string {
       href: routeHref({ view: "questions", id: question.id }),
     });
   }
-  const needsYou = new Set(attention.map((entry) => entry.itemId));
-  const work = snapshot.items.filter((item) => {
-    const run = item.runId ? runs.get(item.runId) : undefined;
-    return (
-      !needsYou.has(item.id) &&
-      ["planning", "running", "verifying"].includes(item.state) &&
-      (!run || ["running", "verifying"].includes(run.state)) &&
-      !item.blockers.length
-    );
-  });
-  const queued = snapshot.items.filter((item) => item.state === "queued").length;
-  const running = work.filter(isRunningNow).length;
+  return attention;
+}
+
+const DONE_STATES: readonly string[] = ["merged", "completed", "stopped"];
+const RECENTLY_MERGED = 5;
+
+function viewOverview(snapshot: StatusSnapshot): string {
+  const warnings = `${renderPushOutages(snapshot)}${renderPolicyRunnerWarnings(snapshot)}`;
+  const intake = renderIntake(snapshot);
+  if (!snapshot.items.length && !snapshot.questions.length)
+    return `${pageHeading("overview")}${warnings}${intake}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
+  const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
+  const attention = needsYou(snapshot, runs);
+  const asked = new Set(attention.map((entry) => entry.itemId));
   const now = Date.parse(snapshot.generatedAt);
-  const merging = snapshot.items.filter((item) => item.state === "merge_queue").length;
-  const summary = [
-    `${attention.length} need${attention.length === 1 ? "s" : ""} you`,
-    `${running} working`,
-    ...(work.length > running ? [`${work.length - running} waiting or stalled`] : []),
-    ...(queued ? [`${queued} queued`] : []),
-    ...(merging ? [`${merging} waiting to merge`] : []),
-  ].join(" · ");
-  return `${pageHeading("overview")}
-    <div class="between"><p class="overview-summary">${esc(summary)}</p><a href="${routeHref({ view: "issues", id: null })}">All issues</a></div>
-    <section class="overview-section" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs you</h2>
-      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p>${ageOf(snapshot, entry.itemId)}</div><a class="btn${entry.primary ? " primary" : ""}" href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
+  const open = snapshot.items
+    .filter((item) => !asked.has(item.id) && !DONE_STATES.includes(item.state))
+    .map((item) => ({
+      item,
+      phase: journey(
+        item,
+        item.runId ? runs.get(item.runId) : undefined,
+        itemVerdict(snapshot, item.id),
+      ),
+    }));
+  const queued = open.filter((entry) => entry.phase.step === "queued");
+  const active = open
+    .filter((entry) => entry.phase.step !== "queued")
+    .sort(
+      (left, right) =>
+        JOURNEY_ORDER.indexOf(left.phase.step) - JOURNEY_ORDER.indexOf(right.phase.step),
+    );
+  const merged = snapshot.items
+    .filter((item) => item.state === "merged")
+    .map((item) => ({ item, at: mergedAt(item) }))
+    .sort((left, right) => right.at.localeCompare(left.at))
+    .slice(0, RECENTLY_MERGED);
+  const count = (value: number) => ` <span class="cnt">${value}</span>`;
+  return `${pageHeading("overview")}${warnings}
+    <div class="overview-grid"><div class="overview-column">
+    <section class="overview-section" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs you${count(attention.length)}</h2>
+      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row" data-item="${esc(entry.itemId)}"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p>${ageOf(snapshot, entry.itemId)}</div><a class="btn${entry.primary ? " primary" : ""}" href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
     </section>
-    ${intake}
-    <section class="overview-section" aria-labelledby="work-heading"><h2 id="work-heading">Working now</h2>
+    <section class="overview-section" aria-labelledby="work-heading"><div class="between"><h2 id="work-heading">In progress${count(active.length)}</h2><a href="${routeHref({ view: "issues", id: null })}">All issues</a></div>
       ${
-        work.length
-          ? `<ul class="overview-work" role="list">${work
-              .slice(0, 6)
-              .map((item) => {
-                const href = routeHref({ view: "issues", id: item.id });
-                return `<li class="overview-row"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${itemTime(item, now)}${itemPill(item)}</li>`;
-              })
-              .join(
-                "",
-              )}</ul>${work.length > 6 ? `<a href="${routeHref({ view: "issues", id: null })}">View all ${work.length} working issues</a>` : ""}`
+        active.length
+          ? `<ul class="overview-work" role="list">${active.map(({ item, phase }) => workRow(item, phase.reason, journeyPill(phase), now)).join("")}</ul>`
           : '<p class="muted">No work is running right now.</p>'
       }
+    </section></div><div class="overview-column">
+    <section class="overview-section" aria-labelledby="queued-heading"><h2 id="queued-heading">Queued${count(queued.length)}</h2>
+      ${
+        queued.length
+          ? `<ul class="overview-work" role="list">${queued.map(({ item, phase }) => workRow(item, waitingFor(item) ?? phase.reason, "", now)).join("")}</ul>`
+          : '<p class="muted">Nothing is waiting for a runner.</p>'
+      }
     </section>
-    ${mergedTimesSection(snapshot.mergedTimes)}`;
+    ${intake}
+    ${
+      merged.length
+        ? `<section class="overview-section" aria-labelledby="merged-heading"><h2 id="merged-heading">Recently merged</h2><ul class="overview-work" role="list">${merged
+            .map(
+              ({ item, at }) =>
+                `<li class="work-row" data-item="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a><p class="work-facts"><span class="muted">${esc([item.pr ? `PR #${item.pr.number}` : "", at ? `merged ${ago(at, snapshot.generatedAt)}` : ""].filter(Boolean).join(" · "))}</span></p></li>`,
+            )
+            .join("")}</ul></section>`
+        : ""
+    }
+    ${mergedTimesSection(snapshot.mergedTimes)}
+    </div></div>`;
+}
+
+function workRow(item: StatusItem, reason: string, pill: string, now: number): string {
+  const runners = item.doing?.runners.join(", ") ?? "";
+  const facts = [
+    item.doing?.stalled ? "No live work for 30 min" : "",
+    runners && !reason.includes(runners) ? `on ${runners}` : "",
+    doingTimeLine(item, now) ?? itemAgeLine(item) ?? "",
+  ].filter(Boolean);
+  return `<li class="work-row" data-item="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${pill}<p class="work-facts"><span>${esc(reason)}</span>${facts.length ? `<span class="muted" data-item-time>${esc(facts.join(" · "))}</span>` : ""}</p></li>`;
+}
+
+function waitingFor(item: StatusItem): string | null {
+  if (item.queue && !item.held && !item.blockers.length) return queueLine(item.queue);
+  return waitReason(item);
+}
+
+function mergedAt(item: StatusItem): string {
+  const merge = [...(item.timeline ?? [])].reverse().find((event) => event.to === "merged");
+  return merge?.at ?? item.stateTimes?.until ?? "";
 }
 
 function ageOf(snapshot: StatusSnapshot, itemId: string): string {
