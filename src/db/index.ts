@@ -129,6 +129,7 @@ export {
   runnerCapacityWait,
   type CapOutcome,
   type RunnerCapacityWaitState,
+  type CloseoutFaults,
   completeMergedItem,
   failWorkItem,
   getWorkItem,
