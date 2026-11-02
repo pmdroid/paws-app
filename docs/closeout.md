@@ -106,6 +106,24 @@ A file published again for the same check, with the same display name, at the sa
 
 Paws Closeout judges the check from an approval record: the task, the check id, the ids of the files the reviewer saw, who approved, and when. The check passes when an approval for this task and check names every file the check counts at the candidate commit. A file published after the review, for example after the reviewer asked for changes, is not covered, so the old approval no longer counts. Without a matching approval the check is `missing`: the decision is blocked, not rejected, so no fix round starts. Too few files still fail as above.
 
+### Live preview
+
+A `preview` check holds the change until a person has tried it in a live preview and accepted it:
+
+```yaml
+- id: live-preview
+  kind: preview
+  gate: beforePR
+  approval: human
+  paths: ["src/web/**", "landing/**"]
+```
+
+`approval: human` is required. The check applies when a changed path matches `paths`, and is skipped otherwise. It runs nothing: `get_closeout` lists it as `pending` and leaves it out of the pending ids, and `run_closeout` says it runs nothing.
+
+Paws Closeout judges it from the same approval records as the visual review. An Accept holds the task, the check id, who accepted, when, the previewed head and the preview URL, and no file ids. The check passes only with an Accept recorded for exactly the commit being evaluated. A new commit, even a rebase with the same patch, needs a new Accept. Without one the check is `missing`, which blocks the decision without starting a fix round. Only the delegating member or the project lead can accept, and only in Paws; a Linear reply cannot accept.
+
+The tool that starts a preview, the item-page Accept and the gate that waits for it are not built yet. Until they are, a policy should not list a `preview` check, because nothing can accept it.
+
 ## Paws Closeout
 
 When the turn ends, the item moves to `verifying` and Paws runs the policy against the candidate commit:

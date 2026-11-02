@@ -12,6 +12,7 @@ import type {
   PolicyEvidence,
   PolicyImport,
   PolicyItem,
+  PolicyPreview,
   PolicyReview,
   PolicyRule,
   PolicySetupStep,
@@ -48,6 +49,7 @@ export function createPolicyParser(schemaDocument: AnySchema): PolicyParser {
     command: ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/command" }),
     review: ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/review" }),
     evidence: ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/evidence" }),
+    preview: ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/preview" }),
   };
   return (text) => {
     let value: unknown;
@@ -79,6 +81,7 @@ type Validators = {
   command: ValidateFunction;
   review: ValidateFunction;
   evidence: ValidateFunction;
+  preview: ValidateFunction;
 };
 
 /** YAML 1.2 parse plus `policy.schema.json`. The message has no file prefix. */
@@ -173,7 +176,12 @@ function schemaMessage(validators: Validators, value: unknown): string | undefin
 }
 
 function itemSchemaMessage(
-  { command: validateCommand, review: validateReview, evidence: validateEvidence }: Validators,
+  {
+    command: validateCommand,
+    review: validateReview,
+    evidence: validateEvidence,
+    preview: validatePreview,
+  }: Validators,
   value: unknown,
 ): string | undefined {
   if (!isRecord(value) || !Array.isArray(value.items)) return undefined;
@@ -188,6 +196,9 @@ function itemSchemaMessage(
     } else if (item.kind === "evidence") {
       if (!validateEvidence(item))
         return formatUnder(`/items/${index}`, validateEvidence.errors?.[0]);
+    } else if (item.kind === "preview") {
+      if (!validatePreview(item))
+        return formatUnder(`/items/${index}`, validatePreview.errors?.[0]);
     } else {
       return `/items/${index} must match exactly one schema in oneOf`;
     }
@@ -345,6 +356,18 @@ function decodeItem(value: unknown): PolicyItem {
     if (value.minimum !== undefined) item.minimum = expectInt(value.minimum);
     if (value.hint !== undefined) item.hint = expectString(value.hint);
     if (value.approval !== undefined) item.approval = expectApproval(value.approval);
+    if (paths !== undefined) item.paths = paths;
+    if (recheck !== undefined) item.recheck = recheck;
+    return item;
+  }
+  if (value.kind === "preview") {
+    const item: PolicyPreview = {
+      id: value.id,
+      kind: "preview",
+      gate: "beforePR",
+      approval: expectApproval(value.approval),
+    };
+    if (value.hint !== undefined) item.hint = expectString(value.hint);
     if (paths !== undefined) item.paths = paths;
     if (recheck !== undefined) item.recheck = recheck;
     return item;

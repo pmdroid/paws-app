@@ -43,6 +43,7 @@ export type {
   PolicyIdentity,
   PolicyImport,
   PolicyItem,
+  PolicyPreview,
   PolicyLoadResult,
   PolicyPaths,
   PolicyReview,
@@ -54,6 +55,7 @@ export type {
   PublishedEvidence,
   ResolvedCommand,
   ResolvedEvidence,
+  ResolvedPreview,
   ResolvedItem,
   ResolvedPolicy,
   ResolvedPolicyAbsent,
@@ -110,6 +112,8 @@ export {
   workspacePolicyFiles,
 } from "./facade";
 export { approvalsAtHead, fixChangedPaths, samePatch } from "./published";
+export { previewAccept } from "./preview";
+export type { PreviewAccept, PreviewAcceptInput } from "./preview";
 export {
   decodePolicyFiles,
   encodePolicyFiles,
