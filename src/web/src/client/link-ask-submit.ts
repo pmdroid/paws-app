@@ -54,6 +54,26 @@ function updateBypassButton(form: HTMLFormElement, questionId: string): void {
   button.disabled = chosen.length === 0 || linkAskPending(questionId);
 }
 
+export function linkAskBody(input: {
+  questionId: string;
+  decision: string;
+  note: string;
+  rule: string | undefined;
+  ruleReason: string;
+  bypassing: boolean;
+  bypasses: { checkId: string; reason: string }[];
+}): {
+  questionId: string;
+  decision: string;
+  note: string;
+  bypasses?: { checkId: string; reason: string }[];
+} {
+  const { questionId, decision } = input;
+  if (input.rule !== undefined) return { questionId, decision, note: input.ruleReason };
+  if (input.bypassing) return { questionId, decision, note: "", bypasses: input.bypasses };
+  return { questionId, decision, note: input.note };
+}
+
 /** Posts the decision with the CSRF token. Returns whether the event was a link ask form. */
 export function submitLinkAsk(event: SubmitEvent, reload: () => Promise<void>): boolean {
   const form = event.target;
@@ -101,12 +121,9 @@ export function submitLinkAsk(event: SubmitEvent, reload: () => Promise<void>): 
       const response = await fetch("/api/link-asks", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-paws-csrf": readCsrfToken(document) },
-        body: JSON.stringify({
-          questionId,
-          decision,
-          note: bypassing ? "" : rule !== undefined ? ruleReason : note,
-          ...(bypassing ? { bypasses } : {}),
-        }),
+        body: JSON.stringify(
+          linkAskBody({ questionId, decision, note, rule, ruleReason, bypassing, bypasses }),
+        ),
       });
       const body: unknown = await response.json().catch(() => null);
       if (!response.ok)
