@@ -1,5 +1,5 @@
 import type { CiResult } from "../closeout";
-import type { PassedCheck, PullCi } from "../github";
+import type { PassedCheck, PullCi, PullMergeable } from "../github";
 import type { FailedCiCheck } from "../merge";
 
 /** How often a merge-queue re-check reads CI again while it waits, and for how long at most. */
@@ -12,20 +12,26 @@ export type CiMapping = { id: string; ci: string };
 /**
  * What a merge-queue re-check of a head does about CI. `check` runs Closeout with `fromCi`
  * taken from green CI (empty when nothing maps or CI could not tell). `ci-failed` sends the
- * item to a CI fix round instead of running the checks.
+ * item to a CI fix round instead of running the checks. `conflict` means the pull request
+ * conflicts with its base, so GitHub runs no CI on it and the item goes back for the conflict.
  */
 export type CiRecheck =
   | { kind: "check"; fromCi: CiResult[] }
-  | { kind: "ci-failed"; checks: FailedCiCheck[] };
+  | { kind: "ci-failed"; checks: FailedCiCheck[] }
+  | { kind: "conflict" };
 
 /**
  * Reads CI on the pull request's head for a merge-queue re-check. Green CI gives each mapped
  * check its result; pending CI is waited for, up to `maxWaitMs`; failed CI goes to the CI fix.
  * When GitHub cannot say, or the head is not the pull request's, the checks run as before.
+ * Before each CI read, `conflicts` says whether the pull request conflicts with its base; GitHub
+ * runs no `pull_request` workflow then, so waiting would only reach the deadline (PAS-990).
  */
 export async function ciForRecheck(input: {
   mappings: readonly CiMapping[];
   read: () => Promise<PullCi>;
+  /** True only when GitHub reports a conflict; unknown or unreadable keeps waiting for CI. */
+  conflicts?: () => Promise<boolean>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   pollMs?: number;
@@ -37,6 +43,7 @@ export async function ciForRecheck(input: {
   const deadline = input.now() + (input.maxWaitMs ?? CI_RECHECK_WAIT_MS);
   let previous = "";
   for (;;) {
+    if (await input.conflicts?.()) return { kind: "conflict" };
     const ci = await input.read();
     if (ci.state === "green")
       return { kind: "check", fromCi: fromGreenCi(input.mappings, ci.checks) };
@@ -46,6 +53,11 @@ export async function ciForRecheck(input: {
     previous = ci.message;
     await input.sleep(input.pollMs ?? CI_RECHECK_POLL_MS);
   }
+}
+
+/** Whether GitHub reports the open pull request at `head` as conflicting with its base. */
+export function conflictsAt(read: PullMergeable | null, head: string): boolean {
+  return read !== null && read.open && read.head === head && read.merges === "conflict";
 }
 
 /**
