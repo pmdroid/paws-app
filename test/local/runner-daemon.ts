@@ -483,6 +483,20 @@ export async function probeRunnerDaemon(
           [[pending], undefined, undefined],
         ],
       );
+      const cursorStart = heartbeatBodies.length;
+      heartbeatResponse = { leases: [], fenced: [], observedAt: 1234 };
+      await configured.heartbeat(undefined, undefined, undefined, []);
+      heartbeatResponse = { leases: [], fenced: [] };
+      await configured.heartbeat(undefined, undefined, undefined, []);
+      const cursors = (heartbeatBodies.slice(cursorStart) as { liveAfter?: number }[]).map(
+        (body) => body.liveAfter,
+      );
+      assert.equal(cursors[0], 0);
+      assert.equal(cursors.filter((cursor) => cursor !== undefined).length, 2);
+      assert.equal(
+        cursors.find((cursor, index) => index > 0 && cursor !== undefined),
+        1234,
+      );
     } finally {
       heartbeatResponse = { leases: [], fenced: [] };
       configured.close();

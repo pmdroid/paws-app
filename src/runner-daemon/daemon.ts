@@ -135,6 +135,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Runner job signing pins must be Ed25519 public keys.");
   let state = readState(options.root);
   let closed = false;
+  let observedAt = 0;
   if (
     state &&
     (state.controlPlaneUrl !== origins.controlPlaneUrl ||
@@ -336,6 +337,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           db.run("DELETE FROM pending_command");
           db.run("DELETE FROM command_receipt");
         });
+      observedAt = 0;
       writeState(options.root, enrolled);
       state = enrolled;
       return status();
@@ -373,7 +375,18 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         live === undefined
           ? withAgents
           : { ...withAgents, live: live.map(({ runId, generation }) => ({ runId, generation })) };
+      const liveAfter = observedAt;
       const attempts: unknown[] = [
+        ...(live === undefined
+          ? []
+          : [
+              {
+                ...withLive,
+                repositories: options.allowedRepositories ?? null,
+                ...(terminated === undefined ? {} : { terminated }),
+                liveAfter,
+              },
+            ]),
         ...(terminated === undefined
           ? []
           : [{ ...withLive, repositories: options.allowedRepositories ?? null, terminated }]),
@@ -404,6 +417,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         }
       }
       const response = RunnerHeartbeatSchema.parse(reply);
+      if (response.observedAt !== undefined) observedAt = Math.max(observedAt, response.observedAt);
       if (options.concurrency !== undefined && response.concurrency !== undefined)
         applied = Math.min(response.concurrency, ceiling);
       return response;
