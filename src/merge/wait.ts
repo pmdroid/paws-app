@@ -6,6 +6,7 @@ export const MERGE_CI_POLL_MS = 10_000;
 export const MERGE_BACKSTOP_POLL_MS = 5 * 60_000;
 export const GITHUB_DELIVERY_QUIET_MS = 60 * 60_000;
 export const MERGE_CI_WAIT_MS = 269 * MERGE_CI_POLL_MS;
+export const MERGE_CI_ASK_AFTER_MS = 6 * 60 * 60_000;
 export const MERGE_QUEUE_POLL_MS = 30_000;
 export const GITHUB_QUEUE_WAIT_MS = 24 * 60 * 60 * 1000;
 export const GITHUB_QUEUE_POLL_MS = 30_000;
@@ -43,7 +44,7 @@ export function parkMerge(
   job: Job,
   now: number,
   wait: Partial<MergeWait> = {},
-): "parked" | "expired" | "lost" {
+): "parked" | "expired" | "ask" | "lost" {
   const payload = payloadRecord(job.payload);
   if (wait.reason)
     payload.mergeWait = {
@@ -69,18 +70,33 @@ export function parkMerge(
   const head = wait.head;
   const saved = payload.ciWaitDeadline;
   const sameHead = head === undefined || payload.ciWaitHead === head;
-  const deadline =
-    sameHead && typeof saved === "number" && Number.isFinite(saved)
-      ? saved
-      : now + (wait.githubQueue ? GITHUB_QUEUE_WAIT_MS : MERGE_CI_WAIT_MS);
-  if (sameHead && now >= deadline) return "expired";
+  const resumed = sameHead && typeof saved === "number" && Number.isFinite(saved);
+  const deadline = resumed
+    ? saved
+    : now + (wait.githubQueue ? GITHUB_QUEUE_WAIT_MS : MERGE_CI_WAIT_MS);
+  let delayMs = pollMs(db, now, wait.githubQueue ? GITHUB_QUEUE_POLL_MS : MERGE_CI_POLL_MS);
+  let started: number | undefined;
+  if (wait.githubQueue) {
+    if (sameHead && now >= deadline) return "expired";
+  } else {
+    const savedStart = payload.ciWaitStartedAt;
+    started =
+      resumed && typeof savedStart === "number" && Number.isFinite(savedStart)
+        ? savedStart
+        : resumed
+          ? deadline - MERGE_CI_WAIT_MS
+          : now;
+    if (now >= started + MERGE_CI_ASK_AFTER_MS) return "ask";
+    if (now >= deadline) delayMs = MERGE_BACKSTOP_POLL_MS;
+  }
   return park(
     db,
     job,
-    now + pollMs(db, now, wait.githubQueue ? GITHUB_QUEUE_POLL_MS : MERGE_CI_POLL_MS),
+    now + delayMs,
     {
       ...payload,
       ciWaitDeadline: deadline,
+      ...(started === undefined ? {} : { ciWaitStartedAt: started }),
       ...(wait.base === undefined ? {} : { ciWaitBase: wait.base }),
       ...(wait.head === undefined ? {} : { ciWaitHead: wait.head }),
       ...(wait.summary === undefined ? {} : { ciWaitSummary: wait.summary }),

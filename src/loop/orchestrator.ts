@@ -398,7 +398,13 @@ import {
   reverifyBypassed,
   type LinkAskEffects,
 } from "./link-ask";
-import { acceptCloseout, retryMergeLater, waitForMergeTurn, waitForRunnerSlot } from "./merge-jobs";
+import {
+  acceptCloseout,
+  askAboutSlowCi,
+  retryMergeLater,
+  waitForMergeTurn,
+  waitForRunnerSlot,
+} from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
 import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
 import { ciForRecheck, conflictsAt, type CiRecheck } from "./ci-recheck";
@@ -1649,8 +1655,17 @@ export class Orchestrator {
       if (waiting === undefined) return;
       const waitingId = readString(job.payload, "itemId");
       if (waitingId) this.settleItemAwake(waitingId);
-      if (parkMerge(this.db, job, this.now(), waiting) !== "expired") return;
+      const parked = parkMerge(this.db, job, this.now(), waiting);
+      if (parked === "parked" || parked === "lost") return;
       const itemId = readString(job.payload, "itemId");
+      if (
+        parked === "ask" &&
+        itemId &&
+        askAboutSlowCi(this.db, itemId, { checks: waiting.message, now: this.now() })
+      ) {
+        await this.flush();
+        return;
+      }
       const item = itemId ? getWorkItem(this.db, itemId) : null;
       if (item)
         this.fail(

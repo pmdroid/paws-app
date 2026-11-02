@@ -15,17 +15,28 @@ import {
   insertQueuedItem,
   joinMergeQueue,
   listJobs,
+  listOutbox,
+  listRuns,
+  markCloseoutAccepted,
   migrate,
   openDatabase,
 } from "../db";
 import {
   MERGE_BACKSTOP_POLL_MS,
+  MERGE_CI_ASK_AFTER_MS,
   MERGE_CI_POLL_MS,
   MERGE_CI_WAIT_MS,
   ciWaitVerification,
   parkMerge,
 } from "../merge";
-import { acceptGitHubDelivery, retryMergeLater, waitForMergeTurn } from "./merge-jobs";
+import { answer } from "../questions";
+import {
+  acceptGitHubDelivery,
+  askAboutSlowCi,
+  retryMergeLater,
+  waitForMergeTurn,
+} from "./merge-jobs";
+import { questionEffects } from "./question-effects";
 import { worktreeBranch } from "./sources";
 
 function queue() {
@@ -47,11 +58,11 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
     });
     const loop = new JobLoop(db, clock);
     let reason: "merge_outcome" | "ci" = "merge_outcome";
-    let expired = false;
+    let backstop = false;
     loop.register(JOB_KIND.merge, (job) => {
-      const result = parkMerge(db, job, clock.now(), { reason });
-      expect(result).toBe(reason === "ci" ? "expired" : "parked");
-      expired = result === "expired";
+      expect(parkMerge(db, job, clock.now(), { reason })).toBe("parked");
+      backstop =
+        reason === "ci" && getJob(db, job.id)!.runAt === clock.now() + MERGE_BACKSTOP_POLL_MS;
     });
     for (const delay of [10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000]) {
       expect((await loop.tick())?.id).toBe(id);
@@ -76,7 +87,7 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
     expect(mergeCallInFlight(db, "eng-1")).toBe(true);
     reason = "ci";
     await loop.tick();
-    expect(expired).toBe(true);
+    expect(backstop).toBe(true);
   } finally {
     db.close();
   }
@@ -174,30 +185,51 @@ describe("merge CI wait", () => {
     );
   });
 
-  test("a merge CI wait expires instead of parking past the limit", () => {
+  test("CI pending past the wait limit parks at the backstop and does not fail", () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    bindWorkItemRepository(db, "eng-1", {
-      owner: "acme",
-      repo: "one",
-      remoteUrl: "https://github.com/acme/one.git",
+    beginImplementRun(db, "eng-1", clock.now());
+    enterMergeQueue(db, "eng-1", { phase: "merge_queue", wipCommit: "h" });
+    enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-1" }, now: clock.now() });
+    const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
+    expect(parkMerge(db, first, clock.now(), { reason: "ci", head: "h" })).toBe("parked");
+    clock.advance(MERGE_CI_WAIT_MS);
+    const again = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
+    expect(again.id).toBe(first.id);
+    expect(parkMerge(db, again, clock.now(), { reason: "ci", head: "h" })).toBe("parked");
+    expect(getJob(db, first.id)).toMatchObject({
+      status: "pending",
+      runAt: clock.now() + MERGE_BACKSTOP_POLL_MS,
     });
-    enqueueJob(db, {
+    expect(getWorkItem(db, "eng-1")?.state).toBe("merge_queue");
+  });
+
+  test("CI that turns green during the backstop wait merges once", async () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    const id = enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
-    const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
-    if (first === null) throw new Error("missing claim");
-    expect(parkMerge(db, first, clock.now())).toBe("parked");
+    const loop = new JobLoop(db, clock);
+    let green = false;
+    let merges = 0;
+    loop.register(JOB_KIND.merge, (job) => {
+      if (green) merges += 1;
+      else expect(parkMerge(db, job, clock.now(), { reason: "ci", head: "h" })).toBe("parked");
+    });
+    await loop.tick();
     clock.advance(MERGE_CI_WAIT_MS);
-    const again = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
-    if (again === null) throw new Error("missing claim");
-    expect(again.id).toBe(first.id);
-    expect(parkMerge(db, again, clock.now())).toBe("expired");
-    expect(getJob(db, first.id)?.status).toBe("running");
+    await loop.tick();
+    clock.advance(MERGE_BACKSTOP_POLL_MS);
+    green = true;
+    await loop.tick();
+    clock.advance(MERGE_BACKSTOP_POLL_MS);
+    await loop.tick();
+    expect(merges).toBe(1);
+    expect(getJob(db, id)?.status).toBe("done");
   });
-
   test("a reclaimed merge job keeps the verified base, head, and summary", () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
@@ -557,5 +589,79 @@ describe("merge poll backstop", () => {
     const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
     parkMerge(db, job!, clock.now(), { queued: true, reason: "review" });
     expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
+  });
+});
+
+describe("slow CI question", () => {
+  const checks = "Waiting for checks: lint, test (1/4)";
+
+  function askedAboutSlowCi() {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: clock.now() });
+    beginImplementRun(db, "eng-1", clock.now());
+    enterMergeQueue(db, "eng-1", { phase: "merge_queue", wipCommit: "h" });
+    markCloseoutAccepted(db, "eng-1", "h");
+    enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-1" }, now: clock.now() });
+    const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
+    expect(parkMerge(db, first, clock.now(), { reason: "ci", head: "h" })).toBe("parked");
+    clock.advance(MERGE_CI_ASK_AFTER_MS);
+    const again = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
+    expect(parkMerge(db, again, clock.now(), { reason: "ci", head: "h" })).toBe("ask");
+    expect(askAboutSlowCi(db, "eng-1", { checks, now: clock.now() })).toBe(true);
+    expect(askAboutSlowCi(db, "eng-1", { checks, now: clock.now() })).toBe(false);
+    completeJob(db, again, clock.now());
+    return { db, clock };
+  }
+
+  function reply(db: ReturnType<typeof queue>["db"], body: string, now: number) {
+    return answer(
+      db,
+      { sessionId: "ses", deliveryId: `reply:${body}`, body, answeredBy: "pascal", now },
+      questionEffects(db, { now }),
+    ).status;
+  }
+
+  test("CI pending for six hours asks once and names the pending checks and branch", () => {
+    const { db } = askedAboutSlowCi();
+    const questions = db
+      .query<{ body: string; options: string }, []>("SELECT body, options FROM question")
+      .all();
+    expect(questions).toHaveLength(1);
+    expect(questions[0]!.body).toContain(checks);
+    expect(questions[0]!.body).toContain(`\`${worktreeBranch(getWorkItem(db, "eng-1")!)}\``);
+    expect(JSON.parse(questions[0]!.options)).toEqual(["Merge the accepted work", "Stop"]);
+    expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
+  });
+
+  test("Merge returns the accepted head to the merge queue and starts a fresh wait", () => {
+    const { db, clock } = askedAboutSlowCi();
+    const runs = listRuns(db, "eng-1").length;
+    expect(reply(db, "Merge the accepted work", clock.now())).toBe("answered");
+    expect(getWorkItem(db, "eng-1")).toMatchObject({ state: "merge_queue", acceptedHead: "h" });
+    expect(listRuns(db, "eng-1")).toHaveLength(runs);
+    const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
+    expect(job.payload).toMatchObject({ itemId: "eng-1", head: "h" });
+    expect(parkMerge(db, job, clock.now(), { reason: "ci", head: "h" })).toBe("parked");
+    expect(getJob(db, job.id)).toMatchObject({
+      runAt: clock.now() + MERGE_CI_POLL_MS,
+      payload: { ciWaitStartedAt: clock.now(), ciWaitDeadline: clock.now() + MERGE_CI_WAIT_MS },
+    });
+  });
+
+  test("Stop fails the item by answer and keeps the accepted branch", () => {
+    const { db, clock } = askedAboutSlowCi();
+    expect(reply(db, "Stop", clock.now())).toBe("answered");
+    expect(getWorkItem(db, "eng-1")?.state).toBe("failed");
+    const event = db
+      .query<{ event: string }, []>("SELECT event FROM work_item_event ORDER BY id DESC LIMIT 1")
+      .get();
+    expect(event?.event).toBe("answer_stopped");
+    expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+      kind: "error",
+      body: expect.stringMatching(
+        /^Stopped while GitHub CI was pending, as asked in Linear\. The accepted work is on branch `.+`\.$/,
+      ),
+    });
+    expect(listJobs(db).some((job) => job.status === "pending")).toBe(false);
   });
 });
