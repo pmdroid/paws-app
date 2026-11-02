@@ -37,6 +37,7 @@ import type {
   OutboxRow,
   MergeQueuePosition,
   QueuePosition,
+  VisualReviewRecord,
   WorkItemEventRow,
   WorkItemFact,
   WorkItemRecord,
@@ -90,6 +91,7 @@ import {
   listWorkItemEventRows,
   listLastWorkItemEventTimes,
   type CloseoutProgressRecord,
+  type CloseoutProgressState,
   type CloseoutRound,
   type CloseoutStepRecord,
 } from "../../../db";
@@ -97,6 +99,7 @@ import { isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
 import { doingOf } from "./doing";
+import { readOverview } from "./overview";
 import { itemReviews } from "./reviews";
 import { isRuleStep, skippedRules, withRuleDetail } from "./rules";
 import { mergedTimes, stateTotals, toStateTimes, type StateTotals } from "./state-times";
@@ -112,6 +115,7 @@ import {
   type IssueDetailResponse,
   type IssueListResponse,
   type ItemState,
+  type OverviewResponse,
   type RunState,
   type StatusActivity,
   type StatusAgentCloseout,
@@ -129,6 +133,7 @@ import {
   type StatusStateTimes,
   type StatusMergeQueue,
   type StatusMergeEntry,
+  type StatusUsagePause,
   type StatusMergeOutcome,
   type StatusMergeSettings,
   type StatusProject,
@@ -212,8 +217,12 @@ export function createLiveStatusProvider(
   checkLog(request: CheckLogRequest): CheckOutput | null;
   issues(): IssueListResponse;
   issue(id: string): IssueDetailResponse | null;
+  overview(): OverviewResponse;
 } {
   return {
+    overview() {
+      return readOverview(db, options);
+    },
     issues() {
       return readIssueList(db, options);
     },
@@ -318,7 +327,7 @@ function toIssueDetail(detail: StatusItemDetail): IssueDetailResponse {
  * An item finished when it last changed state; one from before `work_item_event` counts from
  * its creation.
  */
-function listedRecords(
+export function listedRecords(
   db: Database,
   visible: readonly WorkItemRecord[],
   facts: ReadonlyMap<string, WorkItemFact>,
@@ -527,7 +536,7 @@ function emptyBase(now: Date, project: LiveStatusOptions["project"]): StatusSnap
 }
 
 /** Repositories GitHub refuses pushes from the Paws App for (PAS-867). */
-function readPushOutages(db: Database): Pick<StatusSnapshot, "pushOutages"> {
+export function readPushOutages(db: Database): Pick<StatusSnapshot, "pushOutages"> {
   const outages = listPushOutages(db);
   if (!outages.length) return {};
   return {
@@ -542,7 +551,7 @@ function readPushOutages(db: Database): Pick<StatusSnapshot, "pushOutages"> {
 }
 
 /** Repositories whose Closeout policy uses keys the lowest online runner does not know (PAS-888). */
-function readPolicyRunnerWarnings(db: Database): Pick<StatusSnapshot, "policyRunnerWarnings"> {
+export function readPolicyRunnerWarnings(db: Database): Pick<StatusSnapshot, "policyRunnerWarnings"> {
   const warnings = listPolicyRunnerWarnings(db);
   if (!warnings.length) return {};
   return {
@@ -556,7 +565,7 @@ function readPolicyRunnerWarnings(db: Database): Pick<StatusSnapshot, "policyRun
   };
 }
 
-function readIntake(
+export function readIntake(
   db: Database,
   options: LiveStatusOptions,
 ): Pick<StatusSnapshot, "intake" | "linearBudget" | "linearWebhook"> {
@@ -600,6 +609,50 @@ function readIntake(
   };
 }
 
+export function visibleRecords(
+  db: Database,
+  options: LiveStatusOptions,
+  facts: ReadonlyMap<string, WorkItemFact>,
+): WorkItemRecord[] {
+  return listWorkItemsByStates(db, WORK_ITEM_STATES)
+    .filter(
+      (record) =>
+        options.sessionIds === undefined ||
+        (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
+    )
+    .sort((left, right) => compareNewest(left, right, facts));
+}
+
+export function readerOutbox(db: Database, options: LiveStatusOptions): OutboxRow[] {
+  return listOutbox(db).filter(
+    (row) =>
+      options.sessionIds === undefined ||
+      (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
+  );
+}
+
+export function mergePlaces(
+  queues: readonly MergeQueuePosition[],
+  visible: readonly WorkItemRecord[],
+): Map<string, StatusMergeQueue> {
+  const recordsById = new Map(visible.map((record) => [record.id, record]));
+  return new Map(
+    queues.map((entry) => {
+      const ahead = entry.nextItemId ? recordsById.get(entry.nextItemId) : undefined;
+      return [
+        entry.itemId,
+        {
+          repository: entry.repository,
+          position: entry.position,
+          total: entry.total,
+          ahead: ahead ? publicId(ahead) : null,
+          ...(entry.busy ? { rechecking: true } : {}),
+        },
+      ];
+    }),
+  );
+}
+
 type ScopedSnapshot = {
   snapshot: FullSnapshot;
   blocks: string[];
@@ -633,13 +686,7 @@ function readScopedSnapshot(
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
   const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
-  const visible = listWorkItemsByStates(db, WORK_ITEM_STATES)
-    .filter(
-      (record) =>
-        options.sessionIds === undefined ||
-        (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
-    )
-    .sort((left, right) => compareNewest(left, right, facts));
+  const visible = visibleRecords(db, options, facts);
   const records =
     only === undefined
       ? listedRecords(db, visible, facts, now.getTime())
@@ -651,34 +698,15 @@ function readScopedSnapshot(
       records: [],
       current: null,
     };
-  const rows = listOutbox(db).filter(
-    (row) =>
-      options.sessionIds === undefined ||
-      (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
-  );
+  const rows = readerOutbox(db, options);
   const jobs = listJobs(db);
   const itemsByIssue = latestByLinearIssue(visible, facts);
   const openQuestions = listOpenQuestions(db);
   const env = options.env ?? process.env;
   const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
   const queue = new Map(listQueuePositions(db).map((entry) => [entry.itemId, entry]));
-  const recordsById = new Map(visible.map((record) => [record.id, record]));
   const queues = listMergeQueues(db);
-  const merging = new Map<string, StatusMergeQueue>(
-    queues.map((entry) => {
-      const ahead = entry.nextItemId ? recordsById.get(entry.nextItemId) : undefined;
-      return [
-        entry.itemId,
-        {
-          repository: entry.repository,
-          position: entry.position,
-          total: entry.total,
-          ahead: ahead ? publicId(ahead) : null,
-          ...(entry.busy ? { rechecking: true } : {}),
-        },
-      ];
-    }),
-  );
+  const merging = mergePlaces(queues, visible);
   const linearRequests = linearRequestsByItem(db);
   const holds = new Map(listItemHolds(db).map((hold) => [hold.itemId, hold]));
   const changed = listLastWorkItemEventTimes(db);
@@ -967,7 +995,6 @@ function toItem(
   const runId = linkedRunId(record, runs);
   const pr = pullRequest(record, rows, repo);
   const fact = facts.get(record.id);
-  const waiting = record.state === "queued" ? queue.get(record.id) : undefined;
   const mergeQueue =
     record.state === "merge_queue" || record.state === "verifying"
       ? merging.get(record.id)
@@ -992,20 +1019,27 @@ function toItem(
     ...(NO_CONTROL_STATES.includes(record.state) && !getConversation(db, record.id).blocked
       ? { noControls: true }
       : {}),
-    ...(waiting
-      ? {
-          queue: {
-            position: waiting.position,
-            busySlots: waiting.busySlots,
-            totalSlots: waiting.totalSlots,
-            ...(waiting.ownerCap === null ? {} : { ownerCap: waiting.ownerCap }),
-          },
-        }
-      : {}),
+    ...queueOf(record, queue),
     ...(mergeQueue ? { mergeQueue } : {}),
     ...(githubQueue ? { githubQueue } : {}),
     ...visualReviewsOf(db, record),
     ...riskCarryOverOf(db, record),
+  };
+}
+
+export function queueOf(
+  record: WorkItemRecord,
+  queue: ReadonlyMap<string, QueuePosition>,
+): Pick<StatusItem, "queue"> {
+  const waiting = record.state === "queued" ? queue.get(record.id) : undefined;
+  if (waiting === undefined) return {};
+  return {
+    queue: {
+      position: waiting.position,
+      busySlots: waiting.busySlots,
+      totalSlots: waiting.totalSlots,
+      ...(waiting.ownerCap === null ? {} : { ownerCap: waiting.ownerCap }),
+    },
   };
 }
 
@@ -1039,7 +1073,7 @@ const HISTORY_LIMIT = 100_000;
  * The item's state changes from `work_item_event`, oldest first, omitted while it has none,
  * and the time it spent in each state since it was created, up to `now` while it is open.
  */
-function historyOf(
+export function historyOf(
   db: Database,
   record: WorkItemRecord,
   facts: ReadonlyMap<string, WorkItemFact>,
@@ -1077,7 +1111,7 @@ function totalsOf(
  * The visible items that merged in the last `STATUS_RECENT_MS`: their median and p90 time from
  * creation to merge and their average time in each state. Omitted when none merged.
  */
-function mergedTimesFor(
+export function mergedTimesFor(
   db: Database,
   visible: readonly WorkItemRecord[],
   facts: ReadonlyMap<string, WorkItemFact>,
@@ -1096,7 +1130,7 @@ function mergedTimesFor(
   return times === null ? {} : { mergedTimes: times };
 }
 
-function doingFor(
+export function doingFor(
   db: Database,
   record: WorkItemRecord,
   input: { hold: ItemHold | undefined; question: string | null; lastChange: number; now: number },
@@ -1109,12 +1143,12 @@ function doingFor(
   return doing === undefined ? { activeMs: record.awakeMs } : { doing, activeMs: record.awakeMs };
 }
 
-function questionLine(body: string): string {
+export function questionLine(body: string): string {
   const line = body.trim().split("\n", 1)[0]!.trim();
   return line.length > 120 ? `${line.slice(0, 119)}…` : line;
 }
 
-function heldOf(
+export function heldOf(
   record: WorkItemRecord,
   holds: ReadonlyMap<string, ItemHold>,
 ): { held?: StatusHeld } {
@@ -1137,15 +1171,10 @@ function visualReviewsOf(
   const reviews = listVisualReviews(db, record.id);
   if (reviews.length === 0) return {};
   const commits = new Map(listEvidence(db, record.id).map((row) => [row.id, row.headCommit]));
-  const rounds = new Map<string, number>();
+  const rounds = visualReviewRounds(reviews);
   return {
-    visualReviews: reviews.map((review) => {
-      // Nobody was asked when every screen carried over, so it is not a new round.
-      const full =
-        review.carried.length > 0 &&
-        review.evidenceIds.every((id) => review.carried.some((entry) => entry.evidenceId === id));
-      const round = Math.max(1, (rounds.get(review.checkId) ?? 0) + (full ? 0 : 1));
-      rounds.set(review.checkId, round);
+    visualReviews: reviews.map((review, index) => {
+      const round = rounds[index]!;
       const marks = listVisualReviewMarks(db, review.questionId).map((mark) => ({
         id: mark.id,
         evidenceId: mark.evidenceId,
@@ -1176,6 +1205,19 @@ function visualReviewsOf(
       };
     }),
   };
+}
+
+export function visualReviewRounds(reviews: readonly VisualReviewRecord[]): number[] {
+  const rounds = new Map<string, number>();
+  return reviews.map((review) => {
+    // Nobody was asked when every screen carried over, so it is not a new round.
+    const full =
+      review.carried.length > 0 &&
+      review.evidenceIds.every((id) => review.carried.some((entry) => entry.evidenceId === id));
+    const round = Math.max(1, (rounds.get(review.checkId) ?? 0) + (full ? 0 : 1));
+    rounds.set(review.checkId, round);
+    return round;
+  });
 }
 
 /** What the merge job last saw of the pull request in GitHub's merge queue. */
@@ -1215,7 +1257,7 @@ function runsFor(
     const current = stored.find((run) => run.id === record.currentRunId) ?? stored.at(-1)!;
     const activity = activityFor(db, record, stored, activityRows.for(record, stored), generatedAt);
     const recent = activity.at(-1);
-    const pause = record.currentRunId === current.id ? usagePause(db, current.id) : null;
+    const pause = record.currentRunId === current.id ? runUsagePause(db, current.id, generatedAt) : null;
     const setup = runAgentSetup(db, current.id);
     runs.push({
       id: first.id,
@@ -1232,14 +1274,7 @@ function runsFor(
       summary: recent?.text ?? textOr(record.title, publicId(record)),
       activity,
       links: [],
-      ...(pause
-        ? {
-            usagePause: {
-              agent: agentName(pause.agent),
-              resumeAt: iso(pause.resumeAt, generatedAt),
-            },
-          }
-        : {}),
+      ...(pause ? { usagePause: pause } : {}),
       ...(setup
         ? {
             setup: {
@@ -1255,6 +1290,17 @@ function runsFor(
     });
   }
   return runs;
+}
+
+export function runUsagePause(
+  db: Database,
+  runId: string,
+  generatedAt: string,
+): StatusUsagePause | null {
+  const pause = usagePause(db, runId);
+  return pause === null
+    ? null
+    : { agent: agentName(pause.agent), resumeAt: iso(pause.resumeAt, generatedAt) };
 }
 
 function runReviewer(pawsHome: string | undefined, runId: string): string {
@@ -1273,7 +1319,7 @@ function runReviewer(pawsHome: string | undefined, runId: string): string {
   }
 }
 
-function blockersFor(
+export function blockersFor(
   db: Database,
   record: WorkItemRecord,
   itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
@@ -1296,7 +1342,7 @@ function blockersFor(
   return ids;
 }
 
-function latestByLinearIssue(
+export function latestByLinearIssue(
   records: readonly WorkItemRecord[],
   facts: ReadonlyMap<string, WorkItemFact>,
 ): Map<string, WorkItemRecord> {
@@ -1337,7 +1383,7 @@ function ownerName(fact: WorkItemFact | undefined): string | null {
   return name.length > 0 ? name : null;
 }
 
-function itemProject(fact: WorkItemFact | undefined): StatusItem["project"] {
+export function itemProject(fact: WorkItemFact | undefined): StatusItem["project"] {
   const id = fact?.projectId?.trim() ?? "";
   const name = fact?.projectName?.trim() ?? "";
   if (id.length === 0 || name.length === 0) return null;
@@ -1432,7 +1478,7 @@ function withRiskDetail(
   };
 }
 
-function questionsFor(
+export function questionsFor(
   db: Database,
   records: readonly WorkItemRecord[],
   rows: readonly OutboxRow[],
@@ -1544,17 +1590,40 @@ function verdictFor(
   env: NodeJS.ProcessEnv,
 ): StatusVerdict[] {
   const live = progressFor(record, progress);
-  const candidates = verdictCandidates(record, rows, jobs);
-  const best = candidates
-    .sort((left, right) => left.at - right.at || left.score - right.score)
-    .at(-1);
-  const base = best ? toVerdict(record, best) : impliedVerdict(record);
+  const base = baseVerdict(record, rows, jobs);
   if (base === null) return [];
   if (!live) return [base];
   const verdict = withProgress(base, live, nowMs, env);
   return [
     { ...verdict, attempts: attemptsFor(record, progress, rounds, live, verdict, nowMs, env) },
   ];
+}
+
+function baseVerdict(
+  record: WorkItemRecord,
+  rows: readonly OutboxRow[],
+  jobs: readonly Job[],
+): StatusVerdict | null {
+  const best = verdictCandidates(record, rows, jobs)
+    .sort((left, right) => left.at - right.at || left.score - right.score)
+    .at(-1);
+  return best ? toVerdict(record, best) : impliedVerdict(record);
+}
+
+export function closeoutState(
+  record: WorkItemRecord,
+  rows: readonly OutboxRow[],
+  jobs: readonly Job[],
+  progress: readonly CloseoutProgressState[],
+): Pick<StatusVerdict, "decision" | "attempt" | "maxAttempts"> | null {
+  const base = baseVerdict(record, rows, jobs);
+  if (base === null) return null;
+  const live = progressFor(record, progress);
+  return {
+    decision: live ? progressDecision(base, live) : base.decision,
+    attempt: base.attempt,
+    maxAttempts: base.maxAttempts,
+  };
 }
 
 function attemptsFor(
@@ -1607,10 +1676,10 @@ function evidenceRoot(options: LiveStatusOptions, env: NodeJS.ProcessEnv): strin
   return home ? join(home, "closeout", "evidence") : null;
 }
 
-function progressFor(
+function progressFor<T extends CloseoutProgressState>(
   record: WorkItemRecord,
-  progress: readonly CloseoutProgressRecord[],
-): CloseoutProgressRecord | null {
+  progress: readonly T[],
+): T | null {
   const mine = progress.filter((row) => row.itemId === record.id);
   if (mine.length === 0) return null;
   const running = mine.filter((row) => row.steps.some((step) => step.state === "running"));
@@ -1627,7 +1696,7 @@ function progressFor(
   return latestProgress(mine);
 }
 
-function latestProgress(rows: readonly CloseoutProgressRecord[]): CloseoutProgressRecord | null {
+function latestProgress<T extends CloseoutProgressState>(rows: readonly T[]): T | null {
   return (
     [...rows]
       .sort((left, right) => left.updatedAt - right.updatedAt || left.id.localeCompare(right.id))
@@ -1635,7 +1704,7 @@ function latestProgress(rows: readonly CloseoutProgressRecord[]): CloseoutProgre
   );
 }
 
-function unfinished(row: CloseoutProgressRecord): boolean {
+function unfinished(row: CloseoutProgressState): boolean {
   if (row.decision === null || row.finishedAt === null) return true;
   if (row.steps.some((step) => step.state === "running")) return true;
   return (
@@ -1644,7 +1713,7 @@ function unfinished(row: CloseoutProgressRecord): boolean {
   );
 }
 
-function sameCandidate(verdict: StatusVerdict, live: CloseoutProgressRecord): boolean {
+function sameCandidate(verdict: StatusVerdict, live: CloseoutProgressState): boolean {
   const verdictHead = (verdict.headSha ?? "").trim().toLowerCase();
   const liveHead = live.head.trim().toLowerCase();
   if (verdictHead.length === 0 || liveHead.length === 0 || verdictHead !== liveHead) return false;
@@ -1668,11 +1737,8 @@ function withProgress(
   );
   const fromProgress = mapDecision(live.decision);
   const open = unfinished(live);
-  const attached =
-    !open &&
-    sameCandidate(verdict, live) &&
-    (fromProgress === null || fromProgress === verdict.decision);
-  const decision = open ? "running" : (fromProgress ?? (attached ? verdict.decision : "running"));
+  const attached = attachedTo(verdict, live);
+  const decision = progressDecision(verdict, live);
   return {
     ...verdict,
     decision,
@@ -1687,6 +1753,20 @@ function withProgress(
     policyPath: live.policyPath,
     ...(skipped.length > 0 ? { skippedRules: skipped } : {}),
   };
+}
+
+function attachedTo(verdict: StatusVerdict, live: CloseoutProgressState): boolean {
+  const fromProgress = mapDecision(live.decision);
+  return (
+    !unfinished(live) &&
+    sameCandidate(verdict, live) &&
+    (fromProgress === null || fromProgress === verdict.decision)
+  );
+}
+
+function progressDecision(verdict: StatusVerdict, live: CloseoutProgressState): VerdictDecision {
+  if (unfinished(live)) return "running";
+  return mapDecision(live.decision) ?? (attachedTo(verdict, live) ? verdict.decision : "running");
 }
 
 function liveSummary(decision: VerdictDecision | null): string {
@@ -2200,7 +2280,7 @@ function concerns(row: OutboxRow, record: WorkItemRecord, runId: string): boolea
   );
 }
 
-function pullRequest(
+export function pullRequest(
   record: WorkItemRecord,
   rows: readonly OutboxRow[],
   repo: string | undefined,
@@ -2250,7 +2330,7 @@ function teamFrom(records: readonly WorkItemRecord[]): string {
   return best || "Paws";
 }
 
-function itemState(state: WorkItemRecord["state"]): ItemState {
+export function itemState(state: WorkItemRecord["state"]): ItemState {
   switch (state) {
     case "planning":
       return "planning";
@@ -2278,7 +2358,7 @@ function itemState(state: WorkItemRecord["state"]): ItemState {
   }
 }
 
-function runState(record: WorkItemRecord, status: string): RunState {
+export function runState(record: WorkItemRecord, status: string): RunState {
   if (record.state === "awaiting_input") return "awaiting_input";
   if (record.state === "paused") return "paused";
   if (status === "lost" || record.state === "cancelled" || record.state === "failed")
@@ -2305,7 +2385,7 @@ function sessionRunId(runId: string | null, runs: readonly StatusRun[]): string 
   return runs.find((run) => run.id === runId || run.attempts?.includes(runId))?.id ?? null;
 }
 
-function publicId(record: WorkItemRecord): string {
+export function publicId(record: WorkItemRecord): string {
   return textOr(record.linearIdentifier, record.id);
 }
 
@@ -2509,7 +2589,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function iso(ms: number, fallback = new Date(0).toISOString()): string {
+export function iso(ms: number, fallback = new Date(0).toISOString()): string {
   const date = new Date(ms);
   if (Number.isNaN(date.getTime())) return fallback;
   return date.toISOString();
@@ -2522,7 +2602,7 @@ function blank(value: string | null | undefined): string | null {
   return trimmed;
 }
 
-function textOr(value: string, fallback: string): string {
+export function textOr(value: string, fallback: string): string {
   const trimmed = value.trim();
   return trimmed || fallback;
 }

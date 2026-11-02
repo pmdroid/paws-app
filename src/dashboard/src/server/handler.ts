@@ -7,10 +7,12 @@ import {
   CHECK_LOG_TAIL_BYTES,
   GENERATED_AT_HEADER,
   ISSUES_API_PATH,
+  OVERVIEW_API_PATH,
   issueCheckLogPath,
   parseIssueCheckLogResponse,
   parseIssueDetailResponse,
   parseIssueListResponse,
+  parseOverviewResponse,
   parseStatusItemDetail,
   parseStatusSlices,
   parseStatusSnapshot,
@@ -21,6 +23,7 @@ import {
   type IssueCheckLogResponse,
   type IssueDetailResponse,
   type IssueListResponse,
+  type OverviewResponse,
   type StatusCheckLog,
   type StatusItemDetail,
   type StatusSnapshot,
@@ -33,6 +36,7 @@ import {
   type CheckOutput,
   type LiveStatusOptions,
 } from "../live/provider";
+import { emptyOverview } from "../live/overview";
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
 import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
 import { injectCsrf } from "./csrf";
@@ -54,6 +58,7 @@ export interface StatusProvider {
   checkLog?(request: CheckLogRequest): CheckOutput | null | Promise<CheckOutput | null>;
   issues?(): IssueListResponse | Promise<IssueListResponse>;
   issue?(id: string): IssueDetailResponse | null | Promise<IssueDetailResponse | null>;
+  overview?(): OverviewResponse | Promise<OverviewResponse>;
 }
 
 export interface StatusServerOptions {
@@ -107,6 +112,9 @@ export function fakeStatusProvider(): StatusProvider {
     issue() {
       return null;
     },
+    overview() {
+      return emptyOverview();
+    },
   };
 }
 
@@ -158,6 +166,8 @@ export async function handleStatusRequest(
     return apiResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname.startsWith(`${STATUS_ITEM_API_PATH}/`))
     return itemResponse(request, providerFor(options), pathname, sizes);
+  if (pathname === OVERVIEW_API_PATH)
+    return overviewResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname === ISSUES_API_PATH || pathname.startsWith(`${ISSUES_API_PATH}/`))
     return issuesResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
@@ -236,6 +246,7 @@ function liveProvider(options?: {
     checkLog: () => null,
     issues: () => emptyIssueList(),
     issue: () => null,
+    overview: () => emptyOverview(),
   };
 }
 
@@ -482,6 +493,36 @@ async function issuesResponse(
     return conditional(sizes, request, built.value);
   } catch (caughtError6) {
     journalCaught(caughtError6, "handler.issuesResponse", null);
+    return json({ error: "status unavailable" }, 500);
+  }
+}
+
+async function overviewResponse(
+  request: Request,
+  options: StatusServerOptions,
+  sizes: ResponseSizeJournal,
+  cache: StatusSnapshotCache,
+): Promise<Response> {
+  if (request.method === "OPTIONS")
+    return new Response(null, { status: 204, headers: { ...CORS } });
+  if (request.method !== "GET" && request.method !== "HEAD")
+    return json({ error: "Method not allowed" }, 405);
+  const provider = providerFor(options);
+  if (provider.overview === undefined) return json({ error: "Not found" }, 404);
+  const read = provider.overview.bind(provider);
+  try {
+    const built = await cache.get<OverviewResponse>(
+      options.provider ?? options.db ?? EMPTY_SOURCE,
+      cacheKey("overview", "", options),
+      async () => {
+        const parsed = parseOverviewResponse(await read());
+        return parsed.ok ? { value: parsed.response } : { error: parsed.error };
+      },
+    );
+    if ("error" in built) return json({ error: built.error }, 500);
+    return conditional(sizes, request, built.value);
+  } catch (caught) {
+    journalCaught(caught, "handler.overviewResponse", null);
     return json({ error: "status unavailable" }, 500);
   }
 }

@@ -1109,6 +1109,164 @@ export function parseIssueCheckLogResponse(input: unknown): IssueCheckLogParseRe
   );
 }
 
+export const OVERVIEW_API_PATH = "/api/overview";
+
+export interface OverviewIssue extends Pick<
+  StatusItem,
+  | "id"
+  | "title"
+  | "state"
+  | "project"
+  | "blockers"
+  | "pr"
+  | "queue"
+  | "held"
+  | "mergeQueue"
+  | "timeline"
+  | "stateTimes"
+  | "doing"
+  | "activeMs"
+> {
+  visualReviews?: Pick<StatusVisualReview, "round" | "state">[];
+  run: { state: RunState; usagePause?: StatusUsagePause } | null;
+  verdict: { decision: VerdictDecision; attempt: number; maxAttempts: number } | null;
+}
+
+export interface OverviewQuestion {
+  id: string;
+  itemId: string;
+  title: string;
+  linkAsk: Pick<StatusLinkAsk, "kind" | "title" | "detail"> | null;
+}
+
+export interface OverviewResponse {
+  source: StatusSource;
+  generatedAt: string;
+  issues: OverviewIssue[];
+  questions: OverviewQuestion[];
+  mergedTimes: StatusMergedTimes | null;
+  intake: StatusIntakeEntry[];
+  linearBudget: StatusLinearBudget | null;
+  linearWebhook: StatusLinearWebhook | null;
+  pushOutages: StatusPushOutage[];
+  policyRunnerWarnings: StatusPolicyRunnerWarning[];
+  mergeQueueCount: number;
+}
+
+export type OverviewParseResult =
+  | { ok: true; response: OverviewResponse }
+  | { ok: false; error: string };
+
+export function parseOverviewResponse(input: unknown): OverviewParseResult {
+  return parsed(
+    () => {
+      const path = "overview";
+      const body = object(input, path);
+      const list = <T>(key: string, read: (entry: unknown, at: string) => T) =>
+        array(body, key, path).map((entry, index) => read(entry, `${path}.${key}[${index}]`));
+      const nullable = <T>(key: string, read: (entry: unknown, at: string) => T) =>
+        body[key] === null ? null : read(body[key], `${path}.${key}`);
+      return {
+        source: oneOf(string(body, "source", path), SOURCES, `${path}.source`),
+        generatedAt: dateString(body, "generatedAt", path),
+        issues: list("issues", readOverviewIssue),
+        questions: list("questions", readOverviewQuestion),
+        mergedTimes: nullable("mergedTimes", readMergedTimes),
+        intake: list("intake", readIntake),
+        linearBudget: nullable("linearBudget", readLinearBudget),
+        linearWebhook: nullable("linearWebhook", readLinearWebhook),
+        pushOutages: list("pushOutages", readPushOutage),
+        policyRunnerWarnings: list("policyRunnerWarnings", readPolicyRunnerWarning),
+        mergeQueueCount: count(body, "mergeQueueCount", path),
+      };
+    },
+    "contract.parseOverviewResponse",
+    "Invalid overview",
+  );
+}
+
+function readOverviewIssue(input: unknown, path: string): OverviewIssue {
+  const body = object(input, path);
+  const optional = <K extends string, T>(key: K, read: (entry: unknown, at: string) => T) =>
+    (body[key] === undefined ? {} : { [key]: read(body[key], `${path}.${key}`) }) as {
+      [P in K]?: T;
+    };
+  const run = body.run === null ? null : object(body.run, `${path}.run`);
+  const verdict = body.verdict === null ? null : object(body.verdict, `${path}.verdict`);
+  return {
+    id: text(body, "id", path),
+    title: text(body, "title", path),
+    state: oneOf(string(body, "state", path), ITEM_STATES, `${path}.state`),
+    project: readItemProject(body.project, `${path}.project`),
+    blockers: stringArray(body, "blockers", path),
+    pr: readPr(body.pr, `${path}.pr`),
+    ...optional("queue", readQueue),
+    ...optional("held", readHeld),
+    ...optional("mergeQueue", readMergeQueue),
+    ...(body.timeline === undefined
+      ? {}
+      : {
+          timeline: array(body, "timeline", path).map((event, index) =>
+            readItemEvent(event, `${path}.timeline[${index}]`),
+          ),
+        }),
+    ...optional("stateTimes", readStateTimes),
+    ...optional("doing", readDoing),
+    ...(body.activeMs === undefined ? {} : { activeMs: count(body, "activeMs", path) }),
+    ...(body.visualReviews === undefined
+      ? {}
+      : {
+          visualReviews: array(body, "visualReviews", path).map((review, index) => {
+            const where = `${path}.visualReviews[${index}]`;
+            const fields = object(review, where);
+            return {
+              round: positiveInteger(fields, "round", where),
+              state: oneOf(string(fields, "state", where), VISUAL_REVIEW_STATES, `${where}.state`),
+            };
+          }),
+        }),
+    run:
+      run === null
+        ? null
+        : {
+            state: oneOf(string(run, "state", `${path}.run`), RUN_STATES, `${path}.run.state`),
+            ...(run.usagePause === undefined
+              ? {}
+              : { usagePause: readUsagePause(run.usagePause, `${path}.run.usagePause`) }),
+          },
+    verdict:
+      verdict === null
+        ? null
+        : {
+            decision: oneOf(
+              string(verdict, "decision", `${path}.verdict`),
+              VERDICT_DECISIONS,
+              `${path}.verdict.decision`,
+            ),
+            attempt: count(verdict, "attempt", `${path}.verdict`),
+            maxAttempts: count(verdict, "maxAttempts", `${path}.verdict`),
+          },
+  };
+}
+
+function readOverviewQuestion(input: unknown, path: string): OverviewQuestion {
+  const body = object(input, path);
+  const ask = body.linkAsk === null ? null : object(body.linkAsk, `${path}.linkAsk`);
+  return {
+    id: text(body, "id", path),
+    itemId: text(body, "itemId", path),
+    title: string(body, "title", path),
+    linkAsk:
+      ask === null
+        ? null
+        : {
+            kind: oneOf(string(ask, "kind", `${path}.linkAsk`), LINK_ASK_KINDS, `${path}.linkAsk.kind`),
+            title: string(ask, "title", `${path}.linkAsk`),
+            detail: string(ask, "detail", `${path}.linkAsk`),
+          },
+  };
+}
+
 /** The list's summary of a full verdict: decision, head, and each check's id, kind and state. */
 export function verdictSummary(verdict: StatusVerdict): StatusVerdictSummary {
   return {
