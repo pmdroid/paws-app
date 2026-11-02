@@ -438,23 +438,32 @@ function replace(node: DOMNode): ReactElement | undefined {
       "grid min-w-0 grid-cols-1 items-start gap-x-6 gap-y-3 sm:grid-cols-[10rem_minmax(0,1fr)]",
     );
   if (has("runner-agent-name")) return styled("flex min-h-6 items-center gap-2 text-sm");
-  if (name === "ul" && has("runner-skill-list", "run-setup-list"))
+  if (name === "ul" && has("runner-skill-list"))
     return styled("m-0 flex min-w-0 list-none flex-col gap-3 p-0");
+  if (name === "ul" && has("run-setup-list"))
+    return styled("m-0 flex min-w-0 list-none flex-col divide-y-2 divide-border/15 p-0");
   if (has("runner-skill"))
     return styled(
       "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 text-sm [overflow-wrap:anywhere] [&>p]:col-span-full",
     );
   if (has("runner-agent-actions"))
     return styled("col-span-full flex min-w-0 flex-wrap items-center gap-2 pt-1");
-  if (has("runner-skill-name", "run-setup-item"))
+  if (has("runner-skill-name"))
     return styled("flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-sm");
+  if (has("run-setup-item"))
+    return styled(
+      "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-1.5 py-2 text-sm [&>.mono]:text-right [&>.muted]:text-right",
+    );
+  if (has("run-setup-note"))
+    return styled("col-span-full flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1");
+  if (has("run-setup-group")) return styled("flex min-w-0 flex-col gap-1");
   if (has("runner-skill-error"))
     return styled(
       "rounded-base border-2 border-border bg-red-200 px-2 py-1 font-mono text-xs text-black",
     );
   if (has("run-setup"))
     return styled(
-      "grid min-w-0 grid-cols-1 gap-x-6 gap-y-4 [overflow-wrap:anywhere] sm:grid-cols-[10rem_minmax(0,1fr)] [&>h3]:col-span-full [&>h4]:text-sm [&>h4]:font-semibold",
+      "grid min-w-0 grid-cols-1 content-start gap-y-4 [overflow-wrap:anywhere] [&_h4]:text-sm [&_h4]:font-semibold [&_h4]:opacity-75",
     );
   if (has("runner-settings")) return styled("flex min-w-0 flex-col gap-5");
   if (has("runner-setting"))

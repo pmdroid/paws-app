@@ -633,8 +633,6 @@ function runDetails(item: StatusItem, run: StatusRun | undefined, view: Closeout
     run?.setup ? runSetupSection(run.setup) : "",
   ].filter(Boolean);
   if (!parts.length) return "";
-  const key = `details:${item.id}`;
-  const open = sectionOpen(view, key, false);
   const summary = [
     item.timeline?.length ? `${item.timeline.length} state changes` : "",
     run?.setup ? "skills and hooks" : "",
@@ -642,7 +640,13 @@ function runDetails(item: StatusItem, run: StatusRun | undefined, view: Closeout
   ]
     .filter(Boolean)
     .join(" · ");
-  return `<section class="run-details" aria-label="Run details">${sectionToggle(key, open, "<h2>Run details</h2>", summary)}${open ? parts.join("") : ""}</section>`;
+  return fold(
+    view,
+    `details:${item.id}`,
+    "Run details",
+    summary,
+    `<div class="run-details">${parts.join("")}</div>`,
+  );
 }
 
 const RESTART_REASON_LABELS: Record<string, string> = {
@@ -658,7 +662,7 @@ const RESTART_REASON_LABELS: Record<string, string> = {
 function itemTimeline(item: StatusItem): string {
   if (!item.timeline?.length) return "";
   return `<section class="item-timeline" aria-labelledby="item-timeline-heading"><h3 id="item-timeline-heading">State changes</h3>
-    <ol role="list">${timelineGroups(item.timeline)
+    <ol class="timeline-list" role="list">${timelineGroups(item.timeline)
       .map((group) => (group.length === 1 ? itemTimelineEntry(group[0]!) : timelineLoop(group)))
       .join("")}</ol></section>`;
 }
@@ -688,29 +692,33 @@ export function timelineGroups(entries: readonly StatusItemEvent[]): StatusItemE
   return groups;
 }
 
+const plainWords = (value: string) => esc(value.replaceAll("_", " "));
+
+function timelineMove(from: string, to: string): string {
+  return `<p class="timeline-move">${plainWords(from)} <span aria-hidden="true">→</span><span class="sr-only">to</span> <strong>${plainWords(to)}</strong></p>`;
+}
+
+function timelineTime(at: string): string {
+  return `<time datetime="${esc(at)}" title="${esc(at)}">${esc(clock24(at))}</time>`;
+}
+
 function timelineLoop(group: readonly StatusItemEvent[]): string {
   const [first, second] = group as [StatusItemEvent, StatusItemEvent];
   const last = group.at(-1)!;
-  const state = (value: string) => esc(value.replaceAll("_", " "));
-  return `<li data-kind="loop"><time datetime="${esc(first.at)}" title="${esc(first.at)}">${esc(clock24(first.at))}</time>–<time datetime="${esc(last.at)}" title="${esc(last.at)}">${esc(clock24(last.at))}</time> <strong>${state(first.to)}</strong> and back to ${state(second.to)}, ${group.length / 2} times <span class="muted">${esc(first.event)} · ${esc(second.event)}</span></li>`;
+  return `<li data-kind="loop"><span class="timeline-time">${timelineTime(first.at)}–${timelineTime(last.at)}</span><span class="timeline-dot" data-state="${esc(first.to)}" aria-hidden="true"></span><div class="timeline-body"><p class="timeline-move"><strong>${plainWords(first.to)}</strong> and back to ${plainWords(second.to)} <span class="tag">${group.length / 2} times</span></p><p class="muted">${plainWords(first.event)} · ${plainWords(second.event)}</p></div></li>`;
 }
 
 function itemTimelineEntry(entry: StatusItemEvent): string {
-  const state = (value: string) => esc(value.replaceAll("_", " "));
   const why =
     entry.kind === "restart"
-      ? `Back to the agent for ${esc(RESTART_REASON_LABELS[entry.reason ?? ""] ?? (entry.reason ?? "a restart").replaceAll("_", " "))}`
+      ? `Back to the agent for ${esc(RESTART_REASON_LABELS[entry.reason ?? ""] ?? (entry.reason ?? "a restart").replaceAll("_", " "))}.`
       : entry.kind === "ask"
-        ? `Asked a person: ${esc((entry.reason ?? "a question").replaceAll("_", " "))}`
+        ? `Asked a person: ${plainWords(entry.reason ?? "a question")}.`
         : "";
-  const detail = [
-    `from ${state(entry.from)}`,
-    esc(entry.event),
-    entry.actor ? `by ${esc(entry.actor)}` : "",
-  ]
+  const detail = [plainWords(entry.event), entry.actor ? `by ${esc(entry.actor)}` : ""]
     .filter(Boolean)
     .join(" · ");
-  return `<li data-kind="${entry.kind}"><time datetime="${esc(entry.at)}" title="${esc(entry.at)}">${esc(clock24(entry.at))}</time> <strong>${state(entry.to)}</strong>${why ? ` ${why}.` : ""} <span class="muted">${detail}</span></li>`;
+  return `<li data-kind="${entry.kind}"><span class="timeline-time">${timelineTime(entry.at)}</span><span class="timeline-dot" data-state="${esc(entry.to)}" aria-hidden="true"></span><div class="timeline-body">${timelineMove(entry.from, entry.to)}${why ? `<p class="timeline-why">${why}</p>` : ""}<p class="muted">${detail}</p></div></li>`;
 }
 
 /** The pull request and where its merge stands. */
@@ -824,7 +832,7 @@ export function runSetupSection(setup: StatusRunSetup): string {
     ? `<ul class="run-setup-list" role="list" aria-label="Skills">${setup.skills
         .map(
           (skill) =>
-            `<li class="run-setup-item"><b>${esc(skill.name)}</b><span class="mono" title="${esc(skill.version)}">${esc(skillVersionLabel(skill.version))}</span>${skill.installing ? '<span class="tag running">Was installing</span><span class="muted">The run may have had the earlier version.</span>' : ""}</li>`,
+            `<li class="run-setup-item"><b>${esc(skill.name)}</b><span class="mono" title="${esc(skill.version)}">${esc(skillVersionLabel(skill.version))}</span>${skill.installing ? '<span class="run-setup-note"><span class="tag running">Was installing</span><span class="muted">The run may have had the earlier version.</span></span>' : ""}</li>`,
         )
         .join("")}</ul>`
     : '<p class="muted">No registered skills.</p>';
@@ -836,7 +844,7 @@ export function runSetupSection(setup: StatusRunSetup): string {
         )
         .join("")}</ul>`
     : '<p class="muted">No hooks.</p>';
-  return `<section class="run-setup" aria-labelledby="setup-heading"><h3 id="setup-heading">Skills and hooks</h3><h4>Skills</h4>${skills}<h4>Hooks</h4>${hooks}</section>`;
+  return `<section class="run-setup" aria-labelledby="setup-heading"><h3 id="setup-heading">Skills and hooks</h3><div class="run-setup-group"><h4>Skills</h4>${skills}</div><div class="run-setup-group"><h4>Hooks</h4>${hooks}</div></section>`;
 }
 
 /** The client asks which controls apply; `data-version` and `data-no-controls` spare that question. */
