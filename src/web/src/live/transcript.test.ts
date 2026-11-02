@@ -1,3 +1,4 @@
+import { openedView } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import {
   appendFileSync,
@@ -96,6 +97,7 @@ test("full transcript reads unfinished ACP output, tools and classification whil
     detail: provider.item(itemId),
     error: null,
     engineUrl: null,
+    closeout: openedView(),
   }).content;
   expect(html).toContain(`href="/status/runs/${run.id}/transcript"`);
   expect(html).toContain('target="_blank"');

@@ -19,7 +19,7 @@ import {
   type StatusItemDetail,
   type StatusSnapshot,
 } from "../contract";
-import { emptyCloseoutView } from "../client/closeout";
+import { openedView } from "../../test/fixtures";
 import { clock24 } from "../client/format";
 import { render } from "../client/render";
 import { issueRedirect, parseRoute } from "../client/route";
@@ -117,7 +117,7 @@ function issuePage(snapshot: Status, id = "PAS-367"): string {
     detail: route?.view === "issues" && route.id ? (snapshot.details.get(route.id) ?? null) : null,
     error: null,
     engineUrl: null,
-    closeout: emptyCloseoutView(),
+    closeout: openedView(),
   }).content;
 }
 
@@ -277,7 +277,7 @@ describe("one page per issue", () => {
       detail: snapshotOf(db).details.get("PAS-367") ?? null,
       error: null,
       engineUrl: null,
-      closeout: { ...emptyCloseoutView(), open: { "section\ndetails:PAS-367": true } },
+      closeout: openedView({ "section\ndetails:PAS-367": true }),
     }).content;
     expect(html).toContain("Back to the agent for a follow-up in Linear.");
     expect(html).toContain("by Jonas Berg");

@@ -1,4 +1,4 @@
-import { fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
+import { openedView, fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -93,6 +93,7 @@ function runPage(snapshot: FullStatus, runId: string): string {
     phase: "ready",
     error: null,
     engineUrl: null,
+    closeout: openedView(),
     ...pageData(snapshot, { view: "runs", id: runId }),
   }).content;
 }
@@ -174,13 +175,14 @@ describe("visual review on the run page", () => {
     const { snapshot, runId } = waiting();
     const html = runPage(snapshot, runId);
     expect(steps(html)).toEqual([
-      "done ✓ Implementation",
-      "now Visual review · round 1",
-      "wait Closeout",
+      "done ✓ Queued",
+      "done ✓ Implementing",
+      "needs Visual review · round 1",
+      "wait Checking",
       "wait Waiting to merge",
-      "wait Complete",
+      "wait Done",
     ]);
-    expect(html).toContain('class="run-stepper with-review"');
+    expect(html).toContain('class="run-stepper journey-stepper with-review"');
     expect(html).toContain('<span class="st awaiting_input">Waiting for visual review</span>');
     expect(html).toContain("Waiting for Ada Reviewer or the project lead · round 1");
     expect(html).toContain(`href="${LINK}"`);
@@ -193,11 +195,12 @@ describe("visual review on the run page", () => {
     const { snapshot, runId } = accepted();
     const html = runPage(snapshot, runId);
     expect(steps(html)).toEqual([
-      "done ✓ Implementation",
+      "done ✓ Queued",
+      "done ✓ Implementing",
       "done ✓ Visual review",
-      "now Closeout",
+      "now Checking",
       "wait Waiting to merge",
-      "wait Complete",
+      "wait Done",
     ]);
     expect(html).toContain("Accepted by Ada Reviewer · 20m ago");
     expect(html).toContain("Ada Reviewer requested changes · 50m ago");
@@ -213,11 +216,12 @@ describe("visual review on the run page", () => {
     const { snapshot, runId } = changes();
     const html = runPage(snapshot, runId);
     expect(steps(html)).toEqual([
-      "now Implementation",
+      "done ✓ Queued",
+      "now Implementing",
       "wait Visual review",
-      "wait Closeout",
+      "wait Checking",
       "wait Waiting to merge",
-      "wait Complete",
+      "wait Done",
     ]);
     expect(html).toContain('<span class="tag bad">Changes requested</span>');
     expect(html).toContain("The agent is addressing these changes.");
@@ -280,10 +284,10 @@ describe("visual review on the run page", () => {
     expect(html).toContain("shot-2.png · Sent to Linear");
   });
 
-  test("a run without a visual review keeps its four steps", () => {
+  test("a run without a visual review has no visual review step", () => {
     const { snapshot, runId } = fixture([], "running");
     const html = runPage(snapshot, runId);
-    expect(steps(html)).toHaveLength(4);
+    expect(steps(html)).toHaveLength(5);
     expect(html).not.toContain("visual-review");
   });
 

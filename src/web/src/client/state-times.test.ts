@@ -1,9 +1,8 @@
-import { fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
+import { openedView, fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { StatusStateTimes } from "../contract";
-import { emptyCloseoutView } from "./closeout";
 import { render } from "./render";
 import type { Route } from "./route";
 import { hoursLabel, itemAgeLine } from "./state-times";
@@ -27,7 +26,7 @@ function view(snapshot: FullStatus, route: Route): string {
     phase: "ready",
     error: null,
     engineUrl: null,
-    closeout: emptyCloseoutView(),
+    closeout: openedView(),
     ...pageData(snapshot, route),
   }).content;
 }
@@ -65,7 +64,7 @@ describe("time in each state", () => {
     expect(section).toContain("awaiting input <b>48 min</b>");
     expect(section).toContain('merge queue <b>73 min</b> <span class="muted">now</span>');
     // Before the Closeout result and the timeline of the run.
-    expect(html.indexOf("state-times-heading")).toBeLessThan(html.indexOf("activity-heading"));
+    expect(html.indexOf("state-times-heading")).toBeGreaterThan(html.indexOf("activity-heading"));
   });
 
   test("each segment grows with its time once themed", () => {

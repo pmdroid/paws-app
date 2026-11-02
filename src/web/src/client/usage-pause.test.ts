@@ -1,7 +1,12 @@
-import { fullStatusFixture, pageData, statusList, type FullStatus } from "../../test/fixtures";
+import {
+  openedView,
+  fullStatusFixture,
+  pageData,
+  statusList,
+  type FullStatus,
+} from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { parseStatusSnapshot } from "../contract";
-import { emptyCloseoutView } from "./closeout";
 import { render } from "./render";
 
 function pausedSnapshot(): FullStatus {
@@ -23,7 +28,7 @@ function runPage(snapshot: FullStatus): string {
     phase: "ready",
     error: null,
     engineUrl: null,
-    closeout: emptyCloseoutView(),
+    closeout: openedView(),
     ...pageData(snapshot, { view: "runs", id: "r-102" }),
   }).content;
 }

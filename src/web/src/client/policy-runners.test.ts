@@ -1,8 +1,13 @@
-import { fullStatusFixture, pageData, statusList, type FullStatus } from "../../test/fixtures";
+import {
+  openedView,
+  fullStatusFixture,
+  pageData,
+  statusList,
+  type FullStatus,
+} from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { parseStatusSnapshot, type StatusPolicyRunnerWarning } from "../contract";
 import type { Route } from "./route";
-import { emptyCloseoutView } from "./closeout";
 import { render } from "./render";
 
 const WARNING: StatusPolicyRunnerWarning = {
@@ -21,7 +26,7 @@ function page(snapshot: FullStatus, route: Route): string {
     phase: "ready",
     error: null,
     engineUrl: null,
-    closeout: emptyCloseoutView(),
+    closeout: openedView(),
     ...pageData(snapshot, route),
   }).content;
 }

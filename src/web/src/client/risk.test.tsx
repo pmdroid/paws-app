@@ -1,9 +1,8 @@
-import { fullStatusFixture, itemDetail } from "../../test/fixtures";
+import { openedView, fullStatusFixture, itemDetail } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStatusItemDetail, type StatusItemRisk } from "../contract";
-import { emptyCloseoutView } from "./closeout";
 import { render } from "./render";
 import { themedMarkup } from "./theme";
 
@@ -22,7 +21,7 @@ function page(risk: StatusItemRisk | null): string {
     detail: parsed.detail,
     error: null,
     engineUrl: null,
-    closeout: emptyCloseoutView(),
+    closeout: openedView(),
   }).content;
 }
 

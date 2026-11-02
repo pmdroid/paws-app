@@ -23,7 +23,7 @@ OWN-WORLD: Inherit DESIGN.md's lavender canvas, paper panels, orange actions, so
 
 STORY: Identify the issue and runner, see the workflow stage, inspect an attempt, expand a failed check, and follow its evidence.
 
-FIRST VIEWPORT: Breadcrumb, issue/status/repository line, large title and run facts precede a full-width segmented stepper. Closeout's heading aligns with attempt controls and Expand all; a single result banner precedes one-line check summaries. Output streams switch within a dark terminal. The evidence gallery follows checks.
+FIRST VIEWPORT: Breadcrumb, a phase pill with the repository and active time, large title and run facts precede the journey card: a full-width segmented stepper over a Now panel naming the current phase and its reason. Detail sections follow as folded one-line rows. Closeout's heading aligns with attempt controls and Expand all; a single result banner precedes one-line check summaries. Output streams switch within a dark terminal. The evidence gallery follows checks.
 
 FORM: User-pinned mocks 1–5 from PAS-373; code-led local extension, with existing authentication and repository authorization preserved. The signature interaction is polling-stable check expansion and stream selection.
 

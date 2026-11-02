@@ -1,8 +1,14 @@
-import { fullStatusFixture, pageData, statusList, type FullStatus } from "../../test/fixtures";
+import {
+  openedView,
+  fullStatusFixture,
+  pageData,
+  statusList,
+  type FullStatus,
+} from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
-import { checkKey, emptyCloseoutView } from "./closeout";
+import { checkKey } from "./closeout";
 import { esc } from "./format";
 
 /** `snapshot` is the full fixture; the model gets its list and, on an issue page, its detail. */
@@ -14,6 +20,7 @@ function model(
     phase: "ready",
     error: null,
     engineUrl: null,
+    closeout: openedView(),
     ...rest,
     ...(snapshot === null ? { route, snapshot: null } : pageData(snapshot, route)),
   };
@@ -83,11 +90,7 @@ describe("status views", () => {
         snapshot,
         engineUrl: "https://engine.example/api/status",
         route: { view: "runs", id: run.id },
-        closeout: {
-          attempt: {},
-          open: { [checkKey(verdict.itemId, 1, check.id)]: true },
-          wrap: {},
-        },
+        closeout: openedView({ [checkKey(verdict.itemId, 1, check.id)]: true }),
       });
     expect(render(input()).content).toContain(
       'href="https://engine.example/api/closeout-artifact?',
@@ -280,7 +283,7 @@ describe("status views", () => {
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
     item.linearRequests = 12;
-    const closeout = emptyCloseoutView();
+    const closeout = openedView();
     closeout.open[`section\ndetails:${item.id}`] = true;
     const page = render(model({ snapshot, route: { view: "runs", id: run.id }, closeout })).content;
     expect(page).toContain("<dt>Linear requests</dt><dd>12</dd>");
@@ -475,7 +478,7 @@ function issueRow(html: string, id: string): string {
 }
 
 function activitySection(html: string): string {
-  const start = html.indexOf('<section class="run-activity"');
+  const start = html.indexOf('<section class="issue-fold" aria-label="Timeline"');
   if (start < 0) throw new Error("missing item activity");
   return html.slice(start, html.indexOf("</section>", start));
 }

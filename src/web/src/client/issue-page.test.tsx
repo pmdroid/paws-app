@@ -1,4 +1,5 @@
 import {
+  openedView,
   fullStatusFixture,
   itemDetail,
   pageData,
@@ -9,7 +10,6 @@ import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
-import { emptyCloseoutView } from "./closeout";
 import { plainTask, render, timelineGroups } from "./render";
 import { themedMarkup } from "./theme";
 
@@ -51,7 +51,7 @@ function page(snapshot: FullStatus, id = "ENG-101"): string {
     phase: "ready",
     error: null,
     engineUrl: null,
-    closeout: emptyCloseoutView(),
+    closeout: openedView(),
     ...pageData(snapshot, { view: "issues", id }),
   }).content;
 }
@@ -96,7 +96,7 @@ describe("issue page", () => {
       detail: parsed.detail,
       error: null,
       engineUrl: null,
-      closeout: { ...emptyCloseoutView(), open: { "section\ndetails:ENG-101": true } },
+      closeout: openedView({ "section\ndetails:ENG-101": true }),
     }).content;
     const section = html.slice(html.indexOf('id="item-timeline-heading"'));
     expect(section).toContain(">State changes</h3>");
@@ -147,7 +147,7 @@ describe("issue page", () => {
       detail: parsed.detail,
       error: null,
       engineUrl: null,
-      closeout: emptyCloseoutView(),
+      closeout: openedView(),
     }).content;
     expect(html).toContain('<article class="run-page issue-page">');
     expect(html).toContain('id="activity-heading">Timeline</h2>');
