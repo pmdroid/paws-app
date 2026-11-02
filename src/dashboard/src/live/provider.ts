@@ -114,6 +114,9 @@ import {
   type CheckState,
   type IssueDetailResponse,
   type IssueListResponse,
+  type QuestionCard,
+  type QuestionDetailResponse,
+  type QuestionListResponse,
   type ItemState,
   type OverviewResponse,
   type RunState,
@@ -218,10 +221,22 @@ export function createLiveStatusProvider(
   issues(): IssueListResponse;
   issue(id: string): IssueDetailResponse | null;
   overview(): OverviewResponse;
+  questions(): QuestionListResponse;
+  question(id: string): QuestionDetailResponse | null;
 } {
   return {
     overview() {
       return readOverview(db, options);
+    },
+    questions() {
+      return readQuestionList(db, options);
+    },
+    question(id) {
+      const list = readQuestionList(db, options);
+      const question = list.questions.find((entry) => entry.id === id);
+      return question === undefined
+        ? null
+        : { source: list.source, generatedAt: list.generatedAt, question };
     },
     issues() {
       return readIssueList(db, options);
@@ -297,6 +312,72 @@ function readIssueList(db: Database, options: LiveStatusOptions): IssueListRespo
     agentCloseout: list.agentCloseout ?? [],
     mergedTimes: list.mergedTimes ?? null,
   };
+}
+
+function readQuestionList(db: Database, options: LiveStatusOptions): QuestionListResponse {
+  const now = options.now?.() ?? new Date();
+  const generatedAt = now.toISOString();
+  const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
+  const visible = listWorkItemsByStates(db, WORK_ITEM_STATES)
+    .filter(
+      (record) =>
+        options.sessionIds === undefined ||
+        (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
+    )
+    .sort((left, right) => compareNewest(left, right, facts));
+  const openQuestions = listOpenQuestions(db);
+  const asked = new Set(openQuestions.map((question) => question.itemId));
+  const records = listedRecords(db, visible, facts, now.getTime()).filter(
+    (record) => asked.has(record.id) || record.state === "awaiting_input",
+  );
+  if (records.length === 0) return { source: "live", generatedAt, questions: [] };
+  const unasked = records.some(
+    (record) => record.state === "awaiting_input" && !asked.has(record.id),
+  );
+  const rows = unasked
+    ? listOutbox(db).filter(
+        (row) =>
+          options.sessionIds === undefined ||
+          (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
+      )
+    : [];
+  const relevant = new Set(records.map((record) => record.id));
+  const stored = new Map<string, StoredRun[]>();
+  for (const run of listRuns(db))
+    if (relevant.has(run.itemId)) stored.set(run.itemId, [...(stored.get(run.itemId) ?? []), run]);
+  const runIdOf = (runId: string | null) => {
+    if (runId === null) return null;
+    for (const group of stored.values())
+      if (group.some((run) => run.id === runId)) return group[0]!.id;
+    return null;
+  };
+  const issues = new Map<string, QuestionCard["issue"]>();
+  for (const record of records) {
+    const id = publicId(record);
+    if (issues.has(id)) continue;
+    const group = stored.get(record.id);
+    const current =
+      group === undefined || runIdOf(record.currentRunId) === null
+        ? undefined
+        : (group.find((run) => run.id === record.currentRunId) ?? group.at(-1));
+    issues.set(id, {
+      id,
+      title: textOr(record.title, id),
+      agent: current === undefined ? "Paws" : agentName(current.agent),
+    });
+  }
+  return {
+    source: "live",
+    generatedAt,
+    questions: questionsFor(db, records, rows, runIdOf, openQuestions).map((question) => ({
+      ...question,
+      issue: issues.get(question.itemId)!,
+    })),
+  };
+}
+
+export function emptyQuestionList(now = new Date()): QuestionListResponse {
+  return { source: "live", generatedAt: now.toISOString(), questions: [] };
 }
 
 function toIssueDetail(detail: StatusItemDetail): IssueDetailResponse {
@@ -792,7 +873,13 @@ function readScopedSnapshot(
     ...(only === undefined ? mergedTimesFor(db, visible, facts, now.getTime()) : {}),
   };
   if (!issuesOnly)
-    snapshot.questions = questionsFor(db, records, rows, runs, openQuestions).map((question) =>
+    snapshot.questions = questionsFor(
+      db,
+      records,
+      rows,
+      (runId) => sessionRunId(runId, runs),
+      openQuestions,
+    ).map((question) =>
       withRiskDetail(db, withBypassChecks(db, question, snapshot.verdicts, env), snapshot.verdicts),
     );
   const blocks =
@@ -1485,7 +1572,7 @@ export function questionsFor(
   db: Database,
   records: readonly WorkItemRecord[],
   rows: readonly OutboxRow[],
-  runs: readonly StatusRun[],
+  runIdOf: (runId: string | null) => string | null,
   openQuestions: readonly OpenQuestionRecord[],
 ): StatusQuestion[] {
   const questions: StatusQuestion[] = [];
@@ -1501,7 +1588,7 @@ export function questionsFor(
     questions.push({
       id: question.id,
       itemId: publicId(record),
-      runId: sessionRunId(question.runId, runs) ?? linkedRunId(record, runs),
+      runId: runIdOf(question.runId) ?? runIdOf(record.currentRunId),
       title: linkAsk?.title ?? (parsed.title || question.body),
       body: linkAsk?.detail ?? (parsed.body || question.body),
       context: linkAsk ? "" : parsed.context,
@@ -1555,7 +1642,7 @@ export function questionsFor(
     seen.add(id);
     const parsed = parseQuestion(readString(row.payload, "body") ?? "");
     if (parsed.title.length === 0) continue;
-    const runId = linkedRunId(record, runs);
+    const runId = runIdOf(record.currentRunId);
     questions.push({
       id,
       itemId: publicId(record),

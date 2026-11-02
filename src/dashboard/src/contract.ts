@@ -1269,6 +1269,92 @@ function readOverviewQuestion(input: unknown, path: string): OverviewQuestion {
   };
 }
 
+export const QUESTIONS_API_PATH = "/api/questions";
+
+export interface QuestionIssue {
+  id: string;
+  title: string;
+  agent: string;
+}
+
+export interface QuestionCard extends StatusQuestion {
+  issue: QuestionIssue;
+}
+
+export interface QuestionListResponse {
+  source: StatusSource;
+  generatedAt: string;
+  questions: QuestionCard[];
+}
+
+export interface QuestionDetailResponse {
+  source: StatusSource;
+  generatedAt: string;
+  question: QuestionCard;
+}
+
+export type QuestionListParseResult =
+  | { ok: true; response: QuestionListResponse }
+  | { ok: false; error: string };
+export type QuestionDetailParseResult =
+  | { ok: true; response: QuestionDetailResponse }
+  | { ok: false; error: string };
+
+export function questionPath(id: string): string {
+  return `${QUESTIONS_API_PATH}/${encodeURIComponent(id)}`;
+}
+
+function readQuestionCard(input: unknown, index: number): QuestionCard {
+  const question = readQuestion(input, index);
+  const path = `questions[${index}].issue`;
+  const issue = object(object(input, `questions[${index}]`).issue, path);
+  const card = {
+    ...question,
+    issue: {
+      id: text(issue, "id", path),
+      title: string(issue, "title", path),
+      agent: text(issue, "agent", path),
+    },
+  };
+  if (card.issue.id !== card.itemId)
+    throw new StatusContractError(`${path}.id must be the question's itemId`);
+  return card;
+}
+
+export function parseQuestionListResponse(input: unknown): QuestionListParseResult {
+  return parsed(
+    () => {
+      const path = "questions";
+      const body = object(input, path);
+      return {
+        source: oneOf(string(body, "source", path), SOURCES, `${path}.source`),
+        generatedAt: dateString(body, "generatedAt", path),
+        questions: array(body, "questions", path).map((entry, index) =>
+          readQuestionCard(entry, index),
+        ),
+      };
+    },
+    "contract.parseQuestionListResponse",
+    "Invalid question list",
+  );
+}
+
+export function parseQuestionDetailResponse(input: unknown): QuestionDetailParseResult {
+  return parsed(
+    () => {
+      const path = "question";
+      const body = object(input, path);
+      return {
+        source: oneOf(string(body, "source", path), SOURCES, `${path}.source`),
+        generatedAt: dateString(body, "generatedAt", path),
+        question: readQuestionCard(body.question, 0),
+      };
+    },
+    "contract.parseQuestionDetailResponse",
+    "Invalid question",
+  );
+}
+
 /** The list's summary of a full verdict: decision, head, and each check's id, kind and state. */
 export function verdictSummary(verdict: StatusVerdict): StatusVerdictSummary {
   return {

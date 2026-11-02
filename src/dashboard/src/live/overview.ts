@@ -66,20 +66,24 @@ export function readOverview(db: Database, options: LiveStatusOptions): Overview
   const listed = listedRecords(db, visible, facts, nowMs);
   const rows = readerOutbox(db, options);
   const openQuestions = listOpenQuestions(db);
-  const questions: OverviewQuestion[] = questionsFor(db, listed, rows, [], openQuestions).map(
-    (question) => ({
-      id: question.id,
-      itemId: question.itemId,
-      title: question.title,
-      linkAsk: question.linkAsk
-        ? {
-            kind: question.linkAsk.kind,
-            title: question.linkAsk.title,
-            detail: question.linkAsk.detail,
-          }
-        : null,
-    }),
-  );
+  const questions: OverviewQuestion[] = questionsFor(
+    db,
+    listed,
+    rows,
+    () => null,
+    openQuestions,
+  ).map((question) => ({
+    id: question.id,
+    itemId: question.itemId,
+    title: question.title,
+    linkAsk: question.linkAsk
+      ? {
+          kind: question.linkAsk.kind,
+          title: question.linkAsk.title,
+          detail: question.linkAsk.detail,
+        }
+      : null,
+  }));
   const asked = new Set(questions.map((question) => question.itemId));
   const changed = listLastWorkItemEventTimes(db);
   const merged = new Set(

@@ -13,6 +13,9 @@ import {
   parseIssueDetailResponse,
   parseIssueListResponse,
   parseOverviewResponse,
+  parseQuestionDetailResponse,
+  parseQuestionListResponse,
+  QUESTIONS_API_PATH,
   parseStatusItemDetail,
   parseStatusSlices,
   parseStatusSnapshot,
@@ -24,6 +27,8 @@ import {
   type IssueDetailResponse,
   type IssueListResponse,
   type OverviewResponse,
+  type QuestionDetailResponse,
+  type QuestionListResponse,
   type StatusCheckLog,
   type StatusItemDetail,
   type StatusSnapshot,
@@ -32,6 +37,7 @@ import {
   createLiveStatusProvider,
   emptyIssueList,
   emptyLiveSnapshot,
+  emptyQuestionList,
   type CheckLogRequest,
   type CheckOutput,
   type LiveStatusOptions,
@@ -59,6 +65,8 @@ export interface StatusProvider {
   issues?(): IssueListResponse | Promise<IssueListResponse>;
   issue?(id: string): IssueDetailResponse | null | Promise<IssueDetailResponse | null>;
   overview?(): OverviewResponse | Promise<OverviewResponse>;
+  questions?(): QuestionListResponse | Promise<QuestionListResponse>;
+  question?(id: string): QuestionDetailResponse | null | Promise<QuestionDetailResponse | null>;
 }
 
 export interface StatusServerOptions {
@@ -115,6 +123,12 @@ export function fakeStatusProvider(): StatusProvider {
     overview() {
       return emptyOverview();
     },
+    questions() {
+      return emptyQuestionList();
+    },
+    question() {
+      return null;
+    },
   };
 }
 
@@ -170,6 +184,8 @@ export async function handleStatusRequest(
     return overviewResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname === ISSUES_API_PATH || pathname.startsWith(`${ISSUES_API_PATH}/`))
     return issuesResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
+  if (pathname === QUESTIONS_API_PATH || pathname.startsWith(`${QUESTIONS_API_PATH}/`))
+    return questionsResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (isDashboardPath(pathname)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
@@ -247,6 +263,8 @@ function liveProvider(options?: {
     issues: () => emptyIssueList(),
     issue: () => null,
     overview: () => emptyOverview(),
+    questions: () => emptyQuestionList(),
+    question: () => null,
   };
 }
 
@@ -523,6 +541,56 @@ async function overviewResponse(
     return conditional(sizes, request, built.value);
   } catch (caught) {
     journalCaught(caught, "handler.overviewResponse", null);
+    return json({ error: "status unavailable" }, 500);
+  }
+}
+
+async function questionsResponse(
+  request: Request,
+  options: StatusServerOptions,
+  sizes: ResponseSizeJournal,
+  cache: StatusSnapshotCache,
+): Promise<Response> {
+  if (request.method === "OPTIONS")
+    return new Response(null, { status: 204, headers: { ...CORS } });
+  if (request.method !== "GET" && request.method !== "HEAD")
+    return json({ error: "Method not allowed" }, 405);
+  const provider = providerFor(options);
+  const source = options.provider ?? options.db ?? EMPTY_SOURCE;
+  const rest = new URL(request.url).pathname.slice(QUESTIONS_API_PATH.length + 1);
+  try {
+    if (rest === "") {
+      if (provider.questions === undefined) return json({ error: "Not found" }, 404);
+      const read = provider.questions.bind(provider);
+      const built = await cache.get<QuestionListResponse>(
+        source,
+        cacheKey("questions", "", options),
+        async () => {
+          const parsed = parseQuestionListResponse(await read());
+          return parsed.ok ? { value: parsed.response } : { error: parsed.error };
+        },
+      );
+      if ("error" in built) return json({ error: built.error }, 500);
+      return conditional(sizes, request, built.value);
+    }
+    const id = rest.includes("/") ? null : itemId(rest);
+    if (id === null || provider.question === undefined) return json({ error: "Not found" }, 404);
+    const read = provider.question.bind(provider);
+    const built = await cache.get<QuestionDetailResponse | null>(
+      source,
+      cacheKey("question", id, options),
+      async () => {
+        const detail = await read(id);
+        if (detail === null) return { value: null };
+        const parsed = parseQuestionDetailResponse(detail);
+        return parsed.ok ? { value: parsed.response } : { error: parsed.error };
+      },
+    );
+    if ("error" in built) return json({ error: built.error }, 500);
+    if (built.value === null) return json({ error: "Not found" }, 404);
+    return conditional(sizes, request, built.value);
+  } catch (caughtError7) {
+    journalCaught(caughtError7, "handler.questionsResponse", null);
     return json({ error: "status unavailable" }, 500);
   }
 }
