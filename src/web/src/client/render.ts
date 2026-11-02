@@ -206,7 +206,8 @@ function viewOverview(snapshot: StatusSnapshot): string {
         },
       ];
     if (["merged", "completed", "stopped"].includes(item.state)) return [];
-    const verdict = itemVerdict(snapshot, item.id);
+    const stopped = ["verifying", "awaiting_input", "needs_human"].includes(item.state);
+    const verdict = stopped ? itemVerdict(snapshot, item.id) : undefined;
     const reason =
       verdict?.decision === "exhausted"
         ? "Automatic retries are used up."
