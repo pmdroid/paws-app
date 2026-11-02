@@ -73,7 +73,7 @@ describe("interrupted verification", () => {
     expect(getWorkItem(db, item.id)?.state).toBe("recovering");
   });
 
-  test("an expired runner lease keeps the candidate verifying, and orphan recovery re-verifies it", () => {
+  test("an expired runner lease keeps the candidate verifying, and re-verifies it without waiting for orphan recovery", () => {
     const { db, item, run } = verifying();
     db.run("PRAGMA foreign_keys=OFF");
     db.run(
@@ -88,10 +88,10 @@ describe("interrupted verification", () => {
     expect(closeExpiredRunnerLeases(db, later)).toEqual([run.id]);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
     expect(getRun(db, run.id)?.status).toBe("lost");
-    expect(requeueOrphanedWork(db, later)).toEqual([item.id]);
     expect(pending(db)).toMatchObject([
       { queue: JOB_KIND.reverify, payload: { itemId: item.id, recheckHead: true } },
     ]);
+    expect(requeueOrphanedWork(db, later)).toEqual([]);
   });
 
   test("Stop wins over a kept candidate", () => {

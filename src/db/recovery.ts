@@ -4,14 +4,22 @@ import {
   decideStartup,
   hasVerificationCandidate,
   JOB_KIND,
+  MAX_TRANSIENT_RETRIES,
   OUTBOX_ACTIVITY,
+  transientRetryDelayMs,
   type StartupDecision,
   type WorkItemState,
 } from "../core";
 import { applyDecision } from "./decisions";
 import { enqueueJobOnce } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
-import { applyWorkItemEvent, getWorkItem, listInFlightItems, listWorkItemsByStates } from "./items";
+import {
+  applyWorkItemEvent,
+  getWorkItem,
+  listInFlightItems,
+  listWorkItemsByStates,
+  saveCheckpoint,
+} from "./items";
 import type { WorkItemRecord } from "./items";
 import {
   markPawsAlive,
@@ -215,6 +223,25 @@ function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boole
 
 const ORPHAN_GRACE_MS = 5 * 60_000;
 
+function progressJobSql(item: string, running = "j.status = 'running'"): string {
+  return `EXISTS (SELECT 1 FROM job j WHERE json_extract(j.payload,'$.itemId') = ${item}.id
+    AND (${running} OR (j.status = 'pending' AND (j.item_version IS NULL
+      OR j.item_version = ${item}.version OR j.queue IN ('${JOB_KIND.command}', '${JOB_KIND.reverify}')))))`;
+}
+
+const RECLAIMABLE_RUNNING_JOB_SQL = `(j.status = 'running' AND (j.locked_until IS NULL
+  OR j.locked_until > ?2 OR j.item_version IS NULL OR j.item_version = i.version))`;
+
+function jobOwnsProgress(db: Database, itemId: string, now: number): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM work_item i WHERE i.id = ?1 AND ${progressJobSql("i", RECLAIMABLE_RUNNING_JOB_SQL)}`,
+      )
+      .get(itemId, now) !== null
+  );
+}
+
 /**
  * Queue work again for an in-flight item nothing is moving: no pending or running job, no live
  * runner work, and no job finished within the grace period. A merge in progress fails closed into
@@ -225,9 +252,7 @@ export function requeueOrphanedWork(db: Database, now: number): string[] {
     .query<{ id: string }, [number, number]>(
       `SELECT i.id FROM work_item i
        WHERE i.state IN ('running','verifying','recovering','merge_queue') AND i.cancel_requested = 0
-       AND NOT EXISTS (SELECT 1 FROM job j WHERE json_extract(j.payload,'$.itemId') = i.id
-         AND (j.status = 'running' OR (j.status = 'pending' AND (j.item_version IS NULL
-           OR j.item_version = i.version OR j.queue IN ('${JOB_KIND.command}', '${JOB_KIND.reverify}')))))
+       AND NOT ${progressJobSql("i")}
        AND NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.run_id = i.current_run_id
          AND w.ended_at IS NULL AND w.lease_until > ?1)
        AND (SELECT MAX(j.finished_at) FROM job j WHERE json_extract(j.payload,'$.itemId') = i.id) < ?2`,
@@ -283,8 +308,8 @@ export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
   return immediate(db, () => {
     const cutoff = runnerLeaseCutoff(now);
     const rows = db
-      .query<{ runId: string }, [number, number]>(
-        `SELECT w.run_id AS runId FROM runner_work w
+      .query<{ runId: string; generation: number }, [number, number]>(
+        `SELECT w.run_id AS runId, w.generation AS generation FROM runner_work w
          JOIN run r ON r.id = w.run_id
          WHERE w.ended_at IS NULL AND w.lease_until <= ?
            AND NOT EXISTS (SELECT 1 FROM job j WHERE json_extract(j.payload, '$.itemId')=r.item_id
@@ -298,19 +323,81 @@ export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
     for (const row of rows) {
       const run = getRun(db, row.runId)!;
       const item = getWorkItem(db, run.itemId);
-      if (
+      const current =
         item?.currentRunId === row.runId &&
-        ["running", "verifying", "merge_queue"].includes(item.state) &&
-        !keepsVerification(item)
-      )
-        applyWorkItemEvent(db, item.id, "lease_expired");
+        ["running", "verifying", "merge_queue"].includes(item.state);
+      if (current && !keepsVerification(item)) applyWorkItemEvent(db, item.id, "lease_expired");
       markRun(db, row.runId, "lost", now);
       db.run("UPDATE runner_work SET ended_at = ? WHERE run_id = ? AND ended_at IS NULL", [
         now,
         row.runId,
       ]);
       db.run("DELETE FROM runner_work_grant WHERE run_id = ?", [row.runId]);
+      if (current) followExpiredLease(db, item, row.generation, now);
     }
     return rows.map((row) => row.runId);
   });
+}
+
+function followExpiredLease(
+  db: Database,
+  before: WorkItemRecord,
+  generation: number,
+  now: number,
+): void {
+  const item = getWorkItem(db, before.id);
+  if (!item || item.cancelRequested || item.currentRunId !== before.currentRunId) return;
+  if (ensureRestartQuestion(db, item, now)) return;
+  if (jobOwnsProgress(db, item.id, now) || hasPendingAnswerResume(db, item.id)) return;
+  const verify = before.state === "merge_queue" || keepsVerification(before);
+  if (verify !== (item.state === "verifying")) return;
+  const retry = lastAdvancingRetry(db, item.id) + 1;
+  if (retry > MAX_TRANSIENT_RETRIES) {
+    applyDecision(db, item, { type: "ask_restart" }, now);
+    return;
+  }
+  if (item.checkpoint?.phase === "merge_queue")
+    saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
+  const runAt = now + transientRetryDelayMs(retry, null);
+  const jobKey = `lease-expired:${item.id}:${before.currentRunId}:${generation}`;
+  if (verify)
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.reverify,
+      jobKey,
+      runAt,
+      maxAttempts: Math.max(1, MAX_TRANSIENT_RETRIES - retry + 1),
+      payload: {
+        itemId: item.id,
+        runId: item.currentRunId,
+        reason: "transient_failure",
+        retry,
+        recheckHead: true,
+        failClosed: true,
+      },
+      now,
+    });
+  else
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.resume,
+      jobKey,
+      runAt,
+      payload: {
+        itemId: item.id,
+        runId: item.currentRunId,
+        reason: "transient_failure",
+        retry,
+        ...pendingRestartHandoff(db, item.id),
+      },
+      now,
+    });
+}
+
+function lastAdvancingRetry(db: Database, itemId: string): number {
+  const row = db
+    .query<{ retry: unknown }, [string, string, string, string]>(
+      `SELECT json_extract(payload, '$.retry') AS retry FROM job WHERE queue IN (?, ?, ?)
+       AND json_extract(payload, '$.itemId') = ? ORDER BY id DESC LIMIT 1`,
+    )
+    .get(JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify, itemId);
+  return typeof row?.retry === "number" ? row.retry : 0;
 }

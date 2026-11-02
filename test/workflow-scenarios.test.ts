@@ -42,6 +42,7 @@ import {
   JOB_LEASE_MS,
   MINUTE,
   World,
+  leaseRunnerWork,
   factsOf,
   unexpectedViolations,
 } from "./workflow-world";
@@ -244,6 +245,47 @@ describe("combined recovery scenarios", () => {
     }
   });
 
+  test("PAS-965: lapsed runner leases get one follow-up each before the orphan grace, and restarts add none", () => {
+    const w = new World().seed(["running_leased", "verifying_leased", "merge_active_run"]);
+    try {
+      const merging = getWorkItem(w.db, "merge_active_run")!;
+      leaseRunnerWork(w.db, merging.currentRunId!, w.now);
+      w.advance(MINUTE + RUNNER_LEASE_GRACE_MS);
+      w.sweep();
+      w.sweep();
+      const expected = {
+        running_leased: { state: "recovering", liveJobs: [`${JOB_KIND.resume}:pending`] },
+        verifying_leased: { state: "verifying", liveJobs: [`${JOB_KIND.reverify}:pending`] },
+        merge_active_run: {
+          state: "verifying",
+          liveJobs: [`${JOB_KIND.merge}:pending`, `${JOB_KIND.reverify}:pending`],
+        },
+      } as const;
+      const check = () => {
+        for (const [id, facts] of Object.entries(expected))
+          expect(factsOf(w.db, id)).toMatchObject({
+            ...facts,
+            recoveryAttempts: 0,
+            restartHold: false,
+            runStatus: "lost",
+          });
+        expect(unexpectedViolations(w.db, w.now)).toEqual([]);
+      };
+      check();
+      w.crash();
+      w.start();
+      check();
+      w.stop();
+      w.start();
+      check();
+      expect(itemJobs(w, "verifying_leased").some((job) => job.queue === JOB_KIND.resume)).toBe(
+        false,
+      );
+    } finally {
+      w.close();
+    }
+  });
+
   test("clock discontinuity: a dead job's lease that looks live after the clock steps back never runs a second agent", () => {
     const w = new World().seed(["running"]);
     try {
@@ -434,8 +476,13 @@ describe("runner control across Paws restarts", () => {
         expect(() => controller().current(run.id, 1)).toThrow(RunnerWorkFencedError);
       }
       w.settle();
-      expect(factsOf(w.db, "item")).toMatchObject({ state: "recovering", restartHold: true });
-      expect(liveExecution(w, "item")).toEqual([]);
+      expect(factsOf(w.db, "item")).toMatchObject({
+        state: "recovering",
+        restartHold: false,
+        recoveryAttempts: 0,
+        liveJobs: ["run.resume:pending"],
+      });
+      expect(liveExecution(w, "item").map((job) => job.status)).toEqual(["pending"]);
       expect(unexpectedViolations(w.db, w.now)).toEqual([]);
     } finally {
       w.close();
