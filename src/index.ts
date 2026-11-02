@@ -196,7 +196,7 @@ import {
   REVIEW_ESCAPES_FILE,
   scoreReview,
 } from "./review-score";
-import { handleLinkAskAnswer } from "./questions";
+import { handleLinkAskAnswer, handleQuestionAnswer } from "./questions";
 import { createFindingIssueRoute } from "./finding-issues";
 import { dashboardUrl } from "./dashboard-links";
 import {
@@ -990,6 +990,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           principal,
           sessionIds,
           submit: async (input) => (orchestrator ? orchestrator.decideLinkAsk(input) : "rejected"),
+        }),
+      questionAnswers: (request, principal, sessionIds) =>
+        handleQuestionAnswer(request, {
+          db,
+          principal,
+          sessionIds,
+          submit: async (input) => (orchestrator ? orchestrator.answerFromPaws(input) : "rejected"),
         }),
       findingIssues: createFindingIssueRoute({
         db,

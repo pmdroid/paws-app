@@ -366,6 +366,8 @@ import {
   handoffNote,
   acceptedVisualReviews,
   getQuestion,
+  isPawsAnswerKind,
+  pawsAnswerNote,
   getVisualReview,
   parseVisualReviewAnswer,
   markVisualReviewStale,
@@ -7240,6 +7242,66 @@ export class Orchestrator {
     }
     await this.flush();
     return outcome;
+  }
+
+  async answerFromPaws(input: {
+    questionId: string;
+    answer: string;
+    answeredBy: string;
+    answeredByName: string;
+  }): Promise<"answered" | "rejected"> {
+    if (this.shuttingDown) return "rejected";
+    const open = getQuestion(this.db, input.questionId);
+    const item = open ? getWorkItem(this.db, open.itemId) : null;
+    if (open?.status !== "open" || !isPawsAnswerKind(open.kind) || item === null) return "rejected";
+    const at = Math.max(this.now(), open.createdAt + 1);
+    const event: AcceptedLinearEvent = {
+      dedupeKey: `paws-answer:${open.id}`,
+      deliveryId: null,
+      source: "webhook",
+      action: "prompted",
+      sessionId: open.sessionId,
+      issueId: item.linearIssueId,
+      activityId: null,
+      actorId: input.answeredBy,
+      activityCreatedAtMs: at,
+      body: input.answer,
+      signal: null,
+      updatedAtMs: at,
+      payload: JSON.stringify({ questionId: open.id, answeredBy: input.answeredBy }),
+    };
+    const key = open.sessionId;
+    const answered = (this.sessionEvents.get(key) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(async () => {
+        await this.handleLinearEvent(event);
+        if (getQuestion(this.db, open.id)?.answerEventKey !== event.dedupeKey) return false;
+        enqueueOutboxOnce(this.db, {
+          target: "linear",
+          op: "activity",
+          orderingKey: open.sessionId,
+          idempotencyKey: event.dedupeKey,
+          delivery: "critical",
+          payload: {
+            id: crypto.randomUUID(),
+            sessionId: open.sessionId,
+            itemId: item.id,
+            issueId: item.linearIssueId,
+            kind: "response",
+            body: pawsAnswerNote(input.answeredByName, input.answer),
+          },
+          now: this.now(),
+        });
+        this.reconcileExecution();
+        await this.flush();
+        return true;
+      });
+    this.sessionEvents.set(key, answered);
+    try {
+      return (await answered) ? "answered" : "rejected";
+    } finally {
+      if (this.sessionEvents.get(key) === answered) this.sessionEvents.delete(key);
+    }
   }
 
   async requestVisualReviewChanges(input: {
