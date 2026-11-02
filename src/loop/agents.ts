@@ -72,6 +72,7 @@ export function closeoutPrompt(): string {
     "run_closeout runs matching setup steps first.",
     "Further edits can make passed checks stale.",
     "If blocked is non-null, stop retrying. When the blocker is an exhausted check, finish with a short note on why, and Paws asks the team how to continue. Otherwise report the blocker.",
+    "When get_closeout shows a broken rule, fix it unless the break is intended. If it is intended, say so and why in the final response.",
     "If a required check fails, fix it and call run_closeout again.",
     "If you cannot fix it, call ask_team with the error and what you tried.",
     "Reviews stay in required and are not pending. An independent reviewer runs those.",

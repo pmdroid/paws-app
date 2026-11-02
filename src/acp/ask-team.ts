@@ -274,7 +274,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
         },
       ],
     },
-    /** The report that closes the turn. It runs the rule probes; the agent's tools never do. */
+    /** The report that closes the turn. It reuses rule results `get_closeout` already has. */
     async closeoutReport() {
       if (!closeout) return undefined;
       return closeout.report({ probes: true });
@@ -345,7 +345,11 @@ async function handleConnection(
       try {
         answer =
           parsed.tool === "get_closeout"
-            ? await options.closeout.report({ progress: true })
+            ? await options.closeout.report({
+                progress: true,
+                // Implement and fix turns see each rule's result; read-only turns only list rules.
+                probes: options.allowCloseoutRun !== false,
+              })
             : await options.closeout.run(
                 closeoutId(parsed.arguments ?? {}),
                 closeoutModel(parsed.arguments),

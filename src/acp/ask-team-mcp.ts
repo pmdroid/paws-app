@@ -138,7 +138,7 @@ const POST_UPDATE_TOOL = {
 const GET_CLOSEOUT_TOOL = {
   name: "get_closeout",
   description:
-    "Refresh workspace changes and return the required closeout checks with hints, matched paths, statuses, remaining failed attempts and different_model requirements. pending lists the ids to run in order with run_closeout. blocked explains exhausted retries. Call after edits and before finishing. Later edits can invalidate passed checks. This tool does not run checks. A null remaining_attempts means unlimited retries. Reviews are listed and are not pending.",
+    "Refresh workspace changes and return the required closeout checks with hints, matched paths, statuses, remaining failed attempts and different_model requirements. pending lists the ids to run in order with run_closeout. blocked explains exhausted retries. Call after edits and before finishing. Later edits can invalidate passed checks. This tool does not run checks. It runs each listed rule's probe once per change and returns its result in rules: a nonzero exitCode means the change breaks that rule. Rule results do not change pending or blocked. A null remaining_attempts means unlimited retries. Reviews are listed and are not pending.",
   inputSchema: {
     type: "object",
     properties: {},
