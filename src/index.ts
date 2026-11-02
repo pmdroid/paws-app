@@ -76,6 +76,7 @@ import {
 import {
   enqueueCommand,
   enqueueJobOnce,
+  getJob,
   getLinearSession,
   getWorkItem,
   workItemForSession,
@@ -171,6 +172,9 @@ import {
   authorizeLinearTask,
   handleLinearAdministration,
   closeClosedIssueTasks,
+  FAILED_ISSUE_SWEEP_JOB,
+  FAILED_ISSUE_SWEEP_MS,
+  sweepFailedIssues,
   stopUndelegatedIssue,
   refreshLinearNotificationContext,
   type Orchestrator,
@@ -1467,6 +1471,32 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: 30_000,
         now: Date.now(),
       });
+      const readIssueClosures = tracker?.readIssueClosures?.bind(tracker);
+      if (readIssueClosures) {
+        const sweepFailed = (signal: AbortSignal) =>
+          sweepFailedIssues(db, {
+            readIssueClosures,
+            signal: AbortSignal.any([signal, abort.signal]),
+            notify: (command) => attached.bus.emit(command),
+            interrupt: (sessionId) => attached.interruptLinearSession(sessionId),
+          });
+        created.jobs.register(FAILED_ISSUE_SWEEP_JOB, async (_job, context) => {
+          await sweepFailed(context.signal);
+        });
+        const sweep = getJob(
+          db,
+          enqueueJobOnce(db, {
+            queue: FAILED_ISSUE_SWEEP_JOB,
+            jobKey: FAILED_ISSUE_SWEEP_JOB,
+            recurringEveryMs: FAILED_ISSUE_SWEEP_MS,
+            now: Date.now(),
+          }),
+        );
+        if (sweep?.status === "pending" && sweep.runAt > Date.now())
+          void sweepFailed(abort.signal).catch((error) =>
+            journalCaught(error, "index.sweepFailedIssues", null),
+          );
+      }
       created.jobs.register("worktree.sweep", (_job, context) =>
         attached.sweepWorktrees(context.signal),
       );
