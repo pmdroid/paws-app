@@ -71,6 +71,7 @@ import {
   initializeWorkspaceAccess,
   showWorkspaceSettingsPage,
   takeSignInReturn,
+  workspaceReader,
 } from "./workspace";
 import { legacyDashboardLocation } from "../../../dashboard-links";
 
@@ -94,7 +95,19 @@ const reviewDraw = createReviewDraw(reload);
 const evidence = createEvidenceMedia(() => paint());
 
 const readStatus = createStatusReader();
-const overviewReader = createResourceReader(OVERVIEW_API_PATH, parseOverviewResponse);
+const resources = createResourceReader();
+const overviewReader = {
+  async read() {
+    const read = await resources.read(OVERVIEW_API_PATH, workspaceReader(), parseOverview);
+    return read.kind === "loaded" ? { kind: "loaded" as const, response: read.body } : read;
+  },
+  forget: () => resources.clear(),
+};
+
+function parseOverview(input: unknown) {
+  const parsed = parseOverviewResponse(input);
+  return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
+}
 
 const regions = ["#top", "#banner", "#page-content"] as const;
 const painted = new Map<string, string>();

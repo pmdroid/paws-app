@@ -14,23 +14,24 @@ test("the overview reader asks with the last ETag, keeps the body on 304 and for
     new Response(JSON.stringify({ error: "sign in" }), { status: 401 }),
     Response.json({ ...emptyOverview(), issues: "none" }),
   ];
-  const reader = createResourceReader(
-    OVERVIEW_API_PATH,
-    parseOverviewResponse,
-    async (path, init) => {
-      sent.push({ path, etag: new Headers(init.headers).get("If-None-Match") });
-      return replies.shift()!;
-    },
-  );
+  const resources = createResourceReader(async (path, init) => {
+    sent.push({ path, etag: new Headers(init.headers).get("If-None-Match") });
+    return replies.shift()!;
+  });
+  const parse = (input: unknown) => {
+    const parsed = parseOverviewResponse(input);
+    return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
+  };
+  const reader = { read: () => resources.read(OVERVIEW_API_PATH, "member", parse) };
 
   const first = await reader.read();
-  expect(first.kind === "loaded" && first.response.generatedAt).toBe(FIRST);
+  expect(first.kind === "loaded" && first.body.generatedAt).toBe(FIRST);
   const second = await reader.read();
-  expect(second.kind === "loaded" && second.response).toEqual({
+  expect(second.kind === "loaded" && second.body).toEqual({
     ...emptyOverview(new Date(FIRST)),
     generatedAt: LATER,
   });
-  reader.forget();
+  resources.clear();
   const third = await reader.read();
   expect(third.kind === "response" && third.response.status).toBe(401);
   await expect(reader.read()).rejects.toThrow("overview.issues must be an array");
