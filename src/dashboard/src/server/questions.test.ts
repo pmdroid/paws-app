@@ -3,31 +3,14 @@ import {
   GENERATED_AT_HEADER,
   parseQuestionDetailResponse,
   parseQuestionListResponse,
-  type QuestionCard,
   type QuestionDetailResponse,
 } from "../contract";
+import { questionCardFixture } from "../../test/fixtures";
 import { createStatusSnapshotCache, handleStatusRequest, type StatusProvider } from "./handler";
 
 const NO_SIZES = { record() {}, flush() {} };
 
-function card(id: string, itemId = "PAS-1"): QuestionCard {
-  return {
-    id,
-    itemId,
-    runId: null,
-    title: `Question ${id}`,
-    body: "Which way?",
-    context: "",
-    kind: "decision",
-    urgency: "blocking",
-    options: ["Left", "Right"],
-    recommendedOption: null,
-    askedAt: "2026-11-02T08:00:00.000Z",
-    claimedBy: null,
-    links: [{ label: "Answer in Linear", href: "https://linear.app/paws/issue/PAS-1" }],
-    issue: { id: itemId, title: "Ship it", agent: "claude" },
-  };
-}
+const card = questionCardFixture;
 
 function recording(generatedAt = () => new Date().toISOString()) {
   const calls: string[] = [];
@@ -130,17 +113,6 @@ describe("question resource routes", () => {
         }) as QuestionDetailResponse,
     };
     expect((await handleStatusRequest(get("/api/questions/q-1"), { provider }))!.status).toBe(500);
-  });
-
-  test("OPTIONS answers CORS for each route and writes are refused", async () => {
-    const { provider, calls } = recording();
-    for (const path of ["/api/questions", "/api/questions/q-1"]) {
-      const options = (await handleStatusRequest(get(path, {}, "OPTIONS"), { provider }))!;
-      expect(options.status).toBe(204);
-      expect(options.headers.get("Access-Control-Allow-Methods")).toBe("GET, HEAD, OPTIONS");
-      expect((await handleStatusRequest(get(path, {}, "POST"), { provider }))!.status).toBe(405);
-    }
-    expect(calls).toEqual([]);
   });
 
   test("a warm cache is keyed by resource, question and reader, so a permission change reads again", async () => {

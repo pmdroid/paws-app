@@ -1293,13 +1293,6 @@ export interface QuestionDetailResponse {
   question: QuestionCard;
 }
 
-export type QuestionListParseResult =
-  | { ok: true; response: QuestionListResponse }
-  | { ok: false; error: string };
-export type QuestionDetailParseResult =
-  | { ok: true; response: QuestionDetailResponse }
-  | { ok: false; error: string };
-
 export function questionPath(id: string): string {
   return `${QUESTIONS_API_PATH}/${encodeURIComponent(id)}`;
 }
@@ -1321,7 +1314,7 @@ function readQuestionCard(input: unknown, index: number): QuestionCard {
   return card;
 }
 
-export function parseQuestionListResponse(input: unknown): QuestionListParseResult {
+export function parseQuestionListResponse(input: unknown) {
   return parsed(
     () => {
       const path = "questions";
@@ -1339,7 +1332,7 @@ export function parseQuestionListResponse(input: unknown): QuestionListParseResu
   );
 }
 
-export function parseQuestionDetailResponse(input: unknown): QuestionDetailParseResult {
+export function parseQuestionDetailResponse(input: unknown) {
   return parsed(
     () => {
       const path = "question";
