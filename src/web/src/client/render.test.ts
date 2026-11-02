@@ -27,7 +27,7 @@ function model(
 }
 
 describe("status views", () => {
-  test("overview follows only the current run after recovery and summarizes queued work", () => {
+  test("overview follows only the current run after recovery and lists queued work", () => {
     const snapshot = fullStatusFixture();
     const run = snapshot.runs[0];
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
@@ -46,15 +46,16 @@ describe("status views", () => {
     const running = render(model({ snapshot })).content;
     expect(running).toContain(`href="/issues/${item.id}"`);
     expect(running).not.toContain('href="/runs/');
-    expect(running).toContain('class="st running"');
+    expect(running).toContain('<span class="st running">Implementing</span>');
     item.state = "queued";
     item.runId = null;
     const queued = render(model({ snapshot })).content;
-    expect(queued).toContain("1 queued");
+    expect(queued).toContain('Queued <span class="cnt">1</span>');
+    expect(queued).toContain('In progress <span class="cnt">0</span>');
+    expect(queued).toContain("Waiting for a free runner");
     expect(queued).toContain('href="/issues"');
     expect(queued).not.toContain('href="/runs/old-run"');
     expect(queued).not.toContain('href="/runs/current-run"');
-    expect(queued).not.toContain("Working now</h2>\n      <ul");
   });
 
   test("terminal closeout outcomes override a stale verifying run in both views", () => {
@@ -102,23 +103,23 @@ describe("status views", () => {
     expect(live).toContain("Download output");
   });
 
-  test("overview leads with actions and active work instead of delivery and raw events", () => {
+  test("overview leads with actions, then every open issue by phase, instead of delivery and raw events", () => {
     const view = render(model());
     expect(view.top).not.toContain("Demo data");
     expect(view.top).not.toContain("Refresh");
     expect(view.banner).toBe("");
-    expect(view.content).toContain("Needs you");
-    expect(view.content).toContain("Working now");
+    expect(view.content).toContain('Needs you <span class="cnt">2</span>');
+    expect(view.content).toContain('In progress <span class="cnt">2</span>');
+    expect(view.content).toContain('Queued <span class="cnt">1</span>');
     expect(view.content).toContain('href="/questions/Q-41"');
     expect(view.content).toContain("Answer question");
     expect(view.content).toContain("Closeout requirement unit exhausted (3/3)");
-    expect(view.content).toContain("2 need you · 1 working · 1 queued · 1 waiting to merge");
     expect(view.content).toContain('href="/issues/ENG-102"');
+    expect(view.content).toContain('href="/issues/ENG-101"');
+    expect(view.content).toContain("Blocked by ENG-101, ENG-102, ENG-103");
     expect(view.content).toContain("All issues");
     expect(view.content).not.toContain("Delivery");
     expect(view.content).not.toContain("Recent events");
-    expect(view.content).not.toContain("Export job worker");
-    expect(view.content).not.toContain("Admin export UI");
     expect(view.content).not.toContain('href="/queue"');
     expect(view.content).not.toContain("/epics");
     expect(view.content).not.toContain("javascript:");
@@ -126,22 +127,56 @@ describe("status views", () => {
     expect(view.content.match(/Retention policy enforcement job/g)).toHaveLength(1);
   });
 
-  test("overview includes input holds without a question and excludes blocked or paused work", () => {
+  test("overview rows carry the issue page's phase pill and reason", () => {
+    const snapshot = fullStatusFixture();
+    snapshot.questions = [];
+    snapshot.verdicts = [];
+    const at = (minutes: number) =>
+      new Date(Date.parse(snapshot.generatedAt) - minutes * 60_000).toISOString();
+    const fixing = snapshot.items.find((entry) => entry.id === "ENG-102")!;
+    fixing.timeline = [
+      {
+        at: at(9),
+        kind: "restart",
+        from: "merge_queue",
+        to: "queued",
+        event: "restart",
+        reason: "conflict",
+        actor: null,
+      },
+    ];
+    fixing.doing = { kind: "running", runners: ["agentbox"], since: at(8), stalled: false };
+    fixing.activeMs = 74 * 60_000;
+    snapshot.items.find((entry) => entry.id === "ENG-100")!.state = "verifying";
+    const html = render(model({ snapshot })).content;
+    const row = (id: string) => html.slice(html.indexOf(`data-item="${id}"`)).split("</li>")[0]!;
+    expect(row("ENG-102")).toContain('<span class="st running">Fixing merge conflicts</span>');
+    expect(row("ENG-102")).toContain("Main moved under this pull request.");
+    expect(row("ENG-102")).toContain("Running on agentbox.");
+    expect(row("ENG-102")).toContain("1.2 h active");
+    expect(row("ENG-100")).toContain('<span class="st verifying">Checking</span>');
+    expect(row("ENG-100")).toContain("Closeout is running the checks and reviews.");
+    expect(row("ENG-101")).toContain('<span class="st merge_queue">Waiting to merge</span>');
+    const order = ["ENG-103", "ENG-100", "ENG-102", "ENG-101", "ENG-104"].map((id) =>
+      html.indexOf(`data-item="${id}"`),
+    );
+    expect(order).toEqual([...order].sort((left, right) => left - right));
+  });
+
+  test("overview includes input holds without a question and paused work under Needs you", () => {
     const snapshot = fullStatusFixture();
     snapshot.questions = [];
     snapshot.verdicts = [];
     snapshot.items[0]!.state = "awaiting_input";
-    snapshot.items[2]!.blockers = [snapshot.items[0]!.id];
     const html = render(model({ snapshot })).content;
     expect(html).toContain("Review issue");
     expect(html).toContain("Waiting for your input.");
-    expect(html).toContain("0 working");
     expect(html).not.toContain('href="/runs/r-102"');
-    snapshot.items[2]!.blockers = [];
     snapshot.runs[0]!.state = "paused";
     const paused = render(model({ snapshot })).content;
     expect(paused).toContain("This issue is paused.");
-    expect(paused).toContain("0 working");
+    expect(paused.match(/data-item="ENG-102"/g)).toHaveLength(1);
+    expect(paused.indexOf('data-item="ENG-102"')).toBeLessThan(paused.indexOf("work-heading"));
   });
 
   test("overview lists a verdict as needing a person only while the item is stopped on it", () => {
@@ -169,15 +204,18 @@ describe("status views", () => {
     expect(render(model({ snapshot })).content).toContain("Work is blocked and needs a person.");
   });
 
-  test("overview does not count stale runs and keeps completed work out of active work", () => {
+  test("overview keeps finished work out of the active lists and shows it as recently merged", () => {
     const snapshot = fullStatusFixture();
     snapshot.questions = [];
     snapshot.items = snapshot.items.filter((item) => item.state === "merged");
     const html = render(model({ snapshot })).content;
-    expect(html).toContain("0 need you · 0 working");
+    expect(html).toContain('In progress <span class="cnt">0</span>');
     expect(html).toContain("Nothing needs your attention.");
     expect(html).toContain("No work is running right now.");
-    expect(html).not.toContain("Audit event schema v2");
+    expect(html).toContain("Nothing is waiting for a runner.");
+    const merged = html.slice(html.indexOf("merged-heading"));
+    expect(merged).toContain("Audit event schema v2");
+    expect(merged).toContain("PR #474");
   });
 
   test("overview keeps questions reachable with no items and gives new work a useful empty state", () => {
@@ -189,7 +227,7 @@ describe("status views", () => {
     expect(render(model({ snapshot })).content).toContain("Delegate an issue to Paws in Linear.");
   });
 
-  test("overview bounds the active list and links to all remaining work", () => {
+  test("overview lists every active issue with no cap", () => {
     const snapshot = fullStatusFixture();
     const item = snapshot.items[2]!;
     snapshot.items = Array.from({ length: 9 }, (_, index) => ({
@@ -202,10 +240,10 @@ describe("status views", () => {
     snapshot.questions = [];
     snapshot.verdicts = [];
     const html = render(model({ snapshot })).content;
-    expect(html).toContain("9 working");
-    expect(html).toContain("View all 9 working issues");
-    expect(html.match(/class="overview-row"/g)).toHaveLength(6);
-    expect(html).not.toContain("Item 6");
+    expect(html).toContain('In progress <span class="cnt">9</span>');
+    expect(html.match(/class="work-row"/g)).toHaveLength(9);
+    expect(html).toContain("Item 8");
+    expect(html).not.toContain("View all");
   });
 
   test("issue filters keep in-progress work out of Done", () => {
