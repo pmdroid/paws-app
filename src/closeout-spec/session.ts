@@ -823,6 +823,8 @@ function commandEnv({ runtimeBinPaths = [], basePath }: CheckPath = {}): Record<
   return env;
 }
 
+const OUTPUT_DRAIN_MS = 1_000;
+
 function runCommand(
   workspace: string,
   argv: readonly string[],
@@ -891,6 +893,7 @@ function runCommand(
     let timedOut = false;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let drain: ReturnType<typeof setTimeout> | undefined;
     const onAbort = () => {
       cancelled = true;
       killCommand(child.pid);
@@ -904,6 +907,7 @@ function runCommand(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(drain);
       signal?.removeEventListener("abort", onAbort);
       resolve({ ...result, full, stdout, stderr, truncated });
     };
@@ -918,6 +922,13 @@ function runCommand(
     child.on("close", (code) =>
       finish({ code: code ?? 1, timedOut, cancelled, output: output.slice(-6_000) }),
     );
+    child.on("exit", (code) => {
+      drain = setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish({ code: code ?? 1, timedOut, cancelled, output: output.slice(-6_000) });
+      }, OUTPUT_DRAIN_MS);
+    });
     if (signal?.aborted) onAbort();
   });
 }
