@@ -6,6 +6,7 @@ import { enqueueOutboxOnce } from "./outbox";
 import { markRun } from "./runs";
 import { artifactPublicationReady, listArtifacts } from "./artifacts";
 import { getLinearSessionGeneration } from "./linear-sessions";
+import { enqueueIssueStatus } from "./linear-delegation";
 
 export function getTaskMode(db: Database, itemId: string): TaskMode | null {
   return (
@@ -144,6 +145,8 @@ function completeResultTask(
       payload: { sessionId: item.sessionKey, kind: "response", body: response },
       now,
     });
+    // An answer does not finish the issue; a delivered artifact does.
+    if (mode === "artifact") enqueueIssueStatus(db, getWorkItem(db, itemId)!, "completed", now);
     finish.announce?.();
   });
 }

@@ -33,6 +33,12 @@ items:
     exec: ["bun", "run", "build:status"]
     timeoutSeconds: 600
     ci: "lint, format, types, test, dashboard build"
+  - id: test
+    kind: command
+    gate: beforePR
+    exec: ["bun", "scripts/affected-tests.ts"]
+    timeoutSeconds: 1800
+    ci: "test (*)"
   - id: links
     kind: command
     gate: beforePR

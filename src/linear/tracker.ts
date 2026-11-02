@@ -51,6 +51,7 @@ const RELATIONS_QUERY = `query IssueRelations($id: String!, $relationsAfter: Str
 
 const STATES_QUERY = `query IssueStates($id: String!) {
   issue(id: $id) {
+    state { type }
     team {
       states(first: 50) { nodes { id name type } }
     }
@@ -263,6 +264,8 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
       options?.signal?.throwIfAborted();
       const data = await client.query(STATES_QUERY, { id: update.linearIssueId }, options);
       options?.signal?.throwIfAborted();
+      // Cancel moves only an issue Paws left In Progress. A person who already moved it wins.
+      if (update.stateType === "canceled" && currentStateType(data) !== "started") return;
       const stateId = pickStateId(data, update.stateType);
       if (stateId === null) {
         throw new Error(`Linear issue ${update.linearIssueId} has no ${update.stateType} state`);
@@ -278,6 +281,12 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
       options?.signal?.throwIfAborted();
     },
   };
+}
+
+function currentStateType(data: unknown): string | null {
+  const issue = dig(data, ["issue"]);
+  const state = issue === null ? null : dig(issue, ["state"]);
+  return state === null ? null : readString(state, "type");
 }
 
 function pickStateId(data: unknown, stateType: StatusUpdate["stateType"]): string | null {

@@ -144,6 +144,31 @@ describe("status views", () => {
     expect(paused).toContain("0 working");
   });
 
+  test("overview lists a verdict as needing a person only while the item is stopped on it", () => {
+    const snapshot = fullStatusFixture();
+    snapshot.questions = [];
+    const verdict = snapshot.verdicts[0];
+    const item = snapshot.items.find((entry) => entry.id === verdict?.itemId);
+    const run = snapshot.runs.find((entry) => entry.id === item?.runId);
+    if (!item || !run || !verdict) throw new Error("missing fixture");
+    snapshot.items = [item];
+    snapshot.mergeQueue = [];
+    item.blockers = [];
+    item.state = "verifying";
+    run.state = "verifying";
+    verdict.decision = "exhausted";
+    const verifying = render(model({ snapshot })).content;
+    expect(verifying).toContain("0 need you · 1 working");
+    expect(verifying).not.toContain("Automatic retries are used up.");
+    item.state = "awaiting_input";
+    run.state = "awaiting_input";
+    expect(render(model({ snapshot })).content).toContain("Automatic retries are used up.");
+    item.state = "needs_human";
+    run.state = "stopped";
+    verdict.decision = "blocked";
+    expect(render(model({ snapshot })).content).toContain("Work is blocked and needs a person.");
+  });
+
   test("overview does not count stale runs and keeps completed work out of active work", () => {
     const snapshot = fullStatusFixture();
     snapshot.questions = [];

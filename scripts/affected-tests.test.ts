@@ -259,3 +259,38 @@ test("a parse error falls back to the full suite", () => {
   });
   rmSync(join(root, "test/invalid.test.ts"));
 });
+
+test("a densely cyclic import graph is selected quickly and still follows every path", () => {
+  const cyclic = mkdtempSync(join(tmpdir(), "affected-cycles-"));
+  try {
+    const count = 40;
+    const names = Array.from({ length: count }, (_, index) => `m${index}`);
+    for (const name of names) {
+      const others = names.filter((other) => other !== name);
+      const put = (path: string, text: string) => {
+        mkdirSync(dirname(join(cyclic, path)), { recursive: true });
+        writeFileSync(join(cyclic, path), text);
+      };
+      put(
+        `src/${name}/index.ts`,
+        `${others.map((other) => `export * from "../${other}";`).join("\n")}\nexport * from "./a";\n`,
+      );
+      put(`src/${name}/a.ts`, `import "./index";\nexport const ${name} = 1;\n`);
+    }
+    mkdirSync(join(cyclic, "test"), { recursive: true });
+    writeFileSync(join(cyclic, "test/far.test.ts"), `import "../src/m0";\n`);
+    const started = performance.now();
+    const selection = selectTests({
+      root: cyclic,
+      changed: ["src/m39/a.ts"],
+      tests: ["test/far.test.ts"],
+    });
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(selection).toEqual({
+      full: false,
+      files: [{ path: "test/far.test.ts", reasons: ["imports src/m39"] }],
+    });
+  } finally {
+    rmSync(cyclic, { recursive: true, force: true });
+  }
+});
