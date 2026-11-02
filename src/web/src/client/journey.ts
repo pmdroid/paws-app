@@ -97,7 +97,7 @@ function lastFrom(item: StatusItem): JourneyStepId {
 function journeyBase(
   item: StatusItem,
   run: StatusRun | undefined,
-  verdict: { attempt: number; maxAttempts: number; decision?: string } | undefined,
+  verdict: { attempt?: number; maxAttempts?: number; decision?: string } | undefined,
 ): Omit<Journey, "pill" | "review"> {
   const fix = currentFix(item);
   const rounds = fixRounds(item);
@@ -178,7 +178,7 @@ function journeyBase(
         tone: "now",
         headline: "Checking",
         reason: withDoing(
-          verdict
+          verdict?.attempt && verdict.maxAttempts
             ? `Closeout is verifying the work, attempt ${verdict.attempt} of ${verdict.maxAttempts}.`
             : "Closeout is running the checks and reviews.",
         ),
@@ -230,7 +230,7 @@ function journeyBase(
 export function journey(
   item: StatusItem,
   run: StatusRun | undefined,
-  verdict: { attempt: number; maxAttempts: number; decision?: string } | undefined,
+  verdict: { attempt?: number; maxAttempts?: number; decision?: string } | undefined,
 ): Journey {
   const value = journeyBase(item, run, verdict);
   const last = item.visualReviews?.at(-1);
@@ -273,7 +273,7 @@ export function journeyPill(value: Journey): string {
   return statePill(value.pill[0], value.pill[1]);
 }
 
-const ORDER: JourneyStepId[] = [
+export const JOURNEY_ORDER: readonly JourneyStepId[] = [
   "queued",
   "implementing",
   "review",
@@ -303,7 +303,7 @@ export function journeyStepper(
     merging: notes.queue ? `Waiting to merge · #${notes.queue} in queue` : "Waiting to merge",
     done: "Done",
   };
-  const steps = ORDER.filter(
+  const steps = JOURNEY_ORDER.filter(
     (id) => (id !== "fixing" || showFix) && (id !== "review" || value.review !== null),
   );
   const current = steps.indexOf(value.step);
