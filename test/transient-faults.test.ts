@@ -32,6 +32,7 @@ import {
   parseAgentEvent,
 } from "../src/linear";
 import { LinearTaskAccess, attachOrchestrator } from "../src/loop";
+import { UsageLimitPause } from "../src/runner-backend";
 import { emptyReview, repoLayout, stateOf, writeOk } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
 
@@ -90,6 +91,15 @@ test("a Linear rate limit while a run starts is waited out without a retry", asy
   expect(result.state, result.detail).toBe("merge_queue");
   expect(result.errors, result.detail).toEqual([]);
   expect(result.retries, result.detail).toEqual([]);
+}, 90_000);
+
+test("an agent usage limit waits for its reset without spending retries or failing the task", async () => {
+  const usageLimit = () => new UsageLimitPause("claude", systemClock.now() + 200, null, null);
+  const result = await runWithFault({ error: usageLimit, times: MAX_TRANSIENT_RETRIES + 2 });
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.retries, result.detail).toEqual(Array(MAX_TRANSIENT_RETRIES + 2).fill(0));
+  expect(result.states, result.detail).not.toContain("failed");
 }, 90_000);
 
 test("a failure that keeps coming back stops the task after its retries instead of leaving it stuck", async () => {
