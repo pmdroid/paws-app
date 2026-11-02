@@ -718,7 +718,12 @@ describe("linear commands", () => {
       requestedAt: clock.now() + 1,
     });
     expect(seen).toEqual(["stop"]);
-    expect(listOutbox(db)).toHaveLength(2);
+    // Response, session plan and the canceled issue status; the repeated cancel adds nothing.
+    expect(listOutbox(db).map((row) => row.op)).toEqual([
+      "activity",
+      "linear.session.plan",
+      "status",
+    ]);
   });
 
   test("a stop names the commits left on the branch and the open pull request", () => {
@@ -741,7 +746,11 @@ describe("linear commands", () => {
       requestedAt: clock.now(),
     });
     const rows = listOutbox(db);
-    expect(rows.map((row) => row.delivery)).toEqual(["stop", "stop"]);
+    expect(rows.map((row) => row.delivery)).toEqual(["stop", "stop", "stop"]);
+    expect(rows.find((row) => row.op === "status")?.payload).toMatchObject({
+      itemId: "eng-5",
+      stateType: "canceled",
+    });
     expect(rows.find((row) => row.op === "activity")?.payload).toMatchObject({
       kind: "response",
       body: "Stopped. Branch paws/eng-5 has 1 commit; PR #12 is open. Re-delegate to continue.",

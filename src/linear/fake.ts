@@ -111,6 +111,8 @@ export type FakeTracker = LinearSessionAdapter &
     progress: ProgressUpdate[];
     questions: SessionElicitation[];
     statuses: StatusUpdate[];
+    /** Current state type per issue id; an unset issue reads as `started`. */
+    issueStateTypes: Map<string, string>;
     sessionUpdates: SessionUpdate[];
     issueSessions: SessionOnIssue[];
     commentSessions: SessionOnComment[];
@@ -130,6 +132,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const progress: ProgressUpdate[] = [];
   const questions: SessionElicitation[] = [];
   const statuses: StatusUpdate[] = [];
+  const issueStateTypes = new Map<string, string>();
   const sessionUpdates: SessionUpdate[] = [];
   const issueSessions: SessionOnIssue[] = [];
   const commentSessions: SessionOnComment[] = [];
@@ -226,6 +229,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     progress,
     questions,
     statuses,
+    issueStateTypes,
     sessionUpdates,
     issueSessions,
     commentSessions,
@@ -372,6 +376,9 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     },
     async setStatus(update, options) {
       options?.signal?.throwIfAborted();
+      const current = issueStateTypes.get(update.linearIssueId) ?? "started";
+      if (update.stateType === "canceled" && current !== "started") return;
+      issueStateTypes.set(update.linearIssueId, update.stateType);
       statuses.push(update);
     },
   };

@@ -692,7 +692,9 @@ test.each(["ok", "fail", "omit"] as const)(
       expect(getTaskMode(f.db, itemId)).toBe("artifact");
       await f.jobs.tick();
       expect(f.launches).toEqual(["classify", "artifact"]);
-      expect(f.tracker.statuses).toEqual([]);
+      expect(f.tracker.statuses).toEqual(
+        upload === "ok" ? [{ linearIssueId: "parent", stateType: "completed" }] : [],
+      );
       expect(existsSync(join(f.root, "worktrees"))).toBe(false);
       const responses = f.tracker.progress.filter((update) => update.kind === "response");
       if (upload === "ok") {
@@ -764,7 +766,10 @@ test.each(["answer", "artifact"] as const)(
         expect(input.session).toBe("session");
         expect(prompt).toContain(input.asset);
       }
-      expect(f.tracker.statuses).toEqual([]);
+      // An answer does not finish the issue; a delivered artifact does.
+      expect(f.tracker.statuses).toEqual(
+        mode === "artifact" ? [{ linearIssueId: "parent", stateType: "completed" }] : [],
+      );
     } finally {
       f.db.close();
     }
