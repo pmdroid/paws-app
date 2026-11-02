@@ -1928,6 +1928,26 @@ export class Orchestrator {
         );
         return;
       }
+      const resetAt = usageResetAt(error);
+      if (resetAt !== null) {
+        const delayMs = Math.max(0, resetAt - this.now());
+        this.settleItemAwake(item.id);
+        deferWorkItem(this.db, item, {
+          retry: retryCount(job.payload),
+          delayMs,
+          handoff: readString(job.payload, "handoff"),
+          message: `The agent reached its usage limit. Paws continues at ${new Date(resetAt).toISOString().slice(11, 16)} UTC.`,
+          now: this.now(),
+        });
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.usageLimit",
+          item.id,
+          "waiting for the agent's usage limit to reset",
+          this.options.journal,
+        );
+        return;
+      }
       const wait = this.nextRunnerWait(job, error);
       if (wait) {
         // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
@@ -8303,3 +8323,9 @@ class VerificationHeld extends Error {
 
 const VERIFICATION_OWNER_WAIT_MS = 20 * 60_000;
 const VERIFICATION_OWNER_POLL_MS = 5_000;
+
+function usageResetAt(error: unknown): number | null {
+  if (!(error instanceof Error) || error.name !== "UsageLimitPause") return null;
+  const resumeAt = (error as Error & { resumeAt?: unknown }).resumeAt;
+  return typeof resumeAt === "number" && Number.isFinite(resumeAt) ? resumeAt : null;
+}

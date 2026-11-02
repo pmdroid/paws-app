@@ -2313,5 +2313,5 @@ function handoverWaitNotice(db: Database, move: HandoverMove, why: string): stri
   return `Waiting to move this session from ${from}: ${why} Paws moves it as soon as a runner fits.\n`;
 }
 
-export { UsageLimitExhaustedError } from "./failover";
+export { UsageLimitExhaustedError, UsageLimitPause } from "./failover";
 export { createFindingGroupHelper } from "./finding-groups";
