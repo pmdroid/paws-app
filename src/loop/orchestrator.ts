@@ -258,6 +258,7 @@ import {
   type OutboxRow,
   type WorkItemRecord,
   type RunnerCapacityWaitState,
+  type CloseoutFaults,
   deferWorkItem,
   enqueueRunnerSetupCheck,
   holdForRunnerSetup,
@@ -6678,10 +6679,29 @@ export class Orchestrator {
         )
         .get(job.id, JOB_KIND.reverify, item.id) !== null;
     if (moving) return;
+    const head = item.checkpoint?.wipCommit ?? "";
+    const prior = closeoutFaults(job.payload);
+    const reasons = [...(prior?.head === head ? prior.reasons : []), reason];
+    const delayMs = CLOSEOUT_FAULT_DELAYS_MS[reasons.length - 1];
+    if (delayMs !== undefined && head !== "" && item.checkpoint?.phase === "verifying") {
+      deferWorkItem(this.db, item, {
+        retry: reasons.length,
+        delayMs,
+        handoff: null,
+        message: `Closeout stopped without a result; retrying in ${delayMs / 60_000} min.`,
+        now: this.now(),
+        closeoutFault: { head, reasons, jobId: job.id },
+      });
+      return;
+    }
+    const faults =
+      reasons.length > 1
+        ? `\nCloseout stopped without a result ${reasons.length} times on this head:\n${reasons.map((entry) => `- ${entry}`).join("\n")}`
+        : "";
     await this.askCloseoutHelp(
       item,
       undefined,
-      `Closeout: blocked\nVerification stopped without moving the task on: ${reason}.`,
+      `Closeout: blocked\nVerification stopped without moving the task on: ${reason}.${faults}`,
     );
   }
 
@@ -8106,6 +8126,16 @@ function withAcceptedBranch(text: string, item: WorkItemRecord): string {
 function retryCount(payload: unknown): number {
   const retry = (payload as { retry?: unknown } | null)?.retry;
   return typeof retry === "number" ? retry : 0;
+}
+
+const CLOSEOUT_FAULT_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+
+function closeoutFaults(payload: unknown): CloseoutFaults | null {
+  const faults = (payload as { closeoutFaults?: unknown } | null)?.closeoutFaults;
+  if (typeof faults !== "object" || faults === null) return null;
+  const { head, reasons } = faults as { head?: unknown; reasons?: unknown };
+  if (typeof head !== "string" || !Array.isArray(reasons)) return null;
+  return { head, reasons: reasons.filter((entry) => typeof entry === "string") };
 }
 
 function readString(payload: unknown, key: string): string | null {

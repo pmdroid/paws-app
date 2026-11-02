@@ -123,13 +123,23 @@ test("a fix_failed verdict after the live operation was aborted restarts the ite
   }
 }, 90_000);
 
-test("a job that ends with its item still in verifying journals why and asks for Closeout help", async () => {
+function closeoutFaultJobs(db: Database) {
+  return listJobs(db).filter(
+    (job) =>
+      job.queue === JOB_KIND.reverify &&
+      (job.payload as { reason?: unknown }).reason === "closeout_fault",
+  );
+}
+
+test("a job that ends without a Closeout result re-verifies the same head after a minute without asking", async () => {
   const f = await verifyingWithHeldGate();
   try {
     const item = listWorkItems(f.db)[0]!;
+    const head = f.gate.runs[0]!.headSha;
     // The aborted Closeout run throws instead of returning a verdict.
     f.throwFromRun(new DOMException("The operation was aborted.", "AbortError"));
     const interrupted = f.orchestrator.interruptLinearSession("ses_1");
+    const before = Date.now();
     f.release();
     await f.turn;
     await interrupted;
@@ -138,42 +148,97 @@ test("a job that ends with its item still in verifying journals why and asks for
     expect(f.stalls()).toEqual([
       `job ${f.jobId} ${JOB_KIND.start} left item ${item.id} (ENG-7) in verifying: the job ended without a Closeout result`,
     ]);
-    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
-    expect(findOpenQuestion(f.db, "ses_1")?.kind).toBe("closeout-help");
-    expect(listCloseoutRecoveries(f.db, item.id)).toHaveLength(1);
-    expect(f.tracker.questions.at(-1)?.body).toContain(
-      "Verification stopped without moving the task on: the job ended without a Closeout result.",
+    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
+    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(listCloseoutRecoveries(f.db, item.id)).toHaveLength(0);
+    const [retry, ...rest] = closeoutFaultJobs(f.db);
+    expect(rest).toEqual([]);
+    expect(retry).toMatchObject({
+      status: "pending",
+      payload: {
+        itemId: item.id,
+        closeoutFaults: { head, reasons: ["the job ended without a Closeout result"] },
+      },
+    });
+    expect(retry!.runAt - before).toBeGreaterThanOrEqual(60_000);
+    expect(retry!.runAt - Date.now()).toBeLessThanOrEqual(60_000);
+    expect(f.tracker.progress.map((update) => update.body)).toContain(
+      "Closeout stopped without a result; retrying in 1 min.",
     );
+    expect(restartReasons(f.db, item.id)).toEqual([]);
   } finally {
     await f.close();
   }
 }, 90_000);
 
-test("a resume job claimed for an item in verifying journals and asks instead of ending silently", async () => {
+test("repeated Closeout faults on one head back off further and the fourth asks once", async () => {
   const f = await verifyingWithHeldGate();
   try {
     const item = listWorkItems(f.db)[0]!;
     f.throwFromRun(new DOMException("The operation was aborted.", "AbortError"));
-    // The first job's result is lost with its lease; a later run.resume finds the item in verifying.
     f.db.run("UPDATE job SET locked_by = 'lost' WHERE id = ?", [f.jobId]);
     f.release();
     await f.turn;
-    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
-    expect(f.stalls()).toEqual([]);
-
     f.db.run("UPDATE job SET status = 'done', locked_by = NULL WHERE id = ?", [f.jobId]);
-    const resume = enqueueJob(f.db, {
-      queue: JOB_KIND.resume,
-      payload: { itemId: item.id },
-      now: Date.now(),
-    });
+    // Every later re-verify ends without a Closeout result.
+    (
+      f.orchestrator as unknown as { candidateForItem: () => Promise<CandidateIdentity | null> }
+    ).candidateForItem = async () => null;
+    enqueueJob(f.db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: Date.now() });
     await f.tickAll();
 
-    expect(f.stalls()).toEqual([
-      `job ${resume} ${JOB_KIND.resume} left item ${item.id} (ENG-7) in verifying: the job ended without a Closeout result`,
-    ]);
+    const delays: number[] = [];
+    for (let fault = 1; fault <= 3; fault++) {
+      const jobs = closeoutFaultJobs(f.db);
+      expect(jobs).toHaveLength(fault);
+      const pending = jobs.at(-1)!;
+      expect(pending.status).toBe("pending");
+      expect(
+        (pending.payload as { closeoutFaults: { reasons: string[] } }).closeoutFaults.reasons,
+      ).toHaveLength(fault);
+      delays.push(pending.runAt - pending.createdAt);
+      expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+      f.db.run("UPDATE job SET run_at = 0 WHERE id = ?", [pending.id]);
+      await f.tickReverify();
+      await f.flush();
+    }
+    expect(delays).toEqual([60_000, 5 * 60_000, 15 * 60_000]);
+    expect(closeoutFaultJobs(f.db)).toHaveLength(3);
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     expect(findOpenQuestion(f.db, "ses_1")?.kind).toBe("closeout-help");
+    const asks = f.tracker.questions.filter((question) =>
+      question.body.includes("Verification stopped without moving the task on"),
+    );
+    expect(asks).toHaveLength(1);
+    expect(asks[0]!.body).toContain("Closeout stopped without a result 4 times on this head:");
+    expect(restartReasons(f.db, item.id)).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 90_000);
+
+test("a successful re-verify after one Closeout fault reaches the merge queue and clears the count", async () => {
+  const f = await verifyingWithHeldGate();
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    f.throwFromRun(new DOMException("The operation was aborted.", "AbortError"));
+    const interrupted = f.orchestrator.interruptLinearSession("ses_1");
+    f.release();
+    await f.turn;
+    await interrupted;
+    f.throwFromRun(null);
+    const [retry] = closeoutFaultJobs(f.db);
+    f.db.run("UPDATE job SET run_at = 0 WHERE id = ?", [retry!.id]);
+    await f.tickReverify();
+
+    expect(listJobs(f.db).find((job) => job.id === retry!.id)?.status).toBe("done");
+    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+    expect(findOpenQuestion(f.db, "ses_1")).toBeNull();
+    expect(
+      listJobs(f.db).filter(
+        (job) => job.status === "pending" && "closeoutFaults" in (job.payload as object),
+      ),
+    ).toEqual([]);
   } finally {
     await f.close();
   }
