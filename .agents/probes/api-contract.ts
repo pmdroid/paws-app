@@ -18,7 +18,8 @@ type Contract = {
 type Change = { surface: string; name: string; kind: string };
 
 const PROTOCOL = "src/runner-protocol/index.ts";
-const STATUS = "src/dashboard/src/contract.ts";
+const DASHBOARD_ROOTS = ["src/dashboard", "src/web"];
+const STATUS_FILES = DASHBOARD_ROOTS.map((root) => `${root}/src/contract.ts`);
 
 const RUNNER_INPUT_SCHEMAS = new Set([
   "RunnerCommandSchema",
@@ -159,7 +160,7 @@ function filesIn(root: string, dir: string): Promise<string[]> {
           path.endsWith(".ts") &&
           !path.endsWith(".d.ts") &&
           !/\.test\.ts$/.test(path) &&
-          !path.startsWith("src/dashboard/src/client/") &&
+          !DASHBOARD_ROOTS.some((dashboard) => path.startsWith(`${dashboard}/src/client/`)) &&
           !path.includes("/test/") &&
           !path.includes("/fixtures/"),
       ),
@@ -690,10 +691,11 @@ async function extract(
         unrepresentable: "any",
       }) as Json;
     }
-  const status = programs.get(STATUS);
-  if (status) {
+  const statusFile = STATUS_FILES.find((file) => programs.has(file));
+  const status = statusFile ? programs.get(statusFile) : undefined;
+  if (statusFile && status) {
     contract.status = statusTypes(status.source, status.program);
-    for (const [name, binding] of exportsOf(STATUS)) {
+    for (const [name, binding] of exportsOf(statusFile)) {
       if (!decls.get(binding.file)?.has(binding.name)) continue;
       const node = decls.get(binding.file)!.get(binding.name)!;
       if (isFunction(node)) continue;

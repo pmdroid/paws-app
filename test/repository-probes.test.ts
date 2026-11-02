@@ -378,6 +378,34 @@ test("an unchanged contract passes api-contract", () => {
   expect(ran.exitCode).toBe(0);
 });
 
+function movedFromSrcWeb(contract: string) {
+  const { "src/dashboard/src/contract.ts": _, ...rest } = API;
+  return candidate(
+    {
+      ...rest,
+      "src/web/src/contract.ts": STATUS,
+      "src/server/serve.ts": SERVE.replace("../dashboard/", "../web/"),
+    },
+    {
+      "src/web/src/contract.ts": null,
+      "src/dashboard/src/contract.ts": contract,
+      "src/server/serve.ts": SERVE,
+    },
+  );
+}
+
+test("moving the dashboard contract from src/web to src/dashboard compares the same contract", () => {
+  const ran = probe("api-contract", movedFromSrcWeb(STATUS));
+  expect(ran.output).toContain(
+    "0 breaking changes · 0 additive · 3 routes, 2 runner schemas, 3 status types",
+  );
+  expect(ran.exitCode).toBe(0);
+
+  const narrowed = probe("api-contract", movedFromSrcWeb(STATUS.replace("  title: string;\n", "")));
+  expect(narrowed.exitCode).toBe(1);
+  expect(narrowed.output).toContain("status\tStatusItem.title\tremoved");
+});
+
 test("removing a field from the status snapshot fails api-contract and names the field", () => {
   const ran = probe(
     "api-contract",
