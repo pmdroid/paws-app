@@ -431,12 +431,23 @@ async function runProbes(
   }
 }
 
+const MATCHED_PATHS_KEPT = 20;
+
 function boundedReport(report: Record<string, unknown>): string {
   let text = JSON.stringify(report);
   const entries = [
     ...((report.required ?? []) as { result?: SessionCommandResult }[]),
     ...((report.rules ?? []) as { result?: SessionRuleResult }[]),
   ];
+  if (Buffer.byteLength(text) > 60_000) {
+    for (const entry of entries as { matched_paths?: string[]; matched_paths_omitted?: number }[]) {
+      const paths = entry.matched_paths;
+      if (!paths || paths.length <= MATCHED_PATHS_KEPT) continue;
+      entry.matched_paths_omitted = paths.length - MATCHED_PATHS_KEPT;
+      entry.matched_paths = paths.slice(0, MATCHED_PATHS_KEPT);
+    }
+    text = JSON.stringify(report);
+  }
   while (Buffer.byteLength(text) > 60_000) {
     const streams = entries.flatMap(({ result }) =>
       result ? (["stdout", "stderr"] as const).map((key) => ({ result, key })) : [],
