@@ -28,14 +28,14 @@ import { earlierRoundsKey, findingIssueKey } from "./review-findings";
 import { readCsrfToken } from "./csrf";
 import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
 import {
-  issueRedirect,
+  issueListRedirect,
+  routePath,
   matchRoute,
   parseRoute,
   routerBase,
   routeCovered,
   routeResource,
   type Route,
-  type RouteIndex,
 } from "./route";
 import { livePoll } from "./poll";
 import { STATUS_POLL_MS } from "./status-reader";
@@ -66,6 +66,7 @@ import {
   workspaceReader,
 } from "./workspace";
 import { legacyDashboardLocation } from "../../../dashboard-links";
+import { aliasApiPath, parseAliasResponse } from "../aliases";
 
 redirectLegacyHash();
 const shell = mountShell();
@@ -171,18 +172,20 @@ function routeChanged(): void {
   const route = currentRoute();
   const resource = routeResource(route);
   const shown =
-    resource === "issue"
-      ? openDetail({ route, issue: page.issue })
-      : resource === "issues"
-        ? page.issues !== null
-        : resource === "overview"
-          ? page.overview !== null
-          : resource === "questions"
-            ? page.questions !== null
-            : resource === "question"
-              ? page.question?.question.id === openQuestion(route) ||
-                page.missingQuestion === openQuestion(route)
-              : routeCovered(route, page.snapshot);
+    route.view === "alias"
+      ? false
+      : resource === "issue"
+        ? openDetail({ route, issue: page.issue })
+        : resource === "issues"
+          ? page.issues !== null
+          : resource === "overview"
+            ? page.overview !== null
+            : resource === "questions"
+              ? page.questions !== null
+              : resource === "question"
+                ? page.question?.question.id === openQuestion(route) ||
+                  page.missingQuestion === openQuestion(route)
+                : routeCovered(route, page.snapshot);
   phase = shown ? "ready" : "loading";
   error = null;
   paint();
@@ -192,6 +195,10 @@ function routeChanged(): void {
 
 async function reload(): Promise<void> {
   const route = currentRoute();
+  if (route.view === "alias") {
+    schedule();
+    return followAlias(route);
+  }
   if (routeResource(route) === null) {
     schedule();
     return;
@@ -247,15 +254,44 @@ function pageData(): Pick<StatusSnapshotBase, "items" | "runs" | "evidence"> | n
   return routeResource(route) === "status" ? page.snapshot : null;
 }
 
-function routeIndex(): RouteIndex | null {
-  const list = page.issues;
-  return list && { items: list.issues, runs: list.runs, verdicts: list.verdicts };
+async function followAlias(route: Extract<Route, { view: "alias" }>): Promise<void> {
+  const shown = router.state.location.pathname;
+  const reader = workspaceReader();
+  const stale = () => router.state.location.pathname !== shown || workspaceReader() !== reader;
+  try {
+    const response = await fetch(aliasApiPath(route.kind, route.id), {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!(await signedIn(response))) return;
+    if (stale()) return;
+    if (response.status === 404) {
+      phase = "ready";
+      error = null;
+    } else {
+      if (!response.ok) throw new Error(await errorText(response));
+      const parsed = parseAliasResponse(await response.json());
+      if (!parsed.ok) throw new Error(parsed.error);
+      if (stale()) return;
+      const { search } = router.state.location;
+      void router.navigate(
+        `${routePath({ view: "issues", id: parsed.response.issueId })}${search}${location.hash}`,
+        { replace: true },
+      );
+      return;
+    }
+  } catch (caught) {
+    journalCaught(caught, "main.followAlias.fetch", null);
+    if (stale()) return;
+    error = caught instanceof Error ? caught.message : "Could not open the link";
+    phase = "error";
+  }
+  paint();
 }
 
-/** Run, session and verdict links open the issue page, so links posted in Linear keep working. */
 function followIssueRedirect(): boolean {
   const pathname = router.state.location.pathname;
-  const target = issueRedirect(pathname.slice(routerBase(pathname).length), routeIndex());
+  const target = issueListRedirect(pathname.slice(routerBase(pathname).length));
   if (target === null) return false;
   void router.navigate(`${target}${router.state.location.search}${location.hash}`, {
     replace: true,
@@ -322,7 +358,7 @@ async function fileFindingIssue(
 
 function paint(): void {
   if (!workspaceReady) return;
-  if (phase === "ready" && followIssueRedirect()) return;
+  if (followIssueRedirect()) return;
   const model: RenderModel = {
     route: currentRoute(),
     phase,
@@ -419,7 +455,7 @@ function drawsLocally(): boolean {
 
 function currentRoute(): Route {
   const pathname = router.state.location.pathname;
-  return parseRoute(pathname.slice(routerBase(pathname).length), routeIndex());
+  return parseRoute(pathname.slice(routerBase(pathname).length));
 }
 
 function settingsPage(route: Route): SettingsPage | null {

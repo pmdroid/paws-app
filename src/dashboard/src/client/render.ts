@@ -99,33 +99,39 @@ export function render(model: RenderModel): Rendered {
     top: renderTop(model),
     banner: renderBanner(model),
     content:
-      model.route.view === "runners"
-        ? '<div id="runner-settings"></div>'
-        : model.route.view === "findings"
-          ? FINDINGS_ROOT
-          : model.route.view === "settings"
-            ? renderSettingsPage(model.route.page)
-            : model.route.view === "questions"
-              ? renderQuestions({
-                  selected: model.route.id,
-                  list: model.questions ?? null,
-                  detail: model.question?.question.id === model.route.id ? model.question : null,
-                  missing: model.route.id !== null && model.missingQuestion === model.route.id,
-                  error: model.phase === "error" ? model.error : null,
-                })
-              : model.route.view === "overview"
-                ? model.overview
-                  ? viewOverview(model.overview)
-                  : renderPending(model)
-                : model.phase !== "loading" && openDetail(model)
-                  ? issuePage(model.issue!, model.closeout ?? emptyCloseoutView(), model.engineUrl)
-                  : model.phase !== "loading" && model.issues && route.view === "issues"
-                    ? viewIssues(model.issues, route.id)
-                    : model.phase !== "loading" && model.issues && route.view === "runs"
-                      ? viewRuns(model.issues, route.id)
-                      : snapshot && model.phase !== "loading" && routeResource(route) === "status"
-                        ? renderView(snapshot, model)
-                        : renderPending(model),
+      model.route.view === "alias"
+        ? renderAlias(model)
+        : model.route.view === "runners"
+          ? '<div id="runner-settings"></div>'
+          : model.route.view === "findings"
+            ? FINDINGS_ROOT
+            : model.route.view === "settings"
+              ? renderSettingsPage(model.route.page)
+              : model.route.view === "questions"
+                ? renderQuestions({
+                    selected: model.route.id,
+                    list: model.questions ?? null,
+                    detail: model.question?.question.id === model.route.id ? model.question : null,
+                    missing: model.route.id !== null && model.missingQuestion === model.route.id,
+                    error: model.phase === "error" ? model.error : null,
+                  })
+                : model.route.view === "overview"
+                  ? model.overview
+                    ? viewOverview(model.overview)
+                    : renderPending(model)
+                  : model.phase !== "loading" && openDetail(model)
+                    ? issuePage(
+                        model.issue!,
+                        model.closeout ?? emptyCloseoutView(),
+                        model.engineUrl,
+                      )
+                    : model.phase !== "loading" && model.issues && route.view === "issues"
+                      ? viewIssues(model.issues, route.id)
+                      : model.phase !== "loading" && model.issues && route.view === "runs"
+                        ? viewRuns(model.issues, route.id)
+                        : snapshot && model.phase !== "loading" && routeResource(route) === "status"
+                          ? renderView(snapshot, model)
+                          : renderPending(model),
     title,
   };
 }
@@ -168,6 +174,11 @@ function renderPending(model: RenderModel): string {
   return `${pageHeading(model.route.view)}<div class="empty" role="status">Loading status…</div>`;
 }
 
+function renderAlias(model: RenderModel): string {
+  if (model.phase !== "ready") return renderPending(model);
+  return `${pageHeading("alias")}<div class="empty">Link not found. It points to work that does not exist or that you cannot see.<div><a class="btn" href="${esc(routeHref({ view: "issues", id: null }))}">Open the issue list</a></div></div>`;
+}
+
 function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
   switch (model.route.view) {
     case "overview":
@@ -186,6 +197,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
         model.mediaInfo ?? new Map(),
         model.engineUrl,
       );
+    case "alias":
+      return renderAlias(model);
     case "runners":
       return '<div id="runner-settings"></div>';
     case "findings":

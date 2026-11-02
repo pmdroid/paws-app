@@ -21,7 +21,7 @@ import {
 } from "../contract";
 import { openedView, issueOf } from "../../test/fixtures";
 import { render } from "../client/render";
-import { issueRedirect, parseRoute } from "../client/route";
+import { issueListRedirect, parseRoute } from "../client/route";
 import { createLiveStatusProvider } from "./provider";
 
 const ITEM = "01M5NDWPQZ0JQ91E1MFMVEY6EP";
@@ -108,7 +108,7 @@ function snapshotOf(db: Database): Status {
 }
 
 function issuePage(snapshot: Status, id = "PAS-367"): string {
-  const route = parseRoute(`/issues/${id}`, snapshot);
+  const route = parseRoute(`/issues/${id}`);
   return render({
     route,
     phase: "ready",
@@ -150,35 +150,33 @@ describe("one page per issue", () => {
     expect(timeline.match(/Implementation started with/g)).toHaveLength(3);
   });
 
-  test("an old Conversations URL redirects to the issue page", () => {
+  test("an old Conversations URL resolves to the issue page from stored records", () => {
     const db = database();
     threeRuns(db);
-    const snapshot = snapshotOf(db);
-    expect(issueRedirect(`/sessions/${SESSION}`, snapshot)).toBe("/issues/PAS-367");
-    expect(issueRedirect(`/sessions/${encodeURIComponent(SESSION)}`, snapshot)).toBe(
-      "/issues/PAS-367",
-    );
-    expect(parseRoute(`/sessions/${SESSION}`, snapshot)).toEqual({
-      view: "issues",
-      id: "PAS-367",
+    const provider = createLiveStatusProvider(db, { env: {} });
+    expect(parseRoute(`/sessions/${encodeURIComponent(SESSION)}`)).toEqual({
+      view: "alias",
+      kind: "sessions",
+      id: SESSION,
     });
-    expect(issueRedirect("/sessions/unknown-session", snapshot)).toBe("/issues");
-    expect(issueRedirect("/sessions", snapshot)).toBe("/issues");
-    expect(issueRedirect(`/sessions/${SESSION}`, null)).toBeNull();
+    expect(provider.alias("sessions", SESSION)).toBe("PAS-367");
+    expect(provider.alias("sessions", "unknown-session")).toBeNull();
+    expect(issueListRedirect("/sessions")).toBe("/issues");
+    expect(issueListRedirect(`/sessions/${SESSION}`)).toBeNull();
   });
 
-  test("run, session and verdict links redirect to /issues/PAS-367", () => {
+  test("run, session and verdict links resolve to PAS-367", () => {
     const db = database();
     const runIds = threeRuns(db);
-    const snapshot = snapshotOf(db);
-    for (const id of runIds) expect(issueRedirect(`/runs/${id}`, snapshot)).toBe("/issues/PAS-367");
-    expect(issueRedirect(`/sessions/${SESSION}`, snapshot)).toBe("/issues/PAS-367");
-    expect(issueRedirect("/verdicts/PAS-367", snapshot)).toBe("/issues/PAS-367");
-    expect(issueRedirect(`/verdicts/${runIds[0]}`, snapshot)).toBe("/issues/PAS-367");
-    // Before the snapshot arrives, and for paths that are not folded, nothing moves.
-    expect(issueRedirect(`/runs/${runIds[1]}`, null)).toBeNull();
-    expect(issueRedirect("/issues/PAS-367", snapshot)).toBeNull();
-    expect(issueRedirect("/runs", snapshot)).toBeNull();
+    const provider = createLiveStatusProvider(db, { env: {} });
+    for (const id of runIds) expect(provider.alias("runs", id)).toBe("PAS-367");
+    expect(provider.alias("verdicts", "PAS-367")).toBe("PAS-367");
+    expect(provider.alias("verdicts", runIds[0]!)).toBe("PAS-367");
+    expect(provider.alias("verdicts", "PAS-404")).toBeNull();
+    expect(parseRoute(`/runs/${runIds[1]}/transcript`)).toEqual({ view: "overview" });
+    expect(issueListRedirect("/issues/PAS-367")).toBeNull();
+    for (const list of ["/runs", "/sessions", "/verdicts"])
+      expect(issueListRedirect(list)).toBe("/issues");
   });
 
   test("a re-delegated issue shows only the current Linear session on its page", () => {
@@ -209,8 +207,9 @@ describe("one page per issue", () => {
     expect(html).not.toContain("earlier-attempt");
     expect(html).not.toContain("Earlier attempt");
     expect(html).not.toContain("Earlier session turn.");
-    expect(issueRedirect("/sessions/earlier-session", snapshot)).toBe("/issues/PAS-367");
-    expect(issueRedirect(`/runs/${old.id}`, snapshot)).toBe("/issues/PAS-367");
+    const provider = createLiveStatusProvider(db, { env: {} });
+    expect(provider.alias("sessions", "earlier-session")).toBe("PAS-367");
+    expect(provider.alias("runs", old.id)).toBe("PAS-367");
   });
 
   test("sibling sub-issues that share one Linear session keep one page each, naming the session", () => {
@@ -225,8 +224,7 @@ describe("one page per issue", () => {
     expect(own).toContain('shared with <a class="lin-id" href="/issues/PAS-368">PAS-368</a>');
     expect(sibling).toContain('shared with <a class="lin-id" href="/issues/PAS-367">PAS-367</a>');
     expect(sibling).not.toContain("First turn read the issue.");
-    // The session link opens the issue delegated first in it.
-    expect(issueRedirect(`/sessions/${SESSION}`, snapshot)).toBe("/issues/PAS-367");
+    expect(createLiveStatusProvider(db, { env: {} }).alias("sessions", SESSION)).toBe("PAS-367");
   });
 
   test("the page names the task only as PAS-367, with no internal id in visible text", () => {

@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { StatusSnapshot } from "../contract";
 import { NAVIGATION, PAGES } from "./navigation";
 import { render } from "./render";
-import { issueRedirect, parseRoute, type Route } from "./route";
+import { parseRoute, type Route } from "./route";
 import { themedMarkup } from "./theme";
 import {
   runnerDetailMarkup,
@@ -88,7 +88,7 @@ describe("pages outside the issue page talk about issues", () => {
     const snapshot = statusFixture();
     const run = snapshot.runs[0]!;
     expect(parseRoute("/runs")).toEqual({ view: "issues", id: null });
-    expect(issueRedirect(`/runs/${run.id}`, snapshot)).toBe(`/issues/${run.itemId}`);
+    expect(parseRoute(`/runs/${run.id}`)).toEqual({ view: "alias", kind: "runs", id: run.id });
     expect(page({ view: "runs", id: "missing" }, snapshot)).toContain("Issue not found");
   });
 
