@@ -1,0 +1,137 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import type { Database } from "bun:sqlite";
+import {
+  applyWorkItemEvent,
+  beginImplementRun,
+  enterMergeQueue,
+  insertQueuedItem,
+  migrate,
+  openDatabase,
+} from "../../../db";
+import { parseIssueDetailResponse, parseIssueListResponse } from "../contract";
+import { createLiveStatusProvider, STATUS_RECENT_LIMIT, STATUS_RECENT_MS } from "./provider";
+
+const NOW = 1_700_000_000_000;
+
+const open: Database[] = [];
+afterEach(() => {
+  for (const db of open.splice(0)) db.close();
+});
+
+function database(): Database {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  open.push(db);
+  return db;
+}
+
+function finish(db: Database, id: string, at: number): void {
+  insertQueuedItem(db, { id, title: id, now: at - 1_000 });
+  applyWorkItemEvent(db, id, "cancel", { now: at });
+}
+
+function provider(db: Database, sessionIds?: readonly string[]) {
+  return createLiveStatusProvider(db, {
+    now: () => new Date(NOW),
+    env: {},
+    ...(sessionIds === undefined ? {} : { sessionIds }),
+  });
+}
+
+describe("issue resources", () => {
+  test("the list keeps every open issue and the 50 latest finished in a day; older issues open directly", () => {
+    const db = database();
+    insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: NOW - 7 * STATUS_RECENT_MS });
+    finish(db, "ENG-OLD", NOW - STATUS_RECENT_MS - 60_000);
+    for (let index = 0; index < STATUS_RECENT_LIMIT + 5; index += 1)
+      finish(db, `ENG-${100 + index}`, NOW - 120_000 - index * 1_000);
+    const live = provider(db);
+    const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(live.issues())));
+    if (!parsed.ok) throw new Error(parsed.error);
+    const ids = parsed.response.issues.map((issue) => issue.id);
+    expect(ids).toContain("ENG-OPEN");
+    expect(ids.filter((id) => id !== "ENG-OPEN")).toHaveLength(STATUS_RECENT_LIMIT);
+    expect(ids).toContain("ENG-100");
+    expect(ids).not.toContain(`ENG-${100 + STATUS_RECENT_LIMIT + 4}`);
+    expect(ids).not.toContain("ENG-OLD");
+    expect(live.issue("ENG-OLD")?.issue).toMatchObject({ id: "ENG-OLD", state: "stopped" });
+  });
+
+  test("the list carries the snapshot's issue rows, runs and summaries and nothing else", () => {
+    const db = database();
+    insertQueuedItem(db, { id: "ENG-1", title: "Running", sessionKey: "s1", now: NOW - 9_000 });
+    beginImplementRun(db, "ENG-1", NOW - 8_000);
+    insertQueuedItem(db, { id: "ENG-2", title: "Merging", sessionKey: "s1", now: NOW - 7_000 });
+    beginImplementRun(db, "ENG-2", NOW - 6_000);
+    enterMergeQueue(db, "ENG-2", {
+      phase: "merge_queue",
+      baseSha: "b".repeat(40),
+      wipCommit: "c".repeat(40),
+    });
+    finish(db, "ENG-3", NOW - 5_000);
+    const live = provider(db);
+    const snapshot = live.snapshot();
+    const list = live.issues();
+    expect(Object.keys(list).sort()).toEqual([
+      "agentCloseout",
+      "generatedAt",
+      "issues",
+      "mergedTimes",
+      "project",
+      "runs",
+      "source",
+      "verdicts",
+    ]);
+    expect(list.issues).toEqual(snapshot.items);
+    expect(list.runs).toEqual(snapshot.runs);
+    expect(list.verdicts).toEqual(snapshot.verdicts);
+    expect(list.agentCloseout).toEqual(snapshot.agentCloseout ?? []);
+    expect(list.issues.find((issue) => issue.id === "ENG-1")?.doing).toBeDefined();
+  });
+
+  test("the detail names the current session and keeps the earlier one with when it ended", () => {
+    const db = database();
+    const identify = (id: string) =>
+      db.run(
+        "UPDATE work_item SET linear_identifier = 'PAS-367', linear_issue_id = 'lin' WHERE id = ?",
+        [id],
+      );
+    insertQueuedItem(db, { id: "OLD", title: "Keep runs", sessionKey: "earlier", now: 0 });
+    identify("OLD");
+    beginImplementRun(db, "OLD", NOW - 7_200_000);
+    db.run("UPDATE work_item SET state = 'cancelled' WHERE id = 'OLD'");
+    db.run("UPDATE run SET status = 'ended', updated_at = ? WHERE item_id = 'OLD'", [
+      NOW - 3_600_000,
+    ]);
+    insertQueuedItem(db, { id: "NEW", title: "Keep runs", sessionKey: "current", now: NOW - 1 });
+    identify("NEW");
+    const live = provider(db);
+    const legacy = live.item("PAS-367")!;
+    const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(live.issue("PAS-367"))));
+    if (!parsed.ok) throw new Error(parsed.error);
+    const detail = parsed.response;
+    expect(detail.issue.session?.id).toBe("current");
+    expect(detail.issue.endedAt).toBeUndefined();
+    expect(detail.earlierSessions.map((session) => [session.session?.id, session.endedAt])).toEqual(
+      [["earlier", new Date(NOW - 3_600_000).toISOString()]],
+    );
+    expect([detail.issue, ...detail.earlierSessions]).toEqual(
+      expect.arrayContaining(legacy.items) as never,
+    );
+    expect(detail.runs).toEqual(legacy.runs);
+    expect(detail.verdicts).toEqual(legacy.verdicts);
+    expect(detail.blocks).toEqual(legacy.blocks);
+    expect(detail.risk).toEqual(legacy.risk ?? null);
+  });
+
+  test("an issue outside the reader's sessions is null, like an unknown one", () => {
+    const db = database();
+    insertQueuedItem(db, { id: "ENG-1", sessionKey: "mine", now: NOW - 1_000 });
+    insertQueuedItem(db, { id: "ENG-2", sessionKey: "other", now: NOW - 1_000 });
+    const live = provider(db, ["mine"]);
+    expect(live.issues().issues.map((issue) => issue.id)).toEqual(["ENG-1"]);
+    expect(live.issue("ENG-1")?.issue.id).toBe("ENG-1");
+    expect(live.issue("ENG-2")).toBeNull();
+    expect(live.issue("ENG-404")).toBeNull();
+  });
+});
