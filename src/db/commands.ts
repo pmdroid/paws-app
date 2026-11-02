@@ -116,7 +116,6 @@ export function applyLinearCommand(
 
     const sessionId = item.sessionKey ?? item.id;
     const closed = response?.startsWith("Closed:") === true;
-    if (!closed) enqueueIssueStatus(db, getWorkItem(db, item.id)!, "canceled", now);
     const generation = !closed
       ? stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now)
       : advanceOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, { now });
@@ -149,6 +148,12 @@ export function applyLinearCommand(
       now,
     });
     enqueueEndedSessionFace(db, { sessionId, generation, item, outcome: "stopped", now });
+    // After the fence: Stop drops pending rows, and only `stop` rows deliver in a stopped session.
+    if (!closed)
+      enqueueIssueStatus(db, getWorkItem(db, item.id)!, "canceled", now, {
+        delivery: "stop",
+        generation,
+      });
     return { applied: true };
   });
 }

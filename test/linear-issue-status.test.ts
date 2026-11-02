@@ -2,8 +2,11 @@ import { expect, test } from "bun:test";
 import {
   applyLinearCommand,
   beginImplementRun,
+  claimOutboxHeads,
   completeAnswerTask,
+  completeOutbox,
   insertQueuedItem,
+  isOutboxCurrent,
   listOutbox,
   requireLinearTaskDelegation,
   saveTaskMode,
@@ -15,30 +18,42 @@ import { tempDb } from "./helpers";
 const statusRows = (db: ReturnType<typeof tempDb>) =>
   listOutbox(db).filter((row) => row.target === "linear" && row.op === "status");
 
-test("a Linear Stop on a running item enqueues one canceled status and delivers it", async () => {
-  const db = tempDb();
-  try {
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    beginImplementRun(db, item.id, 1);
-    const command = { type: "stop", source: "linear", itemId: item.id, requestedAt: 5 } as const;
-    expect(applyLinearCommand(db, command, 5).applied).toBe(true);
-    expect(applyLinearCommand(db, { ...command, requestedAt: 6 }, 6).applied).toBe(false);
-    const rows = statusRows(db);
-    expect(rows.map((row) => row.payload)).toEqual([
-      { itemId: item.id, linearIssueId: item.linearIssueId, stateType: "canceled" },
-    ]);
-    expect(rows[0]!.idempotencyKey).toMatch(
-      new RegExp(`^status:${item.id}:${item.linearIssueId}:canceled:\\d+$`),
-    );
-    const tracker = createFakeTracker();
-    await deliverLinearOutbox(rows[0]!, tracker, async () => {});
-    expect(tracker.statuses).toEqual([
-      { linearIssueId: item.linearIssueId, stateType: "canceled" },
-    ]);
-  } finally {
-    db.close();
-  }
-});
+for (const [type, source] of [
+  ["stop", "linear"],
+  ["cancel", "dashboard"],
+] as const)
+  test(`a ${source} ${type} enqueues one canceled status that survives the Stop fence`, async () => {
+    const db = tempDb();
+    try {
+      const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+      beginImplementRun(db, item.id, 1);
+      const command = { type, source, itemId: item.id, requestedAt: 5 };
+      expect(applyLinearCommand(db, command, 5).applied).toBe(true);
+      expect(applyLinearCommand(db, { ...command, requestedAt: 6 }, 6).applied).toBe(false);
+      const rows = statusRows(db);
+      expect(rows.map((row) => [row.status, row.payload])).toEqual([
+        ["pending", { itemId: item.id, linearIssueId: item.linearIssueId, stateType: "canceled" }],
+      ]);
+      expect(rows[0]!.idempotencyKey).toMatch(
+        new RegExp(`^status:${item.id}:${item.linearIssueId}:canceled:\\d+$`),
+      );
+      // Claim through the production heads and fence checks, as the outbox worker does.
+      const tracker = createFakeTracker();
+      for (let round = 0; round < 10 && tracker.statuses.length === 0; round += 1) {
+        for (const head of claimOutboxHeads(db, { now: 10 + round })) {
+          expect(isOutboxCurrent(db, head)).toBe(true);
+          if (head.op === "status") await deliverLinearOutbox(head, tracker, async () => {});
+          completeOutbox(db, head, 10 + round);
+        }
+      }
+      expect(tracker.statuses).toEqual([
+        { linearIssueId: item.linearIssueId, stateType: "canceled" },
+      ]);
+      expect(statusRows(db).map((row) => row.status)).toEqual(["sent"]);
+    } finally {
+      db.close();
+    }
+  });
 
 test("a cancel from the issue closing in Linear enqueues no status", () => {
   const db = tempDb();
