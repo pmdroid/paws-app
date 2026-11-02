@@ -340,6 +340,14 @@ async function fixture(options: { crashAt?: CrashPoint; moved?: boolean; freeze?
           )
           .get(),
       ),
+    markCleaning() {
+      const db = new Database(join(root, "executions.db"));
+      try {
+        db.run("UPDATE execution SET phase='cleaning' WHERE phase='publishing'");
+      } finally {
+        db.close();
+      }
+    },
     savedResults: () =>
       journal(
         (db) => db.query<{ n: number }, []>("SELECT count(*) AS n FROM result_delivery").get()!.n,
@@ -423,6 +431,26 @@ test.skipIf(!linuxUser)(
       expect(f.remoteBranch()).toBe(rebased);
       expect(f.remoteGit(["rev-list", "--count", `${f.baseSha}..${rebased}`])).toBe("2");
       expect(f.publication()?.publishedSha).toBe(rebased);
+      expect(f.starts).toHaveLength(1);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+test.skipIf(!linuxUser)(
+  "a crash while a kept publication was cleaning restores publishing and delivers it",
+  async () => {
+    const f = await fixture({ crashAt: "before-push" });
+    try {
+      await f.settle(f.crashed);
+      f.markCleaning();
+      expect(f.publication()?.phase).toBe("cleaning");
+      await f.restart();
+      await f.settle(() => f.posted.length > 0);
+      expect(f.posted).toHaveLength(1);
+      expectRealOutcome(f.posted[0], f.candidateSha);
       expect(f.starts).toHaveLength(1);
     } finally {
       await f.cleanup();

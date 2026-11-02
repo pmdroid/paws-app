@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
-import { immediate } from "../db";
+import { RunnerCapacityWait } from "../core";
+import { immediate, runTeardownOwner } from "../db";
 import type { RunnerWork } from "../runner-work";
 
 export function createRemoteCancellation(options: {
@@ -34,20 +35,32 @@ export function createRemoteCancellation(options: {
             workspaceId: string;
             generation: number;
             leaseUntil: number;
+            requested: number;
           },
           [string]
         >(
           `SELECT w.run_id AS runId,w.runner_id AS runnerId,w.workspace_id AS workspaceId,
-           w.generation,w.lease_until AS leaseUntil FROM runner_work w JOIN run r ON r.id=w.run_id
-           WHERE r.item_id=? AND (w.ended_at IS NULL OR EXISTS (
+           w.generation,w.lease_until AS leaseUntil,(w.ended_at IS NULL OR EXISTS (
              SELECT 1 FROM runner_command c WHERE c.run_id=w.run_id AND c.generation=w.generation
              AND c.runner_id=w.runner_id AND c.kind='cancel' AND c.acknowledged_at IS NULL
              AND NOT EXISTS (SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id
-               AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL)))`,
+               AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL))) AS requested
+           FROM runner_work w JOIN run r ON r.id=w.run_id WHERE r.item_id=?`,
         )
         .all(itemId);
       return rows.flatMap((row) => {
         const at = now();
+        if (!row.requested) {
+          if (runTeardownOwner(db, row.runId) === null) return [];
+          return [
+            {
+              runId: row.runId,
+              runnerId: row.runnerId,
+              validUntil: at + 65_000,
+              deadline: performance.now() + 65_000,
+            },
+          ];
+        }
         const expiresAt = Math.max(row.leaseUntil + 65_000, at + 65_000);
         const previous = db
           .query<{ id: string; expiresAt: number }, [string, string, number, number]>(
@@ -74,22 +87,24 @@ export function createRemoteCancellation(options: {
           }
         }
         const validUntil = previous?.expiresAt ?? expiresAt;
-        return [{ id, validUntil, deadline: performance.now() + validUntil - at }];
+        return [
+          {
+            runId: row.runId,
+            runnerId: row.runnerId,
+            validUntil,
+            deadline: performance.now() + validUntil - at,
+          },
+        ];
       });
     });
     await Promise.all(
-      requests.map(async ({ id, deadline, validUntil }) => {
+      requests.map(async ({ runId, runnerId, deadline, validUntil }) => {
         while (performance.now() < deadline && now() < validUntil) {
           signal?.throwIfAborted();
-          const command = db
-            .query<{ acknowledged: number | null }, [string]>(
-              "SELECT acknowledged_at AS acknowledged FROM runner_command WHERE id=?",
-            )
-            .get(id);
-          if (command?.acknowledged !== null && command?.acknowledged !== undefined) return;
+          if (runTeardownOwner(db, runId) === null) return;
           await delay(options.pollIntervalMs ?? 250, undefined, { signal });
         }
-        throw new Error("Runner teardown is not acknowledged");
+        throw new RunnerCapacityWait([runnerId]);
       }),
     );
   };

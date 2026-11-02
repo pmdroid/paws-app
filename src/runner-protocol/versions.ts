@@ -67,3 +67,6 @@ export const DURABLE_PUBLICATION_RUNNER_VERSION: RunnerVersion = [0, 1, 55];
 export const REVIEW_EFFORT_RUNNER_VERSION: RunnerVersion = [0, 1, 55];
 export const REVIEW_CONTEXT_RUNNER_VERSION: RunnerVersion = [0, 1, 55];
 export const LIVE_PREVIEW_RUNNER_VERSION: RunnerVersion = [0, 1, 56];
+
+/** First runner release with durable cleanup and explicit broker termination reports. */
+export const CONFIRMED_TEARDOWN_RUNNER_VERSION: RunnerVersion = [0, 1, 55];

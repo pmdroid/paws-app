@@ -154,6 +154,19 @@ async function fixture() {
           if (handled.has(command.id)) continue;
           handled.add(command.id);
           work.acknowledge(runnerId, command.id);
+          if (command.type === "cancel")
+            work.heartbeat(
+              runnerId,
+              1,
+              {},
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              [{ runId: command.runId, generation: command.generation, commandId: command.id }],
+            );
           if (command.type === "run" || command.type === "review") placed.push(command);
         }
       }

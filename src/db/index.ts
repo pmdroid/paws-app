@@ -60,8 +60,8 @@ export {
   type ReviewReplyTarget,
 } from "./review-replies";
 export {
-  CANCEL_STILL_PENDING,
   runnerCancelPending,
+  runTeardownOwner,
   recordRunnerCapacity,
   runnerHasCapacity,
   runnerOccupancy,
