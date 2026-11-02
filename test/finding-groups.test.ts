@@ -19,7 +19,7 @@ import {
   type GroupingInput,
 } from "../src/finding-groups";
 import { createFakeFindingIssueAdapter } from "../src/linear";
-import { handleFindingGroupsRequest } from "../src/web";
+import { handleFindingGroupsRequest } from "../src/dashboard";
 import { tempDb } from "./helpers";
 
 const epoch = Date.parse("2026-10-28T06:00:00Z");
@@ -426,7 +426,7 @@ test("a lost Linear reply keeps the action retryable and protects its members du
     };
     expect((await post(f, { action: "file", id: group.id })).status).toBe(502);
     expect(listFindingGroups(f.db, "ws").find((g) => g.id === group.id)?.action).toBe("file");
-    const { handleFindingsRequest } = await import("../src/web");
+    const { handleFindingsRequest } = await import("../src/dashboard");
     const dismiss = await handleFindingsRequest(
       new Request("http://localhost/api/findings", {
         method: "POST",
@@ -595,7 +595,7 @@ test("claimed Linear actions reconcile even after a review marks members gone", 
 });
 
 test("untouched groups follow individual dismissals immediately and locks are workspace-scoped", async () => {
-  const { handleFindingsRequest } = await import("../src/web");
+  const { handleFindingsRequest } = await import("../src/dashboard");
   const f = seed();
   try {
     await f.grouping.run("ws", new AbortController().signal);

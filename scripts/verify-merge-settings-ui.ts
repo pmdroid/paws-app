@@ -1,4 +1,4 @@
-import { statusFixture } from "../src/web/test/fixtures";
+import { statusFixture } from "../src/dashboard/test/fixtures";
 // Settings → Merging against the real settings handler and a temporary config.toml, and a run
 // page whose pull request waits in the GitHub merge queue.
 // Usage: bun run build:status && bun --no-env-file scripts/verify-merge-settings-ui.ts <screenshot dir>
@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfigFile, readMergeSettings } from "../src/config";
 import { handleMergeSettingsRequest } from "../src/settings";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/dashboard";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");

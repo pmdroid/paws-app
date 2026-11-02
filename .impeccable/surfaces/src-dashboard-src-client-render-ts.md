@@ -1,13 +1,13 @@
 ---
 version: 1
-slug: "src-web-src-client-render-ts"
-primary_target: "src/web/src/client/render.ts"
+slug: "src-dashboard-src-client-render-ts"
+primary_target: "src/dashboard/src/client/render.ts"
 related_targets:
   [
-    "src/web/src/client/closeout.ts",
-    "src/web/src/client/evidence.ts",
-    "src/web/src/client/evidence-media.ts",
-    "src/web/src/client/theme.css",
+    "src/dashboard/src/client/closeout.ts",
+    "src/dashboard/src/client/evidence.ts",
+    "src/dashboard/src/client/evidence-media.ts",
+    "src/dashboard/src/client/theme.css",
   ]
 ---
 

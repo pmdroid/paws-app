@@ -71,7 +71,7 @@ for (const runner of runners) {
 }
 const browser = createRunnerPlacementBrowser({ db });
 const built = await Bun.build({
-  entrypoints: [new URL("../../src/web/src/client/runners.ts", import.meta.url).pathname],
+  entrypoints: [new URL("../../src/dashboard/src/client/runners.ts", import.meta.url).pathname],
   target: "browser",
   format: "esm",
 });
@@ -95,7 +95,7 @@ const server = Bun.serve({
     if (path === "/runner.js")
       return new Response(script, { headers: { "content-type": "text/javascript" } });
     if (path === "/style.css") {
-      const assets = new URL("../../src/web/dist/assets/", import.meta.url).pathname;
+      const assets = new URL("../../src/dashboard/dist/assets/", import.meta.url).pathname;
       const css = [...new Bun.Glob("*.css").scanSync(assets)][0];
       if (!css) return new Response("Run bun run build:status first", { status: 503 });
       return new Response(Bun.file(join(assets, css)), { headers: { "content-type": "text/css" } });

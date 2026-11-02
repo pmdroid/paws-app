@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readCsrfToken } from "../src/web/src/client/csrf";
-import { handleStatusRequest } from "../src/web/src/server/handler";
-import { injectCsrf, processCsrfToken } from "../src/web/src/server/csrf";
+import { readCsrfToken } from "../src/dashboard/src/client/csrf";
+import { handleStatusRequest } from "../src/dashboard/src/server/handler";
+import { injectCsrf, processCsrfToken } from "../src/dashboard/src/server/csrf";
 
 describe("dashboard CSRF token", () => {
   test("the status page embeds the token and the client reads it back", async () => {

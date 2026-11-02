@@ -1,4 +1,4 @@
-import { fixtureProvider, fullStatusFixture } from "../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 // The Risk card on the issue page after a person approved a high-risk head: a fix that changed
 // no high-risk path keeps the approval, and a fix that changed one asks again with only its own
 // high-risk paths since the approved head. Against the real status handler.
@@ -6,7 +6,7 @@ import { fixtureProvider, fullStatusFixture } from "../src/web/test/fixtures";
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/dashboard";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");

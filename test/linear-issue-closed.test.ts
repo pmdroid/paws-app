@@ -38,7 +38,7 @@ import {
   stopUndelegatedIssue,
 } from "../src/loop";
 import { startServer } from "../src/server";
-import { createLiveStatusProvider } from "../src/web";
+import { createLiveStatusProvider } from "../src/dashboard";
 import { tempHome } from "./helpers";
 
 const cleanup: (() => void)[] = [];

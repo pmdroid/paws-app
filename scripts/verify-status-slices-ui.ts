@@ -1,8 +1,8 @@
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { statusFixture } from "../src/web/test/fixtures";
-import { handleStatusRequest } from "../src/web";
+import { statusFixture } from "../src/dashboard/test/fixtures";
+import { handleStatusRequest } from "../src/dashboard";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");

@@ -1,10 +1,10 @@
-import { statusFixture } from "../../src/web/test/fixtures";
+import { statusFixture } from "../../src/dashboard/test/fixtures";
 // Captures the Runners list with the coding agent version catalog at desktop and 390 px, light and dark.
 // Usage: bun run build:status && bun --no-env-file test/local/agent-catalog-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/dashboard";
 
 const directory = resolve(process.argv[2] ?? "agent-catalog-evidence");
 await mkdir(directory, { recursive: true });

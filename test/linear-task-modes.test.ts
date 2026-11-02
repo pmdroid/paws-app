@@ -15,7 +15,7 @@ import {
   saveTaskMode,
 } from "../src/db";
 import { classifyTask, parseTaskClassification } from "../src/loop";
-import { createLiveStatusProvider } from "../src/web";
+import { createLiveStatusProvider } from "../src/dashboard";
 import { tempDb, tempHome } from "./helpers";
 
 test("task classification accepts supported modes and explicit clarification", () => {

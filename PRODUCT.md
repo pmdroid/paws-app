@@ -34,4 +34,4 @@ The product is Paws. Its landing-page domain is paws.boo. The remote runner inst
 
 ## Evidence on Hand
 
-README.md documents the product workflow and setup. src/web implements the status dashboard.
+README.md documents the product workflow and setup. src/dashboard implements the status dashboard.

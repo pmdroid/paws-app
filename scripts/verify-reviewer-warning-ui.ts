@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeAgentSettings } from "../src/config";
 import { handleAgentSettingsRequest } from "../src/settings";
-import { handleStatusRequest } from "../src/web";
-import { statusFixture } from "../src/web/test/fixtures";
+import { handleStatusRequest } from "../src/dashboard";
+import { statusFixture } from "../src/dashboard/test/fixtures";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a proof directory");

@@ -4,7 +4,7 @@ Paws is one Bun process on the developer's machine. It takes delegated Linear is
 
 The product is Paws. Do not rename it, and do not describe it as a factory.
 
-The loop lives in `src/loop` and is wired from `src/index.ts`. A real run is `docs/smoke-test.md`. Check prerequisites with `bun run paws doctor`. Do not invent the feature while touching a neighboring module. The dashboard in `src/web` is owned separately.
+The loop lives in `src/loop` and is wired from `src/index.ts`. A real run is `docs/smoke-test.md`. Check prerequisites with `bun run paws doctor`. Do not invent the feature while touching a neighboring module. The dashboard in `src/dashboard` is owned separately.
 
 ## Run
 
@@ -94,7 +94,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/settings`                                           | Settings API for agents, merge policy, hooks and skills               |
 | `src/skills`                                             | Skill discovery, sources, bundles, hooks and updates                  |
 | `src/slack`                                              | Slack OAuth, identity, authorization and webhooks                     |
-| `src/web`                                                | Status dashboard client, server contract and build                    |
+| `src/dashboard`                                          | Status dashboard client, server contract and build                    |
 | `src/webhook-body`                                       | Bounded webhook request bodies and raw signature checks               |
 | `src/workspace`                                          | Workspace membership, integrations, assignments and policies          |
 | `src/worktree-checkout`                                  | Worktree checkout and folder exclusion policies                       |
@@ -118,7 +118,7 @@ Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not
 - Fakes live next to the interface they implement and are exported from that module. They record calls in memory.
 - Identifiers are ULIDs (`src/intake/ulid.ts`).
 - Secrets stay in `~/.paws/secrets` (directory mode `0700`). Never log them, never put them in the agent environment, and never commit them.
-- The status page is static files under `src/web` so it can ship on its own. The process serves them on localhost at `/status` and `GET /api/status`.
+- The status page is static files under `src/dashboard` so it can ship on its own. The process serves them on localhost at `/status` and `GET /api/status`.
 - Documentation describes the code as it is now. Delete a page that no longer matches instead of keeping it for history; `bun run links` fails on an orphaned doc, a broken local link or an inline `src/...` path that no longer exists. `bun run knip` fails on an unused file, dependency or duplicate export.
 
 ## Parallel work

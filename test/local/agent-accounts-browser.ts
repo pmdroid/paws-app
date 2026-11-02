@@ -1,4 +1,4 @@
-import { statusFixture } from "../../src/web/test/fixtures";
+import { statusFixture } from "../../src/dashboard/test/fixtures";
 import { chromium } from "@playwright/test";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { resolve, join } from "node:path";
@@ -30,10 +30,10 @@ const server = Bun.serve({
     const url = new URL(req.url);
     const asset = url.pathname.replace(/^\/(status\/)?assets\//, "");
     if (asset !== url.pathname && !asset.includes("/"))
-      return new Response(Bun.file(`${root}/src/web/dist/assets/${asset}`));
+      return new Response(Bun.file(`${root}/src/dashboard/dist/assets/${asset}`));
     if (["/status/", "/", "/runners/runner-a"].includes(url.pathname))
       return new Response(
-        (await Bun.file(`${root}/src/web/dist/index.html`).text()).replace(
+        (await Bun.file(`${root}/src/dashboard/dist/index.html`).text()).replace(
           "</head>",
           '<meta name="paws-csrf" content="synthetic-csrf"></head>',
         ),

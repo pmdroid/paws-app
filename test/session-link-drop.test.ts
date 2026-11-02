@@ -12,7 +12,7 @@ import {
   migrations,
   openDatabase,
 } from "../src/db";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/dashboard";
 import { tempDb } from "./helpers";
 
 function applyMigrationsUntil(db: Database, lastId: string): void {

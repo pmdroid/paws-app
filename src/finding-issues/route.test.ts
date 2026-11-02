@@ -9,7 +9,7 @@ import {
   type WorkspaceRole,
 } from "../db";
 import { createFakeTracker, REVIEW_FINDING_LABEL } from "../linear";
-import type { StatusReview, StatusReviewFinding } from "../web";
+import type { StatusReview, StatusReviewFinding } from "../dashboard";
 import { issueWorkspaceSession } from "../workspace";
 import { createFindingIssueRoute } from "./route";
 

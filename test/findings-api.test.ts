@@ -8,7 +8,7 @@ import {
   syncWorkspaceMember,
   type ReviewFindingReport,
 } from "../src/db";
-import { handleFindingsRequest, type FindingsResponse } from "../src/web";
+import { handleFindingsRequest, type FindingsResponse } from "../src/dashboard";
 import { tempDb } from "./helpers";
 
 const URL_BASE = "http://127.0.0.1:8787/api/findings";

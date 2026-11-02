@@ -27,7 +27,7 @@ import {
   statusSnapshots,
   type ReadLinearArtifact,
   type StartLinearSession,
-} from "../web";
+} from "../dashboard";
 import {
   EVIDENCE_API_PATH,
   handleEvidenceRequest,

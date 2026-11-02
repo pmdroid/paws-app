@@ -69,7 +69,7 @@ Shared workspaces use [Linear sign-in and workspace access](docs/workspace-acces
 
 To connect a Linux VM, follow [Enroll a remote Linux runner](docs/runner-enrollment.md) for package installation, configuration, agent login and enrollment.
 
-The status page lives in [`src/web`](src/web/README.md). It is read-only: items, current runs, open questions, Closeout verdicts, and the merge queue. It does not import the rest of the engine.
+The status page lives in [`src/dashboard`](src/dashboard/README.md). It is read-only: items, current runs, open questions, Closeout verdicts, and the merge queue. It does not import the rest of the engine.
 
 The dashboard reads `/api/status` from the Paws process that serves it. Build it with `bun run build:status`, then start Paws with `bun run paws` and open `http://127.0.0.1:8787/status`. An empty database shows no items.
 
@@ -81,7 +81,7 @@ bun run fmt           # oxfmt, writes
 bun run fmt:check     # oxfmt, check only
 bun run typecheck     # tsc --noEmit, plus the browser client
 bun run test          # bun test --parallel=4 --timeout=20000
-bun run build:status  # static dashboard → src/web/dist
+bun run build:status  # static dashboard → src/dashboard/dist
 bun run links         # docs links, orphaned docs and dead source paths
 bun run knip          # unused files, dependencies and duplicate exports
 bun run check         # all of the above

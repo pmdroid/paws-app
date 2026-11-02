@@ -5,7 +5,7 @@ import { setJournalSink } from "../src/journal";
 import { listItemHolds, migrate, migrations, openDatabase, saveItemHolds } from "../src/db";
 import { recordItemDependencies } from "../src/intake";
 import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
-import { createLiveStatusProvider } from "../src/web";
+import { createLiveStatusProvider } from "../src/dashboard";
 import { joinFakeWorkspace, workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 import { tempDb } from "./helpers";
 

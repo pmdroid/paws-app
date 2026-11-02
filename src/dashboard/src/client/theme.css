@@ -144,7 +144,7 @@ html.dark
   margin-top: 2rem;
 }
 
-/* ANSI SGR output in Closeout check logs (src/web/src/client/ansi.ts). */
+/* ANSI SGR output in Closeout check logs (src/dashboard/src/client/ansi.ts). */
 .ansi-bold {
   font-weight: 700;
 }
@@ -318,7 +318,7 @@ html.dark
   color: #fdfdfb;
 }
 
-/* Closeout evidence thumbnails on the evidence page (src/web/src/client/evidence.ts). */
+/* Closeout evidence thumbnails on the evidence page (src/dashboard/src/client/evidence.ts). */
 .evidence-more {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
@@ -1109,7 +1109,7 @@ dialog.review-draw {
   border-bottom: 2px solid var(--border);
 }
 
-/* Repository rules on the issue page (src/web/src/client/rules.ts). */
+/* Repository rules on the issue page (src/dashboard/src/client/rules.ts). */
 .rules-section > p {
   margin: 0;
 }
@@ -1147,7 +1147,7 @@ dialog.review-draw {
   }
 }
 
-/* The Visual review card on the item page (src/web/src/client/visual-review.ts). */
+/* The Visual review card on the item page (src/dashboard/src/client/visual-review.ts). */
 .visual-review-ask {
   display: flex;
   flex-direction: column;
@@ -1233,7 +1233,7 @@ a.visual-review-frame:focus-visible {
   margin: 0.5rem 0;
 }
 
-/* The Risk card on the item page (src/web/src/client/risk.ts). */
+/* The Risk card on the item page (src/dashboard/src/client/risk.ts). */
 .risk-paths {
   display: flex;
   flex-direction: column;
@@ -1257,7 +1257,7 @@ a.visual-review-frame:focus-visible {
   padding-block: 0;
 }
 
-/* Settings › Merging › High-risk paths (src/web/src/client/merge-settings.ts). */
+/* Settings › Merging › High-risk paths (src/dashboard/src/client/merge-settings.ts). */
 .risk-lists {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));

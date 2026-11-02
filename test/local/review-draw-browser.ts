@@ -1,4 +1,4 @@
-import { fixtureProvider, fullStatusFixture } from "../../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 // Draws on the screenshots of a waiting visual review at desktop (mouse) and 390 px (touch), sends
 // Request changes, and checks the marked PNGs keep each screenshot's size, then captures the pages.
 // Fails on horizontal scroll, page errors, or a missing or misplaced mark.
@@ -6,7 +6,7 @@ import { fixtureProvider, fullStatusFixture } from "../../src/web/test/fixtures"
 import { chromium, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/dashboard";
 
 const directory = resolve(process.argv[2] ?? "review-draw-evidence");
 await mkdir(directory, { recursive: true });

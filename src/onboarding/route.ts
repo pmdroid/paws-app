@@ -33,7 +33,7 @@ import {
   type LinearBrowserIdentity,
   type WorkspaceClient,
 } from "../workspace";
-import { handleStatusRequest } from "../web";
+import { handleStatusRequest } from "../dashboard";
 import { createLinearReconnect, type LinearReconnectSnapshot } from "./reconnect";
 
 const INSTALL_COOKIE = "__Host-paws-install";

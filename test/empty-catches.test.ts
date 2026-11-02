@@ -63,7 +63,7 @@ test("src contains no empty catches", () => {
   for (const file of readdirSync(root, { recursive: true })) {
     if (typeof file !== "string" || !/\.[cm]?[jt]sx?$/.test(file)) continue;
 
-    if (file.startsWith("web/dist/")) continue;
+    if (file.startsWith("dashboard/dist/")) continue;
     for (const line of emptyCatches(file, readFileSync(join(root, file), "utf8")))
       violations.push(`${file}:${line}`);
   }

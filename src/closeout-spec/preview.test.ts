@@ -15,7 +15,7 @@ const POLICY = [
   "    kind: preview",
   "    gate: beforePR",
   "    approval: human",
-  '    paths: ["src/web/**", "landing/**"]',
+  '    paths: ["src/dashboard/**", "landing/**"]',
   "",
 ].join("\n");
 
@@ -76,7 +76,7 @@ describe("the preview check in the policy", () => {
         kind: "preview",
         gate: "beforePR",
         approval: "human",
-        paths: ["src/web/**", "landing/**"],
+        paths: ["src/dashboard/**", "landing/**"],
       },
     ]);
   });
@@ -103,21 +103,21 @@ describe("the preview check in the policy", () => {
 
 describe("judging a preview check", () => {
   test("a matching change is held until Accept", () => {
-    const held = judge(S, ["src/web/page.ts"], []);
+    const held = judge(S, ["src/dashboard/page.ts"], []);
     expect(held.decision).toBe("blocked");
     expect(held.item?.state).toBe("missing");
-    expect(judge(S, ["src/web/page.ts"], [accepted()]).decision).toBe("accepted");
+    expect(judge(S, ["src/dashboard/page.ts"], [accepted()]).decision).toBe("accepted");
   });
 
   test("Accept on head S passes S, and a new head needs a new Accept", () => {
-    const passed = judge(S, ["src/web/page.ts"], [accepted(S)]);
+    const passed = judge(S, ["src/dashboard/page.ts"], [accepted(S)]);
     expect(passed.item?.state).toBe("passed");
     expect(passed.item?.message).toContain("accepted by member");
     expect(passed.item?.message).toContain("https://paws-preview-1.example.ts.net/");
-    const stale = judge(NEXT, ["src/web/page.ts"], [accepted(S)]);
+    const stale = judge(NEXT, ["src/dashboard/page.ts"], [accepted(S)]);
     expect(stale.decision).toBe("blocked");
     expect(stale.item?.state).toBe("missing");
-    expect(judge(NEXT, ["src/web/page.ts"], [accepted(S), accepted(NEXT)]).decision).toBe(
+    expect(judge(NEXT, ["src/dashboard/page.ts"], [accepted(S), accepted(NEXT)]).decision).toBe(
       "accepted",
     );
   });

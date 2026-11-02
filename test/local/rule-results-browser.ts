@@ -1,4 +1,8 @@
-import { fixtureProvider, fullStatusFixture, withRuleResults } from "../../src/web/test/fixtures";
+import {
+  fixtureProvider,
+  fullStatusFixture,
+  withRuleResults,
+} from "../../src/dashboard/test/fixtures";
 // Captures the run page's Repository rules at desktop and 390 px in light and dark: a pass, a probe
 // failure, a rule waiting for approval, an approval and a bypass. Fails on horizontal scroll or
 // page errors.
@@ -6,7 +10,7 @@ import { fixtureProvider, fullStatusFixture, withRuleResults } from "../../src/w
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/dashboard";
 
 const directory = resolve(process.argv[2] ?? "rule-results-evidence");
 await mkdir(directory, { recursive: true });

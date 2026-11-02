@@ -1,6 +1,6 @@
 # Status payload budget
 
-The status contract is in [`src/web/README.md`](../src/web/README.md#contract). The dashboard polls it, so its size is a budget, not a detail. Version 1 of `GET /api/status` grew to 13.7 MB per poll before anyone noticed.
+The status contract is in [`src/dashboard/README.md`](../src/dashboard/README.md#contract). The dashboard polls it, so its size is a budget, not a detail. Version 1 of `GET /api/status` grew to 13.7 MB per poll before anyone noticed.
 
 | Response                                        | Budget |
 | ----------------------------------------------- | ------ |
@@ -11,7 +11,7 @@ Check `stdout` and `stderr` are in neither. They come from `GET /api/status/item
 
 ## The test
 
-`src/web/src/live/payload-budget.test.ts` builds 100 finished items and 10 open ones. Each finished item has one Closeout attempt with two failing checks; each open item has three attempts of six failing checks. Every check stores `stdout` and `stderr` at the 64 KB cap. The test serves the list and an item detail through the status handler and fails when either is over its budget. A change that puts check output or every finished item back in the list fails it; today the list is about 145 KB of its 200 KB.
+`src/dashboard/src/live/payload-budget.test.ts` builds 100 finished items and 10 open ones. Each finished item has one Closeout attempt with two failing checks; each open item has three attempts of six failing checks. Every check stores `stdout` and `stderr` at the 64 KB cap. The test serves the list and an item detail through the status handler and fails when either is over its budget. A change that puts check output or every finished item back in the list fails it; today the list is about 145 KB of its 200 KB.
 
 ## The journal line
 

@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../../src/db";
-import { createLiveStatusProvider, handleStatusRequest } from "../../src/web";
+import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboard";
 
 const root = mkdtempSync(join(tmpdir(), "paws-hook-failure-transcript-"));
 const db = openDatabase(join(root, "paws.db"));
@@ -29,7 +29,7 @@ writeFileSync(
       update: {
         sessionUpdate: "tool_call",
         toolCallId: "edit-1",
-        title: "Edit src/web/src/client/hooks.ts",
+        title: "Edit src/dashboard/src/client/hooks.ts",
         kind: "edit",
         status: "completed",
       },
@@ -39,7 +39,7 @@ writeFileSync(
       hookId: "hook_fmt",
       hookEvent: "after_edit",
       command: "bun run fmt",
-      reason: "exited with 1: src/web/src/client/hooks.ts is not formatted",
+      reason: "exited with 1: src/dashboard/src/client/hooks.ts is not formatted",
     }) +
     line(3, {
       type: "hook_failed",

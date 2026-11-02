@@ -143,7 +143,7 @@ for name in development:
 for name in (f"@anthropic-ai/claude-agent-sdk-linux-{arch}-musl", f"@oxlint/binding-linux-{arch}-musl", f"lightningcss-linux-{arch}-musl", "left-pad/node_modules/helper-linux-musl"):
     write(modules / name / "index.js")
 write(modules / "left-pad/index.js")
-for name in ("src/web/index.ts", "src/web/src/client/main.ts", "src/web/dist/index.html", "src/webhooks/keep.ts"):
+for name in ("src/dashboard/index.ts", "src/dashboard/src/client/main.ts", "src/dashboard/dist/index.html", "src/dashboards/keep.ts"):
     write(source / name)
 write(root / "bun")
 installs = []
@@ -198,8 +198,8 @@ print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "dev
             member.startsWith(`app/node_modules/${name}/`) || member === `app/node_modules/${name}`,
         ),
       ).toEqual([]);
-    expect(result.members.filter((name) => name.startsWith("app/src/web/"))).toEqual([]);
-    expect(result.members).toContain("app/src/webhooks/keep.ts");
+    expect(result.members.filter((name) => name.startsWith("app/src/dashboard/"))).toEqual([]);
+    expect(result.members).toContain("app/src/dashboards/keep.ts");
     const dashboard = ["@base-ui/react", "lucide-react", "react", "react-dom", "video.js"];
     for (const name of dashboard) expect(result.development).toContain(name);
     const packages = result.members

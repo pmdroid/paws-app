@@ -11,10 +11,10 @@ import {
   recordLinearTurn,
   setCurrentRun,
 } from "../src/db";
-import { handleStatusRequest } from "../src/web";
-import { render } from "../src/web/src/client/render";
-import { parseStatusItemDetail, parseStatusSnapshot } from "../src/web/src/contract";
-import { parseRoute } from "../src/web/src/client/route";
+import { handleStatusRequest } from "../src/dashboard";
+import { render } from "../src/dashboard/src/client/render";
+import { parseStatusItemDetail, parseStatusSnapshot } from "../src/dashboard/src/contract";
+import { parseRoute } from "../src/dashboard/src/client/route";
 
 const NOW = 1_700_000_000_000;
 

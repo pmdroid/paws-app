@@ -13,8 +13,8 @@ import {
   releaseRunCapacity,
   setCurrentRun,
 } from "../src/db";
-import { createLiveStatusProvider } from "../src/web/src/live/provider";
-import { parseStatusItemDetail, parseStatusSnapshot } from "../src/web/src/contract";
+import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
+import { parseStatusItemDetail, parseStatusSnapshot } from "../src/dashboard/src/contract";
 import { tempDb, tempHome } from "./helpers";
 
 const homes: string[] = [];

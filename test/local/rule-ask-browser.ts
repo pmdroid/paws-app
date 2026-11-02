@@ -1,11 +1,11 @@
-import { fixtureProvider, fullStatusFixture } from "../../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 // The overview's Needs you list with a rule ask, and the "Rule break" card on the issue page,
 // against the real status handler.
 // Usage: bun run build:status && bun --no-env-file test/local/rule-ask-browser.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/dashboard";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
@@ -45,7 +45,7 @@ snapshot.questions = [
             state: "failed",
             attempt: 1,
             finding:
-              "src/web/src/contract.ts: StatusTask.title was removed\nsrc/server/serve.ts: GET /api/tasks/:id now requires ?workspace",
+              "src/dashboard/src/contract.ts: StatusTask.title was removed\nsrc/server/serve.ts: GET /api/tasks/:id now requires ?workspace",
           },
         ],
       },

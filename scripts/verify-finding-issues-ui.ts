@@ -4,9 +4,9 @@
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { FINDING_ISSUE_PATH, handleStatusRequest } from "../src/web";
-import type { StatusReviewFinding } from "../src/web/src/contract";
-import { fixtureProvider, fullStatusFixture } from "../src/web/test/fixtures";
+import { FINDING_ISSUE_PATH, handleStatusRequest } from "../src/dashboard";
+import type { StatusReviewFinding } from "../src/dashboard/src/contract";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");

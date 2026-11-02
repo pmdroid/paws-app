@@ -27,7 +27,7 @@ import {
   enqueueOutbox,
   listOutbox,
 } from "../../src/db";
-import { createLiveStatusProvider } from "../../src/web/src/live/provider";
+import { createLiveStatusProvider } from "../../src/dashboard/src/live/provider";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
 import { createRunnerControl } from "../../src/runner-control";
 import { initializeRunnerAuthority, createRunnerKey } from "../../src/runner-identity";

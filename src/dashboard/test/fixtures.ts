@@ -650,7 +650,7 @@ export function withRuleResults(full: FullStatus): FullStatus {
     },
     {
       ...rule("api-contract", "failed", 1, 2_080),
-      stdout: 'src/web/src/contract.ts: StatusCheck.kind narrowed: removed "evidence"\n',
+      stdout: 'src/dashboard/src/contract.ts: StatusCheck.kind narrowed: removed "evidence"\n',
       approval: {
         state: "waiting",
         questionId: "q-rule-100",

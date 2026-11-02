@@ -17,9 +17,9 @@ import {
   saveWorkItemLinearProject,
 } from "../src/db";
 import { elicitationBody, openQuestion } from "../src/questions";
-import { parseStatusSnapshot, statusIntegrity } from "../src/web/src/contract";
-import { render } from "../src/web/src/client/render";
-import { handleStatusRequest } from "../src/web";
+import { parseStatusSnapshot, statusIntegrity } from "../src/dashboard/src/contract";
+import { render } from "../src/dashboard/src/client/render";
+import { handleStatusRequest } from "../src/dashboard";
 
 const BASE = "a".repeat(40);
 const HEAD = "b".repeat(40);

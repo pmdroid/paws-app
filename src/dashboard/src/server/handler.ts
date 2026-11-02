@@ -53,7 +53,7 @@ export interface StatusServerOptions {
   db?: Database;
   /**
    * Directory from `bun run build:status` (`index.html`, `assets/`).
-   * Omit it to use `src/web/dist` when that build exists. Pass `null` to skip files.
+   * Omit it to use `src/dashboard/dist` when that build exists. Pass `null` to skip files.
    */
   staticDir?: string | null;
   /** Defaults to `process.env`. */

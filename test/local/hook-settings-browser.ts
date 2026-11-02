@@ -1,4 +1,4 @@
-import { statusFixture } from "../../src/web/test/fixtures";
+import { statusFixture } from "../../src/dashboard/test/fixtures";
 // Screenshots Settings → Agents → Hooks at desktop width and 390 px, after adding a hook
 // through the form. Run `bun run build:status` first. Prints the output directory.
 import { chromium } from "@playwright/test";
@@ -45,10 +45,10 @@ const server = Bun.serve({
     const url = new URL(req.url);
     const asset = url.pathname.replace(/^\/(status\/)?assets\//, "");
     if (asset !== url.pathname && !asset.includes("/"))
-      return new Response(Bun.file(`${root}/src/web/dist/assets/${asset}`));
+      return new Response(Bun.file(`${root}/src/dashboard/dist/assets/${asset}`));
     if (url.pathname === "/settings/agents")
       return new Response(
-        (await Bun.file(`${root}/src/web/dist/index.html`).text()).replace(
+        (await Bun.file(`${root}/src/dashboard/dist/index.html`).text()).replace(
           "</head>",
           '<meta name="paws-csrf" content="synthetic-csrf"></head>',
         ),

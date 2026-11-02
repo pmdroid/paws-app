@@ -312,7 +312,7 @@ const STATUS = [
   "",
 ].join("\n");
 const SERVE = [
-  'import { STATUS_API_PATH } from "../web/src/contract";',
+  'import { STATUS_API_PATH } from "../dashboard/src/contract";',
   "",
   "export function serve(request: Request): Response {",
   "  const path = new URL(request.url).pathname;",
@@ -330,7 +330,7 @@ const API = {
   "bun.lock": readFileSync(join(ROOT, "bun.lock"), "utf8"),
   ".gitignore": "node_modules\n",
   "src/runner-protocol/index.ts": EVENTS,
-  "src/web/src/contract.ts": STATUS,
+  "src/dashboard/src/contract.ts": STATUS,
   "src/server/serve.ts": SERVE,
 };
 
@@ -381,7 +381,7 @@ test("an unchanged contract passes api-contract", () => {
 test("removing a field from the status snapshot fails api-contract and names the field", () => {
   const ran = probe(
     "api-contract",
-    apiCandidate(edit("src/web/src/contract.ts", "  title: string;\n", "")),
+    apiCandidate(edit("src/dashboard/src/contract.ts", "  title: string;\n", "")),
   );
   expect(ran.exitCode).toBe(1);
   expect(ran.output).toContain("status\tStatusItem.title\tremoved");
@@ -400,7 +400,7 @@ test.each([
   ["a status state", ', "needs_human"]', "]", 'ITEM_STATES\tvalue "needs_human" removed'],
   ["a status path", '"/api/status"', '"/api/v2/status"', "STATUS_API_PATH\tchanged from"],
 ])("narrowing %s fails api-contract", (_, from, to, message) => {
-  const ran = probe("api-contract", apiCandidate(edit("src/web/src/contract.ts", from, to)));
+  const ran = probe("api-contract", apiCandidate(edit("src/dashboard/src/contract.ts", from, to)));
   expect(ran.exitCode).toBe(1);
   expect(ran.output).toContain(message);
 });
@@ -815,9 +815,9 @@ test("status object constant keys and nested values are compared", () => {
   const ran = probe(
     "api-contract",
     candidate(
-      { ...API, "src/web/src/contract.ts": before },
+      { ...API, "src/dashboard/src/contract.ts": before },
       {
-        "src/web/src/contract.ts": before
+        "src/dashboard/src/contract.ts": before
           .replace(', runners:["id"]', "")
           .replace('["id","title"]', '["id"]'),
       },
@@ -834,7 +834,7 @@ test("unrelated unsupported exports do not crash extraction", () => {
     apiCandidate({
       "src/runner-protocol/index.ts":
         EVENTS + '\nexport const RUNNER_KNOWN_AGENTS = new Set(["a"]);',
-      "src/web/src/contract.ts":
+      "src/dashboard/src/contract.ts":
         STATUS + '\nexport const UNUSED = new Set(["a"]);\nexport const EXTRA_PATH = `/api/extra`;',
     }),
   );

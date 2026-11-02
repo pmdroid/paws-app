@@ -17,7 +17,7 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 SAFE_NAME = re.compile(r"[A-Za-z0-9@._+-]+")
 # Source directories only the control plane runs. The dashboard is built and served there, never on a runner.
-CONTROL_PLANE_ONLY = frozenset({("web",)})
+CONTROL_PLANE_ONLY = frozenset({("dashboard",)})
 
 
 def read_package_file(path, limit):
@@ -210,7 +210,7 @@ def pack_with(arguments, source, bun, runtime, manifest, development, modules):
         for name in sorted(release.ASSETS):
             add_content(archive, f"deploy/linux/{name}", read_package_file(source / "deploy/linux" / name, 1_048_576))
     members = release.inspect_archive(artifact)
-    if any(name.startswith("app/src/web/") for name in members):
+    if any(name.startswith("app/src/dashboard/") for name in members):
         raise ValueError("The dashboard must not ship in the runner package")
     if not launcher_targets <= members.keys():
         raise ValueError("Adapter launcher target is missing from the release")

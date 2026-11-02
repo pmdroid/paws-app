@@ -26,7 +26,7 @@ import {
   type CloseoutProgressRecord,
 } from "../src/db";
 import { createDbCloseoutProgress } from "../src/loop/closeout-progress";
-import { createLiveStatusProvider } from "../src/web/src/live/provider";
+import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 
 const exec = promisify(execFile);
 const TASK = "ENG-74";

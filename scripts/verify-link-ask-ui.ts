@@ -1,4 +1,4 @@
-import { statusFixture } from "../src/web/test/fixtures";
+import { statusFixture } from "../src/dashboard/test/fixtures";
 // The overview's Needs you list with the four kinds of link asks, the "Closeout needs your
 // help" card and the Risk card on the issue page, against the real status handler, and the
 // risk gate note in Settings › Merging on a Paws without an https link.
@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RISK_GATE_NEEDS_PUBLIC_URL } from "../src/loop";
 import { handleMergeSettingsRequest } from "../src/settings";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/dashboard";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");

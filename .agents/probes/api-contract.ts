@@ -18,7 +18,7 @@ type Contract = {
 type Change = { surface: string; name: string; kind: string };
 
 const PROTOCOL = "src/runner-protocol/index.ts";
-const STATUS = "src/web/src/contract.ts";
+const STATUS = "src/dashboard/src/contract.ts";
 
 const RUNNER_INPUT_SCHEMAS = new Set([
   "RunnerCommandSchema",
@@ -159,7 +159,7 @@ function filesIn(root: string, dir: string): Promise<string[]> {
           path.endsWith(".ts") &&
           !path.endsWith(".d.ts") &&
           !/\.test\.ts$/.test(path) &&
-          !path.startsWith("src/web/src/client/") &&
+          !path.startsWith("src/dashboard/src/client/") &&
           !path.includes("/test/") &&
           !path.includes("/fixtures/"),
       ),

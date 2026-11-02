@@ -23,7 +23,7 @@ const VISUAL_PROOF = [
   "  - id: visual-proof",
   "    kind: evidence",
   "    gate: beforePR",
-  '    paths: ["src/web/**", "landing/**"]',
+  '    paths: ["src/dashboard/**", "landing/**"]',
   "    hint: Screenshot each changed screen at desktop width and at 390 px.",
 ];
 
@@ -43,7 +43,7 @@ test("a change outside paths does not require visual proof", async () => {
 
 test("a frontend change without evidence is pending, then fails in Paws Closeout", async () => {
   const f = fixture(VISUAL_PROOF);
-  f.commit("src/web/page.ts", "export {};\n");
+  f.commit("src/dashboard/page.ts", "export {};\n");
   const report = await f.report([]);
   expect(report.required.find((item) => item.id === "visual-proof")).toMatchObject({
     kind: "evidence",
@@ -62,8 +62,8 @@ test("a frontend change without evidence is pending, then fails in Paws Closeout
 
 test("one screenshot from an earlier commit of the same task passes", async () => {
   const f = fixture(VISUAL_PROOF);
-  const earlier = f.commit("src/web/page.ts", "export {};\n");
-  f.commit("src/web/page.ts", "export const done = true;\n");
+  const earlier = f.commit("src/dashboard/page.ts", "export {};\n");
+  f.commit("src/dashboard/page.ts", "export const done = true;\n");
   const shot: PublishedEvidence = { checkId: "visual-proof", media: "image", commit: earlier };
   const report = await f.report([shot]);
   expect(report.required.find((item) => item.id === "visual-proof")?.status).toBe("passed");
@@ -81,7 +81,7 @@ test("a screenshot survives a rebase that leaves the checked files alone", async
   const shot: PublishedEvidence = {
     checkId: "visual-proof",
     media: "image",
-    commit: f.commit("src/web/page.ts", "export {};\n"),
+    commit: f.commit("src/dashboard/page.ts", "export {};\n"),
   };
   f.rebaseOnto("src/core/state.ts");
   expect((await f.report([shot])).required.find((item) => item.id === "visual-proof")?.status).toBe(
@@ -95,9 +95,9 @@ test("a rebase that changes the checked files drops the screenshot", async () =>
   const shot: PublishedEvidence = {
     checkId: "visual-proof",
     media: "image",
-    commit: f.commit("src/web/page.ts", "export {};\n"),
+    commit: f.commit("src/dashboard/page.ts", "export {};\n"),
   };
-  f.rebaseOnto("src/web/theme.ts");
+  f.rebaseOnto("src/dashboard/theme.ts");
   expect((await f.report([shot])).required.find((item) => item.id === "visual-proof")?.status).toBe(
     "missing",
   );
@@ -125,7 +125,7 @@ test("a video counts only when media allows it", async () => {
 
 test("minimum 2 needs two files", async () => {
   const f = fixture([...VISUAL_PROOF, "    minimum: 2"]);
-  const head = f.commit("src/web/page.ts", "export {};\n");
+  const head = f.commit("src/dashboard/page.ts", "export {};\n");
   const shot: PublishedEvidence = { checkId: "visual-proof", media: "image", commit: head };
   expect((await f.report([shot])).pending).toContain("visual-proof");
   expect(await f.judge([shot])).toEqual({ decision: "rejected", state: "failed" });
@@ -153,7 +153,7 @@ test("the policy schema rejects unknown media and the runner transfer keeps publ
 
 test("approval: human is pending in get_closeout and in Paws Closeout until a reviewer accepts", async () => {
   const f = fixture([...VISUAL_PROOF, "    approval: human"]);
-  const head = f.commit("src/web/page.ts", "export {};\n");
+  const head = f.commit("src/dashboard/page.ts", "export {};\n");
   const shot: PublishedEvidence = {
     id: "ev-1",
     checkId: "visual-proof",
@@ -246,7 +246,7 @@ function fixture(evidence: string[]) {
     sideCommit(): string {
       const tip = headOf(root);
       git(root, ["checkout", "-q", "-b", "side", base]);
-      const side = f.commit("src/web/other.ts", "export {};\n");
+      const side = f.commit("src/dashboard/other.ts", "export {};\n");
       git(root, ["checkout", "-q", "main"]);
       expect(headOf(root)).toBe(tip);
       return side;

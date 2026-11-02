@@ -60,7 +60,7 @@ Example:
 `createLiveStatusProvider(db)` is exported from [`index.ts`](index.ts) and reads the engine database (`source: "live"`). `fakeStatusProvider()` returns an empty live snapshot. The server mounts the live reader like this:
 
 ```ts
-import { createLiveStatusProvider, handleStatusRequest } from "../web";
+import { createLiveStatusProvider, handleStatusRequest } from "../dashboard";
 
 const response = await handleStatusRequest(request, {
   provider: createLiveStatusProvider(db),

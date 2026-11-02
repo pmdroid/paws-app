@@ -19,7 +19,7 @@ import {
   openDatabase,
   upsertCloseoutStep,
 } from "../src/db";
-import { createLiveStatusProvider } from "../src/web/src/live/provider";
+import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 
 test("remote session output survives result transport, persistence and the live status API", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-remote-output-"));

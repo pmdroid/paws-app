@@ -52,7 +52,7 @@ items:
   - id: visual-proof
     kind: evidence
     gate: beforePR
-    paths: ["src/web/**", "landing/**"]
+    paths: ["src/dashboard/**", "landing/**"]
     media: [image, video]
     minimum: 1
     hint: Screenshot each changed screen at desktop width and at 390 px.
@@ -105,7 +105,7 @@ items:
       - "src/runner-repository-access/**"
       - "src/server/**"
       - "src/slack/**"
-      - "src/web/src/server/**"
+      - "src/dashboard/src/server/**"
       - "src/workspace/**"
       - "src/worktree-checkout/**"
 rules:

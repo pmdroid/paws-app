@@ -1,15 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { insertQueuedItem, insertRun, migrate, openDatabase, saveEvidence } from "../src/db";
 import type { EvidenceMediaType } from "../src/db";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/dashboard";
 import {
   parseStatusSnapshot,
   type StatusItemDetail,
   type StatusSnapshot,
-} from "../src/web/src/contract";
-import { createLiveStatusProvider } from "../src/web/src/live/provider";
-import { render, type RenderModel } from "../src/web/src/client/render";
-import { filterEvidence, mediaSummary, sizeLabel, timeLabel } from "../src/web/src/client/evidence";
+} from "../src/dashboard/src/contract";
+import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
+import { render, type RenderModel } from "../src/dashboard/src/client/render";
+import {
+  filterEvidence,
+  mediaSummary,
+  sizeLabel,
+  timeLabel,
+} from "../src/dashboard/src/client/evidence";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const VIDEO = "01JA0000000000000000000001";

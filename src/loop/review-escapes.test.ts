@@ -199,7 +199,7 @@ describe("classifyReviewEscape", () => {
     for (const file of [
       "test/boundaries.test.ts",
       "src/loop/pull-reviews.test.ts",
-      "src/web/__snapshots__/a.snap",
+      "src/dashboard/__snapshots__/a.snap",
       "docs/smoke-test.md",
       "README.md",
       "CHANGELOG.md",

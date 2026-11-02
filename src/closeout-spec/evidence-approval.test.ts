@@ -18,7 +18,7 @@ function policyText(extra: string[]): string {
     "  - id: visual-proof",
     "    kind: evidence",
     "    gate: beforePR",
-    '    paths: ["src/web/**", "landing/**"]',
+    '    paths: ["src/dashboard/**", "landing/**"]',
     ...extra,
     "",
   ].join("\n");
@@ -33,7 +33,7 @@ describe("approval: human in the policy", () => {
       id: "visual-proof",
       kind: "evidence",
       gate: "beforePR",
-      paths: ["src/web/**", "landing/**"],
+      paths: ["src/dashboard/**", "landing/**"],
       approval: "human",
     });
   });
@@ -156,7 +156,7 @@ function decide(
     gate: "beforePR",
     task: "task",
     candidate: { session: "s", model: "m", provider: "p" },
-    changedPaths: ["src/web/page.ts"],
+    changedPaths: ["src/dashboard/page.ts"],
     published,
     approvals,
   };
