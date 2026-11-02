@@ -35,20 +35,32 @@ export function createRemoteCancellation(options: {
             workspaceId: string;
             generation: number;
             leaseUntil: number;
+            requested: number;
           },
           [string]
         >(
           `SELECT w.run_id AS runId,w.runner_id AS runnerId,w.workspace_id AS workspaceId,
-           w.generation,w.lease_until AS leaseUntil FROM runner_work w JOIN run r ON r.id=w.run_id
-           WHERE r.item_id=? AND (w.ended_at IS NULL OR EXISTS (
+           w.generation,w.lease_until AS leaseUntil,(w.ended_at IS NULL OR EXISTS (
              SELECT 1 FROM runner_command c WHERE c.run_id=w.run_id AND c.generation=w.generation
              AND c.runner_id=w.runner_id AND c.kind='cancel' AND c.acknowledged_at IS NULL
              AND NOT EXISTS (SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id
-               AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL)))`,
+               AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL))) AS requested
+           FROM runner_work w JOIN run r ON r.id=w.run_id WHERE r.item_id=?`,
         )
         .all(itemId);
       return rows.flatMap((row) => {
         const at = now();
+        if (!row.requested) {
+          if (runTeardownOwner(db, row.runId) === null) return [];
+          return [
+            {
+              runId: row.runId,
+              runnerId: row.runnerId,
+              validUntil: at + 65_000,
+              deadline: performance.now() + 65_000,
+            },
+          ];
+        }
         const expiresAt = Math.max(row.leaseUntil + 65_000, at + 65_000);
         const previous = db
           .query<{ id: string; expiresAt: number }, [string, string, number, number]>(

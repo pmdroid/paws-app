@@ -762,6 +762,7 @@ export async function probeRunnerWork(
         cancellationJoined = true;
       });
       const repeatedCancelTask = backend.cancelItem(waiting.itemId);
+      let retriedAfterReceipt: Promise<void> | undefined;
       assert.equal(
         db
           .query<{ count: number }, [string]>(
@@ -784,15 +785,20 @@ export async function probeRunnerWork(
           /(?:cancellation|free slot)/,
         );
         work.acknowledge(firstRunner, pendingCancellation.id);
+        let retryJoined = false;
+        retriedAfterReceipt = backend.cancelItem(waiting.itemId).then(() => {
+          retryJoined = true;
+        });
         await delay(5);
         assert.equal(cancellationJoined, false, "a receipt acknowledgement is not termination");
+        assert.equal(retryJoined, false, "a retry after receipt still waits for termination");
         assert.throws(
           () => work.assign({ ...review, id: workspaceId(), generation: 6 }),
           /(?:cancellation|free slot)/,
         );
       } finally {
         confirmStopped(firstRunner, { ...review, id: pendingCancellation.id, generation: 5 });
-        await Promise.all([cancelTask, repeatedCancelTask]);
+        await Promise.all([cancelTask, repeatedCancelTask, retriedAfterReceipt]);
       }
       assert.equal(cancellationJoined, true);
       work.assign({ ...review, id: workspaceId(), generation: 6 });
