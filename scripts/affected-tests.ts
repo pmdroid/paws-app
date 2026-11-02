@@ -175,8 +175,8 @@ function relativeImports(path: string, text: string): string[] {
 
 /**
  * Relative imports, followed through test helpers and through `src/` so a file that imports
- * `src/loop`, which imports `src/merge`, reaches both units. A finished file is cached. A walk
- * that hit a file still on the stack is not, so a cycle cannot store a partial result.
+ * `src/loop`, which imports `src/merge`, reaches both units. Each file is parsed once, and a
+ * file's reach is a walk over the import graph with a visited set, so cycles cost nothing.
  */
 function createImportGraph(root: string) {
   const texts = new Map<string, string>();
@@ -198,34 +198,39 @@ function createImportGraph(root: string) {
     }
     return target;
   };
-  const cache = new Map<string, Set<string>>();
-  // `partial` is true when a dependency was still on the stack. That result must not be cached:
-  // the in-progress file may import a unit this walk could not see yet.
-  const walk = (path: string, stack: Set<string>): { units: Set<string>; partial: boolean } => {
-    const cached = cache.get(path);
-    if (cached !== undefined) return { units: cached, partial: false };
-    if (stack.has(path)) return { units: new Set(), partial: true };
-    stack.add(path);
-    const units = new Set<string>();
-    let partial = false;
-    for (const specifier of relativeImports(path, read(path))) {
-      const target = resolve(path, specifier);
-      if (target === undefined || target.includes("node_modules/")) continue;
-      const unit = sourceUnit(target);
-      if (unit !== undefined) units.add(unit);
-      if (stack.has(target)) {
-        partial = true;
-        continue;
+  const edges = new Map<string, string[]>();
+  const importsOf = (path: string): string[] => {
+    let targets = edges.get(path);
+    if (targets === undefined) {
+      targets = [];
+      for (const specifier of relativeImports(path, read(path))) {
+        const target = resolve(path, specifier);
+        if (target !== undefined && !target.includes("node_modules/")) targets.push(target);
       }
-      const found = walk(target, stack);
-      partial ||= found.partial;
-      for (const reached of found.units) units.add(reached);
+      edges.set(path, targets);
     }
-    stack.delete(path);
-    if (!partial) cache.set(path, units);
-    return { units, partial };
+    return targets;
   };
-  return { read, reaches: (path: string) => walk(path, new Set()).units };
+  const reached = new Map<string, Set<string>>();
+  const reaches = (path: string): Set<string> => {
+    const cached = reached.get(path);
+    if (cached !== undefined) return cached;
+    const units = new Set<string>();
+    const seen = new Set<string>([path]);
+    const pending = [path];
+    while (pending.length) {
+      for (const target of importsOf(pending.pop()!)) {
+        const unit = sourceUnit(target);
+        if (unit !== undefined) units.add(unit);
+        if (seen.has(target)) continue;
+        seen.add(target);
+        pending.push(target);
+      }
+    }
+    reached.set(path, units);
+    return units;
+  };
+  return { read, reaches };
 }
 
 /** Units that import `unit`, directly or through another unit. The unit itself is left out. */
