@@ -519,3 +519,29 @@ test("large session output stays within the remote report budget and marks trunc
   expect(result.truncated).toBe(true);
   expect(result.stderr).toContain("末尾");
 });
+
+test("a change to many files keeps the report within the remote budget by shortening matched paths", async () => {
+  const root = initRepo();
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "items:",
+    ...["lint", "format", "typecheck", "test"].map((id) => command(id, ["true"], "src/**")),
+  ]);
+  for (let index = 0; index < 1500; index++)
+    writeFileSync(
+      join(root, "src", `module-${String(index).padStart(4, "0")}-with-a-long-name.ts`),
+      "x\n",
+    );
+  const session = createCloseoutSession(root, local(root));
+  const text = await session.report();
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(60000);
+  const report = JSON.parse(text) as {
+    pending: string[];
+    required: { id: string; matched_paths: string[]; matched_paths_omitted?: number }[];
+  };
+  expect(report.pending).toEqual(["lint", "format", "typecheck", "test"]);
+  for (const entry of report.required) {
+    expect(entry.matched_paths).toHaveLength(20);
+    expect(entry.matched_paths_omitted).toBe(1480);
+  }
+});
