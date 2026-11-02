@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -527,6 +528,32 @@ test("upgrade reconciles historical terminal executions through the broker contr
     expect(journal.pendingTerminations()).toEqual([
       { runId: command.runId, generation: 1, commandId: command.id },
     ]);
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("upgrade reconciles a terminal execution an older release stored in a shape this release rejects", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-legacy-payload-"));
+  let journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    journal.phase(execution.id, "complete");
+    journal.close();
+    const legacy = { ...command, commitPolicy: { projectLead: "lead", taskSteerer: "steerer" } };
+    const db = new Database(join(root, "executions.db"));
+    db.run("UPDATE execution SET payload=? WHERE id=?", [JSON.stringify(legacy), execution.id]);
+    db.close();
+    journal = openExecutionJournal(root);
+    expect(journal.unconfirmedTerminations()).toEqual([
+      {
+        id: execution.id,
+        command: { id: command.id, runId: command.runId, generation: 1, itemId: command.itemId },
+      },
+    ]);
+    journal.confirmTermination(command);
+    expect(journal.unconfirmedTerminations()).toEqual([]);
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });

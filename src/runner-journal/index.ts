@@ -66,6 +66,11 @@ function executionId(now: number): string {
   return result;
 }
 
+export type TerminalExecution = {
+  id: string;
+  command: { id: string; runId: string; generation: number; itemId: string };
+};
+
 export function openExecutionJournal(root: string) {
   if (!isAbsolute(root)) throw new Error("Execution journal root must be absolute");
   const info = statSync(root);
@@ -163,14 +168,22 @@ export function openExecutionJournal(root: string) {
     publication: storedPublication,
     // Older releases could mark an execution interrupted before its broker stopped.
     // Reconcile those rows through the same broker contract on upgrade.
-    unconfirmedTerminations() {
+    unconfirmedTerminations(): TerminalExecution[] {
       return db
-        .query<{ id: string; payload: string; phase: string }, []>(
-          `SELECT id,payload,phase FROM execution e WHERE phase IN ('complete','interrupted')
+        .query<
+          { id: string; commandId: string; runId: string; generation: number; itemId: string },
+          []
+        >(
+          `SELECT id,command_id AS commandId,json_extract(payload,'$.runId') AS runId,
+          json_extract(payload,'$.generation') AS generation,json_extract(payload,'$.itemId') AS itemId
+          FROM execution e WHERE phase IN ('complete','interrupted')
           AND NOT EXISTS(SELECT 1 FROM termination t WHERE t.command_id=e.command_id) ORDER BY rowid`,
         )
         .all()
-        .map(parseExecution);
+        .map(({ id, commandId, runId, generation, itemId }) => ({
+          id,
+          command: { id: commandId, runId, generation, itemId },
+        }));
     },
     terminationPending(runId: string, generation: number) {
       return (
