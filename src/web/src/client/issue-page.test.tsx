@@ -102,11 +102,64 @@ describe("issue page", () => {
     expect(section).toContain(">State changes</h3>");
     const entries = section.slice(0, section.indexOf("</ol>")).match(/<li /g);
     expect(entries).toHaveLength(6);
-    expect(section).toContain("<strong>queued</strong> Back to the agent for Closeout findings.");
+    expect(section).toContain(
+      '<strong>queued</strong></p><p class="timeline-why">Back to the agent for Closeout findings.</p>',
+    );
     expect(section).toContain('<li data-kind="restart">');
     expect(section).toContain("<strong>merge queue</strong>");
-    expect(section).toContain("from verifying · closeout_accepted");
+    expect(section).toContain(
+      'verifying <span aria-hidden="true">→</span><span class="sr-only">to</span> <strong>merge queue</strong>',
+    );
+    expect(section).toContain('<p class="muted">closeout accepted</p>');
     expect(html.indexOf('id="merge-heading"')).toBeLessThan(html.indexOf("item-timeline-heading"));
+  });
+
+  test("open run details lay out facts, a dotted state timeline and the run setup as panels", () => {
+    const snapshot = fullStatusFixture();
+    const item = snapshot.items.find((entry) => entry.id === "ENG-101")!;
+    const run = snapshot.runs.find((entry) => entry.itemId === "ENG-101")!;
+    const step = (at: string, from: string, to: string, event: string) => ({
+      at,
+      from,
+      to,
+      event,
+      kind: "transition" as const,
+      reason: null,
+      actor: null,
+    });
+    item.timeline = [
+      step("2026-10-09T20:58:00.000Z", "queued", "running", "dispatched"),
+      ...[1, 2].flatMap((n) => [
+        step(`2026-10-09T21:0${n}:00.000Z`, "running", "recovering", "runner_lost"),
+        step(`2026-10-09T21:0${n}:30.000Z`, "recovering", "running", "recovered"),
+      ]),
+    ];
+    item.linearRequests = 7;
+    run.setup = {
+      skills: [{ name: "impeccable", version: "2.4.1", installing: false }],
+      hooks: [],
+    };
+    const closed = page(snapshot, "ENG-101");
+    expect(closed).toContain('<section class="issue-fold" aria-label="Run details">');
+    expect(closed).not.toContain('class="run-details"');
+    const html = render({
+      phase: "ready",
+      error: null,
+      engineUrl: null,
+      closeout: openedView({ "section\ndetails:ENG-101": true }),
+      ...pageData(snapshot, { view: "issues", id: "ENG-101" }),
+    }).content;
+    const body = html.slice(html.indexOf('<div class="run-details">'));
+    expect(body.indexOf('<dl class="issue-facts-grid">')).toBe(25);
+    expect(body.indexOf("item-timeline")).toBeLessThan(body.indexOf('class="run-setup"'));
+    expect(body).toContain('<span class="timeline-dot" data-state="running" aria-hidden="true">');
+    expect(body).toContain(
+      '<li data-kind="loop"><span class="timeline-time"><time datetime="2026-10-09T21:01:00.000Z"',
+    );
+    expect(body).toContain(
+      '<strong>recovering</strong> and back to running <span class="tag">2 times</span>',
+    );
+    expect(body).toContain('<p class="muted">runner lost · recovered</p>');
   });
 
   test("an item without recorded state changes has no item timeline", () => {

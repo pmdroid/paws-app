@@ -601,10 +601,36 @@ a.evidence-thumb:focus-visible {
   white-space: nowrap;
 }
 .run-details {
-  display: flex;
+  display: grid;
   min-width: 0;
-  flex-direction: column;
-  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 1rem;
+}
+.run-details > * {
+  min-width: 0;
+  border: 2px solid var(--border);
+  border-radius: 5px;
+  padding: 1rem 1.25rem;
+  background: var(--secondary-background);
+}
+@media (min-width: 64rem) {
+  .run-details:has(> .item-timeline) {
+    grid-template-columns: minmax(0, 3fr) minmax(16rem, 2fr);
+    grid-template-rows: auto 1fr;
+  }
+  .run-details:has(> .item-timeline) > * {
+    grid-column: 2;
+  }
+  .run-details > .item-timeline {
+    grid-row: 1 / span 2;
+    grid-column: 1;
+  }
+}
+@media (max-width: 500px) {
+  .run-details > * {
+    padding: 0.875rem;
+  }
 }
 .check-row {
   min-width: 0;
@@ -942,44 +968,102 @@ dialog.review-draw {
 .time-legend .time-swatch {
   margin-right: 0;
 }
-:is(.time-seg, .time-swatch)[data-state="planning"] {
+:is(.time-seg, .time-swatch, .timeline-dot)[data-state="planning"] {
   background-color: #ddd6fe;
 }
-:is(.time-seg, .time-swatch)[data-state="queued"] {
+:is(.time-seg, .time-swatch, .timeline-dot)[data-state="queued"] {
   background-color: #d4d4d8;
 }
-:is(.time-seg, .time-swatch)[data-state="running"] {
+:is(.time-seg, .time-swatch, .timeline-dot)[data-state="running"] {
   background-color: var(--main);
 }
-:is(.time-seg, .time-swatch)[data-state="verifying"] {
+:is(.time-seg, .time-swatch, .timeline-dot)[data-state="verifying"] {
   background-color: #93c5fd;
 }
-:is(.time-seg, .time-swatch)[data-state="recovering"] {
+:is(.time-seg, .time-swatch, .timeline-dot)[data-state="recovering"] {
   background-color: #f9a8d4;
 }
-:is(.time-seg, .time-swatch)[data-state="awaiting_input"],
-:is(.time-seg, .time-swatch)[data-state="paused"] {
+:is(.time-seg, .time-swatch, .timeline-dot)[data-state="awaiting_input"],
+:is(.time-seg, .time-swatch, .timeline-dot)[data-state="paused"] {
   background-color: #fde68a;
 }
-:is(.time-seg, .time-swatch)[data-state="merge_queue"] {
+:is(.time-seg, .time-swatch, .timeline-dot)[data-state="merge_queue"] {
   background-color: #86efac;
 }
-:is(.time-seg, .time-swatch)[data-state="failed"] {
+:is(.time-seg, .time-swatch, .timeline-dot)[data-state="failed"] {
   background-color: #fca5a5;
 }
-:is(.time-seg, .time-swatch)[data-state="manual"] {
+:is(.time-seg, .time-swatch, .timeline-dot)[data-state="manual"] {
   background-color: #a5f3fc;
 }
 .merged-times-table {
   max-width: 28rem;
 }
-.item-timeline ol {
+.timeline-list {
+  --timeline-time: 3.25rem;
+  --timeline-dot: 0.875rem;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
   list-style: none;
   margin: 0;
   padding: 0;
+}
+.timeline-list > li {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--timeline-time) var(--timeline-dot) minmax(0, 1fr);
+  align-items: start;
+  column-gap: 0.75rem;
+  padding: 0 0 1rem;
+}
+.timeline-list > li:last-child {
+  padding-bottom: 0;
+}
+.timeline-list > li:not(:last-child)::after {
+  position: absolute;
+  top: 0.75rem;
+  bottom: -0.25rem;
+  left: calc(var(--timeline-time) + 0.75rem + var(--timeline-dot) / 2 - 1px);
+  width: 2px;
+  background: color-mix(in oklab, var(--foreground) 45%, transparent);
+  content: "";
+}
+.timeline-time {
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5rem;
+  text-align: right;
+  opacity: 0.8;
+}
+.timeline-dot {
+  position: relative;
+  z-index: 1;
+  width: var(--timeline-dot);
+  height: var(--timeline-dot);
+  margin-top: 0.3125rem;
+  border: 2px solid var(--border);
+  border-radius: 3px;
+  background: var(--secondary-background);
+}
+.timeline-move > .tag {
+  margin-left: 0.25rem;
+  vertical-align: 0.0625rem;
+}
+[data-kind="loop"] > .timeline-dot {
+  box-shadow: 3px 3px 0 color-mix(in oklab, var(--foreground) 70%, transparent);
+}
+.timeline-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+.timeline-body > p {
+  margin: 0;
+}
+.timeline-move {
+  font-size: 1rem;
+  line-height: 1.5rem;
 }
 .earlier-attempt {
   border-top: 2px solid var(--border);

@@ -302,8 +302,9 @@ describe("run page skills and hooks", () => {
     expect(section).toContain("grid-cols-1");
     expect(section).toContain("min-w-0");
     expect(section).toContain("[overflow-wrap:anywhere]");
-    expect(section).toContain("sm:grid-cols-");
-    for (const item of classNames(html, "run-setup-item")) expect(item).toContain("flex-wrap");
+    for (const item of classNames(html, "run-setup-item"))
+      expect(item).toContain("grid-cols-[minmax(0,1fr)_auto]");
+    for (const note of classNames(html, "run-setup-note")) expect(note).toContain("flex-wrap");
     expectNoFixedWidths(html);
   });
 });
