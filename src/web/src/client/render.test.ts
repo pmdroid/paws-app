@@ -144,6 +144,19 @@ describe("status views", () => {
     expect(paused).toContain("0 working");
   });
 
+  test("an exhausted Closeout needs you only while the issue waits, not after the agent resumed", () => {
+    const snapshot = fullStatusFixture();
+    snapshot.questions = [];
+    const item = snapshot.items.find((entry) => entry.id === "ENG-100")!;
+    snapshot.verdicts = snapshot.verdicts.map((verdict) =>
+      verdict.itemId === item.id ? { ...verdict, decision: "exhausted" } : verdict,
+    );
+    item.state = "awaiting_input";
+    expect(render(model({ snapshot })).content).toContain("Automatic retries are used up.");
+    item.state = "running";
+    expect(render(model({ snapshot })).content).not.toContain("Automatic retries are used up.");
+  });
+
   test("overview does not count stale runs and keeps completed work out of active work", () => {
     const snapshot = fullStatusFixture();
     snapshot.questions = [];
