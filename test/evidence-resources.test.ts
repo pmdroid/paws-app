@@ -273,7 +273,7 @@ test("older authorized evidence, marked images and hidden evidence keep their an
       redirect: "manual",
     });
     expect(shortlink.status).toBe(307);
-    expect(shortlink.headers.get("location")).toBe(`/status/evidence/${f.old.id}?from=linear`);
+    expect(shortlink.headers.get("location")).toBe(`/dashboard/evidence/${f.old.id}?from=linear`);
   } finally {
     await f.close();
   }
