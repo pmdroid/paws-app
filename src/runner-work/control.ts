@@ -31,6 +31,7 @@ import {
   runTeardownOwner,
 } from "../db";
 import {
+  executionAuthorityUntil,
   LIVE_PREVIEW_RUNNER_VERSION,
   OFFLINE_LEASE_RUNNER_VERSION,
   RUNNER_LEASE_GRACE_MS,
@@ -286,9 +287,26 @@ export function createRunnerWork(options: {
       throw new Error("Run repository binding changed.");
     return work;
   }
-  function renew(work: Assignment, at: number) {
-    const leaseUntil = Math.min(workCommand(work).expiresAt, at + RUNNER_LEASE_MS);
-    db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [leaseUntil, work.runId]);
+  function renew(
+    work: Assignment,
+    at: number,
+    credit?: { offlineBudgetMs: number; aliveAt: number },
+  ) {
+    const expiresAt = workCommand(work).expiresAt;
+    const leaseUntil = Math.min(expiresAt, at + RUNNER_LEASE_MS);
+    const authorityUntil = credit
+      ? executionAuthorityUntil({
+          renewedAt: at,
+          leaseUntil,
+          expiresAt,
+          aliveAt: credit.aliveAt,
+          budgetMs: credit.offlineBudgetMs,
+        })
+      : leaseUntil + RUNNER_LEASE_GRACE_MS;
+    db.run("UPDATE runner_work SET lease_until=MAX(lease_until,?) WHERE run_id=?", [
+      Math.max(leaseUntil, authorityUntil - RUNNER_LEASE_GRACE_MS),
+      work.runId,
+    ]);
     return leaseUntil;
   }
   function accepted(work: Assignment) {
@@ -689,7 +707,7 @@ export function createRunnerWork(options: {
             leases.push({
               runId: row.runId,
               generation: row.generation,
-              expiresAt: renew(row, at),
+              expiresAt: renew(row, at, offlineCredit),
             });
           } catch (caughtError2) {
             journalCaught(caughtError2, "control.heartbeat.live", null);

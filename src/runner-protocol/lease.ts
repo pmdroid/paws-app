@@ -49,3 +49,28 @@ export function creditedLeaseUntil(input: {
   if (shift === 0) return leaseUntil;
   return Math.max(leaseUntil, Math.min(expiresAt, leaseUntil + shift));
 }
+
+export const RUNNER_AUTHORITY_STOP_MS = RUNNER_LEASE_MS;
+
+export function executionAuthorityUntil(input: {
+  renewedAt: number;
+  leaseUntil: number;
+  expiresAt: number;
+  aliveAt: number | null | undefined;
+  budgetMs: number | undefined;
+}): number {
+  const { renewedAt, leaseUntil, expiresAt, aliveAt, budgetMs } = input;
+  const plain = leaseUntil + RUNNER_LEASE_GRACE_MS;
+  if (aliveAt === null || aliveAt === undefined || budgetMs === undefined || budgetMs <= 0)
+    return plain;
+  const credited = creditedLeaseUntil({
+    leaseUntil,
+    expiresAt,
+    aliveAt,
+    now: aliveAt + budgetMs,
+    budgetMs,
+    skewMs: PAWS_ALIVE_LEASE_SKEW_MS,
+  });
+  if (credited <= leaseUntil) return plain;
+  return Math.min(renewedAt + budgetMs, expiresAt);
+}

@@ -7,6 +7,7 @@ import { RunnerRequestError } from "../src/runner-daemon";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import {
   PAWS_ALIVE_LEASE_SKEW_MS,
+  RUNNER_AUTHORITY_STOP_MS,
   RUNNER_OFFLINE_BUDGET_MS,
   RunnerResultSchema,
   type RunnerCommand,
@@ -442,13 +443,13 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
 );
 
 test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.getgid!() === 0)(
-  "a runner told the offline budget stops once downtime passes that budget",
+  "a runner told the offline budget stops a stop margin before that budget ends",
   async () => {
     const f = await fixture();
     try {
       f.goDown();
       await f.tick();
-      f.advance(RUNNER_OFFLINE_BUDGET_MS - 1);
+      f.advance(RUNNER_OFFLINE_BUDGET_MS - RUNNER_AUTHORITY_STOP_MS - 1);
       await Bun.sleep(300);
       expect(f.stopped()).toBe(0);
       f.advance(1);
@@ -526,7 +527,7 @@ test("sleep and wall-clock jumps spend no active command time", async () => {
     f.jumpWall(24 * 60 * 60_000);
     await Bun.sleep(300);
     expect(f.stopped()).toBe(0);
-    f.advance(24 * 60_000);
+    f.advance(22 * 60_000);
     await Bun.sleep(300);
     expect(f.stopped()).toBe(0);
     f.advance(60_000);

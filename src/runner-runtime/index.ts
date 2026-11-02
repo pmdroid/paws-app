@@ -38,7 +38,9 @@ import {
 import { CandidateRebaseConflict, createRunnerRepositories } from "../runner-repositories";
 import {
   creditedLeaseUntil,
+  executionAuthorityUntil,
   PAWS_ALIVE_LEASE_SKEW_MS,
+  RUNNER_AUTHORITY_STOP_MS,
   RUNNER_LEASE_GRACE_MS,
   RunnerResultSchema,
   type RunnerResult,
@@ -478,22 +480,18 @@ export async function openRunnerRuntime(options: {
       budgetMs: entry.offlineBudgetMs,
       skewMs: PAWS_ALIVE_LEASE_SKEW_MS,
     });
-    const authorityUntil = creditedLeaseUntil({
+    const authorityUntil = executionAuthorityUntil({
+      renewedAt: entry.serverLeaseUntil,
       leaseUntil: entry.serverLeaseUntil,
       expiresAt: entry.execution.command.expiresAt,
       aliveAt: entry.serverAliveAt,
-      now: entry.serverAliveAt + entry.offlineBudgetMs,
       budgetMs: entry.offlineBudgetMs,
-      skewMs: PAWS_ALIVE_LEASE_SKEW_MS,
     });
     entry.deadline = Math.min(
       entry.agreedAt + entry.idleMs + Math.max(0, credited - entry.agreedWallAt),
-      entry.agreedAt + Math.max(0, authorityUntil - entry.agreedWallAt),
       entry.agreedAt +
-        Math.min(
-          entry.offlineBudgetMs,
-          Math.max(0, entry.execution.command.expiresAt - entry.agreedWallAt),
-        ) -
+        Math.max(0, authorityUntil - entry.serverLeaseUntil) -
+        RUNNER_AUTHORITY_STOP_MS -
         RUNNER_LEASE_GRACE_MS,
     );
   }
@@ -1067,7 +1065,21 @@ export async function openRunnerRuntime(options: {
         }
       } catch (error) {
         unreachable = true;
-        for (const entry of active.values()) holdOffline(entry);
+        const revoked = fencedRefusal(error);
+        for (const entry of active.values()) {
+          if (!revoked) {
+            holdOffline(entry);
+            continue;
+          }
+          entry.offlineBudgetMs = undefined;
+          void interrupt(entry, "fenced by Paws").catch(
+            journalRejection(
+              "runner-runtime.pulse.revoked",
+              report,
+              entry.execution.command.itemId,
+            ),
+          );
+        }
         throw error;
       }
       const identity = options.daemon.status();

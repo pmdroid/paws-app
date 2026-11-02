@@ -1,5 +1,7 @@
 export {
   creditedLeaseUntil,
+  executionAuthorityUntil,
+  RUNNER_AUTHORITY_STOP_MS,
   PAWS_ALIVE_INTERVAL_MS,
   PAWS_ALIVE_LEASE_SKEW_MS,
   runnerReleaseAtLeast,

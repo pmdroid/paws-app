@@ -132,6 +132,16 @@ export function createRunnerControl(options: {
     authenticate(peer: RunnerPeer) {
       return authorized(peer);
     },
+    revoked(peer: RunnerPeer): boolean {
+      return (
+        db
+          .query(
+            `SELECT 1 FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
+            WHERE c.fingerprint=? AND (r.revoked_at IS NOT NULL OR r.status='revoked')`,
+          )
+          .get(peer.fingerprint) !== null
+      );
+    },
     list(principal: WorkspacePrincipal) {
       if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
         throw new Error("Workspace membership is required.");

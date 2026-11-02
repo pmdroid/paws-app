@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { runnerLeaseCutoff } from "./runner-lease";
+import { endRevokedRunnerAuthority, runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 import type { RunnerSessionMove } from "./runner-session-moves";
@@ -539,6 +539,7 @@ export function updateRunnerStatus(
         input.now,
         input.runnerId,
       ]);
+      endRevokedRunnerAuthority(db, input.now);
     }
     auditWorkspaceAccess(db, {
       workspaceId: input.workspaceId,
