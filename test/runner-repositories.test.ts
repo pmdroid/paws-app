@@ -116,7 +116,10 @@ async function fixture() {
       expect(response.status).toBe(200);
     },
     async list(): Promise<Lists> {
-      const response = await browser.browser(new Request("https://paws.invalid/api/runners"), admin);
+      const response = await browser.browser(
+        new Request("https://paws.invalid/api/runners"),
+        admin,
+      );
       return ((await response!.json()) as { runners: { repositories: Lists }[] }).runners[0]!
         .repositories;
     },
@@ -172,9 +175,9 @@ test("only admins save valid owner/repo names, and null restores all repositorie
   expect(await runner.list()).toEqual({ admin: null, host: null });
   expect(await runner.save(["not a repository"])).toBe(400);
   expect(await runner.save(["acme/paws/extra"])).toBe(400);
-  expect(
-    await runner.save(Array.from({ length: 257 }, (_, index) => `acme/repo-${index}`)),
-  ).toBe(400);
+  expect(await runner.save(Array.from({ length: 257 }, (_, index) => `acme/repo-${index}`))).toBe(
+    400,
+  );
   expect(await runner.save(["acme/paws"])).toBe(200);
   expect(runnerAllowsRepository(runner.db, runner.runnerId, "acme/looky")).toBe(false);
   expect(await runner.save(null)).toBe(200);
