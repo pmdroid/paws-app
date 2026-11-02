@@ -17,6 +17,7 @@ import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearMergeChoices, LinearMergeContext } from "./merge-context";
 import type { SubIssueRequest } from "./sub-issues";
 import type { BriefIssueRead } from "./brief-issue";
+import type { LinearIssueClosed } from "./administration";
 import type { FiledFindingIssue, FindingIssueRequest } from "./finding-issues";
 
 export type TrackerRequestOptions = {
@@ -34,6 +35,10 @@ export interface TrackerAdapter {
     identifier: string,
     options?: TrackerRequestOptions,
   ): Promise<BriefIssueRead | null>;
+  readIssueClosures?(
+    ids: readonly string[],
+    options?: TrackerRequestOptions,
+  ): Promise<LinearIssueClosed[]>;
   listIssuePullRequests?(id: string, options?: TrackerRequestOptions): Promise<IssuePullRequest[]>;
   getIssueContext?(id: string, options?: TrackerRequestOptions): Promise<LinearIssueContext>;
   deleteIssueAttachment?(id: string, options?: TrackerRequestOptions): Promise<void>;
