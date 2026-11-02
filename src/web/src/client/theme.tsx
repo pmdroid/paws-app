@@ -474,6 +474,19 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("overview-row"))
     return styled("flex min-w-0 flex-wrap items-center justify-between gap-x-6 gap-y-3 py-4");
   if (has("overview-copy")) return styled("min-w-0 flex-1 basis-72 space-y-1 break-words");
+  if (has("overview-grid"))
+    return styled(
+      "grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]",
+    );
+  if (has("overview-column")) return styled("flex min-w-0 flex-col gap-6");
+  if (has("work-row"))
+    return styled(
+      "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-1 py-3 [&>.st]:mt-0.5 [&>.st]:justify-self-end [&>.work-facts]:col-span-full",
+    );
+  if (has("work-facts"))
+    return styled(
+      "flex min-w-0 flex-wrap gap-x-3 gap-y-0.5 text-sm leading-relaxed [overflow-wrap:anywhere]",
+    );
   if (has("overview-summary")) return styled("text-sm font-semibold leading-relaxed");
   if (has("split"))
     return styled(
