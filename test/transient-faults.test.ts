@@ -100,6 +100,8 @@ test("an agent usage limit waits for its reset without spending retries or faili
   expect(result.errors, result.detail).toEqual([]);
   expect(result.retries, result.detail).toEqual(Array(MAX_TRANSIENT_RETRIES + 2).fill(0));
   expect(result.states, result.detail).not.toContain("failed");
+  expect(result.events, result.detail).toContain("deferred");
+  expect(result.events, result.detail).not.toContain("lease_expired");
 }, 90_000);
 
 test("a failure that keeps coming back stops the task after its retries instead of leaving it stuck", async () => {

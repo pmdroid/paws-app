@@ -43,6 +43,8 @@ export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "paused", event: "resume", to: "running" },
   { from: "running", event: "lease_expired", to: "recovering" },
   { from: "verifying", event: "lease_expired", to: "recovering" },
+  { from: "running", event: "deferred", to: "recovering" },
+  { from: "verifying", event: "deferred", to: "recovering" },
   { from: "merge_queue", event: "lease_expired", to: "verifying" },
   { from: "queued", event: "restart", to: "queued" },
   { from: "failed", event: "restart", to: "queued" },

@@ -788,7 +788,7 @@ export function deferWorkItem(
     const before = getWorkItem(db, item.id) ?? item;
     const reverify = before.state === "verifying" && hasVerificationCandidate(before.checkpoint);
     if (!reverify && (item.state === "running" || item.state === "verifying"))
-      applyWorkItemEvent(db, item.id, "lease_expired");
+      applyWorkItemEvent(db, item.id, "deferred");
     const current = getWorkItem(db, item.id) ?? item;
     journal(
       `item ${item.linearIdentifier} deferred: ${reverify ? "re-verify" : "retry"} ${input.retry} in ${input.delayMs} ms`,

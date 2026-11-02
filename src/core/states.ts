@@ -41,6 +41,7 @@ export const WORK_ITEM_EVENTS = [
   "resume",
   "restart",
   "lease_expired",
+  "deferred",
   "recovered",
   "crash_budget_used",
   "turn_ended",
