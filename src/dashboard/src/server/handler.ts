@@ -6,6 +6,11 @@ import type { Database } from "bun:sqlite";
 import {
   CHECK_LOG_TAIL_BYTES,
   GENERATED_AT_HEADER,
+  ISSUES_API_PATH,
+  issueCheckLogPath,
+  parseIssueCheckLogResponse,
+  parseIssueDetailResponse,
+  parseIssueListResponse,
   parseStatusItemDetail,
   parseStatusSlices,
   parseStatusSnapshot,
@@ -14,12 +19,16 @@ import {
   STATUS_API_PATH,
   STATUS_ITEM_API_PATH,
   STATUS_PAGE_PATH,
+  type IssueCheckLogResponse,
+  type IssueDetailResponse,
+  type IssueListResponse,
   type StatusCheckLog,
   type StatusItemDetail,
   type StatusSnapshot,
 } from "../contract";
 import {
   createLiveStatusProvider,
+  emptyIssueList,
   emptyLiveSnapshot,
   type CheckLogRequest,
   type CheckOutput,
@@ -38,6 +47,8 @@ export interface StatusProvider {
   item?(id: string): StatusItemDetail | null | Promise<StatusItemDetail | null>;
   /** One check's whole output. Null, or no reader, answers 404. */
   checkLog?(request: CheckLogRequest): CheckOutput | null | Promise<CheckOutput | null>;
+  issues?(): IssueListResponse | Promise<IssueListResponse>;
+  issue?(id: string): IssueDetailResponse | null | Promise<IssueDetailResponse | null>;
 }
 
 export interface StatusServerOptions {
@@ -83,6 +94,12 @@ export function fakeStatusProvider(): StatusProvider {
       return null;
     },
     checkLog() {
+      return null;
+    },
+    issues() {
+      return emptyIssueList();
+    },
+    issue() {
       return null;
     },
   };
@@ -141,6 +158,8 @@ export async function handleStatusRequest(
     return apiResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname.startsWith(`${STATUS_ITEM_API_PATH}/`))
     return itemResponse(request, providerFor(options), pathname, sizes);
+  if (pathname === ISSUES_API_PATH || pathname.startsWith(`${ISSUES_API_PATH}/`))
+    return issuesResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (pathname === STATUS_PAGE_PATH || pathname.startsWith(`${STATUS_PAGE_PATH}/`)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
@@ -211,7 +230,13 @@ function liveProvider(options?: {
       ...(options.riskApproval ? { riskApproval: options.riskApproval } : {}),
     });
   }
-  return { snapshot: () => emptyLiveSnapshot(), item: () => null, checkLog: () => null };
+  return {
+    snapshot: () => emptyLiveSnapshot(),
+    item: () => null,
+    checkLog: () => null,
+    issues: () => emptyIssueList(),
+    issue: () => null,
+  };
 }
 
 function artifactResponse(request: Request, options: StatusServerOptions): Response {
@@ -257,7 +282,7 @@ function artifactHome(options: StatusServerOptions): string | null {
 /** How long a built `/api/status` snapshot answers repeated polls before it is built again. */
 export const STATUS_SNAPSHOT_REUSE_MS = 1_000;
 
-type BuiltSnapshot = { snapshot: StatusSnapshot } | { error: string };
+type Built<T> = { value: T } | { error: string };
 
 /**
  * Built `/api/status` snapshots, per data source and reader, so a dashboard polling from several
@@ -265,7 +290,7 @@ type BuiltSnapshot = { snapshot: StatusSnapshot } | { error: string };
  * waits for it.
  */
 export interface StatusSnapshotCache {
-  get(source: object, reader: string, build: () => Promise<BuiltSnapshot>): Promise<BuiltSnapshot>;
+  get<T>(source: object, key: string, build: () => Promise<Built<T>>): Promise<Built<T>>;
 }
 
 export function createStatusSnapshotCache(
@@ -273,15 +298,18 @@ export function createStatusSnapshotCache(
 ): StatusSnapshotCache {
   const now = options.now ?? Date.now;
   const reuseMs = options.reuseMs ?? STATUS_SNAPSHOT_REUSE_MS;
-  const sources = new WeakMap<object, Map<string, { at: number; built: Promise<BuiltSnapshot> }>>();
+  const sources = new WeakMap<
+    object,
+    Map<string, { at: number; built: Promise<Built<unknown>> }>
+  >();
   return {
-    get(source, reader, build) {
+    get<T>(source: object, reader: string, build: () => Promise<Built<T>>): Promise<Built<T>> {
       const at = now();
       let readers = sources.get(source);
       if (readers === undefined) sources.set(source, (readers = new Map()));
       for (const [key, entry] of readers) if (at - entry.at >= reuseMs) readers.delete(key);
       const cached = readers.get(reader);
-      if (cached !== undefined) return cached.built;
+      if (cached !== undefined) return cached.built as Promise<Built<T>>;
       const built = build();
       const entry = { at, built };
       readers.set(reader, entry);
@@ -302,7 +330,7 @@ export function createStatusSnapshotCache(
 /** The process's cache, shared by every status request the engine serves. */
 export const statusSnapshots = createStatusSnapshotCache();
 
-const UNCACHED: StatusSnapshotCache = { get: (_source, _reader, build) => build() };
+const UNCACHED: StatusSnapshotCache = { get: (_source, _key, build) => build() };
 
 /** Status bodies built without a database or provider share this source. */
 const EMPTY_SOURCE = {};
@@ -323,20 +351,18 @@ async function apiResponse(
   if (!slices.ok) return json({ error: slices.error }, 400);
   try {
     const source = options.provider ?? options.db ?? EMPTY_SOURCE;
-    const reader =
-      options.sessionIds === undefined ? "*" : [...options.sessionIds].sort().join(",");
-    const built = await cache.get(source, reader, async () => {
-      const parsed = parseStatusSnapshot(await providerFor(options).snapshot());
-      return parsed.ok ? { snapshot: parsed.snapshot } : { error: parsed.error };
-    });
+    const built = await cache.get<StatusSnapshot>(
+      source,
+      cacheKey("status", "", options),
+      async () => {
+        const parsed = parseStatusSnapshot(await providerFor(options).snapshot());
+        return parsed.ok ? { value: parsed.snapshot } : { error: parsed.error };
+      },
+    );
     if ("error" in built) return json({ error: built.error }, 500);
     const body =
-      slices.slices === null ? built.snapshot : selectStatusSlices(built.snapshot, slices.slices);
-    const etag = statusEtag(body);
-    const headers = { ETag: etag, [GENERATED_AT_HEADER]: body.generatedAt };
-    if (etagMatches(request.headers.get("If-None-Match"), etag))
-      return new Response(null, { status: 304, headers: { ...CORS, ...JSON_HEADERS, ...headers } });
-    return served(sizes, request, body, headers);
+      slices.slices === null ? built.value : selectStatusSlices(built.value, slices.slices);
+    return conditional(sizes, request, body);
   } catch (caughtError1) {
     journalCaught(caughtError1, "handler.apiResponse.snapshot", null);
     return json({ error: "status unavailable" }, 500);
@@ -383,6 +409,118 @@ async function checkLogResponse(
   segments: readonly string[],
   sizes: ResponseSizeJournal,
 ): Promise<Response> {
+  try {
+    const read = await readCheckLog(request, provider, segments);
+    if (read === null) return json({ error: "Not found" }, 404);
+    const { id, attempt, checkId, run, output, full } = read;
+    const stdout = full ? output.stdout : tail(output.stdout);
+    const stderr = full ? output.stderr : tail(output.stderr);
+    const truncated = stdout !== output.stdout || stderr !== output.stderr;
+    const body: StatusCheckLog = {
+      stdout,
+      stderr,
+      truncated,
+      fullPath: truncated ? statusCheckLogPath(id, attempt, checkId, { run, full: true }) : null,
+    };
+    return served(sizes, request, body);
+  } catch (caughtError5) {
+    journalCaught(caughtError5, "handler.checkLogResponse.checkLog", null);
+    return json({ error: "status unavailable" }, 500);
+  }
+}
+
+function cacheKey(resource: string, parameters: string, options: StatusServerOptions): string {
+  const reader = options.sessionIds === undefined ? null : [...options.sessionIds].sort();
+  return JSON.stringify([resource, parameters, reader]);
+}
+
+async function issuesResponse(
+  request: Request,
+  options: StatusServerOptions,
+  sizes: ResponseSizeJournal,
+  cache: StatusSnapshotCache,
+): Promise<Response> {
+  if (request.method === "OPTIONS")
+    return new Response(null, { status: 204, headers: { ...CORS } });
+  if (request.method !== "GET" && request.method !== "HEAD")
+    return json({ error: "Method not allowed" }, 405);
+  const provider = providerFor(options);
+  const source = options.provider ?? options.db ?? EMPTY_SOURCE;
+  const rest = new URL(request.url).pathname.slice(ISSUES_API_PATH.length + 1);
+  try {
+    if (rest === "") {
+      if (provider.issues === undefined) return json({ error: "Not found" }, 404);
+      const read = provider.issues.bind(provider);
+      const built = await cache.get<IssueListResponse>(
+        source,
+        cacheKey("issues", "", options),
+        async () => {
+          const parsed = parseIssueListResponse(await read());
+          return parsed.ok ? { value: parsed.response } : { error: parsed.error };
+        },
+      );
+      if ("error" in built) return json({ error: built.error }, 500);
+      return conditional(sizes, request, built.value);
+    }
+    const segments = rest.split("/");
+    if (segments.length > 1) return issueCheckLogResponse(request, provider, segments, sizes);
+    const id = itemId(segments[0]!);
+    if (id === null || provider.issue === undefined) return json({ error: "Not found" }, 404);
+    const read = provider.issue.bind(provider);
+    const built = await cache.get<IssueDetailResponse | null>(
+      source,
+      cacheKey("issue", id, options),
+      async () => {
+        const detail = await read(id);
+        if (detail === null) return { value: null };
+        const parsed = parseIssueDetailResponse(detail);
+        return parsed.ok ? { value: parsed.response } : { error: parsed.error };
+      },
+    );
+    if ("error" in built) return json({ error: built.error }, 500);
+    if (built.value === null) return json({ error: "Not found" }, 404);
+    return conditional(sizes, request, built.value);
+  } catch (caughtError6) {
+    journalCaught(caughtError6, "handler.issuesResponse", null);
+    return json({ error: "status unavailable" }, 500);
+  }
+}
+
+async function issueCheckLogResponse(
+  request: Request,
+  provider: StatusProvider,
+  segments: readonly string[],
+  sizes: ResponseSizeJournal,
+): Promise<Response> {
+  const read = await readCheckLog(request, provider, segments);
+  if (read === null) return json({ error: "Not found" }, 404);
+  const { id, attempt, checkId, run, output, full } = read;
+  const stdout = full ? output.stdout : tail(output.stdout);
+  const stderr = full ? output.stderr : tail(output.stderr);
+  const truncated = stdout !== output.stdout || stderr !== output.stderr;
+  const parsed = parseIssueCheckLogResponse({
+    generatedAt: new Date().toISOString(),
+    stdout,
+    stderr,
+    truncated,
+    fullPath: truncated ? issueCheckLogPath(id, attempt, checkId, { run, full: true }) : null,
+  } satisfies IssueCheckLogResponse);
+  if (!parsed.ok) return json({ error: parsed.error }, 500);
+  return conditional(sizes, request, parsed.response);
+}
+
+async function readCheckLog(
+  request: Request,
+  provider: StatusProvider,
+  segments: readonly string[],
+): Promise<{
+  id: string;
+  attempt: number;
+  checkId: string;
+  run: string | null;
+  full: boolean;
+  output: CheckOutput;
+} | null> {
   const [rawId, attempts, rawAttempt, checks, rawCheck, log] = segments;
   const id = itemId(rawId ?? "");
   const checkId = itemId(rawCheck ?? "");
@@ -400,25 +538,10 @@ async function checkLogResponse(
     (run !== null && !/^[^/\\\0]{1,128}$/.test(run)) ||
     provider.checkLog === undefined
   )
-    return json({ error: "Not found" }, 404);
-  try {
-    const output = await provider.checkLog({ itemId: id, attempt, checkId, run });
-    if (output === null) return json({ error: "Not found" }, 404);
-    const full = query.get("full") === "1";
-    const stdout = full ? output.stdout : tail(output.stdout);
-    const stderr = full ? output.stderr : tail(output.stderr);
-    const truncated = stdout !== output.stdout || stderr !== output.stderr;
-    const body: StatusCheckLog = {
-      stdout,
-      stderr,
-      truncated,
-      fullPath: truncated ? statusCheckLogPath(id, attempt, checkId, { run, full: true }) : null,
-    };
-    return served(sizes, request, body);
-  } catch (caughtError5) {
-    journalCaught(caughtError5, "handler.checkLogResponse.checkLog", null);
-    return json({ error: "status unavailable" }, 500);
-  }
+    return null;
+  const output = await provider.checkLog({ itemId: id, attempt, checkId, run });
+  if (output === null) return null;
+  return { id, attempt, checkId, run, full: query.get("full") === "1", output };
 }
 
 /** The last `CHECK_LOG_TAIL_BYTES` of `output`, starting on a whole UTF-8 character. */
@@ -528,8 +651,8 @@ function defaultStaticDir(): string | null {
   return existsSync(join(dir, "index.html")) ? dir : null;
 }
 
-function statusEtag(snapshot: StatusSnapshot): string {
-  const { generatedAt: _generatedAt, ...rest } = snapshot;
+function statusEtag(body: { generatedAt: string }): string {
+  const { generatedAt: _generatedAt, ...rest } = body;
   return `W/"${createHash("sha256").update(JSON.stringify(rest)).digest("base64url").slice(0, 32)}"`;
 }
 
@@ -544,6 +667,18 @@ const JSON_HEADERS: Record<string, string> = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
 };
+
+function conditional(
+  sizes: ResponseSizeJournal,
+  request: Request,
+  body: { generatedAt: string },
+): Response {
+  const etag = statusEtag(body);
+  const headers = { ETag: etag, [GENERATED_AT_HEADER]: body.generatedAt };
+  if (etagMatches(request.headers.get("If-None-Match"), etag))
+    return new Response(null, { status: 304, headers: { ...CORS, ...JSON_HEADERS, ...headers } });
+  return served(sizes, request, body, headers);
+}
 
 /** A 200 JSON body whose size counts toward the minute's largest response. */
 function served(
