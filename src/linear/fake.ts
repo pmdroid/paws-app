@@ -1,6 +1,7 @@
 import type { BriefIssueRead } from "./brief-issue";
 import type { LinearMergeContext } from "./merge-context";
 import type { TrackerRequestOptions } from "./adapter";
+import type { LinearIssueClosed } from "./administration";
 import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearIssueContext } from "./issue-context";
 import type { FiledSubIssue } from "../core";
@@ -42,6 +43,13 @@ import type {
 export type FakeTracker = LinearSessionAdapter &
   LinearRepositoryAdapter & {
     attachments: IssueAttachment[];
+    issueClosures: Map<string, LinearIssueClosed>;
+    issueClosureReads: (readonly string[])[];
+    issueClosureFailures: Error[];
+    readIssueClosures(
+      ids: readonly string[],
+      options?: TrackerRequestOptions,
+    ): Promise<LinearIssueClosed[]>;
     issuePullRequests: Map<string, IssuePullRequest[]>;
     issueContexts: Map<string, LinearIssueContext>;
     repositorySuggestionRequests: RepositorySuggestionsInput[];
@@ -110,6 +118,9 @@ export type FakeTracker = LinearSessionAdapter &
 
 export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTracker {
   const attachments: IssueAttachment[] = [];
+  const issueClosures = new Map<string, LinearIssueClosed>();
+  const issueClosureReads: (readonly string[])[] = [];
+  const issueClosureFailures: Error[] = [];
   const issuePullRequests = new Map<string, IssuePullRequest[]>();
   const issueContexts = new Map<string, LinearIssueContext>();
   const byId = new Map(epics.map((epic) => [epic.linearIssueId, epic]));
@@ -165,6 +176,19 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
       return context;
     },
     attachments,
+    issueClosures,
+    issueClosureReads,
+    issueClosureFailures,
+    async readIssueClosures(ids, options) {
+      options?.signal?.throwIfAborted();
+      issueClosureReads.push([...ids]);
+      const failure = issueClosureFailures.shift();
+      if (failure) throw failure;
+      return ids.flatMap((id) => {
+        const closed = issueClosures.get(id);
+        return closed ? [closed] : [];
+      });
+    },
     async deleteIssueAttachment(id, options) {
       options?.signal?.throwIfAborted();
       const index = attachments.findIndex((attachment) => attachment.id === id);

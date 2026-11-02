@@ -57,6 +57,11 @@ export {
   stopUndelegatedIssue,
 } from "./linear-administration";
 export type { ClosedIssueTask } from "./linear-administration";
+export {
+  FAILED_ISSUE_SWEEP_JOB,
+  FAILED_ISSUE_SWEEP_MS,
+  sweepFailedIssues,
+} from "./failed-issue-sweep";
 export { LinearTaskAccess } from "./linear-task-access";
 export { TASK_ACCESS_TTL_MS } from "./github-integration";
 export { createRepositoryGit } from "./repository-git";
