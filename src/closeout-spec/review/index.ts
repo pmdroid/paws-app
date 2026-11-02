@@ -6,8 +6,11 @@ export {
   createReviewCommandRunner,
   parseReviewEvents,
   reaskArgv,
+  REVIEW_COMMAND_RULE,
   REVIEW_COMMAND_TIMEOUT_MS,
+  REVIEW_INSTRUCTIONS_BYTES,
   reviewArgv,
+  reviewInstructions,
   reviewProvider,
 } from "./command";
 export type {

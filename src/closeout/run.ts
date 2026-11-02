@@ -885,6 +885,7 @@ async function addReviewEvidence(
                   model: request.candidate.model,
                   provider: request.candidate.provider,
                 },
+                ...(request.earlier?.length ? { earlier: request.earlier } : {}),
               }),
             ).catch((error: unknown) => {
               reviewerThrew = true;

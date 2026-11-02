@@ -67,10 +67,29 @@ test("the live gate's reviewer asks the item's runner for the review command of 
     readOnly: true,
     checkpoint: false,
     mainSha: base,
-    reviewCommand: { base },
+    reviewCommand: { base, brief: "Required output: `secret-brief`" },
   });
-  // No brief, task line or finding format goes around the command.
+  expect(calls[0]!.reviewCommand).not.toHaveProperty("earlier");
   expect(calls[0]!.prompt).toBe(`Review ${base}..${head} with the agent's review command.`);
+});
+
+test("a later round's review command carries the earlier rounds' findings", async () => {
+  const { review, calls } = reviewer(finished, "[]");
+  const earlier = [
+    {
+      severity: "P1" as const,
+      location: "src/app.ts:4",
+      explanation: "dropped caller",
+      head: "c".repeat(40),
+      status: "open" as const,
+    },
+  ];
+  await review.review({ ...request, earlier });
+  expect(calls[0]!.reviewCommand).toEqual({
+    base,
+    brief: "Required output: `secret-brief`",
+    earlier,
+  });
 });
 
 test("a review command that fails or returns no findings array blocks the review", async () => {
