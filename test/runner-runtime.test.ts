@@ -202,6 +202,7 @@ for (const failure of ["hung", "rejected"] as const)
       home: root,
       concurrency: 1,
       stopWaitMs: 50,
+      cleanupRetryMs: 1,
       onError: (error) => errors.push(error.message),
       spool,
       results: { root: join(root, "results"), agentUid: 1002, resultsGid: 1003 },
