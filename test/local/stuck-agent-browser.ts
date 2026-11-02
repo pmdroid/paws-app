@@ -1,12 +1,12 @@
-import { fixtureProvider, fullStatusFixture } from "../../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 // Captures the run page while a cleanup block holds its replies, with Clear stuck agent offered to
 // an owner, at desktop and 390 px in light and dark, and fails on horizontal scroll or page errors.
-// Usage: bun run build:status && bun --no-env-file test/local/stuck-agent-browser.ts <evidence-directory>
+// Usage: bun run build:dashboard && bun --no-env-file test/local/stuck-agent-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { CLEANUP_BLOCKED_NOTICE } from "../../src/db";
-import { handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/dashboard";
 
 const directory = resolve(process.argv[2] ?? "stuck-agent-evidence");
 await mkdir(directory, { recursive: true });

@@ -2,7 +2,7 @@ import { Database, type Statement } from "bun:sqlite";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createLiveStatusProvider } from "../src/web";
+import { createLiveStatusProvider } from "../src/dashboard";
 
 type Timing = { sql: string; calls: number; ms: number };
 
@@ -100,7 +100,7 @@ function dirBytes(dir: string): number {
   );
 }
 
-const assets = join(import.meta.dir, "../src/web/dist/assets");
+const assets = join(import.meta.dir, "../src/dashboard/dist/assets");
 const bundle = readdirSync(assets).map((name) => ({
   name,
   bytes: statSync(join(assets, name)).size,

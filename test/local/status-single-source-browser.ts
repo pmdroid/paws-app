@@ -1,7 +1,7 @@
 import { chromium, expect } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { emptyLiveSnapshot, handleStatusRequest } from "../../src/web";
+import { emptyLiveSnapshot, handleStatusRequest } from "../../src/dashboard";
 
 const directory = resolve(process.argv[2] ?? "/tmp/paws-single-source-proof");
 await mkdir(directory, { recursive: true });

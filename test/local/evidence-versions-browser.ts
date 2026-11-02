@@ -1,8 +1,8 @@
-import { fixtureProvider, fullStatusFixture } from "../../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/dashboard";
 
 const directory = resolve(process.argv[2] ?? "evidence-versions-evidence");
 await mkdir(directory, { recursive: true });

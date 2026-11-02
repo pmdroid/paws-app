@@ -1,10 +1,10 @@
 // The issue page listing a dead Linear question and a dead job, against the real status handler.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-dead-deliveries-page.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-dead-deliveries-page.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { handleStatusRequest } from "../src/web";
-import { statusFixture } from "../src/web/test/fixtures";
+import { handleStatusRequest } from "../src/dashboard";
+import { statusFixture } from "../src/dashboard/test/fixtures";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");

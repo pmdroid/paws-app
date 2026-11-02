@@ -1,9 +1,9 @@
-import { statusFixture } from "../src/web/test/fixtures";
+import { statusFixture } from "../src/dashboard/test/fixtures";
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/dashboard";
 
 const directory = await mkdtemp(join(tmpdir(), "paws-status-ui-"));
 const snapshot = statusFixture();

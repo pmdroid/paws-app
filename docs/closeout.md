@@ -58,7 +58,7 @@ An `evidence` check asks the agent for screenshots or videos instead of running 
 - id: visual-proof
   kind: evidence
   gate: beforePR
-  paths: ["src/web/**", "landing/**"]
+  paths: ["src/dashboard/**", "landing/**"]
   media: [image, video]
   minimum: 1
   hint: Screenshot each changed screen at desktop width and at 390 px.
@@ -83,7 +83,7 @@ Paws Closeout counts the same files. With too few, the check fails, and a fix ro
 - id: visual-proof
   kind: evidence
   gate: beforePR
-  paths: ["src/web/**", "landing/**"]
+  paths: ["src/dashboard/**", "landing/**"]
   approval: human
 ```
 
@@ -115,7 +115,7 @@ A `preview` check holds the change until a person has tried it in a live preview
   kind: preview
   gate: beforePR
   approval: human
-  paths: ["src/web/**", "landing/**"]
+  paths: ["src/dashboard/**", "landing/**"]
 ```
 
 `approval: human` is required. The check applies when a changed path matches `paths`, and is skipped otherwise. It runs nothing: `get_closeout` lists it as `pending` and leaves it out of the pending ids, and `run_closeout` says it runs nothing.

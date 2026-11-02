@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../../src/db";
 import { openExecutionJournal, type WorkCommand } from "../../src/runner-journal";
 import { RunnerEventSchema } from "../../src/runner-protocol";
-import { createLiveStatusProvider, handleStatusRequest } from "../../src/web";
+import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboard";
 
 export async function probeRunnerPublicActivity(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });

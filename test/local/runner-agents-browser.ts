@@ -1,11 +1,11 @@
-import { statusFixture } from "../../src/web/test/fixtures";
+import { statusFixture } from "../../src/dashboard/test/fixtures";
 // Captures a runner card's coding agents before, during and after an update, at desktop and
 // 390 px, for visual proof. The Update and Update all runners buttons are clicked for real.
-// Usage: bun run build:status && bun --no-env-file test/local/runner-agents-browser.ts <evidence-directory>
+// Usage: bun run build:dashboard && bun --no-env-file test/local/runner-agents-browser.ts <evidence-directory>
 import { chromium, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/dashboard";
 
 const directory = resolve(process.argv[2] ?? "runner-agents-evidence");
 await mkdir(directory, { recursive: true });

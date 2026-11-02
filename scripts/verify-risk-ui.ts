@@ -1,16 +1,16 @@
-import { fullStatusFixture, itemDetail, statusList } from "../src/web/test/fixtures";
+import { fullStatusFixture, itemDetail, statusList } from "../src/dashboard/test/fixtures";
 // The Risk card on the issue page from the item detail, and Settings › Merging › High-risk paths
 // against the real settings handler and a temporary config.toml: edit, save, reload, and the
 // repository file read-only. Light and dark, at 1440 and 390 px.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-risk-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-risk-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { highRiskPaths, loadConfigFile, readMergeSettings } from "../src/config";
 import { handleMergeSettingsRequest } from "../src/settings";
-import { handleStatusRequest } from "../src/web";
-import type { StatusItemDetail, StatusItemRisk } from "../src/web/src/contract";
+import { handleStatusRequest } from "../src/dashboard";
+import type { StatusItemDetail, StatusItemRisk } from "../src/dashboard/src/contract";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");

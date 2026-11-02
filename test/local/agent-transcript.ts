@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDatabase, migrate, insertQueuedItem, beginImplementRun } from "../../src/db";
-import { createLiveStatusProvider, handleStatusRequest } from "../../src/web";
+import { createLiveStatusProvider, handleStatusRequest } from "../../src/dashboard";
 
 const root = process.argv[2]!;
 mkdirSync(root, { recursive: true, mode: 0o700 });

@@ -1,15 +1,15 @@
-import { statusFixture } from "../src/web/test/fixtures";
+import { statusFixture } from "../src/dashboard/test/fixtures";
 // The overview's Needs you list with the four kinds of link asks, the "Closeout needs your
 // help" card and the Risk card on the issue page, against the real status handler, and the
 // risk gate note in Settings › Merging on a Paws without an https link.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-link-ask-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-link-ask-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RISK_GATE_NEEDS_PUBLIC_URL } from "../src/loop";
 import { handleMergeSettingsRequest } from "../src/settings";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/dashboard";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
@@ -91,7 +91,7 @@ questions[0]!.linkAsk = {
   ...questions[0]!.linkAsk,
   bypass: {
     policyDigest: "sha256:0eadf4c9d1e2f3",
-    passed: ["install", "lint", "format", "typecheck", "test", "build-status", "links"],
+    passed: ["install", "lint", "format", "typecheck", "test", "build-dashboard", "links"],
     checks: [
       {
         id: "independent-review",

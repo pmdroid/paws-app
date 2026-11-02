@@ -1,5 +1,5 @@
 import { bugClass } from "../closeout";
-import type { StatusReviewFinding } from "../web";
+import type { StatusReviewFinding } from "../dashboard";
 
 const TITLE_LIMIT = 120;
 

@@ -1,8 +1,12 @@
-import { fixtureProvider, fullStatusFixture, type FullStatus } from "../src/web/test/fixtures";
+import {
+  fixtureProvider,
+  fullStatusFixture,
+  type FullStatus,
+} from "../src/dashboard/test/fixtures";
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/dashboard";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Usage: verify-overview-ui.ts <screenshot dir> [--before]");

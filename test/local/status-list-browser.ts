@@ -1,11 +1,11 @@
-import { fixtureProvider, fullStatusFixture } from "../../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 // Captures the overview and Issues list read from the trimmed status list, and an issue page with
 // its Closeout attempts read from the item detail, at desktop and 390 px, for visual proof.
-// Usage: bun run build:status && bun --no-env-file test/local/status-list-browser.ts <evidence-directory>
+// Usage: bun run build:dashboard && bun --no-env-file test/local/status-list-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { handleStatusRequest } from "../../src/web";
+import { handleStatusRequest } from "../../src/dashboard";
 
 const directory = resolve(process.argv[2] ?? "status-list-evidence");
 await mkdir(directory, { recursive: true });

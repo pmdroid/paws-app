@@ -1,5 +1,5 @@
 specVersion: "0.1"
-description: Lint, format, typecheck, the tests the change affects, the status dashboard build, the documentation checks, dead-code and dependency checks, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request. GitHub CI runs the full test suite, which must be green before a merge. A merge-queue re-check takes the checks with `ci:` from green GitHub CI on the same commit.
+description: Lint, format, typecheck, the tests the change affects, the dashboard build, the documentation checks, dead-code and dependency checks, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request. GitHub CI runs the full test suite, which must be green before a merge. A merge-queue re-check takes the checks with `ci:` from green GitHub CI on the same commit.
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
@@ -27,10 +27,10 @@ items:
     exec: ["bun", "run", "typecheck"]
     timeoutSeconds: 600
     ci: "lint, format, types, test, dashboard build"
-  - id: build-status
+  - id: build-dashboard
     kind: command
     gate: beforePR
-    exec: ["bun", "run", "build:status"]
+    exec: ["bun", "run", "build:dashboard"]
     timeoutSeconds: 600
     ci: "lint, format, types, test, dashboard build"
   - id: test
@@ -52,7 +52,7 @@ items:
   - id: visual-proof
     kind: evidence
     gate: beforePR
-    paths: ["src/web/**", "landing/**"]
+    paths: ["src/dashboard/**", "landing/**"]
     media: [image, video]
     minimum: 1
     hint: Screenshot each changed screen at desktop width and at 390 px.
@@ -105,7 +105,7 @@ items:
       - "src/runner-repository-access/**"
       - "src/server/**"
       - "src/slack/**"
-      - "src/web/src/server/**"
+      - "src/dashboard/src/server/**"
       - "src/workspace/**"
       - "src/worktree-checkout/**"
 rules:

@@ -2,7 +2,7 @@
 
 ## System
 
-The dashboard uses [Neobrutalism components](https://www.neobrutalism.dev/docs). Copy-in components live under `src/web/src/client/ui`; their upstream MIT license is retained there. Tailwind 4 builds the stylesheet from `theme.css` and the component and layout utilities. Radix Themes is not used.
+The dashboard uses [Neobrutalism components](https://www.neobrutalism.dev/docs). Copy-in components live under `src/dashboard/src/client/ui`; their upstream MIT license is retained there. Tailwind 4 builds the stylesheet from `theme.css` and the component and layout utilities. Radix Themes is not used.
 
 The palette follows the landing page: lavender canvas, paper panels, near-black outlines, and orange actions. Dark mode uses deep lavender surfaces and light text with the same orange accent and structural borders. Five-pixel radii, bold headings, and four-pixel offset shadows stay with the Neobrutalism components.
 

@@ -52,8 +52,8 @@ export interface StatusServerOptions {
   /** Opened engine database. Ignored when `provider` is set. */
   db?: Database;
   /**
-   * Directory from `bun run build:status` (`index.html`, `assets/`).
-   * Omit it to use `src/web/dist` when that build exists. Pass `null` to skip files.
+   * Directory from `bun run build:dashboard` (`index.html`, `assets/`).
+   * Omit it to use `src/dashboard/dist` when that build exists. Pass `null` to skip files.
    */
   staticDir?: string | null;
   /** Defaults to `process.env`. */
@@ -598,10 +598,10 @@ const MISSING_PAGE = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Paws status</title>
+<title>Paws dashboard</title>
 </head>
 <body>
-<p>Paws status dashboard is not built. From the repo root run <code>bun run build:status</code>.</p>
+<p>The Paws dashboard is not built. From the repo root run <code>bun run build:dashboard</code>.</p>
 </body>
 </html>
 `;

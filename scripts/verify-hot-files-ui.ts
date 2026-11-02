@@ -1,13 +1,13 @@
-import { fixtureProvider, fullStatusFixture } from "../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 // Settings → Merging lists the conflict-prone files read-only, and an issue the scheduler holds
 // for one shows which item it waits for.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-hot-files-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-hot-files-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleMergeSettingsRequest } from "../src/settings";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/dashboard";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
@@ -19,7 +19,11 @@ const provider = fixtureProvider(snapshot);
 held.state = "queued";
 held.blockers = [];
 delete held.queue;
-held.held = { reason: "overlap", blockers: ["PAS-785"], files: ["src/web/src/live/provider.ts"] };
+held.held = {
+  reason: "overlap",
+  blockers: ["PAS-785"],
+  files: ["src/dashboard/src/live/provider.ts"],
+};
 const configPath = join(mkdtempSync(join(tmpdir(), "paws-hot-files-")), "config.toml");
 writeFileSync(configPath, `[merge]\norder = "queue"\nmain_moved = "ci"\n`);
 const server = Bun.serve({
@@ -43,13 +47,13 @@ const server = Bun.serve({
           },
           {
             repository: "acme/platform",
-            path: "src/web/src/live/provider.ts",
+            path: "src/dashboard/src/live/provider.ts",
             conflicts: 4,
             items: ["PAS-785", "PAS-761"],
           },
           {
             repository: "acme/platform",
-            path: "src/web/src/server/handler.ts",
+            path: "src/dashboard/src/server/handler.ts",
             conflicts: 3,
             items: ["PAS-763"],
           },
@@ -75,7 +79,7 @@ try {
     await page.goto(`http://127.0.0.1:${server.port}/status/settings/merging`);
     const section = page.locator("#merge-hot-files");
     await expect(section.getByRole("heading", { name: "Conflict-prone files" })).toBeVisible();
-    await expect(section).toContainText("src/web/src/live/provider.ts");
+    await expect(section).toContainText("src/dashboard/src/live/provider.ts");
     await expect(section).toContainText("4 conflicts (PAS-785, PAS-761)");
     await expect(section.locator("textarea, input, select")).toHaveCount(0);
     await expect

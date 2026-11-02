@@ -14,7 +14,7 @@ import {
 } from "../db";
 import { journalCaught } from "../journal";
 import type { FiledFindingIssue, FindingIssueRequest } from "../linear";
-import { FINDING_ISSUE_PATH, type StatusReview } from "../web";
+import { FINDING_ISSUE_PATH, type StatusReview } from "../dashboard";
 import { validWorkspaceCsrf } from "../workspace";
 import { findingIssueDescription, findingIssueTitle } from "./body";
 

@@ -17,7 +17,7 @@ import {
 } from "../src/db";
 import { createFakeTracker, type SessionUpdate } from "../src/linear";
 import { Orchestrator } from "../src/loop";
-import { createLiveStatusProvider } from "../src/web";
+import { createLiveStatusProvider } from "../src/dashboard";
 import { tempDb, tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 

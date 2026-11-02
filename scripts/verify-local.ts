@@ -41,12 +41,12 @@ const commands = [
         ["--bun", "run", "fmt:check"],
         ["--bun", "run", "typecheck"],
         ["test"],
-        ["run", "build:status"],
+        ["run", "build:dashboard"],
         ["run", "links"],
       ]
     : mode === "workspace"
       ? []
-      : [["run", "build:status"]]),
+      : [["run", "build:dashboard"]]),
   [
     mode === "workspace"
       ? "test/local/workspace-instance.ts"

@@ -1,11 +1,11 @@
-import { fixtureProvider, fullStatusFixture } from "../src/web/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 // A merge queue whose first task is re-checking: the Merge queue page and that task's issue page
 // show it keeps its place, and the ready task behind it moves. Against the real status handler.
-// Usage: bun run build:status && bun --no-env-file scripts/verify-merge-recheck-ui.ts <screenshot dir>
+// Usage: bun run build:dashboard && bun --no-env-file scripts/verify-merge-recheck-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest } from "../src/dashboard";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");

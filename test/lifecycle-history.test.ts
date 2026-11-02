@@ -21,8 +21,8 @@ import {
 } from "../src/db";
 import { ask, questionEffects, restart } from "../src/loop";
 import { answer } from "../src/questions";
-import { parseStatusSnapshot } from "../src/web/src/contract";
-import { createLiveStatusProvider } from "../src/web/src/live/provider";
+import { parseStatusSnapshot } from "../src/dashboard/src/contract";
+import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 
 const MINUTE = 60_000;
 const open: Database[] = [];

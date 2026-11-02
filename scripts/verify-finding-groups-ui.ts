@@ -1,8 +1,12 @@
 import { chromium, expect } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { handleStatusRequest, type FindingsResponse, type FindingGroupsResponse } from "../src/web";
-import { statusFixture } from "../src/web/test/fixtures";
+import {
+  handleStatusRequest,
+  type FindingsResponse,
+  type FindingGroupsResponse,
+} from "../src/dashboard";
+import { statusFixture } from "../src/dashboard/test/fixtures";
 
 const output = process.argv[2] ?? "/tmp/pas892-evidence";
 await mkdir(output, { recursive: true });

@@ -3,7 +3,7 @@ import { writeFileSync, rmSync } from "node:fs";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { RiskDisplayReader, riskApprovalFor } from "../src/loop";
-import { createLiveStatusProvider } from "../src/web";
+import { createLiveStatusProvider } from "../src/dashboard";
 import { loadConfigFile, readMergeSettings, type MergeSettings } from "../src/config";
 import {
   insertQueuedItem,

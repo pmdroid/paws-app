@@ -1,6 +1,6 @@
 /**
  * Check the repository's documentation:
- * - local markdown links resolve, in README.md, the root guides, docs/ and src/web/README.md
+ * - local markdown links resolve, in README.md, the root guides, docs/ and src/dashboard/README.md
  * - every doc under docs/ is linked from another checkable document
  * - inline code paths such as `src/loop` name a file or directory that exists
  *
@@ -19,7 +19,7 @@ const ROOT_DOCS = [
   "DESIGN.md",
   "GLOSSARY.md",
   "PRODUCT.md",
-  "src/web/README.md",
+  "src/dashboard/README.md",
 ];
 
 /** Docs that describe a separate demo repository, so their `src/...` paths are not ours. */

@@ -14,7 +14,7 @@ import {
   parseLinearIssueProjectChange,
   type EpicSnapshot,
 } from "../src/linear";
-import { createLiveStatusProvider } from "../src/web";
+import { createLiveStatusProvider } from "../src/dashboard";
 
 const at = Date.parse("2026-10-24T12:00:00.000Z");
 

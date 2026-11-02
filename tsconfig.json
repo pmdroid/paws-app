@@ -18,5 +18,5 @@
     "isolatedModules": true
   },
   "include": ["src", "test"],
-  "exclude": ["src/web/src/client"]
+  "exclude": ["src/dashboard/src/client"]
 }

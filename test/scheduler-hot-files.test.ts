@@ -13,7 +13,7 @@ import { tempDb } from "./helpers";
 import { workspaceDispatch } from "./fake-workspace";
 
 const NOW = 30 * 24 * 60 * 60 * 1000;
-const PROVIDER = "src/web/src/live/provider.ts";
+const PROVIDER = "src/dashboard/src/live/provider.ts";
 
 function item(db: Database, id: string, paths: readonly string[] | null, now = 1): void {
   insertQueuedItem(db, { id, now });
@@ -254,8 +254,8 @@ test("hot files come from conflict restarts in the last 7 days", () => {
     db.run("DELETE FROM work_item");
     conflicted(db, [PROVIDER, "src/index.ts"]);
     expect(hotFiles(db, NOW)).toEqual([
-      { repository: "owner/repo", path: "src/index.ts", conflicts: 1, items: ["earlier"] },
       { repository: "owner/repo", path: PROVIDER, conflicts: 1, items: ["earlier"] },
+      { repository: "owner/repo", path: "src/index.ts", conflicts: 1, items: ["earlier"] },
     ]);
   } finally {
     db.close();

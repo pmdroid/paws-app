@@ -23,17 +23,17 @@ import {
   type CloseoutProgressIdentity,
   type CloseoutStepWrite,
 } from "../src/db";
-import { handleStatusRequest } from "../src/web";
-import { render, type RenderModel } from "../src/web/src/client/render";
-import { attemptsOf, checkKey } from "../src/web/src/client/closeout";
-import { openedView } from "../src/web/test/fixtures";
-import { createLiveStatusProvider } from "../src/web/src/live/provider";
+import { handleStatusRequest } from "../src/dashboard";
+import { render, type RenderModel } from "../src/dashboard/src/client/render";
+import { attemptsOf, checkKey } from "../src/dashboard/src/client/closeout";
+import { openedView } from "../src/dashboard/test/fixtures";
+import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 import type {
   StatusCheck,
   StatusItemDetail,
   StatusSnapshot,
   StatusVerdict,
-} from "../src/web/src/contract";
+} from "../src/dashboard/src/contract";
 
 /** The status list, with each listed issue's detail as the issue page loads it. */
 type Status = StatusSnapshot & { details: Map<string, StatusItemDetail> };

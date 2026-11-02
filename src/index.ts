@@ -215,7 +215,7 @@ import {
 } from "./runner-placement";
 import { startServer } from "./server";
 import { activeRunnerReadiness } from "./settings";
-import { itemReviews } from "./web";
+import { itemReviews } from "./dashboard";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";

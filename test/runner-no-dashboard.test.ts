@@ -74,13 +74,13 @@ function chainsInto(root: string, entries: readonly string[], forbidden: string)
   return { reached, files: parent.size };
 }
 
-test("no runner entry point reaches the dashboard in src/web", () => {
-  const { reached, files } = chainsInto(ROOT, RUNNER_ENTRIES, "src/web");
+test("no runner entry point reaches the dashboard in src/dashboard", () => {
+  const { reached, files } = chainsInto(ROOT, RUNNER_ENTRIES, "src/dashboard");
   expect(files).toBeGreaterThan(RUNNER_ENTRIES.length);
   expect(reached.map((chain) => chain.join(" -> "))).toEqual([]);
 });
 
-test("the check names the chain when a runner module imports src/web, directly or through another module", () => {
+test("the check names the chain when a runner module imports src/dashboard, directly or through another module", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-imports-"));
   const write = (name: string, content: string) => {
     mkdirSync(dirname(join(root, name)), { recursive: true });
@@ -93,36 +93,42 @@ test("the check names the chain when a runner module imports src/web, directly o
       "src/runner-daemon/work.ts",
       'const page = await import("../status");\nexport { page };\n',
     );
-    write("src/status/index.ts", 'export * from "../web";\n');
+    write("src/status/index.ts", 'export * from "../dashboard";\n');
     write(
       "src/runner-worker/index.ts",
-      'import { STATUS } from "../web/contract";\nexport { STATUS };\n',
+      'import { STATUS } from "../dashboard/contract";\nexport { STATUS };\n',
     );
-    write("src/runner-worker/types.ts", 'import type { StatusSnapshot } from "../web/contract";\n');
-    write("src/web/index.ts", "export const page = 1;\n");
     write(
-      "src/web/contract.ts",
+      "src/runner-worker/types.ts",
+      'import type { StatusSnapshot } from "../dashboard/contract";\n',
+    );
+    write("src/dashboard/index.ts", "export const page = 1;\n");
+    write(
+      "src/dashboard/contract.ts",
       'export type StatusSnapshot = object;\nexport const STATUS = "/status";\n',
     );
-    write("src/webhooks/index.ts", "export const hook = 1;\n");
-    write("src/runner-execution/index.ts", 'export * from "../webhooks";\n');
+    write("src/dashboards/index.ts", "export const hook = 1;\n");
+    write("src/runner-execution/index.ts", 'export * from "../dashboards";\n');
 
-    // A type-only import is erased before Bun runs the file, so it loads nothing from src/web.
+    // A type-only import is erased before Bun runs the file, so it loads nothing from src/dashboard.
     expect(
-      chainsInto(root, ["src/runner-execution/index.ts", "src/runner-worker/types.ts"], "src/web")
-        .reached,
+      chainsInto(
+        root,
+        ["src/runner-execution/index.ts", "src/runner-worker/types.ts"],
+        "src/dashboard",
+      ).reached,
     ).toEqual([]);
     expect(
-      chainsInto(root, ["src/runner-cli/index.ts", "src/runner-worker/index.ts"], "src/web")
+      chainsInto(root, ["src/runner-cli/index.ts", "src/runner-worker/index.ts"], "src/dashboard")
         .reached,
     ).toEqual([
-      ["src/runner-worker/index.ts", "src/web/contract.ts"],
+      ["src/runner-worker/index.ts", "src/dashboard/contract.ts"],
       [
         "src/runner-cli/index.ts",
         "src/runner-daemon/index.ts",
         "src/runner-daemon/work.ts",
         "src/status/index.ts",
-        "src/web/index.ts",
+        "src/dashboard/index.ts",
       ],
     ]);
   } finally {

@@ -21,7 +21,7 @@ import {
 } from "../../src/github";
 import { startPaws } from "../../src/index";
 import { attachOrchestrator, type AgentLaunch } from "../../src/loop";
-import { handleStatusRequest, parseStatusSnapshot } from "../../src/web";
+import { handleStatusRequest, parseStatusSnapshot } from "../../src/dashboard";
 import type { FakeScript, FakeStep } from "../../src/acp/testing/script";
 import { probeBoundaries } from "./probes";
 import { probeRunnerProtocol } from "./runner-protocol";

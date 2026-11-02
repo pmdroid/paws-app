@@ -59,7 +59,7 @@ import {
 } from "../src/linear";
 import { createEvidenceStore } from "../src/evidence";
 import { findOpenQuestion, getQuestion } from "../src/questions";
-import { handleStatusRequest, parseStatusSnapshot } from "../src/web";
+import { handleStatusRequest, parseStatusSnapshot } from "../src/dashboard";
 import {
   attachOrchestrator,
   itemPathId,

@@ -1,5 +1,5 @@
 // Real Settings save against disposable SQLite and profile snapshots. No external services.
-// bun run build:status && bun scripts/verify-waiting-agent-settings-ui.ts <proof directory>
+// bun run build:dashboard && bun scripts/verify-waiting-agent-settings-ui.ts <proof directory>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,8 +17,8 @@ import {
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
 import { handleAgentSettingsRequest, handleHookSettingsRequest } from "../src/settings";
-import { handleStatusRequest } from "../src/web";
-import { statusFixture } from "../src/web/test/fixtures";
+import { handleStatusRequest } from "../src/dashboard";
+import { statusFixture } from "../src/dashboard/test/fixtures";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a proof directory");

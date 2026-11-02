@@ -1,5 +1,5 @@
 /**
- * In-module barrel for status tests. Other modules import `src/web` only.
+ * In-module barrel for status tests. Other modules import `src/dashboard` only.
  *
  * Call `handleStatusRequest` from the engine HTTP server. Return value `null`
  * means the request is not a status route (leave webhooks and everything else
