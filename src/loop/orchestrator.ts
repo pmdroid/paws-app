@@ -284,6 +284,7 @@ import {
   type TaskMergeSettings,
   delegatedLinearUserId,
   resetAwakeTime,
+  rebaseReturnedFor,
 } from "../db";
 import {
   publishAccepted,
@@ -400,7 +401,7 @@ import {
 import { acceptCloseout, retryMergeLater, waitForMergeTurn, waitForRunnerSlot } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
 import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
-import { ciForRecheck, type CiRecheck } from "./ci-recheck";
+import { ciForRecheck, conflictsAt, type CiRecheck } from "./ci-recheck";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
   REBASE_CONFLICT_INSTRUCTION,
@@ -3098,6 +3099,10 @@ export class Orchestrator {
       await this.flush();
       return;
     }
+    if (ci?.kind === "conflict" && (await this.sendBackForConflict(item, head))) {
+      await this.flush();
+      return;
+    }
     const fromCi = ci?.kind === "check" ? ci.fromCi : [];
     let decide = options.decide ?? false;
     for (let pass = 0; ; pass++) {
@@ -3772,6 +3777,21 @@ export class Orchestrator {
           ...this.gitHubCredentials(github),
         });
       },
+      // GitHub runs no CI on a conflicting pull request (PAS-990). One read per poll; only a
+      // conflict on this head counts, so unknown or unreadable keeps waiting.
+      conflicts: async () => {
+        this.assertJobCurrent(item.id);
+        const read = await readPullMergeable({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pull.pullNumber,
+          reads: 1,
+          ...this.gitHubCredentials(github),
+          ...(signal ? { signal } : {}),
+        });
+        return conflictsAt(read, head);
+      },
       sleep: (ms) => this.waitWithoutAwake(item.id, "ci", ms, signal),
       now: () => this.now(),
       ...(this.options.ciRecheckWait ?? {}),
@@ -3780,6 +3800,50 @@ export class Orchestrator {
           `item ${item.linearIdentifier} re-check at ${short} waits for CI: ${message}`,
         ),
     });
+  }
+
+  /**
+   * A merge-queue re-check's pull request conflicts with main: the item goes back to rebase, as
+   * the merge lane's conflict return does, within the shared rebase budget. False when the head
+   * already went back once, main cannot be fetched or the budget is spent, so the checks run.
+   */
+  private async sendBackForConflict(item: WorkItemRecord, head: string): Promise<boolean> {
+    this.assertJobCurrent(item.id);
+    if (rebaseReturnedFor(this.db, item.id, head)) return false;
+    const base = await this.fetchUpstreamMain(item);
+    if (base === null) return false;
+    this.assertJobCurrent(item.id);
+    const conflict = { base, files: null, reason: "merge" as const };
+    const sent = immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (
+        !current ||
+        current.cancelRequested ||
+        (current.state !== "verifying" && current.state !== "merge_queue") ||
+        !rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed
+      )
+        return false;
+      const jobId = restart(this.db, current, {
+        reason: "conflict",
+        body: REBASE_CONFLICT_INSTRUCTION,
+        now: this.now(),
+        jobKey: `conflict:${item.id}:recheck:${head}`,
+      });
+      if (jobId === null) return false;
+      recordRebaseReturn(this.db, {
+        itemId: item.id,
+        jobId,
+        candidate: head,
+        ...conflict,
+        recordedAt: this.now(),
+      });
+      return true;
+    });
+    if (sent)
+      this.options.journal?.(
+        `item ${item.linearIdentifier} re-check at ${head.slice(0, 7)}: the pull request conflicts with main. Sent back to the agent to rebase.`,
+      );
+    return sent;
   }
 
   /**

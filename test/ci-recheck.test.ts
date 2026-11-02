@@ -6,10 +6,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, spyOn, test } from "bun:test";
+import { worktreePath } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
 import * as closeoutCommands from "../src/closeout-spec/run/exec";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
+import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
 import {
   createFakeGitHub,
   fakeMergeReadiness,
@@ -17,7 +18,7 @@ import {
   type GitHubResponse,
 } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
-import { attachOrchestrator } from "../src/loop";
+import { attachOrchestrator, itemPathId } from "../src/loop";
 import {
   CLOSEOUT_POLICY,
   emptyReview,
@@ -55,10 +56,11 @@ const shard = (index: number, conclusion: string | null, run: number): FakeCheck
 /**
  * One task through the merge queue. CI fails on the first accepted head, so the lane sends it
  * back. CI fails again on the fix, so the re-check sends it back without running Closeout. On
- * the third head CI is pending, then green: the re-check waits, takes `test` from CI and runs
- * only the review. The third head would fail `test` if it ran.
+ * the third head the pull request conflicts, so the re-check sends it back to rebase without
+ * reading CI (PAS-990). On the fourth head CI is pending, then green: the re-check waits, takes
+ * `test` from CI and runs only the review. That head would fail `test` if it ran.
  */
-test("a merge-queue re-check waits for CI, sends red CI to a fix and takes green CI's results", async () => {
+test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to a rebase and takes green CI's results", async () => {
   const layout = await repoLayout("paws-ci-recheck-");
   await commitPolicy(layout.bare);
   const tracker = createFakeTracker([
@@ -89,6 +91,18 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix and takes green
     const body = fakeMergeReadiness(head);
     body.data.repository.object.statusCheckRollup.contexts.nodes = checks;
     return { status: 200, body };
+  };
+  // GitHub reports the pull request conflicting once, at the head after the red re-check.
+  let conflicted: string | null = null;
+  // The local head: this harness pushes only after Closeout accepts it.
+  const pull = async (): Promise<GitHubResponse | null> => {
+    if (conflicted !== null || heads.length !== 2) return null;
+    const row = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
+    const worktree = worktreePath(layout.pawsRoot, itemPathId(getWorkItem(db, row.id)!));
+    const head = (await git(worktree, ["rev-parse", "HEAD"])).trim();
+    if (heads.includes(head)) return null;
+    conflicted = head;
+    return { status: 200, body: { state: "open", mergeable: false, head: { sha: head } } };
   };
   const ran: string[] = [];
   const realCommands = closeoutCommands.createCommandRunner;
@@ -126,6 +140,10 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix and takes green
         async request(req): Promise<GitHubResponse> {
           if (isMergeReadiness(req))
             return ci((req.body as { variables: { head: string } }).variables.head);
+          if (req.method === "GET" && /\/pulls\/\d+$/.test(req.path)) {
+            const conflict = await pull();
+            if (conflict) return conflict;
+          }
           return client.request(req);
         },
       },
@@ -135,7 +153,7 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix and takes green
       let steps: FakeScript["steps"] = emptyReview().steps;
       if (input.purpose === "implement") {
         turns += 1;
-        const file = turns === 1 ? null : turns === 2 ? "fix.txt" : "header.txt";
+        const file = turns === 1 ? null : turns === 2 ? "fix.txt" : `header-${turns}.txt`;
         steps = [
           file === null
             ? writeOk(input.worktree)
@@ -174,9 +192,19 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix and takes green
       progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
     });
     expect(stateOf(db, "ENG-8"), detail).toBe("merged");
+    // The conflicting head went back before any CI read, so CI saw three heads in four turns.
     expect(heads.length, detail).toBe(3);
     const [first, second, third] = heads as [string, string, string];
-    expect(turns, detail).toBe(3);
+    expect(conflicted, detail).not.toBeNull();
+    expect(heads, detail).not.toContain(conflicted);
+    expect(turns, detail).toBe(4);
+    const returned = listJobs(db).find(
+      (job) => job.jobKey?.startsWith("conflict:") && job.jobKey.endsWith(`:recheck:${conflicted}`),
+    );
+    expect(returned?.payload, detail).toMatchObject({ reason: "conflict" });
+    expect(journal, detail).toContain(
+      `item ENG-8 re-check at ${conflicted!.slice(0, 7)}: the pull request conflicts with main. Sent back to the agent to rebase.`,
+    );
     // A first run runs everything; the red re-check ran nothing; the green one ran no `test`.
     expect(ran, detail).toContain(`test@${first}`);
     expect(

@@ -5,8 +5,9 @@ import {
   readPullCi,
   type FakeCheckContext,
   type GitHubClient,
+  type PullMergeable,
 } from "../github";
-import { ciForRecheck, ciPattern, fromGreenCi, type CiMapping } from "./ci-recheck";
+import { ciForRecheck, ciPattern, conflictsAt, fromGreenCi, type CiMapping } from "./ci-recheck";
 
 const HEAD = "a".repeat(40);
 const RUNS = "https://github.com/pmdroid/paws-app/actions/runs";
@@ -44,13 +45,25 @@ function github(polls: FakeCheckContext[][]): { client: GitHubClient; reads: () 
   };
 }
 
-function recheck(client: GitHubClient, sleeps: number[] = [], mappings = MAPPINGS) {
+function recheck(
+  client: GitHubClient,
+  sleeps: number[] = [],
+  mappings = MAPPINGS,
+  mergeable?: (PullMergeable | null)[],
+) {
   const waits: string[] = [];
   let now = 0;
+  let polls = 0;
   return {
     waits,
     result: ciForRecheck({
       mappings,
+      ...(mergeable
+        ? {
+            conflicts: async () =>
+              conflictsAt(mergeable[Math.min(polls++, mergeable.length - 1)]!, HEAD),
+          }
+        : {}),
       read: () =>
         readPullCi({
           client,
@@ -137,6 +150,47 @@ test("red CI goes to the CI fix", async () => {
       expect.objectContaining({ name: "test (0/4)", url: `${RUNS}/77/job/1`, failsOnBase: false }),
     ],
   });
+});
+
+const pullAt = (merges: PullMergeable["merges"], head = HEAD): PullMergeable => ({
+  head,
+  open: true,
+  merges,
+});
+
+test("a conflicting pull request goes back for the conflict without reading CI or sleeping", async () => {
+  const fake = github([[job("test (0/4)", null, 1)]]);
+  const sleeps: number[] = [];
+  const read = recheck(fake.client, sleeps, MAPPINGS, [pullAt("conflict")]);
+  expect(await read.result).toEqual({ kind: "conflict" });
+  expect(sleeps).toEqual([]);
+  expect(fake.reads()).toBe(0);
+});
+
+test("a clean, unknown or unreadable pull request keeps waiting for CI", async () => {
+  for (const mergeable of [pullAt("clean"), pullAt("unknown"), null, pullAt("conflict", "b")]) {
+    const fake = github([
+      [job("test (0/4)", null, 1), job(CHECK_JOB, null, 3)],
+      [job("test (0/4)", "SUCCESS", 1), job(CHECK_JOB, "SUCCESS", 3)],
+    ]);
+    const sleeps: number[] = [];
+    const result = await recheck(fake.client, sleeps, MAPPINGS, [mergeable]).result;
+    expect(result.kind === "check" && result.fromCi.map((entry) => entry.id)).toEqual([
+      "lint",
+      "test",
+    ]);
+    expect(sleeps).toEqual([1_000]);
+  }
+});
+
+test("a pull request that starts conflicting during the wait goes back on the next poll", async () => {
+  const fake = github([[job("test (0/4)", null, 1)]]);
+  const sleeps: number[] = [];
+  const mergeable = [pullAt("clean"), pullAt("unknown"), pullAt("conflict")];
+  const read = recheck(fake.client, sleeps, MAPPINGS, mergeable);
+  expect(await read.result).toEqual({ kind: "conflict" });
+  expect(sleeps).toEqual([1_000, 1_000]);
+  expect(fake.reads()).toBe(2);
 });
 
 test("a policy without ci mappings reads nothing", async () => {
