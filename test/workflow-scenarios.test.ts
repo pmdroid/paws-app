@@ -434,8 +434,13 @@ describe("runner control across Paws restarts", () => {
         expect(() => controller().current(run.id, 1)).toThrow(RunnerWorkFencedError);
       }
       w.settle();
-      expect(factsOf(w.db, "item")).toMatchObject({ state: "recovering", restartHold: true });
-      expect(liveExecution(w, "item")).toEqual([]);
+      expect(factsOf(w.db, "item")).toMatchObject({
+        state: "recovering",
+        restartHold: false,
+        recoveryAttempts: 0,
+        liveJobs: ["run.resume:pending"],
+      });
+      expect(liveExecution(w, "item").map((job) => job.status)).toEqual(["pending"]);
       expect(unexpectedViolations(w.db, w.now)).toEqual([]);
     } finally {
       w.close();

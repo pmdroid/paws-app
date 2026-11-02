@@ -3,7 +3,7 @@ import type { WorkItemRecord } from "./items";
 import { reenqueueJob } from "./jobs";
 
 export const RESTART_QUESTION =
-  "Paws restarted twice while this task was running. Start it again from its branch in a fresh session? Stop the session to leave it.";
+  "Paws lost this task's run more than once, through a restart or a runner that stopped answering. Start it again from its branch in a fresh session? Stop the session to leave it.";
 
 export type RestartHold = { itemId: string; sessionId: string; requestedAt: number };
 
