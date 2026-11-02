@@ -463,7 +463,9 @@ export function createRunnerWork(options: {
         if (
           command.generation !== (previous?.generation ?? 0) + 1 ||
           (previous?.endedAt === null &&
-            runnerLeaseLive(previous.leaseUntil, at) &&
+            (accepted(previous)
+              ? previous.leaseUntil > at
+              : runnerLeaseLive(previous.leaseUntil, at)) &&
             availableIdentity(previous.runnerId)?.fence === previous.runnerFence)
         )
           throw new Error("Run assignment generation conflicts.");
