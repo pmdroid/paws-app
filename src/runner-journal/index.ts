@@ -71,6 +71,19 @@ export type TerminalExecution = {
   command: { id: string; runId: string; generation: number; itemId: string };
 };
 
+type TerminalRow = {
+  id: string;
+  commandId: string;
+  runId: string;
+  generation: number;
+  itemId: string;
+};
+const TERMINAL_COLUMNS = `id,command_id AS commandId,json_extract(payload,'$.runId') AS runId,
+  json_extract(payload,'$.generation') AS generation,json_extract(payload,'$.itemId') AS itemId`;
+function terminalExecution({ id, commandId, runId, generation, itemId }: TerminalRow) {
+  return { id, command: { id: commandId, runId, generation, itemId } } satisfies TerminalExecution;
+}
+
 export function openExecutionJournal(root: string) {
   if (!isAbsolute(root)) throw new Error("Execution journal root must be absolute");
   const info = statSync(root);
@@ -127,11 +140,13 @@ export function openExecutionJournal(root: string) {
   db.run(
     "UPDATE execution SET phase=(SELECT CASE WHEN accepted=1 AND failure=0 THEN 'complete' ELSE 'interrupted' END FROM result_delivery WHERE execution_id=execution.id) WHERE phase NOT IN ('complete','interrupted') AND id IN (SELECT execution_id FROM result_delivery WHERE accepted<>0)",
   );
-  function parseExecution(row: { id: string; payload: string; phase: string }): Execution {
-    const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
+  function parseExecution(row: { id: string; payload: string; phase: string }) {
+    const parsed = RunnerCommandSchema.safeParse(JSON.parse(row.payload));
+    if (!parsed.success) return undefined;
+    const command = parsed.data;
     if (command.type !== "run" && command.type !== "review" && command.type !== "task")
       throw new Error("Invalid persisted work command");
-    return { id: row.id, command, phase: row.phase };
+    return { id: row.id, command, phase: row.phase } satisfies Execution;
   }
   function execution(id: string): Execution | undefined {
     const row = db
@@ -147,7 +162,7 @@ export function openExecutionJournal(root: string) {
         "SELECT id,payload,phase FROM execution WHERE (phase NOT IN ('complete','interrupted'))=? ORDER BY rowid",
       )
       .all(Number(active))
-      .map(parseExecution);
+      .flatMap((row) => parseExecution(row) ?? []);
   }
   function storedPublication(id: string) {
     const row = db
@@ -180,20 +195,24 @@ export function openExecutionJournal(root: string) {
     // Reconcile those rows through the same broker contract on upgrade.
     unconfirmedTerminations(): TerminalExecution[] {
       return db
-        .query<
-          { id: string; commandId: string; runId: string; generation: number; itemId: string },
-          []
-        >(
-          `SELECT id,command_id AS commandId,json_extract(payload,'$.runId') AS runId,
-          json_extract(payload,'$.generation') AS generation,json_extract(payload,'$.itemId') AS itemId
+        .query<TerminalRow, []>(
+          `SELECT ${TERMINAL_COLUMNS}
           FROM execution e WHERE phase IN ('complete','interrupted')
           AND NOT EXISTS(SELECT 1 FROM termination t WHERE t.command_id=e.command_id) ORDER BY rowid`,
         )
         .all()
-        .map(({ id, commandId, runId, generation, itemId }) => ({
-          id,
-          command: { id: commandId, runId, generation, itemId },
-        }));
+        .map(terminalExecution);
+    },
+    unreadableExecutions(): TerminalExecution[] {
+      return db
+        .query<TerminalRow & { payload: string; phase: string }, []>(
+          `SELECT ${TERMINAL_COLUMNS},payload,phase
+          FROM execution e WHERE phase NOT IN ('complete','interrupted')
+          AND NOT EXISTS(SELECT 1 FROM termination t WHERE t.command_id=e.command_id) ORDER BY rowid`,
+        )
+        .all()
+        .filter((row) => !parseExecution(row))
+        .map(terminalExecution);
     },
     terminationPending(runId: string, generation: number) {
       return (
