@@ -120,6 +120,7 @@ export type GateResult = {
    * and use no fix attempt: a person approves the break or sends it back.
    */
   ruleApprovals?: RuleApproval[];
+  reviewerFault?: string;
 };
 
 /** A failed `onFail: approve` rule waiting for a person, with what the agent gets if it is sent back. */

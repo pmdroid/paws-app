@@ -781,7 +781,7 @@ export function deferWorkItem(
     message: string | null;
     now: number;
     capacityWait?: RunnerCapacityWaitState;
-    closeoutFault?: CloseoutFaults & { jobId: number };
+    closeoutFault?: CloseoutFaults & { jobId: number; reviewer?: string };
   },
 ): void {
   immediate(db, () => {
@@ -812,6 +812,7 @@ export function deferWorkItem(
           recheckHead: true,
           failClosed: true,
           closeoutFaults: { head: fault.head, reasons: fault.reasons },
+          ...(fault.reviewer === undefined ? {} : { reviewerFault: fault.reviewer }),
         },
         now: input.now,
       });
@@ -854,7 +855,9 @@ export function deferWorkItem(
         op: OUTBOX_ACTIVITY.op,
         orderingKey: item.sessionKey ?? item.id,
         idempotencyKey: fault
-          ? `closeout-fault:${item.id}:${fault.jobId}`
+          ? fault.reviewer === undefined
+            ? `closeout-fault:${item.id}:${fault.jobId}`
+            : `${REVIEWER_ALERT}${fault.reviewer}:${item.id}:${fault.jobId}`
           : `retry:${item.id}:${current.version}`,
         payload: { sessionId: item.sessionKey ?? item.id, kind: "thought", body: input.message },
         now: input.now,
@@ -863,6 +866,35 @@ export function deferWorkItem(
 }
 
 export type CloseoutFaults = { head: string; reasons: readonly string[] };
+
+const REVIEWER_ALERT = "reviewer-fault:";
+
+export function reviewerFaultHolds(db: Database, reviewer: string): WorkItemRecord[] {
+  return db
+    .query<{ itemId: string }, [string, string]>(
+      `SELECT DISTINCT json_extract(payload,'$.itemId') AS itemId FROM job
+       WHERE queue=? AND status='pending' AND json_extract(payload,'$.reviewerFault')=?`,
+    )
+    .all(JOB_KIND.reverify, reviewer)
+    .flatMap((row) => getWorkItem(db, row.itemId) ?? []);
+}
+
+export function reviewerAlertedSince(db: Database, reviewer: string, since: number): boolean {
+  return (
+    db
+      .query("SELECT 1 FROM outbox WHERE idempotency_key LIKE ? AND created_at>=?")
+      .get(`${REVIEWER_ALERT}${reviewer}:%`, since) !== null
+  );
+}
+
+export function releaseReviewerFaultHolds(db: Database, itemId: string, now: number): number {
+  return db.run(
+    `UPDATE job SET run_at=?, payload=json_remove(payload,'$.closeoutFaults','$.reviewerFault')
+     WHERE queue=? AND status='pending' AND json_extract(payload,'$.itemId')=?
+       AND json_extract(payload,'$.reviewerFault') IS NOT NULL`,
+    [now, JOB_KIND.reverify, itemId],
+  ).changes;
+}
 
 export type RunnerCapacityWaitState = {
   since: number;
