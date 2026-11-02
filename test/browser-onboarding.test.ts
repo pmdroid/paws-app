@@ -69,6 +69,27 @@ test("a fresh HTTPS instance serves browser onboarding for its configured organi
   expect(blocked.status).toBe(401);
   const login = await paws.server.fetch(new Request("https://localhost:8787/auth/linear"));
   expect(login.status).toBe(303);
+  const root = await paws.server.fetch(new Request("https://localhost:8787/?onboarding=failed"));
+  expect(root.status).toBe(307);
+  expect(root.headers.get("location")).toBe("/dashboard/?onboarding=failed");
+  const page = await paws.server.fetch(new Request("https://localhost:8787/dashboard/settings"));
+  expect(page.status).toBe(200);
+  expect(await page.text()).toContain('<base href="/dashboard/"');
+  for (const method of ["GET", "HEAD"]) {
+    const old = await paws.server.fetch(
+      new Request("https://localhost:8787/status/settings/integrations?connecting=1", { method }),
+    );
+    expect(old.status).toBe(307);
+    expect(old.headers.get("location")).toBe("/dashboard/settings/integrations?connecting=1");
+  }
+  const head = await paws.server.fetch(
+    new Request("https://localhost:8787/dashboard/", { method: "HEAD" }),
+  );
+  expect(head.status).toBe(200);
+  const post = await paws.server.fetch(
+    new Request("https://localhost:8787/status/settings", { method: "POST" }),
+  );
+  expect(post.status).toBe(405);
 });
 
 test("a fresh HTTPS instance refuses sign-in until its organization is configured", async () => {
@@ -239,7 +260,7 @@ test("browser sign-in creates an owner only in the operator's configured organiz
       `/auth/linear/install/callback?state=${install.state}&code=app-code`,
       install.cookie,
     );
-    expect(response.headers.get("location")).toBe("/status/settings/integrations?connecting=1");
+    expect(response.headers.get("location")).toBe("/dashboard/settings/integrations?connecting=1");
     expect(response.headers.get("set-cookie")).toContain("__Host-paws-session=");
     expect(scene.state.installed).toBe(1);
     const workspace = workspaceForOrganization(scene.db, "org")!;
@@ -283,7 +304,9 @@ test("an unrelated Linear admin cannot claim a fresh instance", async () => {
     scene.state.userOrganization = "foreign-org";
     scene.state.organization = "foreign-org";
     const install = await scene.installation();
-    expect(install.response.headers.get("location")).toBe("/status/?onboarding=workspace-mismatch");
+    expect(install.response.headers.get("location")).toBe(
+      "/dashboard/?onboarding=workspace-mismatch",
+    );
     expect(scene.db.query("SELECT 1 FROM browser_installation_request").get()).toBeNull();
     expect(scene.db.query("SELECT 1 FROM workspace").get()).toBeNull();
     expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
@@ -304,7 +327,7 @@ test("installation rechecks the operator organization after a restart", async ()
       `/auth/linear/install/callback?state=${install.state}&code=app-code`,
       install.cookie,
     );
-    expect(response.headers.get("location")).toBe("/status/?onboarding=workspace-mismatch");
+    expect(response.headers.get("location")).toBe("/dashboard/?onboarding=workspace-mismatch");
     expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
     expect(scene.db.query("SELECT 1 FROM workspace").get()).toBeNull();
     expect(scene.state.exchanges).toBe(1);
@@ -327,7 +350,7 @@ test("a concurrently bound foreign workspace prevents credential writes", async 
       `/auth/linear/install/callback?state=${install.state}&code=app-code`,
       install.cookie,
     );
-    expect(response.headers.get("location")).toBe("/status/?onboarding=workspace-mismatch");
+    expect(response.headers.get("location")).toBe("/dashboard/?onboarding=workspace-mismatch");
     expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
     expect(existsSync(join(scene.home, "secrets/linear-client.json"))).toBe(false);
     expect(workspaceForOrganization(scene.db, "org")).toBeNull();
@@ -358,7 +381,9 @@ for (const property of ["admin", "active", "guest"] as const) {
     try {
       scene.state[property] = property === "guest";
       const install = await scene.installation();
-      expect(install.response.headers.get("location")).toBe("/status/?onboarding=admin-required");
+      expect(install.response.headers.get("location")).toBe(
+        "/dashboard/?onboarding=admin-required",
+      );
       expect(scene.state.installed).toBe(0);
     } finally {
       scene.close();
@@ -387,7 +412,7 @@ for (const failure of [
         `/auth/linear/install/callback?state=${install.state}&${suffix}`,
         failure === "cookie" ? "" : install.cookie,
       );
-      expect(response.headers.get("location")).toContain("/status/?onboarding=");
+      expect(response.headers.get("location")).toContain("/dashboard/?onboarding=");
       expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
       expect(workspaceForOrganization(scene.db, "org")).toBeNull();
       expect(scene.state.installed).toBe(0);
@@ -438,8 +463,8 @@ for (const concurrentRevocation of [false, true]) {
       );
       expect(response.headers.get("location")).toBe(
         concurrentRevocation
-          ? "/status/?onboarding=failed"
-          : "/status/settings/integrations?connecting=1",
+          ? "/dashboard/?onboarding=failed"
+          : "/dashboard/settings/integrations?connecting=1",
       );
       expect(getLinearSessionAccess(scene.db, "session")).toBe(
         concurrentRevocation ? "revoked" : "allowed",

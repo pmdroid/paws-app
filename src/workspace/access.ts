@@ -37,6 +37,7 @@ import {
   workspaceSessionCookie,
   workspaceTokenHash,
 } from "./session";
+import { dashboardIssuePath, dashboardPath } from "../dashboard-links";
 
 const GITHUB_STEP = "/github";
 
@@ -431,7 +432,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         teamIds: identity.teamIds,
         now: syncAt,
       });
-      let location = "/status/";
+      let location = dashboardPath();
       if (result.assignmentHash !== null) {
         if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
         const completion = options.assignments.complete(
@@ -449,7 +450,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         }
         location =
           completion.linkId === null
-            ? issuePage(completion.identifier)
+            ? dashboardIssuePath(completion.identifier)
             : `/onboard/${completion.linkId}`;
       } else options.assignments?.releaseFor(workspace.id, result.identity.userId);
       await links.syncUser(workspace.id, userId);
@@ -610,10 +611,6 @@ function json(body: unknown, status = 200): Response {
 
 function notFound(): Response {
   return page("This sign-in link is not active.", 404);
-}
-
-function issuePage(identifier: string): string {
-  return `/status/issues/${encodeURIComponent(identifier)}`;
 }
 
 function page(message: string, status: number): Response {

@@ -99,7 +99,7 @@ test("full transcript reads unfinished ACP output, tools and classification whil
     engineUrl: null,
     closeout: openedView(),
   }).content;
-  expect(html).toContain(`href="/status/runs/${run.id}/transcript"`);
+  expect(html).toContain(`href="/dashboard/runs/${run.id}/transcript"`);
   expect(html).toContain('target="_blank"');
   expect(html).toContain("Open full agent transcript");
   expect(html).not.toContain("Opening create VM dialog");

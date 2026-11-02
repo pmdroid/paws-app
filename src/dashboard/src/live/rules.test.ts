@@ -136,7 +136,7 @@ function seed(): { db: Database; home: string } {
       itemId: item.id,
       kind: "bypass",
       headCommit: HEAD,
-      link: `https://paws.example/status/issues/ENG-7#closeout`,
+      link: `https://paws.example/dashboard/issues/ENG-7#closeout`,
       title: "Closeout needs your decision.",
       detail: `Closeout stopped: ${checkId} failed.`,
       answerers: ["delegator"],

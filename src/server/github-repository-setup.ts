@@ -20,6 +20,7 @@ import {
 import { readWorkspaceJson, requestWorkspaceSession, validWorkspaceCsrf } from "../workspace";
 import { discoverGitHubInstallation } from "./github-connect-status";
 import { githubRepositoryChoices } from "./github-repository-choices";
+import { dashboardUrl } from "../dashboard-links";
 
 const START = "/api/workspaces/github-setup";
 const CALLBACK = "/auth/github-app/callback";
@@ -190,7 +191,7 @@ export function createGitHubRepositorySetup(options: {
           return new Response(null, {
             status: 303,
             headers: {
-              location: origin + "/status/settings/integrations",
+              location: dashboardUrl(origin, "/settings/integrations"),
               "cache-control": "no-store",
             },
           });

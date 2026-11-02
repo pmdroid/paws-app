@@ -35,6 +35,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/core`                                               | Domain types, states, pure transition() and execution policies        |
 | `src/credentials`                                        | Secret file access and credential refresh                             |
 | `src/dashboard`                                          | Dashboard client, server contract and build                           |
+| `src/dashboard-links`                                    | Canonical dashboard paths, links and old `/status` redirects          |
 | `src/db`                                                 | SQLite migrations, domain rows, jobs, outbox and transactional writes |
 | `src/decisions`                                          | Workspace decisions and repository access choices                     |
 | `src/deployment`                                         | Deployment configuration, TLS certificates and renewal                |
@@ -118,7 +119,7 @@ Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not
 - Fakes live next to the interface they implement and are exported from that module. They record calls in memory.
 - Identifiers are ULIDs (`src/intake/ulid.ts`).
 - Secrets stay in `~/.paws/secrets` (directory mode `0700`). Never log them, never put them in the agent environment, and never commit them.
-- The dashboard is static files under `src/dashboard` so it can ship on its own. The process serves them on localhost at `/status` and `GET /api/status`.
+- The dashboard is static files under `src/dashboard` so it can ship on its own. The process serves them on localhost at `/dashboard` and `GET /api/status`; old `/status` page links redirect to `/dashboard`.
 - Documentation describes the code as it is now. Delete a page that no longer matches instead of keeping it for history; `bun run links` fails on an orphaned doc, a broken local link or an inline `src/...` path that no longer exists. `bun run knip` fails on an unused file, dependency or duplicate export.
 
 ## Parallel work

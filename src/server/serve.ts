@@ -74,6 +74,7 @@ import {
   type WorkspacePrincipal,
 } from "../workspace";
 import type { WorkspaceSession } from "../db";
+import { isDashboardPage, isDashboardPath } from "../dashboard-links";
 
 export type ServerOptions = {
   findingGroups?: FindingGroupServices;
@@ -302,7 +303,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (path === "/api/runner-enrollments" && secrets.runnerHostEnrollment !== undefined)
     return secrets.runnerHostEnrollment(request);
   if (secrets.workspaceAccess === null && !path.startsWith("/webhooks")) {
-    if (path === "/" || path === "/status" || path.startsWith("/status/")) {
+    if (isDashboardPage(path)) {
       const page = await handleStatusRequest(request, {});
       if (page !== null) return page;
     }
@@ -318,7 +319,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (workspace !== undefined) {
     const auth = await workspace.handle(request, { ip: secrets.ip ?? null });
     if (auth !== null) return auth;
-    if ((path === "/status" || path.startsWith("/status/")) && secrets.db !== undefined) {
+    if (isDashboardPath(path) && secrets.db !== undefined) {
       const access = requestWorkspaceSession(secrets.db, request, Date.now());
       if (access !== null) csrfToken = access.session.csrfToken;
     }

@@ -7,6 +7,7 @@ import { initializeAppearance } from "./appearance";
 import { ansiToHtml } from "./ansi";
 import { Button } from "./ui/button";
 import { cn } from "./ui/utils";
+import { dashboardPath } from "../../../dashboard-links";
 
 const POLL_MS = 3000;
 const BOTTOM_SLACK = 48;
@@ -253,7 +254,7 @@ function TranscriptPage({ runId }: { runId: string | null }) {
             {load.message}{" "}
             {load.message.startsWith("Sign in") && (
               <a
-                href="/status/"
+                href={dashboardPath()}
                 className="font-semibold underline decoration-2 underline-offset-4 hover:decoration-main"
               >
                 Open Paws

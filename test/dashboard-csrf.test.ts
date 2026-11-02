@@ -5,7 +5,7 @@ import { injectCsrf, processCsrfToken } from "../src/dashboard/src/server/csrf";
 
 describe("dashboard CSRF token", () => {
   test("the status page embeds the token and the client reads it back", async () => {
-    const page = await handleStatusRequest(new Request("http://127.0.0.1/status"), {
+    const page = await handleStatusRequest(new Request("http://127.0.0.1/dashboard"), {
       staticDir: null,
       csrfToken: "csrf-token",
     });

@@ -48,9 +48,16 @@ test("the Projects page and /api/projects are gone for a signed-in member", asyn
   const get = (path: string) =>
     fetch(`http://127.0.0.1:${server.port}${path}`, { headers, redirect: "manual" });
   try {
-    expect((await get("/status/issues")).status).toBe(200);
-    expect((await get("/status/projects")).status).toBe(404);
-    expect((await get("/status/projects/approval")).status).toBe(404);
+    const page = await get("/dashboard/issues");
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain(`content="${session.session.csrfToken}"`);
+    expect((await get("/dashboard/projects")).status).toBe(404);
+    expect((await get("/dashboard/projects/approval")).status).toBe(404);
+    expect((await get("/dashboard/assets/..%2f..%2fpackage.json")).status).toBe(404);
+    const legacy = await get("/status/projects/approval?x=1");
+    expect(legacy.status).toBe(307);
+    expect(legacy.headers.get("location")).toBe("/dashboard/projects/approval?x=1");
+    expect((await get("/status/issues")).headers.get("location")).toBe("/dashboard/issues");
     expect((await get("/api/projects")).status).toBe(404);
   } finally {
     await server.stop(true);

@@ -148,7 +148,7 @@ describe("issue page sections", () => {
         head: "91fd0c4aa1",
         title: "A rule broke on 91fd0c4 and needs your decision.",
         detail: "Rule api-contract broke.",
-        link: "https://paws.example/status/issues/ENG-100#rule",
+        link: "https://paws.example/dashboard/issues/ENG-100#rule",
         bypass: { policyDigest: "sha256:0eadf4c1234", passed: [], checks: [] },
       },
     });

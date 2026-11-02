@@ -183,7 +183,7 @@ describe("live evidence", () => {
       { staticDir: null },
     );
     expect(response?.status).toBe(307);
-    expect(response?.headers.get("location")).toBe(`/status/evidence/${VIDEO}`);
+    expect(response?.headers.get("location")).toBe(`/dashboard/evidence/${VIDEO}`);
     expect(
       await handleStatusRequest(new Request("http://127.0.0.1:8787/evidence/../x"), {
         staticDir: null,

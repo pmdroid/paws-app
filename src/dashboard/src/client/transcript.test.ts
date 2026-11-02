@@ -2,10 +2,10 @@ import { expect, test } from "bun:test";
 import { parseTranscript, transcriptRunId } from "./transcript";
 
 test("the transcript page reads its run from the engine path", () => {
-  expect(transcriptRunId("/status/runs/run_01-abc/transcript")).toBe("run_01-abc");
-  expect(transcriptRunId("/status/runs/run_01-abc/transcript/")).toBe("run_01-abc");
-  expect(transcriptRunId("/status/runs/../transcript")).toBeNull();
-  expect(transcriptRunId("/status/runs/run_01-abc")).toBeNull();
+  expect(transcriptRunId("/dashboard/runs/run_01-abc/transcript")).toBe("run_01-abc");
+  expect(transcriptRunId("/dashboard/runs/run_01-abc/transcript/")).toBe("run_01-abc");
+  expect(transcriptRunId("/dashboard/runs/../transcript")).toBeNull();
+  expect(transcriptRunId("/dashboard/runs/run_01-abc")).toBeNull();
 });
 
 test("the transcript page accepts only well-formed entries", () => {

@@ -15,7 +15,6 @@ export const STATUS_API_VERSION = 2 as const;
 export const STATUS_API_PATH = "/api/status";
 /** `GET /api/status/items/<id>` returns a `StatusItemDetail` for the issue with that id. */
 export const STATUS_ITEM_API_PATH = "/api/status/items";
-export const STATUS_PAGE_PATH = "/status";
 
 export const ITEM_STATES = [
   "queued",

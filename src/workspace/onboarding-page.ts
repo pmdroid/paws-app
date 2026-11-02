@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { dashboardIssuePath, dashboardPath } from "../dashboard-links";
 
 /** One step of the member's exe.dev VM setup, as the Runners page shows it. */
 export type OnboardingVmStep = {
@@ -78,7 +79,7 @@ type Step = {
 };
 
 /** The dashboard page that also has Create VM and Add a host. */
-const RUNNERS_PAGE = "/status/runners";
+const RUNNERS_PAGE = dashboardPath("/runners");
 /** How often the page re-reads itself while a VM is being set up, and otherwise. */
 const VM_POLL_MS = 3_000;
 const POLL_MS = 15_000;
@@ -567,7 +568,7 @@ export function onboardingPage(input: OnboardingPageInput): Response {
     input.issueUrl
       ? `<a href="${escape(input.issueUrl)}">Open ${escape(input.identifier)} in Linear</a>`
       : "",
-    `<a href="/status/issues/${escape(encodeURIComponent(input.identifier))}">Open dashboard</a>`,
+    `<a href="${escape(dashboardIssuePath(input.identifier))}">Open dashboard</a>`,
   ].join("");
   // Add a host lives outside the steps, so a refresh of the steps keeps a shown command.
   const host = `<section class="host" id="host" hidden aria-labelledby="host-heading"><h2 id="host-heading">Add a host</h2><form id="host-form"><label>Host name<input name="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${escape(

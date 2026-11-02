@@ -21,6 +21,7 @@ import {
   workspaceMember,
 } from "../db";
 import { requestWorkspaceSession, validWorkspaceCsrf } from "../workspace";
+import { dashboardUrl } from "../dashboard-links";
 
 const START = "/api/workspaces/github-connect";
 const CALLBACK = "/auth/github-app/callback";
@@ -474,7 +475,7 @@ export function createHostedGitHubConnect(options: {
         return new Response(null, {
           status: 303,
           headers: {
-            location: origin + "/status/settings/integrations",
+            location: dashboardUrl(origin, "/settings/integrations"),
             "cache-control": "no-store",
           },
         });

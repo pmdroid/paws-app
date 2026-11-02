@@ -1228,7 +1228,7 @@ test("another member opening the onboarding link sees nothing about the issue", 
       await fetch(`${f.local}/auth/linear`, { redirect: "manual" }),
       "other",
     );
-    expect(dashboard.headers.get("location")).toBe("/status/");
+    expect(dashboard.headers.get("location")).toBe("/dashboard/");
     const cookie = sessionCookie(dashboard);
     for (const headers of [{ cookie }, {}] as Record<string, string>[]) {
       const opened = await f.begin(link, headers);
@@ -1272,7 +1272,7 @@ test("signing in from the dashboard instead of the link releases the hold", asyn
     const start = await fetch(`${f.local}/auth/linear`, { redirect: "manual" });
     const done = await f.callback(start);
     expect(done.status).toBe(303);
-    expect(done.headers.get("location")).toBe("/status/");
+    expect(done.headers.get("location")).toBe("/dashboard/");
     const jobs = f.jobs();
     await jobs.tick();
     await jobs.tick();

@@ -19,7 +19,7 @@ describe("server", () => {
         failedChecks: ["database"],
       });
 
-      const status = await fetch(`${base}/status`);
+      const status = await fetch(`${base}/dashboard`);
       expect(status.status).toBe(200);
       expect(status.headers.get("content-type")).toContain("text/html");
       expect(await status.text()).toContain("Paws");
@@ -90,6 +90,34 @@ describe("server", () => {
       });
       expect(unsigned.status).toBe(401);
       expect(await unsigned.json()).toEqual({ ok: false, reason: "missing_secret" });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("dashboard pages stay reachable while workspace access is not ready", async () => {
+    const server = startServer({
+      port: 0,
+      hostname: "127.0.0.1",
+      webhooks: false,
+      workspaceAccess: new Promise(() => {}),
+    });
+    const base = `http://${server.hostname}:${server.port}`;
+    const get = (path: string, method = "GET") =>
+      fetch(`${base}${path}`, { method, redirect: "manual" });
+    try {
+      const root = await get("/?onboarding=failed");
+      expect(root.status).toBe(307);
+      expect(root.headers.get("location")).toBe("/dashboard/?onboarding=failed");
+      const page = await get("/dashboard/issues/PAS-1");
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain('<base href="/dashboard/"');
+      const old = await get("/status/issues/PAS-1?x=1");
+      expect(old.status).toBe(307);
+      expect(old.headers.get("location")).toBe("/dashboard/issues/PAS-1?x=1");
+      expect((await get("/status/issues/PAS-1", "POST")).status).toBe(405);
+      expect((await get("/api/status")).status).toBe(503);
+      expect((await get("/statuses")).status).toBe(503);
     } finally {
       server.stop(true);
     }

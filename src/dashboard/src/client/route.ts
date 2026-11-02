@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { hasStatusSlice, type StatusSlice, type StatusSnapshot } from "../contract";
 import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
+import { DASHBOARD_PATH, isDashboardPath } from "../../../dashboard-links";
 
 export type Route =
   | { view: "overview" }
@@ -13,10 +14,8 @@ export type Route =
   | { view: "questions"; id: string | null }
   | { view: "settings"; page?: SettingsPage };
 
-const ENGINE_BASE = "/status";
-
 export function routerBase(pathname: string): string {
-  return pathname === ENGINE_BASE || pathname.startsWith(`${ENGINE_BASE}/`) ? ENGINE_BASE : "";
+  return isDashboardPath(pathname) ? DASHBOARD_PATH : "";
 }
 
 export function parseRoute(path: string, snapshot?: StatusSnapshot | null): Route {

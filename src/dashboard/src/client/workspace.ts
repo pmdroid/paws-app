@@ -7,6 +7,7 @@ import { initializeWorkspaceAudit } from "./workspace-audit";
 import { initializeWorkspaceGitHub } from "./workspace-github";
 import { initializeWorkspaceAttribution } from "./workspace-attribution";
 import { routeHref } from "./route";
+import { DASHBOARD_PATH } from "../../../dashboard-links";
 import { clearSettingsLoads, loadWhenShown, settingsPageShown } from "./settings-loads";
 
 type BrowserSession = {
@@ -23,7 +24,7 @@ const SIGN_IN_RETURN = "paws.signInReturn";
 function rememberSignInReturn(): void {
   const path = `${location.pathname}${location.search}${location.hash}`;
   try {
-    if (location.pathname.replace(/\/+$/, "") === "/status" || location.pathname === "/")
+    if (location.pathname.replace(/\/+$/, "") === DASHBOARD_PATH || location.pathname === "/")
       sessionStorage.removeItem(SIGN_IN_RETURN);
     else sessionStorage.setItem(SIGN_IN_RETURN, path);
   } catch (caughtError1) {
@@ -99,7 +100,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
     setLoginLayout(true);
     const content = document.querySelector("#page-content");
     rememberSignInReturn();
-    const evidence = /^(?:\/status)?\/evidence\/[^/]+\/?$/.test(location.pathname);
+    const evidence = /^(?:\/dashboard)?\/evidence\/[^/]+\/?$/.test(location.pathname);
     const heading = reconnect
       ? "Reconnect Linear"
       : onboarding

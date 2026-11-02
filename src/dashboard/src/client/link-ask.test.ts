@@ -10,7 +10,7 @@ function withLinkAsk(): FullStatus {
     head: "7f65200aa1",
     title: "Closeout needs your decision on 7f65200.",
     detail: "independent-review failed (P1, docs/smoke-test.md). 7 other checks passed.",
-    link: "https://paws.example/status/issues/ENG-103#closeout",
+    link: "https://paws.example/dashboard/issues/ENG-103#closeout",
   };
   return snapshot;
 }
@@ -116,7 +116,7 @@ function withRounds() {
     title: "Review rounds ran out on 4b317d5.",
     detail:
       'The independent review failed 4 rounds and 2 findings are still open. The class of bug that keeps coming back is "unchecked null" (1 of 2 open findings). Rethink the approach, keep going, or stop.',
-    link: "https://paws.example/status/issues/ENG-103#review-rounds",
+    link: "https://paws.example/dashboard/issues/ENG-103#review-rounds",
     rounds: {
       rounds: [
         { head: "1111111aaa", findings: 3 },
@@ -140,7 +140,7 @@ function withRisk() {
     head: "7f65200aa1",
     title: "High-risk changes in 7f65200 need your approval.",
     detail: "High-risk paths changed: `src/auth/session.ts`.",
-    link: "https://paws.example/status/issues/ENG-103#risk",
+    link: "https://paws.example/dashboard/issues/ENG-103#risk",
     risk: {
       paths: ["src/auth/session.ts"],
       summary: "Closeout accepted 7f65200: 8 checks passed.",
@@ -237,7 +237,7 @@ function withRule(): FullStatus {
     title: "A rule broke on 7f65200 and needs your decision.",
     detail:
       "Rule api-contract broke: No removed field or route. Finding: probe exited 1; P1 finding.",
-    link: "https://paws.example/status/issues/ENG-103#rule",
+    link: "https://paws.example/dashboard/issues/ENG-103#rule",
     bypass: {
       policyDigest: "sha256:0eadf4c1234",
       passed: ["lint"],
