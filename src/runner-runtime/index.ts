@@ -305,6 +305,7 @@ export async function openRunnerRuntime(options: {
   const historical = [
     ...restored.filter((execution) => journal.resultPending(execution.id)),
     ...journal.unconfirmedTerminations(),
+    ...journal.unreadableExecutions(),
   ];
   const resumed: Execution[] = [];
   const recovering: { execution: Execution; refused: boolean }[] = [];
