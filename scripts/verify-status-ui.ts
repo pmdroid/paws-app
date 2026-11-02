@@ -1,4 +1,4 @@
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { questionReaders, statusFixture } from "../src/dashboard/test/fixtures";
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -45,7 +45,7 @@ const server = Bun.serve({
     }
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: { snapshot: () => snapshot, ...questionReaders(snapshot) },
         csrfToken: "ui-fixture",
       })) ?? new Response(null, { status: 404 })
     );
