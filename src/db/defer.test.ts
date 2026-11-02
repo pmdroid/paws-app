@@ -128,3 +128,33 @@ test("deferring verification without a recorded candidate falls back to a resume
   expect(getWorkItem(db, "item-1")?.state).toBe("recovering");
   expect(listJobs(db).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
 });
+
+test("a Closeout fault re-verifies the same version once per faulted job and carries the faults", () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
+  beginImplementRun(db, "item-1", 1_000);
+  applyWorkItemEvent(db, "item-1", "turn_ended");
+  saveCheckpoint(db, "item-1", { phase: "verifying", baseSha: "base", wipCommit: "head" });
+  const fault = (jobId: number, reasons: string[], now: number) =>
+    deferWorkItem(db, getWorkItem(db, "item-1")!, {
+      retry: reasons.length,
+      delayMs: 60_000,
+      handoff: null,
+      message: `Closeout stopped without a result; retry ${reasons.length}.`,
+      now,
+      closeoutFault: { head: "head", reasons, jobId },
+    });
+  fault(7, ["lost"], 2_000);
+  fault(7, ["lost"], 2_500);
+  fault(8, ["lost", "lost again"], 3_000);
+  expect(getWorkItem(db, "item-1")?.state).toBe("verifying");
+  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toMatchObject([
+    { runAt: 62_000, payload: { reason: "closeout_fault", closeoutFaults: { reasons: ["lost"] } } },
+    {
+      runAt: 63_000,
+      payload: { closeoutFaults: { head: "head", reasons: ["lost", "lost again"] } },
+    },
+  ]);
+  expect(listOutbox(db)).toHaveLength(2);
+});

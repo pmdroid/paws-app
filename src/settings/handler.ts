@@ -12,9 +12,11 @@ import {
   readQueueSettings,
   storedMerge,
   writeAgentSettings,
+  type ImplementerName,
   type QueueSettings,
   type StoredMerge,
 } from "../config";
+import { reviewerRunnerWarnings, type RunnerReadiness } from "./reviewer-runners";
 
 export type AgentSettingsOptions = {
   trustedOrigin?: string;
@@ -25,6 +27,7 @@ export type AgentSettingsOptions = {
   applyToWaiting?: () => number;
   /** Records a changed workspace setting in the audit history. */
   audit?: (action: string, subject: string) => void;
+  runnerReadiness?: (agent: ImplementerName) => RunnerReadiness[];
 };
 
 const SETTINGS_PATH = "/api/settings/agents";
@@ -147,11 +150,19 @@ export async function handleAgentSettingsRequest(
       "settings.queue-owner-cap",
       `Running tasks per owner ${capBefore ?? "no cap"} → ${queue.maxRunningPerOwner ?? "no cap"}`,
     );
+  let warnings: string[] = [];
+  try {
+    if (options.runnerReadiness)
+      warnings = reviewerRunnerWarnings(settings, options.runnerReadiness);
+  } catch (caughtError5) {
+    journalCaught(caughtError5, "handler.handleAgentSettingsRequest.runnerReadiness", null);
+  }
   return json({
     ...settings,
     merge: { ciFixAttempts: saved },
     queue: savedQueue,
     ...(applyToWaiting ? { waitingRuns } : {}),
+    ...(warnings.length ? { warnings } : {}),
   });
 }
 

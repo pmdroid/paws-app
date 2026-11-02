@@ -781,6 +781,7 @@ export function deferWorkItem(
     message: string | null;
     now: number;
     capacityWait?: RunnerCapacityWaitState;
+    closeoutFault?: CloseoutFaults & { jobId: number };
   },
 ): void {
   immediate(db, () => {
@@ -798,7 +799,23 @@ export function deferWorkItem(
         markRun(db, run.id, "lost", input.now);
     }
     const capacityWait = input.capacityWait ? { capacityWait: input.capacityWait } : {};
-    if (reverify)
+    const fault = input.closeoutFault;
+    if (reverify && fault)
+      enqueueJobOnce(db, {
+        queue: JOB_KIND.reverify,
+        jobKey: `reverify:closeout-fault:${item.id}:${fault.jobId}`,
+        runAt: input.now + input.delayMs,
+        payload: {
+          itemId: item.id,
+          runId: current.currentRunId,
+          reason: "closeout_fault",
+          recheckHead: true,
+          failClosed: true,
+          closeoutFaults: { head: fault.head, reasons: fault.reasons },
+        },
+        now: input.now,
+      });
+    else if (reverify)
       enqueueJobOnce(db, {
         queue: JOB_KIND.reverify,
         jobKey: `reverify:retry:${item.id}:${current.version}:${input.retry}`,
@@ -836,12 +853,16 @@ export function deferWorkItem(
         target: OUTBOX_ACTIVITY.target,
         op: OUTBOX_ACTIVITY.op,
         orderingKey: item.sessionKey ?? item.id,
-        idempotencyKey: `retry:${item.id}:${current.version}`,
+        idempotencyKey: fault
+          ? `closeout-fault:${item.id}:${fault.jobId}`
+          : `retry:${item.id}:${current.version}`,
         payload: { sessionId: item.sessionKey ?? item.id, kind: "thought", body: input.message },
         now: input.now,
       });
   });
 }
+
+export type CloseoutFaults = { head: string; reasons: readonly string[] };
 
 export type RunnerCapacityWaitState = {
   since: number;

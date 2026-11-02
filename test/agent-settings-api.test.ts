@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../src/settings";
+import {
+  activeRunnerReadiness,
+  handleAgentSettingsRequest,
+  type AgentSettingsOptions,
+} from "../src/settings";
+import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
+import { workspaceId } from "../src/workspace";
 import { loadConfigFile, readAgentSettings, type AgentSettings } from "../src/config";
 import { startServer } from "../src/server";
 import { tempHome } from "./helpers";
@@ -365,5 +371,124 @@ describe("local agent settings API", () => {
     } finally {
       server.stop(true);
     }
+  });
+});
+
+describe("reviewer profile validation", () => {
+  const put = (body: unknown, options: AgentSettingsOptions) =>
+    handleAgentSettingsRequest(request(undefined, "PUT", body), options);
+
+  test("refuses a reviewer with the implementer's agent and model and keeps the file", async () => {
+    const { options } = fixture();
+    writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
+    const same = {
+      defaults: {
+        implementer: { agent: "claude", model: "opus" },
+        reviewer: { agent: "claude", model: "opus" },
+      },
+      projects: [],
+    };
+    const response = await put(same, options);
+    expect(response?.status).toBe(400);
+    expect(await response!.json()).toEqual({
+      error: "Implementer and reviewer must use different agents or different models",
+    });
+    const project = await put(
+      {
+        ...settings,
+        projects: [{ repo: "pmdroid/barkvisor", reviewer: settings.defaults.implementer }],
+      },
+      options,
+    );
+    expect(project?.status).toBe(400);
+    expect(readFileSync(options.configPath, "utf8")).toBe("[caps]\nmax_turns = 31\n");
+  });
+
+  test("saves a reviewer that no active runner has signed in, with a warning naming the runners", async () => {
+    const { options } = fixture();
+    const asked: string[] = [];
+    options.runnerReadiness = (agent) => {
+      asked.push(agent);
+      return agent === "claude"
+        ? [{ name: "studio", ready: true }]
+        : [
+            { name: "laptop", ready: false },
+            { name: "studio", ready: false },
+          ];
+    };
+    const response = await put(settings, options);
+    expect(response?.status).toBe(200);
+    expect(((await response!.json()) as { warnings: unknown }).warnings).toEqual([
+      "No active runner has codex signed in and ready to review: laptop, studio.",
+    ]);
+    expect(asked.sort()).toEqual(["claude", "codex"]);
+    expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
+
+    options.runnerReadiness = () => [];
+    expect(
+      ((await (await put(settings, options))!.json()) as { warnings: unknown }).warnings,
+    ).toEqual([
+      "No active runner can review with codex yet: there is no active runner.",
+      "No active runner can review with claude yet: there is no active runner.",
+    ]);
+  });
+
+  test("a valid reviewer that a runner has ready saves without warnings", async () => {
+    const { options } = fixture();
+    options.runnerReadiness = () => [{ name: "studio", ready: true }];
+    const response = await put(settings, options);
+    expect(response?.status).toBe(200);
+    expect(await response!.json()).toEqual({
+      ...settings,
+      merge: { ciFixAttempts: 3 },
+      queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
+    });
+  });
+
+  test("runner readiness counts only active runners with the agent ready and signed in", () => {
+    const db = openDatabase(join(tempHome(), "paws.db"));
+    migrate(db);
+    const now = Date.now();
+    const userId = putWorkspaceUser(db, {
+      id: workspaceId(),
+      linearUserId: "reviewer-owner",
+      name: "Owner",
+      email: "owner@example.invalid",
+    });
+    const workspace = workspaceId();
+    db.run("INSERT INTO workspace VALUES(?,?,?,?)", [workspace, workspace, "Review", now]);
+    syncWorkspaceMember(db, {
+      workspaceId: workspace,
+      userId,
+      role: "admin",
+      active: true,
+      teamIds: [],
+      now,
+    });
+    const runner = (name: string, status: string) => {
+      const id = workspaceId();
+      db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,?,?)",
+        [id, workspace, userId, name, status, now],
+      );
+      return id;
+    };
+    const ready = runner("ready", "active");
+    const expired = runner("expired", "active");
+    runner("blank", "active");
+    const paused = runner("paused", "paused");
+    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [ready]);
+    db.run(
+      "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'codex',1,1)",
+      [expired],
+    );
+    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [paused]);
+    expect(activeRunnerReadiness(db, "codex")).toEqual([
+      { name: "blank", ready: false },
+      { name: "expired", ready: false },
+      { name: "ready", ready: true },
+    ]);
+    expect(activeRunnerReadiness(db, "claude").every((entry) => !entry.ready)).toBe(true);
+    db.close();
   });
 });
