@@ -232,28 +232,24 @@ export function openExecutionJournal(root: string) {
         .query<
           {
             executionId: string;
-            payload: string;
             phase: string;
             since: number;
             failures: number;
             failure: string | null;
             failedAt: number | null;
+            runId: string;
+            generation: number;
+            commandId: string;
           },
           []
         >(
-          `SELECT c.execution_id AS executionId,e.payload,e.phase,c.started_at AS since,c.failures,
-          c.failure,c.failed_at AS failedAt FROM cleanup c JOIN execution e ON e.id=c.execution_id ORDER BY c.rowid`,
+          // Read only the identifiers, so an execution an older release journaled still lists.
+          `SELECT c.execution_id AS executionId,e.phase,c.started_at AS since,c.failures,c.failure,
+          c.failed_at AS failedAt,json_extract(e.payload,'$.runId') AS runId,
+          json_extract(e.payload,'$.generation') AS generation,e.command_id AS commandId
+          FROM cleanup c JOIN execution e ON e.id=c.execution_id ORDER BY c.rowid`,
         )
-        .all()
-        .map(({ payload, ...row }) => {
-          const { command } = parseExecution({ id: row.executionId, payload, phase: row.phase });
-          return {
-            ...row,
-            runId: command.runId,
-            generation: command.generation,
-            commandId: command.id,
-          };
-        });
+        .all();
     },
     pendingTerminations() {
       return db

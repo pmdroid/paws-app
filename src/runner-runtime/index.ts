@@ -43,7 +43,7 @@ import {
   RunnerResultSchema,
   type RunnerResult,
 } from "../runner-protocol";
-import { openExecutionJournal, type Execution } from "../runner-journal";
+import { openExecutionJournal, type Execution, type TerminalExecution } from "../runner-journal";
 import { openRunnerRuntimeInventory } from "./runtimes";
 export {
   openRunnerAgents,
@@ -401,7 +401,7 @@ export async function openRunnerRuntime(options: {
       wake?.then(done, done);
     });
   }
-  async function confirmStop(execution: Execution) {
+  async function confirmStop(execution: TerminalExecution) {
     journal.cleanupStarted(execution.id, now());
     for (let failures = 0; ; failures++) {
       const call = stopCall(execution.id);
