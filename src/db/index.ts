@@ -387,6 +387,7 @@ export {
   closeoutPolicyDigest,
   closeoutPolicyDigests,
   listCloseoutProgress,
+  listCloseoutProgressStates,
   getCloseoutProgress,
   setRunningCloseoutStepDetail,
   upsertCloseoutStep,
@@ -394,6 +395,7 @@ export {
   type AcceptedCloseoutRun,
   type CloseoutProgressIdentity,
   type CloseoutProgressRecord,
+  type CloseoutProgressState,
   type CloseoutStepRecord,
   type CloseoutStepWrite,
 } from "./closeout-progress";

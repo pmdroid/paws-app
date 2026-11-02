@@ -17,7 +17,11 @@ import {
   saveWorkItemLinearProject,
 } from "../src/db";
 import { elicitationBody, openQuestion } from "../src/questions";
-import { parseStatusSnapshot, statusIntegrity } from "../src/dashboard/src/contract";
+import {
+  parseOverviewResponse,
+  parseStatusSnapshot,
+  statusIntegrity,
+} from "../src/dashboard/src/contract";
 import { render } from "../src/dashboard/src/client/render";
 import { handleStatusRequest } from "../src/dashboard";
 
@@ -245,26 +249,27 @@ test("each task on /api/status carries the Linear requests it made", async () =>
   }
 });
 
-test("an empty live snapshot asks the operator to delegate a Linear issue", async () => {
+test("an empty live overview asks the operator to delegate a Linear issue", async () => {
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/overview"), {
       db,
       env: {},
     });
-    const parsed = parseStatusSnapshot(await response?.json());
+    const parsed = parseOverviewResponse(await response?.json());
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     const view = render({
       route: { view: "overview" },
       phase: "ready",
-      snapshot: parsed.snapshot,
+      snapshot: null,
+      overview: parsed.response,
       error: null,
       engineUrl: "http://127.0.0.1:8787",
     });
-    expect(parsed.snapshot.source).toBe("live");
-    expect(parsed.snapshot.items).toEqual([]);
+    expect(parsed.response.source).toBe("live");
+    expect(parsed.response.issues).toEqual([]);
     expect(view.top).not.toContain("Live");
     expect(view.top).not.toContain("Demo data");
     expect(view.content).toContain("No issues yet. Delegate an issue to Paws in Linear.");

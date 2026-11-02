@@ -16,6 +16,7 @@ import { createLiveStatusProvider, handleStatusRequest } from "../engine";
 /** The budget in `docs/status-payload.md`. */
 const LIST_BUDGET_BYTES = 200 * 1024;
 const DETAIL_BUDGET_BYTES = 1024 * 1024;
+const OVERVIEW_BUDGET_BYTES = 50 * 1024;
 /** What `src/db` keeps of one check stream. */
 const OUTPUT_CAP_BYTES = 64 * 1024;
 
@@ -113,12 +114,18 @@ describe("status payload budget", () => {
     expect(await get("/api/issues")).toBeLessThanOrEqual(LIST_BUDGET_BYTES);
     expect(await get("/api/issues/PAS-2000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
     expect(await get("/api/issues/PAS-1000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
+    const overviewBytes = await get("/api/overview");
+    expect(overviewBytes).toBeLessThanOrEqual(OVERVIEW_BUDGET_BYTES);
+    expect(overviewBytes * 10).toBeLessThan(
+      await get("/api/status?slices=items,questions,mergeQueue,intake"),
+    );
 
     const live = createLiveStatusProvider(db, { env: {} });
     const calls: string[] = [];
     const provider = {
       snapshot: () => live.snapshot(),
       issues: () => (calls.push("issues"), live.issues()),
+      overview: () => (calls.push("overview"), live.overview()),
       checkLog: (request: Parameters<typeof live.checkLog>[0]) => (
         calls.push("checkLog"),
         live.checkLog(request)
@@ -132,5 +139,15 @@ describe("status payload budget", () => {
     expect(calls).toEqual(["issues"]);
     expect(body).not.toMatch(/"stdout"|"stderr"|expected 1 to be 2/);
     expect((JSON.parse(body) as { issues: unknown[] }).issues).toHaveLength(60);
+
+    calls.length = 0;
+    const overview = (await handleStatusRequest(new Request("http://127.0.0.1/api/overview"), {
+      provider,
+      responseSizes: { record() {}, flush() {} },
+    }))!;
+    const overviewBody = await overview.text();
+    expect(calls).toEqual(["overview"]);
+    expect(overviewBody).not.toMatch(/"stdout"|"stderr"|expected 1 to be 2/);
+    expect((JSON.parse(overviewBody) as { issues: unknown[] }).issues).toHaveLength(10);
   });
 });

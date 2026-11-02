@@ -1,12 +1,17 @@
-import type { StatusIntakeEntry, StatusLinearBudget, StatusSnapshot } from "../contract";
+import type { StatusIntakeEntry, StatusLinearBudget, StatusLinearWebhook } from "../contract";
 import { esc, utcClock } from "./format";
 
-export function renderIntake(snapshot: StatusSnapshot): string {
-  const waiting = snapshot.intake ?? [];
-  const budget = snapshot.linearBudget;
-  const webhook = snapshot.linearWebhook;
+export function renderIntake(data: {
+  generatedAt: string;
+  intake?: StatusIntakeEntry[];
+  linearBudget?: StatusLinearBudget | null;
+  linearWebhook?: StatusLinearWebhook | null;
+}): string {
+  const waiting = data.intake ?? [];
+  const budget = data.linearBudget;
+  const webhook = data.linearWebhook;
   if (!waiting.length && !budget && !webhook) return "";
-  const now = Date.parse(snapshot.generatedAt);
+  const now = Date.parse(data.generatedAt);
   const holdUntil =
     budget?.holdUntil && Date.parse(budget.holdUntil) > now ? budget.holdUntil : null;
   return `<section class="overview-section" aria-labelledby="intake-heading"><h2 id="intake-heading">Intake</h2>

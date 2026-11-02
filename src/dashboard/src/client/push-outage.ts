@@ -1,9 +1,9 @@
-import type { StatusPushOutage, StatusSnapshot } from "../contract";
+import type { StatusPushOutage } from "../contract";
 import { esc, safeHref, utcClock } from "./format";
 
 /** One banner per repository GitHub refuses pushes from the Paws App for. */
-export function renderPushOutages(snapshot: StatusSnapshot): string {
-  return (snapshot.pushOutages ?? []).map(banner).join("");
+export function renderPushOutages(data: { pushOutages?: readonly StatusPushOutage[] }): string {
+  return (data.pushOutages ?? []).map(banner).join("");
 }
 
 function banner(outage: StatusPushOutage): string {

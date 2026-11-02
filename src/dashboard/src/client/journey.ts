@@ -1,4 +1,9 @@
-import type { StatusItem, StatusItemEvent, StatusRun } from "../contract";
+import type { StatusItem, StatusItemEvent, StatusRun, StatusVisualReview } from "../contract";
+
+type JourneyItem = Pick<StatusItem, "state" | "timeline" | "doing" | "mergeQueue"> & {
+  visualReviews?: readonly Pick<StatusVisualReview, "round" | "state">[];
+};
+type JourneyRun = Pick<StatusRun, "usagePause">;
 import { doingLabel } from "./doing";
 import { esc, statePill, utcClock } from "./format";
 
@@ -74,7 +79,7 @@ function lastIndex(events: readonly StatusItemEvent[], match: (event: StatusItem
   return -1;
 }
 
-function currentFix(item: StatusItem): string | null {
+function currentFix(item: Pick<StatusItem, "timeline">): string | null {
   const events = item.timeline ?? [];
   const restart = lastIndex(events, (event) => event.kind === "restart");
   if (restart < 0) return null;
@@ -83,20 +88,20 @@ function currentFix(item: StatusItem): string | null {
   return restart > turnEnded && FIXES[reason] ? reason : null;
 }
 
-function fixRounds(item: StatusItem): number {
+function fixRounds(item: Pick<StatusItem, "timeline">): number {
   return (item.timeline ?? []).filter(
     (event) => event.kind === "restart" && FIXES[event.reason ?? ""] !== undefined,
   ).length;
 }
 
-function lastFrom(item: StatusItem): JourneyStepId {
+function lastFrom(item: Pick<StatusItem, "timeline">): JourneyStepId {
   const last = item.timeline?.at(-1);
   return (last && FROM_STEP[last.from]) ?? "implementing";
 }
 
 function journeyBase(
-  item: StatusItem,
-  run: StatusRun | undefined,
+  item: JourneyItem,
+  run: JourneyRun | undefined,
   verdict: { attempt?: number; maxAttempts?: number; decision?: string } | undefined,
 ): Omit<Journey, "pill" | "review"> {
   const fix = currentFix(item);
@@ -228,8 +233,8 @@ function journeyBase(
 }
 
 export function journey(
-  item: StatusItem,
-  run: StatusRun | undefined,
+  item: JourneyItem,
+  run: JourneyRun | undefined,
   verdict: { attempt?: number; maxAttempts?: number; decision?: string } | undefined,
 ): Journey {
   const value = journeyBase(item, run, verdict);
@@ -251,7 +256,7 @@ export function journey(
 
 function pillFor(
   value: Omit<Journey, "pill" | "review">,
-  run: StatusRun | undefined,
+  run: JourneyRun | undefined,
 ): [string, string] {
   if (run?.usagePause) return ["running usage-limit", "Paused · usage limit"];
   if (value.tone === "needs") return ["awaiting_input", value.headline];

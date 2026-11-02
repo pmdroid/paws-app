@@ -81,7 +81,7 @@ export function routeHref(route: Route): string {
 }
 
 export const ROUTE_SLICES: Record<Route["view"], readonly StatusSlice[]> = {
-  overview: ["items", "questions", "mergeQueue", "intake"],
+  overview: [],
   issues: ["items"],
   runs: ["items"],
   mergeQueue: ["items", "mergeQueue", "mergeHistory"],
@@ -103,6 +103,10 @@ export function routeCovered(route: Route, snapshot: StatusSnapshot | null): boo
 
 export function needsSnapshot(route: Route): boolean {
   return routeSlices(route).length > 0;
+}
+
+export function loadsPage(route: Route): boolean {
+  return route.view === "overview" || needsSnapshot(route);
 }
 
 const FOLDED = new Set(["runs", "sessions", "verdicts"]);

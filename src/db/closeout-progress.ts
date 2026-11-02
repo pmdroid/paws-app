@@ -493,6 +493,29 @@ export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
   );
 }
 
+export type CloseoutProgressState = Pick<
+  CloseoutProgressRecord,
+  "id" | "itemId" | "head" | "policyDigest" | "decision" | "updatedAt" | "finishedAt"
+> & { steps: Pick<CloseoutStepRecord, "state">[] };
+
+export function listCloseoutProgressStates(db: Database): CloseoutProgressState[] {
+  const runs = db
+    .query<Omit<CloseoutProgressState, "steps">, []>(
+      `SELECT id, item_id AS itemId, head, policy_digest AS policyDigest, decision,
+         updated_at AS updatedAt, finished_at AS finishedAt
+       FROM closeout_progress ORDER BY updated_at, id`,
+    )
+    .all();
+  const steps = new Map<string, Pick<CloseoutStepRecord, "state">[]>();
+  for (const step of db
+    .query<{ progressId: string; state: CloseoutStepRecord["state"] }, []>(
+      "SELECT progress_id AS progressId, state FROM closeout_step ORDER BY ordinal, step_id",
+    )
+    .all())
+    steps.set(step.progressId, [...(steps.get(step.progressId) ?? []), { state: step.state }]);
+  return runs.map((run) => ({ ...run, steps: steps.get(run.id) ?? [] }));
+}
+
 function progressRecord(run: ProgressSql, steps: StepSql[]): CloseoutProgressRecord {
   return {
     id: run.id,

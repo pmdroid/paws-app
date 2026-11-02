@@ -2,7 +2,9 @@
 import {
   STATUS_API_VERSION,
   agentCloseoutSummary,
+  parseOverviewResponse,
   verdictSummary,
+  type OverviewResponse,
   type StatusAgentCloseout,
   type StatusCheck,
   type StatusItemDetail,
@@ -699,7 +701,12 @@ export function withRuleResults(full: FullStatus): FullStatus {
 export function pageData(
   full: FullStatus,
   route: Route,
-): { route: Route; snapshot: StatusSnapshot; detail: StatusItemDetail | null } {
+): {
+  route: Route;
+  snapshot: StatusSnapshot;
+  detail: StatusItemDetail | null;
+  overview: OverviewResponse;
+} {
   const issue =
     route.view === "runs" && route.id !== null
       ? full.runs.find((run) => run.id === route.id || run.attempts?.includes(route.id!))?.itemId
@@ -712,7 +719,43 @@ export function pageData(
     route: shown,
     snapshot: statusList(full),
     detail: known ? itemDetail(full, issue) : null,
+    overview: overviewOf(statusList(full)),
   };
+}
+
+/** What `GET /api/overview` carries of the list `snapshot`, through the response parser. */
+export function overviewOf(snapshot: StatusSnapshot): OverviewResponse {
+  const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
+  const parsed = parseOverviewResponse(
+    JSON.parse(
+      JSON.stringify({
+        source: snapshot.source,
+        generatedAt: snapshot.generatedAt,
+        issues: snapshot.items.map((issue) => {
+          const run = issue.runId ? runs.get(issue.runId) : undefined;
+          const verdict = snapshot.verdicts.find((entry) => entry.itemId === issue.id);
+          return {
+            ...issue,
+            run: run ? { state: run.state, usagePause: run.usagePause } : null,
+            verdict: verdict ? { decision: verdict.decision } : null,
+          };
+        }),
+        questions: snapshot.questions.map((question) => ({
+          ...question,
+          linkAsk: question.linkAsk ?? null,
+        })),
+        mergedTimes: snapshot.mergedTimes ?? null,
+        intake: snapshot.intake ?? [],
+        linearBudget: snapshot.linearBudget ?? null,
+        linearWebhook: snapshot.linearWebhook ?? null,
+        pushOutages: snapshot.pushOutages ?? [],
+        policyRunnerWarnings: snapshot.policyRunnerWarnings ?? [],
+        mergeQueueCount: snapshot.mergeQueue.length,
+      }),
+    ),
+  );
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.response;
 }
 
 /** A status provider over `full`: the list, each issue's detail for its page, and check logs. */

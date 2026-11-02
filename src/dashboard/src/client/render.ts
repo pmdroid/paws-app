@@ -1,5 +1,7 @@
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
+  OverviewIssue,
+  OverviewResponse,
   StatusItem,
   StatusItemDetail,
   StatusItemEvent,
@@ -10,7 +12,6 @@ import type {
   StatusSnapshot,
   StatusUsagePause,
   StatusVerdict,
-  StatusVerdictSummary,
 } from "../contract";
 import {
   agentChip,
@@ -30,7 +31,7 @@ import {
   statePill,
   utcClock,
 } from "./format";
-import { needsSnapshot, routeHref, type Route } from "./route";
+import { loadsPage, routeHref, type Route } from "./route";
 import { parseEngineUrl } from "./format";
 import {
   emptyCloseoutView,
@@ -63,6 +64,7 @@ export interface RenderModel {
   snapshot: StatusSnapshot | null;
   /** The open issue page's own data from `GET /api/status/items/<id>`. It renders that page alone. */
   detail?: StatusItemDetail | null;
+  overview?: OverviewResponse | null;
   error: string | null;
   engineUrl: string | null;
   closeout?: CloseoutView;
@@ -99,16 +101,20 @@ export function render(model: RenderModel): Rendered {
           ? FINDINGS_ROOT
           : model.route.view === "settings"
             ? renderSettingsPage(model.route.page)
-            : model.phase !== "loading" && openDetail(model)
-              ? issuePage(
-                  model.detail!,
-                  model.detail!.id,
-                  model.closeout ?? emptyCloseoutView(),
-                  model.engineUrl,
-                )
-              : snapshot && model.phase !== "loading"
-                ? renderView(snapshot, model)
-                : renderPending(model),
+            : model.route.view === "overview"
+              ? model.overview
+                ? viewOverview(model.overview)
+                : renderPending(model)
+              : model.phase !== "loading" && openDetail(model)
+                ? issuePage(
+                    model.detail!,
+                    model.detail!.id,
+                    model.closeout ?? emptyCloseoutView(),
+                    model.engineUrl,
+                  )
+                : snapshot && model.phase !== "loading"
+                  ? renderView(snapshot, model)
+                  : renderPending(model),
     title,
   };
 }
@@ -125,8 +131,9 @@ function renderTop(_model: RenderModel): string {
 }
 
 function renderBanner(model: RenderModel): string {
-  if (model.phase === "error" && needsSnapshot(model.route)) {
-    return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${model.snapshot ? " Showing the last snapshot." : ""}</span></div>`;
+  if (model.phase === "error" && loadsPage(model.route)) {
+    const shown = model.route.view === "overview" ? model.overview : model.snapshot;
+    return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${shown ? " Showing the last snapshot." : ""}</span></div>`;
   }
   return "";
 }
@@ -141,7 +148,7 @@ function renderPending(model: RenderModel): string {
 function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
   switch (model.route.view) {
     case "overview":
-      return viewOverview(snapshot);
+      return renderPending(model);
     case "issues":
       return viewIssues(snapshot, model.route.id);
     case "runs":
@@ -176,10 +183,10 @@ type NeedsYou = {
   primary?: boolean;
 };
 
-function needsYou(snapshot: StatusSnapshot, runs: ReadonlyMap<string, StatusRun>): NeedsYou[] {
-  const attention = snapshot.items.flatMap((item): NeedsYou[] => {
-    const run = item.runId ? runs.get(item.runId) : undefined;
-    const question = snapshot.questions.find((entry) => entry.itemId === item.id);
+function needsYou(overview: OverviewResponse): NeedsYou[] {
+  const attention = overview.issues.flatMap((item): NeedsYou[] => {
+    const run = item.run;
+    const question = overview.questions.find((entry) => entry.itemId === item.id);
     if (question?.linkAsk)
       return [
         {
@@ -203,7 +210,7 @@ function needsYou(snapshot: StatusSnapshot, runs: ReadonlyMap<string, StatusRun>
       ];
     if (DONE_STATES.includes(item.state)) return [];
     const stopped = item.state === "awaiting_input" || item.state === "needs_human";
-    const verdict = stopped ? itemVerdict(snapshot, item.id) : undefined;
+    const verdict = stopped ? item.verdict : null;
     const reason =
       verdict?.decision === "exhausted"
         ? "Automatic retries are used up."
@@ -226,8 +233,8 @@ function needsYou(snapshot: StatusSnapshot, runs: ReadonlyMap<string, StatusRun>
         ]
       : [];
   });
-  for (const question of snapshot.questions) {
-    if (snapshot.items.some((item) => item.id === question.itemId)) continue;
+  for (const question of overview.questions) {
+    if (overview.issues.some((item) => item.id === question.itemId)) continue;
     attention.push({
       itemId: question.itemId,
       title: question.title,
@@ -242,24 +249,19 @@ function needsYou(snapshot: StatusSnapshot, runs: ReadonlyMap<string, StatusRun>
 const DONE_STATES: readonly string[] = ["merged", "completed", "stopped"];
 const RECENTLY_MERGED = 5;
 
-function viewOverview(snapshot: StatusSnapshot): string {
-  const warnings = `${renderPushOutages(snapshot)}${renderPolicyRunnerWarnings(snapshot)}`;
-  const intake = renderIntake(snapshot);
-  if (!snapshot.items.length && !snapshot.questions.length)
+function viewOverview(overview: OverviewResponse): string {
+  const warnings = `${renderPushOutages(overview)}${renderPolicyRunnerWarnings(overview)}`;
+  const intake = renderIntake(overview);
+  if (!overview.issues.length && !overview.questions.length)
     return `${pageHeading("overview")}${warnings}${intake}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
-  const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
-  const attention = needsYou(snapshot, runs);
+  const attention = needsYou(overview);
   const asked = new Set(attention.map((entry) => entry.itemId));
-  const now = Date.parse(snapshot.generatedAt);
-  const open = snapshot.items
+  const now = Date.parse(overview.generatedAt);
+  const open = overview.issues
     .filter((item) => !asked.has(item.id) && !DONE_STATES.includes(item.state))
     .map((item) => ({
       item,
-      phase: journey(
-        item,
-        item.runId ? runs.get(item.runId) : undefined,
-        itemVerdict(snapshot, item.id),
-      ),
+      phase: journey(item, item.run ?? undefined, item.verdict ?? undefined),
     }));
   const queued = open.filter((entry) => entry.phase.step === "queued");
   const active = open
@@ -268,7 +270,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
       (left, right) =>
         JOURNEY_ORDER.indexOf(left.phase.step) - JOURNEY_ORDER.indexOf(right.phase.step),
     );
-  const merged = snapshot.items
+  const merged = overview.issues
     .filter((item) => item.state === "merged")
     .map((item) => ({ item, at: mergedAt(item) }))
     .sort((left, right) => right.at.localeCompare(left.at))
@@ -277,7 +279,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
   return `${pageHeading("overview")}${warnings}
     <div class="overview-grid"><div class="overview-column">
     <section class="overview-section" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs you${count(attention.length)}</h2>
-      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row" data-item="${esc(entry.itemId)}"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p>${ageOf(snapshot, entry.itemId)}</div><a class="btn${entry.primary ? " primary" : ""}" href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
+      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row" data-item="${esc(entry.itemId)}"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p>${ageOf(overview, entry.itemId)}</div><a class="btn${entry.primary ? " primary" : ""}" href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
     </section>
     <section class="overview-section" aria-labelledby="work-heading"><div class="between"><h2 id="work-heading">In progress${count(active.length)}</h2><a href="${routeHref({ view: "issues", id: null })}">All issues</a></div>
       ${
@@ -299,16 +301,16 @@ function viewOverview(snapshot: StatusSnapshot): string {
         ? `<section class="overview-section" aria-labelledby="merged-heading"><h2 id="merged-heading">Recently merged</h2><ul class="overview-work" role="list">${merged
             .map(
               ({ item, at }) =>
-                `<li class="work-row" data-item="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a><p class="work-facts"><span class="muted">${esc([item.pr ? `PR #${item.pr.number}` : "", at ? `merged ${ago(at, snapshot.generatedAt)}` : ""].filter(Boolean).join(" · "))}</span></p></li>`,
+                `<li class="work-row" data-item="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a><p class="work-facts"><span class="muted">${esc([item.pr ? `PR #${item.pr.number}` : "", at ? `merged ${ago(at, overview.generatedAt)}` : ""].filter(Boolean).join(" · "))}</span></p></li>`,
             )
             .join("")}</ul></section>`
         : ""
     }
-    ${mergedTimesSection(snapshot.mergedTimes)}
+    ${mergedTimesSection(overview.mergedTimes ?? undefined)}
     </div></div>`;
 }
 
-function workRow(item: StatusItem, reason: string, pill: string, now: number): string {
+function workRow(item: OverviewIssue, reason: string, pill: string, now: number): string {
   const runners = item.doing?.runners.join(", ") ?? "";
   const facts = [
     item.doing?.stalled ? "No live work for 30 min" : "",
@@ -318,18 +320,18 @@ function workRow(item: StatusItem, reason: string, pill: string, now: number): s
   return `<li class="work-row" data-item="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${pill}<p class="work-facts"><span>${esc(reason)}</span>${facts.length ? `<span class="muted" data-item-time>${esc(facts.join(" · "))}</span>` : ""}</p></li>`;
 }
 
-function waitingFor(item: StatusItem): string | null {
+function waitingFor(item: OverviewIssue): string | null {
   if (item.queue && !item.held && !item.blockers.length) return queueLine(item.queue);
   return waitReason(item);
 }
 
-function mergedAt(item: StatusItem): string {
+function mergedAt(item: OverviewIssue): string {
   const merge = [...(item.timeline ?? [])].reverse().find((event) => event.to === "merged");
   return merge?.at ?? item.stateTimes?.until ?? "";
 }
 
-function ageOf(snapshot: StatusSnapshot, itemId: string): string {
-  const item = findItem(snapshot, itemId);
+function ageOf(overview: OverviewResponse, itemId: string): string {
+  const item = overview.issues.find((entry) => entry.id === itemId);
   return item ? itemAge(item) : "";
 }
 
@@ -943,10 +945,6 @@ function questionCard(
       ${options ? `<div class="opts">${options}</div>` : ""}
       <div class="row">${question.links.length ? linkList(question.links) : '<span class="dim">Answer in the source conversation to continue.</span>'}</div>
     </div></article>`;
-}
-
-function itemVerdict(snapshot: StatusSnapshot, itemId: string): StatusVerdictSummary | undefined {
-  return snapshot.verdicts.find((entry) => entry.itemId === itemId);
 }
 
 function itemLink(item: StatusItem | undefined): string {

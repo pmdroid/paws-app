@@ -75,7 +75,7 @@ export function biggestWait(times: StatusStateTimes): StatusStateTime | null {
 }
 
 /** An open item's age and its biggest waiting state, such as "3 h 10 min · 2 h recovering". */
-export function itemAgeLine(item: StatusItem): string | null {
+export function itemAgeLine(item: Pick<StatusItem, "stateTimes">): string | null {
   const times = item.stateTimes;
   if (!times || times.current === null) return null;
   const wait = biggestWait(times);
@@ -85,7 +85,7 @@ export function itemAgeLine(item: StatusItem): string | null {
   ].join(" · ");
 }
 
-export function itemAge(item: StatusItem): string {
+export function itemAge(item: Pick<StatusItem, "stateTimes">): string {
   const line = itemAgeLine(item);
   return line ? `<span class="muted item-age" data-item-age>${esc(line)}</span>` : "";
 }

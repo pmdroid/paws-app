@@ -1,4 +1,4 @@
-import { statusFixture } from "../../test/fixtures";
+import { overviewOf, statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseStatusSnapshot, type StatusIntakeEntry, type StatusSnapshot } from "../contract";
@@ -58,6 +58,7 @@ function overview(snapshot: StatusSnapshot): string {
     route: { view: "overview" },
     phase: "ready",
     snapshot,
+    overview: overviewOf(snapshot),
     error: null,
     engineUrl: null,
   }).content;

@@ -1,9 +1,11 @@
-import type { StatusPolicyRunnerWarning, StatusSnapshot } from "../contract";
+import type { StatusPolicyRunnerWarning } from "../contract";
 import { esc } from "./format";
 
 /** One banner per repository whose Closeout policy uses keys the lowest online runner lacks. */
-export function renderPolicyRunnerWarnings(snapshot: StatusSnapshot): string {
-  return (snapshot.policyRunnerWarnings ?? []).map(banner).join("");
+export function renderPolicyRunnerWarnings(data: {
+  policyRunnerWarnings?: readonly StatusPolicyRunnerWarning[];
+}): string {
+  return (data.policyRunnerWarnings ?? []).map(banner).join("");
 }
 
 function banner(warning: StatusPolicyRunnerWarning): string {
