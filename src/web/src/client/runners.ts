@@ -62,6 +62,7 @@ export type Runner = {
   runtimes?: RunnerRuntime[];
   /** Coding agent versions the runner reports; older Paws releases do not list them. */
   codingAgents?: RunnerCodingAgent[];
+  repositories?: { admin: string[] | null; host: string[] | null };
 };
 export type RunnerCodingAgent = {
   agent: string;
@@ -957,6 +958,41 @@ export function runnerConcurrencyMarkup(
   return `<form class="row" data-runner-concurrency="${id}"><input class="concurrency-input" name="concurrency" inputmode="numeric" pattern="[0-9]*" maxlength="2" size="3" required aria-label="Slots, from 1 to ${ceiling}" value="${esc(state.draft ?? String(value))}" data-focus="concurrency:${id}"${disabled}><button class="btn" type="submit" data-focus="concurrency:${id}:save"${disabled}>Save</button><span class="muted">${esc(reported)}</span></form>`;
 }
 
+export function runnerRepositoriesMarkup(
+  runner: Runner,
+  state: {
+    manages: boolean;
+    busy: boolean;
+    workspace: readonly string[];
+    draft?: readonly string[] | null;
+  },
+): string {
+  const lists = runner.repositories;
+  if (!lists || runner.status === "revoked") return "";
+  const names = (list: readonly string[]) => (list.length ? list.join(", ") : "none");
+  const shown = `<p>Repositories: ${esc(lists.admin === null ? "All repositories" : names(lists.admin))}</p>${
+    lists.host === null
+      ? ""
+      : `<p class="muted">Host config limits it to: ${esc(names(lists.host))}</p>`
+  }`;
+  if (!state.manages) return shown;
+  const chosen = state.draft === undefined ? lists.admin : state.draft;
+  const picked = new Set((chosen ?? []).map((name) => name.toLowerCase()));
+  const options = new Map<string, string>();
+  for (const name of [...state.workspace, ...(lists.admin ?? [])])
+    if (!options.has(name.toLowerCase())) options.set(name.toLowerCase(), name);
+  const id = esc(runner.id);
+  const disabled = state.busy ? " disabled" : "";
+  const boxes = [...options.values()]
+    .sort((left, right) => left.localeCompare(right))
+    .map(
+      (name) =>
+        `<label class="runner-consent"><input type="checkbox" name="repository" value="${esc(name)}" data-focus="repositories:${id}:${esc(name)}"${picked.has(name.toLowerCase()) ? " checked" : ""}${chosen === null || state.busy ? " disabled" : ""}><span>${esc(name)}</span></label>`,
+    )
+    .join("");
+  return `${shown}<form data-runner-repositories="${id}"><label class="runner-consent"><input type="checkbox" name="all" data-focus="repositories:${id}:all"${chosen === null ? " checked" : ""}${disabled}><span>All repositories</span></label>${boxes}<div class="row"><button class="btn" type="submit" data-focus="repositories:${id}:save"${disabled}>Save</button></div></form>`;
+}
+
 /** "5 s ago", "3 min ago", "2 h ago", or the date for older values. */
 export function updatedLabel(at: number, now: number): string {
   const seconds = Math.floor(Math.max(0, now - at) / 1000);
@@ -1118,6 +1154,8 @@ export function runnerDetailMarkup(
     busy: boolean;
     open?: ReadonlySet<string>;
     concurrencyDraft?: string;
+    repositoryDraft?: readonly string[] | null;
+    workspaceRepositories?: readonly string[];
     /** The agent catalog, for the newest eligible versions. */
     catalog?: readonly AgentCatalogEntry[];
   },
@@ -1223,6 +1261,12 @@ export function runnerDetailMarkup(
     busy: view.busy,
     ...(view.concurrencyDraft === undefined ? {} : { draft: view.concurrencyDraft }),
   });
+  const repositories = runnerRepositoriesMarkup(runner, {
+    manages,
+    busy: view.busy,
+    workspace: view.workspaceRepositories ?? [],
+    ...(view.repositoryDraft === undefined ? {} : { draft: view.repositoryDraft }),
+  });
   const sharing =
     view.policy === null || revoked
       ? ""
@@ -1230,6 +1274,9 @@ export function runnerDetailMarkup(
   const copy = `<button class="btn" data-runner-copy="${id}" data-focus="copy:${id}" title="${id}" aria-label="Copy runner ID ${id}">Copy ID</button>`;
   const settings = [
     concurrency ? `<div class="runner-setting"><h3>Slots</h3><div>${concurrency}</div></div>` : "",
+    repositories
+      ? `<div class="runner-setting"><h3>Repositories</h3><div>${repositories}</div></div>`
+      : "",
     sharing ? `<div class="runner-setting"><h3>Sharing</h3><div>${sharing}</div></div>` : "",
     runnerActionsMarkup(runner, { manages, busy: view.busy }, copy),
   ].join("");
@@ -1267,6 +1314,8 @@ export function createRunners() {
   let painted = "";
   let pendingFocus: string | null = null;
   const concurrencyDrafts = new Map<string, string>();
+  const repositoryDrafts = new Map<string, string[] | null>();
+  let workspaceRepositories: string[] = [];
   let stopPolling: (() => void) | null = null;
 
   function manages() {
@@ -1279,6 +1328,8 @@ export function createRunners() {
     policies = new Map();
     serverVersion = null;
     agentCatalog = [];
+    workspaceRepositories = [];
+    repositoryDrafts.clear();
     usage = [];
     usageRunner = null;
     addingHost = false;
@@ -1371,6 +1422,17 @@ export function createRunners() {
             ),
         ),
       ]);
+      if (current !== generation) return;
+      if (identity.role === "admin")
+        workspaceRepositories = await api<{ repositories: { repository: string }[] }>(
+          "/api/workspaces/repositories",
+        ).then(
+          (answer) => answer.repositories.map((entry) => entry.repository),
+          (caughtError4) => {
+            journalCaught(caughtError4, "runners.load.repositories", null);
+            return workspaceRepositories;
+          },
+        );
       if (current !== generation) return;
       // A failed refresh keeps the last state.
       const vm: MemberVmState = await api<MemberVmState>("/api/runners/vm").catch(
@@ -1525,6 +1587,10 @@ export function createRunners() {
       ...(concurrencyDrafts.has(runner.id)
         ? { concurrencyDraft: concurrencyDrafts.get(runner.id)! }
         : {}),
+      ...(repositoryDrafts.has(runner.id)
+        ? { repositoryDraft: repositoryDrafts.get(runner.id)! }
+        : {}),
+      workspaceRepositories,
     })}${runnerVm ? runnerVmMarkup(runnerVm, { busy, pools, denied: adoptDenied }) : ""}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>${deleteDialog()}`;
   }
   function markup(open: ReadonlySet<string>): string {
@@ -1794,6 +1860,33 @@ export function createRunners() {
           });
           concurrencyDrafts.delete(runnerId);
           feedback = "Slots saved. The runner applies it to new work at its next heartbeat.";
+        });
+      });
+    }
+    for (const form of root!.querySelectorAll<HTMLFormElement>("form[data-runner-repositories]")) {
+      const runnerId = form.dataset.runnerRepositories!;
+      const all = form.querySelector<HTMLInputElement>('input[name="all"]')!;
+      const boxes = [...form.querySelectorAll<HTMLInputElement>('input[name="repository"]')];
+      const chosen = () =>
+        all.checked ? null : boxes.filter((box) => box.checked).map((box) => box.value);
+      form.addEventListener("change", () => {
+        repositoryDrafts.set(runnerId, chosen());
+        paint();
+      });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const repositories = chosen();
+        if (repositories !== null && repositories.length === 0) {
+          error = "Choose at least one repository, or All repositories.";
+          paint();
+          return;
+        }
+        void change(async () => {
+          await api(`/api/runners/${encodeURIComponent(runnerId)}/repositories`, {
+            repositories,
+          });
+          repositoryDrafts.delete(runnerId);
+          feedback = "Repositories saved. New work on this runner follows them.";
         });
       });
     }

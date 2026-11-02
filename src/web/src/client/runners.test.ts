@@ -619,6 +619,52 @@ describe("runner details", () => {
       );
   });
 
+  describe("repositories", () => {
+    test("everyone sees All repositories by default, with no host line", () => {
+      const html = runnerDetailMarkup(
+        { ...runner, repositories: { admin: null, host: null } },
+        { ...view, userId: "member", role: "member" },
+      );
+      expect(html).toContain("<h3>Repositories</h3><div><p>Repositories: All repositories</p>");
+      expect(html).not.toContain("Host config limits it to");
+      expect(html).not.toContain("data-runner-repositories");
+    });
+
+    test("an admin list and the host limit both appear", () => {
+      const html = runnerDetailMarkup(
+        { ...runner, repositories: { admin: ["acme/paws"], host: ["acme/paws", "acme/looky"] } },
+        { ...view, userId: "member", role: "member" },
+      );
+      expect(html).toContain("<p>Repositories: acme/paws</p>");
+      expect(html).toContain(
+        '<p class="muted">Host config limits it to: acme/paws, acme/looky</p>',
+      );
+    });
+
+    test("admins choose All repositories or the workspace's repositories", () => {
+      const listed: Runner = { ...runner, repositories: { admin: ["acme/old"], host: null } };
+      const html = runnerDetailMarkup(listed, {
+        ...view,
+        workspaceRepositories: ["acme/paws", "ACME/old"],
+      });
+      expect(html).toContain(`data-runner-repositories="${runner.id}"`);
+      expect(html).toMatch(/name="all"(?![^>]* checked)[^>]*><span>All repositories/);
+      expect(html).toMatch(/value="ACME\/old"[^>]* checked/);
+      expect(html).toMatch(/value="acme\/paws"(?![^>]* checked)/);
+      expect(html.match(/name="repository"/g)).toHaveLength(2);
+      const all = runnerDetailMarkup(listed, {
+        ...view,
+        workspaceRepositories: ["acme/paws"],
+        repositoryDraft: null,
+      });
+      expect(all).toMatch(/name="all"[^>]* checked/);
+      expect(all).toMatch(/value="acme\/paws"[^>]* disabled/);
+      expect(runnerDetailMarkup({ ...listed, status: "revoked" }, view)).not.toContain(
+        "<h3>Repositories</h3>",
+      );
+    });
+  });
+
   describe("concurrency", () => {
     const tuned: Runner = {
       ...runner,

@@ -16,6 +16,7 @@ import {
   requestRunnerAgentUpdate,
   isCurrentRunnerCertificate,
   runnerForCertificate,
+  setRunnerAdminRepositories,
   setRunnerConcurrency,
   updateRunnerStatus,
   workspaceMember,
@@ -203,6 +204,22 @@ export function createRunnerControl(options: {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           concurrency,
+          now: now(),
+        });
+      });
+    },
+    setRepositories(
+      principal: WorkspacePrincipal,
+      runnerId: string,
+      repositories: readonly string[] | null,
+    ) {
+      immediate(db, () => {
+        admin(principal);
+        setRunnerAdminRepositories(db, {
+          runnerId,
+          workspaceId: principal.workspaceId,
+          userId: principal.userId,
+          repositories,
           now: now(),
         });
       });
