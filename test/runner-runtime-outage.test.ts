@@ -4,6 +4,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunnerRequestError } from "../src/runner-daemon";
+import { openExecutionJournal } from "../src/runner-journal";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import {
   PAWS_ALIVE_LEASE_SKEW_MS,
@@ -690,6 +691,42 @@ test("permanent result refusals stop retries across runner restarts", async () =
   }
 });
 
+test("a permanent non-fencing refusal keeps the result as undeliverable and stops retrying", async () => {
+  for (const status of [400, 404, 410, 413, 422]) {
+    const f = await fixture({ retryMs: 1000 });
+    try {
+      f.rejectPermanently(status, "Runner result is invalid.");
+      f.finish();
+      await f.tickUntil(() => f.postAttempts() > 0);
+      for (let i = 0; i < 3; i++) await f.tick();
+      f.advance(120_000);
+      await f.restart();
+      for (let i = 0; i < 3; i++) await f.tick();
+      expect(f.postAttempts()).toBe(1);
+      expect(f.errors.filter((error) => error.includes("cannot accept the stored result"))).toEqual(
+        [expect.stringContaining(`HTTP ${status}: Runner result is invalid.`)],
+      );
+      expect(f.reports.at(-1)).not.toContain("run");
+      const journal = openExecutionJournal(f.root);
+      try {
+        expect(journal.pendingResults()).toEqual([]);
+        expect(journal.undeliverableResults()).toEqual([
+          expect.objectContaining({
+            runId: "run",
+            generation: 1,
+            reason: `HTTP ${status}: Runner result is invalid.`,
+            result: expect.objectContaining({ commandId: "command" }),
+          }),
+        ]);
+      } finally {
+        journal.close();
+      }
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
 test("a failure whose transcript was sealed retries only the result after restart", async () => {
   const f = await fixture();
   try {
@@ -797,7 +834,7 @@ test("a lost transcript seal acknowledgement cannot reject the failure result", 
 });
 
 test("transient result retries back off and report one repeated failure", async () => {
-  for (const status of [503, 400, 401, 403, 404, 410, "parse"]) {
+  for (const status of [503, 401, 403, 408, 429, "parse"]) {
     const f = await fixture({ retryMs: 1000 });
     try {
       if (status === 503) f.rejectResults(100);

@@ -106,6 +106,13 @@ export function openExecutionJournal(root: string) {
     db.run("ALTER TABLE execution ADD COLUMN session_state TEXT NOT NULL DEFAULT ''");
   if (!columns.has("transcript_sealed"))
     db.run("ALTER TABLE execution ADD COLUMN transcript_sealed INTEGER NOT NULL DEFAULT 0");
+  if (
+    !db
+      .query<{ name: string }, []>("PRAGMA table_info(result_delivery)")
+      .all()
+      .some((column) => column.name === "refused")
+  )
+    db.run("ALTER TABLE result_delivery ADD COLUMN refused TEXT");
   db.run(
     "CREATE INDEX IF NOT EXISTS delivery_waiting ON delivery(execution_id,sequence) WHERE json_extract(payload,'$.type') IN ('question','artifact','closeout_policy')",
   );
@@ -279,6 +286,26 @@ export function openExecutionJournal(root: string) {
     },
     resultRejected(id: string) {
       db.run("UPDATE result_delivery SET accepted=2 WHERE execution_id=?", [id]);
+    },
+    resultUndeliverable(id: string, reason: string) {
+      db.run(
+        "UPDATE result_delivery SET accepted=3,refused=? WHERE execution_id=? AND accepted=0",
+        [reason.slice(0, 4096), id],
+      );
+    },
+    undeliverableResults() {
+      return db
+        .query<
+          { id: string; runId: string; generation: number; reason: string; payload: string },
+          []
+        >(
+          "SELECT r.execution_id AS id,json_extract(e.payload,'$.runId') AS runId,json_extract(e.payload,'$.generation') AS generation,r.refused AS reason,r.payload FROM result_delivery r JOIN execution e ON e.id=r.execution_id WHERE r.accepted=3 ORDER BY r.rowid",
+        )
+        .all()
+        .map(({ payload, ...row }) => ({
+          ...row,
+          result: RunnerResultSchema.parse(JSON.parse(payload)),
+        }));
     },
     saveResult(id: string, result: RunnerResult, failure = false) {
       db.run("INSERT OR IGNORE INTO result_delivery(execution_id,payload,failure) VALUES (?,?,?)", [

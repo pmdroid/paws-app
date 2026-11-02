@@ -172,6 +172,11 @@ const LEASE_PASSED = "lease deadline passed";
 const fencedRefusal = (error: unknown): error is RunnerRequestError =>
   error instanceof RunnerRequestError &&
   (error.status === 409 || (error.status === 403 && /\bfenced\b/i.test(error.reason ?? "")));
+const permanentRefusal = (error: unknown): error is RunnerRequestError =>
+  error instanceof RunnerRequestError &&
+  error.status >= 400 &&
+  error.status < 500 &&
+  ![401, 403, 408, 409, 425, 429].includes(error.status);
 
 export async function openRunnerRuntime(options: {
   root: string;
@@ -730,6 +735,16 @@ export async function openRunnerRuntime(options: {
         report(
           new Error(
             `Paws refused the stored result for execution ${execution.id}: ${error.message}`,
+          ),
+        );
+      } else if ((granting || posting) && permanentRefusal(error)) {
+        const reason = `HTTP ${error.status}${error.reason ? `: ${error.reason}` : ""}`;
+        journal.resultUndeliverable(execution.id, reason);
+        journal.phase(execution.id, "interrupted");
+        resultRetries.delete(execution.id);
+        report(
+          new Error(
+            `Paws cannot accept the stored result for execution ${execution.id} of run ${command.runId} (${reason}); the runner keeps it and stops retrying`,
           ),
         );
       } else {
