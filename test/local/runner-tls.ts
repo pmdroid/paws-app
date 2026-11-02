@@ -23,6 +23,7 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
   const server = await serverIdentity(join(root, "server"));
   const accepted: unknown[] = [];
   const active = new Set([certificate.fingerprint]);
+  const pawsRevoked = new Set<string>();
   let now = Date.now();
   let streamCancelled = false;
   let rejectedStreamCancelled = false;
@@ -35,6 +36,7 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
     tls: { ...server, ca: authority.certificate },
     now: () => now,
     log: (line) => logged.push(line),
+    revoked: (peer) => pawsRevoked.has(peer.fingerprint),
     authorize: async (peer) => {
       authorizationCount++;
       if (authorizationFails) throw new Error("database is locked");
@@ -188,6 +190,19 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
       "a handler or peer check that fails without denying access answers 503, not 403",
       true,
       { handlerStatus: handlerFailed.status, checkStatus: checkFailed.status },
+    );
+    const lapsed = await authority.issue(client.csr);
+    const lapsedRefusal = await denied({ cert: lapsed.pem, key });
+    pawsRevoked.add(lapsed.fingerprint);
+    listener.revoke(lapsed.fingerprint);
+    const revokedRefusal = await denied({ cert: lapsed.pem, key });
+    assert.deepEqual(lapsedRefusal, { status: 403, body: "" });
+    assert.equal((revokedRefusal as { status: number }).status, 403);
+    assert.equal(JSON.parse((revokedRefusal as { body: string }).body).code, "fenced");
+    observe(
+      "a revoked runner is answered with the fenced 403 and a lapsed authorization with a plain 403",
+      true,
+      { lapsedRefusal, revokedRefusal },
     );
     const missing = await denied({
       headers: { "x-client-cert": certificate.pem.replace(/\n/g, "") },
