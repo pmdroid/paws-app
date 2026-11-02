@@ -19,6 +19,9 @@ test("implement and fix prompts tell the agent to call get_closeout", () => {
   expect(text).toContain("get_closeout");
   expect(text).toContain("run_closeout");
   expect(text).toContain("pending");
+  expect(text).toContain(
+    "When get_closeout shows a broken rule, fix it unless the break is intended. If it is intended, say so and why in the final response.",
+  );
   expect(implementPrompt({ identifier: "ENG-1", title: "Add the tool" })).toContain(text);
   expect(
     fixPrompt({
@@ -638,5 +641,34 @@ test("rules first: a passing rule leaves pending alone and probes once per commi
 
   writeFileSync(join(root, "src", "main.ts"), "export const value = 2;\n");
   await session.report();
+  expect(probeRuns(marks)).toBe(2);
+});
+
+test("an agent turn's report includes each rule's result and a break leaves pending alone", async () => {
+  const { root, marks } = rulesFirstRepo(1);
+  const session = createCloseoutSession(root, local(root));
+
+  const report = JSON.parse(await session.report({ progress: true, probes: true })) as RuleReport;
+  expect(report.rules).toHaveLength(1);
+  expect(report.rules?.[0]).toMatchObject({ id: "api-contract", result: { exitCode: 1 } });
+  expect(report.pending).toEqual(["check"]);
+  expect(report.blocked).toBeNull();
+  expect(await session.run("check")).toBe("check passed.");
+  expect(checkRan(marks)).toBe(true);
+});
+
+test("an agent turn probes once per commit and again after an edit changes the fingerprint", async () => {
+  const { root, marks } = rulesFirstRepo(0);
+  const session = createCloseoutSession(root, local(root));
+
+  for (let call = 0; call < 2; call++) {
+    const report = JSON.parse(await session.report({ probes: true })) as RuleReport;
+    expect(report.rules?.[0]?.result?.exitCode).toBe(0);
+  }
+  expect(probeRuns(marks)).toBe(1);
+
+  writeFileSync(join(root, "src", "main.ts"), "export const value = 2;\n");
+  const edited = JSON.parse(await session.report({ probes: true })) as RuleReport;
+  expect(edited.rules?.[0]?.result?.exitCode).toBe(0);
   expect(probeRuns(marks)).toBe(2);
 });

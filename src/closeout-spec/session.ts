@@ -62,8 +62,9 @@ export type SessionRuleResult = {
 
 export type CloseoutSession = {
   /**
-   * `probes` runs each listed rule's probe and adds its result. Only the runner asks for it, when
-   * the turn ends; the agent's `get_closeout` and `run_closeout` never run a probe.
+   * `probes` adds each listed rule's result. A probe runs at most once per fingerprint (head,
+   * policy digest and changed files). `get_closeout` in implement and fix turns and the turn-end
+   * report ask for it. A result never changes `pending` or `blocked` unless `rulesFirst` is set.
    */
   report(options?: { progress?: boolean; probes?: boolean }): Promise<string>;
   run(id: string, model?: string): Promise<string>;
@@ -164,7 +165,7 @@ type Prepared =
       published: PublishedEvidence[];
     };
 
-/** A rule the change must keep. Listing it does not run its probe. */
+/** A rule the change must keep. `result` is set when the report asked for probes. */
 type ListedRule = {
   id: string;
   summary: string;
