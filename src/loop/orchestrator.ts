@@ -6,7 +6,7 @@ import {
   hasPublishedPullRequest,
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
 import { restartForPushConflict } from "./push-conflict";
@@ -260,6 +260,9 @@ import {
   type RunnerCapacityWaitState,
   type CloseoutFaults,
   deferWorkItem,
+  releaseReviewerFaultHolds,
+  reviewerAlertedSince,
+  reviewerFaultHolds,
   enqueueRunnerSetupCheck,
   holdForRunnerSetup,
   listRunnerSetupHolds,
@@ -678,6 +681,7 @@ export class Orchestrator {
   private readonly jobContexts = new Map<string, JobContext>();
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
+  private readonly reviewerFaults = new Map<string, string>();
   private readonly runtimeLists = new Map<string, { runId: string; list: RuntimeList }>();
   private shuttingDown = false;
   private readonly activitySeqs = new Map<string, number>();
@@ -3164,6 +3168,10 @@ export class Orchestrator {
       if (pass < 2 && decide) {
         decide = false;
         continue;
+      }
+      if (verdict.result?.reviewerFault && after.state === "verifying") {
+        this.reviewerFaults.set(item.id, verdict.result.reviewerFault);
+        return;
       }
       if (this.cancelVisualReview(after))
         this.post(
@@ -6660,9 +6668,11 @@ export class Orchestrator {
     if (itemId === null) return;
     const note = this.verifyingStops.get(itemId);
     this.verifyingStops.delete(itemId);
+    const reviewerFault = this.reviewerFaults.get(itemId);
+    this.reviewerFaults.delete(itemId);
     const item = getWorkItem(this.db, itemId);
     if (item?.state !== "verifying" || !context.isCurrent()) return;
-    const reason = note ?? "the job ended without a Closeout result";
+    const reason = note ?? reviewerFault ?? "the job ended without a Closeout result";
     this.options.journal?.(
       `job ${job.id} ${job.queue} left item ${item.id} (${item.linearIdentifier ?? "-"}) in verifying: ${reason}`,
     );
@@ -6681,16 +6691,26 @@ export class Orchestrator {
     if (moving) return;
     const head = item.checkpoint?.wipCommit ?? "";
     const prior = closeoutFaults(job.payload);
-    const reasons = [...(prior?.head === head ? prior.reasons : []), reason];
+    const seen = [...(prior?.head === head ? prior.reasons : []), reason];
+    const reasons =
+      reviewerFault === undefined ? seen : seen.slice(-CLOSEOUT_FAULT_DELAYS_MS.length);
     const delayMs = CLOSEOUT_FAULT_DELAYS_MS[reasons.length - 1];
     if (delayMs !== undefined && head !== "" && item.checkpoint?.phase === "verifying") {
+      const reviewer = reviewerFault === undefined ? null : this.reviewerHold(item, reviewerFault);
       deferWorkItem(this.db, item, {
         retry: reasons.length,
         delayMs,
         handoff: null,
-        message: `Closeout stopped without a result; retrying in ${delayMs / 60_000} min.`,
+        message: reviewer
+          ? reviewer.alert
+          : `Closeout stopped without a result; retrying in ${delayMs / 60_000} min.`,
         now: this.now(),
-        closeoutFault: { head, reasons, jobId: job.id },
+        closeoutFault: {
+          head,
+          reasons,
+          jobId: job.id,
+          ...(reviewer ? { reviewer: reviewer.key } : {}),
+        },
       });
       return;
     }
@@ -6703,6 +6723,29 @@ export class Orchestrator {
       undefined,
       `Closeout: blocked\nVerification stopped without moving the task on: ${reason}.${faults}`,
     );
+  }
+
+  private reviewerHold(
+    item: WorkItemRecord,
+    fault: string,
+  ): { key: string; alert: string | null } | null {
+    if (item.currentRunId === null) return null;
+    const { reviewer, reviewerFallback } = this.profileSnapshot(item.currentRunId);
+    const key = createHash("sha256")
+      .update(JSON.stringify({ reviewer, reviewerFallback }))
+      .digest("hex")
+      .slice(0, 16);
+    if (reviewerAlertedSince(this.db, key, this.now() - REVIEWER_ALERT_INTERVAL_MS))
+      return { key, alert: null };
+    const held = [
+      item,
+      ...reviewerFaultHolds(this.db, key).filter((entry) => entry.id !== item.id),
+    ];
+    const names = held.map((entry) => entry.linearIdentifier ?? entry.id).join(", ");
+    return {
+      key,
+      alert: `The reviewer ${reviewer.agent} ${reviewer.model ?? "agent default"} can't run its review (${fault}). Closeout holds ${names} and retries every 15 min at most. Change the reviewer in Settings to re-verify them now.`,
+    };
   }
 
   private async hydrateLinearContext(sessionId: string | null, signal: AbortSignal): Promise<void> {
@@ -7456,6 +7499,10 @@ export class Orchestrator {
         { mode: 0o600 },
       );
       changedRuns += 1;
+      const reviewers = (entry: AgentProfiles) =>
+        JSON.stringify([entry.reviewer, entry.reviewerFallback]);
+      if (reviewers(saved.profiles) !== reviewers(profiles))
+        releaseReviewerFaultHolds(this.db, run.itemId, this.now());
     }
     return changedRuns;
   }
@@ -8129,6 +8176,7 @@ function retryCount(payload: unknown): number {
 }
 
 const CLOSEOUT_FAULT_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+const REVIEWER_ALERT_INTERVAL_MS = 60 * 60_000;
 
 function closeoutFaults(payload: unknown): CloseoutFaults | null {
   const faults = (payload as { closeoutFaults?: unknown } | null)?.closeoutFaults;
