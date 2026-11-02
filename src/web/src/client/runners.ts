@@ -990,7 +990,7 @@ export function runnerRepositoriesMarkup(
         `<label class="runner-consent"><input type="checkbox" name="repository" value="${esc(name)}" data-focus="repositories:${id}:${esc(name)}"${picked.has(name.toLowerCase()) ? " checked" : ""}${chosen === null || state.busy ? " disabled" : ""}><span>${esc(name)}</span></label>`,
     )
     .join("");
-  return `${shown}<form data-runner-repositories="${id}"><label class="runner-consent"><input type="checkbox" name="all" data-focus="repositories:${id}:all"${chosen === null ? " checked" : ""}${disabled}><span>All repositories</span></label>${boxes}<button class="btn" type="submit" data-focus="repositories:${id}:save"${disabled}>Save</button></form>`;
+  return `${shown}<form data-runner-repositories="${id}"><label class="runner-consent"><input type="checkbox" name="all" data-focus="repositories:${id}:all"${chosen === null ? " checked" : ""}${disabled}><span>All repositories</span></label>${boxes}<div class="row"><button class="btn" type="submit" data-focus="repositories:${id}:save"${disabled}>Save</button></div></form>`;
 }
 
 /** "5 s ago", "3 min ago", "2 h ago", or the date for older values. */
