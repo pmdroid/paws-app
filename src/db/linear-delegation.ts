@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { delegationIssueIdSql } from "../core";
+import type { WorkItemRecord } from "./items";
+import { enqueueOutboxOnce } from "./outbox";
 
 export type LinearTaskDelegation = {
   appUserId: string;
@@ -23,6 +25,28 @@ export function getLinearTaskDelegation(
   return row
     ? { appUserId: row.app_user_id, humanActorId: row.human_actor_id, teamId: row.team_id }
     : null;
+}
+
+/**
+ * Enqueue a Linear status change for the item's issue in the caller's transaction. An issue
+ * delegated to Paws without a human actor is not Paws's to move, as in the orchestrator.
+ */
+export function enqueueIssueStatus(
+  db: Database,
+  item: Pick<WorkItemRecord, "id" | "linearIssueId" | "sessionKey" | "version">,
+  stateType: "completed" | "canceled",
+  now: number,
+): void {
+  const owner = getLinearTaskDelegation(db, item.id, item.linearIssueId);
+  if (owner !== null && !owner.humanActorId) return;
+  enqueueOutboxOnce(db, {
+    target: "linear",
+    op: "status",
+    orderingKey: item.sessionKey ?? item.id,
+    idempotencyKey: `status:${item.id}:${item.linearIssueId}:${stateType}:${item.version}`,
+    payload: { itemId: item.id, linearIssueId: item.linearIssueId, stateType },
+    now,
+  });
 }
 
 export function requireLinearTaskDelegation(

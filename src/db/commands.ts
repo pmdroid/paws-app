@@ -21,6 +21,7 @@ import { enqueueOutboxOnce, stopOutboxSession, advanceOutboxSession } from "./ou
 import { withOpenFindings } from "./open-findings";
 import { markRun } from "./runs";
 import { halt } from "./halt";
+import { enqueueIssueStatus } from "./linear-delegation";
 import { enqueueEndedSessionFace, stoppedResponse } from "./stop-response";
 import { mergeCallInFlight, getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
@@ -115,6 +116,7 @@ export function applyLinearCommand(
 
     const sessionId = item.sessionKey ?? item.id;
     const closed = response?.startsWith("Closed:") === true;
+    if (!closed) enqueueIssueStatus(db, getWorkItem(db, item.id)!, "canceled", now);
     const generation = !closed
       ? stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now)
       : advanceOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, { now });
