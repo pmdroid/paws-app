@@ -23,6 +23,14 @@ const runnerStatus = z
   .object({ status: z.enum(["active", "paused", "draining", "revoked"]) })
   .strict();
 const runnerConcurrency = z.object({ concurrency: z.number().int().min(1).max(16) }).strict();
+const runnerRepositories = z
+  .object({
+    repositories: z
+      .array(z.string().regex(/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/))
+      .max(256)
+      .nullable(),
+  })
+  .strict();
 const agentUpdate = z.object({ version: RunnerAgentVersionSchema }).strict();
 const agentNames = RUNNER_CODING_AGENTS.join("|");
 const agentPath = new RegExp(
@@ -113,6 +121,14 @@ export function createRunnerHttp(
             concurrency[1]!,
             runnerConcurrency.parse(await readJson(request)).concurrency,
           );
+          return json({ ok: true });
+        }
+        const repositories = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/repositories$/.exec(path);
+        if (repositories && request.method === "POST") {
+          const parsed = runnerRepositories.safeParse(await readJson(request));
+          if (!parsed.success)
+            return json({ error: "Repositories must be owner/repo names, at most 256." }, 400);
+          control.setRepositories(principal, repositories[1]!, parsed.data.repositories);
           return json({ ok: true });
         }
         if (path === "/api/runners/coding-agents/update-all" && request.method === "POST")

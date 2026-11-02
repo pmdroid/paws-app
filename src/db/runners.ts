@@ -6,6 +6,7 @@ import type { RunnerSessionMove } from "./runner-session-moves";
 import { listSkills, runnerSkillStates, type RunnerSkillView } from "./skills";
 import { listRunnerRuntimes, type RunnerRuntimeStatus } from "./runner-runtimes";
 import { listRunnerAgents, type RunnerAgentView } from "./runner-agents";
+import { runnerRepositoryLists, type RunnerRepositoryLists } from "./runner-repositories";
 
 export type RunnerRecord = {
   id: string;
@@ -98,6 +99,7 @@ export type RunnerOverview = RunnerRecord & {
   runtimes: RunnerRuntimeStatus[];
   /** Coding agent versions as last reported, and the version asked for from the Runners page. */
   codingAgents: RunnerAgentView[];
+  repositories: RunnerRepositoryLists;
 };
 
 export type RunnerSessionPhase = "working" | "closeout" | "fixing" | "merging";
@@ -331,6 +333,7 @@ export function listRunnerOverview(
       skills: runnerSkillStates(db, row.id, pins),
       runtimes: listRunnerRuntimes(db, row.id),
       codingAgents: listRunnerAgents(db, row.id),
+      repositories: runnerRepositoryLists(db, row.id),
     }));
 }
 
