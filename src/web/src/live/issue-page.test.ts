@@ -20,7 +20,6 @@ import {
   type StatusSnapshot,
 } from "../contract";
 import { openedView } from "../../test/fixtures";
-import { clock24 } from "../client/format";
 import { render } from "../client/render";
 import { issueRedirect, parseRoute } from "../client/route";
 import { createLiveStatusProvider } from "./provider";
@@ -180,7 +179,7 @@ describe("one page per issue", () => {
     expect(issueRedirect("/runs", snapshot)).toBeNull();
   });
 
-  test("a re-delegated issue shows the earlier Linear session as a section on the same page", () => {
+  test("a re-delegated issue shows only the current Linear session on its page", () => {
     const db = database();
     insertQueuedItem(db, {
       id: EARLIER,
@@ -204,11 +203,10 @@ describe("one page per issue", () => {
 
     const html = issuePage(snapshot);
     expect(html.match(/<article /g)).toHaveLength(1);
-    const section = html.indexOf('class="earlier-attempt"');
-    expect(section).toBeGreaterThan(html.indexOf("Third turn after the reply."));
-    expect(html).toContain(`Earlier attempt, ended ${clock24(earlier!.endedAt!)}`);
-    expect(html.slice(section)).toContain("Earlier session turn.");
-    expect(html.slice(0, section)).not.toContain("Earlier session turn.");
+    expect(html).toContain("Third turn after the reply.");
+    expect(html).not.toContain("earlier-attempt");
+    expect(html).not.toContain("Earlier attempt");
+    expect(html).not.toContain("Earlier session turn.");
     expect(issueRedirect("/sessions/earlier-session", snapshot)).toBe("/issues/PAS-367");
     expect(issueRedirect(`/runs/${old.id}`, snapshot)).toBe("/issues/PAS-367");
   });
