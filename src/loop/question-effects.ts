@@ -1,4 +1,5 @@
 import { mergeAcceptedWork } from "./accepted-work";
+import { SLOW_CI_REASON } from "./merge-jobs";
 import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
@@ -148,8 +149,8 @@ export function questionEffects(
     failWorkItem(
       db,
       item,
-      "cap:time",
-      `Stopped at the time limit, as asked in Linear. The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
+      question.reason === SLOW_CI_REASON ? "merge" : "cap:time",
+      `${question.reason === SLOW_CI_REASON ? "Stopped while GitHub CI was pending" : "Stopped at the time limit"}, as asked in Linear. The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
       input.now,
       { stoppedByAnswer: true },
     );
