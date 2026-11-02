@@ -136,18 +136,18 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   paws.work.assign(first);
 
   let link: "up" | "partitioned" | "revoked" | "paws-down" = "up";
-  const remote = <T>(path: string, call: () => T): T => {
-    if (link === "partitioned") throw new Error(`connect ECONNREFUSED ${path}`);
-    if (link === "paws-down") throw new RunnerRequestError(503, "POST", path, 1);
+  const remote = <T>(route: string, call: () => T): T => {
+    if (link === "partitioned") throw new Error(`connect ECONNREFUSED ${route}`);
+    if (link === "paws-down") throw new RunnerRequestError(503, "POST", route, 1);
     if (link === "revoked")
-      throw new RunnerRequestError(403, "POST", path, 1, "Runner is revoked; its work is fenced.");
+      throw new RunnerRequestError(403, "POST", route, 1, "Runner is revoked; its work is fenced.");
     try {
       return call();
     } catch (error) {
       throw new RunnerRequestError(
         runnerFailureStatus(error),
         "POST",
-        path,
+        route,
         1,
         error instanceof Error ? error.message : undefined,
       );
@@ -301,7 +301,8 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     await runtime.tick().catch((error: Error) => errors.push(error.message));
     await Bun.sleep(1);
   };
-  for (let index = 0; index < 400 && !execution; index++) await tick();
+  const started = () => execution !== "";
+  for (let index = 0; index < 400 && !started(); index++) await tick();
   if (!execution) throw new Error("The runner never started the work.");
 
   const replaced: number[] = [];
