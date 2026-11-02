@@ -210,6 +210,7 @@ import {
   itemOwnerRunnerSetupNeed,
 } from "./runner-placement";
 import { startServer } from "./server";
+import { activeRunnerReadiness } from "./settings";
 import { itemReviews } from "./web";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
@@ -1002,6 +1003,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       },
       agentSettings: {
         applyToWaiting: () => orchestrator?.applyAgentSettingsToWaiting() ?? 0,
+        runnerReadiness: (agent) => activeRunnerReadiness(db, agent),
         ...(linear?.tracker?.readBriefIssue
           ? {
               readIssue: (identifier: string, signal: AbortSignal) =>

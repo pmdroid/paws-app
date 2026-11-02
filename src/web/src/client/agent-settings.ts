@@ -80,6 +80,7 @@ type SettingsView = {
   saved: boolean;
   applyToWaiting?: boolean;
   waitingRuns?: number;
+  warnings?: string[];
   denied?: boolean;
   catalogs?: AgentModelCatalog[];
   catalogError?: string | null;
@@ -95,7 +96,7 @@ export function renderAgentSettings(view: SettingsView): string {
   const feedback = view.error
     ? `<p class="settings-message err" role="alert">${esc(view.error)}</p>`
     : view.saved
-      ? `<p class="settings-message" role="status">${view.waitingRuns === undefined ? "Agent settings saved. New work will use these profiles." : `Saved. ${view.waitingRuns} waiting ${view.waitingRuns === 1 ? "run will" : "runs will"} switch at their next step.`}</p>`
+      ? `<p class="settings-message" role="status">${view.waitingRuns === undefined ? "Agent settings saved. New work will use these profiles." : `Saved. ${view.waitingRuns} waiting ${view.waitingRuns === 1 ? "run will" : "runs will"} switch at their next step.`}</p>${view.warnings?.length ? `<p class="settings-message err" role="alert">${view.warnings.map(esc).join("<br>")} Closeout's review waits until a runner signs in to this agent.</p>` : ""}`
       : "";
   return `${intro}${view.catalogError ? `<p class="settings-message err" role="status">${esc(view.catalogError)} <button class="btn" type="button" data-settings="models">Reload choices</button></p>` : ""}<form id="agent-settings-form"><div id="settings-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
@@ -363,16 +364,19 @@ export function createAgentSettings(invalidate: () => void): {
     }
     const started = generation;
     void request("Saving agent settings…", async () => {
-      const data = await settingsRequest<AgentSettings & { waitingRuns?: number }>(
+      const data = await settingsRequest<
+        AgentSettings & { waitingRuns?: number; warnings?: string[] }
+      >(
         engine!,
         "PUT",
         { ...view.data, applyToWaiting: view.applyToWaiting === true },
         readCsrfToken(document),
       );
       if (started !== generation) return;
-      const { waitingRuns, ...settings } = data;
+      const { waitingRuns, warnings, ...settings } = data;
       view.data = settings;
       view.waitingRuns = waitingRuns;
+      view.warnings = warnings;
       view.applyToWaiting = false;
       view.saved = true;
     });

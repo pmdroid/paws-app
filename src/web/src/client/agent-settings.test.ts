@@ -232,6 +232,13 @@ describe("agent settings", () => {
       'class="settings-fields" disabled',
     );
     expect(renderAgentSettings({ ...view(), saved: true })).toContain("Agent settings saved");
+    const warned = renderAgentSettings({
+      ...view(),
+      saved: true,
+      warnings: ["No active runner has codex signed in and ready to review: <box>."],
+    });
+    expect(warned).toContain("Agent settings saved");
+    expect(warned).toContain("ready to review: &lt;box&gt;.");
   });
 
   test("requests use the selected engine and protect mutations with CSRF", async () => {

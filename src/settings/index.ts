@@ -2,6 +2,7 @@ export { handleAgentSettingsRequest } from "./handler";
 export { BRIEF_SETTINGS_PATH, handleBriefSettingsRequest } from "./brief";
 export type { BriefSettingsOptions } from "./brief";
 export type { AgentSettingsOptions } from "./handler";
+export { activeRunnerReadiness } from "./reviewer-runners";
 export { SKILL_SETTINGS_PATH, handleSkillSettingsRequest } from "./skills";
 export type { SkillSettingsOptions } from "./skills";
 export { handleMergeSettingsRequest, MERGE_SETTINGS_PATH } from "./merging";
