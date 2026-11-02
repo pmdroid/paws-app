@@ -11,7 +11,7 @@ test("persisted session link replacement, incremental removal and clearing reach
   let db = openDatabase(path);
   migrate(db);
   const changes = [
-    { externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/dashboard" }] },
+    { externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/status" }] },
     {
       addedExternalUrls: [{ label: "Pull request", url: "https://github.com/acme/app/pull/2" }],
       removedExternalUrls: ["https://github.com/acme/app/pull/1"],

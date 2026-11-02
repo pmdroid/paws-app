@@ -241,7 +241,7 @@ describe("Linear session mutations", () => {
     expect(
       await tracker.createSessionOnIssue({
         issueId: "ENG-1",
-        externalUrls: [{ label: "Paws", url: "http://localhost:8787/dashboard" }],
+        externalUrls: [{ label: "Paws", url: "http://localhost:8787/status" }],
       }),
     ).toEqual({ id: "session" });
     expect(await tracker.createSessionOnComment({ commentId: "comment" })).toEqual({
@@ -251,7 +251,7 @@ describe("Linear session mutations", () => {
     expect(calls[0]?.variables).toEqual({
       input: {
         issueId: "ENG-1",
-        externalUrls: [{ label: "Paws", url: "http://localhost:8787/dashboard" }],
+        externalUrls: [{ label: "Paws", url: "http://localhost:8787/status" }],
       },
     });
     expect(calls[1]?.query).toContain("$input: AgentSessionCreateOnComment!");

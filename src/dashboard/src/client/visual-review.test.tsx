@@ -329,7 +329,7 @@ describe("visual review asked with a link", () => {
       head: "4b317d5".padEnd(40, "0"),
       title: "The screens of 4b317d5 need your visual review.",
       detail: "2 changed screens for visual-proof: shot-1.png, shot-2.png.",
-      link: "https://paws.example/dashboard/issues/ENG-102#visual-review",
+      link: "https://paws.example/status/issues/ENG-102#visual-review",
     };
     return { snapshot, runId };
   }

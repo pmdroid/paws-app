@@ -115,7 +115,7 @@ export async function probeStandaloneAttribution(root: string) {
       check: async () => true,
       identity: () => "workspace-repository",
       administrators: () => [],
-      recoveryUrl: "https://paws.example/dashboard/#/settings/account",
+      recoveryUrl: "https://paws.example/status/#/settings/account",
     },
     () => now,
   );

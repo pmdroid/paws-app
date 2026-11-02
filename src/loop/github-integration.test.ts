@@ -29,7 +29,7 @@ function fixture(path = ":memory:") {
       return ready && allowed;
     },
     administrators: () => ["lead", "admin", "admin"],
-    recoveryUrl: "https://paws.example/dashboard/settings/integrations",
+    recoveryUrl: "https://paws.example/status/settings/integrations",
     identity: () => authority,
   };
   const auth = new GitHubInstallationCheck(
