@@ -19,7 +19,6 @@ import {
   clock,
   clock24,
   esc,
-  itemLabel,
   linkButtons,
   linkList,
   mergeQueueLine,
@@ -384,7 +383,7 @@ function viewRuns(snapshot: StatusSnapshot, id: string | null): string {
 
 /**
  * Everything about one issue: its state, the timeline of every engine run, Closeout, reviews,
- * questions, fix rounds, the pull request and merge, and earlier Linear sessions further down.
+ * questions, fix rounds, and the pull request and merge.
  */
 function issuePage(
   snapshot: StatusItemDetail,
@@ -394,9 +393,7 @@ function issuePage(
 ): string {
   const attempts = snapshot.items.filter((entry) => entry.id === id);
   const item = attempts.find((entry) => !entry.endedAt) ?? attempts[0]!;
-  const earlier = attempts
-    .filter((entry) => entry !== item)
-    .sort((left, right) => (right.endedAt ?? "").localeCompare(left.endedAt ?? ""));
+  const earlier = attempts.filter((entry) => entry !== item);
   const run = itemRun(snapshot, item, earlier);
   const verdict = attemptVerdict(snapshot, item, run);
   const engineRun = run?.attempts?.at(-1) ?? run?.id;
@@ -519,7 +516,6 @@ function issuePage(
     )}
     ${runDetails(item, run, closeout)}
     </div>
-    ${earlier.map((entry, index) => earlierAttempt(snapshot, entry, index, attempts)).join("")}
   </article>`;
 }
 
@@ -729,37 +725,6 @@ function fixRounds(
       return `<li><div><b>CI round ${round.round}</b> on <span class="mono">${esc(round.head.slice(0, 7))}</span> · ${esc(next(round))} · <span class="muted">${esc(clock24(round.recordedAt))}</span></div>${failed.length ? `<div class="row wrap">${failed.map((check) => (check.url ? `<a href="${esc(check.url)}" target="_blank" rel="noopener noreferrer">${esc(check.name)}</a>` : `<span>${esc(check.name)}</span>`)).join("")}</div>` : ""}</li>`;
     })
     .join("")}</ol></section>`;
-}
-
-/** A Linear session on this issue that a newer one replaced (re-delegation). */
-function earlierAttempt(
-  snapshot: StatusItemDetail,
-  item: StatusItem,
-  index: number,
-  attempts: readonly StatusItem[],
-): string {
-  const run = itemRun(
-    snapshot,
-    item,
-    attempts.filter((entry) => entry !== item),
-  );
-  const verdict = attemptVerdict(snapshot, item, run);
-  const heading = `earlier-${index}`;
-  const evidence = run ? (snapshot.evidence ?? []).filter((entry) => inRun(run, entry.runId)) : [];
-  const facts = [
-    itemLabel(item.state),
-    ...(run ? [`${run.agent}${run.runner ? ` on runner ${run.runner}` : ""}`] : []),
-    ...(verdict
-      ? [`Closeout ${verdict.decision}, attempt ${verdict.attempt} of ${verdict.maxAttempts}`]
-      : []),
-  ];
-  return `<section class="earlier-attempt" aria-labelledby="${heading}"><h2 id="${heading}">Earlier attempt${item.endedAt ? `, ended ${esc(clock24(item.endedAt))}` : ""}</h2>
-    <p class="muted">${esc(facts.join(" · "))}</p>
-    ${item.session ? `<p><a href="${esc(item.session.url)}" target="_blank" rel="noopener noreferrer">Linear session</a></p>` : ""}
-    ${item.pr ? `<p><a href="${esc(item.pr.url)}" target="_blank" rel="noopener noreferrer">Pull request #${item.pr.number}</a></p>` : ""}
-    ${evidence.length ? `<ul class="issue-items" role="list">${evidence.map((entry) => `<li><a href="${esc(routeHref({ view: "evidence", id: entry.id }))}">${esc(entry.displayName)}</a> <span class="muted">${esc(entry.checkId)} · attempt ${entry.attempt}</span></li>`).join("")}</ul>` : ""}
-    ${run ? activityLog(`${heading}-${run.id}`, run) : ""}
-  </section>`;
 }
 
 function activityLog(key: string, run: StatusRun): string {

@@ -57,31 +57,33 @@ function page(snapshot: FullStatus, id = "ENG-101"): string {
 }
 
 describe("issue page", () => {
-  test("desktop: state, project, runner and agent, then the timeline, the pull request and earlier attempts", () => {
+  test("desktop: state, project, runner and agent, then the timeline and the pull request", () => {
     const html = page(redelegated());
     for (const term of ["Project", "Runner", "Agent", "Session"])
       expect(html).toContain(`<dt>${term}</dt>`);
-    const order = [
-      'id="activity-heading">Timeline</h2>',
-      'id="merge-heading">Pull request and merge</h2>',
-      'class="earlier-attempt"',
-    ].map((marker) => html.indexOf(marker));
-    expect(order.every((at) => at > 0)).toBe(true);
-    expect(order[0]).toBeLessThan(order[2]!);
-    expect(html).toContain("Earlier attempt, ended ");
-    expect(html).toContain("Earlier session turn.");
+    expect(html).toContain('id="activity-heading">Timeline</h2>');
+    expect(html).toContain('id="merge-heading">Pull request and merge</h2>');
     expect(html).toContain('shared with <a class="lin-id" href="/issues/ENG-102">ENG-102</a>');
     expect(html.match(/<article /g)).toHaveLength(1);
   });
 
-  test("390 px: facts, merge steps and earlier attempts wrap instead of widening the page", () => {
+  test("390 px: facts and merge steps wrap instead of widening the page", () => {
     const html = renderToStaticMarkup(
       createElement(Fragment, null, themedMarkup(page(redelegated()))),
     );
     expect(html).toContain("issue-facts-grid");
-    expect(html).toContain("earlier-attempt");
     expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
     expect(html).not.toMatch(/style="[^"]*width:\s*\d{3,}px/);
+  });
+
+  test("an issue with an earlier ended attempt renders only the current attempt", () => {
+    const html = page(redelegated());
+    expect(html.match(/<article /g)).toHaveLength(1);
+    expect(html).toContain('href="https://linear.app/acme/issue/ENG-101#agent-session"');
+    expect(html).not.toContain("earlier-attempt");
+    expect(html).not.toContain("Earlier attempt");
+    expect(html).not.toContain("Earlier session turn.");
+    expect(html).not.toContain("r-101-earlier");
   });
 
   test("the item timeline lists every state change from the fake, the restart with its reason", () => {
@@ -151,7 +153,7 @@ describe("issue page", () => {
     }).content;
     expect(html).toContain('<article class="run-page issue-page">');
     expect(html).toContain('id="activity-heading">Timeline</h2>');
-    expect(html).toContain("Earlier attempt, ended ");
+    expect(html).not.toContain("Earlier attempt");
     expect(html).toContain(
       '<dt>Blocks</dt><dd><div class="row wrap"><a href="/issues/ENG-105">ENG-105</a>',
     );
