@@ -24,6 +24,7 @@ import {
   immediate,
   recordRunnerHostStatus,
   runnerHasCapacity,
+  runnerLeaseLive,
   type RunnerHostSample,
   taskRequiresRepository,
   workspaceSessionIds,
@@ -462,7 +463,7 @@ export function createRunnerWork(options: {
         if (
           command.generation !== (previous?.generation ?? 0) + 1 ||
           (previous?.endedAt === null &&
-            previous.leaseUntil > at &&
+            runnerLeaseLive(previous.leaseUntil, at) &&
             availableIdentity(previous.runnerId)?.fence === previous.runnerFence)
         )
           throw new Error("Run assignment generation conflicts.");
