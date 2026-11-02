@@ -10,7 +10,12 @@ import { credentialSecrets, scrubCommandEnv } from "./run/env";
 import { scrubText } from "./run/scrub";
 import { git } from "./run/exec";
 import { executeProbe, PROBE_TIMEOUT_SECONDS } from "./run/probe";
-import { countEvidence, evidenceRequest, VISUAL_REVIEW_HINT } from "./evaluate/evaluate";
+import {
+  countEvidence,
+  evidenceRequest,
+  previewRequest,
+  VISUAL_REVIEW_HINT,
+} from "./evaluate/evaluate";
 import { publishedAtHead } from "./published";
 import type {
   PublishedEvidence,
@@ -316,9 +321,11 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
   const max = prepared.policy.retry?.maxFailedAttemptsPerItem ?? 3;
   const scope = prepared.policy.retry?.scope ?? null;
   const status = (item: Listed) =>
-    item.evidence
-      ? evidenceStatus(item.evidence, prepared.published)
-      : statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max);
+    item.kind === "preview"
+      ? "pending"
+      : item.evidence
+        ? evidenceStatus(item.evidence, prepared.published)
+        : statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max);
   const required = prepared.required.map((item) => {
     const state = memory.get(item.id);
     const failures = state?.failures ?? 0;
@@ -352,6 +359,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
     .filter(
       (item) =>
         item.kind !== "review" &&
+        item.kind !== "preview" &&
         (item.evidence
           ? status(item) === "missing"
           : runnable(memory.get(item.id), item.kind === "setup" ? 2 : max)),
@@ -487,6 +495,7 @@ async function runId(
   if (item.kind === "review") {
     return `Review ${id} requires a different model. An independent reviewer runs it after this turn.`;
   }
+  if (item.kind === "preview") return `${id} runs nothing. ${item.hint}`;
   if (item.evidence) {
     const found = countEvidence(item.evidence, prepared.published);
     if (found >= item.evidence.minimum && item.evidence.approval === "human") {
@@ -662,6 +671,16 @@ function describeItem(item: ResolvedSetup | ResolvedRequirement, paths: readonly
       ...(item.paths !== undefined ? { paths: item.paths } : {}),
       matched,
       evidence: item,
+    };
+  }
+  if (item.kind === "preview") {
+    return {
+      id: item.id,
+      kind: item.kind,
+      hint: previewRequest(item),
+      differentModel: false,
+      ...(item.paths !== undefined ? { paths: item.paths } : {}),
+      matched,
     };
   }
   if (item.kind === "review") {

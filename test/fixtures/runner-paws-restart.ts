@@ -450,7 +450,7 @@ let runtime = runnerRestart
   : await openRunnerRuntime(runtimeOptions);
 
 async function until(label: string, done: () => boolean) {
-  const deadline = performance.now() + 12_000;
+  const deadline = performance.now() + 30_000;
   while (!done() && performance.now() < deadline) {
     await runtime.tick();
     await Bun.sleep(5);

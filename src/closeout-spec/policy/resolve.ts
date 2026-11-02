@@ -9,6 +9,7 @@ import type {
   PolicyRule,
   ResolvedCommand,
   ResolvedEvidence,
+  ResolvedPreview,
   ResolvedRequirement,
   ResolvedReview,
   ResolvedRule,
@@ -242,6 +243,21 @@ function walk(
       };
       if (raw.hint !== undefined) item.hint = raw.hint;
       if (raw.approval !== undefined) item.approval = raw.approval;
+      if (paths.paths.length > 0) item.paths = paths.paths;
+      if (raw.recheck === true) item.recheck = true;
+      state.items.push(item);
+      continue;
+    }
+    if (raw.kind === "preview") {
+      const paths = checkPathPatterns(raw.paths ?? []);
+      if (!paths.ok) return paths.message;
+      const item: ResolvedPreview = {
+        id,
+        kind: "preview",
+        gate: "beforePR",
+        approval: raw.approval,
+      };
+      if (raw.hint !== undefined) item.hint = raw.hint;
       if (paths.paths.length > 0) item.paths = paths.paths;
       if (raw.recheck === true) item.recheck = true;
       state.items.push(item);
