@@ -8,6 +8,7 @@ import {
   finishCloseoutProgress,
   insertQueuedItem,
   migrate,
+  saveEvidence,
   openDatabase,
   upsertCloseoutStep,
 } from "../../../db";
@@ -151,5 +152,41 @@ describe("status payload budget", () => {
     expect(calls).toEqual(["overview"]);
     expect(overviewBody).not.toMatch(/"stdout"|"stderr"|expected 1 to be 2/);
     expect((JSON.parse(overviewBody) as { issues: unknown[] }).issues).toHaveLength(10);
+  });
+});
+
+describe("evidence gallery budget", () => {
+  test("GET /api/evidence stays under 200 KB with eight files on each of the 60 listed issues", async () => {
+    const db = openDatabase(":memory:");
+    open.push(db);
+    migrate(db);
+    const now = Date.now();
+    for (let index = 0; index < 110; index += 1) {
+      const item = `PAS-${1000 + index}`;
+      insertQueuedItem(db, { id: item, now: now - index });
+      if (index >= 10) db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [item]);
+      for (let file = 0; file < 8; file += 1)
+        saveEvidence(db, {
+          id: `01J${String(index).padStart(3, "0")}${file}`.padEnd(26, "Z"),
+          itemId: item,
+          runId: `run-${item}`,
+          checkId: "visual-proof",
+          attempt: 1,
+          mediaType: file === 0 ? "video/webm" : "image/png",
+          sizeBytes: 250_000,
+          sha256: "0".repeat(64),
+          displayName: `Runner card with three sessions · desktop ${file}.png`,
+          headCommit: base,
+          createdAt: now - index,
+          assetUrl: null,
+        });
+    }
+    const response = await handleStatusRequest(new Request("http://paws.test/api/evidence"), {
+      provider: createLiveStatusProvider(db),
+    });
+    const body = await response!.text();
+    expect(response!.status).toBe(200);
+    expect((JSON.parse(body) as { evidence: unknown[] }).evidence).toHaveLength(480);
+    expect(new TextEncoder().encode(body).byteLength).toBeLessThan(LIST_BUDGET_BYTES);
   });
 });

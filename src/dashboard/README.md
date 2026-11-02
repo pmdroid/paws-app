@@ -97,7 +97,15 @@ const response = await handleStatusRequest(request, {
 if (response) return response;
 ```
 
-Closeout videos and screenshots arrive in the snapshot's `evidence` list, limited to the items the reader can see. The issue page shows them in a gallery, and `/dashboard/evidence/<id>` (or `/evidence/<id>`, which redirects there) shows one of them. Files load from `GET /api/evidence/<id>`. video.js is bundled as a separate chunk the first time a video plays; nothing loads from a CDN.
+Closeout videos and screenshots arrive in the issue's `evidence` list, limited to the items the reader can see, and the issue page shows them in a gallery. The Evidence pages, which the sidebar does not link, load their own resources. Types and parsers are in [`src/contract.ts`](src/contract.ts).
+
+| Endpoint                          | Response                   | Data                                                                                                                                           |
+| --------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/evidence`               | `EvidenceListResponse`     | `evidence` of the issues `GET /api/issues` lists, oldest first. `/dashboard/evidence` shows it newest first, with each file's issue and check. |
+| `GET /api/evidence/<id>/metadata` | `EvidenceMetadataResponse` | `evidence`, one file the reader may see however old its issue, and `related`, every file of that issue. A marked copy has no metadata.         |
+| `GET /api/evidence/<id>`          | the file                   | Bytes with `Range`, `HEAD` and the download name, for evidence and marked copies. It answers 401 without a Paws session.                       |
+
+`/dashboard/evidence/<id>` (or `/evidence/<id>`, which redirects there) shows one file. Only `/api/evidence/<id>` reaches the file handler; deeper paths reach the metadata routes. Both metadata routes carry `generatedAt`, `Paws-Generated-At`, `Cache-Control: no-store` and a weak `ETag`, are reused for one second per reader, and answer an unknown or hidden file with the same 404. The Evidence pages load once and do not poll, so playback is never interrupted. video.js is bundled as a separate chunk the first time a video plays; nothing loads from a CDN.
 
 `null` means the request is not `/status` or `/api/status`. Leave webhook routes alone.
 
