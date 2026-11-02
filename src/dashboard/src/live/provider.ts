@@ -67,6 +67,8 @@ import {
   listCloseoutProgress,
   listCiRounds,
   listCloseoutRounds,
+  getEvidence,
+  getWorkItem,
   listEvidence,
   linearRequestsByItem,
   listIntakeQueue,
@@ -113,6 +115,8 @@ import {
   type ActivityKind,
   type CheckKind,
   type CheckState,
+  type EvidenceListResponse,
+  type EvidenceMetadataResponse,
   type IssueDetailResponse,
   type IssueListResponse,
   type QuestionCard,
@@ -229,6 +233,8 @@ export function createLiveStatusProvider(
   questions(): QuestionListResponse;
   question(id: string): QuestionDetailResponse | null;
   alias(kind: AliasKind, id: string): string | null;
+  evidence(): EvidenceListResponse;
+  evidenceMetadata(id: string): EvidenceMetadataResponse | null;
 } {
   return {
     overview() {
@@ -246,6 +252,12 @@ export function createLiveStatusProvider(
       return question === undefined
         ? null
         : { source: list.source, generatedAt: list.generatedAt, question };
+    },
+    evidence() {
+      return readEvidenceList(db, options);
+    },
+    evidenceMetadata(id) {
+      return readEvidenceMetadata(db, id, options);
     },
     issues() {
       return readIssueList(db, options);
@@ -442,6 +454,64 @@ function readMergeQueue(db: Database, options: LiveStatusOptions): MergeQueueRes
     issues: issues.filter((issue) => shown.has(issue.id)),
     pushOutages: readPushOutages(db).pushOutages ?? [],
     policyRunnerWarnings: readPolicyRunnerWarnings(db).policyRunnerWarnings ?? [],
+  };
+}
+
+function visibleTo(options: LiveStatusOptions, record: WorkItemRecord): boolean {
+  return (
+    options.sessionIds === undefined ||
+    (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey))
+  );
+}
+
+function readEvidenceList(db: Database, options: LiveStatusOptions): EvidenceListResponse {
+  const now = options.now?.() ?? new Date();
+  const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
+  const visible = listWorkItemsByStates(db, WORK_ITEM_STATES)
+    .filter((record) => visibleTo(options, record))
+    .sort((left, right) => compareNewest(left, right, facts));
+  const records = listedRecords(db, visible, facts, now.getTime());
+  return {
+    source: "live",
+    generatedAt: now.toISOString(),
+    project: projectOf(records, options.project),
+    evidence: evidenceFor(db, records),
+  };
+}
+
+function readEvidenceMetadata(
+  db: Database,
+  id: string,
+  options: LiveStatusOptions,
+): EvidenceMetadataResponse | null {
+  const stored = getEvidence(db, id);
+  const owner = stored === null ? null : getWorkItem(db, stored.itemId);
+  if (owner === null || !visibleTo(options, owner)) return null;
+  const issue = publicId(owner);
+  const records = listWorkItemsByStates(db, WORK_ITEM_STATES).filter(
+    (record) => publicId(record) === issue && visibleTo(options, record),
+  );
+  const related = evidenceFor(db, records);
+  const evidence = related.find((entry) => entry.id === id);
+  if (evidence === undefined) return null;
+  return {
+    source: "live",
+    generatedAt: (options.now?.() ?? new Date()).toISOString(),
+    project: projectOf(records, options.project),
+    evidence,
+    related,
+  };
+}
+
+export function emptyEvidenceList(
+  now = new Date(),
+  project?: LiveStatusOptions["project"],
+): EvidenceListResponse {
+  return {
+    source: "live",
+    generatedAt: now.toISOString(),
+    project: projectOf([], project),
+    evidence: [],
   };
 }
 

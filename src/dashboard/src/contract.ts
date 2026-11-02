@@ -1409,6 +1409,69 @@ function readMergeQueueIssue(input: unknown, path: string): MergeQueueIssue {
   };
 }
 
+export const EVIDENCE_RESOURCE_PATH = "/api/evidence";
+
+export interface EvidenceListResponse {
+  source: StatusSource;
+  generatedAt: string;
+  project: StatusProject;
+  evidence: StatusEvidence[];
+}
+
+export interface EvidenceMetadataResponse {
+  source: StatusSource;
+  generatedAt: string;
+  project: StatusProject;
+  evidence: StatusEvidence;
+  related: StatusEvidence[];
+}
+
+export type EvidenceListParseResult =
+  | { ok: true; response: EvidenceListResponse }
+  | { ok: false; error: string };
+export type EvidenceMetadataParseResult =
+  | { ok: true; response: EvidenceMetadataResponse }
+  | { ok: false; error: string };
+
+export function evidenceMetadataPath(id: string): string {
+  return `${EVIDENCE_RESOURCE_PATH}/${encodeURIComponent(id)}/metadata`;
+}
+
+export function parseEvidenceListResponse(input: unknown): EvidenceListParseResult {
+  return parsed(
+    () => {
+      const path = "evidenceList";
+      const body = object(input, path);
+      return {
+        ...readResourceHead(body, path),
+        evidence: array(body, "evidence", path).map((entry, index) =>
+          readEvidence(entry, `${path}.evidence[${index}]`),
+        ),
+      };
+    },
+    "contract.parseEvidenceListResponse",
+    "Invalid evidence list",
+  );
+}
+
+export function parseEvidenceMetadataResponse(input: unknown): EvidenceMetadataParseResult {
+  return parsed(
+    () => {
+      const path = "evidenceMetadata";
+      const body = object(input, path);
+      return {
+        ...readResourceHead(body, path),
+        evidence: readEvidence(body.evidence, `${path}.evidence`),
+        related: array(body, "related", path).map((entry, index) =>
+          readEvidence(entry, `${path}.related[${index}]`),
+        ),
+      };
+    },
+    "contract.parseEvidenceMetadataResponse",
+    "Invalid evidence metadata",
+  );
+}
+
 /** The list's summary of a full verdict: decision, head, and each check's id, kind and state. */
 export function verdictSummary(verdict: StatusVerdict): StatusVerdictSummary {
   return {

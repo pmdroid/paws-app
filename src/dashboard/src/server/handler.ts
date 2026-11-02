@@ -5,11 +5,14 @@ import { join, posix, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   CHECK_LOG_TAIL_BYTES,
+  EVIDENCE_RESOURCE_PATH,
   GENERATED_AT_HEADER,
   ISSUES_API_PATH,
   MERGE_QUEUE_API_PATH,
   OVERVIEW_API_PATH,
   issueCheckLogPath,
+  parseEvidenceListResponse,
+  parseEvidenceMetadataResponse,
   parseIssueCheckLogResponse,
   parseIssueDetailResponse,
   parseIssueListResponse,
@@ -25,6 +28,8 @@ import {
   statusCheckLogPath,
   STATUS_API_PATH,
   STATUS_ITEM_API_PATH,
+  type EvidenceListResponse,
+  type EvidenceMetadataResponse,
   type IssueCheckLogResponse,
   type IssueDetailResponse,
   type IssueListResponse,
@@ -38,6 +43,7 @@ import {
 } from "../contract";
 import {
   createLiveStatusProvider,
+  emptyEvidenceList,
   emptyIssueList,
   emptyMergeQueue,
   emptyLiveSnapshot,
@@ -74,6 +80,10 @@ export interface StatusProvider {
   questions?(): QuestionListResponse | Promise<QuestionListResponse>;
   question?(id: string): QuestionDetailResponse | null | Promise<QuestionDetailResponse | null>;
   alias?(kind: AliasKind, id: string): string | null | Promise<string | null>;
+  evidence?(): EvidenceListResponse | Promise<EvidenceListResponse>;
+  evidenceMetadata?(
+    id: string,
+  ): EvidenceMetadataResponse | null | Promise<EvidenceMetadataResponse | null>;
 }
 
 export interface StatusServerOptions {
@@ -142,6 +152,12 @@ export function fakeStatusProvider(): StatusProvider {
     alias() {
       return null;
     },
+    evidence() {
+      return emptyEvidenceList();
+    },
+    evidenceMetadata() {
+      return null;
+    },
   };
 }
 
@@ -203,6 +219,8 @@ export async function handleStatusRequest(
     return aliasResponse(request, providerFor(options), pathname);
   if (pathname === MERGE_QUEUE_API_PATH)
     return mergeQueueResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
+  if (pathname === EVIDENCE_RESOURCE_PATH || pathname.startsWith(`${EVIDENCE_RESOURCE_PATH}/`))
+    return evidenceResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (isDashboardPath(pathname)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
@@ -284,6 +302,8 @@ function liveProvider(options?: {
     questions: () => emptyQuestionList(),
     question: () => null,
     alias: () => null,
+    evidence: () => emptyEvidenceList(),
+    evidenceMetadata: () => null,
   };
 }
 
@@ -640,6 +660,59 @@ async function questionsResponse(
     return conditional(sizes, request, built.value);
   } catch (caughtError7) {
     journalCaught(caughtError7, "handler.questionsResponse", null);
+    return json({ error: "status unavailable" }, 500);
+  }
+}
+
+const EVIDENCE_METADATA = /^\/([0-9A-HJKMNP-TV-Z]{26})\/metadata$/;
+
+async function evidenceResponse(
+  request: Request,
+  options: StatusServerOptions,
+  sizes: ResponseSizeJournal,
+  cache: StatusSnapshotCache,
+): Promise<Response> {
+  if (request.method === "OPTIONS")
+    return new Response(null, { status: 204, headers: { ...CORS } });
+  if (request.method !== "GET" && request.method !== "HEAD")
+    return json({ error: "Method not allowed" }, 405);
+  const provider = providerFor(options);
+  const source = options.provider ?? options.db ?? EMPTY_SOURCE;
+  const rest = new URL(request.url).pathname.slice(EVIDENCE_RESOURCE_PATH.length);
+  try {
+    if (rest === "") {
+      if (provider.evidence === undefined) return json({ error: "Not found" }, 404);
+      const read = provider.evidence.bind(provider);
+      const built = await cache.get<EvidenceListResponse>(
+        source,
+        cacheKey("evidence", "", options),
+        async () => {
+          const parsed = parseEvidenceListResponse(await read());
+          return parsed.ok ? { value: parsed.response } : { error: parsed.error };
+        },
+      );
+      if ("error" in built) return json({ error: built.error }, 500);
+      return conditional(sizes, request, built.value);
+    }
+    const id = EVIDENCE_METADATA.exec(rest)?.[1];
+    if (id === undefined || provider.evidenceMetadata === undefined)
+      return json({ error: "Not found" }, 404);
+    const read = provider.evidenceMetadata.bind(provider);
+    const built = await cache.get<EvidenceMetadataResponse | null>(
+      source,
+      cacheKey("evidenceMetadata", id, options),
+      async () => {
+        const metadata = await read(id);
+        if (metadata === null) return { value: null };
+        const parsed = parseEvidenceMetadataResponse(metadata);
+        return parsed.ok ? { value: parsed.response } : { error: parsed.error };
+      },
+    );
+    if ("error" in built) return json({ error: built.error }, 500);
+    if (built.value === null) return json({ error: "Not found" }, 404);
+    return conditional(sizes, request, built.value);
+  } catch (caughtError7) {
+    journalCaught(caughtError7, "handler.evidenceResponse", null);
     return json({ error: "status unavailable" }, 500);
   }
 }
