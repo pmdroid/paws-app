@@ -11,7 +11,7 @@ import {
   openDatabase,
   upsertCloseoutStep,
 } from "../../../db";
-import { handleStatusRequest } from "../engine";
+import { createLiveStatusProvider, handleStatusRequest } from "../engine";
 
 /** The budget in `docs/status-payload.md`. */
 const LIST_BUDGET_BYTES = 200 * 1024;
@@ -110,5 +110,27 @@ describe("status payload budget", () => {
     const detail = await get("/api/status/items/PAS-2000");
     expect(detail).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
     expect(await get("/api/status/items/PAS-1000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
+    expect(await get("/api/issues")).toBeLessThanOrEqual(LIST_BUDGET_BYTES);
+    expect(await get("/api/issues/PAS-2000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
+    expect(await get("/api/issues/PAS-1000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
+
+    const live = createLiveStatusProvider(db, { env: {} });
+    const calls: string[] = [];
+    const provider = {
+      snapshot: () => live.snapshot(),
+      issues: () => (calls.push("issues"), live.issues()),
+      checkLog: (request: Parameters<typeof live.checkLog>[0]) => (
+        calls.push("checkLog"),
+        live.checkLog(request)
+      ),
+    };
+    const response = (await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
+      provider,
+      responseSizes: { record() {}, flush() {} },
+    }))!;
+    const body = await response.text();
+    expect(calls).toEqual(["issues"]);
+    expect(body).not.toMatch(/"stdout"|"stderr"|expected 1 to be 2/);
+    expect((JSON.parse(body) as { issues: unknown[] }).issues).toHaveLength(60);
   });
 });

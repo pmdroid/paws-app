@@ -948,6 +948,168 @@ export function parseStatusItemDetail(input: unknown): ItemDetailParseResult {
   }
 }
 
+export const ISSUES_API_PATH = "/api/issues";
+
+export interface IssueListResponse {
+  source: StatusSource;
+  generatedAt: string;
+  project: StatusProject;
+  issues: StatusItem[];
+  runs: StatusRun[];
+  verdicts: StatusVerdictSummary[];
+  agentCloseout: StatusAgentCloseoutSummary[];
+  mergedTimes: StatusMergedTimes | null;
+}
+
+export interface IssueDetailResponse {
+  source: StatusSource;
+  generatedAt: string;
+  project: StatusProject;
+  issue: StatusItem;
+  earlierSessions: StatusItem[];
+  blocks: string[];
+  risk: StatusItemRisk | null;
+  runs: StatusRun[];
+  questions: StatusQuestion[];
+  verdicts: StatusVerdict[];
+  agentCloseout: StatusAgentCloseout[];
+  evidence: StatusEvidence[];
+  ciRounds: StatusCiRound[];
+  mergeQueue: StatusMergeEntry[];
+  mergeHistory: StatusMergeOutcome[];
+  dead: StatusDeadDelivery[];
+}
+
+export interface IssueCheckLogResponse extends StatusCheckLog {
+  generatedAt: string;
+}
+
+export type IssueListParseResult =
+  | { ok: true; response: IssueListResponse }
+  | { ok: false; error: string };
+export type IssueDetailParseResult =
+  | { ok: true; response: IssueDetailResponse }
+  | { ok: false; error: string };
+export type IssueCheckLogParseResult =
+  | { ok: true; response: IssueCheckLogResponse }
+  | { ok: false; error: string };
+
+export function issuePath(id: string): string {
+  return `${ISSUES_API_PATH}/${encodeURIComponent(id)}`;
+}
+
+/** As `statusCheckLogPath`, under the issue resource. */
+export function issueCheckLogPath(
+  issueId: string,
+  attempt: number,
+  checkId: string,
+  options: { run?: string | null; full?: boolean } = {},
+): string {
+  const query = new URLSearchParams();
+  if (options.run) query.set("run", options.run);
+  if (options.full) query.set("full", "1");
+  const search = query.toString() ? `?${query.toString()}` : "";
+  return `${issuePath(issueId)}/attempts/${attempt}/checks/${encodeURIComponent(checkId)}/log${search}`;
+}
+
+function readResourceHead(body: Record<string, unknown>, path: string) {
+  return {
+    source: oneOf(string(body, "source", path), SOURCES, `${path}.source`),
+    generatedAt: dateString(body, "generatedAt", path),
+    project: readProject(body.project),
+  };
+}
+
+function parsed<T>(read: () => T, at: string, fallback: string) {
+  try {
+    return { ok: true as const, response: read() };
+  } catch (error) {
+    journalCaught(error, at, null);
+    return { ok: false as const, error: error instanceof Error ? error.message : fallback };
+  }
+}
+
+export function parseIssueListResponse(input: unknown): IssueListParseResult {
+  return parsed(
+    () => {
+      const path = "issues";
+      const body = object(input, path);
+      const head = readResourceHead(body, path);
+      return {
+        ...head,
+        issues: array(body, "issues", path).map((entry, index) => readItem(entry, index)),
+        runs: array(body, "runs", path).map((entry, index) => readRun(entry, index)),
+        verdicts: array(body, "verdicts", path).map((entry, index) =>
+          readVerdictSummary(entry, `${path}.verdicts[${index}]`),
+        ),
+        agentCloseout: array(body, "agentCloseout", path).map((entry, index) =>
+          readAgentCloseoutSummary(entry, `${path}.agentCloseout[${index}]`),
+        ),
+        mergedTimes:
+          body.mergedTimes === null
+            ? null
+            : readMergedTimes(body.mergedTimes, `${path}.mergedTimes`),
+      };
+    },
+    "contract.parseIssueListResponse",
+    "Invalid issue list",
+  );
+}
+
+export function parseIssueDetailResponse(input: unknown): IssueDetailParseResult {
+  return parsed(
+    () => {
+      const path = "issue";
+      const body = object(input, path);
+      const head = readResourceHead(body, path);
+      const list = <T>(key: string, read: (entry: unknown, at: string) => T) =>
+        array(body, key, path).map((entry, index) => read(entry, `${path}.${key}[${index}]`));
+      return {
+        ...head,
+        issue: readItem(body.issue, 0),
+        earlierSessions: array(body, "earlierSessions", path).map((entry, index) =>
+          readItem(entry, index + 1),
+        ),
+        blocks: stringArray(body, "blocks", path),
+        risk: readItemRisk(body.risk),
+        runs: array(body, "runs", path).map((entry, index) => readRun(entry, index)),
+        questions: array(body, "questions", path).map((entry, index) => readQuestion(entry, index)),
+        verdicts: array(body, "verdicts", path).map((entry, index) => readVerdict(entry, index)),
+        agentCloseout: list("agentCloseout", readAgentCloseout),
+        evidence: list("evidence", readEvidence),
+        ciRounds: list("ciRounds", readCiRound),
+        mergeQueue: array(body, "mergeQueue", path).map((entry, index) =>
+          readMerge(entry, index, head.project.repo),
+        ),
+        mergeHistory: list("mergeHistory", (entry, at) =>
+          readMergeOutcome(entry, at, head.project.repo),
+        ),
+        dead: list("dead", readDeadDelivery),
+      };
+    },
+    "contract.parseIssueDetailResponse",
+    "Invalid issue detail",
+  );
+}
+
+export function parseIssueCheckLogResponse(input: unknown): IssueCheckLogParseResult {
+  return parsed(
+    () => {
+      const path = "log";
+      const body = object(input, path);
+      return {
+        generatedAt: dateString(body, "generatedAt", path),
+        stdout: string(body, "stdout", path),
+        stderr: string(body, "stderr", path),
+        truncated: boolean(body, "truncated", path),
+        fullPath: body.fullPath === null ? null : text(body, "fullPath", path),
+      };
+    },
+    "contract.parseIssueCheckLogResponse",
+    "Invalid check log",
+  );
+}
+
 /** The list's summary of a full verdict: decision, head, and each check's id, kind and state. */
 export function verdictSummary(verdict: StatusVerdict): StatusVerdictSummary {
   return {

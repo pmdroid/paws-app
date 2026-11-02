@@ -109,6 +109,8 @@ import {
   type ActivityKind,
   type CheckKind,
   type CheckState,
+  type IssueDetailResponse,
+  type IssueListResponse,
   type ItemState,
   type RunState,
   type StatusActivity,
@@ -208,8 +210,17 @@ export function createLiveStatusProvider(
   snapshot(): StatusSnapshot;
   item(id: string): StatusItemDetail | null;
   checkLog(request: CheckLogRequest): CheckOutput | null;
+  issues(): IssueListResponse;
+  issue(id: string): IssueDetailResponse | null;
 } {
   return {
+    issues() {
+      return readIssueList(db, options);
+    },
+    issue(id) {
+      const detail = readItemDetail(db, id, options);
+      return detail === null ? null : toIssueDetail(detail);
+    },
     snapshot() {
       return {
         ...readLiveSnapshot(db, options),
@@ -261,6 +272,43 @@ function toList(snapshot: FullSnapshot): StatusSnapshot {
     ...rest,
     verdicts: verdicts.map(verdictSummary),
     ...(agentCloseout ? { agentCloseout: agentCloseout.map(agentCloseoutSummary) } : {}),
+  };
+}
+
+function readIssueList(db: Database, options: LiveStatusOptions): IssueListResponse {
+  const { snapshot } = readScopedSnapshot(db, options, undefined, "issues");
+  const list = toList(snapshot);
+  return {
+    source: list.source,
+    generatedAt: list.generatedAt,
+    project: list.project,
+    issues: list.items,
+    runs: list.runs,
+    verdicts: list.verdicts,
+    agentCloseout: list.agentCloseout ?? [],
+    mergedTimes: list.mergedTimes ?? null,
+  };
+}
+
+function toIssueDetail(detail: StatusItemDetail): IssueDetailResponse {
+  const current = detail.items.find((item) => item.endedAt === undefined) ?? detail.items[0]!;
+  return {
+    source: detail.source,
+    generatedAt: detail.generatedAt,
+    project: detail.project,
+    issue: current,
+    earlierSessions: detail.items.filter((item) => item !== current),
+    blocks: detail.blocks,
+    risk: detail.risk ?? null,
+    runs: detail.runs,
+    questions: detail.questions,
+    verdicts: detail.verdicts,
+    agentCloseout: detail.agentCloseout ?? [],
+    evidence: detail.evidence ?? [],
+    ciRounds: detail.ciRounds ?? [],
+    mergeQueue: detail.mergeQueue,
+    mergeHistory: detail.mergeHistory ?? [],
+    dead: detail.dead ?? [],
   };
 }
 
@@ -449,6 +497,22 @@ export function emptyLiveSnapshot(
   return { ...emptyBase(now, project), verdicts: [] };
 }
 
+export function emptyIssueList(
+  now = new Date(),
+  project?: LiveStatusOptions["project"],
+): IssueListResponse {
+  return {
+    source: "live",
+    generatedAt: now.toISOString(),
+    project: projectOf([], project),
+    issues: [],
+    runs: [],
+    verdicts: [],
+    agentCloseout: [],
+    mergedTimes: null,
+  };
+}
+
 function emptyBase(now: Date, project: LiveStatusOptions["project"]): StatusSnapshotBase {
   return {
     version: STATUS_API_VERSION,
@@ -563,7 +627,9 @@ function readScopedSnapshot(
   db: Database,
   options: LiveStatusOptions,
   only?: string,
+  scope: "snapshot" | "issues" = "snapshot",
 ): ScopedSnapshot {
+  const issuesOnly = scope === "issues";
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
   const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
@@ -649,15 +715,17 @@ function readScopedSnapshot(
   }));
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
-  const merge = mergeQueueFor(db, {
-    records: visible,
-    items,
-    jobs,
-    queues,
-    generatedAt,
-    now: now.getTime(),
-    repo: options.project?.repo,
-  });
+  const merge: Pick<StatusSnapshot, "mergeQueue" | "mergeHistory"> = issuesOnly
+    ? { mergeQueue: [] }
+    : mergeQueueFor(db, {
+        records: visible,
+        items,
+        jobs,
+        queues,
+        generatedAt,
+        now: now.getTime(),
+        repo: options.project?.repo,
+      });
   const listed = new Set(items.map((item) => item.id));
   const recordVerdicts = new Map(
     records.map((record) => {
@@ -687,15 +755,16 @@ function readScopedSnapshot(
     ...(merge.mergeHistory === undefined
       ? {}
       : { mergeHistory: merge.mergeHistory.filter((entry) => listed.has(entry.itemId)) }),
-    evidence: evidenceFor(db, records),
+    evidence: issuesOnly ? [] : evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, records, now.getTime(), env),
-    ciRounds: ciRoundsFor(db, records, env),
-    dead: deadFor(db, records),
+    ciRounds: issuesOnly ? [] : ciRoundsFor(db, records, env),
+    dead: issuesOnly ? [] : deadFor(db, records),
     ...(only === undefined ? mergedTimesFor(db, visible, facts, now.getTime()) : {}),
   };
-  snapshot.questions = questionsFor(db, records, rows, runs, openQuestions).map((question) =>
-    withRiskDetail(db, withBypassChecks(db, question, snapshot.verdicts, env), snapshot.verdicts),
-  );
+  if (!issuesOnly)
+    snapshot.questions = questionsFor(db, records, rows, runs, openQuestions).map((question) =>
+      withRiskDetail(db, withBypassChecks(db, question, snapshot.verdicts, env), snapshot.verdicts),
+    );
   const blocks =
     only === undefined
       ? []
