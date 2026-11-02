@@ -132,6 +132,7 @@ type Active = {
   dispatching?: Promise<void>;
   teardownConfirmed?: boolean;
   quiesced?: Promise<void>;
+  resuming?: Promise<void>;
   publicationBranch?: string;
   followUps?: number;
   restarts?: number;
@@ -834,6 +835,7 @@ export async function openRunnerRuntime(options: {
   function quiesce(entry: Active) {
     entry.quiesced ??= (async () => {
       await entry.dispatching;
+      await Promise.allSettled([entry.resuming]);
       await broker.stop(entry.execution.id);
       journal.confirmTermination(entry.execution.command);
     })().catch((error) => {
@@ -1414,7 +1416,12 @@ export async function openRunnerRuntime(options: {
     }
     check(entry);
     entry.restarts = (entry.restarts ?? 0) + 1;
-    await broker.resume(id);
+    entry.resuming = broker.resume(id);
+    try {
+      await entry.resuming;
+    } finally {
+      entry.resuming = undefined;
+    }
     return true;
   }
   async function workerFinished(entry: Active): Promise<boolean> {
