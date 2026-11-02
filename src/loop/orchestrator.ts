@@ -1948,6 +1948,24 @@ export class Orchestrator {
         );
         return;
       }
+      if (slotsBusy(error)) {
+        this.settleItemAwake(item.id);
+        deferWorkItem(this.db, item, {
+          retry: retryCount(job.payload),
+          delayMs: SLOTS_BUSY_RETRY_MS,
+          handoff: readString(job.payload, "handoff"),
+          message: null,
+          now: this.now(),
+        });
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.slotsBusy",
+          item.id,
+          "waiting for a runner slot",
+          this.options.journal,
+        );
+        return;
+      }
       const wait = this.nextRunnerWait(job, error);
       if (wait) {
         // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
@@ -3001,7 +3019,7 @@ export class Orchestrator {
             current,
             error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
           );
-        else if (isTransient(error)) {
+        else if (isTransient(error) || slotsBusy(error)) {
           deferred = true;
           capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
@@ -8323,6 +8341,16 @@ class VerificationHeld extends Error {
 
 const VERIFICATION_OWNER_WAIT_MS = 20 * 60_000;
 const VERIFICATION_OWNER_POLL_MS = 5_000;
+
+const SLOTS_BUSY_RETRY_MS = 60_000;
+
+function slotsBusy(error: unknown): boolean {
+  for (let current = error, depth = 0; current instanceof Error && depth < 5; depth++) {
+    if (current instanceof RunnerSlotsBusyError) return true;
+    current = current.cause;
+  }
+  return false;
+}
 
 function usageResetAt(error: unknown): number | null {
   if (!(error instanceof Error) || error.name !== "UsageLimitPause") return null;

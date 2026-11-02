@@ -8,6 +8,7 @@ import {
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
+  RunnerSlotsBusyError,
   systemClock,
 } from "../src/core";
 import {
@@ -102,6 +103,20 @@ test("an agent usage limit waits for its reset without spending retries or faili
   expect(result.states, result.detail).not.toContain("failed");
   expect(result.events, result.detail).toContain("deferred");
   expect(result.events, result.detail).not.toContain("lease_expired");
+}, 90_000);
+
+test("a helper that finds every runner slot busy waits without spending retries or failing the task", async () => {
+  const clock = new FakeClock(Date.now());
+  const result = await runWithFault({
+    error: () => new RunnerSlotsBusyError(),
+    times: MAX_TRANSIENT_RETRIES + 12,
+    clock,
+  });
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(new Set(result.retries), result.detail).toEqual(new Set([0]));
+  expect(result.states, result.detail).not.toContain("failed");
+  expect(result.events, result.detail).toContain("deferred");
 }, 90_000);
 
 test("a failure that keeps coming back stops the task after its retries instead of leaving it stuck", async () => {

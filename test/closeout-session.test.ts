@@ -273,6 +273,32 @@ test("abort kills the closeout process group without counting a failure", async 
   }
 });
 
+test("a check finishes when it exits even if a detached child keeps its output open", async () => {
+  const root = initRepo();
+  const mark = join(root, "pid.txt");
+  const script = [
+    'const {spawn}=require("child_process");',
+    'const child=spawn(process.execPath,["-e","setTimeout(()=>{},60000)"],{detached:true,stdio:["ignore","inherit","inherit"]});',
+    `require("fs").writeFileSync(${JSON.stringify(mark)}, process.pid+"\\n"+child.pid);`,
+    "child.unref();",
+  ].join("");
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "items:",
+    command("leaky", [process.execPath, "-e", script]),
+  ]);
+  writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");
+  const session = createCloseoutSession(root, local(root));
+  const started = Date.now();
+  try {
+    expect(await session.run("leaky")).toContain("passed");
+    expect(Date.now() - started).toBeLessThan(10_000);
+  } finally {
+    const leaked = Number(readProcessIds(mark)?.trim().split("\n")[1] ?? 0);
+    if (leaked > 0 && alive(leaked)) process.kill(leaked, "SIGKILL");
+  }
+});
+
 test("committed changes since origin/main stay required", async () => {
   const root = initRepo();
   writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");

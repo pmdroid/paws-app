@@ -13,6 +13,7 @@ import { createStreamScrubber, scrubText } from "./scrub";
 
 /** Combined stdout and stderr are capped per stream. Past this, `truncated` is set. */
 const OUTPUT_CAP_BYTES = 256 * 1024;
+const OUTPUT_DRAIN_MS = 1_000;
 
 const GIT_TIMEOUT_SECONDS = 30;
 
@@ -334,6 +335,10 @@ export function spawnArgv(
     });
 
     child.once("exit", (code) => {
+      setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }, OUTPUT_DRAIN_MS).unref();
       void Promise.all([stdout, stderr]).then(([out, err]) => {
         finish({
           started: true,
