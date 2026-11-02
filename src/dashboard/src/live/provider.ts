@@ -90,6 +90,7 @@ import {
   listWorkItemsByStates,
   listWorkItemEventRows,
   listLastWorkItemEventTimes,
+  resolveDashboardAlias,
   type CloseoutProgressRecord,
   type CloseoutProgressState,
   type CloseoutRound,
@@ -150,6 +151,7 @@ import {
   type StatusRiskCarryOver,
   type VerdictDecision,
 } from "../contract";
+import type { AliasKind } from "../aliases";
 
 /** Keep aligned with `WORK_ITEM_STATES` / the `work_item.state` check. */
 const WORK_ITEM_STATES = [
@@ -223,6 +225,7 @@ export function createLiveStatusProvider(
   overview(): OverviewResponse;
   questions(): QuestionListResponse;
   question(id: string): QuestionDetailResponse | null;
+  alias(kind: AliasKind, id: string): string | null;
 } {
   return {
     overview() {
@@ -244,6 +247,9 @@ export function createLiveStatusProvider(
     issue(id) {
       const detail = readItemDetail(db, id, options);
       return detail === null ? null : toIssueDetail(detail);
+    },
+    alias(kind, id) {
+      return resolveDashboardAlias(db, kind, id, options.sessionIds);
     },
     snapshot() {
       return {

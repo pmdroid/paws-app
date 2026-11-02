@@ -610,6 +610,8 @@ export {
 } from "./workspace-auth";
 export type { WorkspaceOAuthRequest } from "./workspace-auth";
 export { workspaceSessionIds } from "./workspace-scope";
+export { resolveDashboardAlias } from "./dashboard-aliases";
+export type { DashboardAliasKind } from "./dashboard-aliases";
 
 export {
   linearSessionsForIssueContext,
