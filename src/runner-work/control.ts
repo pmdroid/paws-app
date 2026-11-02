@@ -630,6 +630,7 @@ export function createRunnerWork(options: {
       reported?: readonly { runId: string; generation: number }[],
       repositories?: readonly string[] | null,
       terminated?: readonly { runId: string; generation: number; commandId: string }[],
+      liveAfter?: number,
     ) {
       const running =
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
@@ -682,9 +683,14 @@ export function createRunnerWork(options: {
           .all(runnerId);
         const leases: { runId: string; generation: number; expiresAt: number }[] = [];
         const fenced: { runId: string; generation: number }[] = [];
+        const causal = running !== undefined && liveAfter !== undefined;
+        const sampledAfter =
+          running && liveAfter !== undefined ? Math.min(liveAfter, at) : at - RUNNER_LIVE_GRACE_MS;
         for (const row of rows) {
           try {
             const settled = accepted(row);
+            const named = running?.has(`${row.runId}:${row.generation}`);
+            const observed = running !== undefined && acknowledgedBy(row, sampledAfter);
             live(
               runnerId,
               row.runId,
@@ -692,16 +698,19 @@ export function createRunnerWork(options: {
               at,
               true,
               settled,
-              running && running.has(`${row.runId}:${row.generation}`),
+              named || !causal || observed ? named : undefined,
             );
-            if (running?.has(`${row.runId}:${row.generation}`))
-              db.run("UPDATE runner_work SET confirmed_at=? WHERE run_id=?", [at, row.runId]);
-            else if (running && !settled && acknowledgedBy(row, at - RUNNER_LIVE_GRACE_MS)) {
-              db.run("UPDATE runner_work SET ended_at=?,lost_at=? WHERE run_id=?", [
-                at,
+            if (named)
+              db.run("UPDATE runner_work SET confirmed_at=? WHERE run_id=? AND generation=?", [
                 at,
                 row.runId,
+                row.generation,
               ]);
+            else if (running && !settled && observed) {
+              db.run(
+                "UPDATE runner_work SET ended_at=?,lost_at=? WHERE run_id=? AND generation=?",
+                [at, at, row.runId, row.generation],
+              );
               db.run("DELETE FROM runner_work_grant WHERE run_id=?", [row.runId]);
               fenced.push({ runId: row.runId, generation: row.generation });
               continue;
@@ -714,7 +723,11 @@ export function createRunnerWork(options: {
             });
           } catch (caughtError2) {
             journalCaught(caughtError2, "control.heartbeat.live", null);
-            db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [at, row.runId]);
+            db.run("UPDATE runner_work SET ended_at=? WHERE run_id=? AND generation=?", [
+              at,
+              row.runId,
+              row.generation,
+            ]);
             db.run("DELETE FROM runner_work_grant WHERE run_id=?", [row.runId]);
             fenced.push({ runId: row.runId, generation: row.generation });
           }
@@ -737,6 +750,7 @@ export function createRunnerWork(options: {
         return {
           leases,
           fenced,
+          ...(liveAfter === undefined ? {} : { observedAt: at }),
           ...(terminated === undefined ? {} : { terminated: [...terminated] }),
           ...(offlineCredit === undefined ? {} : offlineCredit),
           ...(concurrency === undefined ? {} : { concurrency }),

@@ -71,3 +71,5 @@ export const LIVE_PREVIEW_RUNNER_VERSION: RunnerVersion = [0, 1, 56];
 /** First runner release with durable cleanup and explicit broker termination reports. */
 export const CONFIRMED_TEARDOWN_RUNNER_VERSION: RunnerVersion = [0, 1, 55];
 export const OFFLINE_AUTHORITY_RUNNER_VERSION: RunnerVersion = [0, 1, 59];
+
+export const CAUSAL_LIVENESS_RUNNER_VERSION: RunnerVersion = [0, 1, 59];

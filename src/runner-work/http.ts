@@ -27,6 +27,7 @@ const heartbeat = RunnerHostStatusSchema.extend({
     .array(z.strictObject({ runId: id, generation }))
     .max(64)
     .optional(),
+  liveAfter: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   repositories: z
     .array(z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/))
     .max(256)
@@ -58,6 +59,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
           live,
           repositories,
           terminated,
+          liveAfter,
           ...host
         } = heartbeat.parse(await body(request));
         return json(
@@ -72,6 +74,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
             live,
             repositories,
             terminated,
+            liveAfter,
           ),
         );
       }
