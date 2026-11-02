@@ -84,6 +84,7 @@ export type CloseoutSessionOptions = {
   basePath?: string;
   allowCommand?: (argv: readonly string[]) => void;
   onProgress?: (event: CloseoutSessionEvent) => void;
+  rulesFirst?: boolean;
 };
 
 export type CloseoutSessionCheck = {
@@ -178,6 +179,8 @@ export function createCloseoutSession(
   const memory = new Map<string, ItemMemory>();
   let fingerprint: string | undefined;
   let checkedHead: string | undefined;
+  let probed = new Map<string, SessionRuleResult>();
+  let probedFingerprint: string | undefined;
   let chain: Promise<unknown> = Promise.resolve();
 
   const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
@@ -239,13 +242,41 @@ export function createCloseoutSession(
     };
   };
 
+  const judgeRules = async (prepared: Prepared): Promise<void> => {
+    if (prepared.kind !== "ready") return;
+    if (probedFingerprint !== fingerprint) {
+      probed = new Map();
+      probedFingerprint = fingerprint;
+    }
+    const unprobed = prepared.rules.filter((rule) => !probed.has(rule.id));
+    if (unprobed.length > 0) {
+      await runProbes(workspace, { ...prepared, rules: unprobed }, options);
+      for (const rule of unprobed) if (rule.result) probed.set(rule.id, rule.result);
+    }
+    for (const rule of prepared.rules) {
+      const result = probed.get(rule.id);
+      if (result) rule.result = result;
+    }
+  };
+
+  const ruleBreak = (prepared: Prepared): string | undefined => {
+    if (!options.rulesFirst || prepared.kind !== "ready") return undefined;
+    const broken = prepared.rules.find((rule) => rule.result && ruleBroke(rule.result));
+    return broken
+      ? `Rule ${broken.id} broke. Stop and finish this turn; Paws asks the team about it before any check runs.`
+      : undefined;
+  };
+
   return {
     report: (request) =>
       exclusive(async () => {
         const prepared = await prepare();
-        if (request?.probes && prepared.kind === "ready")
-          await runProbes(workspace, prepared, options);
-        const report = reportOf(prepared, memory);
+        if (request?.probes || options.rulesFirst) await judgeRules(prepared);
+        const broken = ruleBreak(prepared);
+        const report = {
+          ...reportOf(prepared, memory),
+          ...(broken ? { pending: [], blocked: broken } : {}),
+        };
         if (request?.progress && checkedHead !== undefined)
           notifyReport(options, checkedHead, prepared, report);
         return boundedReport(report);
@@ -255,6 +286,9 @@ export function createCloseoutSession(
         const prepared = await prepare();
         if (prepared.kind === "blocked") return prepared.message;
         if (prepared.kind === "empty") return `No closeout check ${id}. Call get_closeout.`;
+        if (options.rulesFirst) await judgeRules(prepared);
+        const broken = ruleBreak(prepared);
+        if (broken) return broken;
         return runId(workspace, prepared, memory, id, options);
       }),
   };
@@ -429,6 +463,10 @@ async function runProbes(
       truncated: ran.truncated || ran.stdout.length > 24_000 || ran.stderr.length > 24_000,
     };
   }
+}
+
+function ruleBroke(result: SessionRuleResult): boolean {
+  return !result.timedOut && result.exitCode !== null && result.exitCode !== 0;
 }
 
 const MATCHED_PATHS_KEPT = 20;

@@ -545,3 +545,98 @@ test("a change to many files keeps the report within the remote budget by shorte
     expect(entry.matched_paths_omitted).toBe(1480);
   }
 });
+
+function rulesFirstRepo(probeExit: number): { root: string; marks: string } {
+  const root = initRepo();
+  const marks = mkdtempSync(join(tmpdir(), "paws-closeout-marks-"));
+  roots.push(marks);
+  mkdirSync(join(root, ".agents", "probes"), { recursive: true });
+  writeFileSync(
+    join(root, ".agents", "probes", "rule.ts"),
+    `require("node:fs").appendFileSync(${JSON.stringify(join(marks, "probe"))}, "x");\nprocess.exit(${probeExit});\n`,
+  );
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "items:",
+    command("check", [
+      process.execPath,
+      "-e",
+      `require("node:fs").writeFileSync(${JSON.stringify(join(marks, "check"))}, "ran")`,
+    ]),
+    "rules:",
+    "  - id: api-contract",
+    "    summary: No removed field.",
+    "    probe: .agents/probes/rule.ts",
+    "    failOn: P1",
+    "    onFail: approve",
+  ]);
+  writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");
+  return { root, marks };
+}
+
+const probeRuns = (marks: string) => {
+  try {
+    return readFileSync(join(marks, "probe"), "utf8").length;
+  } catch {
+    return 0;
+  }
+};
+
+const checkRan = (marks: string) => {
+  try {
+    return readFileSync(join(marks, "check"), "utf8") === "ran";
+  } catch {
+    return false;
+  }
+};
+
+type RuleReport = Report & {
+  rules?: Array<{ id: string; result?: { exitCode: number | null } }>;
+};
+
+test("rules first: a broken rule empties pending, blocks the report and refuses the checks", async () => {
+  const { root, marks } = rulesFirstRepo(1);
+  const session = createCloseoutSession(root, { ...local(root), rulesFirst: true });
+
+  const first = JSON.parse(await session.report()) as RuleReport;
+  expect(first.rules?.[0]).toMatchObject({ id: "api-contract", result: { exitCode: 1 } });
+  expect(first.pending).toEqual([]);
+  expect(first.blocked).toContain("Rule api-contract broke");
+  expect(await session.run("check")).toBe(first.blocked!);
+  expect(checkRan(marks)).toBe(false);
+
+  await session.report({ probes: true });
+  expect(probeRuns(marks)).toBe(1);
+});
+
+test("without rules first a failing rule leaves the checks pending and runnable", async () => {
+  const { root, marks } = rulesFirstRepo(1);
+  const session = createCloseoutSession(root, local(root));
+
+  const report = JSON.parse(await session.report()) as RuleReport;
+  expect(report.pending).toEqual(["check"]);
+  expect(report.blocked).toBeNull();
+  expect(report.rules?.[0]?.result).toBeUndefined();
+  expect(probeRuns(marks)).toBe(0);
+  expect(await session.run("check")).toBe("check passed.");
+  expect(checkRan(marks)).toBe(true);
+});
+
+test("rules first: a passing rule leaves pending alone and probes once per commit", async () => {
+  const { root, marks } = rulesFirstRepo(0);
+  const session = createCloseoutSession(root, { ...local(root), rulesFirst: true });
+
+  for (let call = 0; call < 3; call++) {
+    const report = JSON.parse(await session.report()) as RuleReport;
+    expect(report.pending).toEqual(["check"]);
+    expect(report.blocked).toBeNull();
+    expect(report.rules?.[0]?.result?.exitCode).toBe(0);
+  }
+  expect(await session.run("check")).toBe("check passed.");
+  await session.report({ probes: true });
+  expect(probeRuns(marks)).toBe(1);
+
+  writeFileSync(join(root, "src", "main.ts"), "export const value = 2;\n");
+  await session.report();
+  expect(probeRuns(marks)).toBe(2);
+});

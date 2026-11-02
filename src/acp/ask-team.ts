@@ -177,6 +177,7 @@ interface HostToolBridgeOptions {
   closeoutBasePath?: string;
   commandGuard?: GuardContext;
   allowCloseoutRun?: boolean;
+  closeoutRulesFirst?: boolean;
   signal: AbortSignal;
   onAsk?: (question: string) => void | Promise<void>;
   onAnswer?: (question: string, answer: string) => void | Promise<void>;
@@ -213,6 +214,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
         signal: options.signal,
         ...(options.runtimeBinPaths?.length ? { runtimeBinPaths: options.runtimeBinPaths } : {}),
         ...(options.closeoutBasePath !== undefined ? { basePath: options.closeoutBasePath } : {}),
+        ...(options.closeoutRulesFirst ? { rulesFirst: true } : {}),
         allowCommand(argv) {
           authorizeCloseout(argv, worktreePath, options.commandGuard);
         },

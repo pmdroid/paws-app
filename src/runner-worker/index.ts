@@ -1004,6 +1004,7 @@ export async function executeRunnerCommand(
       role: command.type === "review" ? "reviewer" : "implementer",
       readOnly: command.type === "task" ? command.purpose !== "artifact" : command.type !== "run",
       checkpoint: command.type === "run" && command.checkpoint !== false,
+      ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : job.executionId,
       runId: job.executionId,

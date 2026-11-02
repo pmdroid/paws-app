@@ -401,6 +401,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           ? { closeoutBasePath: options.closeoutBasePath }
           : {}),
         allowCloseoutRun: options.readOnly !== true,
+        ...(options.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
         signal: runAbort.signal,
         onAsk: (question) => emit({ type: "ask_team", question, phase: "asked" }),
         onAnswer: (question, answer) =>
