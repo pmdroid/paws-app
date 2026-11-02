@@ -74,7 +74,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
-    await page.goto(`http://127.0.0.1:${server.port}/status/issues/${item.id}`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/${item.id}`);
     const section = page.locator("#dead-deliveries");
     await expect(
       section.getByRole("heading", { name: "Stopped after every attempt" }),

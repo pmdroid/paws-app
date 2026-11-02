@@ -117,7 +117,7 @@ async function pageFor(browser: Browser, manifest: Manifest, identity: "member" 
   const page = await context.newPage();
   page.setDefaultTimeout(15_000);
   page.on("pageerror", (error) => errors.push(`${identity}: ${error.message}`));
-  await page.goto(`${manifest.origin}/status/runners`);
+  await page.goto(`${manifest.origin}/dashboard/runners`);
   await page.getByRole("button", { name: "Add a runner", exact: true }).waitFor();
   return page;
 }

@@ -36,7 +36,7 @@ import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src
 import { migratedDatabase } from "./helpers";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
-const RUNNERS_URL = "https://paws.example/status/runners";
+const RUNNERS_URL = "https://paws.example/dashboard/runners";
 const DAY_MS = 24 * 60 * 60_000;
 const gitConfig = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"] as const;
 const previousGitConfig = gitConfig.map((key) => process.env[key]);

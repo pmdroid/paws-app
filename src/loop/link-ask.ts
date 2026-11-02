@@ -55,6 +55,7 @@ import {
   stopForRisk,
 } from "./risk-approval";
 import { decideVisualReview, postNote, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
+import { dashboardIssuePath } from "../dashboard-links";
 
 /** A Paws that only listens on localhost has no link a person can open, so it cannot ask this way. */
 export const LINK_ASK_NEEDS_PUBLIC_URL =
@@ -74,10 +75,10 @@ export function linkAskAvailable(publicUrl: string | null | undefined): publicUr
   return typeof publicUrl === "string" && publicUrl.startsWith("https://");
 }
 
-/** `https://paws.example/status/issues/PAS-633#closeout` */
+/** `https://paws.example/dashboard/issues/PAS-633#closeout` */
 export function linkAskUrl(publicUrl: string, item: WorkItemRecord, kind: LinkAskKind): string {
-  const issue = encodeURIComponent(item.linearIdentifier ?? item.id);
-  return `${publicUrl.replace(/\/+$/, "")}/status/issues/${issue}#${LINK_ASK_ANCHORS[kind]}`;
+  const issue = dashboardIssuePath(item.linearIdentifier ?? item.id);
+  return `${publicUrl.replace(/\/+$/, "")}${issue}#${LINK_ASK_ANCHORS[kind]}`;
 }
 
 /**

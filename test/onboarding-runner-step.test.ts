@@ -360,7 +360,7 @@ test("a missing agent sign-in links to the sign-in on the member's own runner", 
     "Sign in to Codex on mia-box. The Codex sign-in expired.",
   );
   const link = agents.querySelector("a.action");
-  expect(link?.getAttribute("href")).toBe("/status/runners/01RUNNER");
+  expect(link?.getAttribute("href")).toBe("/dashboard/runners/01RUNNER");
   expect(link?.textContent).toBe("Sign in on mia-box");
   // Only the owner can sign in on a shared runner, so the page names them instead of linking.
   const shared = await render(
@@ -421,7 +421,7 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
     `${name} is paused. Sign in the coding agents this runner should use, then turn it on.`,
   );
   expect(page.runner()?.getAttribute("data-runner")).toBe("paused");
-  expect(page.document.querySelector(`a[href="/status/runners/${vm.runnerId}"]`)).not.toBeNull();
+  expect(page.document.querySelector(`a[href="/dashboard/runners/${vm.runnerId}"]`)).not.toBeNull();
   // Readiness is the scheduler's gate for a held first delegation: once the agents sign in on
   // the new runner, the held item may start.
   expect(ready()).toBe(false);

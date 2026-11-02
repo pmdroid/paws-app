@@ -42,7 +42,7 @@ async function openSettings(page) {
       });
     });
     const page = await context.newPage();
-    await page.goto(`${fixture.origin}/status/`);
+    await page.goto(`${fixture.origin}/dashboard/`);
     await page.locator("summary").filter({ hasText: "Set up your first workspace" }).click();
     await page.locator("input[name=bootstrap]").fill(fixture.bootstrap);
     await page.getByRole("button", { name: "Connect workspace" }).click();
@@ -55,7 +55,7 @@ async function openSettings(page) {
       await section.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
       await section.getByRole("checkbox").check();
       await section.getByRole("button", { name: "Link GitHub identity" }).click();
-      await page.waitForURL((url) => url.pathname === "/status" && !url.search);
+      await page.waitForURL((url) => url.pathname === "/dashboard" && !url.search);
       await page.getByRole("button", { name: "Sign out" }).waitFor();
       await openSettings(page);
       await page.locator("#workspace-github-attribution summary").click();

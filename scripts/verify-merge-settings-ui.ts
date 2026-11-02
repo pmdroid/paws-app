@@ -79,7 +79,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
-    await page.goto(`http://127.0.0.1:${server.port}/status/settings/merging`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/merging`);
     await expect(page.getByRole("heading", { name: "Workspace default" })).toBeVisible();
     await expect(page.locator("#project-0-main")).toBeDisabled();
     await expect(page.locator("#project-1-order")).toHaveValue("github-queue");
@@ -138,7 +138,7 @@ try {
       fullPage: true,
     });
 
-    await page.goto(`http://127.0.0.1:${server.port}/status/runs/r-102`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/runs/r-102`);
     await expect(
       page.getByRole("heading", {
         name: "Second in the acme/platform GitHub merge queue, waiting for checks.",

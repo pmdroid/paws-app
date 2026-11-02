@@ -72,7 +72,7 @@ try {
     ["390", 390, 844],
   ] as const) {
     const page = await browser.newPage({ viewport: { width, height } });
-    await page.goto(`${server.url.origin}/status/runs/${run.id}/transcript`);
+    await page.goto(`${server.url.origin}/dashboard/runs/${run.id}/transcript`);
     await page.getByText("Workspace hook failed (after a file edit)", { exact: false }).waitFor();
     await page.getByText("timed out after 10s", { exact: false }).waitFor();
     widths[name] = await page.evaluate(

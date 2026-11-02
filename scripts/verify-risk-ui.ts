@@ -93,7 +93,7 @@ try {
       page.on("pageerror", (error) => errors.push(error.message));
       await page.emulateMedia({ colorScheme: scheme });
 
-      await page.goto(`http://127.0.0.1:${server.port}/status/issues/ENG-101`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-101`);
       const card = page.locator("#risk-tier");
       await expect(card.getByRole("heading", { name: "Risk" })).toBeVisible();
       await expect(card).toContainText("High");
@@ -104,14 +104,14 @@ try {
       await card.scrollIntoViewIfNeeded();
       await card.screenshot({ path: join(directory, `risk-high-${scheme}-${width}.png`) });
 
-      await page.goto(`http://127.0.0.1:${server.port}/status/issues/ENG-102`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-102`);
       await expect(card).toContainText("Normal");
       await expect(card).toContainText("Security review skipped: no high-risk path.");
       await fits(page);
       await card.scrollIntoViewIfNeeded();
       await card.screenshot({ path: join(directory, `risk-normal-${scheme}-${width}.png`) });
 
-      await page.goto(`http://127.0.0.1:${server.port}/status/settings/merging`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/merging`);
       await expect(page.getByRole("heading", { name: "High-risk paths" })).toBeVisible();
       const platform = page.locator(".settings-project", {
         has: page.getByRole("heading", { name: "acme/platform" }),

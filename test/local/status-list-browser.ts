@@ -54,13 +54,13 @@ try {
       await page.screenshot({ path: file, fullPage: true });
       shots.push(file);
     };
-    await page.goto(`${base}/status/`);
+    await page.goto(`${base}/dashboard/`);
     await page.getByText("Needs you").first().waitFor();
     await shoot("overview");
-    await page.goto(`${base}/status/issues`);
+    await page.goto(`${base}/dashboard/issues`);
     await page.locator(".issue-row").first().waitFor();
     await shoot("issues");
-    await page.goto(`${base}/status/issues/ENG-100`);
+    await page.goto(`${base}/dashboard/issues/ENG-100`);
     await page.locator('[aria-label="Closeout"]').waitFor();
     const attempts = await page.locator('[data-action="closeout-attempt"]').count();
     await shoot("issue-page-closeout");

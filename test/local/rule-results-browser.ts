@@ -55,7 +55,7 @@ try {
       await page.emulateMedia({ colorScheme: scheme });
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(`http://127.0.0.1:${server.port}/status/issues/ENG-100`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-100`);
       const section = page.locator(".rules-section");
       await section.getByText("Repository rules").waitFor();
       for (const text of ["Passed", "Failed", "Waiting for approval", "Approved", "Bypassed"])

@@ -21,7 +21,7 @@ export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
   rule: "Review rule",
 };
 
-/** The card on the item page each kind opens: `/status/issues/PAS-633#closeout`. */
+/** The card on the item page each kind opens: `/dashboard/issues/PAS-633#closeout`. */
 export const LINK_ASK_ANCHORS: Record<LinkAskKind, string> = {
   bypass: "closeout",
   screenshots: "visual-review",

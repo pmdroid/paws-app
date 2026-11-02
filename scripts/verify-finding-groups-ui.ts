@@ -140,7 +140,7 @@ try {
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.emulateMedia({ colorScheme: theme as "light" | "dark", reducedMotion: "reduce" });
-      await page.goto(`http://127.0.0.1:${server.port}/status/findings`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/findings`);
       await page.getByRole("button", { name: "Groups", exact: true }).click();
       await expect(
         page.getByRole("heading", { name: "Use constant-time comparisons for secrets" }),
@@ -174,7 +174,7 @@ try {
   await expect.poll(() => actions.length).toBe(4);
   await expect(page.getByRole("status").filter({ hasText: "Grouping queued." })).toBeVisible();
   failGroups = true;
-  await page.goto(`http://127.0.0.1:${server.port}/status/findings`);
+  await page.goto(`http://127.0.0.1:${server.port}/dashboard/findings`);
   await expect(page.locator("#finding-1")).toBeVisible();
   const beforeFilters = groupsReads;
   await page.locator("[data-findings-filter=severity]").selectOption("P1");
@@ -198,7 +198,7 @@ try {
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.emulateMedia({ colorScheme: theme as "light" | "dark", reducedMotion: "reduce" });
-      await page.goto(`http://127.0.0.1:${server.port}/status/findings`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/findings`);
       await page.getByRole("button", { name: "Groups", exact: true }).click();
       await expect(
         page.getByRole("status").filter({ hasText: "Skipped: No findings changed" }),

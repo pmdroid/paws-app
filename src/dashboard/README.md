@@ -48,7 +48,7 @@ The list reads only issue rows and their summaries: no questions, merge queue, e
 - A queued entry in `items` carries `held` while the scheduler holds it back: a `reason` (`blocked`, `project`, `reconciling`, `snapshot`, `cap`, `slot` or `workspace`) and, for `blocked`, the `blockers` that have not merged yet. The scheduler stores it on each pass and writes a journal line each time it changes. The issue page shows it as a "Waiting:" line, such as "Waiting: blocked by PAS-367".
 - A repository rule's probe is a Closeout check of kind `rule`. Closeout records it as a command whose argv ends `--base <base> --head <head> --repo .`, and the reader names it `rule` by that. In the item detail a rule carries `probeSha256`, the hash its evidence record lists for the probe that ran (`null` without the record), and a failed rule carries `approval` when a bypass ask offered it: `waiting` with the open `questionId`, or `approved` or `bypassed` with `by`, `reason`, `at` and the `head` it covers. Each attempt and verdict lists `skippedRules`, the rules whose paths matched none of the change. The issue page shows rules in their own "Repository rules" section; a waiting rule's Approve posts `bypasses: [{ checkId, reason }]` to `POST /api/link-asks` and Send back posts `changes` with the reason as the note.
 - In the item detail, `agentCloseout` has one entry for an item's first run and one for its current run, each keyed by `runId`. The issue page shows the entry for the item's current run. Once the run ended, the entry carries `endedAt`, a check it started and never finished has state `stopped` with its duration up to `endedAt`, and `continuesIn` names the item's current run when that is a newer one.
-- `mergeQueue` lists every item Closeout accepted that waits to merge. Each entry carries its `repository`, its `position` in that repository's queue (`null` while it holds no place, such as when it waits for a review or the repository merges each pull request when green), `waitingFor` (`ahead`, `ci`, `review`, `branch_update` or `closeout`), `acceptedAt`, and the merge `settings` it resolved. `mergeHistory` lists what merged in the last 24 hours and what went back to the agent after CI failed or a branch update conflicted. The Merge queue page at `/status/merge-queue` renders both.
+- `mergeQueue` lists every item Closeout accepted that waits to merge. Each entry carries its `repository`, its `position` in that repository's queue (`null` while it holds no place, such as when it waits for a review or the repository merges each pull request when green), `waitingFor` (`ahead`, `ci`, `review`, `branch_update` or `closeout`), `acceptedAt`, and the merge `settings` it resolved. `mergeHistory` lists what merged in the last 24 hours and what went back to the agent after CI failed or a branch update conflicted. The Merge queue page at `/dashboard/merge-queue` renders both.
 - `intake` lists the Linear delegations Paws recorded and has not taken in yet, oldest first, each with its `issue`, `title`, `receivedAt`, failed `attempts`, `nextAttemptAt` and `lastError`. It is read from `inbox_event`. `linearBudget` carries the requests left this hour (`requestsRemaining`, `requestsLimit`, `resetAt`) and `holdUntil` during a rate-limit hold, from Paws's own Linear ledger. `linearWebhook` is present while Linear may have disabled the Paws webhook: the catch-up poll found an event no webhook delivered, or no verified delivery came for an hour while a work item has a session. It carries the `warning`, the `fix` and `lastVerifiedAt`, from the `sync_cursor` rows. None of them makes a Linear call. The overview renders all three in its Intake section.
 
 Example:
@@ -67,7 +67,7 @@ Example:
 }
 ```
 
-`GET /api/findings` feeds the Findings page at `/status/findings`, `FindingsResponse` in [`src/findings.ts`](src/findings.ts). It reads `review_finding`: one row per distinct review finding that did not block a merge (pre-existing, or below the review's `failOn`), keyed by `reviewFindingKey` in `src/core` (repository, path, line range and normalized text). Paws records them when Closeout accepts a head, from the stored review evidence, and a one-time job backfilled the runs accepted before. The query filters by `repository`, `severity`, `review`, `status` (`open` by default, `all` for any) and `path` prefix; the list is newest last seen first, at most 500, with `counts` per severity over the other filters, and shows a finding only when the reader can open an item that reported it. `POST /api/findings` with the CSRF token lets an active member send `{ id, action: "dismiss", reason }` or `{ id, action: "reopen" }` on a dismissed one. `filed`, with the Linear issue, is written through `markReviewFindingFiled`; `gone` is set by Paws when a later accepted review of the same path no longer reports it.
+`GET /api/findings` feeds the Findings page at `/dashboard/findings`, `FindingsResponse` in [`src/findings.ts`](src/findings.ts). It reads `review_finding`: one row per distinct review finding that did not block a merge (pre-existing, or below the review's `failOn`), keyed by `reviewFindingKey` in `src/core` (repository, path, line range and normalized text). Paws records them when Closeout accepts a head, from the stored review evidence, and a one-time job backfilled the runs accepted before. The query filters by `repository`, `severity`, `review`, `status` (`open` by default, `all` for any) and `path` prefix; the list is newest last seen first, at most 500, with `counts` per severity over the other filters, and shows a finding only when the reader can open an item that reported it. `POST /api/findings` with the CSRF token lets an active member send `{ id, action: "dismiss", reason }` or `{ id, action: "reopen" }` on a dismissed one. `filed`, with the Linear issue, is written through `markReviewFindingFiled`; `gone` is set by Paws when a later accepted review of the same path no longer reports it.
 
 `createLiveStatusProvider(db)` is exported from [`index.ts`](index.ts) and reads the engine database (`source: "live"`). `fakeStatusProvider()` returns an empty live snapshot. The server mounts the live reader like this:
 
@@ -80,7 +80,7 @@ const response = await handleStatusRequest(request, {
 if (response) return response;
 ```
 
-Closeout videos and screenshots arrive in the snapshot's `evidence` list, limited to the items the reader can see. The issue page shows them in a gallery, and `/status/evidence/<id>` (or `/evidence/<id>`, which redirects there) shows one of them. Files load from `GET /api/evidence/<id>`. video.js is bundled as a separate chunk the first time a video plays; nothing loads from a CDN.
+Closeout videos and screenshots arrive in the snapshot's `evidence` list, limited to the items the reader can see. The issue page shows them in a gallery, and `/dashboard/evidence/<id>` (or `/evidence/<id>`, which redirects there) shows one of them. Files load from `GET /api/evidence/<id>`. video.js is bundled as a separate chunk the first time a video plays; nothing loads from a CDN.
 
 `null` means the request is not `/status` or `/api/status`. Leave webhook routes alone.
 
@@ -96,10 +96,12 @@ bun run build:dashboard
 bun run paws
 ```
 
-- Page: http://127.0.0.1:8787/status
+- Page: http://127.0.0.1:8787/dashboard
 - API: http://127.0.0.1:8787/api/status
 
-When the page is served under `/status`, it calls the same origin's `/api/status`. That body is `source: "live"`. An empty database shows no items.
+When the page is served under `/dashboard`, it calls the same origin's `/api/status`. That body is `source: "live"`. An empty database shows no items.
+
+`/dashboard` is the canonical address, and `/` redirects to `/dashboard/`. Links to the old `/status` pages, such as `/status/issues/PAS-633#closeout`, answer GET and HEAD with a 307 to the same path under `/dashboard`, keeping the query. The browser keeps the fragment, so decision cards, check-log anchors and old `#/...` routes still open. Other methods on `/status` get 405, and API routes never redirect. [`src/dashboard-links`](../dashboard-links/index.ts) holds the paths every module uses to link to, gate or redirect dashboard pages.
 
 ## Check
 

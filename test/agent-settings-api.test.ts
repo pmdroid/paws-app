@@ -352,7 +352,7 @@ describe("local agent settings API", () => {
     const server = startServer({ hostname: "127.0.0.1", port: 0, webhooks: false, agentSettings });
     try {
       const base = `http://127.0.0.1:${server.port}`;
-      const page = await (await fetch(`${base}/status`)).text();
+      const page = await (await fetch(`${base}/dashboard`)).text();
       const token = /name="paws-csrf" content="([^"]+)"/.exec(page)?.[1];
       expect(token).toBeDefined();
       const saved = await fetch(`${base}/api/settings/agents`, {

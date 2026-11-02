@@ -62,7 +62,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
-    await page.goto(`http://127.0.0.1:${server.port}/status/runners`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners`);
     const add = page.getByRole("button", { name: "Add a host" });
     await expect(add).toBeVisible();
     await page.screenshot({

@@ -94,7 +94,7 @@ test("Paws shutdown joins an accepted HTTP operation before closing SQLite", asy
   const origin = `http://127.0.0.1:${paws.server.port}`;
   let request: Promise<Response | null> | undefined;
   try {
-    const page = await (await nativeFetch(`${origin}/status/`)).text();
+    const page = await (await nativeFetch(`${origin}/dashboard/`)).text();
     const csrf = page.match(/name="paws-csrf" content="([^"]+)"/)?.[1];
     expect(csrf).toBeDefined();
     request = nativeFetch(`${origin}/api/linear/sessions`, {

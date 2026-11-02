@@ -125,7 +125,7 @@ test("two screenshots published 10 s apart end the turn with one link ask that n
     expect(question!.options ?? []).toEqual([]);
     expect(question!.body).toContain("2 changed screens for visual-proof: shot-1.png, shot-2.png.");
     expect(question!.body).toContain(
-      "Decide in Paws: https://paws.example/status/issues/ENG-7#visual-review",
+      "Decide in Paws: https://paws.example/dashboard/issues/ENG-7#visual-review",
     );
     expect(question!.body).toContain("A reply here cannot approve the screens.");
     expect(f.log.filter((entry) => entry.kind === "elicitation")).toHaveLength(1);
@@ -221,7 +221,7 @@ test("the reminder is posted once after 24 hours, without buttons", async () => 
     const last = f.log.at(-1)!;
     expect(last.kind).toBe("elicitation");
     expect(last.body).toContain(
-      "Decide in Paws: https://paws.example/status/issues/ENG-7#visual-review",
+      "Decide in Paws: https://paws.example/dashboard/issues/ENG-7#visual-review",
     );
     expect(last).not.toHaveProperty("options");
     expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");

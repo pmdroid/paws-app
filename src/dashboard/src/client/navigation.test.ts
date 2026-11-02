@@ -87,9 +87,10 @@ test("issues list offers state filters and a simple item list", () => {
 });
 
 test("path routes keep the engine base and only claim dashboard pages", () => {
-  expect(routerBase("/status")).toBe("/status");
-  expect(routerBase("/status/runs/r-1")).toBe("/status");
-  expect(routerBase("/statuses")).toBe("");
+  expect(routerBase("/dashboard")).toBe("/dashboard");
+  expect(routerBase("/dashboard/runs/r-1")).toBe("/dashboard");
+  expect(routerBase("/dashboards")).toBe("");
+  expect(routerBase("/status/runs/r-1")).toBe("");
   expect(routerBase("/runs/r-1")).toBe("");
   expect(routeHref({ view: "runs", id: "r/1" })).toBe("/runs/r%2F1");
   expect(parseRoute("/runs/r%2F1")).toEqual({ view: "runs", id: "r/1" });

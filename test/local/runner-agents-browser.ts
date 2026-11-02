@@ -177,7 +177,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(`http://127.0.0.1:${server.port}/status/runners/${id}`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners/${id}`);
     await capture(page, "1-before", block, width);
     // Update on the card sends the eligible version.
     await page.getByRole("button", { name: "Update to 0.31.0" }).click();
@@ -194,7 +194,7 @@ try {
     await capture(page, "5-after", block, width);
     // The runner list offers Update all runners while an agent is behind.
     stage = "before";
-    await page.goto(`http://127.0.0.1:${server.port}/status/runners`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners`);
     await capture(page, "6-update-all", '[aria-labelledby="agent-catalog-heading"]', width);
     await page.getByRole("button", { name: "Update all runners" }).click();
     await page.getByText("Sent 1 coding agent update to your runners.").waitFor();

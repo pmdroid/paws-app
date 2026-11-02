@@ -426,7 +426,7 @@ test.each([
   ["a status type", "| null;", ";", "StatusItem.pullRequest\tnarrowed: null no longer accepted"],
   ["a required status field", "  id: string;", "  id?: string;", "StatusItem.id\tbecame optional"],
   ["a status state", ', "needs_human"]', "]", 'ITEM_STATES\tvalue "needs_human" removed'],
-  ["a status path", '"/api/status"', '"/api/v2/status"', "STATUS_API_PATH\tchanged from"],
+  ["a status path", '"/api/status"', '"/api/v2/dashboard"', "STATUS_API_PATH\tchanged from"],
 ])("narrowing %s fails api-contract", (_, from, to, message) => {
   const ran = probe("api-contract", apiCandidate(edit("src/dashboard/src/contract.ts", from, to)));
   expect(ran.exitCode).toBe(1);

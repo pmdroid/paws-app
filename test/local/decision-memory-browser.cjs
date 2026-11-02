@@ -23,7 +23,7 @@ assert.equal(new URL(origin).hostname, "127.0.0.1");
       const page = await context.newPage();
       const errors = [];
       page.on("pageerror", (error) => errors.push(String(error)));
-      await page.goto(`${origin}/status/#/settings/decisions`);
+      await page.goto(`${origin}/dashboard/#/settings/decisions`);
       await page.getByRole("heading", { name: "Saved decisions" }).waitFor();
       if (screen === "desktop") {
         await page.getByText("Save an answer as a decision", { exact: true }).click();

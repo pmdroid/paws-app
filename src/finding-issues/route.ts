@@ -17,6 +17,7 @@ import type { FiledFindingIssue, FindingIssueRequest } from "../linear";
 import { FINDING_ISSUE_PATH, type StatusReview } from "../dashboard";
 import { validWorkspaceCsrf } from "../workspace";
 import { findingIssueDescription, findingIssueTitle } from "./body";
+import { dashboardIssuePath } from "../dashboard-links";
 
 const MAX_TEXT = 100_000;
 
@@ -135,7 +136,7 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
               headSha: found.headSha,
               repository,
               identifier: item.linearIdentifier || item.id,
-              pageUrl: `${access.origin.replace(/\/+$/, "")}/status/issues/${encodeURIComponent(item.linearIdentifier || item.id)}`,
+              pageUrl: `${access.origin.replace(/\/+$/, "")}${dashboardIssuePath(item.linearIdentifier || item.id)}`,
             }),
           },
           { signal: request.signal },

@@ -512,7 +512,7 @@ export async function probeWorkspaceAuthorization(
         items: remapped.items.map((item) => item.id),
       },
     );
-    const ownerPage = await fetch(`${origin}/status/`, { headers: headers(owner) });
+    const ownerPage = await fetch(`${origin}/dashboard/`, { headers: headers(owner) });
     const pageCsrf = (await ownerPage.text()).match(/name="paws-csrf" content="([^"]+)"/)?.[1];
     const pageAction = await fetch(`${origin}/api/settings/agents`, {
       method: "PUT",
@@ -548,7 +548,7 @@ export async function probeWorkspaceAuthorization(
       ownerId,
     ]);
     membershipFailure = true;
-    const outagePage = await fetch(`${origin}/status/`, { headers: headers(outageSession) });
+    const outagePage = await fetch(`${origin}/dashboard/`, { headers: headers(outageSession) });
     const outageCsrf = (await outagePage.text()).match(/name="paws-csrf" content="([^"]+)"/)?.[1];
     const outageData = await fetch(`${origin}/api/status`, { headers: headers(outageSession) });
     const outageLogout = await fetch(`${origin}/api/auth/logout`, {

@@ -29,6 +29,7 @@ import type { IntakeResult } from "./intake";
 import { orderByBlocks } from "./order";
 import { ulid } from "./ulid";
 import { parentSummaryMessage, type SummaryIssue, type SummarySubIssue } from "./parent-summary";
+import { dashboardUrl } from "../dashboard-links";
 
 /** Refusal for a Linear event on a sub-issue that already runs in another session. */
 export const PARENT_REFUSAL = {
@@ -315,7 +316,7 @@ export function createParentDelegations(input: {
       if (waitingFor(parent, sub.issueId).length > 0) continue;
       await startSession(
         { kind: "issue", id: sub.issueId },
-        new URL("/status/", input.origin).href,
+        dashboardUrl(input.origin),
         context.signal,
         (event) => {
           if (!context.isCurrent()) throw new Error("The parent delegation claim changed.");

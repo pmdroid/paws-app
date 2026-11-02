@@ -46,7 +46,7 @@ const errors = [];
     });
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(String(error)));
-    await page.goto(`${fixture.origin}/status/`);
+    await page.goto(`${fixture.origin}/dashboard/`);
     if (identity === "owner") {
       await page.getByText("Set up your first workspace", { exact: true }).click();
       await page.locator("input[name=bootstrap]").fill(fixture.bootstrap);
@@ -302,7 +302,7 @@ const errors = [];
       explicitConsentRequired: true,
     });
     await attribution.getByRole("button", { name: "Link GitHub identity" }).click();
-    await page.waitForURL((url) => url.pathname === "/status/settings/account");
+    await page.waitForURL((url) => url.pathname === "/dashboard/settings/account");
     await attribution.getByText("Public attribution is enabled for @fixture-human.").waitFor();
     assert.equal(
       await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).isVisible(),

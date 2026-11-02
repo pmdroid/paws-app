@@ -47,7 +47,7 @@ const { privateKey } = generateKeyPairSync("rsa", {
   publicKeyEncoding: { type: "spki", format: "pem" },
 });
 const ORIGIN = "https://paws.example.invalid";
-const RUNNERS_URL = `${ORIGIN}/status/runners`;
+const RUNNERS_URL = `${ORIGIN}/dashboard/runners`;
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
 
 type Membership = { active: boolean; guest: boolean; teamIds: string[] };

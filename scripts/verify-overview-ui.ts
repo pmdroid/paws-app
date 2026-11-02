@@ -120,7 +120,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: scheme });
-    await page.goto(`http://127.0.0.1:${server.port}/status`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard`);
     await expect(page.getByRole("heading", { level: 2, name: /Needs you/ })).toBeVisible();
     if (!before) {
       await expect(page.locator("h1")).toHaveCount(1);

@@ -25,7 +25,7 @@ const P2: OpenFinding = {
   why: "below failOn",
 };
 
-const LINK = "https://paws.example/status/issues/PAS-1";
+const LINK = "https://paws.example/dashboard/issues/PAS-1";
 
 test("the line counts open findings by severity and why, names high risk and links the page", () => {
   expect(

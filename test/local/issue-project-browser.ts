@@ -45,12 +45,12 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(`http://127.0.0.1:${server.port}/status/issues/ENG-104`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-104`);
     await page.getByText("Audit log export").first().waitFor();
     const issueShot = join(directory, `issue-page-project-${width}.png`);
     await page.screenshot({ path: issueShot, fullPage: true });
 
-    await page.goto(`http://127.0.0.1:${server.port}/status/issues`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues`);
     const picker = page.locator("select[data-issue-project-filter]");
     await picker.waitFor();
     await picker.selectOption("linear-audit");

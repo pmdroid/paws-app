@@ -126,7 +126,7 @@ try {
         });
       };
 
-      await page.goto(`${origin}/status`);
+      await page.goto(`${origin}/dashboard`);
       await expect(page.getByText("Running on agentbox").first()).toBeVisible();
       await expect(page.getByText("Waiting for a slot on agentbox").first()).toBeVisible();
       await expect(
@@ -136,18 +136,18 @@ try {
       await expect(page.getByText("Stalled").first()).toBeVisible();
       await shot("activity-overview");
 
-      await page.goto(`${origin}/status/issues`);
+      await page.goto(`${origin}/dashboard/issues`);
       await expect(page.getByText("Stalled").first()).toBeVisible();
       await shot("activity-issues");
 
-      await page.goto(`${origin}/status/issues/ENG-105`);
+      await page.goto(`${origin}/dashboard/issues/ENG-105`);
       await expect(
         page.getByText("Waiting for a slot on agentbox · 1.9 h active · waiting 26 min"),
       ).toBeVisible();
       await expect(page.locator(".run-heading .st").first()).toHaveText("Waiting for a slot");
       await shot("activity-issue-page");
 
-      await page.goto(`${origin}/status/runners/${runner.id}`);
+      await page.goto(`${origin}/dashboard/runners/${runner.id}`);
       await expect(
         page.getByText("2 running · 2 waiting for this runner · 2 slots").first(),
       ).toBeVisible();

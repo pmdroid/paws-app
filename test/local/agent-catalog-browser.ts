@@ -89,7 +89,7 @@ try {
       const page = await browser.newPage({ viewport: { width, height: 900 } });
       await page.emulateMedia({ colorScheme: scheme });
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(`http://127.0.0.1:${server.port}/status/runners`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners`);
       await page.locator("#agent-catalog-heading").waitFor();
       await page.screenshot({
         path: join(directory, `agent-catalog-${width}-${scheme}.png`),

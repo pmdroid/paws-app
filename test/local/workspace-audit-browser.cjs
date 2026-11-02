@@ -36,7 +36,7 @@ const errors = [];
       });
       const page = await context.newPage();
       page.on("pageerror", (error) => errors.push(String(error)));
-      await page.goto(`${fixture.origin}/status/`);
+      await page.goto(`${fixture.origin}/dashboard/`);
       await page.getByRole("heading", { name: "Sign in to Paws" }).waitFor();
       if (identity === "owner") {
         await page.locator("summary").filter({ hasText: "Set up your first workspace" }).click();

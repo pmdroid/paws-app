@@ -109,7 +109,7 @@ const browser = await chromium.launch({
     : {}),
 });
 const errors: string[] = [];
-const url = `http://127.0.0.1:${server.port}/status/runners/01JRUNNER0000000000000000A`;
+const url = `http://127.0.0.1:${server.port}/dashboard/runners/01JRUNNER0000000000000000A`;
 const noScroll = () => document.documentElement.scrollWidth <= innerWidth;
 try {
   for (const width of [1440, 390]) {

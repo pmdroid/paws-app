@@ -121,7 +121,7 @@ async function pageFor(browser: Browser, manifest: Manifest, identity: "member")
   const page = await context.newPage();
   page.setDefaultTimeout(15_000);
   page.on("pageerror", (error) => errors.push(`${identity}: ${error.message}`));
-  await page.goto(`${manifest.origin}/status/runners`);
+  await page.goto(`${manifest.origin}/dashboard/runners`);
   await page.getByRole("button", { name: "Add a runner", exact: true }).waitFor();
   return page;
 }
@@ -256,7 +256,7 @@ try {
   await phoneWidth(member, "runner-detail");
   observe("the runner detail view offers agent sign-in");
 
-  await member.goto(`${manifest.origin}/status/runners`);
+  await member.goto(`${manifest.origin}/dashboard/runners`);
   await member.locator('[data-member-vm="ready"]').waitFor();
   assert.equal(await member.getByRole("button", { name: "Create VM", exact: true }).count(), 0);
   observe("a member who already has a VM sees its state instead of the button");

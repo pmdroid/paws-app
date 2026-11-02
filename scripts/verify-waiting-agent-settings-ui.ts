@@ -91,7 +91,7 @@ try {
     writeAgentSettings(configPath, { defaults: original, projects: [] });
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(`http://127.0.0.1:${server.port}/status/settings/agents`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/agents`);
     const toggle = page.getByRole("checkbox", { name: "Also switch runs that are waiting" });
     await expect(toggle).not.toBeChecked();
     await page.locator('[name="defaults-implementer-agent"]').selectOption("grok");

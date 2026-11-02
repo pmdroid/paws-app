@@ -7,6 +7,7 @@ import { migrate, openDatabase } from "./db";
 import type { PublicTls } from "./deployment";
 import { createBrowserOnboarding } from "./onboarding";
 import { startServer } from "./server";
+import { isDashboardPage } from "./dashboard-links";
 
 export function startBrowserOnboarding(
   runtime: RuntimeConfig,
@@ -63,7 +64,7 @@ export function startBrowserOnboarding(
     tls,
     onboarding(request, client) {
       const path = new URL(request.url).pathname;
-      const page = path === "/" || path === "/status" || path.startsWith("/status/");
+      const page = isDashboardPage(path);
       if (stopping || ((switching || failed) && !page))
         return Promise.resolve(
           Response.json({ error: "Paws is starting. Retry shortly." }, { status: 503 }),

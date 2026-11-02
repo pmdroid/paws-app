@@ -139,7 +139,7 @@ try {
       const page = await browser.newPage({ viewport: { width, height: 1000 } });
       page.on("pageerror", (error) => errors.push(error.message));
       await page.emulateMedia({ colorScheme: scheme });
-      await page.goto(`http://127.0.0.1:${server.port}/status/issues/ENG-100`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/issues/ENG-100`);
       const card = page.locator("section.review-findings");
       await expect(card.getByRole("heading", { name: "Review findings" })).toBeVisible();
       const buttons = card.getByRole("button", { name: "File an issue" });

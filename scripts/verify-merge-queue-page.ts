@@ -112,7 +112,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
-    await page.goto(`http://127.0.0.1:${server.port}/status/merge-queue`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/merge-queue`);
     await expect(page.getByRole("heading", { name: "acme/platform" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "acme/web" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Repository not known" })).toBeVisible();

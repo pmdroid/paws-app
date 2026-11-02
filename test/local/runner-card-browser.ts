@@ -184,7 +184,7 @@ try {
         await page.emulateMedia({ colorScheme: scheme });
         const errors: string[] = [];
         page.on("pageerror", (error) => errors.push(error.message));
-        await page.goto(`http://127.0.0.1:${server.port}/status/runners/${id}`);
+        await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners/${id}`);
         const card = page.locator(`[data-runner-card="${id}"]`);
         await card.waitFor();
         await page.locator("#runner-history-heading + div table").waitFor();

@@ -119,7 +119,7 @@ snapshot.questions = [
       head: HEAD,
       title,
       detail,
-      link: `https://paws.example/status/issues/${item.id}#visual-review`,
+      link: `https://paws.example/dashboard/issues/${item.id}#visual-review`,
     },
   },
 ];
@@ -150,9 +150,9 @@ try {
       const page = await browser.newPage({ viewport: { width, height: 2600 } });
       page.on("pageerror", (error) => errors.push(error.message));
       await page.emulateMedia({ colorScheme: scheme });
-      await page.goto(`http://127.0.0.1:${server.port}/status/`);
+      await page.goto(`http://127.0.0.1:${server.port}/dashboard/`);
       await page.getByRole("link", { name: /^Review screenshots/ }).click();
-      await expect(page).toHaveURL(/\/status\/issues\/ENG-103#visual-review$/);
+      await expect(page).toHaveURL(/\/dashboard\/issues\/ENG-103#visual-review$/);
       const card = page.locator("#visual-review");
       await expect(card.getByRole("heading", { name: "Visual review" })).toBeVisible();
       await expect(card.locator(".visual-review-frame img")).toHaveCount(3);

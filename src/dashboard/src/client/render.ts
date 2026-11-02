@@ -55,6 +55,7 @@ import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
 import { riskCard } from "./risk";
+import { dashboardPath } from "../../../dashboard-links";
 
 export interface RenderModel {
   route: Route;
@@ -447,7 +448,7 @@ function issuePage(
         findAgentCloseout(snapshot.agentCloseout, run.id));
   const engine = engineUrl === null ? null : parseEngineUrl(engineUrl);
   const transcriptPath =
-    run === undefined ? null : `/status/runs/${encodeURIComponent(run.id)}/transcript`;
+    run === undefined ? null : dashboardPath(`/runs/${encodeURIComponent(run.id)}/transcript`);
   const transcriptHref =
     transcriptPath === null || snapshot.source !== "live"
       ? null

@@ -67,6 +67,7 @@ import {
   showWorkspaceSettingsPage,
   takeSignInReturn,
 } from "./workspace";
+import { legacyDashboardLocation } from "../../../dashboard-links";
 
 redirectLegacyHash();
 const shell = mountShell();
@@ -417,7 +418,7 @@ function source(): string {
 }
 
 function appPath(href: string): string | null {
-  const url = new URL(href, location.href);
+  const url = canonicalUrl(new URL(href, location.href));
   const base = routerBase(location.pathname);
   if (url.origin !== location.origin) return null;
   if (base && url.pathname !== base && !url.pathname.startsWith(`${base}/`)) return null;
@@ -431,6 +432,11 @@ function signInReturn(): string | null {
   if (stored === null) return null;
   const path = appPath(stored);
   return path === null ? null : `${path}${new URL(stored, location.href).hash}`;
+}
+
+function canonicalUrl(url: URL): URL {
+  const canonical = legacyDashboardLocation(url.pathname, url.search);
+  return canonical === null ? url : new URL(`${canonical}${url.hash}`, url.origin);
 }
 
 function redirectLegacyHash(): void {
@@ -460,7 +466,7 @@ function followLink(event: MouseEvent, target: Element): void {
   void router.navigate(`${path}${new URL(link.href).hash}`);
 }
 
-/** A link ask link (`/status/issues/PAS-633#risk`) scrolls to its card once the card is drawn. */
+/** A link ask link (`/dashboard/issues/PAS-633#risk`) scrolls to its card once the card is drawn. */
 function scrollToLinkedCard(): void {
   const key = `${location.pathname}${location.hash}`;
   if (!linkAskAnchor(location.hash) || key === linkedCard) return;

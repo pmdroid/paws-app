@@ -236,7 +236,7 @@ test("settings list the workspace's GitHub-connected and team-mapped repositorie
       "pmdroid/paws-app",
     ]);
 
-    const page = await (await fetch(`${base}/status`)).text();
+    const page = await (await fetch(`${base}/dashboard`)).text();
     const token = /name="paws-csrf" content="([^"]+)"/.exec(page)?.[1];
     const saved = await fetch(`${base}/api/settings/checkout`, {
       method: "PUT",

@@ -61,7 +61,7 @@ try {
     });
     const page = await browser.newPage({ viewport: { width, height: 1000 } });
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(`http://127.0.0.1:${server.port}/status/settings/agents`);
+    await page.goto(`http://127.0.0.1:${server.port}/dashboard/settings/agents`);
     await page.locator('[name="defaults-reviewer-agent"]').selectOption("codex");
     await page.getByRole("button", { name: "Save settings", exact: true }).click();
     const warning = page.getByRole("alert").filter({

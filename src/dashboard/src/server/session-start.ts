@@ -8,6 +8,7 @@ import {
 } from "../session-start";
 import { processCsrfToken } from "./csrf";
 import { dashboardOrigin } from "./request-origin";
+import { dashboardUrl } from "../../../dashboard-links";
 
 export type StartLinearSession = (
   target: LinearSessionTarget,
@@ -81,10 +82,7 @@ export async function handleSessionStartRequest(
   }
   try {
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(15_000)]);
-    return json(
-      await options.startLinearSession(target, new URL("/status/", url.origin).href, signal),
-      201,
-    );
+    return json(await options.startLinearSession(target, dashboardUrl(url.origin), signal), 201);
   } catch (caughtError1) {
     journalCaught(caughtError1, "session-start.handleSessionStartRequest.any", null);
     return json(

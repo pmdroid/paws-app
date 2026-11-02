@@ -41,7 +41,7 @@ try {
     );
     for (const choice of ["demo", "https://outside.invalid"]) {
       const before = reads;
-      await page.goto(`${origin}/status/?engine=${encodeURIComponent(choice)}`);
+      await page.goto(`${origin}/dashboard/?engine=${encodeURIComponent(choice)}`);
       await expect(page.locator("#content .empty")).toBeVisible();
       await expect.poll(() => reads).toBeGreaterThan(before);
       await expect(page.getByRole("dialog", { name: "Status source" })).toHaveCount(0);

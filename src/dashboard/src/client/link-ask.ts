@@ -18,7 +18,7 @@ export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
   rule: "Review rule",
 };
 
-/** The card's id on the item page; Linear links to `/status/issues/<id>#<anchor>`. */
+/** The card's id on the item page; Linear links to `/dashboard/issues/<id>#<anchor>`. */
 export const LINK_ASK_ANCHORS: Record<LinkAskKind, string> = {
   bypass: "closeout",
   screenshots: "visual-review",

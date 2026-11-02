@@ -35,6 +35,7 @@ import {
 } from "../workspace";
 import { handleStatusRequest } from "../dashboard";
 import { createLinearReconnect, type LinearReconnectSnapshot } from "./reconnect";
+import { dashboardPath, isDashboardPage } from "../dashboard-links";
 
 const INSTALL_COOKIE = "__Host-paws-install";
 const CALLBACK = "/auth/linear/install/callback";
@@ -80,10 +81,7 @@ export function createBrowserOnboarding(options: {
       (request.headers.has("host") && request.headers.get("host") !== url.host)
     )
       return Response.json({ error: "Use the configured Paws origin." }, { status: 403 });
-    if (
-      request.method !== "GET" &&
-      !(request.method === "HEAD" && url.pathname.startsWith("/status"))
-    )
+    if (request.method !== "GET" && !(request.method === "HEAD" && isDashboardPage(url.pathname)))
       return Response.json({ error: "Method not allowed." }, { status: 405 });
     if (url.pathname === "/health") return Response.json({ ok: true, service: "paws" });
     const configured = !!options.clientId && !!options.clientSecret;
@@ -92,7 +90,7 @@ export function createBrowserOnboarding(options: {
         { onboarding: true, configured, reconnect: options.reconnect === true },
         { status: 401, headers: { "cache-control": "no-store" } },
       );
-    if (url.pathname === "/" || url.pathname === "/status" || url.pathname.startsWith("/status/"))
+    if (isDashboardPage(url.pathname))
       return (await handleStatusRequest(request, {})) ?? new Response("Not found", { status: 404 });
     if (!configured)
       return Response.json(
@@ -275,7 +273,7 @@ export function createBrowserOnboarding(options: {
         now: timestamp + 1,
       });
       const headers = new Headers({
-        location: "/status/settings/integrations?connecting=1",
+        location: dashboardPath("/settings/integrations?connecting=1"),
         "cache-control": "no-store",
         "referrer-policy": "no-referrer",
       });
@@ -303,7 +301,7 @@ function retry(reason: string): Response {
   return new Response(null, {
     status: 303,
     headers: {
-      location: `/status/?onboarding=${reason}`,
+      location: dashboardPath(`/?onboarding=${reason}`),
       "cache-control": "no-store",
       "referrer-policy": "no-referrer",
     },

@@ -27,7 +27,7 @@ const resume = process.argv.includes("--resume");
           );
           const page = await context.newPage();
           page.on("pageerror", (error) => errors.push(String(error)));
-          await page.goto(origin + "/status/");
+          await page.goto(origin + "/dashboard/");
           await page.getByRole("heading", { name: "Connect your workspace" }).waitFor();
           assert.equal(await page.getByText("Setup code from the Paws operator").count(), 0);
           assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
@@ -67,11 +67,11 @@ const resume = process.argv.includes("--resume");
     });
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(String(error)));
-    await page.goto(origin + (resume ? "/status/settings/integrations" : "/status/"));
+    await page.goto(origin + (resume ? "/dashboard/settings/integrations" : "/dashboard/"));
     if (!resume) {
       await page.getByRole("link", { name: "Sign in with Linear" }).focus();
       await page.keyboard.press("Enter");
-      await page.waitForURL("**/status/settings/integrations?connecting=1");
+      await page.waitForURL("**/dashboard/settings/integrations?connecting=1");
     }
     await page.getByRole("heading", { name: "GitHub", exact: true }).waitFor();
     const session = await page.evaluate(async () => {

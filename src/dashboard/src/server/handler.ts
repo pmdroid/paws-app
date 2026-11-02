@@ -18,7 +18,6 @@ import {
   statusCheckLogPath,
   STATUS_API_PATH,
   STATUS_ITEM_API_PATH,
-  STATUS_PAGE_PATH,
   type IssueCheckLogResponse,
   type IssueDetailResponse,
   type IssueListResponse,
@@ -40,6 +39,12 @@ import { injectCsrf } from "./csrf";
 import { statusResponseSizes, type ResponseSizeJournal } from "./response-size";
 import { handleSessionStartRequest, type StartLinearSession } from "./session-start";
 import { handleAgentTranscriptRequest } from "./transcript";
+import {
+  DASHBOARD_PATH,
+  dashboardPath,
+  isDashboardPath,
+  legacyDashboardLocation,
+} from "../../../dashboard-links";
 
 export interface StatusProvider {
   snapshot(): StatusSnapshot | Promise<StatusSnapshot>;
@@ -123,25 +128,20 @@ export async function handleStatusRequest(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const { pathname } = url;
-  if (pathname === "/") {
+  const legacy =
+    pathname === "/"
+      ? dashboardPath(`/${url.search}`)
+      : legacyDashboardLocation(pathname, url.search);
+  if (legacy !== null) {
     if (request.method !== "GET" && request.method !== "HEAD")
       return text("Method not allowed", 405);
-    return new Response(null, {
-      status: 307,
-      headers: { Location: `${STATUS_PAGE_PATH}/${url.search}`, "Cache-Control": "no-store" },
-    });
+    return redirect(legacy);
   }
   const evidence = /^\/evidence\/([0-9A-HJKMNP-TV-Z]{26})\/?$/.exec(pathname);
   if (evidence) {
     if (request.method !== "GET" && request.method !== "HEAD")
       return text("Method not allowed", 405);
-    return new Response(null, {
-      status: 307,
-      headers: {
-        Location: `${STATUS_PAGE_PATH}/evidence/${evidence[1]}${url.search}`,
-        "Cache-Control": "no-store",
-      },
-    });
+    return redirect(dashboardPath(`/evidence/${evidence[1]}${url.search}`));
   }
   const transcript = handleAgentTranscriptRequest(request, options);
   if (transcript !== null) return transcript;
@@ -161,16 +161,16 @@ export async function handleStatusRequest(
   if (pathname === ISSUES_API_PATH || pathname.startsWith(`${ISSUES_API_PATH}/`))
     return issuesResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
-  if (pathname === STATUS_PAGE_PATH || pathname.startsWith(`${STATUS_PAGE_PATH}/`)) {
+  if (isDashboardPath(pathname)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
     return pageResponse(request, staticDir, options.csrfToken);
   }
   return null;
 }
 
-/** HTML for `GET /status`, including the fallback when the static build is missing. */
+/** HTML for `GET /dashboard`, including the fallback when the static build is missing. */
 export function statusResponse(): Response {
-  return pageResponse(new Request("http://127.0.0.1/status"), defaultStaticDir());
+  return pageResponse(new Request(`http://127.0.0.1${DASHBOARD_PATH}`), defaultStaticDir());
 }
 
 export function startStatusServer(options?: {
@@ -566,8 +566,7 @@ function itemId(raw: string): string | null {
 function pageResponse(request: Request, staticDir: string | null, csrfToken?: string): Response {
   if (request.method !== "GET" && request.method !== "HEAD") return text("Method not allowed", 405);
   const url = new URL(request.url);
-  const relative =
-    url.pathname === STATUS_PAGE_PATH ? "index.html" : relativePagePath(url.pathname);
+  const relative = url.pathname === DASHBOARD_PATH ? "index.html" : relativePagePath(url.pathname);
   if (!relative || removedPage(relative)) return text("Not found", 404);
   if (/^runs\/[A-Za-z0-9_-]{1,128}\/transcript\/?$/.test(relative))
     return pageHtml(staticDir, "transcript.html", csrfToken);
@@ -597,7 +596,7 @@ function removedPage(relative: string): boolean {
 }
 
 function relativePagePath(pathname: string): string | null {
-  const prefix = `${STATUS_PAGE_PATH}/`;
+  const prefix = `${DASHBOARD_PATH}/`;
   if (!pathname.startsWith(prefix)) return null;
   const raw = pathname.slice(prefix.length);
   if (!raw) return "index.html";
@@ -637,9 +636,9 @@ function pageHtml(staticDir: string | null, name: string, csrfToken?: string): R
   return html(injectCsrf(withBase(body), csrfToken));
 }
 
-/** Engine pages live at `/status`, so relative asset URLs need that base. */
+/** Engine pages live at `/dashboard`, so relative asset URLs need that base. */
 function withBase(body: string): string {
-  const tag = '<base href="/status/" />';
+  const tag = `<base href="${DASHBOARD_PATH}/" />`;
   if (body.includes('<base href="/" />')) return body.replace('<base href="/" />', tag);
   if (body.includes("<base ")) return body;
   if (body.includes("<head>")) return body.replace("<head>", `<head>\n    ${tag}`);
@@ -700,6 +699,13 @@ function jsonText(body: string, status: number, headers: Record<string, string> 
   return new Response(body, {
     status,
     headers: { ...CORS, ...JSON_HEADERS, ...headers },
+  });
+}
+
+function redirect(location: string): Response {
+  return new Response(null, {
+    status: 307,
+    headers: { Location: location, "Cache-Control": "no-store" },
   });
 }
 
