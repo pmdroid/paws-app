@@ -100,6 +100,7 @@ export interface RunAgentOptions {
   fallbackProfile?: AgentProfile;
   resolveProfiles?: () => { profile?: AgentProfile; fallbackProfile?: AgentProfile };
   readOnly?: boolean;
+  closeoutRulesFirst?: boolean;
   hostAccess?: boolean;
   prepareOnly?: boolean;
   role: AgentRole;

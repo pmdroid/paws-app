@@ -59,6 +59,7 @@ import {
   REVIEW_BRIEF_LIMIT,
   REVIEW_COMMAND_RUNNER_VERSION,
   REVIEW_CONTEXT_RUNNER_VERSION,
+  CLOSEOUT_RULES_FIRST_RUNNER_VERSION,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
@@ -1396,6 +1397,11 @@ export function createRemoteAgentRunner(options: {
                       },
                       ...(input.role !== "reviewer" && input.checkpoint === false
                         ? { checkpoint: false as const }
+                        : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.closeoutRulesFirst &&
+                      versionAtLeast(runnerVersion, CLOSEOUT_RULES_FIRST_RUNNER_VERSION)
+                        ? { closeoutRulesFirst: true as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
                       ...(restorePlan?.eligible

@@ -3441,6 +3441,9 @@ export class Orchestrator {
       const saved = readSessionCloseout(sessionPath);
       return saved?.head === commit ? saved.report : undefined;
     };
+    const recovery = recoveryOptions(this.db, item.id);
+    let rulesFirst = !recovery.bypasses.some((bypass) => bypass.head === head);
+    let stoppedOnRule: string | undefined;
     const runnerChecks = new Map<string, Promise<void>>();
     const runnerResults = (commit: string, stepId: string | undefined) => {
       let checks = runnerChecks.get(commit);
@@ -3454,6 +3457,7 @@ export class Orchestrator {
           policy,
           assertCurrent,
           report: (body) => report(body),
+          rulesFirst,
           // CI's results are for the head it ran on; a fixed head runs every check.
           fromCi: commit === head ? fromCi.map((entry) => entry.id) : [],
         });
@@ -3469,6 +3473,11 @@ export class Orchestrator {
             if (!sessionCloseoutResult(savedReport(commit), request))
               await runnerResults(commit, request.itemId);
             assertCurrent();
+            const broken = rulesFirst ? brokenRuleOf(savedReport(commit)) : undefined;
+            if (broken && !sessionCloseoutResult(savedReport(commit), request)) {
+              stoppedOnRule = broken;
+              throw new Error(`Rule ${broken} broke before the checks ran.`);
+            }
             const result = loggedSessionCloseout(savedReport(commit), request);
             assertCurrent();
             return result;
@@ -3531,7 +3540,12 @@ export class Orchestrator {
       },
       recorder: {
         record: async (verdict) => {
-          if (deps.signal?.aborted || verdict.outcome === "accepted" || awaitsVisualReview(verdict))
+          if (
+            deps.signal?.aborted ||
+            verdict.outcome === "accepted" ||
+            awaitsVisualReview(verdict) ||
+            (stoppedOnRule !== undefined && verdict.decision === null)
+          )
             return;
           this.post(
             item,
@@ -3543,18 +3557,35 @@ export class Orchestrator {
       },
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
       ...this.closeoutHome(item),
-      ...recoveryOptions(this.db, item.id),
+      ...recovery,
       progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
     });
+    const request = {
+      taskId: itemPathId(item),
+      taskLabel: item.linearIdentifier,
+      worktree,
+      baseSha: base,
+      headSha: head,
+      attempt: 1,
+    };
     try {
-      return await gate[decide ? "decide" : "run"]({
-        taskId: itemPathId(item),
-        taskLabel: item.linearIdentifier,
-        worktree,
-        baseSha: base,
-        headSha: head,
-        attempt: 1,
-      });
+      const verdict = await gate[decide ? "decide" : "run"](request);
+      if (stoppedOnRule === undefined) return verdict;
+      const decided = await gate.decide(request);
+      const ruleFailed = decided.result?.decision?.items.some(
+        (entry) => entry.kind === "rule" && entry.state === "failed",
+      );
+      if (ruleFailed && decided.result?.ruleApprovals?.length)
+        return {
+          ...decided,
+          exhausted: true,
+          result: { ...decided.result, outcome: "exhausted" },
+        };
+      if (ruleFailed) return decided;
+      rulesFirst = false;
+      stoppedOnRule = undefined;
+      runnerChecks.clear();
+      return await gate.run(request);
     } finally {
       activity.flush();
       if (live) live.progress = null;
@@ -3575,6 +3606,7 @@ export class Orchestrator {
       report: (body: string) => void;
       /** Checks Closeout took from CI, which the runner leaves alone. */
       fromCi?: readonly string[];
+      rulesFirst: boolean;
     },
   ): Promise<void> {
     const { worktree, head, assertCurrent } = input;
@@ -3610,6 +3642,7 @@ export class Orchestrator {
           worktreePath: worktree,
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
+          ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
           mainSha: input.base,
           ...(input.policy ? { commitPolicy: input.policy } : {}),
           ...(deps.home ? { home: deps.home } : {}),
@@ -8320,6 +8353,29 @@ function sameRepository(left: RepositoryBinding, right: RepositoryBinding): bool
   return (
     left.owner === right.owner && left.repo === right.repo && left.remoteUrl === right.remoteUrl
   );
+}
+
+function brokenRuleOf(report: string | undefined): string | undefined {
+  try {
+    const parsed = JSON.parse(report ?? "null") as {
+      pending?: unknown;
+      blocked?: unknown;
+      rules?: { id?: unknown; result?: { exitCode?: unknown; timedOut?: unknown } }[];
+    } | null;
+    if (!Array.isArray(parsed?.pending) || parsed.pending.length > 0) return undefined;
+    if (typeof parsed.blocked !== "string" || !Array.isArray(parsed.rules)) return undefined;
+    const broken = parsed.rules.find(
+      (rule) =>
+        typeof rule.id === "string" &&
+        typeof rule.result?.exitCode === "number" &&
+        rule.result.exitCode !== 0 &&
+        rule.result.timedOut !== true,
+    );
+    return typeof broken?.id === "string" ? broken.id : undefined;
+  } catch (caughtError) {
+    journalCaught(caughtError, "orchestrator.brokenRuleOf.parse", null);
+    return undefined;
+  }
 }
 
 function listsChecks(report: string): boolean {

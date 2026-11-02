@@ -196,6 +196,7 @@ export const RunnerCommandSchema = z
       checkpointBot: RunnerCheckpointBotSchema.optional(),
       commitPolicy: RunnerCommitPolicySchema.optional(),
       checkpoint: z.literal(false).optional(),
+      closeoutRulesFirst: z.literal(true).optional(),
       resumeSessionId: id.optional(),
       livePreview: RunnerLivePreviewSchema.optional(),
       /** The sealed session snapshot to unpack before the agent starts, when the run moved. */

@@ -526,3 +526,26 @@ test("a review command carries the brief and earlier findings only to a runner t
     }
   }
 }, 60_000);
+
+test("a checks run asks for rules first only on a runner that accepts it", async () => {
+  for (const [version, expected] of [
+    ["0.1.58", undefined],
+    ["0.1.59", true],
+  ] as const) {
+    const f = await fixture();
+    try {
+      f.db.run("UPDATE runner_host_status SET runner_version=?", [version]);
+      const running = f.services.backend.forItem(f.item.id)({
+        ...f.checks(new AbortController().signal),
+        closeoutRulesFirst: true,
+      });
+      await f.until(() => f.placed.length === 1);
+      const command = f.placed[0]!;
+      expect(command.type === "run" && command.closeoutRulesFirst).toBe(expected);
+      f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+      expect(await running).toMatchObject({ stopReason: "end_turn" });
+    } finally {
+      await f.close();
+    }
+  }
+}, 60_000);
