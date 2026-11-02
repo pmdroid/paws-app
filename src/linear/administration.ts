@@ -165,6 +165,7 @@ export type LinearIssueClosed = {
 export const CLOSED_ISSUE_EVENT = "closed";
 
 export function closedIssueState(value: string | null): LinearIssueClosedState | null {
+  if (value === "duplicate") return "canceled";
   return value === "completed" || value === "canceled" ? value : null;
 }
 
