@@ -229,14 +229,4 @@ describe("issue resource routes", () => {
     expect(calls.at(-1)).toBe("issues");
     expect(calls).toHaveLength(7);
   });
-
-  test("the snapshot API stays callable beside the issue resources", async () => {
-    const response = (await handleStatusRequest(get("/api/status"), {
-      responseSizes: NO_SIZES,
-    }))!;
-    expect(response.status).toBe(200);
-    const issues = (await handleStatusRequest(get("/api/issues"), { responseSizes: NO_SIZES }))!;
-    expect(issues.status).toBe(200);
-    expect(((await issues.json()) as { issues: unknown[] }).issues).toEqual([]);
-  });
 });

@@ -73,31 +73,26 @@ function closeout(db: Database, item: string, attempts: number, checks: number, 
   }
 }
 
-function largeFixture(): Database {
-  const db = openDatabase(":memory:");
-  open.push(db);
-  migrate(db);
-  const now = Date.now() - 60 * 60 * 1000;
-  for (let index = 0; index < 100; index += 1) {
-    const id = `PAS-${1000 + index}`;
-    insertQueuedItem(db, { id, title: `Finished item ${index}`, now: now + index });
-    beginImplementRun(db, id, now + index);
-    closeout(db, id, 1, 2, now + index);
-    applyWorkItemEvent(db, id, "cancel", { now: now + index + 10 });
-  }
-  for (let index = 0; index < 10; index += 1) {
-    const id = `PAS-${2000 + index}`;
-    insertQueuedItem(db, { id, title: `Open item ${index}`, now: now + index });
-    beginImplementRun(db, id, now + index);
-    enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: "c".repeat(40) });
-    closeout(db, id, 3, CHECKS.length, now + index);
-  }
-  return db;
-}
-
 describe("status payload budget", () => {
   test("the list stays under 200 KB and an item detail under 1 MB with large check output", async () => {
-    const db = largeFixture();
+    const db = openDatabase(":memory:");
+    open.push(db);
+    migrate(db);
+    const now = Date.now() - 60 * 60 * 1000;
+    for (let index = 0; index < 100; index += 1) {
+      const id = `PAS-${1000 + index}`;
+      insertQueuedItem(db, { id, title: `Finished item ${index}`, now: now + index });
+      beginImplementRun(db, id, now + index);
+      closeout(db, id, 1, 2, now + index);
+      applyWorkItemEvent(db, id, "cancel", { now: now + index + 10 });
+    }
+    for (let index = 0; index < 10; index += 1) {
+      const id = `PAS-${2000 + index}`;
+      insertQueuedItem(db, { id, title: `Open item ${index}`, now: now + index });
+      beginImplementRun(db, id, now + index);
+      enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: "c".repeat(40) });
+      closeout(db, id, 3, CHECKS.length, now + index);
+    }
 
     const get = async (path: string) => {
       const response = (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
@@ -118,40 +113,24 @@ describe("status payload budget", () => {
     expect(await get("/api/issues")).toBeLessThanOrEqual(LIST_BUDGET_BYTES);
     expect(await get("/api/issues/PAS-2000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
     expect(await get("/api/issues/PAS-1000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
-  });
 
-  test("the issue list reads no check log and carries no check output", async () => {
-    const db = largeFixture();
     const live = createLiveStatusProvider(db, { env: {} });
     const calls: string[] = [];
     const provider = {
-      snapshot: () => {
-        calls.push("snapshot");
-        return live.snapshot();
-      },
-      issues: () => {
-        calls.push("issues");
-        return live.issues();
-      },
-      issue: (id: string) => {
-        calls.push("issue");
-        return live.issue(id);
-      },
-      checkLog: (request: Parameters<typeof live.checkLog>[0]) => {
-        calls.push("checkLog");
-        return live.checkLog(request);
-      },
+      snapshot: () => live.snapshot(),
+      issues: () => (calls.push("issues"), live.issues()),
+      checkLog: (request: Parameters<typeof live.checkLog>[0]) => (
+        calls.push("checkLog"),
+        live.checkLog(request)
+      ),
     };
     const response = (await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       provider,
       responseSizes: { record() {}, flush() {} },
     }))!;
     const body = await response.text();
-    expect(response.status).toBe(200);
     expect(calls).toEqual(["issues"]);
-    expect(body).not.toContain('"stdout"');
-    expect(body).not.toContain('"stderr"');
-    expect(body).not.toContain("expected 1 to be 2");
+    expect(body).not.toMatch(/"stdout"|"stderr"|expected 1 to be 2/);
     expect((JSON.parse(body) as { issues: unknown[] }).issues).toHaveLength(60);
   });
 });

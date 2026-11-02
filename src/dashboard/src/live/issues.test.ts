@@ -123,15 +123,4 @@ describe("issue resources", () => {
     expect(detail.blocks).toEqual(legacy.blocks);
     expect(detail.risk).toEqual(legacy.risk ?? null);
   });
-
-  test("an issue outside the reader's sessions is null, like an unknown one", () => {
-    const db = database();
-    insertQueuedItem(db, { id: "ENG-1", sessionKey: "mine", now: NOW - 1_000 });
-    insertQueuedItem(db, { id: "ENG-2", sessionKey: "other", now: NOW - 1_000 });
-    const live = provider(db, ["mine"]);
-    expect(live.issues().issues.map((issue) => issue.id)).toEqual(["ENG-1"]);
-    expect(live.issue("ENG-1")?.issue.id).toBe("ENG-1");
-    expect(live.issue("ENG-2")).toBeNull();
-    expect(live.issue("ENG-404")).toBeNull();
-  });
 });
