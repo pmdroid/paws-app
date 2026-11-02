@@ -101,6 +101,9 @@ export const EnrollmentTokenSchema = z
   .max(256)
   .regex(/^[A-Za-z0-9_-]+$/);
 
+const RETIRED_RECEIPT_RETENTION_MS = 24 * 60 * 60_000;
+const RETIRED_PRUNE_INTERVAL_MS = 10 * 60_000;
+
 export type RunnerDaemonOptions = {
   root: string;
   controlPlaneUrl: string;
@@ -153,6 +156,25 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     "CREATE TABLE IF NOT EXISTS pending_command (id TEXT PRIMARY KEY REFERENCES command_receipt(id), payload TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged IN (0,1,2))) STRICT",
   );
 
+  let prunedAt = Number.NEGATIVE_INFINITY;
+  function pruneRetired() {
+    ensureOpen();
+    const at = now();
+    if (at - prunedAt < RETIRED_PRUNE_INTERVAL_MS && at >= prunedAt) return 0;
+    prunedAt = at;
+    const cutoff = at - RETIRED_RECEIPT_RETENTION_MS;
+    return immediate(db, () => {
+      const commands = db.run(
+        "DELETE FROM pending_command WHERE acknowledged=2 AND id IN (SELECT id FROM command_receipt WHERE expires_at<?)",
+        [cutoff],
+      ).changes;
+      const receipts = db.run(
+        "DELETE FROM command_receipt WHERE expires_at<? AND id NOT IN (SELECT id FROM pending_command)",
+        [cutoff],
+      ).changes;
+      return commands + receipts;
+    });
+  }
   function ensureOpen() {
     if (closed) throw new Error("Runner daemon is closed.");
   }
@@ -250,6 +272,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   async function pollCommands(path: string) {
     const identity = paired();
     trustedSigningKeys(identity, pins);
+    pruneRetired();
     for (const row of db
       .query<{ id: string }, []>(
         "SELECT id FROM pending_command WHERE acknowledged=1 ORDER BY rowid",
@@ -300,6 +323,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     capacity: () => applied,
     ceiling: () => ceiling,
     pendingCommands,
+    pruneRetired,
     /**
      * Enroll with a member's single-use token: prepare the key and CSR, post once, store the
      * identity Paws returns. A daemon already paired with a valid certificate returns its status
