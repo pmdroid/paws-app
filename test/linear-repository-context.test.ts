@@ -304,7 +304,9 @@ test.each(
             : ["classify", mode],
       );
       expect(reads).toEqual(Array(repositoryChoice ? 5 : 1).fill("read"));
-      expect(tracker.statuses).toEqual([]);
+      expect(tracker.statuses).toEqual(
+        mode === "artifact" ? [{ linearIssueId: "issue", stateType: "completed" }] : [],
+      );
       expect(uploads).toBe(mode === "artifact" ? 1 : 0);
       expect(readFileSync(join(source, "app.txt"), "utf8")).toBe("Application source");
       expect((await git(["-C", source, "rev-parse", "HEAD"])).trim()).toBe(initialHead);

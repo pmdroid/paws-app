@@ -82,9 +82,10 @@ test("artifact completion requires uploaded deliverables and survives database r
     expect(getWorkItem(restored, item.id)?.state).toBe("completed");
     expect(listOutbox(restored, "session").map((row) => row.payload)).toEqual([
       { sessionId: "session", kind: "response", body: "Here is the complete report." },
+      { itemId: item.id, linearIssueId: item.linearIssueId, stateType: "completed" },
     ]);
     expect(() => completeArtifactTask(restored, item.id, "Duplicate")).toThrow("no longer running");
-    expect(listOutbox(restored, "session")).toHaveLength(1);
+    expect(listOutbox(restored, "session")).toHaveLength(2);
   } finally {
     restored.close();
   }

@@ -21,6 +21,7 @@ import { enqueueOutboxOnce, stopOutboxSession, advanceOutboxSession } from "./ou
 import { withOpenFindings } from "./open-findings";
 import { markRun } from "./runs";
 import { halt } from "./halt";
+import { enqueueIssueStatus } from "./linear-delegation";
 import { enqueueEndedSessionFace, stoppedResponse } from "./stop-response";
 import { mergeCallInFlight, getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
@@ -147,6 +148,12 @@ export function applyLinearCommand(
       now,
     });
     enqueueEndedSessionFace(db, { sessionId, generation, item, outcome: "stopped", now });
+    // After the fence: Stop drops pending rows, and only `stop` rows deliver in a stopped session.
+    if (!closed)
+      enqueueIssueStatus(db, getWorkItem(db, item.id)!, "canceled", now, {
+        delivery: "stop",
+        generation,
+      });
     return { applied: true };
   });
 }
