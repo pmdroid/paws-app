@@ -1,16 +1,23 @@
-import { fullStatusFixture, pageData, statusFixture, statusList } from "../../test/fixtures";
+import {
+  fullStatusFixture,
+  issueList,
+  listResponse,
+  pageData,
+  statusFixture,
+  statusList,
+} from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";
 import {
   issueRedirect,
   matchRoute,
-  loadsPage,
   needsSnapshot,
   parseRoute,
   ROUTE_SLICES,
   routeCovered,
   routeHref,
+  routeResource,
   routerBase,
   type Route,
 } from "./route";
@@ -20,6 +27,7 @@ import { STATUS_SLICES } from "../contract";
 const model = {
   phase: "ready" as const,
   snapshot: statusList(fullStatusFixture()),
+  issues: issueList(fullStatusFixture()),
   error: null,
   engineUrl: null,
 };
@@ -56,7 +64,12 @@ test("empty pages retain their own heading and empty state", () => {
     mergeQueue: [],
   };
   for (const view of ["overview", "issues", "runs", "questions"] as const) {
-    const html = render({ ...model, snapshot, route: { view, id: null } }).content;
+    const html = render({
+      ...model,
+      snapshot,
+      issues: listResponse(snapshot),
+      route: { view, id: null },
+    }).content;
     expect(html.match(/<h1 /g)?.length).toBe(1);
     expect(html).toContain(`<h1 class="sr-only">${PAGES[view].title}</h1>`);
     expect(html).toContain('class="empty"');
@@ -114,11 +127,15 @@ test("the Conversations page is gone and its old links open the issue list", () 
   expect(issueRedirect("/sessions", null)).toBeNull();
 });
 
-test("only work pages read the status snapshot; the Overview loads its own resource", () => {
+test("only work pages read the status snapshot; issue pages and the Overview read their own resources", () => {
   const pages = Object.keys(PAGES).filter((view) => needsSnapshot({ view, id: null } as Route));
-  expect(pages).toEqual(["issues", "runs", "mergeQueue", "evidence", "questions"]);
-  const loading = Object.keys(PAGES).filter((view) => loadsPage({ view, id: null } as Route));
-  expect(loading).toEqual(["overview", ...pages]);
+  expect(pages).toEqual(["mergeQueue", "evidence", "questions"]);
+  expect(routeResource({ view: "issues", id: null })).toBe("issues");
+  expect(routeResource({ view: "issues", id: "ENG-101" })).toBe("issue");
+  expect(routeResource({ view: "runs", id: "r-1" })).toBe("issues");
+  expect(routeResource({ view: "overview" })).toBe("overview");
+  expect(routeResource({ view: "questions", id: null })).toBe("status");
+  expect(routeResource({ view: "settings" })).toBeNull();
 });
 
 test("every route names the status slices it renders", () => {
@@ -127,8 +144,8 @@ test("every route names the status slices it renders", () => {
     for (const slice of slices) expect(STATUS_SLICES).toContain(slice);
   expect(ROUTE_SLICES).toEqual({
     overview: [],
-    issues: ["items"],
-    runs: ["items"],
+    issues: [],
+    runs: [],
     mergeQueue: ["items", "mergeQueue", "mergeHistory"],
     questions: ["items", "questions"],
     evidence: ["items", "evidence"],
@@ -142,10 +159,9 @@ test("a list loaded for one page does not stand in for another page's slices", (
   const questions = { ...statusFixture(), slices: ["items", "questions"] };
   const evidenceOnly = { ...statusFixture(), slices: ["evidence"] } as typeof questions;
   expect(routeCovered({ view: "questions", id: null }, questions as never)).toBe(true);
-  expect(routeCovered({ view: "issues", id: null }, questions as never)).toBe(true);
   expect(routeCovered({ view: "mergeQueue" }, questions as never)).toBe(false);
   expect(routeCovered({ view: "evidence", id: null }, questions as never)).toBe(false);
-  expect(routeCovered({ view: "issues", id: null }, evidenceOnly as never)).toBe(false);
+  expect(routeCovered({ view: "questions", id: null }, evidenceOnly as never)).toBe(false);
   expect(routeCovered({ view: "runners", id: null }, null)).toBe(true);
   expect(routeCovered({ view: "mergeQueue" }, statusFixture())).toBe(true);
   expect(routeCovered({ view: "questions", id: null }, null)).toBe(false);

@@ -1,5 +1,11 @@
 import { journalCaught } from "../journal";
-import { hasStatusSlice, type StatusSlice, type StatusSnapshot } from "../contract";
+import {
+  hasStatusSlice,
+  type StatusItem,
+  type StatusRun,
+  type StatusSlice,
+  type StatusSnapshot,
+} from "../contract";
 import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
 import { DASHBOARD_PATH, isDashboardPath } from "../../../dashboard-links";
 
@@ -14,15 +20,21 @@ export type Route =
   | { view: "questions"; id: string | null }
   | { view: "settings"; page?: SettingsPage };
 
+export interface RouteIndex {
+  items: readonly Pick<StatusItem, "id" | "session">[];
+  runs: readonly Pick<StatusRun, "id" | "itemId" | "attempts">[];
+  verdicts: readonly { itemId: string; runId?: string }[];
+}
+
 export function routerBase(pathname: string): string {
   return isDashboardPath(pathname) ? DASHBOARD_PATH : "";
 }
 
-export function parseRoute(path: string, snapshot?: StatusSnapshot | null): Route {
+export function parseRoute(path: string, snapshot?: RouteIndex | null): Route {
   return matchRoute(path, snapshot) ?? { view: "overview" };
 }
 
-export function matchRoute(path: string, snapshot?: StatusSnapshot | null): Route | null {
+export function matchRoute(path: string, snapshot?: RouteIndex | null): Route | null {
   const parts = path
     .replace(/^#/, "")
     .split("/")
@@ -82,8 +94,8 @@ export function routeHref(route: Route): string {
 
 export const ROUTE_SLICES: Record<Route["view"], readonly StatusSlice[]> = {
   overview: [],
-  issues: ["items"],
-  runs: ["items"],
+  issues: [],
+  runs: [],
   mergeQueue: ["items", "mergeQueue", "mergeHistory"],
   questions: ["items", "questions"],
   evidence: ["items", "evidence"],
@@ -105,8 +117,13 @@ export function needsSnapshot(route: Route): boolean {
   return routeSlices(route).length > 0;
 }
 
-export function loadsPage(route: Route): boolean {
-  return route.view === "overview" || needsSnapshot(route);
+export type RouteResource = "overview" | "issue" | "issues" | "status" | null;
+
+export function routeResource(route: Route): RouteResource {
+  if (route.view === "overview") return "overview";
+  if (route.view === "issues") return route.id === null ? "issues" : "issue";
+  if (route.view === "runs") return "issues";
+  return needsSnapshot(route) ? "status" : null;
 }
 
 const FOLDED = new Set(["runs", "sessions", "verdicts"]);
@@ -117,8 +134,8 @@ const FOLDED = new Set(["runs", "sessions", "verdicts"]);
  * page it used to open no longer exists.
  * Null when the path is not one of those, or the snapshot has not arrived yet.
  */
-export function issueRedirect(path: string, snapshot: StatusSnapshot | null): string | null {
-  if (!hasStatusSlice(snapshot, "items")) return null;
+export function issueRedirect(path: string, snapshot: RouteIndex | null): string | null {
+  if (snapshot === null) return null;
   const head = path
     .replace(/^#/, "")
     .split("/")
@@ -130,7 +147,7 @@ export function issueRedirect(path: string, snapshot: StatusSnapshot | null): st
 }
 
 /** Any of a task's engine run ids, or the run id the dashboard shows for it. */
-function issueForRun(id: string, snapshot: StatusSnapshot | null | undefined): string | null {
+function issueForRun(id: string, snapshot: RouteIndex | null | undefined): string | null {
   const run = snapshot?.runs.find((entry) => entry.id === id || entry.attempts?.includes(id));
   return run?.itemId ?? null;
 }
@@ -139,11 +156,11 @@ function issueForRun(id: string, snapshot: StatusSnapshot | null | undefined): s
  * The Linear session's issue. Sub-issues that share a session open the one delegated first;
  * items arrive newest first.
  */
-function issueForSession(id: string, snapshot: StatusSnapshot | null | undefined): string | null {
+function issueForSession(id: string, snapshot: RouteIndex | null | undefined): string | null {
   return snapshot?.items.findLast((item) => item.session?.id === id)?.id ?? null;
 }
 
-function issueForVerdict(id: string, snapshot: StatusSnapshot | null | undefined): string | null {
+function issueForVerdict(id: string, snapshot: RouteIndex | null | undefined): string | null {
   if (!snapshot) return null;
   if (snapshot.items.some((item) => item.id === id)) return id;
   return (

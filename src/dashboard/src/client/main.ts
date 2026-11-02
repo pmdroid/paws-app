@@ -5,17 +5,10 @@ import { mergeQueueCount } from "./merge-queue";
 
 import {
   FINDING_ISSUE_PATH,
-  OVERVIEW_API_PATH,
   hasStatusSlice,
-  parseOverviewResponse,
-  parseStatusCheckLog,
-  parseStatusItemDetail,
-  statusCheckLogPath,
-  statusItemPath,
-  type OverviewResponse,
-  type StatusCheckLog,
-  type StatusItemDetail,
-  type StatusSnapshot,
+  issueCheckLogPath,
+  parseIssueCheckLogResponse,
+  type IssueCheckLogResponse,
   type StatusSnapshotBase,
 } from "../contract";
 import {
@@ -36,18 +29,17 @@ import { readCsrfToken } from "./csrf";
 import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
 import {
   issueRedirect,
-  loadsPage,
   matchRoute,
-  needsSnapshot,
   parseRoute,
   routerBase,
   routeCovered,
-  routeSlices,
+  routeResource,
   type Route,
+  type RouteIndex,
 } from "./route";
 import { livePoll } from "./poll";
-import { createStatusReader, STATUS_POLL_MS } from "./status-reader";
-import { createResourceReader } from "./resource-reader";
+import { STATUS_POLL_MS } from "./status-reader";
+import { createPageLoader, errorText } from "./page-loader";
 import type { SettingsPage } from "./settings-pages";
 
 import { createAgentSettings } from "./agent-settings";
@@ -94,20 +86,9 @@ const deadDeliveryRetry = createDeadDeliveryRetry(reload);
 const reviewDraw = createReviewDraw(reload);
 const evidence = createEvidenceMedia(() => paint());
 
-const readStatus = createStatusReader();
-const resources = createResourceReader();
-const overviewReader = {
-  async read() {
-    const read = await resources.read(OVERVIEW_API_PATH, workspaceReader(), parseOverview);
-    return read.kind === "loaded" ? { kind: "loaded" as const, response: read.body } : read;
-  },
-  forget: () => resources.clear(),
-};
-
-function parseOverview(input: unknown) {
-  const parsed = parseOverviewResponse(input);
-  return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
-}
+const loader = createPageLoader({ reader: workspaceReader, signedIn });
+const page = loader.data;
+let shownReader = "";
 
 const regions = ["#top", "#banner", "#page-content"] as const;
 const painted = new Map<string, string>();
@@ -117,11 +98,6 @@ let linkedHash = "";
 /** The path and hash of the link ask card last scrolled to, so a repaint does not scroll again. */
 let linkedCard = "";
 let phase: RenderModel["phase"] = "loading";
-let snapshot: StatusSnapshot | null = null;
-/** The open issue page's data. While an issue page is open, only this is polled. */
-let detail: StatusItemDetail | null = null;
-let overview: OverviewResponse | null = null;
-let loads = 0;
 let error: string | null = null;
 let stopPolling: (() => void) | null = null;
 let workspaceReady = false;
@@ -170,6 +146,7 @@ void boot();
 async function boot(): Promise<void> {
   workspaceReady = await initializeWorkspaceAccess(() => settingsPage(currentRoute()));
   shell.setAuthenticated(workspaceReady);
+  shownReader = workspaceReader();
   if (!workspaceReady) return;
   try {
     const destination = sessionStorage.getItem("paws.settingsReturn");
@@ -190,11 +167,19 @@ async function boot(): Promise<void> {
 }
 
 function routeChanged(): void {
+  loader.navigate();
   const route = currentRoute();
-  const issue = openIssue(route);
-  if (issue !== null && detail?.id !== issue) phase = "loading";
-  else if (route.view === "overview" && overview === null) phase = "loading";
-  else if (issue === null && !routeCovered(route, snapshot)) phase = "loading";
+  const resource = routeResource(route);
+  const shown =
+    resource === "issue"
+      ? openDetail({ route, issue: page.issue })
+      : resource === "issues"
+        ? page.issues !== null
+        : resource === "overview"
+          ? page.overview !== null
+          : routeCovered(route, page.snapshot);
+  phase = shown ? "ready" : "loading";
+  error = null;
   paint();
   if (!booted) return;
   void reload();
@@ -202,53 +187,17 @@ function routeChanged(): void {
 
 async function reload(): Promise<void> {
   const route = currentRoute();
-  const load = ++loads;
-  const latest = () => load === loads;
-  if (route.view === "overview") return reloadOverview(latest);
-  if (!needsSnapshot(route)) {
+  if (routeResource(route) === null) {
     schedule();
     return;
   }
-  try {
-    const loaded = await loadDetail(route);
-    if (loaded === "signed-out") return;
-    if (loaded === "none") {
-      const read = await readStatus(routeSlices(route));
-      if (read.kind === "response") {
-        if (!(await signedIn(read.response))) return;
-        throw new Error(await errorText(read.response));
-      }
-      if (!latest() || !routeCovered(currentRoute(), read.snapshot)) return;
-      snapshot = read.snapshot;
-    }
-    if (!latest()) return;
+  const loaded = await loader.load(route);
+  if (loaded === "stale" || loaded === "signed-out") return;
+  if (loaded === "applied") {
     phase = "ready";
     error = null;
-  } catch (caught) {
-    journalCaught(caught, "main.reload.fetch", null);
-    if (!latest()) return;
-    error = caught instanceof Error ? caught.message : "Could not load status";
-    phase = "error";
-  }
-  paint();
-  schedule();
-}
-
-async function reloadOverview(latest: () => boolean): Promise<void> {
-  try {
-    const read = await overviewReader.read();
-    if (read.kind === "response") {
-      if (!(await signedIn(read.response))) return;
-      throw new Error(await errorText(read.response));
-    }
-    if (!latest()) return;
-    overview = read.response;
-    phase = "ready";
-    error = null;
-  } catch (caught) {
-    journalCaught(caught, "main.reloadOverview.fetch", null);
-    if (!latest()) return;
-    error = caught instanceof Error ? caught.message : "Could not load the overview";
+  } else {
+    error = loaded.error;
     phase = "error";
   }
   paint();
@@ -259,49 +208,45 @@ function openIssue(route: Route): string | null {
   return route.view === "issues" ? route.id : null;
 }
 
-/**
- * Loads the open issue page's detail. `none` when no issue page is open or the issue is not
- * visible, so the list snapshot is loaded instead and the page says the issue was not found.
- */
-async function loadDetail(route: Route): Promise<"loaded" | "none" | "signed-out"> {
-  const id = openIssue(route);
-  if (id === null) return "none";
-  const response = await fetch(statusItemPath(id), {
-    headers: { Accept: "application/json" },
-    cache: "no-store",
-  });
-  if (!(await signedIn(response))) return "signed-out";
-  if (response.status === 404) {
-    detail = null;
-    return "none";
-  }
-  if (!response.ok) throw new Error(await errorText(response));
-  const parsed = parseStatusItemDetail(await response.json());
-  if (!parsed.ok) throw new Error(parsed.error);
-  // The reader may have moved to another page while this request ran.
-  if (openIssue(currentRoute()) === id) detail = parsed.detail;
-  return "loaded";
-}
-
 /** False when the session ended and the reader still has to sign in again. */
 async function signedIn(response: Response): Promise<boolean> {
   if (response.status !== 401) return true;
-  overview = null;
-  overviewReader.forget();
   workspaceReady = await initializeWorkspaceAccess(() => settingsPage(currentRoute()));
   shell.setAuthenticated(workspaceReady);
+  readerChanged();
   return workspaceReady;
 }
 
+function readerChanged(): void {
+  if (workspaceReader() === shownReader) return;
+  shownReader = workspaceReader();
+  loader.reset();
+  closeout.logs = {};
+  closeout.filing = {};
+  phase = "loading";
+  error = null;
+  if (!workspaceReady) return;
+  paint();
+  void reload();
+}
+
 /** What the current page renders from: the issue's detail on its page, otherwise the list. */
-function pageData(): StatusSnapshotBase | null {
-  return openDetail({ route: currentRoute(), detail }) ? detail : snapshot;
+function pageData(): Pick<StatusSnapshotBase, "items" | "runs" | "evidence"> | null {
+  const route = currentRoute();
+  if (page.issue && openDetail({ route, issue: page.issue }))
+    return { ...page.issue, items: [page.issue.issue, ...page.issue.earlierSessions] };
+  return routeResource(route) === "status" ? page.snapshot : null;
+}
+
+function routeIndex(): RouteIndex | null {
+  const list = page.issues;
+  return list && { items: list.issues, runs: list.runs, verdicts: list.verdicts };
 }
 
 /** Run, session and verdict links open the issue page, so links posted in Linear keep working. */
 function followIssueRedirect(): boolean {
   const pathname = router.state.location.pathname;
-  const target = issueRedirect(pathname.slice(routerBase(pathname).length), snapshot);
+  const target = issueRedirect(pathname.slice(routerBase(pathname).length), routeIndex());
   if (target === null) return false;
   void router.navigate(`${target}${router.state.location.search}${location.hash}`, {
     replace: true,
@@ -313,7 +258,7 @@ function schedule(): void {
   stopPolling?.();
   stopPolling = null;
   const route = currentRoute();
-  if (!loadsPage(route)) return;
+  if (routeResource(route) === null) return;
   // Stored evidence does not change, and a repaint would interrupt the video.
   if (route.view === "evidence") return;
   stopPolling = livePoll(() => void reload(), STATUS_POLL_MS);
@@ -372,9 +317,10 @@ function paint(): void {
   const model: RenderModel = {
     route: currentRoute(),
     phase,
-    snapshot,
-    detail,
-    overview,
+    snapshot: page.snapshot,
+    issues: page.issues,
+    issue: page.issue,
+    overview: page.overview,
     error,
     engineUrl: currentEngine(),
     closeout,
@@ -384,11 +330,13 @@ function paint(): void {
   const route = model.route;
   const data = pageData();
   const shown =
-    route.view === "evidence" ? snapshot?.evidence?.find((entry) => entry.id === route.id) : null;
-  if (route.view === "overview" && overview !== null)
-    shell.setCounts({ mergeQueue: overview.mergeQueueCount });
-  else if (hasStatusSlice(snapshot, "mergeQueue"))
-    shell.setCounts({ mergeQueue: mergeQueueCount(snapshot) });
+    route.view === "evidence"
+      ? page.snapshot?.evidence?.find((entry) => entry.id === route.id)
+      : null;
+  if (route.view === "overview" && page.overview !== null)
+    shell.setCounts({ mergeQueue: page.overview.mergeQueueCount });
+  else if (page.snapshot && hasStatusSlice(page.snapshot, "mergeQueue"))
+    shell.setCounts({ mergeQueue: mergeQueueCount(page.snapshot) });
   shell.setBreadcrumb(
     shown
       ? { issueId: shown.itemId, entityId: shown.id }
@@ -459,7 +407,7 @@ function drawsLocally(): boolean {
 
 function currentRoute(): Route {
   const pathname = router.state.location.pathname;
-  return parseRoute(pathname.slice(routerBase(pathname).length), snapshot);
+  return parseRoute(pathname.slice(routerBase(pathname).length), routeIndex());
 }
 
 function settingsPage(route: Route): SettingsPage | null {
@@ -764,7 +712,14 @@ async function loadLog(
   try {
     const log = await fetchLog(itemId, attempt, checkId, full);
     if (log === null) return;
-    next = { status: "loaded", checkState, ...log, full };
+    next = {
+      status: "loaded",
+      checkState,
+      stdout: log.stdout,
+      stderr: log.stderr,
+      truncated: log.truncated,
+      full,
+    };
   } catch (caught) {
     journalCaught(caught, "main.loadLog.fetch", itemId);
     next = {
@@ -774,7 +729,7 @@ async function loadLog(
     };
   }
   // A later load of the same row replaced this one.
-  if (logs[key] !== loading) return;
+  if (closeout.logs?.[key] !== loading) return;
   logs[key] = next;
   paint();
 }
@@ -785,10 +740,11 @@ async function fetchLog(
   attempt: number,
   checkId: string,
   full: boolean,
-): Promise<StatusCheckLog | null> {
+): Promise<IssueCheckLogResponse | null> {
   const issue = openIssue(currentRoute());
   if (issue === null) throw new Error("No issue page is open");
-  const path = statusCheckLogPath(issue, attempt, checkId, {
+  const reader = workspaceReader();
+  const path = issueCheckLogPath(issue, attempt, checkId, {
     run: agentCloseoutRun(itemId),
     full,
   });
@@ -798,14 +754,14 @@ async function fetchLog(
   });
   if (!(await signedIn(response))) return null;
   if (!response.ok) throw new Error(await errorText(response));
-  const parsed = parseStatusCheckLog(await response.json());
+  const parsed = parseIssueCheckLogResponse(await response.json());
   if (!parsed.ok) throw new Error(parsed.error);
-  return parsed.log;
+  return reader === workspaceReader() ? parsed.response : null;
 }
 
 /** Closeout attempts and checks are only in the open issue page's detail, not in the list. */
 function closeoutVerdict(itemId: string) {
-  const data = openDetail({ route: currentRoute(), detail }) ? detail : null;
+  const data = openDetail({ route: currentRoute(), issue: page.issue }) ? page.issue : null;
   const runId = agentCloseoutRun(itemId);
   if (runId === null) return data?.verdicts.find((entry) => entry.itemId === itemId);
   const agent = findAgentCloseout(data?.agentCloseout, runId);
@@ -835,6 +791,13 @@ function openLinkedCheck(): boolean {
   if (!linked) {
     linkedHash = hash;
     return false;
+  }
+  const route = currentRoute();
+  const fold = `section\ncloseout:${openIssue(route)}`;
+  if (openDetail({ route, issue: page.issue }) && closeout.open[fold] === undefined) {
+    closeout.open[fold] = true;
+    paint();
+    return true;
   }
   const sections = document.querySelectorAll(
     '#page-content section[aria-label="Closeout"] [data-item], #page-content section[aria-label="Agent Closeout"] [data-item]',
@@ -895,19 +858,6 @@ function applyIssueFilter(): void {
 
 function currentEngine(): string {
   return location.origin;
-}
-
-async function errorText(response: Response): Promise<string> {
-  try {
-    const body: unknown = await response.json();
-    if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
-      return `Engine responded ${response.status}: ${body.error}`;
-    }
-  } catch (caughtError3) {
-    journalCaught(caughtError3, "main.errorText.json", null);
-    /* status is enough */
-  }
-  return `Engine responded ${response.status}`;
 }
 
 async function downloadOutput(itemId: string, attempt: number, checkId: string): Promise<void> {

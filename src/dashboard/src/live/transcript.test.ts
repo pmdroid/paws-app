@@ -1,4 +1,4 @@
-import { openedView } from "../../test/fixtures";
+import { openedView, issueOf } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import {
   appendFileSync,
@@ -94,7 +94,7 @@ test("full transcript reads unfinished ACP output, tools and classification whil
     route: { view: "issues", id: itemId },
     phase: "ready",
     snapshot: first,
-    detail: provider.item(itemId),
+    issue: issueOf(provider.item(itemId)),
     error: null,
     engineUrl: null,
     closeout: openedView(),

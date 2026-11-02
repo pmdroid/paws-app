@@ -2,6 +2,7 @@ import {
   openedView,
   fullStatusFixture,
   overviewOf,
+  listResponse,
   pageData,
   statusFixture,
 } from "../../test/fixtures";
@@ -163,6 +164,7 @@ test("issues list shows blockers without positioned CSS", () => {
     route: { view: "issues", id: null },
     phase: "ready",
     snapshot,
+    issues: listResponse(snapshot),
     error: null,
     engineUrl: null,
   });

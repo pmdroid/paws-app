@@ -10,6 +10,8 @@ import { evidenceFileUrl, evidencePageHref, evidenceVersions, thumbnailMedia } f
 import { linkAskDraft, linkAskMessage, linkAskPending } from "./link-ask";
 import { drawnMarkCount, drawnStrokes, strokesOverlay } from "./review-marks";
 
+type ReviewSource = Pick<StatusSnapshotBase, "questions" | "generatedAt" | "evidence">;
+
 const STATE_TAG: Record<StatusVisualReview["state"], [string, string]> = {
   waiting: ["warn", "Waiting"],
   accepted: ["accepted", "Accepted"],
@@ -48,7 +50,7 @@ export function waitingVisualReview(item: StatusItem | undefined): StatusVisualR
 
 /** The open screenshots link ask of the item's latest review, decided on this page. */
 export function visualReviewAsk(
-  snapshot: StatusSnapshotBase,
+  snapshot: ReviewSource,
   item: StatusItem,
 ): { question: StatusQuestion; review: StatusVisualReview } | undefined {
   const review = item.visualReviews?.at(-1);
@@ -65,7 +67,7 @@ export function visualReviewAsk(
  * is the item the execution controls stop.
  */
 export function visualReviewSection(
-  snapshot: StatusSnapshotBase,
+  snapshot: ReviewSource,
   item: StatusItem,
   engineUrl: string | null,
   stopItemId?: string,
@@ -95,7 +97,7 @@ export function visualReviewSection(
 }
 
 function carriedSummary(
-  snapshot: StatusSnapshotBase,
+  snapshot: ReviewSource,
   reviews: readonly StatusVisualReview[],
   review: StatusVisualReview,
 ): string {
@@ -106,7 +108,7 @@ function carriedSummary(
 }
 
 function roundEntry(
-  snapshot: StatusSnapshotBase,
+  snapshot: ReviewSource,
   review: StatusVisualReview,
   next: StatusVisualReview | undefined,
   engineUrl: string | null,
@@ -148,7 +150,7 @@ function marksLabel(count: number): string {
 }
 
 function askCard(
-  snapshot: StatusSnapshotBase,
+  snapshot: ReviewSource,
   item: StatusItem,
   ask: { question: StatusQuestion; review: StatusVisualReview },
   engineUrl: string | null,

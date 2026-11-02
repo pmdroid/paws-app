@@ -5,6 +5,7 @@ import {
   pageData,
   statusList,
   type FullStatus,
+  issueOf,
 } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
@@ -95,7 +96,7 @@ describe("issue page", () => {
       route: { view: "issues", id: "ENG-101" },
       phase: "ready",
       snapshot: null,
-      detail: parsed.detail,
+      issue: issueOf(parsed.detail),
       error: null,
       engineUrl: null,
       closeout: openedView({ "section\ndetails:ENG-101": true }),
@@ -199,7 +200,7 @@ describe("issue page", () => {
       route: { view: "issues", id: "ENG-101" },
       phase: "ready",
       snapshot: null,
-      detail: parsed.detail,
+      issue: issueOf(parsed.detail),
       error: null,
       engineUrl: null,
       closeout: openedView(),
@@ -215,7 +216,7 @@ describe("issue page", () => {
       route: { view: "issues", id: "ENG-102" },
       phase: "ready",
       snapshot: null,
-      detail: parsed.detail,
+      issue: issueOf(parsed.detail),
       error: null,
       engineUrl: null,
     }).content;

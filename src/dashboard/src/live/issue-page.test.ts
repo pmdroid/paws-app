@@ -19,7 +19,7 @@ import {
   type StatusItemDetail,
   type StatusSnapshot,
 } from "../contract";
-import { openedView } from "../../test/fixtures";
+import { openedView, issueOf } from "../../test/fixtures";
 import { render } from "../client/render";
 import { issueRedirect, parseRoute } from "../client/route";
 import { createLiveStatusProvider } from "./provider";
@@ -113,7 +113,9 @@ function issuePage(snapshot: Status, id = "PAS-367"): string {
     route,
     phase: "ready",
     snapshot,
-    detail: route?.view === "issues" && route.id ? (snapshot.details.get(route.id) ?? null) : null,
+    issue: issueOf(
+      route?.view === "issues" && route.id ? (snapshot.details.get(route.id) ?? null) : null,
+    ),
     error: null,
     engineUrl: null,
     closeout: openedView(),
@@ -272,7 +274,7 @@ describe("one page per issue", () => {
       route: { view: "issues", id: "PAS-367" },
       phase: "ready",
       snapshot: snapshotOf(db),
-      detail: snapshotOf(db).details.get("PAS-367") ?? null,
+      issue: issueOf(snapshotOf(db).details.get("PAS-367") ?? null),
       error: null,
       engineUrl: null,
       closeout: openedView({ "section\ndetails:PAS-367": true }),

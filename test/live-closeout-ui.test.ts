@@ -26,7 +26,7 @@ import {
 import { handleStatusRequest } from "../src/dashboard";
 import { render, type RenderModel } from "../src/dashboard/src/client/render";
 import { attemptsOf, checkKey } from "../src/dashboard/src/client/closeout";
-import { openedView } from "../src/dashboard/test/fixtures";
+import { openedView, issueOf } from "../src/dashboard/test/fixtures";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 import type {
   StatusCheck,
@@ -200,7 +200,7 @@ function paint(snapshot: Status, id: string, checkId: string): string {
     route: { view: "issues", id },
     phase: "ready",
     snapshot,
-    detail: snapshot.details.get(id) ?? null,
+    issue: issueOf(snapshot.details.get(id) ?? null),
     error: null,
     engineUrl: "http://127.0.0.1:8787",
     closeout: openedView({ [checkKey(id, latest, checkId)]: true }),
@@ -413,7 +413,7 @@ describe("live closeout ui", () => {
       route: { view: "issues", id },
       phase: "ready",
       snapshot,
-      detail: snapshot.details.get(id) ?? null,
+      issue: issueOf(snapshot.details.get(id) ?? null),
       error: null,
       engineUrl: null,
       closeout: { ...openedView(), attempt: { [id]: 1 } },

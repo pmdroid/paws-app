@@ -2,8 +2,9 @@ import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
   OverviewIssue,
   OverviewResponse,
+  IssueDetailResponse,
+  IssueListResponse,
   StatusItem,
-  StatusItemDetail,
   StatusItemEvent,
   StatusLink,
   StatusQuestion,
@@ -31,7 +32,7 @@ import {
   statePill,
   utcClock,
 } from "./format";
-import { loadsPage, routeHref, type Route } from "./route";
+import { routeHref, routeResource, type Route } from "./route";
 import { parseEngineUrl } from "./format";
 import {
   emptyCloseoutView,
@@ -62,9 +63,9 @@ export interface RenderModel {
   route: Route;
   phase: "loading" | "ready" | "error";
   snapshot: StatusSnapshot | null;
-  /** The open issue page's own data from `GET /api/status/items/<id>`. It renders that page alone. */
-  detail?: StatusItemDetail | null;
   overview?: OverviewResponse | null;
+  issues?: IssueListResponse | null;
+  issue?: IssueDetailResponse | null;
   error: string | null;
   engineUrl: string | null;
   closeout?: CloseoutView;
@@ -106,23 +107,24 @@ export function render(model: RenderModel): Rendered {
                 ? viewOverview(model.overview)
                 : renderPending(model)
               : model.phase !== "loading" && openDetail(model)
-                ? issuePage(
-                    model.detail!,
-                    model.detail!.id,
-                    model.closeout ?? emptyCloseoutView(),
-                    model.engineUrl,
-                  )
-                : snapshot && model.phase !== "loading"
-                  ? renderView(snapshot, model)
-                  : renderPending(model),
+                ? issuePage(model.issue!, model.closeout ?? emptyCloseoutView(), model.engineUrl)
+                : model.phase !== "loading" && model.issues && route.view === "issues"
+                  ? viewIssues(model.issues, route.id)
+                  : model.phase !== "loading" && model.issues && route.view === "runs"
+                    ? viewRuns(model.issues, route.id)
+                    : snapshot && model.phase !== "loading" && routeResource(route) === "status"
+                      ? renderView(snapshot, model)
+                      : renderPending(model),
     title,
   };
 }
 
 /** The issue page has its detail; the list snapshot is not read for it. */
-export function openDetail(model: Pick<RenderModel, "route" | "detail">): boolean {
+export function openDetail(model: Pick<RenderModel, "route" | "issue">): boolean {
   return (
-    model.route.view === "issues" && model.route.id !== null && model.detail?.id === model.route.id
+    model.route.view === "issues" &&
+    model.route.id !== null &&
+    model.issue?.issue.id === model.route.id
   );
 }
 
@@ -131,9 +133,15 @@ function renderTop(_model: RenderModel): string {
 }
 
 function renderBanner(model: RenderModel): string {
-  if (model.phase === "error" && loadsPage(model.route)) {
-    const shown = model.route.view === "overview" ? model.overview : model.snapshot;
-    return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${shown ? " Showing the last snapshot." : ""}</span></div>`;
+  const resource = routeResource(model.route);
+  if (model.phase === "error" && resource !== null) {
+    const kept =
+      resource === "overview"
+        ? model.overview
+        : resource === "status"
+          ? model.snapshot
+          : openDetail(model) || model.issues;
+    return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${kept ? " Showing the last snapshot." : ""}</span></div>`;
   }
   return "";
 }
@@ -150,9 +158,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "overview":
       return renderPending(model);
     case "issues":
-      return viewIssues(snapshot, model.route.id);
     case "runs":
-      return viewRuns(snapshot, model.route.id);
+      return renderPending(model);
     case "mergeQueue":
       return `${pageHeading("mergeQueue")}${renderPushOutages(snapshot)}${renderPolicyRunnerWarnings(snapshot)}${renderMergeQueue(snapshot)}`;
     case "questions":
@@ -337,12 +344,12 @@ function ageOf(overview: OverviewResponse, itemId: string): string {
 
 const EMPTY_ISSUES = "No issues yet. Delegate an issue to Paws in Linear.";
 
-function viewIssues(snapshot: StatusSnapshot, id: string | null): string {
-  const selected = id ? findItem(snapshot, id) : undefined;
+function viewIssues(list: IssueListResponse, id: string | null): string {
+  const selected = id ? list.issues.find((item) => item.id === id) : undefined;
   if (id && !selected)
     return `${pageHeading("issues")}<div class="empty">Issue not found. Choose an issue from the list.</div>${entityPicker(
       "Issue",
-      snapshot.items.map((item) => ({
+      list.issues.map((item) => ({
         value: routeHref({ view: "issues", id: item.id }),
         label: `${item.id} · ${item.title}`,
       })),
@@ -350,7 +357,7 @@ function viewIssues(snapshot: StatusSnapshot, id: string | null): string {
     )}`;
   // The issue page renders from its own detail; the list does not carry its Closeout attempts.
   if (selected) return issuePending();
-  if (!snapshot.items.length)
+  if (!list.issues.length)
     return `${pageHeading("issues")}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
   return `${pageHeading("issues")}
     <div class="issue-filters" role="group" aria-label="Filter issues">
@@ -359,8 +366,8 @@ function viewIssues(snapshot: StatusSnapshot, id: string | null): string {
       <button type="button" class="btn" data-action="issue-filter" data-issue-filter="needs" aria-pressed="false">Needs attention</button>
       <button type="button" class="btn" data-action="issue-filter" data-issue-filter="done" aria-pressed="false">Done</button>
     </div>
-    ${projectFilter(snapshot.items)}
-    <ul class="issue-list" role="list">${snapshot.items.map((item) => issueRow(snapshot, item)).join("")}</ul>
+    ${projectFilter(list.issues)}
+    <ul class="issue-list" role="list">${list.issues.map((item) => issueRow(list.generatedAt, item)).join("")}</ul>
     <p class="empty issue-filter-empty" hidden>No issues match this filter.</p>`;
 }
 
@@ -400,10 +407,10 @@ function projectFilter(items: readonly StatusItem[]): string {
   return `<label class="field issue-project-filter"><span>Project</span><select name="issue-project" data-issue-project-filter aria-label="Filter by project"><option value="">Any project</option>${options}${none}</select></label>`;
 }
 
-function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
+function issueRow(generatedAt: string, item: StatusItem): string {
   const blockers = item.blockers;
   const reason = waitReason(item) ?? (blockers.length ? `Blocked by ${blockers.join(", ")}` : null);
-  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${itemPill(item)}<div class="issue-facts">${issueMeta(item)}${itemTime(item, Date.parse(snapshot.generatedAt))}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
+  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}" data-issue-project="${esc(item.project?.id ?? NO_PROJECT_FILTER)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${itemPill(item)}<div class="issue-facts">${issueMeta(item)}${itemTime(item, Date.parse(generatedAt))}${reason ? `<span class="muted" data-wait-reason>${esc(reason)}</span>` : ""}</div></li>`;
 }
 
 function issueMeta(item: StatusItem): string {
@@ -421,10 +428,10 @@ function relatedIssues(ids: readonly string[]): string {
   return `<div class="row wrap">${ids.map((id) => `<a href="${routeHref({ view: "issues", id })}">${esc(id)}</a>`).join("")}</div>`;
 }
 
-function viewRuns(snapshot: StatusSnapshot, id: string | null): string {
-  const run = id === null ? undefined : snapshot.runs.find((entry) => inRun(entry, id));
-  if (run && findItem(snapshot, run.itemId)) return issuePending();
-  return viewIssues(snapshot, id);
+function viewRuns(list: IssueListResponse, id: string | null): string {
+  const run = id === null ? undefined : list.runs.find((entry) => inRun(entry, id));
+  if (run && list.issues.some((item) => item.id === run.itemId)) return issuePending();
+  return viewIssues(list, id);
 }
 
 /**
@@ -432,14 +439,12 @@ function viewRuns(snapshot: StatusSnapshot, id: string | null): string {
  * questions, fix rounds, and the pull request and merge.
  */
 function issuePage(
-  snapshot: StatusItemDetail,
-  id: string,
+  snapshot: IssueDetailResponse,
   closeout: CloseoutView,
   engineUrl: string | null,
 ): string {
-  const attempts = snapshot.items.filter((entry) => entry.id === id);
-  const item = attempts.find((entry) => !entry.endedAt) ?? attempts[0]!;
-  const earlier = attempts.filter((entry) => entry !== item);
+  const item = snapshot.issue;
+  const earlier = snapshot.earlierSessions;
   const run = itemRun(snapshot, item, earlier);
   const verdict = attemptVerdict(snapshot, item, run);
   const engineRun = run?.attempts?.at(-1) ?? run?.id;
@@ -533,7 +538,7 @@ function issuePage(
       `risk:${item.id}`,
       "Risk",
       "",
-      `${riskCarryOverSection(snapshot, item)}${"risk" in snapshot ? riskCard((snapshot as StatusItemDetail).risk) : ""}`,
+      `${riskCarryOverSection(snapshot, item)}${riskCard(snapshot.risk)}`,
       snapshot.questions.some(
         (question) => question.itemId === item.id && question.linkAsk?.kind === "risk",
       ),
@@ -582,7 +587,7 @@ function fold(
 }
 
 /** The kept approval, unless a risk ask on the item is open again. */
-function riskCarryOverSection(snapshot: StatusItemDetail, item: StatusItem): string {
+function riskCarryOverSection(snapshot: IssueDetailResponse, item: StatusItem): string {
   if (!item.riskCarryOver) return "";
   const asking = snapshot.questions.some(
     (question) => question.itemId === item.id && question.linkAsk?.kind === "risk",
@@ -592,7 +597,7 @@ function riskCarryOverSection(snapshot: StatusItemDetail, item: StatusItem): str
 
 /** State, project, runner and agent, and the Linear session it belongs to. */
 function issueFacts(
-  snapshot: StatusItemDetail,
+  snapshot: IssueDetailResponse,
   item: StatusItem,
   run: StatusRun | undefined,
   blocked: readonly string[],
@@ -725,9 +730,9 @@ function itemTimelineEntry(entry: StatusItemEvent): string {
 }
 
 /** The pull request and where its merge stands. */
-function pullRequestSection(snapshot: StatusItemDetail, item: StatusItem): string {
+function pullRequestSection(snapshot: IssueDetailResponse, item: StatusItem): string {
   const entry = snapshot.mergeQueue.find((candidate) => candidate.itemId === item.id);
-  const outcome = snapshot.mergeHistory?.findLast((candidate) => candidate.itemId === item.id);
+  const outcome = snapshot.mergeHistory.findLast((candidate) => candidate.itemId === item.id);
   const state =
     item.state === "merged"
       ? "Merged."
@@ -757,11 +762,11 @@ function pullRequestSection(snapshot: StatusItemDetail, item: StatusItem): strin
 
 /** CI reads that failed on the pull request, and what Paws did next. */
 function fixRounds(
-  snapshot: StatusItemDetail,
+  snapshot: IssueDetailResponse,
   item: StatusItem,
   run: StatusRun | undefined,
 ): string {
-  const rounds = (snapshot.ciRounds ?? []).filter(
+  const rounds = snapshot.ciRounds.filter(
     (round) =>
       round.itemId === item.id &&
       (round.runId === null || run === undefined || inRun(run, round.runId)),
@@ -787,7 +792,7 @@ function activityLog(key: string, run: StatusRun): string {
 
 /** The run of this attempt. An issue delegated twice has one run per Linear session. */
 function itemRun(
-  snapshot: StatusItemDetail,
+  snapshot: IssueDetailResponse,
   item: StatusItem,
   others: readonly StatusItem[],
 ): StatusRun | undefined {
@@ -802,7 +807,7 @@ function itemRun(
 }
 
 function attemptVerdict(
-  snapshot: StatusItemDetail,
+  snapshot: IssueDetailResponse,
   item: StatusItem,
   run: StatusRun | undefined,
 ): StatusVerdict | undefined {

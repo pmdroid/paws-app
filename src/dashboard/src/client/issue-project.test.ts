@@ -1,4 +1,4 @@
-import { fullStatusFixture, pageData, statusList } from "../../test/fixtures";
+import { fullStatusFixture, listResponse, pageData, statusList } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import { issueRowMatches, NO_PROJECT_FILTER, render } from "./render";
 
@@ -7,6 +7,7 @@ const snapshot = statusList(full);
 const model = {
   phase: "ready" as const,
   snapshot,
+  issues: listResponse(snapshot),
   error: null,
   engineUrl: null,
 };
@@ -62,6 +63,10 @@ test("the Issues project filter lists the listed issues' projects and shows only
 
 test("the project filter is left out when no listed issue has a Linear project", () => {
   const plain = { ...snapshot, items: snapshot.items.map((item) => ({ ...item, project: null })) };
-  const html = render({ ...model, snapshot: plain, route: { view: "issues", id: null } }).content;
+  const html = render({
+    ...model,
+    issues: listResponse(plain),
+    route: { view: "issues", id: null },
+  }).content;
   expect(html).not.toContain("data-issue-project-filter");
 });
