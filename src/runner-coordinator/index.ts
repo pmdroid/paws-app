@@ -162,6 +162,7 @@ export async function openRunnerCoordinator(options: {
         return false;
       }
     },
+    revoked: (peer) => control.revoked(peer),
     async fetch(request, peer) {
       const runnerId = control.authenticate(peer).id;
       const renewal = await http.runner(request, peer);

@@ -25,6 +25,14 @@ export function runnerLeaseLive(leaseUntil: number, now: number): boolean {
   return leaseUntil > runnerLeaseCutoff(now);
 }
 
+export function endRevokedRunnerAuthority(db: Database, now: number): void {
+  db.run(
+    `UPDATE runner_work SET lease_until=?1 WHERE ended_at IS NULL AND lease_until>?1
+    AND runner_id IN (SELECT id FROM runner WHERE revoked_at IS NOT NULL OR status='revoked')`,
+    [runnerLeaseCutoff(now)],
+  );
+}
+
 /** Settled results and acknowledged cancellations no longer hold work. Queries alias work as w. */
 const UNSETTLED_RUNNER_WORK_SQL = `AND NOT EXISTS(SELECT 1 FROM runner_result r
     WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)

@@ -1513,6 +1513,26 @@ export function createRemoteAgentRunner(options: {
                 "SELECT confirmed_at AS confirmedAt,lost_at AS lostAt FROM runner_work WHERE run_id=? AND generation=?",
               )
               .get(assigned.runId, assigned.generation);
+          const heartbeatLost = () =>
+            (db
+              .query<{ lastSeen: number | null }, [string]>(
+                "SELECT last_seen_at AS lastSeen FROM runner WHERE id=?",
+              )
+              .get(selected.id)?.lastSeen ?? 0) <=
+            now() - 60_000 - RUNNER_LEASE_GRACE_MS;
+          const unreachableWithAuthority = () =>
+            db
+              .query(
+                `SELECT 1 FROM runner_work w JOIN runner r ON r.id=w.runner_id
+                WHERE w.run_id=? AND w.generation=? AND w.ended_at IS NULL AND w.lease_until>?
+                AND COALESCE(r.last_seen_at,0)<=?`,
+              )
+              .get(
+                assigned.runId,
+                assigned.generation,
+                runnerLeaseCutoff(now()),
+                now() - RUN_CONFIRMATION_MS,
+              ) !== null;
           const lostRun = async (how: string, thought = RUN_LOST_THOUGHT) => {
             journal(
               `item ${itemId} run ${assigned.runId} generation ${assigned.generation} lost on runner ${selected.id}: ${how}`,
@@ -1561,6 +1581,13 @@ export function createRemoteAgentRunner(options: {
                 }),
               );
               if (!interrupted?.retryable) throw error;
+              if (heartbeatLost())
+                throw new RetryableRunnerError(
+                  selected.id,
+                  "The runner stopped sending heartbeats.",
+                  transcript,
+                  publishedEffects,
+                );
               throw new RetryableRunnerError(
                 selected.id,
                 "The runner restarted or lost its lease during the run.",
@@ -1854,7 +1881,11 @@ export function createRemoteAgentRunner(options: {
             // wait is not silence. A runner that still names the command in its heartbeat keeps a
             // quiet tool call until the hung bound, where the agent is stopped all the same.
             if (question) heardAt = now();
-            if (options.placement && now() - heardAt >= silentRunMs) {
+            if (
+              options.placement &&
+              now() - heardAt >= silentRunMs &&
+              !unreachableWithAuthority()
+            ) {
               const confirmedAt = liveness()?.confirmedAt ?? null;
               const unconfirmed =
                 confirmedAt === null || confirmedAt <= now() - RUN_CONFIRMATION_MS;
@@ -1884,15 +1915,7 @@ export function createRemoteAgentRunner(options: {
                 );
               }
             }
-            if (
-              options.placement &&
-              (db
-                .query<{ lastSeen: number | null }, [string]>(
-                  "SELECT last_seen_at AS lastSeen FROM runner WHERE id=?",
-                )
-                .get(selected.id)?.lastSeen ?? 0) <=
-                now() - 60_000 - RUNNER_LEASE_GRACE_MS
-            ) {
+            if (options.placement && heartbeatLost() && !unreachableWithAuthority()) {
               const lost = immediate(db, () =>
                 options.placement?.finished({
                   commandId: assigned.id,

@@ -16,7 +16,7 @@ import {
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
 import { createRunnerWork } from "../../src/runner-work";
-import type { RunnerCommand } from "../../src/runner-protocol";
+import { RUNNER_LEASE_GRACE_MS, type RunnerCommand } from "../../src/runner-protocol";
 import {
   createRunnerTranscripts,
   createRunnerTranscriptsHttp,
@@ -304,6 +304,7 @@ export async function probeRunnerTranscripts(
       true,
       { changedObjectDenied: true },
     );
+    now += RUNNER_LEASE_GRACE_MS;
     const emptyCommand = {
       ...command,
       id: workspaceId(now),

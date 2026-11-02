@@ -2505,13 +2505,23 @@ export async function probeRunnerBackend(
     });
     for (
       let index = 0;
-      index < 100 && !existsSync(`${runDir(root, failoverItem.run.id)}/acp.jsonl`);
+      index < 1000 &&
+      (!existsSync(`${runDir(root, failoverItem.run.id)}/acp.jsonl`) ||
+        (db
+          .query<{ consumed: number }, [string]>(
+            "SELECT consumed_sequence AS consumed FROM runner_work WHERE run_id=?",
+          )
+          .get(firstAttempt.runId)?.consumed ?? 0) < 1);
       index++
     )
       await delay(1);
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [
       now - 60_000 - RUNNER_LEASE_GRACE_MS,
       hostIds[0]!,
+    ]);
+    db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
+      now - RUNNER_LEASE_GRACE_MS,
+      firstAttempt.runId,
     ]);
     const firstStop = await next(hostIds[0]!, false);
     assert.equal(firstStop.type, "cancel");

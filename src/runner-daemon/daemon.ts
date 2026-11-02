@@ -396,7 +396,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           if (
             index === attempts.length - 1 ||
             !(error instanceof RunnerRequestError) ||
-            error.status !== 403
+            error.status !== 403 ||
+            /\bfenced\b/i.test(error.reason ?? "")
           )
             throw error;
           journalCaught(error, "daemon.heartbeat.authenticated", null);

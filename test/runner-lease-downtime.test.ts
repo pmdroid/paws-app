@@ -218,9 +218,10 @@ test("Paws down 20 minutes with a 30-minute budget: the runner still holds the w
     expect(beat.fenced).toEqual([]);
     expect(beat.offlineBudgetMs).toBe(BUDGET);
     expect(beat.aliveAt).toBe(f.clock.at);
-    // A second recovery in the same process does not shift the lease again.
+    expect(f.leaseUntil()).toBe(f.clock.at + BUDGET - RUNNER_LEASE_GRACE_MS);
+    const renewed = f.leaseUntil();
     recoverOnStartup(f.db, f.clock.at, BUDGET);
-    expect(f.leaseUntil()).toBe(before + 20 * MINUTE);
+    expect(f.leaseUntil()).toBe(renewed);
   } finally {
     f.close();
   }

@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
+import { endRevokedRunnerAuthority } from "./runner-lease";
 
 export type WorkspaceRole = "admin" | "member";
 export type WorkspaceRecord = {
@@ -124,6 +125,7 @@ export function syncWorkspaceMember(
       active=excluded.active,checked_at=excluded.checked_at`,
       [input.workspaceId, input.userId, input.role, input.active ? 1 : 0, input.now],
     );
+    if (!input.active) endRevokedRunnerAuthority(db, input.now);
     db.run("DELETE FROM workspace_user_team WHERE workspace_id=? AND user_id=?", [
       input.workspaceId,
       input.userId,

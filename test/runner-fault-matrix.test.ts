@@ -67,7 +67,7 @@ afterAll(() => {
 });
 
 test.each([
-  ["a fenced lease", "fenced", "The runner restarted or lost its lease during the run.", 3],
+  ["a fenced lease", "fenced", "The runner stopped sending heartbeats.", 3],
   [
     "no paired runner",
     "unpaired",

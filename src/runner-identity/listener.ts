@@ -18,11 +18,14 @@ class RunnerAuthorizationError extends Error {
   override readonly name = "RunnerAuthorizationError";
 }
 
+class RunnerRevokedError extends RunnerAuthorizationError {}
+
 export async function startRunnerListener(options: {
   tls: RunnerTls;
   hostname?: string;
   port?: number;
   authorize(peer: RunnerPeer): boolean | Promise<boolean>;
+  revoked?(peer: RunnerPeer): boolean;
   fetch(request: Request, peer: RunnerPeer): Promise<Response>;
   now?: () => number;
   log?: (line: string) => void;
@@ -55,7 +58,7 @@ export async function startRunnerListener(options: {
         const peer = readPeer(socket, now());
         connections.set(socket, peer.fingerprint);
         socket.once("close", () => connections.delete(socket));
-        if (revoked.has(peer.fingerprint)) socket.destroy();
+        if (revoked.has(peer.fingerprint) && !isRevoked(peer)) socket.destroy();
       } catch (caughtError1) {
         journalCaught(caughtError1, "listener.createServer.readPeer", null);
         socket.destroy();
@@ -69,13 +72,23 @@ export async function startRunnerListener(options: {
     return server;
   }
   /** A failing authorization check (a busy database) throws as itself, so it answers 503. */
+  function isRevoked(peer: RunnerPeer): boolean {
+    try {
+      return options.revoked?.(peer) === true;
+    } catch (error) {
+      journalCaught(error, "listener.isRevoked", null);
+      return false;
+    }
+  }
+  function refused(peer: RunnerPeer): never {
+    if (isRevoked(peer)) throw new RunnerRevokedError("Runner is revoked");
+    throw new RunnerAuthorizationError("Runner authorization expired");
+  }
   async function authorize(socket: TLSSocket): Promise<RunnerPeer> {
     const peer = authorizedPeer(socket, now());
-    if (revoked.has(peer.fingerprint) || !(await options.authorize(peer)))
-      throw new RunnerAuthorizationError("Runner authorization expired");
+    if (revoked.has(peer.fingerprint) || !(await options.authorize(peer))) refused(peer);
     authorizedPeer(socket, now());
-    if (revoked.has(peer.fingerprint))
-      throw new RunnerAuthorizationError("Runner authorization expired");
+    if (revoked.has(peer.fingerprint)) refused(peer);
     return peer;
   }
   async function handle(request: Http2ServerRequest, response: Http2ServerResponse) {
@@ -143,9 +156,9 @@ export async function startRunnerListener(options: {
       void cancelBody?.().catch((caughtError4) => {
         journalCaught(caughtError4, "listener.handle.cancelBody", null);
       });
-      if (!response.headersSent && !response.destroyed)
-        reject(response, caughtError3 instanceof RunnerAuthorizationError ? 403 : 503);
-      else response.destroy();
+      if (response.headersSent || response.destroyed) response.destroy();
+      else if (caughtError3 instanceof RunnerRevokedError) fence(response);
+      else reject(response, caughtError3 instanceof RunnerAuthorizationError ? 403 : 503);
     } finally {
       const elapsed = now() - started;
       if (response.statusCode >= 500 || response.statusCode === 403 || elapsed >= 5_000)
@@ -228,6 +241,18 @@ function authorizedPeer(socket: TLSSocket, now: number): RunnerPeer {
       { cause: error },
     );
   }
+}
+
+function fence(response: Http2ServerResponse): void {
+  response.writeHead(403, {
+    "cache-control": "no-store",
+    connection: "close",
+    "content-type": "application/json",
+  });
+  response.end(
+    JSON.stringify({ error: "Runner is revoked; its work is fenced.", code: "fenced" }),
+    () => response.destroy(),
+  );
 }
 
 function reject(response: Http2ServerResponse, status: number): void {
