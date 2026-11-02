@@ -84,6 +84,7 @@ export type Evaluation = {
   reviewFindings: ReviewFindings[];
   head: string;
   bypasses?: readonly CloseoutBypass[];
+  reviewerFault?: string;
 };
 
 export type GateInput = {
@@ -852,6 +853,7 @@ async function addReviewEvidence(
     noteReview(input, identity, item.id, "running", item.message, null, item.attempt ?? null);
     const started = Date.now();
     let tokens: number | null = null;
+    let reviewerThrew = false;
     let added;
     try {
       added = await addReview({
@@ -884,7 +886,10 @@ async function addReviewEvidence(
                   provider: request.candidate.provider,
                 },
               }),
-            );
+            ).catch((error: unknown) => {
+              reviewerThrew = true;
+              throw error;
+            });
             tokens = result.tokens ?? null;
             return {
               producer: {
@@ -907,7 +912,8 @@ async function addReviewEvidence(
         durationMs: Date.now() - started,
         tokens,
       });
-      return failure("blocked", null, detail, input.head);
+      const blocked = failure("blocked", null, detail, input.head);
+      return reviewerThrew ? { ...blocked, reviewerFault: detail } : blocked;
     }
     metrics.set(item.id, { durationMs: Date.now() - started, tokens });
     if (!added.ok) {
@@ -1282,6 +1288,9 @@ async function finalResult(
     summary: summaryParts.join("\n"),
     ...(evaluation?.bypasses ? { bypasses: evaluation.bypasses } : {}),
     ...(approvals.length > 0 ? { ruleApprovals: approvals } : {}),
+    ...(outcome === "blocked" && evaluation?.reviewerFault
+      ? { reviewerFault: evaluation.reviewerFault }
+      : {}),
   };
   if (input.reportDir) {
     result.reportPath = await writeVerdictReport(input.reportDir, result);

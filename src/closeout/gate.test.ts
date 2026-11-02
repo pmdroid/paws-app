@@ -651,6 +651,9 @@ describe("closeout gate", () => {
       });
       expect(result.outcome).toBe(outcome);
       expect(reviews).toBe(calls);
+      expect(result.reviewerFault).toBe(
+        outcome === "blocked" ? `reviewer failed for adversarial-review: ${message}` : undefined,
+      );
       await repo.cleanup();
     });
   }
