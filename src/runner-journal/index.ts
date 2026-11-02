@@ -113,6 +113,9 @@ export function openExecutionJournal(root: string) {
     command_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, generation INTEGER NOT NULL,
     reported INTEGER NOT NULL DEFAULT 0) STRICT`);
   db.run("CREATE INDEX IF NOT EXISTS termination_generation ON termination(run_id,generation)");
+  db.run(`CREATE TABLE IF NOT EXISTS cleanup (
+    execution_id TEXT PRIMARY KEY REFERENCES execution(id), started_at INTEGER NOT NULL,
+    failures INTEGER NOT NULL DEFAULT 0, failure TEXT, failed_at INTEGER) STRICT`);
   // Recover a crash between recording Paws's decision and changing the execution phase.
   db.run(
     "UPDATE execution SET phase=(SELECT CASE WHEN accepted=1 AND failure=0 THEN 'complete' ELSE 'interrupted' END FROM result_delivery WHERE execution_id=execution.id) WHERE phase NOT IN ('complete','interrupted') AND id IN (SELECT execution_id FROM result_delivery WHERE accepted<>0)",
@@ -202,6 +205,55 @@ export function openExecutionJournal(root: string) {
         command.runId,
         command.generation,
       ]);
+    },
+    cleanupStarted(id: string, at: number) {
+      db.run("INSERT OR IGNORE INTO cleanup(execution_id,started_at) VALUES(?,?)", [id, at]);
+    },
+    cleanupFailed(id: string, failure: string, at: number) {
+      return db
+        .query<{ failures: number }, [string, number, string, number]>(
+          `INSERT INTO cleanup(execution_id,started_at,failures,failure,failed_at) VALUES(?1,?2,1,?3,?4)
+          ON CONFLICT(execution_id) DO UPDATE SET failures=failures+1,failure=excluded.failure,failed_at=excluded.failed_at
+          RETURNING failures`,
+        )
+        .get(id, at, failure.slice(0, 1024), at)!.failures;
+    },
+    cleanupDone(id: string) {
+      return (
+        db
+          .query<{ failures: number }, [string]>(
+            "DELETE FROM cleanup WHERE execution_id=? RETURNING failures",
+          )
+          .get(id)?.failures ?? 0
+      );
+    },
+    cleanups() {
+      return db
+        .query<
+          {
+            executionId: string;
+            payload: string;
+            phase: string;
+            since: number;
+            failures: number;
+            failure: string | null;
+            failedAt: number | null;
+          },
+          []
+        >(
+          `SELECT c.execution_id AS executionId,e.payload,e.phase,c.started_at AS since,c.failures,
+          c.failure,c.failed_at AS failedAt FROM cleanup c JOIN execution e ON e.id=c.execution_id ORDER BY c.rowid`,
+        )
+        .all()
+        .map(({ payload, ...row }) => {
+          const { command } = parseExecution({ id: row.executionId, payload, phase: row.phase });
+          return {
+            ...row,
+            runId: command.runId,
+            generation: command.generation,
+            commandId: command.id,
+          };
+        });
     },
     pendingTerminations() {
       return db

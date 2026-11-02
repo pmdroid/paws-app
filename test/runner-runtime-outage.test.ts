@@ -95,6 +95,7 @@ async function fixture(
   const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     root,
     stopWaitMs: options.stopWaitMs,
+    cleanupRetryMs: 10,
     resultRetryMs: options.retryMs ?? 0,
     spool,
     results,

@@ -131,6 +131,7 @@ type Active = {
   stopped?: Promise<void>;
   dispatching?: Promise<void>;
   teardownConfirmed?: boolean;
+  cleanupSince?: number;
   quiesced?: Promise<void>;
   resuming?: Promise<void>;
   publicationBranch?: string;
@@ -211,6 +212,8 @@ export async function openRunnerRuntime(options: {
   /** Read before admitting work, so a lowered value holds back new work without stopping any. */
   concurrency?: number | (() => number);
   stopWaitMs?: number;
+  cleanupAttemptMs?: number;
+  cleanupRetryMs?: number;
   deliveryWaitMs?: number;
   /** The first wait before a session upload is retried during restart recovery; it doubles. */
   sessionRetryMs?: number;
@@ -237,6 +240,21 @@ export async function openRunnerRuntime(options: {
     options.onError?.(
       error instanceof Error ? error : new Error("Runner runtime operation failed"),
     );
+  const cleanupAttemptMs = options.cleanupAttemptMs ?? 30_000;
+  const cleanupRetryMs = options.cleanupRetryMs ?? 5_000;
+  const closing = new AbortController();
+  const stopCalls = new Map<string, Promise<void>>();
+  const degraded = new Set<string>();
+  const attemptWaiters = new Map<string, (() => void)[]>();
+  function attemptSettled(id: string) {
+    return new Promise<void>((resolve) => {
+      attemptWaiters.set(id, [...(attemptWaiters.get(id) ?? []), resolve]);
+    });
+  }
+  function wakeAttemptWaiters(id: string) {
+    for (const resolve of attemptWaiters.get(id) ?? []) resolve();
+    attemptWaiters.delete(id);
+  }
   const runtimes = openRunnerRuntimeInventory({ root: options.root, now, onError: report });
   /** Move the worker's runtime install report into the inventory once it exists. */
   function collectRuntimes(entry: Active) {
@@ -270,10 +288,8 @@ export async function openRunnerRuntime(options: {
     }
   }
   const deniedReported = new Set<string>();
-  const settle = (
-    work: readonly (Promise<unknown> | undefined)[],
-    waitMs = options.stopWaitMs ?? 5_000,
-  ) =>
+  const stopWaitMs = options.stopWaitMs ?? 5_000;
+  const settle = (work: readonly (Promise<unknown> | undefined)[], waitMs = stopWaitMs) =>
     Promise.race([
       Promise.allSettled(work),
       new Promise<void>((resolve) => setTimeout(resolve, waitMs).unref?.()),
@@ -344,16 +360,84 @@ export async function openRunnerRuntime(options: {
     });
   }
   async function stopRestored(execution: Execution) {
-    for (;;) {
-      if (closed) return;
+    await confirmStop(execution).catch((error) =>
+      journalCaught(error, "runner-runtime.restore.stop", execution.command.itemId),
+    );
+  }
+  function stopCall(id: string) {
+    const existing = stopCalls.get(id);
+    if (existing) return existing;
+    const call = Promise.resolve().then(() => broker.stop(id));
+    stopCalls.set(id, call);
+    const forget = () => {
+      if (stopCalls.get(id) === call) stopCalls.delete(id);
+    };
+    call.then(forget, forget);
+    return call;
+  }
+  function bounded(call: Promise<void>) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      call,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`the worker stop did not finish within ${cleanupAttemptMs} ms`)),
+          cleanupAttemptMs,
+        );
+        timer.unref?.();
+      }),
+    ]).finally(() => clearTimeout(timer));
+  }
+  function pause(ms: number, wake?: Promise<void>) {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(done, ms);
+      timer.unref?.();
+      function done() {
+        clearTimeout(timer);
+        closing.signal.removeEventListener("abort", done);
+        resolve();
+      }
+      closing.signal.addEventListener("abort", done, { once: true });
+      wake?.then(done, done);
+    });
+  }
+  async function confirmStop(execution: Execution) {
+    journal.cleanupStarted(execution.id, now());
+    for (let failures = 0; ; failures++) {
+      const call = stopCall(execution.id);
       try {
-        await broker.stop(execution.id);
-        return;
+        await bounded(call);
+        break;
       } catch (error) {
-        journalCaught(error, "runner-runtime.restore.stop", execution.command.itemId);
-        await new Promise<void>((resolve) => setTimeout(resolve, 15_000).unref?.());
+        journalCaught(error, "runner-runtime.cleanup.stop", execution.command.itemId);
+        const message = error instanceof Error ? error.message : String(error);
+        journal.cleanupFailed(execution.id, message, now());
+        degraded.add(execution.id);
+        wakeAttemptWaiters(execution.id);
+        if (failures === 0)
+          report(
+            new Error(
+              `Runner could not confirm that execution ${execution.id} for run ${execution.command.runId} stopped: ${message}. It keeps the slot and retries.`,
+            ),
+          );
+        if (closed) throw error;
+        const pending = stopCalls.get(execution.id) === call;
+        await pause(
+          Math.min(60_000, cleanupRetryMs * 2 ** Math.min(failures, 4)),
+          pending ? call : undefined,
+        );
+        if (closed) throw error;
       }
     }
+    degraded.delete(execution.id);
+    wakeAttemptWaiters(execution.id);
+    const failed = journal.cleanupDone(execution.id);
+    if (failed)
+      report(
+        new Error(
+          `Runner confirmed that execution ${execution.id} for run ${execution.command.runId} stopped after ${failed} failed cleanup attempts`,
+        ),
+      );
   }
   /**
    * While Paws is unreachable, move the deadline with `creditedLeaseUntil` and the alive mark
@@ -451,6 +535,7 @@ export async function openRunnerRuntime(options: {
         ),
       );
     entry.interruption ??= { reason, notify, pushFailure, recover };
+    entry.cleanupSince ??= monotonic();
     journal.phase(entry.execution.id, "cleaning");
     entry.execution.phase = "cleaning";
     entry.stopped ??= (async () => {
@@ -841,7 +926,7 @@ export async function openRunnerRuntime(options: {
     entry.quiesced ??= (async () => {
       await entry.dispatching;
       await Promise.allSettled([entry.resuming]);
-      await broker.stop(entry.execution.id);
+      await confirmStop(entry.execution);
       journal.confirmTermination(entry.execution.command);
     })().catch((error) => {
       entry.quiesced = undefined;
@@ -1655,8 +1740,16 @@ export async function openRunnerRuntime(options: {
     }
     await settle(
       [...active.values()]
-        .filter((entry) => entry.abort.signal.aborted)
-        .flatMap((entry) => [entry.stopped, entry.task]),
+        .filter(
+          (entry) =>
+            entry.abort.signal.aborted &&
+            !degraded.has(entry.execution.id) &&
+            monotonic() - (entry.cleanupSince ?? 0) < stopWaitMs,
+        )
+        .flatMap((entry) => [
+          entry.stopped && Promise.race([entry.stopped, attemptSettled(entry.execution.id)]),
+          entry.task,
+        ]),
     );
     for (const entry of active.values()) {
       if (entry.abort.signal.aborted) {
@@ -1809,17 +1902,14 @@ export async function openRunnerRuntime(options: {
   else await sweep();
   const reconciling = (async () => {
     for (const execution of historical) {
-      for (let confirmed = false; !confirmed;) {
-        if (closed) return;
-        try {
-          await broker.stop(execution.id);
-          journal.confirmTermination(execution.command);
-          confirmed = true;
-        } catch (error) {
-          journalCaught(error, "runner-runtime.reconcile.stop", execution.command.itemId);
-          await new Promise<void>((resolve) => setTimeout(resolve, 15_000).unref?.());
-        }
+      if (closed) return;
+      try {
+        await confirmStop(execution);
+      } catch (error) {
+        journalCaught(error, "runner-runtime.reconcile.stop", execution.command.itemId);
+        return;
       }
+      journal.confirmTermination(execution.command);
     }
   })();
   const heartbeat = setInterval(() => {
@@ -1857,6 +1947,9 @@ export async function openRunnerRuntime(options: {
               phase: entry.execution.phase,
             }
           : null,
+        cleanup: journal
+          .cleanups()
+          .map((cleanup) => ({ ...cleanup, degraded: cleanup.failures > 0 })),
       };
     },
     tick() {
@@ -1869,6 +1962,7 @@ export async function openRunnerRuntime(options: {
     stop() {
       stopping ??= (async () => {
         closed = true;
+        closing.abort();
         clearInterval(heartbeat);
         clearInterval(watchdog);
         const cleanup = Promise.allSettled(
