@@ -26,6 +26,7 @@ import {
 import { handleStatusRequest } from "../src/web";
 import { render, type RenderModel } from "../src/web/src/client/render";
 import { attemptsOf, checkKey } from "../src/web/src/client/closeout";
+import { openedView } from "../src/web/test/fixtures";
 import { createLiveStatusProvider } from "../src/web/src/live/provider";
 import type {
   StatusCheck,
@@ -202,7 +203,7 @@ function paint(snapshot: Status, id: string, checkId: string): string {
     detail: snapshot.details.get(id) ?? null,
     error: null,
     engineUrl: "http://127.0.0.1:8787",
-    closeout: { attempt: {}, open: { [checkKey(id, latest, checkId)]: true }, wrap: {} },
+    closeout: openedView({ [checkKey(id, latest, checkId)]: true }),
   };
   return render(model).content;
 }
@@ -290,8 +291,7 @@ describe("live closeout ui", () => {
     const run = snapshot.runs.find((entry) => entry.itemId === id);
     expect(run?.activity.some((line) => line.text.includes("Implementation finished"))).toBe(true);
     const html = paint(snapshot, id, "typecheck");
-    expect(html).toContain("Implementation finished. Closeout is verifying this candidate.");
-    expect(html).toContain("The item is not complete.");
+    expect(html).toContain("Closeout is verifying the work");
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("line one");
@@ -345,7 +345,7 @@ describe("live closeout ui", () => {
     expect(running.policyDigest).toBe(policy("b"));
     expect(running.checks.map((check) => check.id)).toEqual(["recheck"]);
     const runningHtml = paint(snapshotOf(db, now + 7), id, "recheck");
-    expect(runningHtml).toContain("Implementation finished. Closeout is verifying this candidate.");
+    expect(runningHtml).toContain("Closeout is verifying the work");
     expect(runningHtml).not.toContain("Closeout accepted. Waiting to merge.");
 
     upsertCloseoutStep(db, id, current, step("recheck", "failed", { exitCode: 1 }), now + 8);
@@ -416,7 +416,7 @@ describe("live closeout ui", () => {
       detail: snapshot.details.get(id) ?? null,
       error: null,
       engineUrl: null,
-      closeout: { attempt: { [id]: 1 }, open: {}, wrap: {} },
+      closeout: { ...openedView(), attempt: { [id]: 1 } },
     }).content;
     expect(earlier).toContain('<span class="ansi-fg-1">FAIL</span> &lt;x&gt;');
     expect(earlier).toContain("Output was cut at the size limit.");

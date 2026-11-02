@@ -152,6 +152,14 @@ function journeyBase(
         reason: doing ?? "A decision is waiting below.",
       };
     case "merge_queue": {
+      if (verdict?.decision === "running")
+        return {
+          ...base,
+          step: "checking",
+          tone: "now",
+          headline: "Checking",
+          reason: "Closeout is verifying the work again before the merge.",
+        };
       const position = item.mergeQueue?.position;
       return {
         ...base,

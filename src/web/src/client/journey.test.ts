@@ -90,6 +90,16 @@ describe("issue journey", () => {
     expect(value.headline).toBe("Closeout exhausted");
   });
 
+  test("a merge-queue re-check reads as Checking, not Waiting to merge", () => {
+    const value = journey(item("merge_queue", accepted), undefined, {
+      attempt: 2,
+      maxAttempts: 3,
+      decision: "running",
+    });
+    expect(value.step).toBe("checking");
+    expect(value.reason).toBe("Closeout is verifying the work again before the merge.");
+  });
+
   test("the stepper marks earlier steps done, the current one, and a past fix round", () => {
     const value = journey(
       item("merge_queue", [
