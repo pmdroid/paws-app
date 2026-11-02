@@ -291,8 +291,13 @@ export async function openRunnerRuntime(options: {
       previous.phase === "publishing" || previous.phase === "cleaning"
         ? journal.publication(previous.id)
         : undefined;
-    if (publication && publication.refused === undefined) resumed.push(previous);
-    else recovering.push({ execution: previous, refused: Boolean(publication) });
+    if (publication && publication.refused === undefined) {
+      if (previous.phase !== "publishing") {
+        journal.phase(previous.id, "publishing");
+        previous.phase = "publishing";
+      }
+      resumed.push(previous);
+    } else recovering.push({ execution: previous, refused: Boolean(publication) });
   }
   const concurrency = () =>
     z
