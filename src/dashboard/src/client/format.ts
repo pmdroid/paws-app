@@ -227,7 +227,9 @@ export function mergeQueueLine(queue: { position: number; repository: string }):
   return `${PLACES[queue.position - 1] ?? `${queue.position}${suffix}`} in the ${queue.repository} queue`;
 }
 
-export function waitReason(item: StatusItem): string | null {
+type WaitingItem = Pick<StatusItem, "state" | "held" | "blockers" | "queue" | "project">;
+
+export function waitReason(item: WaitingItem): string | null {
   if (item.state !== "queued") return null;
   const held = heldLine(item);
   if (held) return held;
@@ -249,7 +251,7 @@ const HELD_LINES: Record<HeldReason, string> = {
   overlap: "another item that changes the same conflict-prone files has to merge first",
 };
 
-export function heldLine(item: StatusItem): string | null {
+export function heldLine(item: WaitingItem): string | null {
   const held = item.state === "queued" ? item.held : undefined;
   if (!held) return null;
   if (held.reason === "blocked" && held.blockers.length)
@@ -263,7 +265,7 @@ export function heldLine(item: StatusItem): string | null {
   return `Waiting: ${HELD_LINES[held.reason]}`;
 }
 
-export function capLine(item: StatusItem, cap: number): string {
+export function capLine(item: Pick<StatusItem, "project">, cap: number): string {
   return `its ${item.project ? "project" : "owner"} already runs ${cap} ${cap === 1 ? "item" : "items"}, the most at once`;
 }
 

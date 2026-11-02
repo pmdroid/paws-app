@@ -1129,7 +1129,7 @@ export interface OverviewIssue extends Pick<
 > {
   visualReviews?: Pick<StatusVisualReview, "round" | "state">[];
   run: { state: RunState; usagePause?: StatusUsagePause } | null;
-  verdict: { decision: VerdictDecision; attempt: number; maxAttempts: number } | null;
+  verdict: { decision: VerdictDecision } | null;
 }
 
 export interface OverviewQuestion {
@@ -1243,8 +1243,6 @@ function readOverviewIssue(input: unknown, path: string): OverviewIssue {
               VERDICT_DECISIONS,
               `${path}.verdict.decision`,
             ),
-            attempt: count(verdict, "attempt", `${path}.verdict`),
-            maxAttempts: count(verdict, "maxAttempts", `${path}.verdict`),
           },
   };
 }
@@ -1260,7 +1258,11 @@ function readOverviewQuestion(input: unknown, path: string): OverviewQuestion {
       ask === null
         ? null
         : {
-            kind: oneOf(string(ask, "kind", `${path}.linkAsk`), LINK_ASK_KINDS, `${path}.linkAsk.kind`),
+            kind: oneOf(
+              string(ask, "kind", `${path}.linkAsk`),
+              LINK_ASK_KINDS,
+              `${path}.linkAsk.kind`,
+            ),
             title: string(ask, "title", `${path}.linkAsk`),
             detail: string(ask, "detail", `${path}.linkAsk`),
           },

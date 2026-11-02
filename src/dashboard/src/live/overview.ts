@@ -197,7 +197,8 @@ function overviewIssue(record: WorkItemRecord, context: IssueContext): OverviewI
     ...doingFor(db, record, {
       hold: context.holds.get(record.id),
       question: context.firstQuestion.get(record.id) ?? null,
-      lastChange: context.changed.get(record.id) ?? context.facts.get(record.id)?.createdAt ?? nowMs,
+      lastChange:
+        context.changed.get(record.id) ?? context.facts.get(record.id)?.createdAt ?? nowMs,
       now: nowMs,
     }),
     ...(last

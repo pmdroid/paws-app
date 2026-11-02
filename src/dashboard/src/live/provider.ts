@@ -551,7 +551,9 @@ export function readPushOutages(db: Database): Pick<StatusSnapshot, "pushOutages
 }
 
 /** Repositories whose Closeout policy uses keys the lowest online runner does not know (PAS-888). */
-export function readPolicyRunnerWarnings(db: Database): Pick<StatusSnapshot, "policyRunnerWarnings"> {
+export function readPolicyRunnerWarnings(
+  db: Database,
+): Pick<StatusSnapshot, "policyRunnerWarnings"> {
   const warnings = listPolicyRunnerWarnings(db);
   if (!warnings.length) return {};
   return {
@@ -1257,7 +1259,8 @@ function runsFor(
     const current = stored.find((run) => run.id === record.currentRunId) ?? stored.at(-1)!;
     const activity = activityFor(db, record, stored, activityRows.for(record, stored), generatedAt);
     const recent = activity.at(-1);
-    const pause = record.currentRunId === current.id ? runUsagePause(db, current.id, generatedAt) : null;
+    const pause =
+      record.currentRunId === current.id ? runUsagePause(db, current.id, generatedAt) : null;
     const setup = runAgentSetup(db, current.id);
     runs.push({
       id: first.id,
@@ -1615,15 +1618,11 @@ export function closeoutState(
   rows: readonly OutboxRow[],
   jobs: readonly Job[],
   progress: readonly CloseoutProgressState[],
-): Pick<StatusVerdict, "decision" | "attempt" | "maxAttempts"> | null {
+): Pick<StatusVerdict, "decision"> | null {
   const base = baseVerdict(record, rows, jobs);
   if (base === null) return null;
   const live = progressFor(record, progress);
-  return {
-    decision: live ? progressDecision(base, live) : base.decision,
-    attempt: base.attempt,
-    maxAttempts: base.maxAttempts,
-  };
+  return { decision: live ? progressDecision(base, live) : base.decision };
 }
 
 function attemptsFor(

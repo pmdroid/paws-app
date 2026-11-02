@@ -5,11 +5,14 @@ import { mergeQueueCount } from "./merge-queue";
 
 import {
   FINDING_ISSUE_PATH,
+  OVERVIEW_API_PATH,
   hasStatusSlice,
+  parseOverviewResponse,
   parseStatusCheckLog,
   parseStatusItemDetail,
   statusCheckLogPath,
   statusItemPath,
+  type OverviewResponse,
   type StatusCheckLog,
   type StatusItemDetail,
   type StatusSnapshot,
@@ -33,6 +36,7 @@ import { readCsrfToken } from "./csrf";
 import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
 import {
   issueRedirect,
+  loadsPage,
   matchRoute,
   needsSnapshot,
   parseRoute,
@@ -43,6 +47,7 @@ import {
 } from "./route";
 import { livePoll } from "./poll";
 import { createStatusReader, STATUS_POLL_MS } from "./status-reader";
+import { createResourceReader } from "./resource-reader";
 import type { SettingsPage } from "./settings-pages";
 
 import { createAgentSettings } from "./agent-settings";
@@ -89,6 +94,7 @@ const reviewDraw = createReviewDraw(reload);
 const evidence = createEvidenceMedia(() => paint());
 
 const readStatus = createStatusReader();
+const overviewReader = createResourceReader(OVERVIEW_API_PATH, parseOverviewResponse);
 
 const regions = ["#top", "#banner", "#page-content"] as const;
 const painted = new Map<string, string>();
@@ -101,6 +107,8 @@ let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
 /** The open issue page's data. While an issue page is open, only this is polled. */
 let detail: StatusItemDetail | null = null;
+let overview: OverviewResponse | null = null;
+let loads = 0;
 let error: string | null = null;
 let stopPolling: (() => void) | null = null;
 let workspaceReady = false;
@@ -172,6 +180,7 @@ function routeChanged(): void {
   const route = currentRoute();
   const issue = openIssue(route);
   if (issue !== null && detail?.id !== issue) phase = "loading";
+  else if (route.view === "overview" && overview === null) phase = "loading";
   else if (issue === null && !routeCovered(route, snapshot)) phase = "loading";
   paint();
   if (!booted) return;
@@ -180,6 +189,9 @@ function routeChanged(): void {
 
 async function reload(): Promise<void> {
   const route = currentRoute();
+  const load = ++loads;
+  const latest = () => load === loads;
+  if (route.view === "overview") return reloadOverview(latest);
   if (!needsSnapshot(route)) {
     schedule();
     return;
@@ -193,14 +205,37 @@ async function reload(): Promise<void> {
         if (!(await signedIn(read.response))) return;
         throw new Error(await errorText(read.response));
       }
-      if (!routeCovered(currentRoute(), read.snapshot)) return;
+      if (!latest() || !routeCovered(currentRoute(), read.snapshot)) return;
       snapshot = read.snapshot;
     }
+    if (!latest()) return;
     phase = "ready";
     error = null;
   } catch (caught) {
     journalCaught(caught, "main.reload.fetch", null);
+    if (!latest()) return;
     error = caught instanceof Error ? caught.message : "Could not load status";
+    phase = "error";
+  }
+  paint();
+  schedule();
+}
+
+async function reloadOverview(latest: () => boolean): Promise<void> {
+  try {
+    const read = await overviewReader.read();
+    if (read.kind === "response") {
+      if (!(await signedIn(read.response))) return;
+      throw new Error(await errorText(read.response));
+    }
+    if (!latest()) return;
+    overview = read.response;
+    phase = "ready";
+    error = null;
+  } catch (caught) {
+    journalCaught(caught, "main.reloadOverview.fetch", null);
+    if (!latest()) return;
+    error = caught instanceof Error ? caught.message : "Could not load the overview";
     phase = "error";
   }
   paint();
@@ -238,6 +273,8 @@ async function loadDetail(route: Route): Promise<"loaded" | "none" | "signed-out
 /** False when the session ended and the reader still has to sign in again. */
 async function signedIn(response: Response): Promise<boolean> {
   if (response.status !== 401) return true;
+  overview = null;
+  overviewReader.forget();
   workspaceReady = await initializeWorkspaceAccess(() => settingsPage(currentRoute()));
   shell.setAuthenticated(workspaceReady);
   return workspaceReady;
@@ -263,7 +300,7 @@ function schedule(): void {
   stopPolling?.();
   stopPolling = null;
   const route = currentRoute();
-  if (!needsSnapshot(route)) return;
+  if (!loadsPage(route)) return;
   // Stored evidence does not change, and a repaint would interrupt the video.
   if (route.view === "evidence") return;
   stopPolling = livePoll(() => void reload(), STATUS_POLL_MS);
@@ -324,6 +361,7 @@ function paint(): void {
     phase,
     snapshot,
     detail,
+    overview,
     error,
     engineUrl: currentEngine(),
     closeout,
@@ -334,7 +372,9 @@ function paint(): void {
   const data = pageData();
   const shown =
     route.view === "evidence" ? snapshot?.evidence?.find((entry) => entry.id === route.id) : null;
-  if (hasStatusSlice(snapshot, "mergeQueue"))
+  if (route.view === "overview" && overview !== null)
+    shell.setCounts({ mergeQueue: overview.mergeQueueCount });
+  else if (hasStatusSlice(snapshot, "mergeQueue"))
     shell.setCounts({ mergeQueue: mergeQueueCount(snapshot) });
   shell.setBreadcrumb(
     shown

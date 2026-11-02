@@ -5,6 +5,7 @@ import { NAVIGATION, PAGES } from "./navigation";
 import {
   issueRedirect,
   matchRoute,
+  loadsPage,
   needsSnapshot,
   parseRoute,
   ROUTE_SLICES,
@@ -113,9 +114,11 @@ test("the Conversations page is gone and its old links open the issue list", () 
   expect(issueRedirect("/sessions", null)).toBeNull();
 });
 
-test("only work pages read the status snapshot", () => {
+test("only work pages read the status snapshot; the Overview loads its own resource", () => {
   const pages = Object.keys(PAGES).filter((view) => needsSnapshot({ view, id: null } as Route));
-  expect(pages).toEqual(["overview", "issues", "runs", "mergeQueue", "evidence", "questions"]);
+  expect(pages).toEqual(["issues", "runs", "mergeQueue", "evidence", "questions"]);
+  const loading = Object.keys(PAGES).filter((view) => loadsPage({ view, id: null } as Route));
+  expect(loading).toEqual(["overview", ...pages]);
 });
 
 test("every route names the status slices it renders", () => {
@@ -123,7 +126,7 @@ test("every route names the status slices it renders", () => {
   for (const slices of Object.values(ROUTE_SLICES))
     for (const slice of slices) expect(STATUS_SLICES).toContain(slice);
   expect(ROUTE_SLICES).toEqual({
-    overview: ["items", "questions", "mergeQueue", "intake"],
+    overview: [],
     issues: ["items"],
     runs: ["items"],
     mergeQueue: ["items", "mergeQueue", "mergeHistory"],
@@ -136,14 +139,14 @@ test("every route names the status slices it renders", () => {
 });
 
 test("a list loaded for one page does not stand in for another page's slices", () => {
-  const overview = { ...statusFixture(), slices: ["items", "questions", "mergeQueue", "intake"] };
-  const evidenceOnly = { ...statusFixture(), slices: ["evidence"] } as typeof overview;
-  expect(routeCovered({ view: "overview" }, overview as never)).toBe(true);
-  expect(routeCovered({ view: "issues", id: null }, overview as never)).toBe(true);
-  expect(routeCovered({ view: "mergeQueue" }, overview as never)).toBe(false);
-  expect(routeCovered({ view: "evidence", id: null }, overview as never)).toBe(false);
+  const questions = { ...statusFixture(), slices: ["items", "questions"] };
+  const evidenceOnly = { ...statusFixture(), slices: ["evidence"] } as typeof questions;
+  expect(routeCovered({ view: "questions", id: null }, questions as never)).toBe(true);
+  expect(routeCovered({ view: "issues", id: null }, questions as never)).toBe(true);
+  expect(routeCovered({ view: "mergeQueue" }, questions as never)).toBe(false);
+  expect(routeCovered({ view: "evidence", id: null }, questions as never)).toBe(false);
   expect(routeCovered({ view: "issues", id: null }, evidenceOnly as never)).toBe(false);
   expect(routeCovered({ view: "runners", id: null }, null)).toBe(true);
   expect(routeCovered({ view: "mergeQueue" }, statusFixture())).toBe(true);
-  expect(routeCovered({ view: "overview" }, null)).toBe(false);
+  expect(routeCovered({ view: "questions", id: null }, null)).toBe(false);
 });

@@ -1,4 +1,10 @@
-import { openedView, fullStatusFixture, pageData, statusFixture } from "../../test/fixtures";
+import {
+  openedView,
+  fullStatusFixture,
+  overviewOf,
+  pageData,
+  statusFixture,
+} from "../../test/fixtures";
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -53,6 +59,7 @@ test("every dashboard view renders without authored inline styles", () => {
       route: { view, id: null },
       phase: "ready",
       snapshot: statusFixture(),
+      overview: overviewOf(statusFixture()),
       error: null,
       engineUrl: null,
     });

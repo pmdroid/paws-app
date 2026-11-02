@@ -1,4 +1,4 @@
-import { statusFixture } from "../../test/fixtures";
+import { overviewOf, statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -58,6 +58,7 @@ function page(route: Route, snapshot: StatusSnapshot = snapshotWithEvidence()): 
     route,
     phase: "ready",
     snapshot,
+    overview: overviewOf(snapshot),
     error: null,
     engineUrl: null,
   }).content;

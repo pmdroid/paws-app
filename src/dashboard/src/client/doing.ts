@@ -4,7 +4,7 @@ import { hoursLabel, itemAge } from "./state-times";
 
 const HOUR = 3_600_000;
 
-export function doingLabel(item: StatusItem): string | null {
+export function doingLabel(item: Pick<StatusItem, "doing" | "state">): string | null {
   const doing = item.doing;
   if (!doing) return null;
   const on = doing.runners.join(", ");
@@ -41,7 +41,10 @@ export function activeLabel(ms: number): string {
   return ms < HOUR ? `${Math.round(ms / 60_000)} min active` : `${(ms / HOUR).toFixed(1)} h active`;
 }
 
-export function doingTimeLine(item: StatusItem, now: number): string | null {
+export function doingTimeLine(
+  item: Pick<StatusItem, "doing" | "activeMs">,
+  now: number,
+): string | null {
   const doing = item.doing;
   if (!doing || item.activeMs === undefined) return null;
   const since = doing.since === null ? NaN : Date.parse(doing.since);
