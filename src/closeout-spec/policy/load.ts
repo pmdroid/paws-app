@@ -153,11 +153,19 @@ export function loadOriginMainRootFiles(
 ): RootFilesLoad {
   const confirmed = confirmedOriginMain(input);
   if (!confirmed.ok) return confirmed;
+  return loadRootFilesAt(input, confirmed.commit, names);
+}
+
+export function loadRootFilesAt(
+  input: Pick<LoadPolicyInput, "repo" | "git">,
+  commit: string,
+  names: readonly string[],
+): RootFilesLoad {
   const files = new Map<string, Uint8Array>();
   for (const name of names) {
     if (name.includes("/") || repoPath(name) === undefined)
       return { ok: false, message: `not a repository-root file: ${name}` };
-    const listed = input.git.listBlobs(input.repo, confirmed.commit, name);
+    const listed = input.git.listBlobs(input.repo, commit, name);
     if (!listed.ok) return { ok: false, message: `could not read ${name}` };
     const blob = listed.blobs.find((entry) => entry.path === name);
     if (blob === undefined) {
@@ -199,7 +207,7 @@ function originMainFiles(
 }
 
 /** The `origin/main` commit when the fetch and `ls-remote` name the same one. */
-function confirmedOriginMain(
+export function confirmedOriginMain(
   input: Pick<LoadPolicyInput, "repo" | "git">,
 ): { ok: true; commit: string } | { ok: false; message: string } {
   const fetched = input.git.fetchOriginMain(input.repo);

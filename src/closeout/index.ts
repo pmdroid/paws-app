@@ -19,7 +19,9 @@ export {
   samePatch,
   reviewRequirements,
   trustedPolicyFiles,
+  trustedOriginMain,
   trustedRootFiles,
+  trustedRootFilesAt,
   visualReviewRequirements,
 } from "../closeout-spec";
 export type { RootFilesLoad } from "../closeout-spec";

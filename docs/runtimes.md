@@ -23,7 +23,7 @@ python 3.12
 
 Paws reads `mise.toml`, `.mise.toml`, and `.tool-versions`, in that order of precedence. When two files name the same tool, the first file in that order wins. Files in subdirectories and your global mise config are not read.
 
-Paws reads these files from `origin/main`, the same way it reads `.agents/closeout.yaml`. Changing them on a task branch has no effect until that change merges. Each file may be at most 64 KiB.
+Paws reads these files from `origin/main`, the same way it reads `.agents/closeout.yaml`. Changing them on a task branch has no effect until that change merges. A change merged to `main` reaches each item's next turn, including turns of a task that is already running; a turn keeps the list from the `main` it started on. Each file may be at most 64 KiB.
 
 ## Tools and backends
 
