@@ -15,7 +15,7 @@ const PRUNABLE_RUNS = `
     AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=r.id AND w.ended_at IS NULL)
     AND NOT EXISTS(SELECT 1 FROM runner_event q
       WHERE q.run_id=r.id
-        AND (q.type IN ('question','artifact','closeout_policy','ci_log') OR (q.type IS NULL AND q.key_id IS NULL))
+        AND (q.type IN ('question','artifact','closeout_policy','ci_log','ci_rerun') OR (q.type IS NULL AND q.key_id IS NULL))
         AND NOT EXISTS(SELECT 1 FROM runner_question_answer a
           WHERE a.run_id=q.run_id AND a.generation=q.generation AND a.sequence=q.sequence))`;
 

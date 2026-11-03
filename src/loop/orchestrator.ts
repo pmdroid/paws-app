@@ -24,6 +24,7 @@ import {
   refreshVerificationJobVersion,
 } from "../db";
 import { journalCaught } from "../journal";
+import { rerunItemCi } from "./ci-rerun";
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -8216,7 +8217,7 @@ export class Orchestrator {
   private trustedRunInputs(
     item: WorkItemRecord,
     input: RunAgentOptions,
-  ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes" | "ciLog"> {
+  ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes" | "ciLog" | "ciRerun"> {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
     const runtimes = { runtimes: () => this.runtimeList(item, input.worktreePath) };
@@ -8236,6 +8237,22 @@ export class Orchestrator {
                 prNumber: pull.pullNumber,
                 job,
                 ...this.gitHubCredentials(github),
+              }),
+            ciRerun: (reason: string) =>
+              rerunItemCi({
+                db: this.db,
+                itemId: item.id,
+                label: item.linearIdentifier,
+                reason,
+                github: {
+                  client: github.client,
+                  owner: repository.owner,
+                  repo: repository.repo,
+                  prNumber: pull.pullNumber,
+                  ...this.gitHubCredentials(github),
+                },
+                now: () => this.now(),
+                journal: this.options.journal,
               }),
           }
         : {}),

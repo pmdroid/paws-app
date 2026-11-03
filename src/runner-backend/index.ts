@@ -67,6 +67,7 @@ import {
   REVIEW_CONTEXT_RUNNER_VERSION,
   CLOSEOUT_RULES_FIRST_RUNNER_VERSION,
   CI_LOG_RUNNER_VERSION,
+  CI_RERUN_RUNNER_VERSION,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
@@ -1518,6 +1519,12 @@ export function createRemoteAgentRunner(options: {
                       versionAtLeast(runnerVersion, CI_LOG_RUNNER_VERSION)
                         ? { ciLog: true as const }
                         : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.ciRerun &&
+                      input.readOnly !== true &&
+                      versionAtLeast(runnerVersion, CI_RERUN_RUNNER_VERSION)
+                        ? { ciRerun: true as const }
+                        : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
                       ...(restorePlan?.eligible
                         ? { restoreSession: restorePlan.restoreSession }
@@ -1857,7 +1864,8 @@ export function createRemoteAgentRunner(options: {
               const answered =
                 (event.type === "artifact" ||
                   event.type === "closeout_policy" ||
-                  event.type === "ci_log") &&
+                  event.type === "ci_log" ||
+                  event.type === "ci_rerun") &&
                 results.answered(assigned.runId, assigned.generation, row.sequence) !== null;
               if (answered && event.type === "artifact" && event.dropped === undefined)
                 publishedEffects = true;
@@ -1901,6 +1909,24 @@ export function createRemoteAgentRunner(options: {
                   generation: assigned.generation,
                   sequence: row.sequence,
                   answer: JSON.stringify(read),
+                });
+              }
+              if (event.type === "ci_rerun" && !answered) {
+                const rerun = input.ciRerun
+                  ? await input.ciRerun(event.reason).then(
+                      (answer) => ({ answer }),
+                      (error: unknown) => {
+                        journalCaught(error, "runner-backend.forItem.ciRerun", itemId);
+                        return { error: error instanceof Error ? error.message : String(error) };
+                      },
+                    )
+                  : { error: "rerun_ci is unavailable for this run" };
+                signal.throwIfAborted();
+                results.answer({
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  sequence: row.sequence,
+                  answer: JSON.stringify(rerun),
                 });
               }
               if (event.type === "artifact" && !answered && event.dropped !== undefined) {

@@ -34,7 +34,13 @@ function followUpsSupported(version: string | null): boolean {
   return major > 0 || minor > 1 || (minor === 1 && patch >= 12);
 }
 
-const QUESTION_TYPES: readonly string[] = ["question", "artifact", "closeout_policy", "ci_log"];
+const QUESTION_TYPES: readonly string[] = [
+  "question",
+  "artifact",
+  "closeout_policy",
+  "ci_log",
+  "ci_rerun",
+];
 
 export function createRunnerResults(options: {
   db: Database;
@@ -183,7 +189,7 @@ export function createRunnerResults(options: {
         .query<StoredRunnerEvent, [string, number]>(
           `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event e
            WHERE run_id=? AND generation=?
-             AND (type IN ('question','artifact','closeout_policy','ci_log') OR (type IS NULL AND key_id IS NULL))
+             AND (type IN ('question','artifact','closeout_policy','ci_log','ci_rerun') OR (type IS NULL AND key_id IS NULL))
              AND NOT EXISTS(SELECT 1 FROM runner_question_answer a
                WHERE a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence)
            ORDER BY sequence`,

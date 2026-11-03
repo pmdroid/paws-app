@@ -182,6 +182,25 @@ const GET_CI_LOG_TOOL = {
   },
 };
 
+const RERUN_CI_TOOL = {
+  name: "rerun_ci",
+  description:
+    "Re-run the failed GitHub Actions jobs on this pull request's current head commit, once per commit, after every check finished. Give the evidence that the failure is outside your change and flaky. Paws records the reason on the item.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      reason: {
+        type: "string",
+        minLength: 1,
+        maxLength: 2000,
+        description: "Why the failed job is outside your change and looks flaky.",
+      },
+    },
+    required: ["reason"],
+    additionalProperties: false,
+  },
+};
+
 const enabledTools = new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
 
 type Rpc = {
@@ -269,6 +288,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           GET_CLOSEOUT_TOOL,
           RUN_CLOSEOUT_TOOL,
           GET_CI_LOG_TOOL,
+          RERUN_CI_TOOL,
         ].filter((tool) => enabledTools.has(tool.name)),
       });
       return;
