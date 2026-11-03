@@ -54,9 +54,11 @@ if [ "$1" = install ]; then
   while [ $# -gt 0 ]; do
     case "$1" in
       -y) shift ;;
+      rootlesskit|uidmap|slirp4netns) shift ;;
       *) test -s "$1" || exit 1; cp "$1" "$PAWS_INSTALLED_DEB"; exit 0 ;;
     esac
   done
+  exit 0
 fi
 exit 1
 `,
@@ -382,4 +384,49 @@ test("installer refuses conflicting or invalid Docker access choices before down
     expect(twoVersions.code).not.toBe(0);
     expect(existsSync(aptLog)).toBe(false);
   });
+});
+
+test("installer adds the rootless Docker tools before the package when Docker access is granted", async () => {
+  const name = "paws-runner_1.2.3_amd64.deb";
+  const body = "package";
+  await withRelease(
+    {
+      [`/download/v1.2.3/${name}`]: body,
+      [`/download/v1.2.3/${name}.sha256`]: checksum(name, body),
+    },
+    "/tag/v1.2.3",
+    async (origin, directory, aptLog, installed) => {
+      const env = envFor(origin, directory, aptLog, installed);
+      const installs = () =>
+        readFileSync(aptLog, "utf8")
+          .split("\n")
+          .filter((line) => line.startsWith("install "));
+      writeExecutable(join(directory, "bin"), "dockerd", "#!/bin/sh\nexit 0\n");
+      expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
+      expect(installs()).toHaveLength(2);
+      expect(installs()[0]).toBe("install -y rootlesskit uidmap slirp4netns");
+      expect(installs()[1]).toEndWith(`/${name}`);
+      rmSync(aptLog);
+      expect((await install(["--no-docker-access", "1.2.3"], env)).code).toBe(0);
+      expect(installs()).toHaveLength(1);
+      expect(installs()[0]).toEndWith(`/${name}`);
+      rmSync(join(directory, "bin", "dockerd"));
+      if (!existsSync("/usr/bin/dockerd") && !existsSync("/bin/dockerd")) {
+        rmSync(aptLog);
+        expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
+        expect(installs()).toHaveLength(1);
+      }
+    },
+  );
+});
+
+test("the installer's Docker prompt offers rootless Docker for agent jobs, not the docker group", () => {
+  const text = readFileSync(script, "utf8");
+  const prompt = text.slice(
+    text.indexOf("# Docker access for agent jobs"),
+    text.indexOf("Installing paws-runner"),
+  );
+  expect(prompt).toContain("Set up rootless Docker for agent jobs? [y/N]");
+  expect(prompt).toContain("runs as the paws-agent account, not as root");
+  expect(prompt).not.toContain("Add the paws-runner service account to the docker group");
 });
