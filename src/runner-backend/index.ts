@@ -20,6 +20,7 @@ import type { Database } from "bun:sqlite";
 import {
   getTaskMode,
   dispatchAccount,
+  fallbackHistory,
   legacyAgentAccountId,
   legacyAgentBindingId,
   getWorkItem,
@@ -29,6 +30,7 @@ import {
   pinnedSlotsReserved,
   releasePinnedSlot,
   restartedFromMergeQueue,
+  recordFallbackAttempt,
   runnerHasCapacity,
   runnerSlotsHeldBetweenCommands,
   saveCheckpoint,
@@ -96,6 +98,7 @@ import {
   USAGE_LIMIT_RESUME_SLACK_MS,
   UsageLimitPause,
   type FailoverAttempt,
+  type FailoverLedger,
   type UsageLimit,
 } from "./failover";
 import {
@@ -867,11 +870,12 @@ export function createRemoteAgentRunner(options: {
           input.role === "implementer" &&
           input.checkpoint !== false
             ? {
-                restore: (runnerId: string) => {
+                restore: (runnerId: string, account?: PlacementAccount) => {
                   const plan = planSessionRestore(db, {
                     runId,
                     agent: profile.agent,
                     targetRunnerId: runnerId,
+                    ...(account ? { targetAccount: account } : {}),
                   });
                   return plan.eligible
                     ? { sameVersion: plan.restoreSession.agentVersion === plan.targetVersion }
@@ -2332,6 +2336,14 @@ export function createRemoteAgentRunner(options: {
           const move: HandoverMove = {};
           const moving: FailoverAttempt = (next, excluded, limit) =>
             attempt(next, excluded, limit, move);
+          const callId = `${input.role}:${input.runId}`;
+          const ledger: FailoverLedger | undefined = runId
+            ? {
+                load: (policyKey) => fallbackHistory(db, runId, callId, policyKey),
+                record: (entry) =>
+                  void recordFallbackAttempt(db, { ...entry, runId, callId, now: now() }),
+              }
+            : undefined;
           return await runWithFailover(
             input,
             moving,
@@ -2344,6 +2356,7 @@ export function createRemoteAgentRunner(options: {
               },
               input,
             ),
+            ledger,
           );
         } finally {
           if (runId) readers.delete(runId);

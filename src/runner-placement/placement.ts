@@ -610,7 +610,7 @@ export function createRunnerPlacement(options: {
         const runId = current.item?.currentRunId ?? "";
         for (const entry of ranked) {
           const id = entry.runner.id;
-          const target = restore(id);
+          const target = restore(id, entry.account);
           const free =
             target &&
             runnerHasCapacity(
@@ -621,7 +621,7 @@ export function createRunnerPlacement(options: {
               (input.reserved?.get(id) ?? 0) + runnerSlotsHeldBetweenCommands(db, id, at, runId),
             );
           entry.rank += !free ? 200 : target.sameVersion ? 0 : 100;
-          if (free) restorers.add(id);
+          if (free) restorers.add(`${id}:${entry.account.bindingId}`);
         }
       }
       const session =
@@ -681,7 +681,7 @@ export function createRunnerPlacement(options: {
           account,
           scope: binding,
           policy: policy(runner.id, input.profile?.agent),
-          reason: restorers.has(runner.id) ? "session_restore" : null,
+          reason: restorers.has(`${runner.id}:${account.bindingId}`) ? "session_restore" : null,
           expiresAt: at + 15_000,
         });
       return ranked.map(({ runner, account }) => ({

@@ -7,6 +7,7 @@ import {
   bindLinearSessionTask,
   consumeWorkspaceBootstrap,
   createAgentAccount,
+  fallbackHistory,
   immediate,
   insertQueuedItem,
   legacyAgentAccountId,
@@ -15,6 +16,7 @@ import {
   putWorkspaceUser,
   recordAccountObservation,
   recordCommandAccount,
+  recordFallbackAttempt,
   recordLinearInstallation,
   recordRunnerAccountCapability,
   setAgentAccountConcurrency,
@@ -588,4 +590,70 @@ test("a helper ended locally keeps its account slot until its result or its expi
   f.db.run("UPDATE runner_helper SET ended_at=? WHERE id='helper-2'", [f.now()]);
   expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(1);
   expect(accountSlotsInUse(f.db, f.accounts.a, f.now() + 60_001)).toBe(0);
+});
+
+test("an abandoned attempt keeps its account and binding, once per execution, across a restart", async () => {
+  const f = fixture();
+  const { run } = beginImplementRun(f.db, f.item.id, f.now());
+  const order = [f.accounts.a, f.accounts.b];
+  const commandId = f.admit("R1", candidate(f, await f.choices(order), "R1", f.accounts.a), order, {
+    runId: run.id,
+  });
+  f.db.run("UPDATE runner_command SET kind='run' WHERE id=?", [commandId]);
+  f.db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
+    [run.id, "R1", f.workspaceId, commandId, f.now() + 60_000],
+  );
+  const entry = {
+    runId: run.id,
+    callId: `implementer:${run.id}`,
+    policyKey: "rev-1",
+    outcome: "failed" as const,
+    runnerId: "R1",
+    excludedKey: f.bindings.a1,
+    now: f.now(),
+  };
+  expect(recordFallbackAttempt(f.db, entry)).toBe(true);
+  expect(recordFallbackAttempt(f.db, entry)).toBe(false);
+  expect(
+    f.db
+      .query<{ accountId: string; bindingId: string; generation: number }, [string]>(
+        "SELECT account_id AS accountId,binding_id AS bindingId,generation FROM run_fallback_attempt WHERE run_id=?",
+      )
+      .all(run.id),
+  ).toEqual([{ accountId: f.accounts.a, bindingId: f.bindings.a1, generation: 1 }]);
+  const history = fallbackHistory(f.db, run.id, entry.callId, "rev-1");
+  expect(history).toEqual({ excluded: [f.bindings.a1], failures: 1, usageLimits: 0 });
+  expect(fallbackHistory(f.db, run.id, "reviewer:rev-1", "rev-1").excluded).toEqual([]);
+  const next = await f.choices(order, { excludeRunnerIds: history.excluded });
+  expect(next.placed[0]).toEqual(["R2", f.accounts.a]);
+  expect(next.placed).not.toContainEqual(["R1", f.accounts.a]);
+  expect(next.placed).toContainEqual(["R1", f.accounts.b]);
+});
+
+test("a moved run prefers a runner whose candidate account may restore its session", async () => {
+  const f = fixture();
+  beginImplementRun(f.db, f.item.id, f.now());
+  f.db.run("UPDATE runner SET last_seen_at=0 WHERE id='R3'");
+  const order = [f.accounts.a, f.accounts.b];
+  for (const [restorer, other] of [
+    ["R1", "R2"],
+    ["R2", "R1"],
+  ] as const) {
+    const asked: [string, string | undefined][] = [];
+    const found = await f.choices(order, {
+      pinnedRunnerId: "R3",
+      restore: (runnerId, account) => {
+        asked.push([runnerId, account?.accountId]);
+        return runnerId === restorer && account?.accountId === f.accounts.a
+          ? { sameVersion: true }
+          : null;
+      },
+    });
+    expect(asked).toContainEqual(["R1", f.accounts.b]);
+    expect(found.placed.slice(0, 2)).toEqual([
+      [restorer, f.accounts.a],
+      [other, f.accounts.a],
+    ]);
+  }
 });

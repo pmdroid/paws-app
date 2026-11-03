@@ -98,7 +98,7 @@ export type PlacementRequest = {
    * sealed session snapshot, and whether it runs the agent version that wrote it. Null when it
    * may not, or there is no snapshot.
    */
-  restore?: (runnerId: string) => { sameVersion: boolean } | null;
+  restore?: (runnerId: string, account?: PlacementAccount) => { sameVersion: boolean } | null;
   /** Slots the caller holds per runner for runs it placed but has not assigned yet. */
   reserved?: ReadonlyMap<string, number>;
   /** Reports policy and ranking rejections for this selection, without credentials. */

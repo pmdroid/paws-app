@@ -877,3 +877,9 @@ export {
   type AccountObservation,
   type AccountObservationOutcome,
 } from "./agent-account-health";
+export {
+  fallbackHistory,
+  recordFallbackAttempt,
+  type FallbackHistory,
+  type FallbackOutcome,
+} from "./run-fallback";
