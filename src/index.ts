@@ -241,8 +241,11 @@ import { cacheRepositoryCredentials } from "./runner-repository-access";
 import {
   encryptRunnerEvents,
   loadRunnerEventKey,
+  pruneRunnerEvents,
   RUNNER_EVENT_ENCRYPT_JOB,
   RUNNER_EVENT_KEY_FILE,
+  RUNNER_EVENT_PRUNE_EVERY_MS,
+  RUNNER_EVENT_PRUNE_JOB,
 } from "./runner-work";
 import {
   encryptRunnerTranscripts,
@@ -1548,6 +1551,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           signal: AbortSignal.any([context.signal, abort.signal]),
         }).then(({ sealed }) => journal(`runner events encrypted: ${sealed} events sealed`)),
       );
+      created.jobs.register(RUNNER_EVENT_PRUNE_JOB, (_job, context) =>
+        pruneRunnerEvents({ db, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
+          ({ deleted }) => journal(`runner events pruned: ${deleted} events deleted`),
+        ),
+      );
+      enqueueJobOnce(db, {
+        queue: RUNNER_EVENT_PRUNE_JOB,
+        jobKey: RUNNER_EVENT_PRUNE_JOB,
+        recurringEveryMs: RUNNER_EVENT_PRUNE_EVERY_MS,
+        now: Date.now(),
+      });
       // Enqueued once by a migration; it fills the Findings page from the review evidence of runs
       // Closeout accepted before the page stored findings.
       created.jobs.register(REVIEW_FINDINGS_BACKFILL_JOB, () =>
