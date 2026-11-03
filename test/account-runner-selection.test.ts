@@ -5,6 +5,7 @@ import {
   beginImplementRun,
   bindAgentAccount,
   bindLinearSessionTask,
+  closeFallbackAttempts,
   consumeWorkspaceBootstrap,
   createAgentAccount,
   fallbackHistory,
@@ -629,6 +630,23 @@ test("an abandoned attempt keeps its account and binding, once per execution, ac
   expect(next.placed[0]).toEqual(["R2", f.accounts.a]);
   expect(next.placed).not.toContainEqual(["R1", f.accounts.a]);
   expect(next.placed).toContainEqual(["R1", f.accounts.b]);
+  closeFallbackAttempts(f.db, run.id, entry.callId, f.now());
+  expect(fallbackHistory(f.db, run.id, entry.callId, "rev-1")).toEqual({
+    excluded: [],
+    failures: 0,
+    usageLimits: 0,
+  });
+  expect(recordFallbackAttempt(f.db, entry)).toBe(true);
+  expect(
+    f.db
+      .query<{ ordinal: number; closed: number | null }, [string]>(
+        "SELECT ordinal,closed_at AS closed FROM run_fallback_attempt WHERE run_id=? ORDER BY ordinal",
+      )
+      .all(run.id),
+  ).toEqual([
+    { ordinal: 1, closed: f.now() },
+    { ordinal: 2, closed: null },
+  ]);
 });
 
 test("a moved run prefers a runner whose candidate account may restore its session", async () => {

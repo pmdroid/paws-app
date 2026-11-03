@@ -19,6 +19,7 @@ import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   getTaskMode,
+  closeFallbackAttempts,
   dispatchAccount,
   fallbackHistory,
   legacyAgentAccountId,
@@ -2340,12 +2341,13 @@ export function createRemoteAgentRunner(options: {
           const move: HandoverMove = {};
           const moving: FailoverAttempt = (next, excluded, limit) =>
             attempt(next, excluded, limit, move);
-          const callId = `${input.role}:${input.runId}`;
+          const callId = `${input.role}:${input.prepareOnly ? "prepare" : "work"}:${input.runId}`;
           const ledger: FailoverLedger | undefined = runId
             ? {
                 load: (policyKey) => fallbackHistory(db, runId, callId, policyKey),
                 record: (entry) =>
                   void recordFallbackAttempt(db, { ...entry, runId, callId, now: now() }),
+                finish: () => closeFallbackAttempts(db, runId, callId, now()),
               }
             : undefined;
           return await runWithFailover(

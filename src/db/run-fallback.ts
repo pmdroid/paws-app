@@ -3,7 +3,7 @@ import { immediate } from "./tx";
 
 export type FallbackOutcome = "failed" | "handed_over" | "usage_limit";
 
-const MAX_FALLBACK_ATTEMPTS = 64;
+const MAX_FALLBACK_ATTEMPTS = 256;
 
 export type FallbackHistory = {
   excluded: string[];
@@ -79,7 +79,7 @@ export function fallbackHistory(
   const rows = db
     .query<{ outcome: FallbackOutcome; excludedKey: string }, [string, string, string]>(
       `SELECT outcome,excluded_key AS excludedKey FROM run_fallback_attempt
-       WHERE run_id=? AND call_id=? AND policy_key=? ORDER BY ordinal`,
+       WHERE run_id=? AND call_id=? AND policy_key=? AND closed_at IS NULL ORDER BY ordinal`,
     )
     .all(runId, callId, policyKey);
   const excluded: string[] = [];
@@ -90,4 +90,16 @@ export function fallbackHistory(
     failures: rows.filter((row) => row.outcome === "failed").length,
     usageLimits: rows.filter((row) => row.outcome === "usage_limit").length,
   };
+}
+
+export function closeFallbackAttempts(
+  db: Database,
+  runId: string,
+  callId: string,
+  now: number,
+): void {
+  db.run(
+    "UPDATE run_fallback_attempt SET closed_at=? WHERE run_id=? AND call_id=? AND closed_at IS NULL",
+    [now, runId, callId],
+  );
 }

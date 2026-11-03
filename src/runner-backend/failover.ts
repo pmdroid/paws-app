@@ -90,6 +90,7 @@ export type FailoverLedger = {
     runnerId: string;
     excludedKey: string;
   }): void;
+  finish(): void;
 };
 
 export const MAX_FAILOVER_FAILURES = 3;
@@ -142,7 +143,7 @@ export async function runWithFailover(
     try {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) throw new Error("Remote runner request timed out during failover");
-      return await attempt(
+      const result = await attempt(
         {
           ...input,
           profile,
@@ -154,6 +155,8 @@ export async function runWithFailover(
         excluded,
         limit,
       );
+      ledger?.finish();
+      return result;
     } catch (error) {
       if (
         error instanceof UsageLimitPause &&

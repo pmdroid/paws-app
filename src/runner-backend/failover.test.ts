@@ -557,10 +557,10 @@ test("a failed named account binding is excluded on its own, not its whole runne
 });
 
 function memoryLedger() {
-  const rows: (Parameters<FailoverLedger["record"]>[0] & { at: number })[] = [];
+  const rows: (Parameters<FailoverLedger["record"]>[0] & { closed: boolean })[] = [];
   const ledger: FailoverLedger = {
     load(policyKey) {
-      const mine = rows.filter((row) => row.policyKey === policyKey);
+      const mine = rows.filter((row) => row.policyKey === policyKey && !row.closed);
       return {
         excluded: [...new Set(mine.map((row) => row.excludedKey).filter(Boolean))],
         failures: mine.filter((row) => row.outcome === "failed").length,
@@ -568,7 +568,10 @@ function memoryLedger() {
       };
     },
     record(entry) {
-      rows.push({ ...entry, at: rows.length });
+      rows.push({ ...entry, closed: false });
+    },
+    finish() {
+      for (const row of rows) row.closed = true;
     },
   };
   return { rows, ledger };
@@ -657,7 +660,7 @@ describe("persisted fallback attempts", () => {
     const { rows, ledger } = memoryLedger();
     const order: string[] = [];
     const tracked: FailoverLedger = {
-      load: ledger.load,
+      ...ledger,
       record(entry) {
         order.push("record");
         ledger.record(entry);
@@ -751,4 +754,32 @@ describe("persisted fallback attempts", () => {
     );
     expect(seen).toEqual([[]]);
   });
+});
+
+test("a finished call closes its attempts, so a later call on the same run starts fresh", async () => {
+  const { rows, ledger } = memoryLedger();
+  let calls = 0;
+  await runWithFailover(
+    input(),
+    async () => {
+      if (++calls === 1) throw new RetryableRunnerError("runner-1", "Interrupted");
+      return done();
+    },
+    async () => {},
+    undefined,
+    ledger,
+  );
+  expect(rows.map((row) => row.closed)).toEqual([true]);
+  const seen: string[][] = [];
+  await runWithFailover(
+    input(),
+    async (_options, avoid) => {
+      seen.push([...avoid]);
+      return done();
+    },
+    async () => {},
+    undefined,
+    ledger,
+  );
+  expect(seen).toEqual([[]]);
 });
