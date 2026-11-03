@@ -275,6 +275,26 @@ export function setAgentAccountEnabled(
   });
 }
 
+export function setAgentAccountConcurrency(
+  db: Database,
+  input: { workspaceId: string; accountId: string; concurrency: number | null; now: number },
+): number | null {
+  if (
+    input.concurrency !== null &&
+    (!Number.isSafeInteger(input.concurrency) || input.concurrency < 1 || input.concurrency > 64)
+  )
+    throw new AgentAccountError("invalid", "Agent account concurrency must be 1 to 64");
+  return immediate(db, () => {
+    const row = liveAccount(db, input.workspaceId, input.accountId);
+    db.run("UPDATE agent_account SET concurrency=?,updated_at=? WHERE id=?", [
+      input.concurrency,
+      input.now,
+      row.id,
+    ]);
+    return input.concurrency;
+  });
+}
+
 export function removeAgentAccount(
   db: Database,
   input: { workspaceId: string; accountId: string; now: number },

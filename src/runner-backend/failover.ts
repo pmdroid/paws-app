@@ -13,7 +13,7 @@ export class RetryableRunnerError extends Error {
     message: string,
     readonly transcriptPath?: string,
     readonly publishedEffects = false,
-    readonly usageLimit?: { resetsAt: number | null },
+    readonly usageLimit?: { resetsAt: number | null; recheckAt?: number },
     readonly restarted = false,
     /** The runner stopped the session at a safe point so another runner continues it. */
     readonly handedOver = false,
@@ -52,7 +52,6 @@ export class AccountPolicyUnavailable extends Error {
   }
 }
 
-/** Usage-limit responses and waits share this budget across the whole failover call. */
 export const MAX_USAGE_LIMIT_EVENTS = 3;
 
 export class UsageLimitExhaustedError extends Error {
@@ -93,7 +92,6 @@ export async function runWithFailover(
   let deadline = performance.now() + (input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
   let limit: UsageLimit | undefined;
   let usageLimitEvents = 0;
-  const limitedSincePause = new Set<string>();
   let profile = input.profile;
   let fallback = input.fallbackProfile;
   let accounts = input.accounts;
@@ -150,7 +148,6 @@ export async function runWithFailover(
         fallback = undefined;
         if (accounts) accounts = { revision: accounts.revision, profile: accounts.fallback };
         limit = undefined;
-        limitedSincePause.clear();
         continue;
       }
       if (
@@ -173,15 +170,15 @@ export async function runWithFailover(
         fallback = undefined;
         if (accounts) accounts = { revision: accounts.revision, profile: accounts.fallback };
         limit = undefined;
-        limitedSincePause.clear();
         continue;
       }
       if (error instanceof UsageLimitPause && usageLimits) {
-        if (++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
+        if (error.resumeAt <= usageLimits.now() && ++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
           throw new UsageLimitExhaustedError(error.runnerId, error);
-        // Waiting does not consume execution time, but does consume the usage-limit budget.
         const waitingAt = performance.now();
         await usageLimits.pause(error, profilesChanged);
+        if (usageLimits.now() < error.resumeAt && ++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
+          throw new UsageLimitExhaustedError(error.runnerId, error);
         if (input.resolveProfiles) {
           const latest = input.resolveProfiles();
           const latestKey = profileKey(latest);
@@ -193,7 +190,6 @@ export async function runWithFailover(
             excluded.length = 0;
           }
         }
-        limitedSincePause.clear();
         input.signal?.throwIfAborted();
         deadline += performance.now() - waitingAt;
         limit = undefined;
@@ -212,13 +208,8 @@ export async function runWithFailover(
       const usageLimit = usageLimits ? error.usageLimit : undefined;
       if ((!usageLimit && !error.handedOver && index === 2) || performance.now() >= deadline)
         throw error;
-      if (
-        usageLimit &&
-        limitedSincePause.has(error.runnerId) &&
-        ++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS
-      )
+      if (usageLimit && ++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
         throw new UsageLimitExhaustedError(error.runnerId, error);
-      if (usageLimit) limitedSincePause.add(error.runnerId);
       if (usageLimit)
         // The runner stays eligible: its cooldown keeps it out until the reset, and another
         // runner with an available account can take the work meanwhile.
@@ -227,7 +218,7 @@ export async function runWithFailover(
           resetsAt: usageLimit.resetsAt,
           resumeAt:
             usageLimit.resetsAt === null
-              ? usageLimits!.now() + USAGE_LIMIT_RETRY_MS
+              ? (usageLimit.recheckAt ?? usageLimits!.now() + USAGE_LIMIT_RETRY_MS)
               : usageLimit.resetsAt + USAGE_LIMIT_RESUME_SLACK_MS,
         };
       else if (error.handedOver) {

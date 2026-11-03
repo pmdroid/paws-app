@@ -121,7 +121,7 @@ describe("usage limits pause the task instead of failing it", () => {
     await expect(run).rejects.toBeInstanceOf(UsageLimitExhaustedError);
     await expect(run).rejects.toMatchObject({
       runnerId: "agentbox",
-      cause: { name: "UsageLimitPause", agent: "claude" },
+      cause: { name: "RetryableRunnerError", runnerId: "agentbox" },
     });
     expect(runners.calls).toHaveLength(MAX_USAGE_LIMIT_EVENTS);
     expect(settled).toBe(MAX_USAGE_LIMIT_EVENTS);
@@ -130,7 +130,7 @@ describe("usage limits pause the task instead of failing it", () => {
     expect(runners.calls.at(-1)!.prompt.match(/usage limit/g)).toHaveLength(1);
   });
 
-  test("placement that always pauses stops before another wait", async () => {
+  test("placement pauses that would not wait stop instead of spinning", async () => {
     let attempts = 0;
     const runners = fleet(() => {
       attempts++;
@@ -139,8 +139,41 @@ describe("usage limits pause the task instead of failing it", () => {
     await expect(
       runWithFailover(input(), runners.attempt, async () => undefined, runners.wait),
     ).rejects.toBeInstanceOf(UsageLimitExhaustedError);
-    expect(attempts).toBe(MAX_USAGE_LIMIT_EVENTS);
-    expect(runners.pauses).toHaveLength(MAX_USAGE_LIMIT_EVENTS - 1);
+    expect(attempts).toBe(MAX_USAGE_LIMIT_EVENTS + 1);
+    expect(runners.pauses).toHaveLength(MAX_USAGE_LIMIT_EVENTS);
+    expect(runners.pauses.slice(1).every((pause) => pause.at === RESET)).toBe(true);
+  });
+
+  test("waiting for every account to recover spends no attempt budget", async () => {
+    let waits = 0;
+    const runners = fleet((_limit, now) => {
+      if (waits >= MAX_USAGE_LIMIT_EVENTS * 2) return "agentbox";
+      waits++;
+      return new UsageLimitPause("claude", now + 30 * 60_000, null, null);
+    });
+    const result = await runWithFailover(
+      input(),
+      runners.attempt,
+      async () => undefined,
+      runners.wait,
+    );
+    expect(result.stopReason).toBe("end_turn");
+    expect(runners.pauses).toHaveLength(MAX_USAGE_LIMIT_EVENTS * 2);
+    expect(runners.calls).toHaveLength(1);
+  });
+
+  test("an unknown reset resumes at the account's recheck time", async () => {
+    const runners = fleet(oneRunner);
+    runners.outcomes.push(
+      new RetryableRunnerError("agentbox", "quota", undefined, false, {
+        resetsAt: null,
+        recheckAt: RESET - 3 * 3_600_000 + 40 * 60_000,
+      }),
+    );
+    await runWithFailover(input(), runners.attempt, async () => undefined, runners.wait);
+    expect(runners.pauses.map((pause) => pause.resumeAt)).toEqual([
+      RESET - 3 * 3_600_000 + 40 * 60_000,
+    ]);
   });
 
   test("usage-limit responses without a placement pause are also bounded", async () => {
@@ -149,7 +182,7 @@ describe("usage limits pause the task instead of failing it", () => {
     await expect(
       runWithFailover(input(), runners.attempt, async () => undefined, runners.wait),
     ).rejects.toBeInstanceOf(UsageLimitExhaustedError);
-    expect(runners.calls).toHaveLength(MAX_USAGE_LIMIT_EVENTS + 1);
+    expect(runners.calls).toHaveLength(MAX_USAGE_LIMIT_EVENTS);
     expect(runners.pauses).toHaveLength(0);
   });
 
@@ -365,7 +398,7 @@ describe("agent settings changed during a quota wait", () => {
       ),
     ).rejects.toBeInstanceOf(UsageLimitExhaustedError);
     expect(attempts).toBe(MAX_USAGE_LIMIT_EVENTS);
-    expect(waits).toBe(MAX_USAGE_LIMIT_EVENTS - 1);
+    expect(waits).toBe(MAX_USAGE_LIMIT_EVENTS);
   });
 
   test("a fallback added while waiting is used", async () => {

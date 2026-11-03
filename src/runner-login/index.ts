@@ -10,6 +10,7 @@ import {
   immediate,
   legacyAgentAccountId,
   legacyAgentBindingId,
+  recordAccountObservation,
   runnerLeaseCutoff,
   workspaceMember,
 } from "../db";
@@ -342,6 +343,18 @@ export function createRunnerLogin(options: {
           );
           inputs.delete(id);
           signedIn = { runnerId, agent: row.agent };
+        }
+        if (update.state === "connected") {
+          const at = now();
+          recordAccountObservation(db, {
+            bindingId: row.bindingId ?? legacyAgentBindingId(runnerId, row.agent),
+            source: "sign_in",
+            sourceId: id,
+            observedAt: at,
+            now: at,
+            state: "ok",
+            clears: ["auth"],
+          });
         }
         return {
           cancelled: false,
