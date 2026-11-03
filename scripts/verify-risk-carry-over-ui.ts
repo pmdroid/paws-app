@@ -46,6 +46,7 @@ snapshot.questions = [
     context: "",
     options: [],
     recommendedOption: null,
+    answerable: false,
     linkAsk: {
       kind: "risk",
       head: "5eed5a1dd4",

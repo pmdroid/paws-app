@@ -113,6 +113,7 @@ snapshot.questions = [
     context: "",
     options: [],
     recommendedOption: null,
+    answerable: false,
     links: [],
     linkAsk: {
       kind: "screenshots",

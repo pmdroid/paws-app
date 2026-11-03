@@ -472,6 +472,39 @@ describe("status views", () => {
     expect(html).not.toContain("Read-only.");
   });
 
+  test("an answerable question renders one button per option and a free-text answer", () => {
+    const snapshot = fullStatusFixture();
+    const question = snapshot.questions[0]!;
+    question.answerable = true;
+    const html = render(model({ snapshot, route: { view: "questions", id: question.id } })).content;
+    expect(html).toContain(`data-question-answer="${question.id}"`);
+    expect(html.match(/<button class="opt btn[^"]*" type="submit" name="option"/g)).toHaveLength(
+      question.options.length,
+    );
+    for (const option of question.options) expect(html).toContain(`value="${esc(option)}"`);
+    expect(html).toContain("Or write an answer");
+    expect(html).toContain('<textarea name="answer"');
+    expect(html).toContain('<button class="btn primary" type="submit">Answer</button>');
+    expect(html).toContain("Answering here also posts your answer in Linear.");
+    expect(html).not.toContain("Answer in the source conversation to continue.");
+  });
+
+  test("a question that is not answerable keeps its read-only options", () => {
+    const snapshot = fullStatusFixture();
+    const question = snapshot.questions[0]!;
+    question.links = [];
+    const html = render(model({ snapshot, route: { view: "questions", id: question.id } })).content;
+    expect(html).not.toContain("data-question-answer");
+    expect(html).not.toContain('name="option"');
+    expect(html).not.toContain('<textarea name="answer"');
+    question.options.forEach((option, index) =>
+      expect(html).toContain(`<span class="mono dim">${index + 1}</span>${esc(option)}`),
+    );
+    expect(html).toContain('<div class="opt static');
+    expect(html).toContain("Answer in the source conversation to continue.");
+    expect(html).not.toContain("Answering here also posts your answer in Linear.");
+  });
+
   test("escapes text and drops non-http links", () => {
     const snapshot = fullStatusFixture();
     const item = snapshot.items.find((entry) => entry.id === "ENG-104");

@@ -53,6 +53,7 @@ import { createFindings } from "./findings";
 import { createExecutionControls } from "./execution-controls";
 import { linkAskAnchor } from "./link-ask";
 import { rememberLinkAskDraft, stopFromLinkAsk, submitLinkAsk } from "./link-ask-submit";
+import { rememberQuestionAnswerDraft, submitQuestionAnswer } from "./question-answer-submit";
 import { clickVisualReviewAsk, submitVisualReviewAsk } from "./visual-review-ask";
 import { createDeadDeliveryRetry } from "./dead-delivery-retry";
 import { createReviewDraw } from "./review-draw";
@@ -110,9 +111,13 @@ let issueProject = "";
 
 document.addEventListener("click", onClick);
 document.addEventListener("submit", (event) => {
-  if (!submitVisualReviewAsk(event, reload)) submitLinkAsk(event, reload);
+  if (submitVisualReviewAsk(event, reload) || submitQuestionAnswer(event, reload)) return;
+  submitLinkAsk(event, reload);
 });
-document.addEventListener("input", (event) => rememberLinkAskDraft(event.target));
+document.addEventListener("input", (event) => {
+  rememberLinkAskDraft(event.target);
+  rememberQuestionAnswerDraft(event.target);
+});
 document.addEventListener("change", (event) => rememberLinkAskDraft(event.target));
 router.subscribe((state) => {
   if (state.location.pathname === shownPath) {

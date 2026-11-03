@@ -29,6 +29,7 @@ snapshot.questions = [
     context: "",
     options: [],
     recommendedOption: null,
+    answerable: false,
     linkAsk: {
       kind: "rule",
       head: "7f65200aa1",

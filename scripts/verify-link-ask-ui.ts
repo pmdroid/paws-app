@@ -41,6 +41,7 @@ const linkAsk = (
   context: "",
   options: [],
   recommendedOption: null,
+  answerable: false,
   linkAsk: {
     kind,
     head,

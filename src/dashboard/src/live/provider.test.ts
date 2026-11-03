@@ -130,6 +130,21 @@ describe("live status provider", () => {
   });
 
   test.each([
+    ["agent", true],
+    ["plan-approval", true],
+    ["push-outage", true],
+    ["link", false],
+    ["visual-review", false],
+    ["github-auth", false],
+  ] as const)("an open %s question is answerable in Paws: %p", (kind, answerable) => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    seedQuestion(db, item.id, "session");
+    db.run("UPDATE question SET kind = ? WHERE id = 'question'", [kind]);
+    expect(createLiveStatusProvider(db).snapshot().questions[0]?.answerable).toBe(answerable);
+  });
+
+  test.each([
     "javascript:alert(1)",
     "https://linear.app.evil.example/question",
     "https://private:secret@linear.app/question",
