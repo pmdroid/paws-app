@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RunnerAccountSchema } from "./accounts";
 import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 import { RunnerLivePreviewSchema } from "./preview";
 
@@ -183,6 +184,7 @@ const work = {
   inputFiles: RunnerInputFilesSchema.optional(),
   promptContext: RunnerPromptContextSchema.optional(),
   runtimes: RunnerRuntimesSchema.optional(),
+  account: RunnerAccountSchema.optional(),
 };
 
 export const RunnerCommandSchema = z
@@ -254,6 +256,7 @@ export const RunnerCommandSchema = z
       inputFiles: work.inputFiles,
       promptContext: work.promptContext,
       runtimes: work.runtimes,
+      account: work.account,
     }),
     z.strictObject({
       ...common,
@@ -263,10 +266,16 @@ export const RunnerCommandSchema = z
       purpose: z.enum(["classify", "select_repository", "finding_groups"]),
       profile: RunnerProfileSchema,
       prompt: z.string().min(1).max(65_536),
+      account: work.account,
     }),
-    z.strictObject({ ...common, type: z.literal("probe"), profile: RunnerProfileSchema }),
-    z.strictObject({ ...common, type: z.literal("login_check"), agent }),
-    z.strictObject({ ...common, type: z.literal("login"), agent }),
+    z.strictObject({
+      ...common,
+      type: z.literal("probe"),
+      profile: RunnerProfileSchema,
+      account: work.account,
+    }),
+    z.strictObject({ ...common, type: z.literal("login_check"), agent, account: work.account }),
+    z.strictObject({ ...common, type: z.literal("login"), agent, account: work.account }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
     /** Stop the run's agent at a safe point and publish what another runner needs to continue. */
     z.strictObject({ ...common, type: z.literal("handover"), runId: id, generation }),
