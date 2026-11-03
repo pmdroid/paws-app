@@ -569,7 +569,7 @@ def replace_link(path, target):
 
 
 def activate_agents(manifest, base=BASE):
-    """Write the provider launchers and move each agent's current pointer to its pinned version."""
+    """Write the provider launchers and move each agent's current pointer to its pinned version, unless it already points at a newer one."""
     statuses = {}
     for name in sorted(release.PROVIDER_EXECUTABLES):
         write_atomic(base / "bin" / name, release.agent_launcher(name, str(base)), 0o755)
@@ -577,8 +577,21 @@ def activate_agents(manifest, base=BASE):
         folder = base / "agents" / agent
         if not (folder / entry["version"]).is_dir():
             raise AgentInstallError(agent, entry["version"], "the version folder is missing")
+        active = current_agent_version(folder)
+        if active is not None and (folder / active).is_dir() and newer(active, entry["version"]):
+            statuses[agent] = {"version": active, "status": "kept"}
+            continue
         statuses[agent] = {"version": entry["version"], "status": switch_current(folder, entry["version"])}
     return statuses
+
+
+def newer(version, than):
+    """Whether one exact version sorts after another; a pre-release sorts before its release."""
+    def key(value):
+        match = release.EXACT_VERSION.fullmatch(value)
+        core = tuple(int(part) for part in match.groups())
+        return core + ((0,) if "-" in value else (1,))
+    return key(version) > key(than)
 
 
 def prepare_agents(artifact, base=BASE, registry=DEFAULT_REGISTRY):

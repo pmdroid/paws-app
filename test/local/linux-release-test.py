@@ -775,6 +775,22 @@ class AgentInstallation(unittest.TestCase):
         self.finish(process)
 
 
+    def test_a_release_whose_pin_is_older_keeps_the_newer_current_version(self):
+        self.install("1.0.0")
+        self.install("2.0.0")
+        self.installer.activate_agents(self.manifest("2.0.0"), self.base)
+        statuses = self.installer.activate_agents(self.manifest("1.0.0"), self.base)
+        self.assertEqual(statuses["claude"], {"version": "2.0.0", "status": "kept"})
+        for agent in ("claude", "codex", "grok"):
+            self.assertEqual(self.current(agent), "2.0.0")
+
+    def test_newer_compares_exact_versions(self):
+        self.assertTrue(self.installer.newer("0.99.1", "0.88.0"))
+        self.assertTrue(self.installer.newer("2.10.0", "2.9.9"))
+        self.assertFalse(self.installer.newer("2.1.1", "2.5.0"))
+        self.assertFalse(self.installer.newer("1.0.0-rc.1", "1.0.0"))
+        self.assertFalse(self.installer.newer("1.0.0", "1.0.0"))
+
     def published_integrity(self, agent, version):
         return self.registry.packuments[release.AGENT_PACKAGES[agent]]["versions"][version]["dist"]["integrity"]
 
