@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   applyWorkItemEvent,
   beginImplementRun,
+  enterMergeQueue,
   insertQueuedItem,
   migrate,
   openDatabase,
@@ -68,6 +69,14 @@ export async function startDashboardFixture() {
     });
     evidence[item] = saved.id;
   }
+  for (const [item, session] of [
+    ["PAS-3", "session-mine"],
+    ["PAS-4", "session-other"],
+  ] as const) {
+    insertQueuedItem(db, { id: item, sessionKey: session, title: `Fixture ${item}` });
+    const head = beginImplementRun(db, item, Date.now()).run.id.padEnd(40, "0").slice(0, 40);
+    enterMergeQueue(db, item, { phase: "merge_queue", baseSha: head, wipCommit: head });
+  }
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;
   await reservation.stop(true);
@@ -106,7 +115,7 @@ export async function startDashboardFixture() {
     origin,
     runs,
     evidence,
-    csrfToken: session.csrfToken,
+    csrfToken: session.session.csrfToken,
     cookie: `${WORKSPACE_COOKIE}=${session.token}`,
     sessionToken: session.token,
     fill: (path: string) =>
