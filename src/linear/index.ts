@@ -30,6 +30,7 @@ export type {
   LinearUsage,
 } from "./budget";
 export { createIntakePollSource } from "./catchup";
+export { linearCommentOf, linearSourceCommentId, type LinearComment } from "./comments";
 export type {
   IntakePollSource,
   IntakeSighting,

@@ -15,6 +15,7 @@ export const JOB_KIND = {
    * `pullCommentsFor`, not `itemId`, so a restart does not cancel it.
    */
   pullComments: "github.pull_comments",
+  linearComments: "linear.comments",
   catchup: "linear.catchup",
   visualReviewReminder: "linear.visual_review_reminder",
   /** The one reminder of an open link ask, 24 hours after it was asked. */

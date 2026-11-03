@@ -76,6 +76,47 @@ Linear's stop button, the `stopping` status and a `/paws stop` reply all end in 
 
 The keepalive (`KEEPALIVE_MS` in `src/loop/activity.ts`, `WAIT_KEEPALIVE_MS` in `src/scheduler/waits.ts`) is 25 minutes, below Linear's 30-minute stale window (`LINEAR_STALE_MS`). Its body is the agent's current plan step, else the last `post_update` line, else the phase. A lifecycle thought with an identical body is not posted twice within one phase.
 
+### Ordinary issue comments
+
+A comment on a delegated issue, outside the agent session's thread, reaches the issue's work too. The Linear webhook must subscribe to `Comment` events; the catch-up poll reads the same comments when a delivery is missed. `src/linear/comments.ts` reads the documented payload: `type: "Comment"`, `action` `create`, `update` or `remove`, `data.id`, `data.body`, `data.issueId`, `data.userId`, `data.parentId`, `data.createdAt`, `data.updatedAt`, `data.botActor`, `data.issue.team.id`, the signed `actor` and `organizationId`.
+
+Each comment is one `linear_comment` row keyed by its id, so a webhook redelivery, the poll seeing it again and any mix of the two record it once. An edit (a newer `updatedAt`) replaces the body while the comment is undelivered; an older update changes nothing. A removal before delivery retires the comment, and the row stays as a tombstone so a later poll cannot bring it back. An edit or removal after delivery is not sent again; post a new comment instead.
+
+`routeLinearComment` in `src/loop/linear-comments.ts` settles each comment once:
+
+| Comment                                                                                | Outcome                                                         |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Empty, `/paws stop`                                                                    | ignored; the stop path handles `/paws stop`                     |
+| By Paws's app user, or a bot or integration not in `[linear] comment_agents`           | ignored, whatever the text claims                               |
+| A reply in an agent session's thread, or the session's own source comment              | ignored; the session reply path delivers it                     |
+| Older than the issue's work item                                                       | ignored, so catch-up does not replay history                    |
+| On an issue with no open item: ended work stays ended                                  | ignored                                                         |
+| On a parent issue whose sub-issues run in their own sessions                           | refused, with a thought on the parent session; never fanned out |
+| From another workspace or team, a session without allowed access, or a stopped session | refused or ignored                                              |
+| By a person who fails the workspace member check, or an agent acting for one           | refused                                                         |
+| Otherwise                                                                              | queued on the item, with one "Received a comment" thought       |
+
+An agent in `comment_agents` is trusted as itself. When Linear's signed `actor` is a person other than the comment's author, that person is recorded as `on_behalf_of` and must pass the member check too.
+
+One `linear.comments` job per item gathers queued comments with the pull request feedback wait (`[merge] comment_quiet_seconds` after the latest, `comment_max_wait_seconds` at most), then:
+
+- **Running:** it waits. A runner follow-up interrupts the agent's prompt, so comments are not pushed into a turn; they go out with the next handoff once the turn has ended.
+- **Verifying or recovering, or a job still running for the item:** it waits.
+- **Resting in the merge queue:** a queued comment holds the merge (`reviewHold` in `src/merge/orders.ts`), so Paws does not merge during the quiet window, and the pull request is taken out of GitHub's merge queue as soon as the comment is queued, so GitHub does not merge it either. When the job runs it tries again. If GitHub already merged the pull request, the merge lane records that; if it was closed without merging, the comments are settled (`pull_closed`) with a thought, so they hold nothing. Otherwise one `restart(follow_up)`. The restart's handoff only says comments follow; the comments themselves stay queued and reach the agent in the brief of the turn that starts, so an edit, deletion or lost access before then still applies. Pending pull request comments, CI failures or change requests keep their own wait; the Linear comments then ride along in that restart's brief. The restart's job key starts `linear-comment:`, so it does not reset the fix-round window a Linear session reply opens.
+- **Queued (capacity, quota or dependency waits):** nothing is dispatched; the next attempt's brief takes the comments. That covers answer, plan and artifact tasks too. A comment counts as delivered only once the agent's turn with that brief ends (or asks a question). A preflight failure, a quota deferral or a recovery before then leaves it queued for the next attempt, whatever the item version. A comment edited while that turn runs stays queued with its new text. Comments that arrive while an answer, plan or artifact turn runs get up to three more turns in the same run before the task completes, so they are not dropped when it finishes.
+- **Paused, manual or failed:** the comments wait with the item; a comment never resumes it, clears a hold or resets a budget.
+- **Awaiting input:** an issue comment never answers a question, the agent's own included. Questions are asked in the session thread, and a reply there takes the session reply path, so an issue comment has no unambiguous target. The comment stays as context and the session says the question still needs an answer.
+
+These thoughts follow the post-PR rule above; the comment's state in `linear_comment` (`received`, `queued`, `delivered`, `answered`, `ignored`, `rejected`, `removed`, with a reason) is the record either way.
+
+A handoff holds at most 12,000 characters (each comment is cut at 4,000). Comments that do not fit stay queued for the next handoff; only the ones handed over are marked delivered, and the delivery job is armed again for the rest.
+
+Before delivery each comment is checked again: a stop since it was routed, a new session for the item, or a member who lost access drops it. While the member check is not available yet, for example right after a restart, the comment waits rather than passing.
+
+A session reply that Linear also records as an issue comment is delivered once. If the comment is still queued when the session reply arrives, the comment is dropped and the reply path delivers it. If the comment was already handed over, the session reply is not delivered again.
+
+For example, Pascal comments "Use the v2 endpoint." on ENG-1 while its pull request rests in the merge queue. Paws records the comment, posts "Received a comment on ENG-1. Paws hands it to the agent at its next turn.", and a minute later restarts the item once with a handoff that starts "New comments on the Linear issue ENG-1." and posts "Handed the comment on ENG-1 to the agent. It works on it now."
+
 ### A first delegation
 
 A delegator who has never signed in to Paws gets the same one session, with a short setup prefix before the ordinary faces. Paws never opens a second session for onboarding and never writes to Linear while it waits. Who may delegate, the onboarding page and the link rules are in [Workspace access](workspace-access.md#a-first-delegation).
