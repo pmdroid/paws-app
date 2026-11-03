@@ -6,6 +6,7 @@ import {
   RUNNER_RESULT_BODY_LIMIT,
   RunnerResultSchema,
   RunnerEventSchema,
+  runnerAccountEchoed,
   type RunnerResult,
 } from "../runner-protocol";
 import { RunnerWorkFencedError, runnerFailureStatus, type RunnerWork } from "../runner-work";
@@ -55,6 +56,7 @@ export function createRunnerResults(options: {
         if (
           (command.type !== "run" && command.type !== "review" && command.type !== "task") ||
           result.commandId !== command.id ||
+          !runnerAccountEchoed(command, result) ||
           result.role !== (command.type === "review" ? "reviewer" : "implementer") ||
           (command.type === "task" &&
             (result.candidateSha !== undefined || result.reviewText !== undefined)) ||

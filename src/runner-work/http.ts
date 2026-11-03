@@ -2,6 +2,7 @@ import { journalCaught } from "../journal";
 import { join } from "node:path";
 import { z } from "zod";
 import {
+  RunnerAccountCapabilitySchema,
   RunnerHostStatusSchema,
   RunnerTerminationSchema,
   RunnerInstalledAgentsSchema,
@@ -28,6 +29,7 @@ const heartbeat = RunnerHostStatusSchema.extend({
     .max(64)
     .optional(),
   liveAfter: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  accounts: RunnerAccountCapabilitySchema.optional(),
   repositories: z
     .array(z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/))
     .max(256)
@@ -60,6 +62,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
           repositories,
           terminated,
           liveAfter,
+          accounts,
           ...host
         } = heartbeat.parse(await body(request));
         return json(
@@ -75,6 +78,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
             repositories,
             terminated,
             liveAfter,
+            accounts,
           ),
         );
       }

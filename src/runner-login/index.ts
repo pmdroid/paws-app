@@ -5,6 +5,8 @@ import {
   auditWorkspaceAccess,
   getRunner,
   immediate,
+  legacyAgentAccountId,
+  legacyAgentBindingId,
   runnerLeaseCutoff,
   workspaceMember,
 } from "../db";
@@ -140,8 +142,13 @@ export function createRunnerLogin(options: {
               "SELECT COUNT(*) AS count FROM runner_work JOIN run ON run.id=runner_work.run_id WHERE runner_work.runner_id=? AND run.agent=? AND runner_work.ended_at IS NULL AND runner_work.lease_until>?",
             )
             .get(runnerId, agent, runnerLeaseCutoff(now()))!.count;
+          const binding = db
+            .query<{ id: string }, [string]>("SELECT id FROM agent_account_binding WHERE id=?")
+            .get(legacyAgentBindingId(runnerId, agent));
           return {
             agent,
+            accountId: binding ? legacyAgentAccountId(principal.workspaceId, agent) : null,
+            bindingId: binding?.id ?? null,
             connected: account?.connected === 1,
             running,
             session: session ? snapshot(read(session.id)) : null,

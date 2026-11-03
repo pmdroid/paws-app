@@ -6,6 +6,7 @@ import { z } from "zod";
 import { immediate, openDatabase } from "../db";
 import { describeRunnerCertificate } from "../runner-identity";
 import {
+  RUNNER_ACCOUNT_PROTOCOL,
   RunnerCommandSchema,
   RunnerLoginUpdateSchema,
   RunnerLoginExchangeSchema,
@@ -295,6 +296,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           workspaceId: identity.workspaceId,
           now: now(),
           allowedRepositories: options.allowedRepositories,
+          accountBindings: new Set(),
           claimCommand: (id, expiresAt) =>
             db.run("INSERT INTO command_receipt VALUES (?,?) ON CONFLICT DO NOTHING", [
               id,
@@ -424,6 +426,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           : []),
         ...(reported === undefined ? [] : [body]),
       ];
+      attempts.unshift({
+        ...(attempts[0] as object),
+        accounts: { protocol: RUNNER_ACCOUNT_PROTOCOL, bindings: [] },
+      });
       let reply: unknown;
       for (const [index, attempt] of attempts.entries()) {
         try {
