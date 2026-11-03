@@ -1,4 +1,3 @@
-import { statusFixture } from "../../src/dashboard/test/fixtures";
 // Screenshots Settings → Agents → Skills at desktop width and 390 px, after adding a skill
 // through the form. Run `bun run build:dashboard` first. Prints the output directory.
 import { chromium } from "@playwright/test";
@@ -51,8 +50,6 @@ const server = Bun.serve({
         authenticatedAt: Date.now(),
         workspaces: [{ id: "workspace", name: "Team workspace", role: "admin" }],
       });
-    if (url.pathname === "/api/status")
-      return Response.json({ ...statusFixture(), source: "live" });
     if (url.pathname === "/api/settings/skills")
       return (await handleSkillSettingsRequest(req, {
         db,

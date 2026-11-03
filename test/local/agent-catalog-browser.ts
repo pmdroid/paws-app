@@ -1,4 +1,4 @@
-import { statusFixture } from "../../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 // Captures the Runners list with the coding agent version catalog at desktop and 390 px, light and dark.
 // Usage: bun run build:dashboard && bun --no-env-file test/local/agent-catalog-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
@@ -9,7 +9,7 @@ import { handleStatusRequest } from "../../src/dashboard";
 const directory = resolve(process.argv[2] ?? "agent-catalog-evidence");
 await mkdir(directory, { recursive: true });
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const HOUR = 3_600_000;
 
@@ -69,7 +69,7 @@ const server = Bun.serve({
       return Response.json({ ownerUserId: "owner", sharing: 1 });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "agent-catalog-fixture",
       })) ?? new Response(null, { status: 404 })
     );

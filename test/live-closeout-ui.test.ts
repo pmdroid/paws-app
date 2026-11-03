@@ -26,17 +26,22 @@ import {
 import { handleStatusRequest } from "../src/dashboard";
 import { render, type RenderModel } from "../src/dashboard/src/client/render";
 import { attemptsOf, checkKey } from "../src/dashboard/src/client/closeout";
-import { openedView, issueOf } from "../src/dashboard/test/fixtures";
+import { openedView } from "../src/dashboard/test/fixtures";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 import type {
+  IssueDetailResponse,
   StatusCheck,
-  StatusItemDetail,
-  StatusSnapshot,
+  StatusItem,
+  StatusRun,
   StatusVerdict,
 } from "../src/dashboard/src/contract";
 
-/** The status list, with each listed issue's detail as the issue page loads it. */
-type Status = StatusSnapshot & { details: Map<string, StatusItemDetail> };
+/** The issue list, with each listed issue's detail as the issue page loads it. */
+type Status = {
+  items: StatusItem[];
+  runs: StatusRun[];
+  details: Map<string, IssueDetailResponse>;
+};
 
 const open: Database[] = [];
 const dirs: string[] = [];
@@ -147,18 +152,18 @@ function acceptVerdict(db: Database, id: string, head: string, body: string, now
 /**
  * The status list, with each listed issue's detail and every check's output read through
  * `checkLog`, as the issue page shows a check once its row has loaded the log. Neither
- * `/api/status` nor the detail carries check output.
+ * `/api/issues` nor the detail carries check output.
  */
 function snapshotOf(db: Database, now: number, env: NodeJS.ProcessEnv = {}): Status {
   const provider = createLiveStatusProvider(db, { now: () => new Date(now), env });
-  const list = provider.snapshot();
+  const list = provider.issues();
   const withLog = (itemId: string, attempt: number) => (check: StatusCheck) => ({
     ...check,
     ...provider.checkLog({ itemId, attempt, checkId: check.id, run: null }),
   });
-  const details = new Map<string, StatusItemDetail>();
-  for (const item of list.items) {
-    const detail = provider.item(item.id);
+  const details = new Map<string, IssueDetailResponse>();
+  for (const item of list.issues) {
+    const detail = provider.issue(item.id);
     if (detail === null) continue;
     details.set(item.id, {
       ...detail,
@@ -179,7 +184,7 @@ function snapshotOf(db: Database, now: number, env: NodeJS.ProcessEnv = {}): Sta
       }),
     });
   }
-  return { ...list, details };
+  return { items: list.issues, runs: list.runs, details };
 }
 
 function verdictOf(snapshot: Status, id: string): StatusVerdict {
@@ -199,8 +204,7 @@ function paint(snapshot: Status, id: string, checkId: string): string {
   const model: RenderModel = {
     route: { view: "issues", id },
     phase: "ready",
-    snapshot,
-    issue: issueOf(snapshot.details.get(id) ?? null),
+    issue: snapshot.details.get(id) ?? null,
     error: null,
     engineUrl: "http://127.0.0.1:8787",
     closeout: openedView({ [checkKey(id, latest, checkId)]: true }),
@@ -412,8 +416,7 @@ describe("live closeout ui", () => {
     const earlier = render({
       route: { view: "issues", id },
       phase: "ready",
-      snapshot,
-      issue: issueOf(snapshot.details.get(id) ?? null),
+      issue: snapshot.details.get(id) ?? null,
       error: null,
       engineUrl: null,
       closeout: { ...openedView(), attempt: { [id]: 1 } },

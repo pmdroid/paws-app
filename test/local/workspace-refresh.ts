@@ -197,7 +197,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   });
   const ready = await owner.access;
   const authenticated = ready.authenticate(
-    new Request("https://paws.example/api/status", {
+    new Request("https://paws.example/api/issues", {
       headers: { cookie: `${WORKSPACE_COOKIE}=${session.token}` },
     }),
   );

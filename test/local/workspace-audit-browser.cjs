@@ -52,7 +52,7 @@ const errors = [];
       [owner, member].map(({ page }) =>
         page.evaluate(async () => ({
           session: await (await fetch("/api/auth/session")).json(),
-          status: await (await fetch("/api/status")).json(),
+          issues: await (await fetch("/api/issues")).json(),
         })),
       ),
     );
@@ -60,7 +60,7 @@ const errors = [];
     assert.equal(identities[0].session.workspaceId, identities[1].session.workspaceId);
     assert.equal(identities[0].session.role, "owner");
     assert.equal(identities[1].session.role, "member");
-    assert.deepEqual(identities[0].status.items, identities[1].status.items);
+    assert.deepEqual(identities[0].issues.issues, identities[1].issues.issues);
     observations.push(
       "Two independent Linear browser sessions read the same permitted live workspace",
     );

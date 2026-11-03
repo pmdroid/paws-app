@@ -39,8 +39,8 @@ async function delegated(snapshot: EpicSnapshot) {
   if (!intake.ok) throw new Error("intake failed");
   const projectOf = () =>
     createLiveStatusProvider(db)
-      .snapshot()
-      .items.find((item) => item.id === "PAS-608")?.project;
+      .issues()
+      .issues.find((item) => item.id === "PAS-608")?.project;
   return { db, tracker, intake, projectOf };
 }
 

@@ -1,6 +1,6 @@
 import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
-// Captures the overview and Issues list read from the trimmed status list, and an issue page with
-// its Closeout attempts read from the item detail, at desktop and 390 px, for visual proof.
+// Captures the overview and Issues list read from their resources, and an issue page with its
+// Closeout attempts read from the issue resource, at desktop and 390 px, for visual proof.
 // Usage: bun run build:dashboard && bun --no-env-file test/local/status-list-browser.ts <evidence-directory>
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -36,8 +36,8 @@ const browser = await chromium.launch({ headless: true });
 const observations: Record<string, unknown>[] = [];
 try {
   const base = `http://127.0.0.1:${server.port}`;
-  const list = (await (await fetch(`${base}/api/status`)).json()) as Record<string, unknown>;
-  const detail = await (await fetch(`${base}/api/status/items/ENG-100`)).text();
+  const list = (await (await fetch(`${base}/api/issues`)).json()) as Record<string, unknown>;
+  const detail = await (await fetch(`${base}/api/issues/ENG-100`)).text();
   observations.push({
     listBytes: JSON.stringify(list).length,
     detailBytes: detail.length,

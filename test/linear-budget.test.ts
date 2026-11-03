@@ -359,7 +359,7 @@ describe("shared Linear budget", () => {
       await server.stop(true);
     }
   });
-  test("/api/status carries the Linear budget and hold from the same ledger", async () => {
+  test("/api/overview carries the Linear budget and hold from the same ledger", async () => {
     const ledger = createLinearLedger({ now: () => START, log: () => {} });
     ledger.observe("tracker", {
       requestsRemaining: 0,
@@ -382,7 +382,7 @@ describe("shared Linear budget", () => {
       linearUsage: () => ledger.usage(),
     });
     try {
-      const response = await fetch(`http://127.0.0.1:${server.port}/api/status`);
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/overview`);
       expect(await response.json()).toMatchObject({
         source: "live",
         intake: [],

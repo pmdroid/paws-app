@@ -65,7 +65,7 @@ test("a fresh HTTPS instance serves browser onboarding for its configured organi
   const response = await paws.server.fetch(new Request("https://localhost:8787/api/auth/session"));
   expect(response.status).toBe(401);
   expect(await response.json()).toMatchObject({ onboarding: true });
-  const blocked = await paws.server.fetch(new Request("https://localhost:8787/api/status"));
+  const blocked = await paws.server.fetch(new Request("https://localhost:8787/api/issues"));
   expect(blocked.status).toBe(401);
   const login = await paws.server.fetch(new Request("https://localhost:8787/auth/linear"));
   expect(login.status).toBe(303);

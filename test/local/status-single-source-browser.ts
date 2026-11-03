@@ -1,25 +1,25 @@
 import { chromium, expect } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { emptyLiveSnapshot, handleStatusRequest } from "../../src/dashboard";
+import { handleStatusRequest } from "../../src/dashboard";
+import { emptyOverview } from "../../src/dashboard/src/live/overview";
 
 const directory = resolve(process.argv[2] ?? "/tmp/paws-single-source-proof");
 await mkdir(directory, { recursive: true });
 let unavailable = false;
 let reads = 0;
-const snapshot = emptyLiveSnapshot();
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   async fetch(request) {
     const path = new URL(request.url).pathname;
     if (path === "/api/auth/session") return new Response(null, { status: 404 });
-    if (path === "/api/status") {
+    if (path === "/api/overview") {
       reads++;
       if (unavailable) return Response.json({ error: "Paws unavailable" }, { status: 503 });
     }
     return (
-      (await handleStatusRequest(request, { provider: { snapshot: () => snapshot } })) ??
+      (await handleStatusRequest(request, { provider: { overview: () => emptyOverview() } })) ??
       new Response(null, { status: 404 })
     );
   },
@@ -48,6 +48,7 @@ try {
       await expect(page.getByRole("button", { name: "Engine", exact: true })).toHaveCount(0);
       expect(requests.every((url) => new URL(url).origin === origin)).toBe(true);
       expect(requests.some((url) => url.endsWith("config.json"))).toBe(false);
+      expect(requests.some((url) => new URL(url).pathname.startsWith("/api/status"))).toBe(false);
     }
     await expect
       .poll(() => page.evaluate("document.documentElement.scrollWidth <= innerWidth"))

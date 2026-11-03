@@ -215,7 +215,7 @@ export async function probeRunnerPublicActivity(root: string) {
       pawsHome: root,
       sessionIds: options.sessionIds,
       env: options.env,
-    }).snapshot().runs[0]!;
+    }).issues().runs[0]!;
     assert(!("transcript" in statusRun));
     assert(
       text.includes("Source 0 inspected") &&

@@ -67,8 +67,8 @@ const assert = require("node:assert/strict");
         new URL(response.url()).pathname === "/api/execution-controls" &&
         response.request().method() === "GET",
     );
-    const refreshed = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/status",
+    const refreshed = page.waitForResponse((response) =>
+      new URL(response.url()).pathname.startsWith("/api/issues"),
     );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await refreshed;

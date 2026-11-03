@@ -238,7 +238,7 @@ try {
       read("/webhooks/linear", body, "invalid").then((response) => {
         unsignedStatus = response.status;
       }),
-      read("/api/status").then((response) => {
+      read("/api/issues").then((response) => {
         protectedStatus = response.status;
       }),
     ]);
@@ -258,7 +258,7 @@ try {
       { beforeReady, persisted },
     );
   }
-  const status = await read("/api/status");
+  const status = await read("/api/issues");
   observe(
     mode === "legacy"
       ? "public URL alone retains local dashboard behavior"
@@ -319,12 +319,12 @@ try {
     let failedRoute;
     paws.db.exec("ALTER TABLE work_item RENAME TO runtime_fault_item");
     try {
-      failedRoute = await read("/api/status", undefined, undefined, callback.cookie!.split(";")[0]);
+      failedRoute = await read("/api/issues", undefined, undefined, callback.cookie!.split(";")[0]);
     } finally {
       paws.db.exec("ALTER TABLE runtime_fault_item RENAME TO work_item");
     }
     const recovered = await read(
-      "/api/status",
+      "/api/issues",
       undefined,
       undefined,
       callback.cookie!.split(";")[0],

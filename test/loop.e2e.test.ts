@@ -59,7 +59,11 @@ import {
 } from "../src/linear";
 import { createEvidenceStore } from "../src/evidence";
 import { findOpenQuestion, getQuestion } from "../src/questions";
-import { handleStatusRequest, parseStatusSnapshot } from "../src/dashboard";
+import {
+  handleStatusRequest,
+  parseIssueDetailResponse,
+  parseIssueListResponse,
+} from "../src/dashboard";
 import {
   attachOrchestrator,
   itemPathId,
@@ -244,17 +248,18 @@ test.each([false, true, "cap"] as const)(
       await outbox.idle();
       // The keepalive names the agent's current step ahead of the fix-round line.
       expect(tracker.progress.at(-1)?.body).toBe("Step 1 of 1: Repair missing output.");
-      const response = await handleStatusRequest(new Request("http://localhost/api/status"), {
-        db,
-      });
-      const parsed = parseStatusSnapshot(await response!.json());
+      const response = await handleStatusRequest(
+        new Request("http://localhost/api/issues/ENG-302"),
+        { db },
+      );
+      const parsed = parseIssueDetailResponse(await response!.json());
       expect(parsed.ok).toBe(true);
-      if (!parsed.ok) throw new Error("Invalid status snapshot");
-      const run = parsed.snapshot.runs.find((entry) => entry.itemId === "ENG-302");
+      if (!parsed.ok) throw new Error("Invalid issue detail");
+      const run = parsed.response.runs.find((entry) => entry.itemId === "ENG-302");
       expect(run?.activity.map((entry) => entry.text)).not.toContain("Fixing the missing output.");
       expect(run?.summary).toContain("Step 1 of 1: Repair missing output.");
       expect(JSON.stringify(tracker.progress)).not.toContain("PRIVATE_FIX_REASONING");
-      expect(JSON.stringify(parsed.snapshot)).not.toContain("PRIVATE_FIX_REASONING");
+      expect(JSON.stringify(parsed.response)).not.toContain("PRIVATE_FIX_REASONING");
       if (stop === true) await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
       if (stop === "cap") {
         const item = listWorkItems(db)[0]!;
@@ -3282,13 +3287,13 @@ async function runGitHubQueue(
       if ((await tickWithRestarts(jobs, orchestrator, db)) !== null) continue;
       const pull = [...pulls.values()][0] ?? 0;
       if (pull > 0 && queue.isQueued(pull)) {
-        const response = await handleStatusRequest(new Request("http://localhost/api/status"), {
+        const response = await handleStatusRequest(new Request("http://localhost/api/issues"), {
           db,
         });
-        const parsed = parseStatusSnapshot(await response!.json());
-        if (!parsed.ok) throw new Error("Invalid status snapshot");
+        const parsed = parseIssueListResponse(await response!.json());
+        if (!parsed.ok) throw new Error("Invalid issue list");
         dashboard.push(
-          parsed.snapshot.items.find((entry) => entry.id === "ENG-95")?.githubQueue?.line ?? null,
+          parsed.response.issues.find((entry) => entry.id === "ENG-95")?.githubQueue?.line ?? null,
         );
         // The pull request waits in GitHub's queue: act as GitHub, then let the parked merge job
         // read it again now instead of after its poll interval.

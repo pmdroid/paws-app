@@ -293,31 +293,41 @@ export async function probeWorkspaceAuthorization(
       auditStatuses.join() === "200,403,401,403,400,405",
       auditStatuses,
     );
-    const anonymous = await fetch(`${origin}/api/status`);
-    const ownerResponse = await fetch(`${origin}/api/status`, { headers: headers(owner) });
-    const ownerSnapshot = (await ownerResponse.json()) as { items: { id: string }[] };
-    const memberResponse = await fetch(`${origin}/api/status`, { headers: headers(member) });
-    const memberSnapshot = (await memberResponse.json()) as typeof ownerSnapshot;
+    const anonymous = await fetch(`${origin}/api/issues`);
+    const ownerResponse = await fetch(`${origin}/api/issues`, { headers: headers(owner) });
+    const ownerIssues = (await ownerResponse.json()) as { issues: { id: string }[] };
+    const memberResponse = await fetch(`${origin}/api/issues`, { headers: headers(member) });
+    const memberIssues = (await memberResponse.json()) as typeof ownerIssues;
     observe(
       "dashboard APIs require a browser session and exclude other workspaces and unknown ownership",
       anonymous.status === 401 &&
-        ownerSnapshot.items
+        ownerIssues.issues
           .map((item) => item.id)
           .sort()
           .join() === "other-team,own" &&
-        memberSnapshot.items.map((item) => item.id).join() === "own",
+        memberIssues.issues.map((item) => item.id).join() === "own",
       {
         anonymous: anonymous.status,
-        ownerItems: ownerSnapshot.items.map((item) => item.id),
-        memberItems: memberSnapshot.items.map((item) => item.id),
+        ownerItems: ownerIssues.issues.map((item) => item.id),
+        memberItems: memberIssues.issues.map((item) => item.id),
       },
+    );
+    const retired = await Promise.all(
+      ["/api/status", "/api/status?slices=items", "/api/status/items/own"].map(
+        async (path) => (await fetch(`${origin}${path}`, { headers: headers(owner) })).status,
+      ),
+    );
+    observe(
+      "the retired status snapshot API answers 404 for a signed-in owner",
+      retired.every((status) => status === 404),
+      { retired },
     );
     observe(
       "authenticated dashboard data has no public CORS grant",
       ownerResponse.headers.get("access-control-allow-origin") === null,
       { cors: ownerResponse.headers.get("access-control-allow-origin") },
     );
-    const crossWorkspace = await fetch(`${origin}/api/status?workspaceId=another-workspace`, {
+    const crossWorkspace = await fetch(`${origin}/api/overview?workspaceId=another-workspace`, {
       headers: headers(owner),
     });
     const crossWorkspaceMembers = await fetch(
@@ -496,20 +506,20 @@ export async function probeWorkspaceAuthorization(
       body: JSON.stringify({ repositories: [{ repository: "fixture/private", teamId: "team-a" }] }),
     });
     const remapped = (await (
-      await fetch(`${origin}/api/status`, { headers: headers(owner) })
-    ).json()) as typeof ownerSnapshot;
+      await fetch(`${origin}/api/issues`, { headers: headers(owner) })
+    ).json()) as typeof ownerIssues;
     observe(
       "repository scope changes only after an admin maps a verified Linear team",
       unmapped.status === 400 &&
         mapped.status === 200 &&
-        remapped.items
+        remapped.issues
           .map((item) => item.id)
           .sort()
           .join() === "other-team,unmapped-repo",
       {
         rejected: unmapped.status,
         saved: mapped.status,
-        items: remapped.items.map((item) => item.id),
+        items: remapped.issues.map((item) => item.id),
       },
     );
     const ownerPage = await fetch(`${origin}/dashboard/`, { headers: headers(owner) });
@@ -550,7 +560,7 @@ export async function probeWorkspaceAuthorization(
     membershipFailure = true;
     const outagePage = await fetch(`${origin}/dashboard/`, { headers: headers(outageSession) });
     const outageCsrf = (await outagePage.text()).match(/name="paws-csrf" content="([^"]+)"/)?.[1];
-    const outageData = await fetch(`${origin}/api/status`, { headers: headers(outageSession) });
+    const outageData = await fetch(`${origin}/api/issues`, { headers: headers(outageSession) });
     const outageLogout = await fetch(`${origin}/api/auth/logout`, {
       method: "POST",
       headers: { ...headers(outageSession), "x-paws-csrf": outageCsrf ?? "" },
@@ -598,7 +608,7 @@ export async function probeWorkspaceAuthorization(
       body: JSON.stringify({ userId: memberId, role: "admin" }),
     });
     const guestError = ((await guestPromotion.json()) as { error: string }).error;
-    const guestSession = await fetch(`${origin}/api/status`, { headers: headers(member) });
+    const guestSession = await fetch(`${origin}/api/issues`, { headers: headers(member) });
     observe(
       "an admin cannot give a verified Linear guest a role, and the guest loses access",
       guestPromotion.status === 400 &&
@@ -612,17 +622,17 @@ export async function probeWorkspaceAuthorization(
     await access.refreshMemberships();
     member = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: memberId, now });
     const refreshed = (await (
-      await fetch(`${origin}/api/status`, { headers: headers(member) })
-    ).json()) as typeof ownerSnapshot;
+      await fetch(`${origin}/api/issues`, { headers: headers(member) })
+    ).json()) as typeof ownerIssues;
     const refreshedSession = (await (
       await fetch(`${origin}/api/auth/session`, { headers: headers(member) })
     ).json()) as { role: string; teamIds: string[] };
     observe(
       "forced membership sync removes team visibility immediately while retaining manual roles",
-      refreshed.items.length === 0 &&
+      refreshed.issues.length === 0 &&
         refreshedSession.teamIds.length === 0 &&
         refreshedSession.role === "member",
-      { items: refreshed.items, teamIds: refreshedSession.teamIds, role: refreshedSession.role },
+      { items: refreshed.issues, teamIds: refreshedSession.teamIds, role: refreshedSession.role },
     );
     const invalidRole = await fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
@@ -727,12 +737,12 @@ export async function probeWorkspaceAuthorization(
       removedTeamIds: ["team-a"],
     });
     const withdrawn = (await (
-      await fetch(`${origin}/api/status`, { headers: headers(owner) })
-    ).json()) as typeof ownerSnapshot;
+      await fetch(`${origin}/api/issues`, { headers: headers(owner) })
+    ).json()) as typeof ownerIssues;
     observe(
       "verified app team access removal hides its historical data even from workspace admins",
-      withdrawn.items.map((item) => item.id).join() === "other-team",
-      { items: withdrawn.items.map((item) => item.id) },
+      withdrawn.issues.map((item) => item.id).join() === "other-team",
+      { items: withdrawn.issues.map((item) => item.id) },
     );
   } finally {
     writeFileSync(

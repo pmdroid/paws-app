@@ -1,4 +1,4 @@
-import { statusFixture } from "../../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 // Captures the dashboard navigation without a Projects entry, at desktop and 390 px, and checks
 // that /status/projects answers 404, for visual proof.
 // Usage: bun run build:dashboard && bun --no-env-file test/local/projects-removed-browser.ts <evidence-directory>
@@ -10,7 +10,7 @@ import { handleStatusRequest } from "../../src/dashboard";
 const directory = resolve(process.argv[2] ?? "projects-removed-evidence");
 await mkdir(directory, { recursive: true });
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 
 const server = Bun.serve({
@@ -29,7 +29,7 @@ const server = Bun.serve({
       });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "projects-removed-fixture",
       })) ?? new Response(null, { status: 404 })
     );

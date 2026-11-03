@@ -21,7 +21,8 @@ import {
 } from "../../src/github";
 import { startPaws } from "../../src/index";
 import { attachOrchestrator, type AgentLaunch } from "../../src/loop";
-import { handleStatusRequest, parseStatusSnapshot } from "../../src/dashboard";
+import { handleStatusRequest, parseIssueListResponse } from "../../src/dashboard";
+import { parseQuestionListResponse } from "../../src/dashboard/src/contract";
 import type { FakeScript, FakeStep } from "../../src/acp/testing/script";
 import { probeBoundaries } from "./probes";
 import { probeRunnerProtocol } from "./runner-protocol";
@@ -317,15 +318,15 @@ async function scenario(
       if (question && !answered) {
         answered = true;
         parked = listWorkItemsByStates(db, WORK_ITEM_STATES).map((item) => item.state);
-        const parkedStatus = await (await fetch(`${origin}/api/status`)).json();
-        save(`${name}-parked.json`, parkedStatus);
-        const parsed = parseStatusSnapshot(parkedStatus);
+        const parkedQuestions = await (await fetch(`${origin}/api/questions`)).json();
+        save(`${name}-parked.json`, parkedQuestions);
+        const parsed = parseQuestionListResponse(parkedQuestions);
         if (name === "happy")
           observe(
             "live question exposes its source-thread handoff",
-            parsed.ok && parsed.snapshot.questions.some((entry) => entry.links.length > 0),
+            parsed.ok && parsed.response.questions.some((entry) => entry.links.length > 0),
             parsed.ok
-              ? parsed.snapshot.questions.map(({ id, links }) => ({ id, links }))
+              ? parsed.response.questions.map(({ id, links }) => ({ id, links }))
               : parsed.error,
           );
         await orchestrator.onLinearEvent({
@@ -364,8 +365,8 @@ async function scenario(
     }
     stopped = true;
     await answerer;
-    const snapshot = await (await fetch(`${origin}/api/status`)).json();
-    assert(parseStatusSnapshot(snapshot).ok);
+    const issues = await (await fetch(`${origin}/api/issues`)).json();
+    assert(parseIssueListResponse(issues).ok);
     const states = listWorkItemsByStates(db, WORK_ITEM_STATES).map((item) => item.state);
     const finalHead = await git("--git-dir", bare, "rev-parse", "main");
     const finalContent = await git("--git-dir", bare, "show", "main:result.txt").catch(() => null);
@@ -381,7 +382,7 @@ async function scenario(
       merged: pulls.merged,
       requests,
       jobs: listJobs(db),
-      snapshot,
+      issues,
     };
     save(`${name}.json`, result);
     if (mode === "serve" && !interrupted) {
@@ -417,9 +418,9 @@ try {
     const origin = `http://127.0.0.1:${fresh.server.port}`;
     const rootResponse = await fetch(origin);
     const health = await (await fetch(`${origin}/health`)).json();
-    const status = await (await fetch(`${origin}/api/status`)).json();
-    const parsed = parseStatusSnapshot(status);
-    const source = parsed.ok ? parsed.snapshot.source : null;
+    const status = await (await fetch(`${origin}/api/issues`)).json();
+    const parsed = parseIssueListResponse(status);
+    const source = parsed.ok ? parsed.response.source : null;
     const healthy =
       typeof health === "object" && health !== null && "ok" in health && health.ok === true;
     const page = await fetch(`${origin}/dashboard`);

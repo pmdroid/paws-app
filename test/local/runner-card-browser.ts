@@ -1,4 +1,4 @@
-import { statusFixture } from "../../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 // Captures the runner card at desktop and 390 px in light and dark, for visual proof.
 // Usage: bun run build:dashboard && bun --no-env-file test/local/runner-card-browser.ts <evidence-directory> [prefix]
 import { chromium } from "@playwright/test";
@@ -10,7 +10,7 @@ const directory = resolve(process.argv[2] ?? "runner-card-evidence");
 const prefix = process.argv[3] ?? "runner-card";
 await mkdir(directory, { recursive: true });
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const GB = 1024 ** 3;
 const busy = "01JRUNNER0000000000000BUSY";
@@ -162,7 +162,7 @@ const server = Bun.serve({
       return Response.json({ ownerUserId: "owner", sharing: 1 });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "runner-card-fixture",
       })) ?? new Response(null, { status: 404 })
     );

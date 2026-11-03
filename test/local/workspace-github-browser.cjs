@@ -44,7 +44,9 @@ const errors = [];
       } else await page.getByRole("link", { name: "Sign in with Linear" }).click();
       await page.getByRole("button", { name: "Sign out" }).waitFor();
       await page.locator('#side a[href="#/settings"]').click();
-      await page.waitForResponse((response) => new URL(response.url()).pathname === "/api/status");
+      await page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/api/settings/agents",
+      );
       return page;
     }
     const owner = await account("owner");
@@ -59,7 +61,9 @@ const errors = [];
     async function reloadSettings(page) {
       await page.reload();
       await page.getByRole("button", { name: "Sign out" }).waitFor();
-      await page.waitForResponse((response) => new URL(response.url()).pathname === "/api/status");
+      await page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/api/settings/agents",
+      );
     }
     for (const role of ["member", "admin"]) {
       if (role === "admin") {
@@ -79,7 +83,7 @@ const errors = [];
         await member.reload();
         await member.getByRole("button", { name: "Sign out" }).waitFor();
         await member.waitForResponse(
-          (response) => new URL(response.url()).pathname === "/api/status",
+          (response) => new URL(response.url()).pathname === "/api/settings/agents",
         );
       }
       const read = await member.evaluate(async () => (await fetch("/api/auth/github")).status);

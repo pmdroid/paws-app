@@ -24,12 +24,14 @@ describe("server", () => {
       expect(status.headers.get("content-type")).toContain("text/html");
       expect(await status.text()).toContain("Paws");
 
-      const api = await fetch(`${base}/api/status`);
+      const api = await fetch(`${base}/api/issues`);
       expect(api.status).toBe(200);
       expect(api.headers.get("content-type")).toContain("application/json");
       expect(api.headers.get("access-control-allow-origin")).toBe("*");
-      const snapshot = await api.json();
-      expect(snapshot).toMatchObject({ version: 2, source: "live" });
+      expect(await api.json()).toMatchObject({ source: "live", issues: [] });
+      // The status snapshot API is gone; its routes answer like any unknown path.
+      for (const path of ["/api/status", "/api/status?slices=items", "/api/status/items/PAS-1"])
+        expect((await fetch(`${base}${path}`)).status).toBe(404);
 
       const missing = await fetch(`${base}/webhooks/linear`, { method: "POST" });
       expect(missing.status).toBe(404);
@@ -116,7 +118,7 @@ describe("server", () => {
       expect(old.status).toBe(307);
       expect(old.headers.get("location")).toBe("/dashboard/issues/PAS-1?x=1");
       expect((await get("/status/issues/PAS-1", "POST")).status).toBe(405);
-      expect((await get("/api/status")).status).toBe(503);
+      expect((await get("/api/issues")).status).toBe(503);
       expect((await get("/statuses")).status).toBe(503);
     } finally {
       server.stop(true);

@@ -41,7 +41,7 @@ async function inspect(page, name) {
     await page.goto(`${origin}/dashboard`);
     await page.locator(".live-bar").waitFor();
     assert.equal(await page.locator("#side .nav").count(), 2);
-    const snapshot = await page.evaluate(async () => (await fetch("/api/status")).json());
+    const issues = await page.evaluate(async () => (await fetch("/api/issues")).json());
     for (const view of ["runs", "questions", "verdicts", "queue", "sessions", "epics"]) {
       await page.locator(`.work-navigation a[href="#/${view}"]`).click();
       assert.equal(new URL(page.url()).hash, `#/${view}`);
@@ -56,7 +56,7 @@ async function inspect(page, name) {
       "epics",
     ]);
     await page.locator("#side .nav").filter({ hasText: "Overview" }).click();
-    const run = snapshot.runs[0];
+    const run = issues.runs[0];
     assert.ok(run);
     await page.locator(`.overview-work a[href="#/runs/${encodeURIComponent(run.id)}"]`).click();
     await page.locator("#content .log").waitFor();
@@ -66,7 +66,8 @@ async function inspect(page, name) {
       fs.readFileSync(path.join(evidenceRoot, "happy-parked.json"), "utf8"),
     );
     let refresh = 0;
-    await page.route("**/api/status", (route) =>
+    await page.goto(`${origin}/dashboard/questions`);
+    await page.route("**/api/questions", (route) =>
       route.fulfill({
         json: {
           ...parked,
@@ -96,18 +97,18 @@ async function inspect(page, name) {
       parked.questions.map(({ id, links }) => ({ id, links })),
     );
     await inspect(page, "overview");
-    await page.route("**/api/status", (route) =>
+    await page.route("**/api/questions", (route) =>
       route.fulfill({ status: 503, body: "Fixture outage" }),
     );
     await page.locator('[data-action="refresh"]').click();
     await page.locator(".err-bar").waitFor();
-    assert.match(await page.locator(".err-bar").innerText(), /Showing the last snapshot/);
+    assert.match(await page.locator(".err-bar").innerText(), /Showing the last loaded page/);
     assert.ok(await page.locator("#content a").filter({ hasText: "Answer in Linear" }).count());
     observe(
-      "Disconnected state preserves the last real snapshot",
+      "Disconnected state preserves the last loaded questions",
       await page.locator(".err-bar").innerText(),
     );
-    await page.unroute("**/api/status");
+    await page.unroute("**/api/questions");
     await page.locator('[data-action="refresh"]').click();
     await page.locator(".live-bar").waitFor();
     await context.close();

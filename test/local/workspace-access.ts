@@ -92,7 +92,7 @@ export async function probeWorkspaceAccess(
   );
   const issued = issueWorkspaceSession(db, { userId, workspaceId: workspace.id, now });
   const cookie = `${WORKSPACE_COOKIE}=${issued.token}`;
-  const request = new Request("https://paws.example.invalid/api/status", { headers: { cookie } });
+  const request = new Request("https://paws.example.invalid/api/issues", { headers: { cookie } });
   const stored = JSON.stringify(db.query("SELECT * FROM workspace_session").all());
   observe(
     "browser session is stored as a hash and uses secure cookie attributes",

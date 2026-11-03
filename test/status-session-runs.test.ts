@@ -1,4 +1,3 @@
-import { issueOf } from "../src/dashboard/test/fixtures";
 import { expect, test } from "bun:test";
 import {
   applyLinearTurns,
@@ -14,7 +13,7 @@ import {
 } from "../src/db";
 import { handleStatusRequest } from "../src/dashboard";
 import { render } from "../src/dashboard/src/client/render";
-import { parseStatusItemDetail, parseStatusSnapshot } from "../src/dashboard/src/contract";
+import { parseIssueDetailResponse, parseIssueListResponse } from "../src/dashboard/src/contract";
 import { parseRoute } from "../src/dashboard/src/client/route";
 
 const NOW = 1_700_000_000_000;
@@ -62,14 +61,14 @@ test("one Linear session shows as one run with every attempt in its timeline", a
         now: at,
       });
 
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},
     });
-    const parsed = parseStatusSnapshot(await response?.json());
+    const parsed = parseIssueListResponse(await response?.json());
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    const runs = parsed.snapshot.runs.filter((run) => run.itemId === "ENG-7");
+    const runs = parsed.response.runs.filter((run) => run.itemId === "ENG-7");
     expect(runs).toHaveLength(1);
     const session = runs[0]!;
     expect(session.id).toBe(first.id);
@@ -85,7 +84,7 @@ test("one Linear session shows as one run with every attempt in its timeline", a
     expect(texts.indexOf("Review found one issue.")).toBeLessThan(
       texts.indexOf("Fixed the issue."),
     );
-    expect(parsed.snapshot.items.find((entry) => entry.id === "ENG-7")?.runId).toBe(first.id);
+    expect(parsed.response.issues.find((entry) => entry.id === "ENG-7")?.runId).toBe(first.id);
 
     const alias = await handleStatusRequest(
       new Request(`http://127.0.0.1/api/aliases/runs/${review.id}`),
@@ -94,19 +93,18 @@ test("one Linear session shows as one run with every attempt in its timeline", a
     expect(await alias?.json()).toEqual({ issueId: "ENG-7" });
     const route = parseRoute("/issues/ENG-7");
     const itemResponse = await handleStatusRequest(
-      new Request("http://127.0.0.1/api/status/items/ENG-7"),
+      new Request("http://127.0.0.1/api/issues/ENG-7"),
       {
         db,
         env: {},
       },
     );
-    const detail = parseStatusItemDetail(await itemResponse?.json());
+    const detail = parseIssueDetailResponse(await itemResponse?.json());
     if (!detail.ok) throw new Error(detail.error);
     const page = render({
       route: route!,
       phase: "ready",
-      snapshot: parsed.snapshot,
-      issue: issueOf(detail.detail),
+      issue: detail.response,
       error: null,
       engineUrl: null,
     });
@@ -156,14 +154,14 @@ test("a reply in the Linear session shows in the run's timeline with its author,
     });
     applyLinearTurns(db, "ses_8", ["reply-1"], item.id);
 
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},
     });
-    const parsed = parseStatusSnapshot(await response?.json());
+    const parsed = parseIssueListResponse(await response?.json());
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    const lines = parsed.snapshot.runs.find((entry) => entry.itemId === "ENG-8")!.activity;
+    const lines = parsed.response.runs.find((entry) => entry.itemId === "ENG-8")!.activity;
     expect(lines.map((line) => [line.kind, line.text])).toEqual([
       ["system", "Implementation started with Cursor."],
       ["thought", "Closeout needs your help."],
@@ -191,14 +189,14 @@ test("a Closeout re-check shows as a re-check, not as a review by the reviewer a
       now: NOW + 2_000,
     });
     setCurrentRun(db, item.id, recheck.id);
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},
     });
-    const parsed = parseStatusSnapshot(await response?.json());
+    const parsed = parseIssueListResponse(await response?.json());
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    const session = parsed.snapshot.runs.find((run) => run.itemId === "ENG-8")!;
+    const session = parsed.response.runs.find((run) => run.itemId === "ENG-8")!;
     const texts = session.activity.map((line) => line.text);
     expect(texts).toContain("Closeout re-check started.");
     expect(texts.some((text) => text.startsWith("Review started"))).toBe(false);
