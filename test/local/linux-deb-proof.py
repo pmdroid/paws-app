@@ -1,4 +1,3 @@
-import grp
 import hashlib
 import importlib.util
 import json
@@ -130,30 +129,20 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
         assert json.loads(services.read_text()) == []
         services.write_text(json.dumps(active))
         observations.append({"name": "reinstall starts an enabled runner that was stopped and leaves a disabled stopped runner alone", "passed": True})
-        engine = source.start_docker_engine(source.add_docker_group())
+        original_groups = source.add_docker_group()
         try:
-            install(second)
-            assert source.docker_group_members() == []
-            assert "components" not in source.runner_work_reaches_docker()
-            observations.append({"name": "package configuration without a Docker choice leaves the runner out of the docker group", "passed": True})
-            worker.write_text("paws-agent@01K00000000000000000000000.service")
-            run(["/usr/bin/dpkg", "--force-depends", "--install", str(second)], False, {"PAWS_RUNNER_DOCKER_ACCESS": "grant"})
-            assert source.docker_group_members() == [] and set(json.loads(services.read_text())) == set(active)
-            worker.unlink()
-            observations.append({"name": "active execution refuses package configuration before Docker membership changes", "passed": True})
             configured = json.loads(run(["/usr/bin/python3", "-I", "-B", "/usr/lib/paws-runner-package/deb-control.py", "configure"], env={"PAWS_RUNNER_DOCKER_ACCESS": "grant"}).strip().splitlines()[-1])
-            assert configured["docker"]["status"] == "granted" and configured["docker"]["runnerService"] == "started", configured["docker"]
+            assert configured["docker"]["status"] == "absent" and configured["docker"]["dockerGroup"]["status"] == "group-kept", configured["docker"]
             assert source.docker_group_members() == ["paws-runner"] and set(json.loads(services.read_text())) == set(active)
-            work = source.runner_work_reaches_docker()
-            assert work.get("components") == ["Engine"] and grp.getgrnam("docker").gr_gid in work["groups"], work
-            observations.append({"name": "opt-in configuration adds paws-runner to docker before the runner starts, and new runner work queries the daemon", "passed": True})
-            run(["/usr/bin/dpkg", "--force-depends", "--install", str(second)], env={"PAWS_RUNNER_DOCKER_ACCESS": "grant"})
+            assert not source.installer.DOCKER_UNIT.exists()
+            observations.append({"name": "package configuration without Docker Engine sets up no daemon and leaves a docker group membership Paws did not add", "passed": True})
+            source.installer.write_atomic(source.installer.DOCKER_GROUP_GRANT, json.dumps({"added": True}).encode(), 0o600)
             install(second)
-            assert source.docker_group_members() == ["paws-runner"] and set(json.loads(services.read_text())) == set(active)
-            observations.append({"name": "reinstalling with and without the choice keeps the approved membership", "passed": True})
+            assert source.docker_group_members() == [] and not source.installer.DOCKER_GROUP_GRANT.exists()
+            assert set(json.loads(services.read_text())) == set(active)
+            observations.append({"name": "an upgrade removes the docker group membership Paws recorded adding", "passed": True})
         finally:
-            source.stop_docker_engine(engine)
-            source.installer.DOCKER_SOCKET.unlink(missing_ok=True)
+            pathlib.Path("/etc/group").write_text(original_groups)
         install(first, False)
         assert pathlib.Path("/opt/paws-runner/current").resolve().name == "0.1.2"
         assert set(json.loads(services.read_text())) == set(active)

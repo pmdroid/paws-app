@@ -108,6 +108,7 @@ const observation = await run(
         ? [
             [join(repository, "deploy/linux/deb-package.py"), "/proof/deb-package.py"],
             [join(repository, "deploy/linux/deb-control.py"), "/proof/deb-control.py"],
+            [join(repository, "deploy/linux/dockerd-rootless.sh"), "/proof/dockerd-rootless.sh"],
           ]
         : []),
     ].flatMap(([src, dst]) => ["--mount", `type=bind,src=${src},dst=${dst},readonly`]),

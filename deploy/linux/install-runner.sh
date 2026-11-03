@@ -181,17 +181,19 @@ if [ "$checksum_line" != "$expected" ]; then
 fi
 sha256sum --strict --check "${name}.sha256" || die "Checksum verification failed for ${name}"
 
-# Docker access for runner work. The package never prompts; this script asks only on a terminal,
-# and only when a local Docker Engine socket exists and paws-runner is not already in its group.
-docker_socket=/var/run/docker.sock
-if [ -z "$docker_access" ] && [ -S "$docker_socket" ] && [ ! -L "$docker_socket" ] \
-  && ! { id -nG paws-runner 2>/dev/null | tr ' ' '\n' | grep -qx docker; } \
+# Docker access for agent jobs: a rootless Docker daemon that runs as paws-runner. The package never
+# prompts; this script asks only on a terminal, when Docker Engine is installed and the daemon isn't set up.
+docker_engine=""
+if command -v dockerd >/dev/null 2>&1; then
+  docker_engine=1
+fi
+if [ -z "$docker_access" ] && [ -n "$docker_engine" ] && [ ! -e /etc/systemd/system/paws-docker.service ] \
   && ( : < /dev/tty ) 2>/dev/null; then
   printf '%s\n' \
-    "Docker Engine is installed on this host. Runner work needs the docker group to use it." \
-    "Members of the docker group control the Docker daemon, which runs as root: every agent and" \
-    "check this runner executes could then act as root on this host." > /dev/tty
-  printf '%s' "Add the paws-runner service account to the docker group? [y/N] " > /dev/tty
+    "Docker Engine is installed on this host. Agent jobs can get rootless Docker: a separate Docker" \
+    "daemon that runs as the paws-runner account, not as root, without the docker group. It needs" \
+    "the rootlesskit, uidmap and slirp4netns packages, which this installer adds." > /dev/tty
+  printf '%s' "Set up rootless Docker for agent jobs? [y/N] " > /dev/tty
   answer=""
   read -r answer < /dev/tty || answer=""
   case $answer in
@@ -208,5 +210,9 @@ fi
 printf '%s\n' "Installing paws-runner ${version} (${arch})"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
+# Package configuration can't install these itself: dpkg holds the lock while it runs.
+if [ "$docker_access" = grant ] && [ -n "$docker_engine" ]; then
+  apt-get install -y rootlesskit uidmap slirp4netns
+fi
 apt-get install -y "${workdir}/${name}"
 printf '%s\n' "Installed paws-runner ${version}"

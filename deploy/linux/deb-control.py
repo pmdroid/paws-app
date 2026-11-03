@@ -3,7 +3,6 @@ import importlib.util
 import json
 import pathlib
 import subprocess
-import sys
 import tempfile
 from types import SimpleNamespace
 
@@ -63,13 +62,9 @@ def configure():
         agents = installer.prepare_agents(artifact)
         installed = installer.install(manifest, artifact, fingerprint, reinstall=True)
         installed["agents"] = installer.finish_agents(agents)
-        # Before the runner starts again, so the daemon and every worker it launches get the new groups.
+        # Before the runner starts again, so it comes back without a docker group membership Paws removed.
         installed["docker"] = installer.configure_docker_access(docker)
-    started = restore()
-    if installed["docker"]["changed"]:
-        installed["docker"]["runnerService"] = "started" if "paws-runner.service" in started else "stopped"
-        if "paws-runner.service" not in started:
-            print("Docker access: paws-runner.service is not running; it gets the docker group when it starts.", file=sys.stderr)
+    restore()
     # Agent versions sent from the Runners page install through this path unit (install.py agent-requests).
     installer.release.command(["/usr/bin/systemctl", "enable", "--now", "--", "paws-runner-agents.path"])
     print(json.dumps(installed))
@@ -88,7 +83,6 @@ def restore():
     if start:
         installer.release.command(["/usr/bin/systemctl", "start", "--", *start])
     RESTART.unlink(missing_ok=True)
-    return start
 
 
 def main():

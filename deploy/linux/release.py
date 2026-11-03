@@ -19,6 +19,9 @@ MISE_SHA256 = {
     "linux-arm64": "3a3c72376687ba21a588d0f5a2c88c76f483fb6cdece7b0fc43d5e3132b08a52",
 }
 MISE_LIMIT = 268_435_456
+# contrib/dockerd-rootless.sh from moby tag docker-v29.1.3 (git blob a5d13d02e3686c07e4dff208d44dacaf45d35c7d),
+# vendored as deploy/linux/dockerd-rootless.sh. The package ships it; nothing fetches it at install time.
+DOCKERD_ROOTLESS_SHA256 = "8eb00d61b5e78ffc0dcd628f056389b5859cc61d6fe3ce17b4a3a4b08143c8a5"
 ARCHITECTURE = {"x86_64": ("x64", "x86_64"), "aarch64": ("arm64", "aarch64")}.get(platform.machine(), ("unsupported", "unsupported"))
 # The coding agents are not in the release. The installer installs each one from npm into
 # /opt/paws-runner/agents/<agent>/<version> from the pinned lockfile in agents.json.
@@ -115,6 +118,12 @@ def verify_mise(content, platform_name):
         raise ValueError("Unsupported mise platform")
     if hashlib.sha256(content).hexdigest() != MISE_SHA256[platform_name]:
         raise ValueError(f"mise {MISE_VERSION} {platform_name} checksum mismatch")
+    return content
+
+
+def verify_dockerd_rootless(content):
+    if hashlib.sha256(content).hexdigest() != DOCKERD_ROOTLESS_SHA256:
+        raise ValueError("dockerd-rootless.sh checksum mismatch")
     return content
 
 

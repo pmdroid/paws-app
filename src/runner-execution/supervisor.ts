@@ -6,6 +6,7 @@ import {
   fchmodSync,
   fchownSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -101,6 +102,21 @@ function killRecorded(pid: number): void {
   }
 }
 
+/** The rootless Docker daemon's socket that `paws-docker.service` (deploy/linux/install.py) runs for runner work as paws-runner. */
+export const RUNNER_DOCKER_SOCKET = "/run/paws-docker/docker.sock";
+
+/** `DOCKER_HOST` for runner work when the rootless Docker daemon's socket exists. */
+export function runnerDockerEnv(socket = RUNNER_DOCKER_SOCKET): Record<string, string> {
+  try {
+    return lstatSync(socket, { throwIfNoEntry: false })?.isSocket()
+      ? { DOCKER_HOST: `unix://${socket}` }
+      : {};
+  } catch (caught) {
+    journalCaught(caught, "supervisor.runnerDockerEnv.lstatSync", null, "socket not reachable");
+    return {};
+  }
+}
+
 function workerLaunch(
   executionId: string,
   home: string,
@@ -124,6 +140,7 @@ function workerLaunch(
     HOME: home,
     PATH: "/opt/paws-runner/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     LANG: "C.UTF-8",
+    ...runnerDockerEnv(),
     ...tag,
     ...(skills ? { [RUNNER_SKILLS_ENV]: skills } : {}),
   };

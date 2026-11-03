@@ -11,7 +11,12 @@ export {
   type RunnerSpool,
 } from "./spool";
 export type { RunnerBrokerClient } from "./broker";
-export { createDirectWorkerSupervisor, RUNNER_SKILLS_ENV } from "./supervisor";
+export {
+  createDirectWorkerSupervisor,
+  RUNNER_DOCKER_SOCKET,
+  RUNNER_SKILLS_ENV,
+  runnerDockerEnv,
+} from "./supervisor";
 export {
   runnerResultDirectory,
   readRunnerResultFile,
