@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -21,7 +22,7 @@ import {
   runnerAccountBindings,
   runnerAccountHome,
 } from "./accounts";
-import { startTime } from "./processes";
+import { executionScope, executionTag, startTime } from "./processes";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -42,7 +43,7 @@ const other = "01J00000000000000000000002";
 function liveReceipt(root: string) {
   const path = join(root, `${execution}.pid`);
   writeFileSync(path, `${process.pid} ${startTime(process.pid)}\n`);
-  return path;
+  return { receipt: path, scope: executionScope(root) };
 }
 
 test("a command without an account keeps the default home", () => {
@@ -157,11 +158,43 @@ test("holds and publish locks left by a crashed process are stale", () => {
   const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
   const dead = join(root, "dead.pid");
   writeFileSync(dead, "2147483646 1\n");
-  holdRunnerAccountHome(home, other, dead);
+  holdRunnerAccountHome(home, other, { receipt: dead, scope: executionScope(root) });
   writeFileSync(join(home, ".paws-publishing"), JSON.stringify({ pid: 2147483646, born: "1" }));
   expect(activeExecutions(home)).toEqual([]);
   let published = 0;
   publishRunnerAccountHome(home, execution, () => published++);
   expect(published).toBe(1);
   expect(readdirSync(join(home, ".paws-active"))).toEqual([]);
+});
+
+test("an admission whose worker receipt is still empty keeps its hold", () => {
+  const root = agentHome();
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  const receipt = join(root, "admitting.pid");
+  writeFileSync(receipt, "");
+  holdRunnerAccountHome(home, other, { receipt, scope: executionScope(root) });
+  expect(activeExecutions(home)).toEqual([other]);
+  expect(() => publishRunnerAccountHome(home, execution, () => {})).toThrow(/still running/);
+});
+
+test("a hold stays while the execution's processes outlive its worker", async () => {
+  const root = agentHome();
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  const scope = executionScope(root);
+  const dead = join(root, "dead.pid");
+  writeFileSync(dead, "2147483646 1\n");
+  const survivor = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+    env: { ...process.env, ...executionTag(scope, other) },
+    stdio: "ignore",
+  });
+  try {
+    while (startTime(survivor.pid!) === undefined) await Bun.sleep(10);
+    holdRunnerAccountHome(home, other, { receipt: dead, scope });
+    expect(activeExecutions(home)).toEqual([other]);
+    expect(() => publishRunnerAccountHome(home, execution, () => {})).toThrow(/still running/);
+  } finally {
+    survivor.kill("SIGKILL");
+    await new Promise((resolve) => survivor.once("exit", resolve));
+  }
+  expect(activeExecutions(home)).toEqual([]);
 });

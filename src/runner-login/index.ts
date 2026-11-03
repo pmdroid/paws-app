@@ -169,7 +169,7 @@ export function createRunnerLogin(options: {
             .get(runnerId, agent);
           const session = db
             .query<{ id: string }, [string, string, string]>(
-              "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? ORDER BY rowid DESC LIMIT 1",
+              "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? AND binding_id IS NULL ORDER BY rowid DESC LIMIT 1",
             )
             .get(runnerId, principal.userId, agent);
           // Sign-in replaces the credentials these tasks read from their next request on.

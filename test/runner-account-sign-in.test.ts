@@ -191,6 +191,11 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
   expect(policy(db, runnerId)?.ready).toBe(1);
   expect(signedIn).toEqual(["codex"]);
 
+  const again = login.start(principal, runnerId, "codex", binding.id);
+  expect(again.id).not.toBe(named.id);
+  expect(
+    login.list(principal, runnerId).accounts.find((entry) => entry.agent === "codex")?.session?.id,
+  ).toBe(legacy.id);
   expect(login.list(principal, runnerId).bindings).toEqual([
     {
       accountId: account.id,
@@ -199,7 +204,7 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
       label: "Second",
       enabled: true,
       running: 0,
-      session: expect.objectContaining({ id: named.id, bindingId: binding.id, state: "connected" }),
+      session: expect.objectContaining({ id: again.id, bindingId: binding.id, state: "starting" }),
     },
   ]);
   db.close();

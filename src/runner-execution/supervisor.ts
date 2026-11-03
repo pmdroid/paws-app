@@ -291,7 +291,7 @@ export function createDirectWorkerSupervisor(options: {
     );
     try {
       if (home !== agentHome && options.spool && options.results) {
-        holdRunnerAccountHome(home, executionId, path);
+        holdRunnerAccountHome(home, executionId, { receipt: path, scope });
         held.set(executionId, home);
       }
       options.skills?.prepareHome(home);

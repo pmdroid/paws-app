@@ -26,7 +26,7 @@ import {
   type RunnerCodingAgent,
 } from "../runner-protocol";
 import { ExecutionIdSchema } from "./jobs";
-import { startTime } from "./processes";
+import { listExecutionProcesses, startTime } from "./processes";
 
 export const RUNNER_ACCOUNT_HOMES = ".paws-accounts";
 const MANIFEST = "account.json";
@@ -52,7 +52,10 @@ const ManifestSchema = z.strictObject({
   agent: z.enum(RUNNER_CODING_AGENTS),
 });
 const ReceiptSchema = z.union([
-  z.strictObject({ receipt: z.string().min(1).max(4096) }),
+  z.strictObject({
+    receipt: z.string().min(1).max(4096),
+    scope: z.string().regex(/^[a-f0-9]{16}$/),
+  }),
   z.strictObject({ pid: z.number().int().min(2), born: z.string().min(1).max(64) }),
 ]);
 
@@ -141,10 +144,17 @@ export function runnerAccountBindings(
   return held;
 }
 
-export function holdRunnerAccountHome(home: string, executionId: string, receipt: string): void {
+export function holdRunnerAccountHome(
+  home: string,
+  executionId: string,
+  holder: { receipt: string; scope: string },
+): void {
   const active = join(home, ACTIVE);
   privateDirectory(active, true);
-  writePrivateFile(join(active, ExecutionIdSchema.parse(executionId)), JSON.stringify({ receipt }));
+  writePrivateFile(
+    join(active, ExecutionIdSchema.parse(executionId)),
+    JSON.stringify(ReceiptSchema.parse({ receipt: holder.receipt, scope: holder.scope })),
+  );
   const publisher = readReceipt(join(home, PUBLISHING));
   if (publisher && publisher !== "stale") {
     releaseRunnerAccountHome(home, executionId);
@@ -209,14 +219,14 @@ export function activeExecutions(home: string): string[] {
   const live: string[] = [];
   for (const name of names) {
     if (!ExecutionIdSchema.safeParse(name).success) continue;
-    const state = readReceipt(join(active, name));
+    const state = readReceipt(join(active, name), name);
     if (state === "stale") rmSync(join(active, name), { force: true });
     else if (state) live.push(name);
   }
   return live;
 }
 
-function readReceipt(path: string): "live" | "stale" | null {
+function readReceipt(path: string, executionId?: string): "live" | "stale" | null {
   let text: string;
   let modified: number;
   try {
@@ -243,17 +253,22 @@ function readReceipt(path: string): "live" | "stale" | null {
     return Date.now() - modified < ADMISSION_MS ? "live" : "stale";
   }
   if ("pid" in holder) return startTime(holder.pid) === holder.born ? "live" : "stale";
-  let worker: string;
+  if (
+    executionId &&
+    listExecutionProcesses(holder.scope).some((entry) => entry.executionId === executionId)
+  )
+    return "live";
+  let worker = "";
   try {
     worker = readFileSync(holder.receipt, "utf8").trim();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     journalCaught(error, "accounts.readReceipt.worker", null, "optional file may be absent");
-    return Date.now() - modified < ADMISSION_MS ? "live" : "stale";
   }
   const [pidText, born] = worker.split(" ");
   const pid = Number(pidText);
-  if (!born || !Number.isSafeInteger(pid) || pid <= 1) return "stale";
+  if (!born || !Number.isSafeInteger(pid) || pid <= 1)
+    return Date.now() - modified < ADMISSION_MS ? "live" : "stale";
   return startTime(pid) === born ? "live" : "stale";
 }
 
