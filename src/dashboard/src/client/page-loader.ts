@@ -5,9 +5,15 @@ import {
   parseIssueDetailResponse,
   parseIssueListResponse,
   parseOverviewResponse,
+  parseQuestionDetailResponse,
+  parseQuestionListResponse,
+  questionPath,
+  QUESTIONS_API_PATH,
   type IssueDetailResponse,
   type IssueListResponse,
   type OverviewResponse,
+  type QuestionDetailResponse,
+  type QuestionListResponse,
   type StatusSnapshot,
 } from "../contract";
 import { journalCaught } from "../journal";
@@ -20,6 +26,9 @@ export interface PageResources {
   issues: IssueListResponse | null;
   issue: IssueDetailResponse | null;
   overview: OverviewResponse | null;
+  questions: QuestionListResponse | null;
+  question: QuestionDetailResponse | null;
+  missingQuestion: string | null;
 }
 
 export type PageLoad = "applied" | "stale" | "signed-out" | { error: string };
@@ -40,6 +49,16 @@ function parseOverview(input: unknown) {
   return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
 }
 
+function parseQuestions(input: unknown) {
+  const parsed = parseQuestionListResponse(input);
+  return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
+}
+
+function parseQuestion(input: unknown) {
+  const parsed = parseQuestionDetailResponse(input);
+  return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
+}
+
 function parseDetail(input: unknown) {
   const parsed = parseIssueDetailResponse(input);
   return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
@@ -48,7 +67,15 @@ function parseDetail(input: unknown) {
 export function createPageLoader(options: PageLoaderOptions) {
   const resources = options.resources ?? createResourceReader();
   const readStatus = createStatusReader(resources);
-  const data: PageResources = { snapshot: null, issues: null, issue: null, overview: null };
+  const data: PageResources = {
+    snapshot: null,
+    issues: null,
+    issue: null,
+    overview: null,
+    questions: null,
+    question: null,
+    missingQuestion: null,
+  };
   let generation = 0;
   let started = 0;
   let applied = 0;
@@ -94,6 +121,26 @@ export function createPageLoader(options: PageLoaderOptions) {
         if (list.kind === "response") return await refused(list.response);
         return apply(() => (data.issues = list.body));
       }
+      if (resource === "questions") {
+        const read = await resources.read(QUESTIONS_API_PATH, reader, parseQuestions);
+        if (read.kind === "response") return await refused(read.response);
+        return apply(() => (data.questions = read.body));
+      }
+      if (resource === "question" && route.view === "questions" && route.id !== null) {
+        const id = route.id;
+        const read = await resources.read(questionPath(id), reader, parseQuestion);
+        if (read.kind === "response" && read.response.status === 404)
+          return apply(() => {
+            data.question = null;
+            data.missingQuestion = id;
+          });
+        if (read.kind === "response") return await refused(read.response);
+        if (read.body.question.id !== id) throw new Error("The engine returned another question");
+        return apply(() => {
+          data.question = read.body;
+          data.missingQuestion = null;
+        });
+      }
       if (resource === "status") {
         const read = await readStatus(routeSlices(route), reader);
         if (read.kind === "response") return await refused(read.response);
@@ -121,6 +168,9 @@ export function createPageLoader(options: PageLoaderOptions) {
       data.issues = null;
       data.issue = null;
       data.overview = null;
+      data.questions = null;
+      data.question = null;
+      data.missingQuestion = null;
     },
   };
 }

@@ -7,7 +7,8 @@ import type {
   StatusItem,
   StatusItemEvent,
   StatusLink,
-  StatusQuestion,
+  QuestionDetailResponse,
+  QuestionListResponse,
   StatusRun,
   StatusRunSetup,
   StatusSnapshot,
@@ -15,9 +16,7 @@ import type {
   StatusVerdict,
 } from "../contract";
 import {
-  agentChip,
   ago,
-  avatar,
   clock,
   clock24,
   esc,
@@ -57,6 +56,7 @@ import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection } from "./visual-review";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS, linkAskCard, riskCarryOverCard } from "./link-ask";
 import { riskCard } from "./risk";
+import { renderQuestions } from "./questions";
 import { dashboardPath } from "../../../dashboard-links";
 
 export interface RenderModel {
@@ -66,6 +66,9 @@ export interface RenderModel {
   overview?: OverviewResponse | null;
   issues?: IssueListResponse | null;
   issue?: IssueDetailResponse | null;
+  questions?: QuestionListResponse | null;
+  question?: QuestionDetailResponse | null;
+  missingQuestion?: string | null;
   error: string | null;
   engineUrl: string | null;
   closeout?: CloseoutView;
@@ -102,19 +105,27 @@ export function render(model: RenderModel): Rendered {
           ? FINDINGS_ROOT
           : model.route.view === "settings"
             ? renderSettingsPage(model.route.page)
-            : model.route.view === "overview"
-              ? model.overview
-                ? viewOverview(model.overview)
-                : renderPending(model)
-              : model.phase !== "loading" && openDetail(model)
-                ? issuePage(model.issue!, model.closeout ?? emptyCloseoutView(), model.engineUrl)
-                : model.phase !== "loading" && model.issues && route.view === "issues"
-                  ? viewIssues(model.issues, route.id)
-                  : model.phase !== "loading" && model.issues && route.view === "runs"
-                    ? viewRuns(model.issues, route.id)
-                    : snapshot && model.phase !== "loading" && routeResource(route) === "status"
-                      ? renderView(snapshot, model)
-                      : renderPending(model),
+            : model.route.view === "questions"
+              ? renderQuestions({
+                  selected: model.route.id,
+                  list: model.questions ?? null,
+                  detail: model.question?.question.id === model.route.id ? model.question : null,
+                  missing: model.route.id !== null && model.missingQuestion === model.route.id,
+                  error: model.phase === "error" ? model.error : null,
+                })
+              : model.route.view === "overview"
+                ? model.overview
+                  ? viewOverview(model.overview)
+                  : renderPending(model)
+                : model.phase !== "loading" && openDetail(model)
+                  ? issuePage(model.issue!, model.closeout ?? emptyCloseoutView(), model.engineUrl)
+                  : model.phase !== "loading" && model.issues && route.view === "issues"
+                    ? viewIssues(model.issues, route.id)
+                    : model.phase !== "loading" && model.issues && route.view === "runs"
+                      ? viewRuns(model.issues, route.id)
+                      : snapshot && model.phase !== "loading" && routeResource(route) === "status"
+                        ? renderView(snapshot, model)
+                        : renderPending(model),
     title,
   };
 }
@@ -138,9 +149,13 @@ function renderBanner(model: RenderModel): string {
     const kept =
       resource === "overview"
         ? model.overview
-        : resource === "status"
-          ? model.snapshot
-          : openDetail(model) || model.issues;
+        : resource === "questions"
+          ? model.questions
+          : resource === "question"
+            ? model.question
+            : resource === "status"
+              ? model.snapshot
+              : openDetail(model) || model.issues;
     return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${kept ? " Showing the last snapshot." : ""}</span></div>`;
   }
   return "";
@@ -163,7 +178,7 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "mergeQueue":
       return `${pageHeading("mergeQueue")}${renderPushOutages(snapshot)}${renderPolicyRunnerWarnings(snapshot)}${renderMergeQueue(snapshot)}`;
     case "questions":
-      return viewQuestions(snapshot, model.route.id);
+      return renderPending(model);
     case "evidence":
       return renderEvidencePage(
         snapshot,
@@ -910,55 +925,6 @@ function activityActions(transcriptHref: string | null, links: StatusLink[]): st
       : `<a class="btn" href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>`;
   const buttons = transcript + linkButtons(links);
   return buttons ? `<div class="row wrap">${buttons}</div>` : "";
-}
-
-function viewQuestions(snapshot: StatusSnapshot, id: string | null): string {
-  const cards = snapshot.questions
-    .map((question) => questionCard(snapshot, question, question.id === id))
-    .join("");
-  return `${pageHeading("questions")}
-    ${cards || '<div class="empty">No open questions.</div>'}`;
-}
-
-function questionCard(
-  snapshot: StatusSnapshot,
-  question: StatusQuestion,
-  highlight: boolean,
-): string {
-  const item = findItem(snapshot, question.itemId);
-  const options = question.options
-    .map((option, index) => {
-      const selected = index === question.recommendedOption ? " sel" : "";
-      const rec =
-        index === question.recommendedOption
-          ? '<span class="rec tag lin">agent recommends</span>'
-          : "";
-      return `<div class="opt static${selected}"><span class="mono dim">${index + 1}</span>${esc(option)}${rec}</div>`;
-    })
-    .join("");
-  const claimed = question.claimedBy
-    ? `${avatar(question.claimedBy, true)}<span>${esc(question.claimedBy)} claimed</span>`
-    : "<span>unclaimed</span>";
-  return `<article class="q${highlight ? " hl" : ""}" id="q-${esc(question.id)}">
-    <div class="qh">
-      <div class="row wrap min-w-0"><span class="lin-id">${esc(question.id)}</span><span class="tag${question.kind === "exhausted" ? " bad" : ""}">${esc(question.kind)}</span><span class="tag">${esc(question.urgency)}</span>${itemLink(item)}${item ? agentChip(item.agent) : ""}</div>
-      <div class="claim">${claimed}<span class="dim">${esc(ago(question.askedAt, snapshot.generatedAt))}</span></div>
-      <div class="title min-w-0">${esc(question.title)}</div>
-    </div>
-    <div class="qb"><div class="muted">${esc(question.body)}</div>
-      ${question.context ? `<div class="ctx">${esc(question.context)}</div>` : ""}
-      ${options ? `<div class="opts">${options}</div>` : ""}
-      <div class="row">${question.links.length ? linkList(question.links) : '<span class="dim">Answer in the source conversation to continue.</span>'}</div>
-    </div></article>`;
-}
-
-function itemLink(item: StatusItem | undefined): string {
-  if (!item) return "";
-  return `<a class="lin-id" href="${routeHref({ view: "issues", id: item.id })}">${esc(item.id)}</a>`;
-}
-
-function findItem(snapshot: StatusSnapshot, id: string): StatusItem | undefined {
-  return snapshot.items.find((item) => item.id === id);
 }
 
 function pageHeading(view: Route["view"]): string {
