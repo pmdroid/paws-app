@@ -88,7 +88,8 @@ import {
   PolicyFetchError,
   reviewRequirements,
   trustedPolicyFiles,
-  trustedRootFiles,
+  trustedOriginMain,
+  trustedRootFilesAt,
   visualReviewRequirements,
   bypassable,
   readReviewRounds,
@@ -531,7 +532,8 @@ import {
   pawsIssueUrl,
   type OpenItems,
 } from "./open-findings";
-import { RUNTIME_FILES, runtimeList, type RuntimeList } from "../runtimes";
+import type { RuntimeList } from "../runtimes";
+import { createRuntimeLists } from "./runtime-lists";
 import { questionEffects } from "./question-effects";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
 import {
@@ -721,7 +723,10 @@ export class Orchestrator {
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
   private readonly reviewerFaults = new Map<string, string>();
-  private readonly runtimeLists = new Map<string, { runId: string; list: RuntimeList }>();
+  private readonly runtimeLists = createRuntimeLists({
+    originMain: trustedOriginMain,
+    rootFilesAt: trustedRootFilesAt,
+  });
   private shuttingDown = false;
   private readonly activitySeqs = new Map<string, number>();
   private waitFaces = new Map<string, string>();
@@ -8251,17 +8256,9 @@ export class Orchestrator {
     };
   }
 
-  /**
-   * The repository's runtime list from mise config on origin/main, read once per run. Its
-   * notices are returned with the first read only, so the task gets each line once.
-   */
   private async runtimeList(item: WorkItemRecord, repo: string): Promise<RuntimeList> {
     const runId = getWorkItem(this.db, item.id)?.currentRunId ?? item.id;
-    const cached = this.runtimeLists.get(item.id);
-    if (cached?.runId === runId) return { runtimes: cached.list.runtimes, notices: [] };
-    const list = runtimeList(trustedRootFiles(repo, RUNTIME_FILES));
-    this.runtimeLists.set(item.id, { runId, list });
-    return list;
+    return this.runtimeLists.read(item.id, runId, repo);
   }
 
   /**
