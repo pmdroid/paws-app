@@ -72,7 +72,7 @@ export async function openRunnerCoordinator(options: {
   transcripts?: { objects: RunnerTranscriptObjects; key: Buffer };
   /** Encrypted agent session snapshot storage and its key from `~/.paws/secrets`. */
   agentSessions?: { objects: AgentSessionObjects; key: Buffer };
-  eventKey?: Buffer;
+  eventKey: Buffer;
   discoverModels?: boolean;
   /** Queue login_check commands in the background so agent sign-in status stays current. */
   checkSignIn?: boolean;

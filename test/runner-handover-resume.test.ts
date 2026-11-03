@@ -89,6 +89,7 @@ async function setup() {
     db,
     keyId: "fixture",
     privateKey: signing.privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
   const results = createRunnerResults({ db, work, now: () => now });

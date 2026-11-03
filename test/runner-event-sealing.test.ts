@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { migrate, openDatabase } from "../src/db";
 import {
   createRunnerWork,
@@ -9,8 +12,8 @@ import {
   type StoredRunnerEvent,
 } from "../src/runner-work";
 
-function setup() {
-  const db = openDatabase(":memory:");
+function setup(path = ":memory:") {
+  const db = openDatabase(path);
   migrate(db);
   db.run("PRAGMA foreign_keys=OFF");
   const key = randomBytes(32);
@@ -104,4 +107,24 @@ test("a sealed payload moved to another sequence fails to open", async () => {
     eventKey: randomBytes(32),
   });
   expect(() => other.openEvent(row(1))).toThrow(/another key/);
+});
+
+test("sealing leaves no plaintext in the database file or its WAL", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-runner-event-"));
+  try {
+    const path = join(root, "paws.sqlite");
+    const { db, key, insert, enqueue } = setup(path);
+    enqueue();
+    const marker = "plaintext-marker-6f1c";
+    insert(1, { type: "progress", text: `${marker} `.repeat(4000) });
+    for (let sequence = 2; sequence <= 40; sequence++)
+      insert(sequence, { type: "progress", text: `${marker} ${sequence}` });
+    await encryptRunnerEvents({ db, key });
+    expect(Buffer.from(db.serialize()).includes(marker)).toBe(false);
+    db.close();
+    for (const file of [path, `${path}-wal`])
+      if (existsSync(file)) expect(readFileSync(file).includes(marker)).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

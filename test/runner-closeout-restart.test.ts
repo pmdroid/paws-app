@@ -122,7 +122,12 @@ async function fixture() {
 
   const keys = generateKeyPairSync("ed25519");
   function open() {
-    const work = createRunnerWork({ db, keyId: "fixture", privateKey: keys.privateKey });
+    const work = createRunnerWork({
+      db,
+      keyId: "fixture",
+      privateKey: keys.privateKey,
+      eventKey: Buffer.alloc(32, 7),
+    });
     const results = createRunnerResults({ db, work });
     const backend = createRemoteAgentRunner({
       db,

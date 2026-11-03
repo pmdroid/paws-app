@@ -102,6 +102,7 @@ async function fixture(root: string) {
     db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
   });
   function startRun(name: string) {
     const item = insertQueuedItem(db, { id: `${name}-item`, now, sessionKey: `${name}-session` });

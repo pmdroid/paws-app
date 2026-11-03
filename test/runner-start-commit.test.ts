@@ -399,7 +399,12 @@ async function startScenario(input: {
   mkdirSync(join(root, "runs"), { recursive: true });
 
   const keys = generateKeyPairSync("ed25519");
-  const work = createRunnerWork({ db, keyId: "fixture", privateKey: keys.privateKey });
+  const work = createRunnerWork({
+    db,
+    keyId: "fixture",
+    privateKey: keys.privateKey,
+    eventKey: Buffer.alloc(32, 7),
+  });
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
   const backend = createRemoteAgentRunner({

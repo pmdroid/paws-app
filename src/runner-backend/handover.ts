@@ -6,9 +6,10 @@ import {
   HANDOVER_RUNNER_VERSION,
   RUNNER_HANDOVER_LIMIT_MS,
   RunnerResultSchema,
+  type RunnerEvent,
   type RunnerHandoverFailure,
 } from "../runner-protocol";
-import type { RunnerWork } from "../runner-work";
+import { RUNNER_EVENT_COLUMNS, type RunnerWork, type StoredRunnerEvent } from "../runner-work";
 import { versionAtLeast } from "./session-restore";
 
 /** Past the runner's deadline: polling and delivery of its decision. */
@@ -123,16 +124,19 @@ export function createRemoteHandover(options: {
       const events = result
         ? []
         : db
-            .query<
-              { type: string; handedOver: number | null; reason: string | null },
-              [string, number, number]
-            >(
-              `SELECT type,handed_over AS handedOver,reason FROM runner_event
+            .query<StoredRunnerEvent, [string, number, number]>(
+              `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
                WHERE run_id=? AND generation=? AND sequence>?
-               AND type IN ('handover','handover_interrupted') ORDER BY sequence`,
+               AND (type IN ('handover','handover_interrupted') OR (type IS NULL AND key_id IS NULL))
+               ORDER BY sequence`,
             )
-            .all(request.runId, request.generation, request.after);
-      const failure = events.find((event) => event.type === "handover" && !event.handedOver);
+            .all(request.runId, request.generation, request.after)
+            .map((row) => work.openEvent(row))
+            .filter((event) => event.type === "handover" || event.type === "handover_interrupted");
+      const failure = events.find(
+        (event): event is Extract<RunnerEvent, { type: "handover" }> =>
+          event.type === "handover" && !event.handedOver,
+      );
       if (failure?.reason === "timeout") return { status: "timed_out" };
       if (failure) return { status: "failed", reason: failure.reason as RunnerHandoverFailure };
       // The agent stopped: only the commit, the snapshot and their publication are left.

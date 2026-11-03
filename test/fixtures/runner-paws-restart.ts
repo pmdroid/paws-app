@@ -128,7 +128,12 @@ let orchestrator!: ReturnType<typeof loop.attachOrchestrator>;
 const attach = loop.attachOrchestrator;
 spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
   const { db, jobs, outbox } = options;
-  const work = createRunnerWork({ db, keyId: "fixture", privateKey: signing.privateKey });
+  const work = createRunnerWork({
+    db,
+    keyId: "fixture",
+    privateKey: signing.privateKey,
+    eventKey: Buffer.alloc(32, 7),
+  });
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
   services = { work, results, health };

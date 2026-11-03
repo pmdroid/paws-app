@@ -101,6 +101,7 @@ export async function probeRunnerTaskAuthority(
   const mints: string[] = [];
   let onMint: (() => void) | undefined;
   const coordinator = await openRunnerCoordinator({
+    eventKey: Buffer.alloc(32, 7),
     root: identity,
     db,
     tls,

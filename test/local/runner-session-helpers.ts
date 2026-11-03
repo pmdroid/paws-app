@@ -91,7 +91,12 @@ export async function probeRunnerSessionHelpers(
     onError: (error: unknown) => errors.push(error),
     now: () => now,
   };
-  let coordinator = await openRunnerCoordinator({ ...options, db, port: 0 });
+  let coordinator = await openRunnerCoordinator({
+    eventKey: Buffer.alloc(32, 7),
+    ...options,
+    db,
+    port: 0,
+  });
   const runnerPort = coordinator.port;
   const browser = Bun.serve({
     hostname: "127.0.0.1",
@@ -243,7 +248,12 @@ export async function probeRunnerSessionHelpers(
     db.close();
     db = openDatabase(dbPath);
     migrate(db);
-    coordinator = await openRunnerCoordinator({ ...options, db, port: runnerPort });
+    coordinator = await openRunnerCoordinator({
+      eventKey: Buffer.alloc(32, 7),
+      ...options,
+      db,
+      port: runnerPort,
+    });
     assert.deepEqual(coordinator.helpers.result(first.command.id), result);
     assert.deepEqual((await call("/v1/helper-commands")).body.commands, []);
     observe("helper acknowledgments and immutable results survive coordinator reopen", true, {

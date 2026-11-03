@@ -212,6 +212,7 @@ async function runRecovering(input: {
     db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
   });
   work.heartbeat(runnerId, input.capacity);
   const results = createRunnerResults({ db, work });

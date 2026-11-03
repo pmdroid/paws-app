@@ -113,6 +113,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
       db,
       keyId: "fixture",
       privateKey: keys.privateKey,
+      eventKey: Buffer.alloc(32, 7),
       now: pawsNow,
     });
     return { work, results: createRunnerResults({ db, work, now: pawsNow }) };

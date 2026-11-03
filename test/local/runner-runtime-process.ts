@@ -146,6 +146,7 @@ if (mode === "prepare") {
     teamIds: [],
   };
   const coordinator = await openRunnerCoordinator({
+    eventKey: Buffer.alloc(32, 7),
     db,
     root: join(server, "identity"),
     tls: tls(),
@@ -236,6 +237,7 @@ if (mode === "prepare") {
   const config = configuration();
   const db = openDatabase(dbPath);
   const coordinator = await openRunnerCoordinator({
+    eventKey: Buffer.alloc(32, 7),
     db,
     root: join(server, "identity"),
     tls: tls(),

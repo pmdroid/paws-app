@@ -143,6 +143,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => workNow(),
   });
   workNow = () => now - 120_000;

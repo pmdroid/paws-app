@@ -34,6 +34,8 @@ function followUpsSupported(version: string | null): boolean {
   return major > 0 || minor > 1 || (minor === 1 && patch >= 12);
 }
 
+const QUESTION_TYPES: readonly string[] = ["question", "artifact", "closeout_policy"];
+
 export function createRunnerResults(options: {
   db: Database;
   work: RunnerWork;
@@ -148,10 +150,7 @@ export function createRunnerResults(options: {
              WHERE run_id=? AND generation=? AND sequence=?`,
           )
           .get(input.runId, input.generation, input.sequence);
-        if (
-          !question ||
-          !["question", "artifact", "closeout_policy"].includes(work.openEvent(question).type)
-        )
+        if (!question || !QUESTION_TYPES.includes(work.openEvent(question).type))
           throw new Error("Runner question is unavailable.");
         const existing = db
           .query<{ answer: string }, [string, number, number]>(
@@ -181,15 +180,16 @@ export function createRunnerResults(options: {
       work.authorize(input);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(input.after);
       const unanswered = db
-        .query<{ sequence: number }, [string, number]>(
-          `SELECT e.sequence FROM runner_event e
-           LEFT JOIN runner_question_answer a
-             ON a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence
-           WHERE e.run_id=? AND e.generation=? AND a.sequence IS NULL
-             AND e.type IN ('question','artifact','closeout_policy')
-           ORDER BY e.sequence LIMIT 1`,
+        .query<StoredRunnerEvent, [string, number]>(
+          `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event e
+           WHERE run_id=? AND generation=?
+             AND (type IN ('question','artifact','closeout_policy') OR (type IS NULL AND key_id IS NULL))
+             AND NOT EXISTS(SELECT 1 FROM runner_question_answer a
+               WHERE a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence)
+           ORDER BY sequence`,
         )
-        .get(input.runId, input.generation);
+        .all(input.runId, input.generation)
+        .find((row) => QUESTION_TYPES.includes(work.openEvent(row).type));
       return db
         .query<{ sequence: number; answer: string }, [string, number, number]>(
           "SELECT sequence,answer FROM runner_question_answer WHERE run_id=? AND generation=? AND sequence>? ORDER BY sequence LIMIT 64",

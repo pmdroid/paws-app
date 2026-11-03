@@ -82,6 +82,7 @@ if (process.argv[2] === "job") {
   const identity = join(root, "identity");
   await initializeRunnerCoordinator(identity);
   const coordinator = await openRunnerCoordinator({
+    eventKey: Buffer.alloc(32, 7),
     db,
     root: identity,
     tls,

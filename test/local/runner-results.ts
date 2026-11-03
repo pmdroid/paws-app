@@ -91,7 +91,12 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       "team",
     ]);
     const keys = generateKeyPairSync("ed25519");
-    const work = createRunnerWork({ db, keyId: "fixture", privateKey: keys.privateKey });
+    const work = createRunnerWork({
+      db,
+      keyId: "fixture",
+      privateKey: keys.privateKey,
+      eventKey: Buffer.alloc(32, 7),
+    });
     const results = createRunnerResults({ db, work });
     let generation = 0;
     function verify(envelope: unknown) {

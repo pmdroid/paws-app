@@ -14,7 +14,7 @@ import {
   pawsAliveAt,
   runnerLeaseCutoff,
 } from "../db";
-import { randomBytes, type KeyObject } from "node:crypto";
+import type { KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   getLinearSessionAccess,
@@ -103,11 +103,11 @@ export function createRunnerWork(options: {
   db: Database;
   keyId: string;
   privateKey: KeyObject;
-  eventKey?: Buffer;
+  eventKey: Buffer;
   now?: () => number;
 }) {
   const { db } = options;
-  const eventKey = options.eventKey ?? randomBytes(32);
+  const { eventKey } = options;
   const now = options.now ?? Date.now;
   function assignment(runId: string) {
     return db

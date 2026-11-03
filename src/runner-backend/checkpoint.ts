@@ -162,7 +162,7 @@ export function createRemoteCheckpoint(options: {
       const rows = db
         .query<StoredRunnerEvent, [string, number, number]>(
           `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
-           WHERE run_id=? AND generation=? AND sequence>? AND type='checkpoint' ORDER BY sequence`,
+           WHERE run_id=? AND generation=? AND sequence>? AND (type='checkpoint' OR (type IS NULL AND key_id IS NULL)) ORDER BY sequence`,
         )
         .all(runId, command.generation, cursor);
       for (const row of rows) {

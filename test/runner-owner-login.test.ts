@@ -78,6 +78,7 @@ function fixture() {
     db,
     keyId: "login",
     privateKey: signing.privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
   const login = createRunnerLogin({ db, work, now: () => at });

@@ -108,6 +108,7 @@ export async function probeRunnerRepositoryAccess(
     db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
   const github = createFakeGitHub();

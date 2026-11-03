@@ -96,19 +96,22 @@ export async function encryptRunnerEvents(options: {
   signal?: AbortSignal;
 }) {
   const { db, key, signal } = options;
-  const next = db.query<StoredRunnerEvent, []>(
-    `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event WHERE key_id IS NULL LIMIT ${BATCH}`,
+  const next = db.query<StoredRunnerEvent, [string, number, number]>(
+    `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
+     WHERE (run_id,generation,sequence)>(?,?,?) AND key_id IS NULL
+     ORDER BY run_id,generation,sequence LIMIT ${BATCH}`,
   );
   const update = db.query(
     `UPDATE runner_event SET payload=?,key_id=?,payload_sha256=?,type=?,handed_over=?,reason=?
      WHERE run_id=? AND generation=? AND sequence=? AND key_id IS NULL`,
   );
+  let after: [string, number, number] = ["", 0, 0];
   let sealed = 0;
   for (;;) {
     signal?.throwIfAborted();
-    const count = immediate(db, () => {
-      const rows = next.all();
-      for (const row of rows) {
+    const rows = immediate(db, () => {
+      const batch = next.all(...after);
+      for (const row of batch) {
         const columns = sealRunnerEvent(key, row, row.payload);
         update.run(
           columns.payload,
@@ -122,11 +125,16 @@ export async function encryptRunnerEvents(options: {
           row.sequence,
         );
       }
-      return rows.length;
+      return batch;
     });
-    if (!count) break;
-    sealed += count;
+    const last = rows.at(-1);
+    if (!last) break;
+    after = [last.runId, last.generation, last.sequence];
+    sealed += rows.length;
     await yieldToLoop();
   }
+  db.run("VACUUM");
+  const [checkpoint] = db.query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").all();
+  if (checkpoint?.busy) throw new Error("Runner event WAL checkpoint is busy.");
   return { sealed };
 }

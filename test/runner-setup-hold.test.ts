@@ -159,6 +159,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
   });
   const freeRunner = await pair("owner-runner", ownerId, 1);
   work.heartbeat(freeRunner, 8);
