@@ -233,3 +233,22 @@ test("runner journal applies the file-token redactor before its only write", () 
   expect(lines[0]).toContain(RUNNER_FAILURE);
   expect(lines[0]).not.toContain(token);
 });
+
+test("a refused request names the request, its status and Paws' reason", () => {
+  expect(
+    describeRunnerFailure(
+      new RunnerRequestError(
+        403,
+        "POST",
+        "/v1/events",
+        12,
+        "Runner work request is denied or invalid.",
+      ),
+    ),
+  ).toBe("Paws answered HTTP 403 from /v1/events. Runner work request is denied or invalid.");
+  expect(
+    describeRunnerFailure(
+      new RunnerRequestError(403, "POST", "/v1/events", 12, "token abc_123 bad"),
+    ),
+  ).toBe("Paws answered HTTP 403 from /v1/events.");
+});
