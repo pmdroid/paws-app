@@ -85,6 +85,7 @@ export type ServerOptions = {
   /** `POST /api/runner-enrollments`, where a host enrolls itself with a member's token. */
   runnerHostEnrollment?: (request: Request) => Promise<Response>;
   runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
+  retros?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
   executionControls?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -228,6 +229,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             ? { runnerHostEnrollment: options.runnerHostEnrollment }
             : {}),
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
+          ...(options.retros ? { retros: options.retros } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
           ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
@@ -271,6 +273,7 @@ type Secrets = {
   workspaceAccess?: WorkspaceAccess | null;
   runnerHostEnrollment?: ServerOptions["runnerHostEnrollment"];
   runnerControl?: ServerOptions["runnerControl"];
+  retros?: ServerOptions["retros"];
   executionControls?: ServerOptions["executionControls"];
   linkAsks?: ServerOptions["linkAsks"];
   questionAnswers?: ServerOptions["questionAnswers"];
@@ -436,6 +439,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {
         const response = await secrets.runnerControl(request, access.principal);
+        if (response !== null) return response;
+      }
+      if (path.startsWith("/api/retros/") && secrets.retros !== undefined) {
+        const response = await secrets.retros(request, access.principal);
         if (response !== null) return response;
       }
       if (path === FINDING_ISSUE_PATH && secrets.findingIssues !== undefined) {

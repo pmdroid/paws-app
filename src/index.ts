@@ -219,6 +219,7 @@ import {
 } from "./runner-placement";
 import { startServer } from "./server";
 import { activeRunnerReadiness } from "./settings";
+import { createRetroSettingsHttp } from "./retros";
 import { itemReviews } from "./dashboard";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
@@ -964,6 +965,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           : null,
       ...(linear?.findingIssues ? { findingGroups: { issues: linear.findingIssues } } : {}),
       hostname: env.host,
+      retros: createRetroSettingsHttp({
+        db,
+        catalog: (principal) => runner?.models.read(principal) ?? null,
+      }),
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??
         Response.json({ error: "Execution controls are starting." }, { status: 503 }),

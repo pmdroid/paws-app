@@ -80,6 +80,7 @@ const MODULES = [
   "finding-issues",
   "live-preview",
   "dashboard-links",
+  "retros",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -152,6 +153,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   runtimes: ["journal"],
   "live-preview": ["journal", "runner-protocol"],
   "dashboard-links": [],
+  retros: ["journal", "db", "runner-models", "workspace"],
   "agent-catalog": ["journal", "db"],
   host: ["journal", "core", "db"],
   loop: [

@@ -149,6 +149,36 @@ describe("retro windows", () => {
     expect(getRetro(db, "r2")).toBeNull();
   });
 
+  test("a retro freezes a resolved profile and a narrower repository scope", () => {
+    const { db } = harness();
+    const revision = settings(db, [REPO, "pmdroid/landing"]).revision;
+    const { retro } = createRetro(db, {
+      id: "r-resolved",
+      workspaceId: "ws",
+      windowStart: 0,
+      windowEnd: DAY,
+      origin: "manual",
+      settingsRevision: revision,
+      agentProfile: { agent: "codex", model: "gpt-6-astra", effort: "medium" },
+      repositories: [REPO],
+      now: 1,
+    });
+    expect(retro.agentProfile).toEqual({ agent: "codex", model: "gpt-6-astra", effort: "medium" });
+    expect(retro.repositories).toEqual([REPO]);
+    expect(() =>
+      createRetro(db, {
+        id: "r-broader",
+        workspaceId: "ws",
+        windowStart: DAY,
+        windowEnd: 2 * DAY,
+        origin: "manual",
+        settingsRevision: revision,
+        repositories: ["pmdroid/other"],
+        now: 2,
+      }),
+    ).toThrow("must come from settings revision");
+  });
+
   test("settings revisions and the frozen input are immutable", () => {
     const { db } = harness();
     const { revision } = settings(db);

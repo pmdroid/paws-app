@@ -115,3 +115,38 @@ test("a runner's history names the issue each execution worked on", async () => 
     { commandId: "prepare-1", identifier: null, title: null },
   ]);
 });
+
+test("the catalog reports the agent's default model and effort", () => {
+  const { db, runnerId, principal } = fixture();
+  const result = (model: string, effort: string) =>
+    JSON.stringify({
+      executionId: "01M5GCQ27RE0YMKT767K0P3451",
+      commandId: `probe-${model}`,
+      role: "reviewer",
+      stopReason: "end_turn",
+      timedOut: false,
+      cancelled: false,
+      authRequired: false,
+      agentExited: true,
+      identity: { session: "s", model, provider: "anthropic" },
+      models: [{ id: "opus", name: "Opus 5.5" }],
+      efforts: [
+        { id: "high", name: "High" },
+        { id: "max", name: "Max" },
+      ],
+      effort,
+    });
+  db.run("UPDATE agent_model_catalog SET result_json=? WHERE runner_id=? AND model=''", [
+    result("opus", "high"),
+    runnerId,
+  ]);
+  const work = createRunnerWork({
+    db,
+    keyId: "labels",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
+  });
+  const [catalog] = createRunnerModels({ db, work }).read(principal);
+  expect(catalog?.defaultModel).toBe("opus");
+  expect(catalog?.models.find((model) => model.id === "opus")?.defaultEffort).toBe("high");
+});

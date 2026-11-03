@@ -26,8 +26,11 @@ type Pending = {
 export type AgentModelCatalog = {
   agent: Agent;
   /** Labelled for people: a 1M entry is named "<model> · 1M context" and flagged. */
-  models: Array<Choice & { longContext: boolean; efforts: Choice[] | null }>;
+  models: Array<
+    Choice & { longContext: boolean; efforts: Choice[] | null; defaultEffort: string | null }
+  >;
   efforts: Choice[];
+  defaultModel: string | null;
   updatedAt: number;
 };
 const refreshMs = 6 * 60 * 60_000;
@@ -184,23 +187,25 @@ export function createRunnerModels(options: {
       const header = rows.find((row) => row.agent === agent && row.model === "");
       if (!header) continue;
       const result = RunnerHealthResultSchema.parse(JSON.parse(header.resultJson));
-      const efforts = (model: string) => {
+      const probed = (model: string) => {
         const row = rows.find((entry) => entry.agent === agent && entry.model === model);
-        return row
-          ? (RunnerHealthResultSchema.parse(JSON.parse(row.resultJson)).efforts ?? [])
-          : null;
+        return row ? RunnerHealthResultSchema.parse(JSON.parse(row.resultJson)) : null;
       };
+      const current = (model: string) =>
+        probed(model) ?? (result.identity?.model === model ? result : null);
       catalogs.push({
         agent,
         updatedAt: header.updatedAt,
         efforts: result.efforts ?? [],
+        defaultModel: result.identity?.model ?? null,
         models: labelModels(result.models ?? [])
           .filter((model) => concrete(model.id))
           .map(({ id, name, longContext }) => ({
             id,
             name,
             longContext,
-            efforts: efforts(id) ?? (result.identity?.model === id ? (result.efforts ?? []) : null),
+            efforts: current(id) ? (current(id)!.efforts ?? []) : null,
+            defaultEffort: current(id)?.effort ?? null,
           })),
       });
     }
