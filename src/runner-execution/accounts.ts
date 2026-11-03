@@ -13,7 +13,6 @@ import {
   readdirSync,
   renameSync,
   rmSync,
-  statSync,
   writeSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -342,5 +341,5 @@ function writePrivateFile(path: string, text: string): void {
     rmSync(temporary, { force: true });
     throw error;
   }
-  if (!statSync(path).isFile()) throw new RunnerAccountHomeError("Agent account file is unsafe");
+  if (!lstatSync(path).isFile()) throw new RunnerAccountHomeError("Agent account file is unsafe");
 }
