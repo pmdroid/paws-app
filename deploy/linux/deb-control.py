@@ -3,6 +3,7 @@ import importlib.util
 import json
 import pathlib
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 
@@ -50,6 +51,7 @@ def stop(next_version):
 
 
 def configure():
+    docker = installer.docker_access_choice()
     arguments = SimpleNamespace(**{name: str(ROOT / filename) for name, filename in (("manifest", "manifest.json"), ("signature", "manifest.sig"), ("artifact", "artifact.tar"), ("release_key", "release.pub"))})
     with tempfile.TemporaryDirectory(prefix="paws-debian-") as temporary:
         manifest, artifact, fingerprint = installer.release.verify_release(arguments, pathlib.Path(temporary))
@@ -61,7 +63,13 @@ def configure():
         agents = installer.prepare_agents(artifact)
         installed = installer.install(manifest, artifact, fingerprint, reinstall=True)
         installed["agents"] = installer.finish_agents(agents)
-    restore()
+        # Before the runner starts again, so the daemon and every worker it launches get the new groups.
+        installed["docker"] = installer.configure_docker_access(docker)
+    started = restore()
+    if installed["docker"]["changed"]:
+        installed["docker"]["runnerService"] = "started" if "paws-runner.service" in started else "stopped"
+        if "paws-runner.service" not in started:
+            print("Docker access: paws-runner.service is not running; it gets the docker group when it starts.", file=sys.stderr)
     # Agent versions sent from the Runners page install through this path unit (install.py agent-requests).
     installer.release.command(["/usr/bin/systemctl", "enable", "--now", "--", "paws-runner-agents.path"])
     print(json.dumps(installed))
@@ -80,6 +88,7 @@ def restore():
     if start:
         installer.release.command(["/usr/bin/systemctl", "start", "--", *start])
     RESTART.unlink(missing_ok=True)
+    return start
 
 
 def main():

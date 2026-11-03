@@ -20,11 +20,89 @@ installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
 
-def run(arguments, success=True):
-    result = subprocess.run(arguments, env=installer.release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=180)
+def run(arguments, success=True, env=None):
+    result = subprocess.run(arguments, env={**installer.release.COMMAND_ENV, **(env or {})}, stdin=subprocess.DEVNULL, capture_output=True, timeout=180)
     if (result.returncode == 0) != success:
         raise RuntimeError(result.stderr.decode())
     return result.stdout.decode()
+
+
+DOCKER_ENGINE = """import json,os,socket,sys
+path=sys.argv[1]
+server=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+server.bind(path)
+os.chown(path,0,int(sys.argv[2]))
+os.chmod(path,0o660)
+server.listen(8)
+open(sys.argv[3],"w").close()
+body=json.dumps({"Platform":{"Name":"Docker Engine - Community"},"Components":[{"Name":"Engine","Version":"29.2.1"}],"Version":"29.2.1"}).encode()
+while True:
+    connection,_=server.accept()
+    try:
+        connection.settimeout(5)
+        request=b""
+        while b"\\r\\n\\r\\n" not in request:
+            chunk=connection.recv(4096)
+            if not chunk: break
+            request+=chunk
+        if request.split(b" ",2)[1:2]==[b"/version"]:
+            connection.sendall(b"HTTP/1.0 200 OK\\r\\nContent-Type: application/json\\r\\nContent-Length: "+str(len(body)).encode()+b"\\r\\n\\r\\n"+body)
+        else:
+            connection.sendall(b"HTTP/1.0 404 Not Found\\r\\nContent-Length: 0\\r\\n\\r\\n")
+    except OSError:
+        pass
+    finally:
+        connection.close()
+"""
+
+
+def start_docker_engine(gid):
+    """A stand-in for a local rootful Docker Engine: root owns its socket, the given group may use it, and it answers /version."""
+    socket_path = installer.DOCKER_SOCKET
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    socket_path.unlink(missing_ok=True)
+    ready = ROOT / "docker-engine-ready"
+    ready.unlink(missing_ok=True)
+    engine = subprocess.Popen(["/usr/bin/python3", "-I", "-B", "-c", DOCKER_ENGINE, str(socket_path), str(gid), str(ready)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 30
+    while not ready.exists():
+        if engine.poll() is not None or time.monotonic() > deadline:
+            raise RuntimeError("Fake Docker Engine did not start")
+        time.sleep(0.01)
+    return engine
+
+
+def stop_docker_engine(engine):
+    engine.kill()
+    engine.wait(timeout=10)
+
+
+def docker_group_members():
+    return [name for name in grp.getgrnam("docker").gr_mem]
+
+
+def add_docker_group():
+    if not pathlib.Path("/usr/sbin/usermod").is_file():
+        raise RuntimeError("The proof image needs usermod at /usr/sbin/usermod")
+    gid = max(group.gr_gid for group in grp.getgrall()) + 1
+    with open("/etc/group", "a") as groups:
+        groups.write(f"docker:x:{gid}:\n")
+    return gid
+
+
+def runner_work_reaches_docker():
+    """Runner work as the daemon launches it: paws-runner, the worker environment, and a child spawned like workerLaunch."""
+    script = ROOT / "docker-worker.ts"
+    script.write_text("""const query = 'const response = await fetch("http://docker/version", { unix: "/var/run/docker.sock" }); const body = await response.json(); console.log(JSON.stringify({ status: response.status, components: body.Components.map((item) => item.Name), uid: process.getuid(), groups: (await Bun.file("/proc/self/status").text()).match(/^Groups:(.*)$/m)[1].trim().split(" ").map(Number) }));';
+const child = Bun.spawn([process.execPath, "--no-env-file", "-e", query], { cwd: process.env.HOME, env: { HOME: process.env.HOME, PATH: process.env.PATH, LANG: "C.UTF-8" }, stdout: "pipe", stderr: "pipe" });
+const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+process.stdout.write(code === 0 ? stdout : JSON.stringify({ error: stderr.slice(-400) }) + "\\n");
+""")
+    script.chmod(0o644)
+    result = installer.as_runner(["/opt/paws-runner/bin/bun", "--no-env-file", str(script)], timeout=60)
+    if result is None or result.returncode != 0:
+        raise RuntimeError("Runner work could not run: " + ("timed out" if result is None else result.stderr.decode()[-400:]))
+    return json.loads(result.stdout)
 
 
 def provision_tools():
@@ -55,6 +133,63 @@ elif args[0] not in ("list-units","stop","daemon-reload","enable","disable"): sy
 ''')
 
 
+def docker_access_proof(install, sign, state_path):
+    runner = pwd.getpwnam("paws-runner")
+    absent = installer.docker_access("grant")
+    if absent["status"] != ("no-engine" if shutil.which("docker", path=installer.WORKER_PATH) else "absent") or absent["changed"]:
+        raise RuntimeError(f"A host without Docker Engine was not a no-op: {absent}")
+    engine = start_docker_engine(0)
+    try:
+        if installer.docker_access("grant")["status"] != "missing-group":
+            raise RuntimeError("A socket without a docker group was not diagnosed")
+        gid = add_docker_group()
+        os.chown(installer.DOCKER_SOCKET, 0, gid)
+        for choice, status in ((None, "opt-in-required"), ("deny", "declined")):
+            report = installer.docker_access(choice)
+            if report["status"] != status or report["changed"] or docker_group_members():
+                raise RuntimeError(f"Docker access without opt-in changed membership: {report}")
+        denied = runner_work_reaches_docker()
+        if "components" in denied:
+            raise RuntimeError("Runner work reached Docker before it was granted access")
+        before = set(os.getgrouplist("paws-runner", runner.pw_gid))
+        sign("0.1.7")
+        granted = json.loads(install(env={"PAWS_RUNNER_DOCKER_ACCESS": "grant"}))
+        if granted["docker"]["status"] != "granted" or not granted["docker"]["changed"]:
+            raise RuntimeError(f"Opt-in did not grant Docker access: {granted['docker']}")
+        if docker_group_members() != ["paws-runner"] or set(os.getgrouplist("paws-runner", runner.pw_gid)) != before | {gid}:
+            raise RuntimeError("Docker access did not append exactly the docker group to paws-runner")
+        if gid in os.getgrouplist("paws-agent", pwd.getpwnam("paws-agent").pw_gid):
+            raise RuntimeError("Docker access reached paws-agent")
+        work = runner_work_reaches_docker()
+        if work.get("status") != 200 or work.get("components") != ["Engine"] or work.get("uid") != runner.pw_uid or gid not in work.get("groups", []):
+            raise RuntimeError(f"New runner work could not query the daemon: {work}")
+        sign("0.1.8")
+        again = json.loads(install(env={"PAWS_RUNNER_DOCKER_ACCESS": "grant"}))
+        if again["docker"]["status"] != "ready" or again["docker"]["changed"] or docker_group_members() != ["paws-runner"]:
+            raise RuntimeError(f"A second install changed Docker access: {again['docker']}")
+        sign("0.1.9")
+        upgraded = json.loads(install())
+        if upgraded["docker"]["status"] != "ready":
+            raise RuntimeError("An upgrade without a choice did not accept the granted membership")
+        group_path = pathlib.Path("/etc/group")
+        original_groups = group_path.read_text()
+        installed = state_path.read_bytes()
+        group_path.write_text(original_groups + f"paws-proof-docker-alias:x:{gid}:\n")
+        try:
+            sign("0.1.10")
+            install(False)
+            if state_path.read_bytes() != installed:
+                raise RuntimeError("A docker group alias changed installed trust state")
+        finally:
+            group_path.write_text(original_groups)
+    finally:
+        stop_docker_engine(engine)
+    if installer.docker_access(None)["status"] != "daemon-unavailable":
+        raise RuntimeError("A stopped daemon was not reported apart from a permission failure")
+    installer.DOCKER_SOCKET.unlink()
+    return {"absentNoOp": True, "missingGroupDiagnosed": True, "optInRequiredAndDeclined": True, "grantedAppendsOnlyDocker": True, "newRunnerWorkQueriesDaemon": work, "secondInstallIdempotent": True, "upgradeAcceptsMembership": True, "dockerAliasRejected": True, "stoppedDaemonReported": True}
+
+
 def main():
     if os.getuid() != 0 or pathlib.Path("/opt/paws-runner").exists():
         raise RuntimeError("Use a fresh disposable root namespace")
@@ -73,8 +208,8 @@ def main():
         def sign(version):
             manifest.write_text(json.dumps({**source, "version": version}))
             run(["/usr/bin/openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private), "-in", str(manifest), "-out", str(signature)])
-        def install(success=True, trust=key):
-            return run(["/usr/bin/python3", str(ROOT / "install.py"), "--artifact", str(artifact), "--manifest", str(manifest), "--signature", str(signature), "--release-key", str(trust)], success)
+        def install(success=True, trust=key, env=None):
+            return run(["/usr/bin/python3", str(ROOT / "install.py"), "--artifact", str(artifact), "--manifest", str(manifest), "--signature", str(signature), "--release-key", str(trust)], success, env)
         sign("0.1.1")
         signature.write_bytes(b"")
         install(False)
@@ -342,10 +477,11 @@ module.main()
             raise RuntimeError("Rejected runner pointer changed release trust state")
         runner_path.unlink()
         runner_path.symlink_to("../current/bin/paws-runner")
+        docker = docker_access_proof(install, sign, state_path)
         commands = [json.loads(line) for line in (ROOT / "systemctl-commands.jsonl").read_text().splitlines()]
         if any(command[0] == "start" for command in commands):
             raise RuntimeError("Installer started an unconfigured daemon")
-        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "agentLaunchersRecovered": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777)}
+        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "agentLaunchersRecovered": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777), "dockerAccess": docker}
         print(json.dumps(observations))
 
 

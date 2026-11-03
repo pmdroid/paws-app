@@ -9,7 +9,7 @@ die() {
 }
 
 usage() {
-  printf '%s\n' "Usage: curl -fsSL https://get.paws.boo | sudo sh -s -- [version]"
+  printf '%s\n' "Usage: curl -fsSL https://get.paws.boo | sudo sh -s -- [--docker-access | --no-docker-access] [version]"
 }
 
 semver_ok() {
@@ -87,26 +87,39 @@ architecture() {
 }
 
 requested=""
-if [ $# -gt 1 ]; then
-  usage >&2
-  exit 1
-fi
-if [ $# -eq 1 ]; then
-  case $1 in
+docker_access=""
+for argument do
+  case $argument in
     -h|--help)
       usage
       exit 0
       ;;
+    --docker-access|--no-docker-access)
+      choice=grant
+      [ "$argument" = --docker-access ] || choice=deny
+      if [ -n "$docker_access" ] && [ "$docker_access" != "$choice" ]; then
+        die "Pass only one of --docker-access and --no-docker-access"
+      fi
+      docker_access=$choice
+      ;;
     --version=*)
-      requested=${1#--version=}
+      [ -z "$requested" ] || { usage >&2; exit 1; }
+      requested=${argument#--version=}
       ;;
     -*)
       usage >&2
       exit 1
       ;;
     *)
-      requested=$1
+      [ -z "$requested" ] || { usage >&2; exit 1; }
+      requested=$argument
       ;;
+  esac
+done
+if [ -z "$docker_access" ] && [ -n "${PAWS_RUNNER_DOCKER_ACCESS:-}" ]; then
+  case $PAWS_RUNNER_DOCKER_ACCESS in
+    grant|deny) docker_access=$PAWS_RUNNER_DOCKER_ACCESS ;;
+    *) die "PAWS_RUNNER_DOCKER_ACCESS must be grant or deny" ;;
   esac
 fi
 if [ -z "$requested" ] && [ -n "${PAWS_RUNNER_VERSION:-}" ]; then
@@ -167,6 +180,30 @@ if [ "$checksum_line" != "$expected" ]; then
   die "Checksum verification failed for ${name}"
 fi
 sha256sum --strict --check "${name}.sha256" || die "Checksum verification failed for ${name}"
+
+# Docker access for runner work. The package never prompts; this script asks only on a terminal,
+# and only when a local Docker Engine socket exists and paws-runner is not already in its group.
+docker_socket=/var/run/docker.sock
+if [ -z "$docker_access" ] && [ -S "$docker_socket" ] && [ ! -L "$docker_socket" ] \
+  && ! { id -nG paws-runner 2>/dev/null | tr ' ' '\n' | grep -qx docker; } \
+  && ( : < /dev/tty ) 2>/dev/null; then
+  printf '%s\n' \
+    "Docker Engine is installed on this host. Runner work needs the docker group to use it." \
+    "Members of the docker group control the Docker daemon, which runs as root: every agent and" \
+    "check this runner executes could then act as root on this host." > /dev/tty
+  printf '%s' "Add the paws-runner service account to the docker group? [y/N] " > /dev/tty
+  answer=""
+  read -r answer < /dev/tty || answer=""
+  case $answer in
+    y|Y|yes|YES|Yes) docker_access=grant ;;
+    *) docker_access=deny ;;
+  esac
+fi
+if [ -n "$docker_access" ]; then
+  export PAWS_RUNNER_DOCKER_ACCESS="$docker_access"
+else
+  unset PAWS_RUNNER_DOCKER_ACCESS
+fi
 
 printf '%s\n' "Installing paws-runner ${version} (${arch})"
 export DEBIAN_FRONTEND=noninteractive

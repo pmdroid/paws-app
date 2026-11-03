@@ -49,6 +49,7 @@ printf '%s\\n' "$*" >> "$PAWS_APT_LOG"
 test "$DEBIAN_FRONTEND" = noninteractive || exit 2
 if [ "$1" = update ]; then exit 0; fi
 if [ "$1" = install ]; then
+  printf '%s\n' "\${PAWS_RUNNER_DOCKER_ACCESS-unset}" > "$PAWS_APT_LOG.docker"
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -327,6 +328,58 @@ test("installer refuses an http download base outside the loopback opt-in", asyn
     );
     expect(loopback.code).not.toBe(0);
     expect(loopback.stderr).toContain("Refusing a non-HTTPS download base");
+    expect(existsSync(aptLog)).toBe(false);
+  });
+});
+
+test("installer passes the Docker access choice to package configuration", async () => {
+  const name = "paws-runner_1.2.3_amd64.deb";
+  const body = "package";
+  await withRelease(
+    {
+      [`/download/v1.2.3/${name}`]: body,
+      [`/download/v1.2.3/${name}.sha256`]: checksum(name, body),
+    },
+    "/tag/v1.2.3",
+    async (origin, directory, aptLog, installed) => {
+      const choice = () => readFileSync(`${aptLog}.docker`, "utf8").trim();
+      const env = envFor(origin, directory, aptLog, installed);
+      expect((await install([], env)).code).toBe(0);
+      expect(choice()).toBe("unset");
+      expect((await install(["--docker-access", "1.2.3"], env)).code).toBe(0);
+      expect(choice()).toBe("grant");
+      expect((await install(["1.2.3", "--no-docker-access"], env)).code).toBe(0);
+      expect(choice()).toBe("deny");
+      const fromEnv = await install(
+        [],
+        envFor(origin, directory, aptLog, installed, { PAWS_RUNNER_DOCKER_ACCESS: "grant" }),
+      );
+      expect(fromEnv.code).toBe(0);
+      expect(choice()).toBe("grant");
+      const flagWins = await install(
+        ["--no-docker-access"],
+        envFor(origin, directory, aptLog, installed, { PAWS_RUNNER_DOCKER_ACCESS: "grant" }),
+      );
+      expect(flagWins.code).toBe(0);
+      expect(choice()).toBe("deny");
+    },
+  );
+});
+
+test("installer refuses conflicting or invalid Docker access choices before download", async () => {
+  await withRelease({}, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
+    const env = envFor(origin, directory, aptLog, installed);
+    const both = await install(["--docker-access", "--no-docker-access"], env);
+    expect(both.code).not.toBe(0);
+    expect(both.stderr).toContain("Pass only one of --docker-access and --no-docker-access");
+    const invalid = await install(
+      ["1.2.3"],
+      envFor(origin, directory, aptLog, installed, { PAWS_RUNNER_DOCKER_ACCESS: "yes" }),
+    );
+    expect(invalid.code).not.toBe(0);
+    expect(invalid.stderr).toContain("PAWS_RUNNER_DOCKER_ACCESS must be grant or deny");
+    const twoVersions = await install(["1.2.3", "1.2.4"], env);
+    expect(twoVersions.code).not.toBe(0);
     expect(existsSync(aptLog)).toBe(false);
   });
 });

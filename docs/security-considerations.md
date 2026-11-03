@@ -1,6 +1,6 @@
 # Security considerations
 
-Paws runs coding agents on input it doesn't control: Linear issues, repository files and third-party dependencies. Any of them can try to steer the agent. This page covers the GitHub settings that keep a steered agent away from the runner release key.
+Paws runs coding agents on input it doesn't control: Linear issues, repository files and third-party dependencies. Any of them can try to steer the agent. This page covers the GitHub settings that keep a steered agent away from the runner release key, and what giving runner work Docker access costs.
 
 ## The runner release key
 
@@ -45,3 +45,9 @@ Follow the same rule for every secret added later: put it in an environment limi
 1. Move `PAWS_RUNNER_RELEASE_KEY` into the `runner-release` environment and delete the repository secret.
 2. Merge the workflow change that sets `environment: runner-release` on the release job.
 3. Grant the GitHub App **Workflows: Read and write**, and accept the new permission on the installation under **Settings > Applications > Installed GitHub Apps**.
+
+## Docker access for runner work
+
+Members of the `docker` group control the Docker daemon, which runs as root. [Docker's documentation](https://docs.docker.com/engine/install/linux-postinstall/) says the group grants root-level privileges. When you add `paws-runner` to it ([Docker access for runner work](runner-enrollment.md#docker-access-for-runner-work)), every agent and check the runner executes can act as root on the host. A steered agent can mount the host filesystem into a container. The `paws-runner.service` hardening (`NoNewPrivileges`, an empty capability set, `ProtectSystem`) does not contain Docker-enabled work, because the daemon does the privileged work outside the service.
+
+Grant it only on a host you would let the agent's input control: a dedicated VM that holds no other secrets. The installer adds only `paws-runner`, never `paws-agent`, and only to an existing `docker` group that no other group name or Paws group shares. Identity checks on later installs and upgrades accept that one membership and still reject any other supplemental group. [Rootless Docker](https://docs.docker.com/engine/security/rootless/) uses a different access model, and the installer leaves it alone.

@@ -36,6 +36,21 @@ curl -fsSL https://get.paws.boo | sudo sh -s -- 1.2.3
 
 Package contents and upgrade behavior are in `deploy/linux`: the release manifest, the signed package builder, and the installer.
 
+### Docker access for runner work
+
+Runner work runs as `paws-runner`. If Docker Engine is already installed and running on the host, that account can't use it until it is in the `docker` group. The installer looks for a local, rootful Docker Engine at `/var/run/docker.sock` and checks access as `paws-runner`, with the environment runner work gets. It adds `paws-runner` to the existing `docker` group only when you opt in. When it asks on a terminal, the default answer is no. For scripted installs, pass the choice:
+
+```sh
+curl -fsSL https://get.paws.boo | sudo sh -s -- --docker-access
+curl -fsSL https://get.paws.boo | sudo sh -s -- --no-docker-access
+```
+
+Package configuration never prompts. It reads `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`; to grant access later, run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner`. Read [Docker access](security-considerations.md#docker-access-for-runner-work) before granting it.
+
+The installer changes nothing when Docker isn't installed, when `paws-runner` already has access, or when you decline. It also leaves rootless Docker, a Docker context that points at another host, and Podman's `docker` command alone. It reports a missing `docker` group, a socket with an unexpected owner, group or mode, and a failed membership change, with the next step for each. A stopped daemon and a refused connection are reported separately. The installer doesn't install or start Docker, and doesn't change the socket.
+
+The membership is added before the runner service starts again, so the daemon and the workers it launches get it. Package configuration still refuses to run while agent work is active. A runner daemon or worker you started by hand keeps the groups it started with: stop it and start it again from a new process.
+
 ## Configure the runner
 
 On the VM, replace the example hostname and repository names, then create the protected configuration:
