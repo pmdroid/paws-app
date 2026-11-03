@@ -646,7 +646,15 @@ export function listRetroAttempts(db: Database, retroId: string): RetroAttempt[]
 
 export type RetroPublication =
   | { ok: true; retro: Retro; items: RetroItem[] }
-  | { ok: false; reason: "not_owner" | "watermark_moved" | "unknown_evidence" | "duplicate_item" };
+  | {
+      ok: false;
+      reason:
+        | "not_owner"
+        | "coverage_gap"
+        | "watermark_moved"
+        | "unknown_evidence"
+        | "duplicate_item";
+    };
 
 export function publishRetro(
   db: Database,
@@ -664,6 +672,8 @@ export function publishRetro(
       if (!ownsAttempt(db, input.retroId, input.attempt, input.owner))
         return { ok: false, reason: "not_owner" } as const;
       const retro = getRetro(db, input.retroId)!;
+      if (listRetroCoverageGaps(db, retro.id).length > 0)
+        return { ok: false, reason: "coverage_gap" } as const;
       const evidence = new Set(listRetroEvidence(db, retro.id).map((entry) => entry.evidenceId));
       if (input.items.some((item) => item.evidenceIds.some((id) => !evidence.has(id))))
         return { ok: false, reason: "unknown_evidence" } as const;

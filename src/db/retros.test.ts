@@ -251,6 +251,24 @@ describe("retro generation", () => {
     expect(listRetroItems(db, "r1")).toEqual([]);
   });
 
+  test("a recorded coverage gap blocks publication and the watermark", () => {
+    const { db, root } = harness();
+    frozen(db, root, { id: "r1", start: 0, end: DAY, cursor: 9 });
+    startRetroAttempt(db, { retroId: "r1", owner: "a", now: 10, leaseMs: 100 });
+    recordRetroCoverageGap(db, {
+      retroId: "r1",
+      repository: REPO,
+      kind: "missing_artifact",
+      detail: "Transcript for run 01ABC is missing.",
+      now: 11,
+    });
+    expect(
+      publishRetro(db, { retroId: "r1", attempt: 1, owner: "a", result: {}, items: [], now: 20 }),
+    ).toEqual({ ok: false, reason: "coverage_gap" });
+    expect(getRetro(db, "r1")!.state).toBe("generating");
+    expect(retroWatermarks(db, "ws")).toEqual([]);
+  });
+
   test("an expired owner cannot publish after another attempt takes over", () => {
     const { db, root } = harness();
     frozen(db, root, { id: "r1", start: 0, end: DAY, cursor: 9 });

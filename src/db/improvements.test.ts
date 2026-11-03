@@ -10,6 +10,7 @@ import {
   improvementsForIssue,
   listImprovementDecisions,
   listImprovementDeliveries,
+  listImprovementDeliveryAttempts,
   listImprovementOutcomes,
   listImprovementProposals,
   migrate,
@@ -178,6 +179,7 @@ describe("improvement decisions", () => {
     expect(claimImprovementDelivery(db, { ...claim, owner: "w2" })).toBeNull();
     settleImprovementDelivery(db, {
       deliveryId: delivery!.id,
+      attempt: 1,
       owner: "w1",
       outcome: "failed",
       error: "Linear unavailable",
@@ -188,6 +190,7 @@ describe("improvement decisions", () => {
     claimImprovementDelivery(db, { ...claim, owner: "w2", now: 20 });
     settleImprovementDelivery(db, {
       deliveryId: delivery!.id,
+      attempt: 2,
       owner: "w2",
       outcome: "unknown",
       error: "Response lost",
@@ -200,6 +203,7 @@ describe("improvement decisions", () => {
     expect(
       settleImprovementDelivery(db, {
         deliveryId: delivery!.id,
+        attempt: 3,
         owner: "w3",
         outcome: "succeeded",
         remote: { id: "issue-1", identifier: "PAS-1100", url: "https://linear.app/x" },
@@ -213,6 +217,22 @@ describe("improvement decisions", () => {
       reviewState: "accepted",
       issue: { id: "issue-1", identifier: "PAS-1100", confirmedAt: 31 },
     });
+    expect(
+      listImprovementDeliveryAttempts(db, delivery!.id).map((row) => [
+        row.attempt,
+        row.owner,
+        row.outcome,
+        row.error,
+        row.settledAt,
+      ]),
+    ).toEqual([
+      [1, "w1", "failed", "Linear unavailable", 11],
+      [2, "w2", "unknown", "Response lost", 21],
+      [3, "w3", "succeeded", null, 31],
+    ]);
+    expect(() => db.run("UPDATE improvement_delivery_attempt SET error = 'x'")).toThrow(
+      /immutable/,
+    );
     expect(claimableImprovementDeliveries(db, "ws", 40)).toEqual([]);
     expect(listImprovementDecisions(db, improvementId).map((row) => row.reviewState)).toEqual([
       "accepted",
@@ -231,12 +251,44 @@ describe("improvement decisions", () => {
     expect(
       settleImprovementDelivery(db, {
         deliveryId: id,
+        attempt: 1,
         owner: "w1",
         outcome: "succeeded",
         remote: { id: "issue-1" },
         now: 16,
       }),
     ).toBe(false);
+    expect(listImprovementDeliveryAttempts(db, id).map((row) => row.outcome)).toEqual([
+      "expired",
+      "claimed",
+    ]);
+  });
+
+  test("a late response from an expired attempt cannot settle a retry by the same owner", () => {
+    const db = harness();
+    const { improvementId } = propose(db, { kind: "retro_item", key: "r1/a" });
+    accept(db, improvementId, { kind: "accept", proposalVersion: 1, intent: { kind: "create" } });
+    const id = improvementDeliveryId(improvementId, "create_issue");
+    claimImprovementDelivery(db, { deliveryId: id, owner: "w", now: 10, leaseMs: 5 });
+    expect(
+      claimImprovementDelivery(db, { deliveryId: id, owner: "w", now: 15, leaseMs: 5 })!.attempts,
+    ).toBe(2);
+    const settle = { deliveryId: id, owner: "w", now: 16 };
+    expect(
+      settleImprovementDelivery(db, { ...settle, attempt: 1, outcome: "failed", error: "late" }),
+    ).toBe(false);
+    expect(
+      settleImprovementDelivery(db, {
+        ...settle,
+        attempt: 2,
+        outcome: "succeeded",
+        remote: { id: "issue-1" },
+      }),
+    ).toBe(true);
+    expect(listImprovementDeliveries(db, improvementId)[0]).toMatchObject({
+      state: "succeeded",
+      error: null,
+    });
   });
 
   test("two sources link to one issue and keep their own evidence", () => {
@@ -257,6 +309,7 @@ describe("improvement decisions", () => {
       claimImprovementDelivery(db, { deliveryId: id, owner: "w", now: 10, leaseMs: 5 });
       settleImprovementDelivery(db, {
         deliveryId: id,
+        attempt: 1,
         owner: "w",
         outcome: "succeeded",
         remote: { id: "issue-7", identifier: "PAS-860" },

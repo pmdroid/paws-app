@@ -604,7 +604,18 @@ export function claimImprovementDelivery(
          RETURNING *`,
       )
       .get(input.owner, input.now + input.leaseMs, input.now, input.deliveryId, input.now);
-    return row === null ? null : deliveryFromRow(row);
+    if (row === null) return null;
+    db.run(
+      `UPDATE improvement_delivery_attempt SET outcome = 'expired', settled_at = ?
+       WHERE delivery_id = ? AND outcome = 'claimed'`,
+      [input.now, row.id],
+    );
+    db.run(
+      `INSERT INTO improvement_delivery_attempt (delivery_id, attempt, owner, claimed_at,
+         claim_expires_at) VALUES (?, ?, ?, ?, ?)`,
+      [row.id, row.attempts, input.owner, input.now, input.now + input.leaseMs],
+    );
+    return deliveryFromRow(row);
   });
 }
 
@@ -612,6 +623,7 @@ export function settleImprovementDelivery(
   db: Database,
   input: {
     deliveryId: string;
+    attempt: number;
     owner: string;
     outcome: "succeeded" | "failed" | "unknown";
     remote?: { id: string; identifier?: string; url?: string };
@@ -622,15 +634,26 @@ export function settleImprovementDelivery(
   return immediate(db, () => {
     if (input.outcome === "succeeded" && input.remote === undefined)
       throw new Error("A succeeded delivery needs its remote record");
+    const error = input.outcome === "succeeded" ? null : (input.error ?? null);
     const row = db
       .query<
         DeliveryRow,
-        [string, string | null, string | null, string | null, string | null, number, string, string]
+        [
+          string,
+          string | null,
+          string | null,
+          string | null,
+          string | null,
+          number,
+          string,
+          string,
+          number,
+        ]
       >(
         `UPDATE improvement_delivery SET state = ?, remote_id = coalesce(?, remote_id),
            remote_identifier = coalesce(?, remote_identifier), remote_url = coalesce(?, remote_url),
            error = ?, claim_owner = NULL, claim_expires_at = NULL, updated_at = ?
-         WHERE id = ? AND state = 'claimed' AND claim_owner = ?
+         WHERE id = ? AND state = 'claimed' AND claim_owner = ? AND attempts = ?
          RETURNING *`,
       )
       .get(
@@ -638,12 +661,28 @@ export function settleImprovementDelivery(
         input.remote?.id ?? null,
         input.remote?.identifier ?? null,
         input.remote?.url ?? null,
-        input.outcome === "succeeded" ? null : (input.error ?? null),
+        error,
         input.now,
         input.deliveryId,
         input.owner,
+        input.attempt,
       );
     if (row === null) return false;
+    db.run(
+      `UPDATE improvement_delivery_attempt SET outcome = ?, remote_id = ?, remote_identifier = ?,
+         remote_url = ?, error = ?, settled_at = ?
+       WHERE delivery_id = ? AND attempt = ? AND outcome = 'claimed'`,
+      [
+        input.outcome,
+        input.remote?.id ?? null,
+        input.remote?.identifier ?? null,
+        input.remote?.url ?? null,
+        error,
+        input.now,
+        input.deliveryId,
+        input.attempt,
+      ],
+    );
     if (input.outcome === "succeeded" && row.operation !== "evidence_comment")
       db.run(
         `UPDATE improvement SET issue_id = ?, issue_identifier = ?, issue_url = ?,
@@ -658,6 +697,33 @@ export function settleImprovementDelivery(
       );
     return true;
   });
+}
+
+export type ImprovementDeliveryAttempt = {
+  attempt: number;
+  owner: string;
+  claimedAt: number;
+  claimExpiresAt: number;
+  outcome: "claimed" | "succeeded" | "failed" | "unknown" | "expired";
+  remoteId: string | null;
+  remoteIdentifier: string | null;
+  remoteUrl: string | null;
+  error: string | null;
+  settledAt: number | null;
+};
+
+export function listImprovementDeliveryAttempts(
+  db: Database,
+  deliveryId: string,
+): ImprovementDeliveryAttempt[] {
+  return db
+    .query<ImprovementDeliveryAttempt, [string]>(
+      `SELECT attempt, owner, claimed_at AS claimedAt, claim_expires_at AS claimExpiresAt, outcome,
+         remote_id AS remoteId, remote_identifier AS remoteIdentifier, remote_url AS remoteUrl,
+         error, settled_at AS settledAt
+       FROM improvement_delivery_attempt WHERE delivery_id = ? ORDER BY attempt`,
+    )
+    .all(deliveryId);
 }
 
 export function recordImprovementOutcome(

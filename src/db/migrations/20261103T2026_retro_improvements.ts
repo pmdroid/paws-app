@@ -271,6 +271,26 @@ CREATE TABLE improvement_delivery (
 CREATE INDEX improvement_delivery_open ON improvement_delivery(state)
   WHERE state IN ('pending','claimed','failed','unknown');
 
+CREATE TABLE improvement_delivery_attempt (
+  delivery_id TEXT NOT NULL REFERENCES improvement_delivery(id),
+  attempt INTEGER NOT NULL CHECK(attempt >= 1),
+  owner TEXT NOT NULL,
+  claimed_at INTEGER NOT NULL,
+  claim_expires_at INTEGER NOT NULL,
+  outcome TEXT NOT NULL DEFAULT 'claimed'
+    CHECK(outcome IN ('claimed','succeeded','failed','unknown','expired')),
+  remote_id TEXT,
+  remote_identifier TEXT,
+  remote_url TEXT,
+  error TEXT,
+  settled_at INTEGER,
+  PRIMARY KEY (delivery_id, attempt)
+) STRICT;
+CREATE TRIGGER improvement_delivery_attempt_settled BEFORE UPDATE ON improvement_delivery_attempt
+WHEN OLD.outcome <> 'claimed' OR OLD.owner IS NOT NEW.owner OR OLD.claimed_at IS NOT NEW.claimed_at
+  OR OLD.claim_expires_at IS NOT NEW.claim_expires_at
+BEGIN SELECT RAISE(ABORT, 'settled delivery attempts are immutable'); END;
+
 CREATE TABLE improvement_outcome (
   id INTEGER PRIMARY KEY,
   improvement_id TEXT NOT NULL REFERENCES improvement(id),
