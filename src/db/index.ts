@@ -460,6 +460,7 @@ export {
   type CiRound,
   type CiRoundCheck,
 } from "./ci-rounds";
+export { hasCiRerun, listCiReruns, recordCiRerun, type CiRerun } from "./ci-reruns";
 export {
   countRebaseReturns,
   listRebaseReturns,

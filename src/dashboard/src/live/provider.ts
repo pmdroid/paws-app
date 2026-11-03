@@ -92,6 +92,7 @@ import {
   listWorkItemsByStates,
   listWorkItemEventRows,
   listLastWorkItemEventTimes,
+  listCiReruns,
   resolveDashboardAlias,
   type CloseoutProgressRecord,
   type CloseoutProgressState,
@@ -1310,8 +1311,9 @@ const TIMELINE_LIMIT = 200;
 const HISTORY_LIMIT = 100_000;
 
 /**
- * The item's state changes from `work_item_event`, oldest first, omitted while it has none,
- * and the time it spent in each state since it was created, up to `now` while it is open.
+ * The item's state changes from `work_item_event` with its agent's CI re-runs, oldest first,
+ * omitted while it has none, and the time it spent in each state since it was created, up to
+ * `now` while it is open. A re-run shows the state the item was in when it was requested.
  */
 export function historyOf(
   db: Database,
@@ -1323,9 +1325,28 @@ export function historyOf(
   const created = facts.get(record.id)?.createdAt;
   const stateTimes =
     created === undefined ? {} : { stateTimes: toStateTimes(totalsOf(record, created, rows, now)) };
-  if (rows.length === 0) return stateTimes;
-  return {
-    timeline: rows.slice(-TIMELINE_LIMIT).map((row) => ({
+  const reruns = listCiReruns(db, record.id);
+  if (rows.length === 0 && reruns.length === 0) return stateTimes;
+  const events: StatusItemEvent[] = [];
+  const pending = [...reruns];
+  const pushReruns = (until: number, state: string) => {
+    while (pending.length && pending[0]!.at < until) {
+      const rerun = pending.shift()!;
+      events.push({
+        at: iso(rerun.at),
+        kind: "ci_rerun",
+        from: state,
+        to: state,
+        event: "ci_rerun",
+        reason: rerun.reason,
+        actor: "agent",
+        runIds: rerun.runIds,
+      });
+    }
+  };
+  for (const row of rows) {
+    pushReruns(row.at, row.fromState);
+    events.push({
       at: iso(row.at),
       kind: row.kind,
       from: row.fromState,
@@ -1333,7 +1354,11 @@ export function historyOf(
       event: row.event,
       reason: row.reason,
       actor: row.actor,
-    })),
+    });
+  }
+  pushReruns(Number.POSITIVE_INFINITY, rows.at(-1)?.toState ?? record.state);
+  return {
+    timeline: events.slice(-TIMELINE_LIMIT),
     ...stateTimes,
   };
 }

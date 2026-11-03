@@ -172,6 +172,7 @@ interface HostToolBridgeOptions {
   closeout?: CloseoutSession;
   closeoutPolicy?: () => Promise<PolicyFilesLoad>;
   ciLog?: (job?: string) => Promise<string>;
+  ciRerun?: (reason: string) => Promise<string>;
   /** Installed runtimes' bin dirs, put in front of `PATH` for Closeout checks. */
   runtimeBinPaths?: readonly string[];
   /** `PATH` for Closeout checks before the runtime bin dirs. Defaults to this process's `PATH`. */
@@ -272,6 +273,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             closeout ? "get_closeout" : "",
             closeout && allowCloseoutRun ? "run_closeout" : "",
             options.ciLog ? "get_ci_log" : "",
+            options.ciRerun ? "rerun_ci" : "",
           ]
             .filter(Boolean)
             .join(","),
@@ -397,6 +399,21 @@ async function handleConnection(
       let answer: string;
       try {
         answer = await abortable(options.ciLog(job?.trim()), options.signal);
+      } finally {
+        options.onHookEnd?.();
+      }
+      socket.end(`${JSON.stringify({ id, answer })}\n`);
+      return;
+    }
+    if (parsed.tool === "rerun_ci") {
+      if (!options.ciRerun) throw new Error("rerun_ci is unavailable");
+      const reason = parsed.arguments?.reason;
+      if (typeof reason !== "string" || !reason.trim() || reason.length > 2000)
+        throw new Error("reason must be 1 to 2000 characters");
+      options.onHookStart?.();
+      let answer: string;
+      try {
+        answer = await abortable(options.ciRerun(reason.trim()), options.signal);
       } finally {
         options.onHookEnd?.();
       }

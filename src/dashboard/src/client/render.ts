@@ -709,7 +709,7 @@ function runDetails(item: StatusItem, run: StatusRun | undefined, view: Closeout
   ].filter(Boolean);
   if (!parts.length) return "";
   const summary = [
-    item.timeline?.length ? `${item.timeline.length} state changes` : "",
+    stateChanges(item) ? `${stateChanges(item)} state changes` : "",
     run?.setup ? "skills and hooks" : "",
     facts.length ? "Linear requests" : "",
   ]
@@ -733,7 +733,11 @@ const RESTART_REASON_LABELS: Record<string, string> = {
   answer: "an answer",
 };
 
-/** Every committed state change of the item, oldest first, from `work_item_event`. */
+function stateChanges(item: StatusItem): number {
+  return (item.timeline ?? []).filter((entry) => entry.kind !== "ci_rerun").length;
+}
+
+/** Every committed state change of the item and its agent's CI re-runs, oldest first. */
 function itemTimeline(item: StatusItem): string {
   if (!item.timeline?.length) return "";
   return `<section class="item-timeline" aria-labelledby="item-timeline-heading"><h3 id="item-timeline-heading">State changes</h3>
@@ -746,6 +750,7 @@ export function timelineGroups(entries: readonly StatusItemEvent[]): StatusItemE
   const same = (left: StatusItemEvent | undefined, right: StatusItemEvent | undefined) =>
     left !== undefined &&
     right !== undefined &&
+    left.kind !== "ci_rerun" &&
     left.kind === right.kind &&
     left.from === right.from &&
     left.to === right.to &&
@@ -783,7 +788,15 @@ function timelineLoop(group: readonly StatusItemEvent[]): string {
   return `<li data-kind="loop"><span class="timeline-time">${timelineTime(first.at)}–${timelineTime(last.at)}</span><span class="timeline-dot" data-state="${esc(first.to)}" aria-hidden="true"></span><div class="timeline-body"><p class="timeline-move"><strong>${plainWords(first.to)}</strong> and back to ${plainWords(second.to)} <span class="tag">${group.length / 2} times</span></p><p class="muted">${plainWords(first.event)} · ${plainWords(second.event)}</p></div></li>`;
 }
 
+function ciRerunEntry(entry: StatusItemEvent): string {
+  const runs = entry.runIds?.length
+    ? `workflow run ${entry.runIds.map((id) => esc(String(id))).join(", ")}`
+    : "";
+  return `<li data-kind="ci_rerun"><span class="timeline-time">${timelineTime(entry.at)}</span><span class="timeline-dot" data-state="${esc(entry.to)}" aria-hidden="true"></span><div class="timeline-body"><p class="timeline-move"><strong>CI re-run</strong></p><p class="timeline-why">CI re-run requested by the agent: ${esc(entry.reason ?? "")}</p>${runs ? `<p class="muted">${runs}</p>` : ""}</div></li>`;
+}
+
 function itemTimelineEntry(entry: StatusItemEvent): string {
+  if (entry.kind === "ci_rerun") return ciRerunEntry(entry);
   const why =
     entry.kind === "restart"
       ? `Back to the agent for ${esc(RESTART_REASON_LABELS[entry.reason ?? ""] ?? (entry.reason ?? "a restart").replaceAll("_", " "))}.`

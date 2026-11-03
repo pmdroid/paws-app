@@ -60,6 +60,12 @@ const ciLogRequest = z.strictObject({
   job: z.string().min(1).max(256).optional(),
 });
 
+const ciRerunRequest = z.strictObject({
+  type: z.literal("ci_rerun"),
+  requestId: z.uuid(),
+  reason: z.string().min(1).max(2000),
+});
+
 function executionId(now: number): string {
   const bytes = randomBytes(16);
   bytes.writeUIntBE(now, 0, 6);
@@ -401,7 +407,7 @@ export function openExecutionJournal(root: string) {
       return Boolean(
         db
           .query(
-            "SELECT 1 FROM delivery d JOIN execution e ON e.id=d.execution_id WHERE e.id=? AND d.sequence>e.answer_cursor AND json_extract(d.payload,'$.type') IN ('question','artifact','closeout_policy','ci_log') LIMIT 1",
+            "SELECT 1 FROM delivery d JOIN execution e ON e.id=d.execution_id WHERE e.id=? AND d.sequence>e.answer_cursor AND json_extract(d.payload,'$.type') IN ('question','artifact','closeout_policy','ci_log','ci_rerun') LIMIT 1",
           )
           .get(id),
       );
@@ -495,7 +501,11 @@ export function openExecutionJournal(root: string) {
           const publication = artifact.safeParse(raw);
           const policy = policyRequest.safeParse(raw);
           const ciLog = ciLogRequest.safeParse(raw);
-          if (ciLog.success) {
+          const ciRerun = ciRerunRequest.safeParse(raw);
+          if (ciRerun.success) {
+            event = { type: "ci_rerun", reason: ciRerun.data.reason };
+            requestId = ciRerun.data.requestId;
+          } else if (ciLog.success) {
             event = {
               type: "ci_log",
               ...(ciLog.data.job === undefined ? {} : { job: ciLog.data.job }),
@@ -599,7 +609,9 @@ export function openExecutionJournal(root: string) {
               raw &&
               typeof raw === "object" &&
               "type" in raw &&
-              ["question", "artifact", "closeout_policy", "ci_log"].includes(String(raw.type))
+              ["question", "artifact", "closeout_policy", "ci_log", "ci_rerun"].includes(
+                String(raw.type),
+              )
             )
               throw new Error("Invalid runner question");
             const permission = z
@@ -776,14 +788,14 @@ export function openExecutionJournal(root: string) {
       if (
         !delivery ||
         delivery.sent !== 1 ||
-        !["question", "artifact", "closeout_policy", "ci_log"].includes(
+        !["question", "artifact", "closeout_policy", "ci_log", "ci_rerun"].includes(
           RunnerEventSchema.parse(JSON.parse(delivery.payload)).type,
         )
       )
         throw new Error("Answer does not match a delivered question or artifact");
       const earlier = db
         .query<{ sequence: number }, [string, number]>(
-          "SELECT d.sequence FROM delivery d JOIN execution e ON e.id=d.execution_id WHERE d.execution_id=? AND d.sequence>e.answer_cursor AND d.sequence<? AND json_extract(d.payload,'$.type') IN ('question','artifact','closeout_policy','ci_log') LIMIT 1",
+          "SELECT d.sequence FROM delivery d JOIN execution e ON e.id=d.execution_id WHERE d.execution_id=? AND d.sequence>e.answer_cursor AND d.sequence<? AND json_extract(d.payload,'$.type') IN ('question','artifact','closeout_policy','ci_log','ci_rerun') LIMIT 1",
         )
         .get(id, sequence);
       if (earlier) throw new Error("Answer would skip an earlier question or artifact");

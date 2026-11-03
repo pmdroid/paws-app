@@ -3,6 +3,7 @@ import type { GitHubApp, InstallationToken, MintTokenInput } from "./app";
 import { signAppJwt } from "./jwt";
 import {
   ACTIONS_LOG_PERMISSIONS,
+  ACTIONS_RERUN_PERMISSIONS,
   INSTALLATION_PERMISSIONS,
   MAX_TOKEN_TTL_MS,
   TOKEN_TTL_SKEW_MS,
@@ -21,7 +22,7 @@ const ALLOWED_PERMISSIONS = new Set([
 ]);
 const withoutWorkflows = new Set<string>();
 
-export type TokenAccess = "read" | "write" | "actions";
+export type TokenAccess = "read" | "write" | "actions" | "actions_write";
 
 export type MintedToken = {
   token: string;
@@ -59,6 +60,7 @@ export async function mintInstallationToken(input: {
   let response: GitHubResponse;
   if (input.access === "read") response = await request({ contents: "read", metadata: "read" });
   else if (input.access === "actions") response = await request(ACTIONS_LOG_PERMISSIONS);
+  else if (input.access === "actions_write") response = await request(ACTIONS_RERUN_PERMISSIONS);
   else if (withoutWorkflows.has(input.installationId))
     response = await request(INSTALLATION_PERMISSIONS);
   else {
@@ -119,13 +121,15 @@ export function assertScopedToken(
   }
   if (!isRecord(body.permissions))
     throw new GitHubTokenError("installation token permissions are missing");
-  if (access === "actions") {
+  if (access === "actions" || access === "actions_write") {
+    const expected: Record<string, string> =
+      access === "actions" ? ACTIONS_LOG_PERMISSIONS : ACTIONS_RERUN_PERMISSIONS;
     const granted = Object.entries(body.permissions);
     if (
-      body.permissions.actions !== "read" ||
-      granted.some(([key, value]) => !(key in ACTIONS_LOG_PERMISSIONS) || value !== "read")
+      body.permissions.actions !== expected.actions ||
+      granted.some(([key, value]) => expected[key] !== value)
     )
-      throw new GitHubTokenError("Actions log token grants unexpected permissions");
+      throw new GitHubTokenError("Actions token grants unexpected permissions");
     return { token: body.token, expiresAt };
   }
   for (const [key, value] of Object.entries(body.permissions)) {
