@@ -10,11 +10,13 @@ import {
   type QuestionListResponse,
   type IssueDetailResponse,
   type IssueListResponse,
+  type MergeQueueResponse,
   type StatusAgentCloseout,
   type StatusCheck,
   type StatusItemDetail,
   type StatusItemEvent,
   type StatusSnapshot,
+  type StatusSnapshotBase,
 } from "../src/contract";
 import type { CloseoutView } from "../src/client/closeout";
 import type { Route } from "../src/client/route";
@@ -762,6 +764,7 @@ export function pageData(
   questions: QuestionListResponse;
   question: QuestionDetailResponse | null;
   missingQuestion: string | null;
+  mergeQueue: MergeQueueResponse | null;
 } {
   const readers = questionReaders(full);
   const asked = route.view === "questions" ? route.id : null;
@@ -782,6 +785,26 @@ export function pageData(
     questions: readers.questions(),
     question: asked === null ? null : readers.question(asked),
     missingQuestion: asked !== null && readers.question(asked) === null ? asked : null,
+    mergeQueue: route.view === "mergeQueue" ? mergeQueueOf(full) : null,
+  };
+}
+
+export function mergeQueueOf(snapshot: StatusSnapshotBase): MergeQueueResponse {
+  return {
+    source: snapshot.source,
+    generatedAt: snapshot.generatedAt,
+    project: snapshot.project,
+    entries: snapshot.mergeQueue,
+    history: snapshot.mergeHistory ?? [],
+    issues: snapshot.items.map(({ id, title, owner, project, pr }) => ({
+      id,
+      title,
+      owner,
+      project,
+      pr,
+    })),
+    pushOutages: snapshot.pushOutages ?? [],
+    policyRunnerWarnings: snapshot.policyRunnerWarnings ?? [],
   };
 }
 

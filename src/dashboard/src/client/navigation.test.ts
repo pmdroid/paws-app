@@ -132,7 +132,8 @@ test("the Conversations page is gone and its old links open the issue list", () 
 
 test("only work pages read the status snapshot; issue, Overview and Questions pages read their own resources", () => {
   const pages = Object.keys(PAGES).filter((view) => needsSnapshot({ view, id: null } as Route));
-  expect(pages).toEqual(["mergeQueue", "evidence"]);
+  expect(pages).toEqual(["evidence"]);
+  expect(routeResource({ view: "mergeQueue" })).toBe("mergeQueue");
   expect(routeResource({ view: "issues", id: null })).toBe("issues");
   expect(routeResource({ view: "issues", id: "ENG-101" })).toBe("issue");
   expect(routeResource({ view: "runs", id: "r-1" })).toBe("issues");
@@ -152,7 +153,7 @@ test("every route names the status slices it renders", () => {
     issues: [],
     runs: [],
     alias: [],
-    mergeQueue: ["items", "mergeQueue", "mergeHistory"],
+    mergeQueue: [],
     questions: [],
     evidence: ["items", "evidence"],
     findings: [],
@@ -165,7 +166,6 @@ test("a list loaded for one page does not stand in for another page's slices", (
   const evidence = { ...statusFixture(), slices: ["items", "evidence"] };
   const evidenceOnly = { ...statusFixture(), slices: ["evidence"] } as typeof evidence;
   expect(routeCovered({ view: "evidence", id: null }, evidence as never)).toBe(true);
-  expect(routeCovered({ view: "mergeQueue" }, evidence as never)).toBe(false);
   expect(routeCovered({ view: "evidence", id: null }, evidenceOnly as never)).toBe(false);
   expect(routeCovered({ view: "runners", id: null }, null)).toBe(true);
   expect(routeCovered({ view: "mergeQueue" }, statusFixture())).toBe(true);

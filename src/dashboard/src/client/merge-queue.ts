@@ -1,26 +1,21 @@
 import type {
+  MergeQueueIssue,
+  MergeQueueResponse,
   MergeWaitReason,
-  StatusItem,
   StatusMergeEntry,
   StatusMergeOutcome,
   StatusMergeSettings,
-  StatusSnapshot,
 } from "../contract";
 import { ago, esc, safeHref, statePill } from "./format";
 import { routeHref } from "./route";
 
 /** Every task Closeout accepted that waits to merge, one section per repository. */
-export function renderMergeQueue(snapshot: StatusSnapshot): string {
-  const repositories = groups(snapshot);
+export function renderMergeQueue(queue: MergeQueueResponse): string {
+  const repositories = groups(queue);
   const intro = `<p>Accepted pull requests merge one at a time per repository, in the order Closeout accepted them.</p>`;
   if (!repositories.length)
     return `${intro}<div class="empty" role="status">Nothing is waiting to merge.</div>`;
-  return `${intro}${repositories.map((group) => section(snapshot, group)).join("")}`;
-}
-
-/** The navigation badge: how many tasks wait to merge. */
-export function mergeQueueCount(snapshot: StatusSnapshot | null): number {
-  return snapshot?.mergeQueue.length ?? 0;
+  return `${intro}${repositories.map((group) => section(queue, group)).join("")}`;
 }
 
 type Group = {
@@ -31,7 +26,7 @@ type Group = {
   history: StatusMergeOutcome[];
 };
 
-function groups(snapshot: StatusSnapshot): Group[] {
+function groups(queue: MergeQueueResponse): Group[] {
   const byRepository = new Map<string | null, Group>();
   const group = (repository: string | null, settings: StatusMergeSettings): Group => {
     let found = byRepository.get(repository);
@@ -41,10 +36,8 @@ function groups(snapshot: StatusSnapshot): Group[] {
     }
     return found;
   };
-  for (const entry of snapshot.mergeQueue)
-    group(entry.repository, entry.settings).waiting.push(entry);
-  for (const entry of snapshot.mergeHistory ?? [])
-    group(entry.repository, entry.settings).history.push(entry);
+  for (const entry of queue.entries) group(entry.repository, entry.settings).waiting.push(entry);
+  for (const entry of queue.history) group(entry.repository, entry.settings).history.push(entry);
   for (const found of byRepository.values()) {
     // An issue rule changes one task, not the repository. The section shows the settings most
     // tasks there use; a task its rule sets apart says so in its row.
@@ -68,7 +61,7 @@ function groups(snapshot: StatusSnapshot): Group[] {
   );
 }
 
-function section(snapshot: StatusSnapshot, group: Group): string {
+function section(queue: MergeQueueResponse, group: Group): string {
   const { repository } = group;
   const queued = group.settings.order === "queue";
   const id =
@@ -76,10 +69,10 @@ function section(snapshot: StatusSnapshot, group: Group): string {
       ? "merge-repo-not-known"
       : `merge-repo-${repository.replace(/[^A-Za-z0-9-]/g, "-")}`;
   const table = group.waiting.length
-    ? `<table class="run-table merge-table"><thead><tr>${queued ? `<th class="run-cell">#</th>` : ""}<th class="run-cell">Issue</th><th class="run-cell hide-phone">Project</th><th class="run-cell hide-phone">Delegated by</th><th class="run-cell">PR</th><th class="run-cell hide-phone">Waiting</th><th class="run-cell">Step</th><th class="run-cell hide-phone">Detail</th></tr></thead><tbody>${group.waiting.map((entry) => row(snapshot, group, entry)).join("")}</tbody></table>`
+    ? `<table class="run-table merge-table"><thead><tr>${queued ? `<th class="run-cell">#</th>` : ""}<th class="run-cell">Issue</th><th class="run-cell hide-phone">Project</th><th class="run-cell hide-phone">Delegated by</th><th class="run-cell">PR</th><th class="run-cell hide-phone">Waiting</th><th class="run-cell">Step</th><th class="run-cell hide-phone">Detail</th></tr></thead><tbody>${group.waiting.map((entry) => row(queue, group, entry)).join("")}</tbody></table>`
     : `<p class="muted">No pull requests waiting.</p>`;
   const done = group.history.length
-    ? `<h3>Done and stopped</h3><ul class="overview-work" role="list">${group.history.map((entry) => outcome(snapshot, entry)).join("")}</ul>`
+    ? `<h3>Done and stopped</h3><ul class="overview-work" role="list">${group.history.map((entry) => outcome(queue, entry)).join("")}</ul>`
     : "";
   return `<section class="col merge-repo" aria-labelledby="${esc(id)}"><div class="between"><h2 id="${esc(id)}">${repository === null ? "Repository not known" : esc(repository)}</h2>${repository === null ? "" : `<div class="row">${settingsTags(group.settings)}</div>`}</div>${repository === null ? `<p class="muted">Paws has no repository for these tasks.</p>` : queued ? "" : `<p class="muted">No queue here: each pull request merges when green.</p>`}${table}${done}</section>`;
 }
@@ -109,17 +102,17 @@ const STEP: Record<MergeWaitReason, { label: string; state: string }> = {
   closeout: { label: "Closeout re-check", state: "verifying" },
 };
 
-function row(snapshot: StatusSnapshot, group: Group, entry: StatusMergeEntry): string {
-  const item = snapshot.items.find((candidate) => candidate.id === entry.itemId);
+function row(queue: MergeQueueResponse, group: Group, entry: StatusMergeEntry): string {
+  const item = queue.issues.find((candidate) => candidate.id === entry.itemId);
   const queued = group.settings.order === "queue";
   const step = STEP[entry.waitingFor];
   const position = queued
     ? `<td class="run-cell">${entry.position === null ? `<span class="muted" aria-label="No place yet">–</span>` : String(entry.position)}</td>`
     : "";
-  return `<tr data-merge-item="${esc(entry.itemId)}">${position}<td class="run-cell">${issueLink(item, entry.itemId)}</td><td class="run-cell hide-phone">${esc(item?.project?.name ?? "No project")}</td><td class="run-cell hide-phone">${esc(item?.owner ?? "")}</td><td class="run-cell">${pullLink(item)}</td><td class="run-cell hide-phone"><span class="muted" title="Closeout accepted ${esc(entry.acceptedAt)}">${esc(waited(entry.acceptedAt, snapshot.generatedAt))}</span></td><td class="run-cell">${statePill(step.state, step.label)}</td><td class="run-cell hide-phone">${esc(detail(group, entry, item))}</td></tr>`;
+  return `<tr data-merge-item="${esc(entry.itemId)}">${position}<td class="run-cell">${issueLink(item, entry.itemId)}</td><td class="run-cell hide-phone">${esc(item?.project?.name ?? "No project")}</td><td class="run-cell hide-phone">${esc(item?.owner ?? "")}</td><td class="run-cell">${pullLink(item)}</td><td class="run-cell hide-phone"><span class="muted" title="Closeout accepted ${esc(entry.acceptedAt)}">${esc(waited(entry.acceptedAt, queue.generatedAt))}</span></td><td class="run-cell">${statePill(step.state, step.label)}</td><td class="run-cell hide-phone">${esc(detail(group, entry, item))}</td></tr>`;
 }
 
-function detail(group: Group, entry: StatusMergeEntry, item: StatusItem | undefined): string {
+function detail(group: Group, entry: StatusMergeEntry, item: MergeQueueIssue | undefined): string {
   const lines: string[] = [];
   if (entry.detail) lines.push(entry.detail.replace(/\.$/, ""));
   else if (entry.waitingFor === "review")
@@ -142,25 +135,25 @@ function detail(group: Group, entry: StatusMergeEntry, item: StatusItem | undefi
   return lines.join(" · ");
 }
 
-function outcome(snapshot: StatusSnapshot, entry: StatusMergeOutcome): string {
-  const item = snapshot.items.find((candidate) => candidate.id === entry.itemId);
+function outcome(queue: MergeQueueResponse, entry: StatusMergeOutcome): string {
+  const item = queue.issues.find((candidate) => candidate.id === entry.itemId);
   const state =
     entry.outcome === "merged"
       ? statePill("merged", "Merged")
       : statePill("warn", "Back with the agent");
   const why =
     entry.outcome === "merged"
-      ? `merged ${ago(entry.at, snapshot.generatedAt)}`
-      : `${entry.reason === "conflict" ? "the branch update conflicted" : "CI failed"} ${ago(entry.at, snapshot.generatedAt)}`;
+      ? `merged ${ago(entry.at, queue.generatedAt)}`
+      : `${entry.reason === "conflict" ? "the branch update conflicted" : "CI failed"} ${ago(entry.at, queue.generatedAt)}`;
   return `<li data-merge-outcome="${esc(entry.itemId)}"><div class="between"><span>${issueLink(item, entry.itemId)} ${pullLink(item)}</span>${state}</div><p class="muted">${esc(why[0]!.toUpperCase() + why.slice(1))}.</p></li>`;
 }
 
-function issueLink(item: StatusItem | undefined, id: string): string {
+function issueLink(item: MergeQueueIssue | undefined, id: string): string {
   const href = routeHref({ view: "issues", id });
   return `<a class="work-title" href="${href}"><span class="lin-id">${esc(id)}</span> ${esc(item?.title ?? "")}</a>`;
 }
 
-function pullLink(item: StatusItem | undefined): string {
+function pullLink(item: MergeQueueIssue | undefined): string {
   if (!item?.pr) return "";
   const href = safeHref(item.pr.url);
   return href

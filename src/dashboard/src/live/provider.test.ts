@@ -35,7 +35,12 @@ import {
   saveCandidateRisk,
   saveRiskFix,
 } from "../../../db";
-import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
+import {
+  parseMergeQueueResponse,
+  parseStatusItemDetail,
+  parseStatusSnapshot,
+  statusIntegrity,
+} from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
 import { createLiveStatusProvider, STATUS_RECENT_LIMIT, STATUS_RECENT_MS } from "./provider";
 import { waitReason } from "../client/format";
@@ -796,10 +801,14 @@ describe("live status provider", () => {
       now: now - 120_000,
     });
 
-    const snapshot = createLiveStatusProvider(db, { now: () => new Date(now) }).snapshot();
-    const parsed = parseStatusSnapshot(snapshot);
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
+    const parsed = parseStatusSnapshot(provider.snapshot());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(statusIntegrity(parsed.snapshot)).toEqual([]);
+    const resource = parseMergeQueueResponse(provider.mergeQueue());
+    if (!resource.ok) throw new Error(resource.error);
+    expect(resource.response.entries).toEqual(parsed.snapshot.mergeQueue);
+    expect(resource.response.history).toEqual(parsed.snapshot.mergeHistory ?? []);
     expect(
       parsed.snapshot.mergeQueue.map((entry) => [
         entry.repository,
@@ -884,16 +893,21 @@ describe("live status provider", () => {
       now: now - 120_000,
     });
 
-    const snapshot = createLiveStatusProvider(db, { now: () => new Date(now) }).snapshot();
-    const parsed = parseStatusSnapshot(snapshot);
+    const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
+    const snapshot = parseStatusSnapshot(provider.snapshot());
+    if (!snapshot.ok) throw new Error(snapshot.error);
+    const parsed = parseMergeQueueResponse(provider.mergeQueue());
     if (!parsed.ok) throw new Error(parsed.error);
-    expect(parsed.snapshot.mergeQueue.map((entry) => [entry.itemId, entry.repository])).toEqual([
+    expect(parsed.response.entries.map((entry) => [entry.itemId, entry.repository])).toEqual([
       ["ENG-21", "pmdroid/paws-app"],
     ]);
     expect(
-      parsed.snapshot.mergeHistory?.map((entry) => [entry.itemId, entry.repository, entry.outcome]),
+      parsed.response.history.map((entry) => [entry.itemId, entry.repository, entry.outcome]),
     ).toEqual([["ENG-22", "pmdroid/paws-app", "back_with_agent"]]);
-    const html = renderMergeQueue(parsed.snapshot);
+    expect(parsed.response.entries).toEqual(snapshot.snapshot.mergeQueue);
+    expect(parsed.response.history).toEqual(snapshot.snapshot.mergeHistory ?? []);
+    expect(parsed.response.issues.map((issue) => issue.id).sort()).toEqual(["ENG-21", "ENG-22"]);
+    const html = renderMergeQueue(parsed.response);
     expect(html.match(/<h2 [^>]*>[^<]*<\/h2>/g)).toEqual([
       `<h2 id="merge-repo-pmdroid-paws-app">pmdroid/paws-app</h2>`,
     ]);

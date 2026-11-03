@@ -1,14 +1,15 @@
-import { statusFixture } from "../../test/fixtures";
+import { mergeQueueOf, statusFixture } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import {
+  parseMergeQueueResponse,
   parseStatusSnapshot,
   statusIntegrity,
+  type MergeQueueResponse,
   type StatusItem,
   type StatusMergeEntry,
   type StatusMergeSettings,
   type StatusSnapshot,
 } from "../contract";
-import { mergeQueueCount } from "./merge-queue";
 import { render } from "./render";
 import { matchRoute, routePath } from "./route";
 import { NAVIGATION } from "./navigation";
@@ -120,11 +121,18 @@ function twoRepositories(): StatusSnapshot {
   return snapshot;
 }
 
+function resource(snapshot: StatusSnapshot): MergeQueueResponse {
+  const parsed = parseMergeQueueResponse(JSON.parse(JSON.stringify(mergeQueueOf(snapshot))));
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.response;
+}
+
 function page(snapshot: StatusSnapshot): string {
   return render({
     route: { view: "mergeQueue" },
     phase: "ready",
-    snapshot,
+    snapshot: null,
+    mergeQueue: resource(snapshot),
     error: null,
     engineUrl: null,
   }).content;
@@ -144,8 +152,7 @@ describe("merge queue page", () => {
     expect(NAVIGATION[0].views).toContain("mergeQueue");
     expect(routePath({ view: "mergeQueue" })).toBe("/merge-queue");
     expect(matchRoute("/merge-queue")).toEqual({ view: "mergeQueue" });
-    expect(mergeQueueCount(twoRepositories())).toBe(5);
-    expect(mergeQueueCount(null)).toBe(0);
+    expect(resource(twoRepositories()).entries).toHaveLength(5);
   });
 
   test("two repositories: three queued issues in order, and one repository without the queue", () => {
@@ -240,7 +247,7 @@ describe("merge queue page", () => {
     snapshot.mergeQueue = [];
     snapshot.mergeHistory = [];
     expect(page(snapshot)).toContain("Nothing is waiting to merge.");
-    expect(mergeQueueCount(snapshot)).toBe(0);
+    expect(resource(snapshot).entries).toHaveLength(0);
   });
 
   test("detail columns hide on phones", () => {

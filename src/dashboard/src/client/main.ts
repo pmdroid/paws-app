@@ -1,11 +1,9 @@
 import { journalCaught } from "../journal";
 import { renderMarkup } from "./theme";
 import { mountShell } from "./shell";
-import { mergeQueueCount } from "./merge-queue";
 
 import {
   FINDING_ISSUE_PATH,
-  hasStatusSlice,
   issueCheckLogPath,
   parseIssueCheckLogResponse,
   type IssueCheckLogResponse,
@@ -180,12 +178,14 @@ function routeChanged(): void {
           ? page.issues !== null
           : resource === "overview"
             ? page.overview !== null
-            : resource === "questions"
-              ? page.questions !== null
-              : resource === "question"
-                ? page.question?.question.id === openQuestion(route) ||
-                  page.missingQuestion === openQuestion(route)
-                : routeCovered(route, page.snapshot);
+            : resource === "mergeQueue"
+              ? page.mergeQueue !== null
+              : resource === "questions"
+                ? page.questions !== null
+                : resource === "question"
+                  ? page.question?.question.id === openQuestion(route) ||
+                    page.missingQuestion === openQuestion(route)
+                  : routeCovered(route, page.snapshot);
   phase = shown ? "ready" : "loading";
   error = null;
   paint();
@@ -366,6 +366,7 @@ function paint(): void {
     issues: page.issues,
     issue: page.issue,
     overview: page.overview,
+    mergeQueue: page.mergeQueue,
     questions: page.questions,
     question: page.question,
     missingQuestion: page.missingQuestion,
@@ -383,8 +384,8 @@ function paint(): void {
       : null;
   if (route.view === "overview" && page.overview !== null)
     shell.setCounts({ mergeQueue: page.overview.mergeQueueCount });
-  else if (page.snapshot && hasStatusSlice(page.snapshot, "mergeQueue"))
-    shell.setCounts({ mergeQueue: mergeQueueCount(page.snapshot) });
+  else if (route.view === "mergeQueue" && page.mergeQueue !== null)
+    shell.setCounts({ mergeQueue: page.mergeQueue.entries.length });
   shell.setBreadcrumb(
     shown
       ? { issueId: shown.itemId, entityId: shown.id }
