@@ -71,6 +71,9 @@ export type RunnerSetupNeed =
   | { reason: "no-runner" }
   | { reason: "agent-not-signed-in"; runnerId: string; runnerName: string; agent: string };
 export type PlacementProfile = Pick<RunnerProfile, "agent"> & { model?: string | null };
+export type PlacementAccount = { accountId: string; bindingId: string; named: boolean };
+export type PlacementAccounts = { revision: string; accountIds: readonly string[] };
+export type PlacementCandidate = { id: string; workspaceId: string; account?: PlacementAccount };
 export type PlacementRequest = {
   /** Workspace maintenance helpers run only on active admins own runners. */
   findingGroups?: boolean;
@@ -81,6 +84,7 @@ export type PlacementRequest = {
   purpose: PlacementPurpose;
   /** Failed hosts to avoid for new placement; an online pin retries a fresh session there. */
   excludeRunnerIds?: readonly string[];
+  accounts?: PlacementAccounts;
   /** Runner assigned to this run. Work moves only when unavailable; preparation is unpinned. */
   pinnedRunnerId?: string;
   /** For unpinned work: the runner tried first when it has a free slot, the run's own. */
@@ -88,7 +92,7 @@ export type PlacementRequest = {
   /** The runner a handed-over run left: the pin no longer holds there, and the run avoids it. */
   handedOverFrom?: string;
   /** The runner holding the item's last agent session, for implementer work. */
-  session?: { runnerId: string };
+  session?: { runnerId: string; bindingId?: string };
   /**
    * For implementer work leaving its pinned runner: whether `runnerId` may restore the run's
    * sealed session snapshot, and whether it runs the agent version that wrote it. Null when it
@@ -98,11 +102,11 @@ export type PlacementRequest = {
   /** Slots the caller holds per runner for runs it placed but has not assigned yet. */
   reserved?: ReadonlyMap<string, number>;
   /** Reports policy and ranking rejections for this selection, without credentials. */
-  onRejected?: (runnerId: string, reason: string) => void;
+  onRejected?: (runnerId: string, reason: string, until?: number) => void;
   signal?: AbortSignal;
 };
 export type RunnerPlacement = {
-  candidates(input: PlacementRequest): Promise<readonly { id: string; workspaceId: string }[]>;
+  candidates(input: PlacementRequest): Promise<readonly PlacementCandidate[]>;
   /**
    * Why the person who owns the work has no runner Paws may use, or null when one is eligible
    * (busy or not) or one of theirs is only offline or paused. Reads SQLite only.
@@ -115,6 +119,8 @@ export type RunnerPlacement = {
     sessionId?: string;
     runId?: string;
     profile?: PlacementProfile;
+    account?: PlacementAccount;
+    accounts?: PlacementAccounts;
     role: "implementer" | "reviewer";
     purpose: PlacementPurpose;
     startedAt: number;

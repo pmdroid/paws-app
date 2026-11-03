@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import type { RunAgentOptions } from "../src/acp";
-import { createAgentAccount, insertQueuedItem } from "../src/db";
+import { createAgentAccount, insertQueuedItem, setAgentAccountEnabled } from "../src/db";
 import {
   AccountPolicyUnavailable,
   createRemoteAgentRunner,
   createRemoteSessionAgentRunner,
 } from "../src/runner-backend";
-import type { RunnerPlacement } from "../src/runner-placement";
+import type { PlacementRequest, RunnerPlacement } from "../src/runner-placement";
 import { migratedDatabase, tempHome } from "./helpers";
 
 const NOW = 1_800_000_000_000;
@@ -23,9 +23,11 @@ function fixture() {
   ]);
   insertQueuedItem(db, { id: "I1", now: NOW, sessionKey: "S1" });
   const placed: string[] = [];
+  const orders: (PlacementRequest["accounts"] | undefined)[] = [];
   const placement = {
-    async candidates() {
+    async candidates(request: PlacementRequest) {
       placed.push("candidates");
+      orders.push(request.accounts);
       return [];
     },
   } as unknown as RunnerPlacement;
@@ -62,21 +64,30 @@ function fixture() {
       },
       ...extra,
     });
-  return { db, root, placed, placement, named, run };
+  return { db, root, placed, orders, placement, named, run };
 }
 
-test("a configured order whose first eligible account is named never runs on the default sign-in", async () => {
+test("a configured order with no eligible account waits visibly and never reaches placement", async () => {
   const f = fixture();
-  await expect(f.run([f.named.id, "legacy_claude_W1"])).rejects.toBeInstanceOf(
+  setAgentAccountEnabled(f.db, {
+    workspaceId: "W1",
+    accountId: f.named.id,
+    enabled: false,
+    now: NOW,
+  });
+  await expect(f.run([f.named.id])).rejects.toThrow("No configured Claude account is eligible");
+  await expect(f.run(["01ARZ3NDEKTSV4RRFFQ69G5FAV"])).rejects.toBeInstanceOf(
     AccountPolicyUnavailable,
   );
-  await expect(f.run([f.named.id])).rejects.toThrow(/cannot run a named account/);
   expect(f.placed).toEqual([]);
   expect(f.db.query("SELECT count(*) AS n FROM runner_command").get()).toEqual({ n: 0 });
 });
 
-test("a configured order led by the default sign-in passes the gate and reaches placement", async () => {
+test("a configured order reaches placement with its eligible accounts in order", async () => {
   const f = fixture();
+  await expect(f.run([f.named.id, "legacy_claude_W1"])).rejects.toThrow(
+    "Remote task has no current run",
+  );
   await expect(f.run(["legacy_claude_W1", f.named.id])).rejects.toThrow(
     "Remote task has no current run",
   );
@@ -105,9 +116,19 @@ test("session helpers check the same account order before placing a helper", asy
       readOnly: true,
       profile: { agent: "claude", model: null },
     });
-  await expect(helper()).rejects.toBeInstanceOf(AccountPolicyUnavailable);
-  expect(f.placed).toEqual([]);
-  accounts = ["legacy_claude_W1"];
   await expect(helper()).rejects.not.toBeInstanceOf(AccountPolicyUnavailable);
-  expect(f.placed.length).toBeGreaterThan(0);
+  expect(f.orders.at(-1)?.accountIds).toEqual([f.named.id, "legacy_claude_W1"]);
+  setAgentAccountEnabled(f.db, {
+    workspaceId: "W1",
+    accountId: f.named.id,
+    enabled: false,
+    now: NOW,
+  });
+  const before = f.placed.length;
+  accounts = [f.named.id];
+  await expect(helper()).rejects.toBeInstanceOf(AccountPolicyUnavailable);
+  expect(f.placed.length).toBe(before);
+  accounts = [f.named.id, "legacy_claude_W1"];
+  await expect(helper()).rejects.not.toBeInstanceOf(AccountPolicyUnavailable);
+  expect(f.orders.at(-1)?.accountIds).toEqual(["legacy_claude_W1"]);
 });

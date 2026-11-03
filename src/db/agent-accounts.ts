@@ -589,11 +589,50 @@ export function dispatchAccount(
       reason: `No configured ${AGENT_NAMES[agent]} account is eligible`,
       admission,
     };
-  if (first !== legacyAgentAccountId(workspaceId, agent))
-    return {
-      dispatch: false,
-      reason: `${AGENT_NAMES[agent]} account ${first} is first in the account order, and Paws cannot run a named account yet`,
-      admission,
-    };
   return { dispatch: true, accountId: first, admission };
+}
+
+export function liveAccountBinding(
+  db: Database,
+  runnerId: string,
+  accountId: string,
+): AgentAccountBinding | null {
+  const row = db
+    .query<Flags<AgentAccountBinding, "legacy">, [string, string]>(
+      `SELECT ${bindingColumns} FROM agent_account_binding
+       WHERE runner_id=? AND account_id=? AND removed_at IS NULL ORDER BY created_at,rowid LIMIT 1`,
+    )
+    .get(runnerId, accountId);
+  return row ? binding(row) : null;
+}
+
+export function agentAccountConcurrency(db: Database, accountId: string): number | null {
+  return (
+    db
+      .query<{ concurrency: number | null }, [string]>(
+        "SELECT concurrency FROM agent_account WHERE id=?",
+      )
+      .get(accountId)?.concurrency ?? null
+  );
+}
+
+export function accountSlotsInUse(
+  db: Database,
+  accountId: string,
+  at: number,
+  exceptCommandId: string | null = null,
+): number {
+  return db
+    .query<{ count: number }, [string, number, string | null]>(
+      `SELECT COUNT(*) AS count FROM runner_execution_usage u
+       JOIN runner_command_account a ON a.command_id=u.command_id
+       LEFT JOIN runner_helper h ON h.id=u.command_id
+       LEFT JOIN runner_command c ON c.id=u.command_id
+       LEFT JOIN runner_work w ON w.run_id=c.run_id
+       WHERE u.ended_at IS NULL AND a.account_id=?1 AND u.command_id IS NOT ?3 AND (
+         (h.id IS NOT NULL AND h.ended_at IS NULL AND h.expires_at>?2)
+         OR (c.id IS NOT NULL AND c.expires_at>?2
+           AND (c.run_id IS NULL OR (w.command_id=u.command_id AND w.ended_at IS NULL))))`,
+    )
+    .get(accountId, at, exceptCommandId)!.count;
 }

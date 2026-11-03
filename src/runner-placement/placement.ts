@@ -16,13 +16,28 @@ import {
   workspaceSessionIds,
   findingGroupingAdmins,
   commandAccount,
+  legacyAgentAccountId,
   legacyAgentBindingId,
   legacyBindingAccountHealth,
   recordAccountObservation,
+  admitAgentAccounts,
+  accountSlotsInUse,
+  agentAccountConcurrency,
+  bindingAccountHealth,
+  liveAccountBinding,
+  runnerAccountUnsupported,
   type AccountObservation,
 } from "../db";
 import type { RunnerCodingAgent } from "../runner-protocol";
-import type { PlacementReason, PlacementRequest, RunnerPlacement } from "./index";
+import type {
+  EligibleRunner,
+  PlacementAccount,
+  PlacementAccounts,
+  PlacementPurpose,
+  PlacementReason,
+  PlacementRequest,
+  RunnerPlacement,
+} from "./index";
 import { eligibleRunners, runnerSetupNeed, RUNNER_ONLINE_MS } from "./eligible";
 import { accountHealthBlock, BINDING_REASON_TEXT, classifyAgentFailure } from "./account-health";
 
@@ -50,6 +65,12 @@ export const LOAD_HISTORY_MS = 6 * 60 * 60_000;
 /** Finished work loses half its weight in recent load every hour. */
 export const LOAD_HALF_LIFE_MS = 60 * 60_000;
 
+const SIGN_IN_REASONS = new Set(["auth-expired", "agent-not-signed-in"]);
+
+type AccountOption = { id: string; legacy: boolean; label: string; index: number };
+type AccountRefusal = { reason: string; until?: number };
+type AccountFit = { account: PlacementAccount; low: boolean };
+
 export function createRunnerPlacement(options: {
   db: Database;
   sessionActor?: (sessionId: string) => string | undefined;
@@ -61,6 +82,7 @@ export function createRunnerPlacement(options: {
     string,
     {
       request: PlacementRequest;
+      account: PlacementAccount;
       scope: string;
       policy: string;
       reason: PlacementReason | null;
@@ -72,9 +94,11 @@ export function createRunnerPlacement(options: {
   function admissionKey(
     runnerId: string,
     input: Pick<PlacementRequest, "itemId" | "sessionId" | "purpose" | "role" | "profile">,
+    bindingId: string | null,
   ) {
     return JSON.stringify([
       runnerId,
+      bindingId,
       input.itemId ?? null,
       input.sessionId ?? null,
       input.purpose,
@@ -300,6 +324,132 @@ export function createRunnerPlacement(options: {
         .get(commandId, owner.workspaceId)?.at ?? null
     );
   }
+  function accountOrder(
+    workspaceId: string,
+    agent: RunnerCodingAgent,
+    accounts: PlacementAccounts | undefined,
+  ): AccountOption[] {
+    const legacy = legacyAgentAccountId(workspaceId, agent);
+    const ids = accounts ? [...new Set(accounts.accountIds)] : [legacy];
+    return admitAgentAccounts(db, workspaceId, agent, { agent, accounts: ids }).eligible.map(
+      (id, index) => ({
+        id,
+        index,
+        legacy: id === legacy,
+        label:
+          id === legacy
+            ? "default sign-in"
+            : (db
+                .query<{ label: string }, [string]>("SELECT label FROM agent_account WHERE id=?")
+                .get(id)?.label ?? id),
+      }),
+    );
+  }
+  function accountFit(
+    runner: Pick<EligibleRunner, "id" | "cooldownUntil" | "quotaState"> & { signedIn: boolean },
+    option: AccountOption,
+    input: {
+      agent: RunnerCodingAgent;
+      model: string | null | undefined;
+      purpose: PlacementPurpose;
+      at: number;
+      exceptCommandId?: string;
+    },
+  ): AccountFit | AccountRefusal {
+    const { agent, at, purpose } = input;
+    const block = (health: ReturnType<typeof accountHealthBlock>): AccountRefusal | null =>
+      health
+        ? {
+            reason: BINDING_REASON_TEXT[health.reason],
+            ...(health.until !== null ? { until: health.until } : {}),
+          }
+        : null;
+    let fit: AccountFit;
+    if (option.legacy) {
+      if (!runner.signedIn) return { reason: "agent not signed in" };
+      if (runner.cooldownUntil > at)
+        return { reason: "agent quota cooldown", until: runner.cooldownUntil };
+      const bindingId = legacyAgentBindingId(runner.id, agent);
+      const refused = block(
+        accountHealthBlock(
+          db,
+          bindingId,
+          legacyBindingAccountHealth(db, runner.id, agent, input.model).filter(
+            (row) => row.kind !== "quota" && row.kind !== "auth",
+          ),
+          at,
+          purpose,
+        ),
+      );
+      if (refused) return refused;
+      fit = {
+        account: { accountId: option.id, bindingId, named: false },
+        low: runner.quotaState === "low",
+      };
+    } else {
+      const binding = liveAccountBinding(db, runner.id, option.id);
+      if (!binding || binding.agent !== agent)
+        return { reason: "account has no binding on this runner" };
+      const unsupported = runnerAccountUnsupported(db, runner.id, binding.id, agent);
+      if (unsupported) return { reason: unsupported };
+      const rows = bindingAccountHealth(db, binding.id, input.model);
+      const refused = block(accountHealthBlock(db, binding.id, rows, at, purpose));
+      if (refused) return refused;
+      fit = {
+        account: { accountId: option.id, bindingId: binding.id, named: true },
+        low: rows.some((row) => row.state === "low"),
+      };
+    }
+    const limit = agentAccountConcurrency(db, option.id);
+    if (limit !== null && accountSlotsInUse(db, option.id, at, input.exceptCommandId) >= limit)
+      return { reason: "account at its concurrency limit" };
+    return fit;
+  }
+  function admit(
+    input: Parameters<RunnerPlacement["started"]>[0],
+    account: PlacementAccount,
+    workspaceId: string,
+  ) {
+    const agent = input.profile!.agent as RunnerCodingAgent;
+    const recorded = commandAccount(db, input.commandId);
+    if (
+      (recorded || account.named) &&
+      (recorded?.bindingId !== account.bindingId || recorded.accountId !== account.accountId)
+    )
+      throw new PlacementRaceError("The command does not carry the account placement chose");
+    if (input.accounts && !input.accounts.accountIds.includes(account.accountId))
+      throw new PlacementRaceError("The agent account left the account order before assignment");
+    const option = accountOrder(workspaceId, agent, {
+      revision: input.accounts?.revision ?? "",
+      accountIds: [account.accountId],
+    })[0];
+    if (!option) throw new PlacementRaceError("The agent account was disabled or removed");
+    const runner = db
+      .query<{ cooldownUntil: number; quotaState: string }, [string, string]>(
+        "SELECT cooldown_until AS cooldownUntil,quota_state AS quotaState FROM runner_agent_policy WHERE runner_id=? AND agent=?",
+      )
+      .get(input.runnerId, agent);
+    const fit = accountFit(
+      {
+        id: input.runnerId,
+        cooldownUntil: runner?.cooldownUntil ?? 0,
+        quotaState: runner?.quotaState ?? "ok",
+        signedIn: true,
+      },
+      option,
+      {
+        agent,
+        model: input.profile?.model,
+        purpose: input.purpose,
+        at: now(),
+        exceptCommandId: input.commandId,
+      },
+    );
+    if ("reason" in fit)
+      throw new PlacementRaceError(`${option.label}: ${fit.reason} before assignment`);
+    if (fit.account.bindingId !== account.bindingId)
+      throw new PlacementRaceError("The agent account binding changed before assignment");
+  }
   return {
     async candidates(input) {
       input.signal?.throwIfAborted();
@@ -350,22 +500,30 @@ export function createRunnerPlacement(options: {
                 : [],
             )
           : [eligibility(current)];
+      const agent = input.profile.agent as RunnerCodingAgent;
+      const order = accountOrder(current.workspace.id, agent, input.accounts);
+      const named = order.some((option) => !option.legacy);
       const rows = scopes
         .flatMap((owner) =>
           eligibleRunners(db, {
             ...owner,
-            agent: input.profile!.agent,
+            agent,
             purpose: input.findingGroups ? "work" : input.purpose,
             now: at,
             includeRevoked: true,
-          }),
+          }).map((runner) => ({
+            ...runner,
+            own: runner.eligible ? runner.reason === "own" : runner.ownerId === owner.ownerUserId,
+            signedIn: runner.eligible,
+          })),
         )
         .filter((runner) => {
-          const reason = !runner.eligible
-            ? runner.reason
-            : pinnedOnline && runner.id !== pinnedRunnerId
-              ? "run pinned to another online runner"
-              : null;
+          const reason =
+            !runner.eligible && !(named && SIGN_IN_REASONS.has(runner.reason))
+              ? runner.reason
+              : pinnedOnline && runner.id !== pinnedRunnerId
+                ? "run pinned to another online runner"
+                : null;
           if (reason) input.onRejected?.(runner.id, reason);
           return reason === null;
         });
@@ -403,19 +561,27 @@ export function createRunnerPlacement(options: {
         // session on its pinned host instead of moving its checkout and held slot.
         if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline)
           return reject("excluded after failed attempt");
-        const own = runner.reason === "own";
-        if (runner.cooldownUntil > at) return reject("agent quota cooldown");
-        const agent = input.profile!.agent as RunnerCodingAgent;
-        const health = accountHealthBlock(
-          db,
-          legacyAgentBindingId(runner.id, agent),
-          legacyBindingAccountHealth(db, runner.id, agent, input.profile?.model).filter(
-            (row) => row.kind !== "quota" && row.kind !== "auth",
-          ),
-          at,
-          input.purpose,
-        );
-        if (health) return reject(BINDING_REASON_TEXT[health.reason]);
+        const fits = order.flatMap((option) => {
+          const refuse = (refusal: AccountRefusal) => {
+            input.onRejected?.(
+              runner.id,
+              input.accounts ? `${option.label}: ${refusal.reason}` : refusal.reason,
+              ...(refusal.until !== undefined ? [refusal.until] : []),
+            );
+            return [];
+          };
+          const fit = accountFit(runner, option, {
+            agent,
+            model: input.profile?.model,
+            purpose: input.purpose,
+            at,
+          });
+          if ("reason" in fit) return refuse(fit);
+          if (input.excludeRunnerIds?.includes(fit.account.bindingId))
+            return refuse({ reason: "excluded after failed attempt" });
+          return [{ ...fit, index: option.index }];
+        });
+        if (fits.length === 0) return [];
         // Preparation must probe fresh identities; preflight compares them against each other.
         // A fresh session may correct a reported model mismatch. The work receipt still rejects
         // actual implementer-model reuse, and failover bounds the number of attempts.
@@ -429,7 +595,8 @@ export function createRunnerPlacement(options: {
           return reject("reviewer model matches implementation model");
         const reviewRank =
           input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
-        return [{ runner, rank: (helper?.preempts ? 1000 : 0) + reviewRank * 10 + (own ? 0 : 1) }];
+        const rank = (helper?.preempts ? 1000 : 0) + reviewRank * 10 + (runner.own ? 0 : 1);
+        return fits.map((fit) => ({ runner, ...fit, rank }));
       });
       // A run leaving its pinned runner goes first to a free runner that can restore its saved
       // agent session, the agent version that wrote it ahead of other versions. It never waits
@@ -463,7 +630,11 @@ export function createRunnerPlacement(options: {
         input.purpose === "work" &&
         input.session;
       const holder = session
-        ? ranked.find(({ runner }) => runner.id === session.runnerId)
+        ? ranked.find(
+            ({ runner, account }) =>
+              runner.id === session.runnerId &&
+              (session.bindingId === undefined || account.bindingId === session.bindingId),
+          )
         : undefined;
       let heldForSession = false;
       if (holder && input.itemId) {
@@ -493,9 +664,10 @@ export function createRunnerPlacement(options: {
       );
       ranked.sort(
         (a, b) =>
+          a.index - b.index ||
           a.rank - b.rank ||
           load.get(a.runner.id)!.current - load.get(b.runner.id)!.current ||
-          Number(a.runner.quotaState === "low") - Number(b.runner.quotaState === "low") ||
+          Number(a.low) - Number(b.low) ||
           load.get(a.runner.id)!.recent - load.get(b.runner.id)!.recent ||
           a.runner.virtualFinish - b.runner.virtualFinish ||
           a.runner.lastUsedAt - b.runner.lastUsedAt ||
@@ -503,15 +675,20 @@ export function createRunnerPlacement(options: {
       );
       for (const [key, admission] of admissions)
         if (admission.expiresAt <= at) admissions.delete(key);
-      for (const { runner } of ranked)
-        admissions.set(admissionKey(runner.id, input), {
+      for (const { runner, account } of ranked)
+        admissions.set(admissionKey(runner.id, input, account.bindingId), {
           request: input,
+          account,
           scope: binding,
           policy: policy(runner.id, input.profile?.agent),
           reason: restorers.has(runner.id) ? "session_restore" : null,
           expiresAt: at + 15_000,
         });
-      return ranked.map(({ runner }) => ({ id: runner.id, workspaceId: runner.workspaceId }));
+      return ranked.map(({ runner, account }) => ({
+        id: runner.id,
+        workspaceId: runner.workspaceId,
+        account,
+      }));
     },
     setupNeed(input) {
       if (!input.profile) return null;
@@ -527,23 +704,34 @@ export function createRunnerPlacement(options: {
     },
     started(input) {
       immediate(db, () => {
-        const admission = admissions.get(admissionKey(input.runnerId, input));
+        const key = admissionKey(
+          input.runnerId,
+          input,
+          input.account?.bindingId ??
+            (input.profile
+              ? legacyAgentBindingId(input.runnerId, input.profile.agent as RunnerCodingAgent)
+              : null),
+        );
+        const admission = admissions.get(key);
         if (
           !admission ||
+          (input.account && input.account.accountId !== admission.account.accountId) ||
           admission.expiresAt <= now() ||
           admission.request.itemId !== input.itemId ||
           admission.request.role !== input.role ||
           JSON.stringify(admission.request.profile) !== JSON.stringify(input.profile) ||
           admission.scope !== authority(scope(admission.request)) ||
-          admission.policy !== policy(input.runnerId, input.profile?.agent)
+          admission.policy !== policy(input.runnerId, input.profile?.agent) ||
+          admission.request.accounts?.revision !== input.accounts?.revision
         )
           throw new PlacementRaceError("Runner selection authority changed before assignment");
         const runner = db
-          .query<{ ownerId: string }, [string]>(
-            "SELECT owner_user_id AS ownerId FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL",
+          .query<{ ownerId: string; workspaceId: string }, [string]>(
+            "SELECT owner_user_id AS ownerId,workspace_id AS workspaceId FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL",
           )
           .get(input.runnerId);
         if (!runner) throw new PlacementRaceError("Runner identity changed before assignment");
+        if (input.profile) admit(input, admission.account, runner.workspaceId);
         if (input.profile) {
           db.run(
             "INSERT INTO runner_agent_policy(runner_id,agent) VALUES(?,?) ON CONFLICT DO NOTHING",
@@ -555,8 +743,8 @@ export function createRunnerPlacement(options: {
           );
         }
         db.run(
-          `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,role,purpose,started_at,placement_reason)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,role,purpose,started_at,placement_reason,account_policy_revision)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             input.commandId,
             input.runnerId,
@@ -569,9 +757,10 @@ export function createRunnerPlacement(options: {
             input.purpose,
             input.startedAt,
             admission.reason,
+            input.accounts?.revision ?? null,
           ],
         );
-        admissions.delete(admissionKey(input.runnerId, input));
+        admissions.delete(key);
       });
       if (input.itemId && input.role === "implementer" && input.purpose === "work")
         sessionWaits.delete(input.itemId);
@@ -663,7 +852,8 @@ export function createRunnerPlacement(options: {
             input.commandId,
           ],
         );
-        if (usage.agent) {
+        const runsAsDefault = commandAccount(db, input.commandId)?.named !== true;
+        if (usage.agent && runsAsDefault) {
           db.run(
             `UPDATE runner_agent_policy SET
             ready=CASE WHEN ? THEN 0 WHEN ? THEN 1 ELSE ready END,
@@ -699,7 +889,13 @@ export function createRunnerPlacement(options: {
           startedAt: usage.startedAt,
           prepare: usage.purpose === "prepare",
         });
-        if (usage.agent && quota?.state === "exhausted" && quota.resetsAt === null && recheckAt)
+        if (
+          usage.agent &&
+          runsAsDefault &&
+          quota?.state === "exhausted" &&
+          quota.resetsAt === null &&
+          recheckAt
+        )
           db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id=? AND agent=?", [
             recheckAt,
             input.runnerId,

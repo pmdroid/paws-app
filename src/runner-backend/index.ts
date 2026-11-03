@@ -20,6 +20,8 @@ import type { Database } from "bun:sqlite";
 import {
   getTaskMode,
   dispatchAccount,
+  legacyAgentAccountId,
+  legacyAgentBindingId,
   getWorkItem,
   immediate,
   inMergeQueue,
@@ -68,6 +70,7 @@ import {
   ANY_MISE_BACKEND_RUNNER_VERSION,
   legacyRuntimeTool,
   SESSION_RESUME_RUNNER_VERSION,
+  type RunnerCodingAgent,
   type RunnerCommand,
   type RunnerResult,
   type RunnerVersion,
@@ -110,6 +113,7 @@ import {
   quotaSignal,
   RUNNER_ONLINE_MS,
   SESSION_GRACE_MS,
+  type PlacementAccount,
   type RunnerPlacement,
 } from "../runner-placement";
 
@@ -137,16 +141,22 @@ const RUN_HUNG_THOUGHT = (minutes: number) =>
   `The agent sent nothing for ${minutes} minutes, so Paws stopped it; continuing from the branch.`;
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
-type SessionHolder = { runnerId: string; agent: string; sessionId: string };
+const ACCOUNT_CONCURRENCY_LIMIT = ": account at its concurrency limit";
+type SessionHolder = { runnerId: string; agent: string; sessionId: string; bindingId: string };
 
 function earlierSession(
   db: Database,
   itemId: string,
   runnerId: string,
   agent: string,
+  bindingId: string | undefined,
 ): string | undefined {
   const holder = sessionHolder(db, itemId);
-  return holder?.runnerId === runnerId && holder.agent === agent ? holder.sessionId : undefined;
+  return holder?.runnerId === runnerId &&
+    holder.agent === agent &&
+    (bindingId === undefined || holder.bindingId === bindingId)
+    ? holder.sessionId
+    : undefined;
 }
 
 /** The runner and agent that hold the item's last resumable agent session. */
@@ -169,6 +179,7 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
       runnerId?: string;
       checkpoint?: boolean;
       profile?: { agent?: string };
+      account?: { bindingId?: string };
     };
     if (command.checkpoint === false) continue;
     const result = JSON.parse(row.payload) as {
@@ -186,6 +197,9 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
           runnerId: command.runnerId,
           agent: command.profile.agent,
           sessionId: result.sessionId,
+          bindingId:
+            command.account?.bindingId ??
+            legacyAgentBindingId(command.runnerId, command.profile.agent as RunnerCodingAgent),
         }
       : undefined;
   }
@@ -223,6 +237,26 @@ function versionAtLeast(version: string | null | undefined, minimum: RunnerVersi
 }
 
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
+
+function commandAccount(account: PlacementAccount | undefined) {
+  return account?.named
+    ? { account: { accountId: account.accountId, bindingId: account.bindingId } }
+    : {};
+}
+
+function placedAccount(
+  account: PlacementAccount | undefined,
+  accounts: { revision: string; accountIds: readonly string[] } | undefined,
+) {
+  return { ...(account ? { account } : {}), ...(accounts ? { accounts } : {}) };
+}
+
+function failedBinding(
+  account: PlacementAccount | undefined,
+  result: { authRequired?: boolean },
+): string | undefined {
+  return account?.named && result.authRequired ? account.bindingId : undefined;
+}
 
 /**
  * Where a command for the run goes. A turn that continues the agent session is pinned to the
@@ -376,7 +410,8 @@ export function createRemoteAgentRunner(options: {
     rejected: string[] = [],
   ) {
     const offered: string[] = [];
-    const selected = await place(itemId, placement, rejected, offered);
+    const untils: number[] = [];
+    const selected = await place(itemId, placement, rejected, offered, untils);
     if (selected) return { ...selected, offered };
     const details = rejected.map((entry) => {
       const separator = entry.indexOf(":");
@@ -400,17 +435,25 @@ export function createRemoteAgentRunner(options: {
       if (need) throw new RunnerSetupRequired(need);
     }
     const agent = placement.profile?.agent;
+    const accountCheck = untils.filter((until) => until > now()).sort((a, b) => a - b)[0];
     const resetsAt = agent
-      ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
+      ? (accountCheck ?? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null))
       : null;
     const heldForSession =
       !placement.pinnedRunnerId &&
       placement.session !== undefined &&
       offered.length === 1 &&
       offered[0] === placement.session.runnerId;
-    const busy = rejected
-      .filter((reason) => reason.endsWith(NO_FREE_CAPACITY))
-      .map((reason) => reason.slice(0, -NO_FREE_CAPACITY.length));
+    const busy = [
+      ...new Set(
+        rejected
+          .filter(
+            (reason) =>
+              reason.endsWith(NO_FREE_CAPACITY) || reason.endsWith(ACCOUNT_CONCURRENCY_LIMIT),
+          )
+          .map((reason) => reason.slice(0, reason.indexOf(":"))),
+      ),
+    ];
     if (
       (resetsAt === null || heldForSession) &&
       (busy.length > 0 ||
@@ -554,24 +597,29 @@ export function createRemoteAgentRunner(options: {
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     rejected: string[],
     offered: string[] = [],
+    untils: number[] = [],
   ) {
     const item = getWorkItem(db, itemId);
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
-    let candidates = options.placement
-      ? await options.placement.candidates({
-          ...placement,
-          reserved: unassigned(item.currentRunId),
-          onRejected: (id, reason) => rejected.push(`${id}: ${reason}`),
-        })
-      : db
-          .query<{ id: string; workspaceId: string }, []>(
-            `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
+    let candidates: readonly { id: string; workspaceId: string; account?: PlacementAccount }[] =
+      options.placement
+        ? await options.placement.candidates({
+            ...placement,
+            reserved: unassigned(item.currentRunId),
+            onRejected: (id, reason, until) => {
+              rejected.push(`${id}: ${reason}`);
+              if (until !== undefined) untils.push(until);
+            },
+          })
+        : db
+            .query<{ id: string; workspaceId: string }, []>(
+              `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
        WHERE r.status='active' AND r.revoked_at IS NULL AND m.active=1
        AND r.last_seen_at>${now() - 60_000}
        ORDER BY r.last_seen_at DESC,r.id`,
-          )
-          .all();
+            )
+            .all();
     const pinnedOnline = Boolean(
       placement.purpose !== "prepare" &&
       placement.pinnedRunnerId &&
@@ -590,14 +638,17 @@ export function createRemoteAgentRunner(options: {
         ...candidates.filter((runner) => runner.id !== placement.preferRunnerId),
       ];
     placement.signal?.throwIfAborted();
-    offered.push(...candidates.map((runner) => runner.id));
+    offered.push(...new Set(candidates.map((runner) => runner.id)));
     const pending = unassigned(item.currentRunId);
     for (const runner of candidates) {
       if (runner.id === placement.handedOverFrom) {
         rejected.push(`${runner.id}: handed the session over`);
         continue;
       }
-      if (placement.excludeRunnerIds?.includes(runner.id) && !pinnedOnline) {
+      if (
+        (placement.excludeRunnerIds?.includes(runner.id) && !pinnedOnline) ||
+        (runner.account && placement.excludeRunnerIds?.includes(runner.account.bindingId))
+      ) {
         rejected.push(`${runner.id}: excluded after failed attempt`);
         continue;
       }
@@ -695,6 +746,13 @@ export function createRemoteAgentRunner(options: {
         id: row.runnerId,
         workspaceId: row.workspaceId,
         runId,
+        account: command.account
+          ? { ...command.account, named: true }
+          : {
+              accountId: legacyAgentAccountId(row.workspaceId, command.profile.agent),
+              bindingId: legacyAgentBindingId(row.runnerId, command.profile.agent),
+              named: false,
+            },
       },
       assigned: command,
       // A response task without a repository has no commit.
@@ -752,6 +810,7 @@ export function createRemoteAgentRunner(options: {
             "The reviewer profile needs a Claude or Codex model to run the agent's review command",
           );
         const accountPolicy = input.accounts?.profile;
+        let accounts: { revision: string; accountIds: readonly string[] } | undefined;
         if (accountPolicy) {
           const choice = dispatchAccount(db, { itemId }, input.profile.agent, accountPolicy);
           const skipped = (choice.admission?.skipped ?? [])
@@ -764,8 +823,9 @@ export function createRemoteAgentRunner(options: {
             throw new AccountPolicyUnavailable(input.profile.agent, choice.reason);
           }
           journal(
-            `item ${itemId}: account policy ${input.accounts!.revision} for ${input.role} chose ${choice.accountId}${skipped ? ` (skipped ${skipped})` : ""}`,
+            `item ${itemId}: account policy ${input.accounts!.revision} for ${input.role} admits ${choice.admission.eligible.join(", ")}${skipped ? ` (skipped ${skipped})` : ""}`,
           );
+          accounts = { revision: input.accounts!.revision, accountIds: choice.admission.eligible };
         }
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
@@ -775,7 +835,10 @@ export function createRemoteAgentRunner(options: {
           input.role === "implementer" &&
           input.checkpoint !== false;
         const holder = continuesSession ? sessionHolder(db, itemId) : undefined;
-        const session = holder?.agent === profile.agent ? { runnerId: holder.runnerId } : undefined;
+        const session =
+          holder?.agent === profile.agent
+            ? { runnerId: holder.runnerId, bindingId: holder.bindingId }
+            : undefined;
         const runId = getWorkItem(db, itemId)?.currentRunId;
         const { pinnedRunnerId, preferRunnerId } =
           !input.prepareOnly && runId
@@ -792,6 +855,7 @@ export function createRemoteAgentRunner(options: {
           role: input.role,
           purpose: input.prepareOnly ? "prepare" : "work",
           excludeRunnerIds: excluded,
+          ...(accounts ? { accounts } : {}),
           ...(pinnedRunnerId ? { pinnedRunnerId } : {}),
           ...(preferRunnerId ? { preferRunnerId } : {}),
           ...(move.from ? { handedOverFrom: move.from } : {}),
@@ -891,6 +955,7 @@ export function createRemoteAgentRunner(options: {
                   expiresAt: issuedAt + 120_000,
                   type: "probe",
                   profile,
+                  ...commandAccount(selected.account),
                 });
                 options.placement?.started({
                   commandId: id,
@@ -898,6 +963,7 @@ export function createRemoteAgentRunner(options: {
                   itemId,
                   runId: selected.runId,
                   profile,
+                  ...placedAccount(selected.account, accounts),
                   role: input.role,
                   purpose: "prepare",
                   startedAt: issuedAt,
@@ -942,6 +1008,9 @@ export function createRemoteAgentRunner(options: {
                     undefined,
                     false,
                     disposition.usageLimit,
+                    false,
+                    false,
+                    failedBinding(selected.account, result),
                   );
                 return { ...result, role: input.role, transcriptPath: transcript };
               }
@@ -1266,7 +1335,9 @@ export function createRemoteAgentRunner(options: {
                   })
                 ).some(
                   (runner) =>
-                    runner.id === selected.id && runner.workspaceId === selected.workspaceId,
+                    runner.id === selected.id &&
+                    runner.workspaceId === selected.workspaceId &&
+                    runner.account?.bindingId === selected.account?.bindingId,
                 );
                 if (!admitted)
                   throw placementRace(
@@ -1304,7 +1375,13 @@ export function createRemoteAgentRunner(options: {
                     .get(selected.id)?.version,
                   SESSION_RESUME_RUNNER_VERSION,
                 )
-                  ? earlierSession(db, itemId, selected.id, profile.agent)
+                  ? earlierSession(
+                      db,
+                      itemId,
+                      selected.id,
+                      profile.agent,
+                      selected.account?.bindingId,
+                    )
                   : restorePlan?.eligible
                     ? restorePlan.restoreSession.sessionId
                     : undefined;
@@ -1375,6 +1452,7 @@ export function createRemoteAgentRunner(options: {
                 itemId,
                 generation,
                 profile,
+                ...commandAccount(selected.account),
                 prompt: promptContext
                   ? "Use the complete supplied conversation context."
                   : prepared.prompt,
@@ -1457,6 +1535,7 @@ export function createRemoteAgentRunner(options: {
                     itemId,
                     runId: selected.runId,
                     profile,
+                    ...placedAccount(selected.account, accounts),
                     role: input.role,
                     purpose: "work",
                     startedAt: issuedAt,
@@ -1647,6 +1726,9 @@ export function createRemoteAgentRunner(options: {
                 transcript,
                 publishedEffects,
                 disposition.usageLimit,
+                false,
+                false,
+                failedBinding(selected.account, complete),
               );
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
@@ -2022,6 +2104,9 @@ export function createRemoteAgentRunner(options: {
               transcript,
               publishedEffects,
               disposition.usageLimit,
+              false,
+              false,
+              failedBinding(selected.account, complete),
             );
           if (complete.reviewText)
             await emit({

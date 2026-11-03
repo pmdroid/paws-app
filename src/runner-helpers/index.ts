@@ -19,6 +19,7 @@ import {
   signRunnerCommand,
   type RunnerCommand,
   type RunnerHelperResult,
+  type RunnerAccount,
   type RunnerProfile,
   type SignedRunnerCommand,
 } from "../runner-protocol";
@@ -118,6 +119,7 @@ export function createRunnerHelpers(options: {
       purpose: HelperCommand["purpose"];
       profile: RunnerProfile;
       prompt: string;
+      account?: RunnerAccount;
     }) {
       return immediate(db, () => {
         const session = getLinearSession(db, input.sessionId);
