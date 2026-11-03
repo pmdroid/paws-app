@@ -210,7 +210,12 @@ export {
   saveCandidateRisk,
   type CandidateRisk,
 } from "./candidate-risk";
-export { getOpenFindingsLine, saveOpenFindings, withOpenFindings } from "./open-findings";
+export {
+  getOpenFindingsLine,
+  getPublishedHead,
+  saveOpenFindings,
+  withOpenFindings,
+} from "./open-findings";
 export {
   getReviewFinding,
   getReviewFindingByKey,

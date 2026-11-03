@@ -229,6 +229,7 @@ import {
   recordItemBranchState,
   recordItemPullRequest,
   saveOpenFindings,
+  getPublishedHead,
   getItemPullRequest,
   saveVisualReviewMarks,
   type VisualReviewMark,
@@ -4558,8 +4559,24 @@ export class Orchestrator {
       link: pawsIssueUrl(publicUrl, item),
     };
     const openLine = openFindingsLine(open);
+    const candidateHead = await git(["-C", worktree, "rev-parse", "HEAD"])
+      .then((head) => head.trim())
+      .catch((caughtError: unknown) => {
+        journalCaught(
+          caughtError,
+          "orchestrator.publishForMerge.candidateHead",
+          item.id,
+          undefined,
+          this.options.journal,
+        );
+        return null;
+      });
     if (this.stopped(item.id)) return { kind: "obsolete" };
-    this.sessionProgress(item)?.phase("publishing");
+    const newPublication =
+      candidateHead === null ||
+      getItemPullRequest(this.db, item.id) === null ||
+      getPublishedHead(this.db, item.id) !== candidateHead;
+    if (newPublication) this.sessionProgress(item)?.phase("publishing");
     const draft = getPullRequestDraft(this.db, item.id);
     const published = await publishAccepted({
       accepted: true,
@@ -4638,7 +4655,8 @@ export class Orchestrator {
     );
     const sessionProgress = this.sessionProgress(item);
     if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
-    sessionProgress?.phase("merging");
+    if (newPublication || published.head !== candidateHead) sessionProgress?.phase("merging");
+    else sessionProgress?.reach("merging");
     await this.flush(live.controller.signal);
     run.signal = live.controller.signal;
     return {

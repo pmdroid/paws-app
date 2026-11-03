@@ -70,7 +70,7 @@ Each work-item state has one face. Titles are prefixed with the issue identifier
 | `manual`                                 | complete                             | manual                                                                               | remaining steps canceled            | Response "Taken over by <who>. Paws will not restart, verify or merge PAS-n."                                                         |
 | `cancelled`, stopped                     | complete                             | stopped                                                                              | remaining steps canceled            | Response "Stopped. Branch paws/PAS-n has k commits; PR #N is open. Re-delegate to continue."                                          |
 
-Publishing is a phase of `verifying` and `merge_queue`, not a work-item state. Spent budgets are questions in `awaiting_input`, never `failed`.
+Publishing is a phase of `verifying` and `merge_queue`, not a work-item state. It shows only when the pull request does not exist yet; a new head on an open pull request reads "updating the pull request" and keeps the merge step. A merge wake that pushes nothing (the recorded pull request already has the worktree's head) leaves the title alone, so a review, CI or queue wait line stays until something changes; after a restart of Paws it only moves a session still short of merging to merging. Spent budgets are questions in `awaiting_input`, never `failed`.
 
 Linear's stop button, the `stopping` status and a `/paws stop` reply all end in the one stop response. It is built from the run's last known branch state: the branch, its commit count, and whether a pull request is open, will be closed, or was never opened.
 

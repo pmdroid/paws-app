@@ -739,3 +739,141 @@ test("the keepalive names the current agent step, else the last line, else the p
     db.close();
   }
 });
+
+test("repeated merge wakes on a published pull request keep a stable title within the throttle", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  const wake = () => createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  try {
+    wake().phase("verifying");
+    await flush(dispatcher);
+    wake().phase("publishing");
+    markPr(db);
+    wake().phase("merging");
+    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: merging");
+    for (let tick = 0; tick < 10; tick++) {
+      wake().reach("merging");
+      clock.advance(30_000);
+      await flush(dispatcher);
+    }
+    const summaries = tracker.sessionUpdates.flatMap((update) =>
+      update.summary ? [update.summary] : [],
+    );
+    expect(summaries).toEqual(["ENG-1: verifying", "ENG-1: merging"]);
+    expect(wake().keepalive(null)).toBe("Merging ENG-1.");
+
+    // A stable CI wait stays the title through further wakes.
+    wake().status("ENG-1: CI 4 of 6 done");
+    for (let tick = 0; tick < 5; tick++) {
+      wake().reach("merging");
+      wake().status("ENG-1: CI 4 of 6 done");
+      clock.advance(30_000);
+      await flush(dispatcher);
+    }
+    expect(tracker.sessionUpdates.flatMap((u) => (u.summary ? [u.summary] : [])).at(-1)).toBe(
+      "ENG-1: CI 4 of 6 done",
+    );
+    expect(
+      listOutbox(db, "session").filter(
+        (row) => row.op === "linear.session.summary" && row.status !== "dropped",
+      ),
+    ).toHaveLength(3);
+  } finally {
+    db.close();
+  }
+});
+
+test("a new head on a published pull request updates it without regressing the phase", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  const wake = () => createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  try {
+    wake().phase("merging");
+    markPr(db);
+    await flush(dispatcher);
+    clock.advance(120_000);
+    wake().restart("ci", 1, 10);
+    await flush(dispatcher);
+    expect(tracker.sessionUpdates.at(-1)?.summary).toBe("ENG-1: fixing CI (1 of 3)");
+    wake().phase("verifying");
+    clock.advance(1_000);
+    wake().phase("publishing");
+    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: updating the pull request");
+    expect(latest(db, "linear.session.plan").plan?.at(-1)).toEqual({
+      content: "Verify fixes",
+      status: "inProgress",
+    });
+    expect(wake().keepalive(null)).toBe("Merging ENG-1.");
+    wake().phase("merging");
+    // Latest wins: the update line waiting on the interval is replaced before it goes out.
+    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: merging");
+    clock.advance(120_000);
+    await flush(dispatcher);
+    const summaries = tracker.sessionUpdates.flatMap((u) => (u.summary ? [u.summary] : []));
+    expect(summaries).not.toContain("ENG-1: updating the pull request");
+    expect(summaries.at(-1)).toBe("ENG-1: merging");
+    expect(
+      latest(db, "linear.session.plan")
+        .plan?.slice(3)
+        .every((step) => step.status === "completed"),
+    ).toBe(true);
+    wake().phase("completed");
+    await flush(dispatcher);
+    expect(tracker.sessionUpdates.at(-1)?.summary).toBe("ENG-1: completed");
+    wake().reach("merging");
+    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: completed");
+  } finally {
+    db.close();
+  }
+});
+
+test("reconstruction reaches merging once and stale or stopped reporters change nothing", () => {
+  const db = tempDb();
+  try {
+    createLinearSessionProgress(db, "session", "ENG-1").phase("publishing");
+    markPr(db);
+    const captured = createLinearSessionProgress(db, "session", "ENG-1");
+    createLinearSessionProgress(db, "session", "ENG-1").reach("merging");
+    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: merging");
+    const rows = listOutbox(db).length;
+    createLinearSessionProgress(db, "session", "ENG-1").reach("merging");
+    captured.reach("merging");
+    expect(listOutbox(db)).toHaveLength(rows);
+
+    advanceOutboxSession(db, "linear", "session");
+    captured.phase("publishing");
+    expect(
+      listOutbox(db).filter((row) => row.status !== "dropped" && row.generation === 0),
+    ).not.toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({ summary: "ENG-1: publishing" }),
+      }),
+    );
+    const fresh = createLinearSessionProgress(db, "session", "ENG-1");
+    fresh.reach("merging");
+    expect(listOutbox(db).findLast((row) => row.op === "linear.session.summary")?.generation).toBe(
+      1,
+    );
+
+    stopOutboxSession(db, "linear", "session");
+    fresh.phase("publishing");
+    fresh.reach("merging");
+    expect(
+      listOutbox(db).every(
+        (row) => !row.op.startsWith("linear.session.") || row.status === "dropped",
+      ),
+    ).toBe(true);
+  } finally {
+    db.close();
+  }
+});

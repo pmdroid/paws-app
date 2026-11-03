@@ -2331,6 +2331,11 @@ for (const movedHead of [false, true]) {
       db.close();
       db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
       recoverOnStartup(db);
+      db.run("CREATE TEMP TABLE title_write (summary TEXT)");
+      for (const event of ["INSERT", "UPDATE OF payload"])
+        db.run(`CREATE TEMP TRIGGER "title_${event}" AFTER ${event} ON outbox
+          WHEN NEW.op = 'linear.session.summary'
+          BEGIN INSERT INTO title_write VALUES (json_extract(NEW.payload, '$.summary')); END`);
       const restarted = attach();
       expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
       for (let tick = 0; tick < 5; tick++) {
@@ -2343,6 +2348,13 @@ for (const movedHead of [false, true]) {
       expect(getWorkItem(db, item.id)?.state, debug(layout, db)).toBe("merged");
       expect(github.merged).toHaveLength(1);
       expect(rejectedHeads).toBe(movedHead ? 2 : 0);
+      // Polling the published pull request again never writes "publishing" back to the title.
+      expect(
+        db
+          .query<{ summary: string }, []>("SELECT summary FROM title_write")
+          .all()
+          .map((row) => row.summary),
+      ).toEqual(["ENG-31: publishing", "ENG-31: merging", "ENG-31: completed"]);
       // The waiting merge keeps its job. A moved head never sends the accepted head back to
       // Closeout or merges another head.
       expect(
