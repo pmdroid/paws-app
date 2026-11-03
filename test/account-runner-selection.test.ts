@@ -91,8 +91,8 @@ function fixture() {
       clock,
     );
   };
-  report("R1", "0.1.60", [bindings.a1, bindings.b1]);
-  report("R2", "0.1.60", [bindings.a2]);
+  report("R1", "0.1.61", [bindings.a1, bindings.b1]);
+  report("R2", "0.1.61", [bindings.a2]);
   report("R3", "0.1.59", [bindings.a3]);
   const legacy = legacyAgentAccountId(workspace.id, "claude");
   const placement = createRunnerPlacement({ db, now: () => clock });
@@ -222,7 +222,7 @@ test("distinct accounts on one runner and one account on several runners follow 
   });
   expect(first.rejected).toContainEqual({
     runnerId: "R3",
-    reason: "A: Named agent accounts need runner 0.1.60 or later",
+    reason: "A: Named agent accounts need runner 0.1.61 or later",
   });
   const reversed = await f.choices([f.accounts.b, f.accounts.a]);
   expect(reversed.placed[0]).toEqual(["R1", f.accounts.b]);
@@ -280,7 +280,7 @@ test("an assignment to a later account records why the accounts ahead of it were
       )
       .get(commandId)!;
   expect(usage()).toEqual({
-    fallback: "A: agent account quota cooldown, Named agent accounts need runner 0.1.60 or later",
+    fallback: "A: agent account quota cooldown, Named agent accounts need runner 0.1.61 or later",
     revision: "rev-1",
   });
   const again = await f.choices([f.accounts.b]);
