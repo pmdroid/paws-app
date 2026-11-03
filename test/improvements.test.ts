@@ -159,7 +159,12 @@ describe("daily finding sources", () => {
     group(db, [f[0]!, f[3]!], { title: "Rewritten" });
     ingestDailyFindings(db, "ws", { now: 3 });
     expect(listImprovementProposals(db, id).map((p) => p.title)).toEqual(["Shared fix"]);
-    expect(owner(db, f[3]!)).not.toBe(id);
+    const other = owner(db, f[3]!)!;
+    expect(other).not.toBe(id);
+    expect(listImprovementProposals(db, other).at(-1)!.evidence).toEqual([
+      `review_finding:${f[3]!.key}`,
+    ]);
+    expect(listImprovementProposals(db, other).at(-1)!.problem).not.toContain(f[0]!.text);
   });
 
   test("backfill maps filed and dismissed records without decisions, deliveries or verification", () => {
@@ -178,8 +183,19 @@ describe("daily finding sources", () => {
       units: 1,
       remaining: 2,
     });
-    ingestDailyFindings(db, "ws", { now: 7 });
-    ingestDailyFindings(db, "ws", { now: 8 });
+    expect(ingestDailyFindings(db, "ws", { now: 7, limit: 1 })).toMatchObject({
+      created: 1,
+      remaining: 1,
+    });
+    expect(ingestDailyFindings(db, "ws", { now: 8, limit: 1 })).toMatchObject({
+      created: 1,
+      remaining: 0,
+    });
+    expect(ingestDailyFindings(db, "ws", { now: 9, limit: 1 })).toMatchObject({
+      created: 0,
+      changed: 0,
+      remaining: 0,
+    });
     const items = listInboxItems(db, { workspaceId: "ws" });
     expect(items).toHaveLength(3);
     const linked = items.find((i) => i.members.some((m) => m.findingId === f[0]!.id))!;

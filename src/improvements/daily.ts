@@ -164,13 +164,19 @@ export function ingestDailyFindings(
     changed: 0,
     attached: 0,
     split: 0,
-    remaining: Math.max(0, units.length - limit),
+    remaining: 0,
   };
   const used = new Set<string>();
-  for (const unit of units.slice(0, limit)) {
+  let written = 0;
+  units.forEach((unit, index) => {
+    if (result.remaining) return;
+    if (written >= limit) {
+      result.remaining = units.length - index;
+      return;
+    }
     result.units++;
-    ingestUnit(db, workspaceId, unit, groups, used, options.now, result);
-  }
+    if (ingestUnit(db, workspaceId, unit, groups, used, options.now, result)) written++;
+  });
   return result;
 }
 
@@ -182,15 +188,21 @@ function ingestUnit(
   used: Set<string>,
   now: number,
   result: DailyIngestResult,
-): void {
-  const proposal = dailyProposal(unit.group, unit.members);
+): boolean {
   const owners = unit.members.map((f) => improvementBySource(db, workspaceId, source(f)));
   const open = (i: Improvement) =>
     i.reviewState === "needs_review" &&
     !used.has(i.id) &&
     (unit.acted || legacyActions(improvementFindings(db, i.id), groups).length === 0);
-  let target = owners.find((i): i is Improvement => i !== null && open(i)) ?? null;
-  if (owners.some((i) => i !== null && i.id !== target?.id)) result.split++;
+  const existing = owners.find((i): i is Improvement => i !== null && open(i)) ?? null;
+  if (owners.some((i) => i !== null && i.id !== existing?.id)) result.split++;
+  const members = unit.members.filter(
+    (_, index) => owners[index] === null || owners[index]!.id === existing?.id,
+  );
+  if (!members.length) return false;
+  const proposal = dailyProposal(unit.group, members);
+  let target = existing;
+  let wrote = false;
   unit.members.forEach((f, index) => {
     if (owners[index] !== null) return;
     const recorded = recordImprovementProposal(db, {
@@ -203,12 +215,13 @@ function ingestUnit(
     });
     if (recorded.created) result.created++;
     else result.attached++;
+    wrote = true;
     target ??= getImprovement(db, recorded.improvementId);
   });
-  if (!target) return;
+  if (!target) return wrote;
   used.add(target.id);
   const latest = listImprovementProposals(db, target.id).at(-1);
-  if (latest && sameProposal(latest, proposal)) return;
+  if (latest && sameProposal(latest, proposal)) return wrote;
   const anchor = unit.members.find((_, index) => owners[index]?.id === target!.id)!;
   recordImprovementProposal(db, {
     workspaceId,
@@ -218,4 +231,5 @@ function ingestUnit(
     now,
   });
   result.changed++;
+  return true;
 }
