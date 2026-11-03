@@ -8,6 +8,7 @@ import { journalCaught } from "./journal";
 import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
+import { createAccountManagement } from "./account-management";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { createOnboardingReadiness } from "./onboarding-readiness";
@@ -822,6 +823,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     ? createRunnerPlacement({ db, ...(parents ? { sessionActor: parents.actor } : {}) })
     : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
+  const accountManagement = createAccountManagement({
+    db,
+    settings: (repository) => {
+      const config = loadConfigFile(paths.configFile);
+      return {
+        profiles: resolveAgentProfiles(config, repository ?? undefined),
+        policy: resolveAccountPolicy(config, repository ?? undefined),
+      };
+    },
+  });
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
     db,
@@ -976,6 +987,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   ),
             runnerControl: async (request: Request, principal: WorkspacePrincipal) =>
               (await memberVmHttp(request, principal)) ??
+              (await accountManagement(request, principal)) ??
               (await placementBrowser(request, principal)) ??
               (await sessionMoves?.fetch(request, principal)) ??
               (runner
