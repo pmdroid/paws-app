@@ -82,6 +82,7 @@ export type PawsConfigFile = {
   /** Path relative to `~/.paws`, or absolute. */
   linearSecret: string | null;
   linearClientFile: string | null;
+  linearCommentAgents?: string[];
   webhooks: boolean | null;
   githubAuth: GitHubConfigAuth | null;
   trackerKind: TrackerKind | null;
@@ -134,6 +135,7 @@ export type PawsSetupConfig = {
   linearViewerId: string;
   linearSecret: string;
   linearClientFile: string | null;
+  linearCommentAgents?: readonly string[];
   githubAuth: GitHubConfigAuth;
   trackerKind?: "linear";
   repo: string;
@@ -228,6 +230,8 @@ export function renderConfigToml(config: PawsSetupConfig): string {
   if (config.linearClientFile !== null) {
     lines.push(`client_file = ${tomlString(config.linearClientFile)}`);
   }
+  if (config.linearCommentAgents?.length)
+    lines.push(`comment_agents = ${tomlStringArray(config.linearCommentAgents)}`);
   lines.push("", "[github]", `auth = ${tomlString(config.githubAuth)}`);
   lines.push(`repo = ${tomlString(config.repo)}`);
   if (config.githubRepos?.length) lines.push(`repos = ${tomlStringArray(config.githubRepos)}`);
@@ -267,6 +271,7 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
     renderConfigToml({
       ...config,
       githubRepos: config.githubRepos ?? stored.githubRepos,
+      linearCommentAgents: config.linearCommentAgents ?? stored.linearCommentAgents,
       closeoutProjects: config.closeoutProjects ?? stored.closeoutProjects,
     }) +
     renderCheckoutProjects(parseCheckoutProjects(current)) +
@@ -498,6 +503,7 @@ function assignConfig(
     else if (key === "viewer_id") config.linearViewerId = asString(value, line);
     else if (key === "secret") config.linearSecret = asString(value, line);
     else if (key === "client_file") config.linearClientFile = asString(value, line);
+    else if (key === "comment_agents") config.linearCommentAgents = asStringArray(value, line);
     else if (key === "webhooks") config.webhooks = asBoolean(value, line);
     else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     return;

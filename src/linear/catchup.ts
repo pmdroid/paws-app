@@ -40,8 +40,12 @@ const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDur
     nodes {
       id
       body
+      createdAt
       updatedAt
-      issue { id }
+      user { id }
+      parent { id }
+      botActor { id type name userDisplayName }
+      issue { id team { id } }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -58,6 +62,7 @@ const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDur
       updatedAt
       signal
       agentSession { id issue { id } }
+      sourceComment { id }
       content { __typename ... on AgentActivityPromptContent { body type } }
     }
     pageInfo { hasNextPage endCursor }
@@ -79,6 +84,11 @@ export type PolledComment = {
   issueId: string | null;
   body: string;
   updatedAtMs: number;
+  createdAtMs?: number | null;
+  authorId?: string | null;
+  parentId?: string | null;
+  teamId?: string | null;
+  botActor?: string | null;
 };
 
 export type PolledSession = {
@@ -99,6 +109,7 @@ export type PolledActivity = {
   body: string | null;
   signal: string | null;
   updatedAtMs: number;
+  sourceCommentId?: string | null;
 };
 
 export type IntakeSighting = {
@@ -347,11 +358,19 @@ function dedupeComments(nodes: readonly Record<string, unknown>[]): PolledCommen
     if (id === null || body === null || updatedAtMs === null || seen.has(id)) continue;
     seen.add(id);
     const issue = isRecord(node["issue"]) ? node["issue"] : null;
+    const team = issue !== null && isRecord(issue["team"]) ? issue["team"] : null;
+    const user = isRecord(node["user"]) ? node["user"] : null;
+    const parent = isRecord(node["parent"]) ? node["parent"] : null;
     comments.push({
       id,
       issueId: issue === null ? null : readString(issue, "id"),
       body,
       updatedAtMs,
+      createdAtMs: readTime(node, "createdAt"),
+      authorId: user === null ? null : readString(user, "id"),
+      parentId: parent === null ? null : readString(parent, "id"),
+      teamId: team === null ? null : readString(team, "id"),
+      botActor: isRecord(node["botActor"]) ? JSON.stringify(node["botActor"]) : null,
     });
   }
   return comments;
@@ -370,7 +389,9 @@ function dedupeActivities(nodes: readonly Record<string, unknown>[]): PolledActi
     const session = isRecord(node["agentSession"]) ? node["agentSession"] : null;
     const issue = session !== null && isRecord(session["issue"]) ? session["issue"] : null;
     const user = isRecord(node["user"]) ? node["user"] : null;
+    const sourceComment = isRecord(node["sourceComment"]) ? node["sourceComment"] : null;
     activities.push({
+      sourceCommentId: sourceComment === null ? null : readString(sourceComment, "id"),
       id,
       actorId: user === null ? null : readString(user, "id"),
       activityCreatedAtMs: readTime(node, "createdAt"),

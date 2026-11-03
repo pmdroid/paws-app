@@ -12,6 +12,7 @@ import type {
   PolledIssue,
   PolledSession,
 } from "./catchup";
+import { polledCommentEvent } from "./comments";
 import { activityKey, promptMetadata, sessionCreatedKey, type AcceptedLinearEvent } from "./events";
 import { flightsFor, isPawsStop } from "./event-dispatch";
 import type { InboxStore } from "./inbox";
@@ -506,7 +507,7 @@ function closedIssueEvent(issue: PolledIssue, sessionId: string | null): Accepte
 }
 
 function commentEvent(comment: PolledComment): AcceptedLinearEvent | null {
-  if (!isPawsStop(comment.body)) return null;
+  if (!isPawsStop(comment.body)) return polledCommentEvent(comment);
   return inboxEvent({
     dedupeKey: `comment:${comment.id}`,
     action: "other",
@@ -536,6 +537,7 @@ function activityEvent(activity: PolledActivity): AcceptedLinearEvent | null {
         reason: "agent",
         actorId: activity.actorId ?? null,
         activityCreatedAtMs: activity.activityCreatedAtMs ?? null,
+        sourceCommentId: activity.sourceCommentId ?? null,
       },
     });
   }
@@ -555,6 +557,7 @@ function activityEvent(activity: PolledActivity): AcceptedLinearEvent | null {
       sessionId: activity.sessionId,
       body: activity.body,
       signal: activity.signal,
+      sourceCommentId: activity.sourceCommentId ?? null,
     },
   });
 }

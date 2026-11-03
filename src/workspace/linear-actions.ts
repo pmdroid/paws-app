@@ -8,7 +8,11 @@ import {
   workspaceForOrganization,
   workspaceLinearMember,
 } from "../db";
-import type { AcceptedLinearEvent, LinearMembershipReads } from "../linear";
+import {
+  LinearEntityNotFoundError,
+  type AcceptedLinearEvent,
+  type LinearMembershipReads,
+} from "../linear";
 
 export function createWorkspaceLinearActions(options: {
   db: Database;
@@ -116,5 +120,64 @@ export function createWorkspaceLinearActions(options: {
       ? true
       : deny();
   }
-  return { authorize, recheck };
+  function deniedActor(workspaceId: string | null, actorId: string): false {
+    auditWorkspaceAccess(options.db, {
+      workspaceId,
+      userId: null,
+      action: "access.denied",
+      subject: `linear-comment:${actorId}`,
+      now: options.now(),
+    });
+    return false;
+  }
+  function recheckActor(actor: { id: string; teamId: string | null }): boolean {
+    const workspace = workspaceForOrganization(options.db, options.organizationId);
+    if (workspace === null || !actor.id.trim()) return false;
+    const member = workspaceLinearMember(options.db, workspace.id, actor.id);
+    return (
+      canAct({ id: actor.id, member, teamId: actor.teamId ?? undefined }, "prompt").allowed ||
+      deniedActor(workspace.id, actor.id)
+    );
+  }
+  async function authorizeActor(actor: { id: string; teamId: string | null }): Promise<boolean> {
+    const workspace = workspaceForOrganization(options.db, options.organizationId);
+    if (workspace === null || !actor.id.trim()) return deniedActor(null, actor.id);
+    if (!recheckActor(actor)) return false;
+    const observedAt = options.now();
+    let identity: Awaited<ReturnType<LinearMembershipReads["member"]>>;
+    try {
+      identity = await options.memberships.member(
+        options.organizationId,
+        actor.id,
+        AbortSignal.timeout(10_000),
+      );
+    } catch (error) {
+      if (error instanceof LinearEntityNotFoundError) return deniedActor(workspace.id, actor.id);
+      throw error;
+    }
+    const latest = workspaceLinearMember(options.db, workspace.id, actor.id);
+    if (identity.userId !== actor.id || identity.organizationId !== options.organizationId)
+      return deniedActor(workspace.id, actor.id);
+    if (latest !== null)
+      syncWorkspaceMember(options.db, {
+        workspaceId: workspace.id,
+        userId: latest.userId,
+        active: identity.active && !identity.guest,
+        role: "member",
+        teamIds: identity.teamIds,
+        now: observedAt,
+      });
+    return canAct(
+      {
+        id: actor.id,
+        identity,
+        member: workspaceLinearMember(options.db, workspace.id, actor.id),
+        teamId: actor.teamId ?? undefined,
+      },
+      "prompt",
+    ).allowed
+      ? true
+      : deniedActor(workspace.id, actor.id);
+  }
+  return { authorize, recheck, authorizeActor, recheckActor };
 }

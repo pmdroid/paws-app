@@ -294,6 +294,9 @@ import {
   delegatedLinearUserId,
   resetAwakeTime,
   rebaseReturnedFor,
+  getLinearComment,
+  receivedLinearComments,
+  recordLinearComment,
 } from "../db";
 import {
   publishAccepted,
@@ -351,6 +354,7 @@ import type {
   LinearMergeContext,
   IntakeDecision,
   ProjectOverview,
+  LinearComment,
 } from "../linear";
 import {
   FIRST_ACTIVITY_BODY,
@@ -361,6 +365,7 @@ import {
   linearCaller,
   linearItem,
   isMergeConflictRequest,
+  linearCommentOf,
   parseLinearSessionContext,
   renderLinearSessionContext,
 } from "../linear";
@@ -418,6 +423,15 @@ import {
   waitForRunnerSlot,
 } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
+import {
+  authorizeLinearComment,
+  commitLinearCommentRoute,
+  deliverLinearComments,
+  routeLinearComment,
+  takeLinearCommentBrief,
+  type LinearCommentCapabilities,
+  type LinearCommentPolicy,
+} from "./linear-comments";
 import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
 import { ciForRecheck, conflictsAt, type CiRecheck } from "./ci-recheck";
 import { followUpCi, unavailableCi, type FollowUpCi } from "./follow-up-ci";
@@ -544,6 +558,7 @@ export type OrchestratorOptions = {
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<IntakeDecision>;
   recheckLinearEvent?: (event: AcceptedLinearEvent) => boolean | Promise<boolean>;
   remoteFollowUp?: (itemId: string, body: string) => boolean | Promise<boolean>;
+  linearComments?: LinearCommentPolicy;
   outboxWaitMs?: number;
   authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
   linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
@@ -793,6 +808,8 @@ export class Orchestrator {
 
   async onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
+    const comment = linearCommentOf(event);
+    if (comment !== null) return this.receiveLinearComment(comment);
     const decision = await this.options.authorizeLinearEvent?.(event);
     if (!this.admitLinearEvent(event, decision)) return false;
     if (event.signal === "stop") {
@@ -875,6 +892,66 @@ export class Orchestrator {
     } finally {
       if (this.sessionEvents.get(key) === done) this.sessionEvents.delete(key);
     }
+  }
+
+  private async receiveLinearComment(comment: LinearComment): Promise<boolean> {
+    const policy = this.options.linearComments;
+    if (policy === undefined) return false;
+    recordLinearComment(this.db, comment, this.now());
+    const wait = policy.wait?.() ?? this.feedbackWait();
+    for (const received of receivedLinearComments(this.db)) {
+      if (received.issueId !== comment.issueId) continue;
+      const route = routeLinearComment(this.db, received, policy);
+      const authorized =
+        route.kind === "queue" ? await authorizeLinearComment(route, policy) : true;
+      commitLinearCommentRoute(this.db, received.commentId, route, {
+        now: this.now(),
+        wait,
+        authorized,
+      });
+    }
+    await this.flush();
+    const stored = getLinearComment(this.db, comment.commentId);
+    return stored !== null && stored.state !== "rejected" && stored.state !== "ignored";
+  }
+
+  private linearCommentCapabilities(policy: LinearCommentPolicy): LinearCommentCapabilities {
+    return {
+      now: () => this.now(),
+      policy,
+      busy: (item) =>
+        this.jobContexts.has(item.id) ||
+        this.db
+          .query(
+            "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
+          )
+          .get(this.now(), item.id) !== null,
+      forward: async (item, body) =>
+        this.options.remoteFollowUp !== undefined &&
+        this.isLive(item.id) &&
+        (await this.options.remoteFollowUp(item.id, body)),
+      answer: async (item, comment, question) => {
+        const eventKey = `comment:${comment.commentId}:answer`;
+        await this.onLinearEvent({
+          dedupeKey: eventKey,
+          deliveryId: null,
+          source: "poll",
+          action: "prompted",
+          sessionId: item.sessionKey,
+          issueId: comment.issueId,
+          activityId: null,
+          actorId: comment.authorId,
+          activityCreatedAtMs: comment.createdAtMs,
+          body: comment.body,
+          signal: null,
+          updatedAtMs: comment.updatedAtMs,
+          payload: JSON.stringify({ kind: "comment", commentId: comment.commentId }),
+        });
+        const after = getQuestion(this.db, question.id);
+        return after?.status === "answered" && after.answerEventKey === eventKey;
+      },
+      flush: () => this.flush(),
+    };
   }
 
   private admitLinearEvent(
@@ -1748,6 +1825,18 @@ export class Orchestrator {
         this.db,
         reviewId,
         this.pullFeedbackCapabilities(context),
+      );
+      if (step === "wait" && context.isCurrent())
+        waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+    });
+    jobs.register(JOB_KIND.linearComments, async (job, context) => {
+      const itemId = (job.payload as { linearCommentsFor?: unknown }).linearCommentsFor;
+      const policy = this.options.linearComments;
+      if (typeof itemId !== "string" || policy === undefined || !context.isCurrent()) return;
+      const step = await deliverLinearComments(
+        this.db,
+        itemId,
+        this.linearCommentCapabilities(policy),
       );
       if (step === "wait" && context.isCurrent())
         waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
@@ -2885,12 +2974,17 @@ export class Orchestrator {
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const checkout = this.runCheckout(item);
+      const policy = this.options.linearComments;
+      const comments = policy
+        ? takeLinearCommentBrief(this.db, item, { now: () => this.now(), policy })
+        : null;
+      const turnHandoff = [handoff, comments].filter((part) => part).join("\n\n");
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
         brief: this.workContext(item),
         hiddenPaths: checkout.agent,
-        ...(handoff ? { handoff } : {}),
+        ...(turnHandoff ? { handoff: turnHandoff } : {}),
         ...(item.continuesBranch ? { continuesBranch: item.continuesBranch } : {}),
       });
       await this.flush();

@@ -39,6 +39,24 @@ export {
   type PullCommentSource,
 } from "./pull-comments";
 export {
+  gatherLinearComments,
+  getLinearComment,
+  linearCommentAuthor,
+  linearCommentsInBrief,
+  markLinearCommentsDelivered,
+  pendingLinearComments,
+  queueLinearComment,
+  receivedLinearComments,
+  recordLinearComment,
+  settleLinearComments,
+  type LinearCommentAuthority,
+  type LinearCommentChange,
+  type LinearCommentReceipt,
+  type LinearCommentRecord,
+  type LinearCommentState,
+  type LinearCommentVia,
+} from "./linear-comments";
+export {
   clearPullCiFailures,
   getPullCiFailure,
   pendingPullCiFailures,

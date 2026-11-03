@@ -1140,6 +1140,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         now: Date.now(),
       });
   };
+  let commentAccess: Awaited<NonNullable<typeof workspace>["access"]> | null = null;
   const loops = startLoops({
     db,
     signal: abort.signal,
@@ -1221,6 +1222,22 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             (await parents?.authorizeEvent(event)) ??
             (assignments ? assignments.authorize(event) : ACCEPTED)
           );
+        },
+        linearComments: {
+          appUserId: runtime.linearViewerId,
+          get agents() {
+            return loadConfigFile(paths.configFile).linearCommentAgents ?? [];
+          },
+          ...(workspace
+            ? {
+                authorize: async (actor: { id: string; teamId: string | null }) => {
+                  commentAccess = await workspace!.access;
+                  return commentAccess.authorizeLinearCommentActor(actor);
+                },
+                recheck: (actor: { id: string; teamId: string | null }) =>
+                  commentAccess?.recheckLinearCommentActor(actor) ?? true,
+              }
+            : {}),
         },
         recheckLinearEvent: async (event) =>
           workspace

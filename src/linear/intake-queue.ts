@@ -1,3 +1,4 @@
+import { linearCommentOf } from "./comments";
 import { journalCaught } from "../journal";
 import { acknowledgeNewSession } from "./acknowledge";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
@@ -232,6 +233,8 @@ export function createLinearIntake(options: {
           return false;
         signal.throwIfAborted();
         request?.signal?.throwIfAborted();
+        if (mode.phase !== "arrive" && linearCommentOf(event) !== null)
+          return followUp?.(event, tracker);
         if (tracker === null) {
           if (mode.phase === "arrive") return true;
           if (event.signal === "stop") {

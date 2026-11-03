@@ -9,6 +9,7 @@ import {
   type AcceptedLinearEvent,
   type LinearEventAction,
 } from "./events";
+import { webhookCommentEvent } from "./comments";
 import { flightsFor, isPawsStop } from "./event-dispatch";
 import type { InboxStore } from "./inbox";
 import type { IntakeQueue } from "./intake-queue";
@@ -209,6 +210,10 @@ export function parseAgentEvent(
   }
   if (!isRecord(parsed)) return null;
   const type = readString(parsed, "type");
+  if (type === "Comment") {
+    const comment = webhookCommentEvent(parsed, rawBody, deliveryId);
+    if (comment !== null) return comment;
+  }
   const actionName = readString(parsed, "action");
   const session = isRecord(parsed["agentSession"]) ? parsed["agentSession"] : null;
   const activity = isRecord(parsed["agentActivity"]) ? parsed["agentActivity"] : null;
