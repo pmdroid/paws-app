@@ -159,3 +159,10 @@ test("Merge the accepted work at the time limit goes to the merge queue without 
       .map((job) => job.payload),
   ).toEqual([{ itemId: item.id, summary: "Closeout accepted.", head: "accepted" }]);
 });
+
+test("Continue with new instructions at the time limit starts a fresh budget instead of adding an hour", () => {
+  const { clock, db, item } = askedAtTimeLimit();
+  expect(reply(db, "Continue, but fix the acme lint first", clock.now()).status).toBe("answered");
+  expect(getWorkItem(db, item.id)).toMatchObject({ awakeMs: 0, maxAwakeMs: 3 * 60 * MINUTE });
+  expect(listOutbox(db).some((row) => row.idempotencyKey.startsWith("fresh-budget:"))).toBe(true);
+});

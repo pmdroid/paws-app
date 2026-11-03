@@ -535,6 +535,7 @@ import {
 } from "./open-findings";
 import type { RuntimeList } from "../runtimes";
 import { createRuntimeLists } from "./runtime-lists";
+import { startFreshBudget } from "./time-budget";
 import { questionEffects } from "./question-effects";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
 import {
@@ -5583,7 +5584,7 @@ export class Orchestrator {
       const outcome = answerAsked(
         this.db,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
-        questionEffects(this.db, { now: this.now() }),
+        questionEffects(this.db, { now: this.now(), maxAwakeMs: this.options.caps?.maxAwakeMs }),
       );
       await this.flush();
       return outcome.status === "answered" ? "answered" : "rejected";
@@ -5597,7 +5598,7 @@ export class Orchestrator {
       const outcome = answerAsked(
         this.db,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
-        questionEffects(this.db, { now: this.now() }),
+        questionEffects(this.db, { now: this.now(), maxAwakeMs: this.options.caps?.maxAwakeMs }),
       );
       await this.flush();
       return outcome.status === "answered" ? "answered" : "rejected";
@@ -5636,6 +5637,7 @@ export class Orchestrator {
         this.db,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
         questionEffects(this.db, {
+          maxAwakeMs: this.options.caps?.maxAwakeMs,
           now: this.now(),
           asking: (runId) => this.askedRuns.has(runId),
           redirect,
@@ -6799,14 +6801,18 @@ export class Orchestrator {
       const handoff = [...pending.map((turn) => turn.body), ...(context ? [context] : [])].join(
         "\n\n",
       );
-      if (item!.cancelRequested || item!.state === "failed") {
+      if (item!.cancelRequested || item!.state === "failed")
         this.db.run(
           "UPDATE work_item SET cancel_requested = 0, recovery_attempts = 0 WHERE id = ?",
           [item!.id],
         );
-        resetAwakeTime(this.db, item!.id);
-        if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
-      }
+      startFreshBudget(this.db, {
+        itemId: item!.id,
+        sessionId,
+        key: jobKey,
+        maxAwakeMs: this.options.caps?.maxAwakeMs,
+        now: this.now(),
+      });
       const jobId = restart(this.db, getWorkItem(this.db, item!.id)!, {
         reason: rebase ? "conflict" : "follow_up",
         body: rebase ? `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}` : handoff,

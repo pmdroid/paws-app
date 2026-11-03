@@ -2,7 +2,8 @@ import { mergeAcceptedWork } from "./accepted-work";
 import { SLOW_CI_REASON } from "./merge-jobs";
 import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
+import { JOB_KIND, TIME_LIMIT_CONTINUE, TIME_LIMIT_MERGE } from "../core";
+import { startFreshBudget } from "./time-budget";
 import {
   applyLinearTurns,
   announceLinearTurn,
@@ -43,6 +44,7 @@ export function questionEffects(
   db: Database,
   input: {
     now: number;
+    maxAwakeMs?: number;
     asking?: (runId: string) => boolean;
     redirect?: boolean;
     marks?: readonly VisualReviewMark[];
@@ -138,7 +140,16 @@ export function questionEffects(
       return;
     }
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {
-      extendAwakeCap(db, question.itemId);
+      if ((question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_CONTINUE.toLowerCase())
+        extendAwakeCap(db, question.itemId);
+      else
+        startFreshBudget(db, {
+          itemId: question.itemId,
+          sessionId: question.sessionId,
+          key: question.id,
+          maxAwakeMs: input.maxAwakeMs,
+          now: input.now,
+        });
       // A review or comment restart the time limit cut off reaches the agent with the answer.
       resume(question, heldHandoffs(db, question.itemId));
       return;

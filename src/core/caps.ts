@@ -19,7 +19,9 @@ export type AwakeBreakdown = {
 export const TIME_LIMIT_MERGE = "Merge the accepted work";
 
 /** Once Closeout accepted the work, the cap asks this instead of failing a resumed agent. */
-export const TIME_LIMIT_OPTIONS = [TIME_LIMIT_MERGE, "Continue", "Stop"] as const;
+export const TIME_LIMIT_CONTINUE = "Continue";
+
+export const TIME_LIMIT_OPTIONS = [TIME_LIMIT_MERGE, TIME_LIMIT_CONTINUE, "Stop"] as const;
 
 /** How much more awake time a Continue answer gives the agent. */
 export const TIME_LIMIT_EXTENSION_MS = 60 * 60 * 1000;
