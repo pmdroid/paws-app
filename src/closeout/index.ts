@@ -1,6 +1,7 @@
 export {
   candidatePolicyDigest,
   candidatePolicyDigests,
+  credentialSecrets,
   FINDING_FORMAT,
   parseFindings,
   policyKeys,
