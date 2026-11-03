@@ -3,7 +3,11 @@ import { getEvidence, getVisualReviewMark, getWorkItem } from "../db";
 import { evidencePath } from "./store";
 import { ULID_PATTERN } from "./ulid";
 
-export const EVIDENCE_API_PATH = "/api/evidence/";
+const EVIDENCE_API_PATH = "/api/evidence/";
+
+export function isEvidenceFilePath(path: string): boolean {
+  return path.startsWith(EVIDENCE_API_PATH) && !path.slice(EVIDENCE_API_PATH.length).includes("/");
+}
 
 export type EvidenceRequestOptions = {
   db: Database;
@@ -21,7 +25,7 @@ export async function handleEvidenceRequest(
   options: EvidenceRequestOptions,
 ): Promise<Response | null> {
   const path = new URL(request.url).pathname;
-  if (!path.startsWith(EVIDENCE_API_PATH)) return null;
+  if (!isEvidenceFilePath(path)) return null;
   if (options.sessionIds === undefined)
     return Response.json({ error: "Sign in to Paws." }, { status: 401, headers: PRIVATE });
   if (request.method !== "GET" && request.method !== "HEAD")

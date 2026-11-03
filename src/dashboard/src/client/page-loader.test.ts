@@ -233,3 +233,82 @@ describe("resource reader", () => {
     expect(sent).toEqual([null, null]);
   });
 });
+
+describe("evidence page loading", () => {
+  const project = { name: "Paws", team: "ENG", repo: "acme/app", workspace: null };
+  const file = (id: string) => ({
+    id,
+    itemId: "ENG-101",
+    runId: "r-101",
+    checkId: "visual-proof",
+    attempt: 1,
+    kind: "image" as const,
+    mediaType: "image/png",
+    displayName: `${id}.png`,
+    sizeBytes: 2048,
+    headCommit: "a".repeat(40),
+    publishedAt: "2026-11-02T10:00:00.000Z",
+    publisher: "Claude",
+  });
+  const generatedAt = "2026-11-03T00:00:00.000Z";
+  const gallery = () =>
+    Response.json(
+      { source: "live", generatedAt, project, evidence: [file("01JA0000000000000000000001")] },
+      { headers: { ETag: 'W/"gallery"' } },
+    );
+  const metadata = (id: string) =>
+    Response.json(
+      { source: "live", generatedAt, project, evidence: file(id), related: [file(id)] },
+      { headers: { ETag: `W/"${id}"` } },
+    );
+  const first = "01JA0000000000000000000001";
+  const second = "01JA0000000000000000000002";
+
+  test("the gallery and one file read their own resources, never /api/status", async () => {
+    const { pages, sent } = loader();
+    const listed = pages.load({ view: "evidence", id: null });
+    await settle();
+    sent[0]!.answer(gallery());
+    expect(await listed).toBe("applied");
+    const opened = pages.load({ view: "evidence", id: first });
+    await settle();
+    sent[1]!.answer(metadata(first));
+    expect(await opened).toBe("applied");
+    expect(sent.map((entry) => entry.path)).toEqual([
+      "/api/evidence",
+      `/api/evidence/${first}/metadata`,
+    ]);
+    expect(pages.data.evidenceList?.evidence.map((entry) => entry.id)).toEqual([first]);
+    expect(pages.data.evidence?.evidence.id).toBe(first);
+    expect(pages.data.snapshot).toBeNull();
+  });
+
+  test("an unknown or hidden file is remembered as missing, and a late answer for the page left behind is dropped", async () => {
+    const { pages, sent } = loader();
+    const left = pages.load({ view: "evidence", id: first });
+    await settle();
+    pages.navigate();
+    const opened = pages.load({ view: "evidence", id: second });
+    await settle();
+    sent[1]!.answer(missing());
+    expect(await opened).toBe("applied");
+    expect(pages.data.missingEvidence).toBe(second);
+    expect(pages.data.evidence).toBeNull();
+    sent[0]!.answer(metadata(first));
+    expect(await left).toBe("stale");
+    expect(pages.data.evidence).toBeNull();
+    expect(pages.data.missingEvidence).toBe(second);
+  });
+
+  test("signing in as another reader clears loaded evidence", async () => {
+    const { pages, sent } = loader();
+    const opened = pages.load({ view: "evidence", id: first });
+    await settle();
+    sent[0]!.answer(metadata(first));
+    expect(await opened).toBe("applied");
+    pages.reset();
+    expect(pages.data.evidence).toBeNull();
+    expect(pages.data.evidenceList).toBeNull();
+    expect(pages.data.missingEvidence).toBeNull();
+  });
+});

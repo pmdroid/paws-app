@@ -37,7 +37,11 @@ export interface EvidenceMedia {
   /** Takes the gallery and the player out of `#page-content` right before it is re-rendered. */
   detach(): void;
   /** Puts them back into their placeholders, so thumbnails and playback are not reloaded. */
-  attach(snapshot: RunEvidenceSource | null, engineUrl: string | null): void;
+  attach(
+    snapshot: RunEvidenceSource | null,
+    engineUrl: string | null,
+    shown?: StatusEvidence | null,
+  ): void;
   copyLink(id: string, button: HTMLButtonElement | null): void;
 }
 
@@ -88,7 +92,7 @@ export function createEvidenceMedia(changed: () => void): EvidenceMedia {
       gallery?.root.remove();
       player?.root.remove();
     },
-    attach(snapshot, engineUrl) {
+    attach(snapshot, engineUrl, shown = null) {
       const slot = document.querySelector<HTMLElement>("#evidence-gallery[data-run]");
       const runId = slot?.dataset.run;
       if (slot && runId && snapshot) {
@@ -101,7 +105,7 @@ export function createEvidenceMedia(changed: () => void): EvidenceMedia {
       }
       const stage = document.querySelector<HTMLElement>("#evidence-player[data-evidence]");
       const id = stage?.dataset.evidence;
-      const evidence = id ? snapshot?.evidence?.find((entry) => entry.id === id) : undefined;
+      const evidence = id && shown?.id === id ? shown : undefined;
       if (player && player.id !== evidence?.id) {
         player.dispose();
         player = null;

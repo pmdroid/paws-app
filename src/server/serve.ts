@@ -29,7 +29,7 @@ import {
   type StartLinearSession,
 } from "../dashboard";
 import {
-  EVIDENCE_API_PATH,
+  isEvidenceFilePath,
   handleEvidenceRequest,
   handleVisualReviewChanges,
   VISUAL_REVIEW_CHANGES_PATH,
@@ -485,7 +485,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ...(sessionIds === undefined ? {} : { sessionIds }),
     }))!;
   }
-  if (path.startsWith(EVIDENCE_API_PATH)) {
+  if (isEvidenceFilePath(path)) {
     if (secrets.db === undefined || secrets.evidenceDir === undefined)
       return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleEvidenceRequest(request, {
