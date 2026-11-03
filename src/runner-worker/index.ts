@@ -633,13 +633,13 @@ export async function executeRunnerCommand(
     (task && command.repository !== undefined) !== (options.repositorySnapshot !== undefined)
   )
     throw new Error("Invalid runner worker configuration");
-  const named = runnerCommandAccount(command);
-  const home = named
-    ? openRunnerAccountHome(options.home, named.account, named.agent, {
+  const binding = runnerCommandAccount(command);
+  const home = binding
+    ? openRunnerAccountHome(options.home, binding.account, binding.agent, {
         signIn: command.type === "login",
       })
     : options.home;
-  const homeEnv = named
+  const homeEnv = binding
     ? accountAgentEnv(home)
     : { HOME: home, CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude") };
   for (const provider of [".codex", ".claude", ".grok"]) {
@@ -711,13 +711,13 @@ export async function executeRunnerCommand(
         signal: options.signal,
         answer: options.answer,
         emit: (update) => emit({ type: "login", update }),
-        ...(named
+        ...(binding
           ? {
               account: {
                 publish: (write: () => void) =>
                   publishRunnerAccountHome(home, job.executionId, () => {
                     write();
-                    markRunnerAccountSignedIn(home, named.account, named.agent);
+                    markRunnerAccountSignedIn(home, binding.account, binding.agent);
                   }),
               },
             }

@@ -144,10 +144,7 @@ export function runnerAccountBindings(
 export function holdRunnerAccountHome(home: string, executionId: string, receipt: string): void {
   const active = join(home, ACTIVE);
   privateDirectory(active, true);
-  writePrivateFile(
-    join(active, ExecutionIdSchema.parse(executionId)),
-    JSON.stringify({ receipt }),
-  );
+  writePrivateFile(join(active, ExecutionIdSchema.parse(executionId)), JSON.stringify({ receipt }));
   const publisher = readReceipt(join(home, PUBLISHING));
   if (publisher && publisher !== "stale") {
     releaseRunnerAccountHome(home, executionId);

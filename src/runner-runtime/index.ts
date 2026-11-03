@@ -721,7 +721,12 @@ export async function openRunnerRuntime(options: {
       if (pending.failure) await prepareFailure(execution, token, request);
       posting = true;
       await request((sent) =>
-        options.daemon.postResult(command.runId, command.generation, pending.result, sent),
+        options.daemon.postResult(
+          command.runId,
+          command.generation,
+          command.account ? { ...pending.result, account: command.account } : pending.result,
+          sent,
+        ),
       );
       journal.resultAccepted(execution.id);
       journal.phase(execution.id, pending.failure ? "interrupted" : "complete");

@@ -5,12 +5,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
-import {
-  accountAgentEnv,
-  resolveAdapter,
-  resolveOpencodeCommand,
-  minimalAgentEnv,
-} from "../acp";
+import { accountAgentEnv, resolveAdapter, resolveOpencodeCommand, minimalAgentEnv } from "../acp";
 import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
 import { RunnerLoginInputSchema, type RunnerLoginUpdate } from "../runner-protocol";
 

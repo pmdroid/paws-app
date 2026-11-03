@@ -18,6 +18,8 @@ import { afterEach, expect, test } from "bun:test";
 import {
   createDirectWorkerSupervisor,
   createRunnerSkillInstaller,
+  markRunnerAccountSignedIn,
+  openRunnerAccountHome,
   publishRunnerJob,
   type RunnerJob,
 } from "../src/runner-execution";
@@ -327,4 +329,63 @@ test("a crashed worker resumes on the skills folder it started with, after an up
   await supervisor.stop(second);
   skills.prepareHome(agentHome);
   expect(existsSync(launched[0]!.folder)).toBe(false);
+});
+
+test("a named job holds its binding home while it runs and never falls back to the default home", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-worker-supervisor-"));
+  roots.push(root);
+  const { spool, results } = prepared(root);
+  const account = {
+    accountId: "01JACCOUNTA000000000000000",
+    bindingId: "01JBINDINGA000000000000000",
+  };
+  const named = "01K00000000000000000000002";
+  const unheld = "01K00000000000000000000003";
+  publishRunnerJob(spool, {
+    executionId: named,
+    command: { ...probe.command, id: "cmd-named", account },
+  });
+  publishRunnerJob(spool, {
+    executionId: unheld,
+    command: {
+      ...probe.command,
+      id: "cmd-unheld",
+      account: { ...account, bindingId: "01JBINDINGB000000000000000" },
+    },
+  });
+  const agentHome = join(root, "agent");
+  mkdirSync(agentHome, { mode: 0o700 });
+  const bindingHome = openRunnerAccountHome(agentHome, account, "codex", { signIn: true });
+  markRunnerAccountSignedIn(bindingHome, account, "codex");
+  const preparedHomes: string[] = [];
+  const launched: string[] = [];
+  const supervisor = createDirectWorkerSupervisor({
+    stateRoot: join(root, "workers"),
+    spool,
+    results,
+    agentHome,
+    skills: {
+      prepareHome: (home) => preparedHomes.push(home),
+      hold: () => undefined,
+      release: () => {},
+    },
+    launch(_executionId, home) {
+      launched.push(home);
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      remember(child.pid);
+      return child;
+    },
+  });
+  await supervisor.start(named);
+  expect(launched).toEqual([agentHome]);
+  expect(preparedHomes).toEqual([bindingHome]);
+  expect(existsSync(join(bindingHome, ".paws-active", named))).toBe(true);
+  await supervisor.stop(named);
+  expect(existsSync(join(bindingHome, ".paws-active", named))).toBe(false);
+
+  await expect(supervisor.start(unheld)).rejects.toThrow(/not signed in/);
+  expect(launched).toEqual([agentHome]);
 });

@@ -86,7 +86,7 @@ function read(path: string): Buffer | null {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     if ((error as NodeJS.ErrnoException).code === "ELOOP")
-      throw new Error("Provider credentials path is a symlink");
+      throw new Error("Provider credentials path is a symlink", { cause: error });
     throw error;
   }
   try {
