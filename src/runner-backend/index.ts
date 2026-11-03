@@ -95,6 +95,7 @@ import {
 import {
   RetryableRunnerError,
   AccountPolicyUnavailable,
+  failoverCallId,
   runWithFailover,
   USAGE_LIMIT_RESUME_SLACK_MS,
   UsageLimitPause,
@@ -2341,7 +2342,7 @@ export function createRemoteAgentRunner(options: {
           const move: HandoverMove = {};
           const moving: FailoverAttempt = (next, excluded, limit) =>
             attempt(next, excluded, limit, move);
-          const callId = `${input.role}:${input.prepareOnly ? "prepare" : "work"}:${input.runId}`;
+          const callId = failoverCallId(input);
           const ledger: FailoverLedger | undefined = runId
             ? {
                 load: (policyKey) => fallbackHistory(db, runId, callId, policyKey),

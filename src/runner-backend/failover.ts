@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FallbackHistory, FallbackOutcome } from "../db";
 import { journalCaught } from "../journal";
 import {
@@ -94,6 +95,23 @@ export type FailoverLedger = {
 };
 
 export const MAX_FAILOVER_FAILURES = 3;
+
+export function failoverCallId(input: RunAgentOptions): string {
+  const purpose = input.prepareOnly ? "prepare" : "work";
+  if (input.role !== "reviewer") return `${input.role}:${purpose}:${input.runId}`;
+  const review = createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.prompt,
+        input.reviewCommand ?? null,
+        input.mainSha ?? null,
+        input.resume?.replayPrompt ?? null,
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 40);
+  return `reviewer:${purpose}:${review}`;
+}
 
 export async function runWithFailover(
   input: RunAgentOptions,
@@ -218,7 +236,14 @@ export async function runWithFailover(
             accounts = latest.accounts;
             configuredProfilesKey = latestKey;
             excluded.length = 0;
-            if (ledger) excluded.push(...ledger.load(configuredProfilesKey).excluded);
+            if (ledger) {
+              const history = ledger.load(configuredProfilesKey);
+              excluded.push(...history.excluded);
+              index = Math.max(index, history.failures);
+              usageLimitEvents = Math.max(usageLimitEvents, history.usageLimits);
+              if (usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
+                throw new UsageLimitExhaustedError(error.runnerId, error);
+            }
           }
         }
         input.signal?.throwIfAborted();

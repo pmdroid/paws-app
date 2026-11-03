@@ -3,6 +3,7 @@ import type { RunAgentOptions, RunAgentResult } from "../acp";
 import { isTransient } from "../core";
 import {
   AccountPolicyUnavailable,
+  failoverCallId,
   RetryableRunnerError,
   runWithFailover,
   UsageLimitPause,
@@ -782,4 +783,50 @@ test("a finished call closes its attempts, so a later call on the same run start
     ledger,
   );
   expect(seen).toEqual([[]]);
+});
+
+test("switching to saved settings keeps that configuration's spent failures and exclusions", async () => {
+  const claude = { agent: "claude" as const, model: "opus" };
+  const codex = { agent: "codex" as const, model: "gpt-6-sol" };
+  const { ledger } = memoryLedger();
+  const codexKey = JSON.stringify([["codex", "gpt-6-sol", null], null, null]);
+  for (const runnerId of ["runner-1", "runner-2"])
+    ledger.record({ policyKey: codexKey, outcome: "failed", runnerId, excludedKey: runnerId });
+  let profiles: ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>> = { profile: claude };
+  let now = RESET - 1;
+  const attempted: [string, string[]][] = [];
+  await expect(
+    runWithFailover(
+      { ...input(), ...profiles, resolveProfiles: () => profiles },
+      async (options, avoid) => {
+        attempted.push([options.profile!.agent, [...avoid]]);
+        if (attempted.length === 1) throw new UsageLimitPause("claude", RESET, RESET, null);
+        throw new RetryableRunnerError("runner-3", "Interrupted");
+      },
+      async () => undefined,
+      {
+        now: () => now,
+        async pause() {
+          profiles = { profile: codex };
+          now = RESET;
+        },
+      },
+      ledger,
+    ),
+  ).rejects.toBeInstanceOf(RetryableRunnerError);
+  expect(attempted).toEqual([
+    ["claude", []],
+    ["codex", ["runner-1", "runner-2"]],
+  ]);
+});
+
+test("a reviewer call keeps its fallback identity across a restart that renumbers its run id", () => {
+  const review = (runId: string, prompt = "Review base..head") =>
+    failoverCallId({ ...input(), role: "reviewer", readOnly: true, runId, prompt });
+  expect(review("rev-task-1")).toBe(review("rev-task-7"));
+  expect(review("rev-task-1")).not.toBe(review("rev-task-1", "Review another head"));
+  expect(failoverCallId({ ...input(), runId: "run-1" })).toBe("implementer:work:run-1");
+  expect(failoverCallId({ ...input(), runId: "run-1", prepareOnly: true })).toBe(
+    "implementer:prepare:run-1",
+  );
 });
