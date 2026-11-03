@@ -37,3 +37,21 @@ export {
   RETRO_SETTINGS_PATH,
   type RetroCatalog,
 } from "./http";
+export {
+  boundRetroDigest,
+  buildRetroDigest,
+  collectRetroDigest,
+  redactRetroText,
+  RETRO_DIGEST_VERSION,
+  RETRO_PROMPT_DIGEST_CHARS,
+  type RetroCollection,
+  type RetroCount,
+  type RetroDigest,
+  type RetroDigestCounts,
+  type RetroDigestRecord,
+  type RetroDigestSession,
+  type RetroGroupedCount,
+  type RetroPromptView,
+  type RetroRate,
+  type RetroWindow,
+} from "./digest";

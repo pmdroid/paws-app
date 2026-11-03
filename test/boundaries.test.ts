@@ -153,7 +153,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   runtimes: ["journal"],
   "live-preview": ["journal", "runner-protocol"],
   "dashboard-links": [],
-  retros: ["journal", "db", "runner-models", "workspace"],
+  retros: ["journal", "db", "runner-models", "workspace", "improvements", "closeout-spec"],
   "agent-catalog": ["journal", "db"],
   host: ["journal", "core", "db"],
   loop: [
