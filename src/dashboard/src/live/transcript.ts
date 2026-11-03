@@ -39,14 +39,23 @@ function* readFile(
     let message = false;
     const terminal = new Map<string, { at: string; title: string; text: string }>();
     const tools = new Map<string, { title?: string; kind?: string }>();
-    for (const line of lines) {
+    // A line without a time belongs to the session around it, not to the run's start.
+    let lastAt = fallbackAt;
+    if (lines.at(-1) === "") lines.pop();
+    for (const [index, line] of lines.entries()) {
       try {
-        const record = JSON.parse(line);
+        let record;
+        try {
+          record = JSON.parse(line);
+        } catch (parseError) {
+          // The writer may still be appending the last line.
+          if (index === lines.length - 1) continue;
+          throw parseError;
+        }
         const event = record.event;
-        const at =
-          typeof record.t === "string" && Number.isFinite(Date.parse(record.t))
-            ? record.t
-            : fallbackAt;
+        if (typeof record.t === "string" && Number.isFinite(Date.parse(record.t)))
+          lastAt = record.t;
+        const at = lastAt;
         let kind: StatusActivity["kind"] = "system";
         let text = "";
         let chunk = false;
