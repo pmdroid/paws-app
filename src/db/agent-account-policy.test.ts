@@ -105,7 +105,7 @@ test("references list every account and each workspace's default sign-in", () =>
   db.close();
 });
 
-test("dispatch runs only the default sign-in, and only when it is first among eligible accounts", () => {
+test("dispatch admits the eligible accounts in order and refuses a list with none", () => {
   const db = fresh();
   db.run("INSERT INTO linear_session(session_id,organization_id,created_at) VALUES(?,?,?)", [
     "S1",
@@ -122,8 +122,9 @@ test("dispatch runs only the default sign-in, and only when it is first among el
     accountId: legacy,
   });
   expect(dispatchAccount(db, { itemId: "I1" }, "claude", policy([a.id, legacy]))).toMatchObject({
-    dispatch: false,
-    reason: expect.stringMatching(/cannot run a named account/),
+    dispatch: true,
+    accountId: a.id,
+    admission: { eligible: [a.id, legacy] },
   });
   setAgentAccountEnabled(db, { workspaceId: "W1", accountId: a.id, enabled: false, now: NOW });
   expect(dispatchAccount(db, { itemId: "I1" }, "claude", policy([a.id, legacy]))).toMatchObject({
