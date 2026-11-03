@@ -43,6 +43,12 @@ if [ "$1" = where ]; then
   echo "$target"
   exit 0
 fi
+if [ "$1" = bin-paths ]; then
+  listed="$here/bin-paths-$(echo "$tool" | tr ':/' '--')"
+  [ -f "$listed" ] || { echo "mise ERROR unknown command bin-paths" >&2; exit 2; }
+  sed "s#@TARGET@#$target#g" "$listed"
+  exit 0
+fi
 [ "$1" = install ] || { echo "unexpected $*" >&2; exit 2; }
 echo "$spec $PATH" >> "$here/path.log"
 echo "call $spec cwd=$PWD data=$MISE_DATA_DIR cache=$MISE_CACHE_DIR config=$MISE_CONFIG_DIR trusted=[$MISE_TRUSTED_CONFIG_PATHS]" >> "$log"
@@ -493,4 +499,84 @@ test("a runtime mise cannot locate fails the install with its name", async () =>
     runtime: { tool: "node", version: "22" },
     message: "Paws could not find the installed runtime node@22: mise exited with code 3: lost",
   });
+});
+
+function binPathsFor(tool: string, lines: string) {
+  writeFileSync(join(dirname(mise), `bin-paths-${tool}`), lines);
+}
+
+test("a tool whose binary sits in a nested folder gets the folder mise reports", async () => {
+  binPathsFor("golangci-lint", "@TARGET@/golangci-lint-2.11.4-linux-amd64\n");
+  const result = await installRuntimes({
+    runtimes: [{ tool: "golangci-lint", version: "2.11.4" }],
+    home,
+    mise,
+  });
+  const install = join(runnerMiseDirectories(home).dataDir, "installs", "golangci-lint", "2.11.4");
+  expect(result).toMatchObject({
+    ok: true,
+    binPaths: [join(install, "golangci-lint-2.11.4-linux-amd64")],
+  });
+});
+
+test("a core tool keeps its bin folder and runtime order still decides precedence", async () => {
+  binPathsFor("node", "@TARGET@/bin\n");
+  binPathsFor("golangci-lint", "@TARGET@/golangci-lint-2.11.4-linux-amd64\n");
+  const result = await installRuntimes({
+    runtimes: [
+      { tool: "node", version: "22" },
+      { tool: "golangci-lint", version: "2.11.4" },
+    ],
+    home,
+    mise,
+  });
+  const installs = join(runnerMiseDirectories(home).dataDir, "installs");
+  expect(result).toMatchObject({
+    ok: true,
+    binPaths: [
+      join(installs, "node", "22", "bin"),
+      join(installs, "golangci-lint", "2.11.4", "golangci-lint-2.11.4-linux-amd64"),
+    ],
+  });
+});
+
+test("a tool with two bin folders keeps both in mise's order", async () => {
+  binPathsFor("acme-tool", "@TARGET@/bin\n@TARGET@/libexec/bin\n");
+  const result = await installRuntimes({
+    runtimes: [{ tool: "acme-tool", version: "1.0.0" }],
+    home,
+    mise,
+  });
+  const install = join(runnerMiseDirectories(home).dataDir, "installs", "acme-tool", "1.0.0");
+  expect(result).toMatchObject({
+    ok: true,
+    binPaths: [join(install, "bin"), join(install, "libexec", "bin")],
+  });
+});
+
+test("when mise bin-paths fails the install falls back to the bin folder under mise where", async () => {
+  const result = await installRuntimes({
+    runtimes: [{ tool: "acme-tool", version: "1.0.0" }],
+    home,
+    mise,
+  });
+  const install = join(runnerMiseDirectories(home).dataDir, "installs", "acme-tool", "1.0.0");
+  expect(result).toMatchObject({ ok: true, binPaths: [join(install, "bin")] });
+});
+
+test("a relative bin path or one with a path delimiter fails the install", async () => {
+  binPathsFor("acme-tool", "relative/bin\n");
+  const relative = await installRuntimes({
+    runtimes: [{ tool: "acme-tool", version: "1.0.0" }],
+    home,
+    mise,
+  });
+  expect(relative).toMatchObject({ ok: false, runtime: { tool: "acme-tool", version: "1.0.0" } });
+  binPathsFor("acme-tool", "@TARGET@/a:@TARGET@/b\n");
+  const joined = await installRuntimes({
+    runtimes: [{ tool: "acme-tool", version: "1.0.0" }],
+    home,
+    mise,
+  });
+  expect(joined).toMatchObject({ ok: false, runtime: { tool: "acme-tool", version: "1.0.0" } });
 });
