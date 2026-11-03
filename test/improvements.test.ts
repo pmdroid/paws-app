@@ -218,6 +218,61 @@ describe("daily finding sources", () => {
     expect(inboxCounts(items)).toMatchObject({ total: 3, daily: 3, linked: 1, needsReview: 1 });
   });
 
+  test("a regroup into subsets keeps every owned finding in the proposal", () => {
+    const { db, f } = seed();
+    group(db, [f[0]!, f[1]!]);
+    ingestDailyFindings(db, "ws", { now: 1 });
+    const id = owner(db, f[0]!)!;
+    regroup(db);
+    group(db, [f[0]!], { title: "Only A" });
+    group(db, [f[1]!], { title: "Only B" });
+    ingestDailyFindings(db, "ws", { now: 2 });
+    expect(listImprovementProposals(db, id).at(-1)!.evidence).toEqual([
+      `review_finding:${f[0]!.key}`,
+      `review_finding:${f[1]!.key}`,
+    ]);
+    expect(ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({ created: 0, changed: 0 });
+  });
+
+  test("restoring an earlier grouping records it again and reports one change", () => {
+    const { db, f } = seed();
+    group(db, [f[0]!, f[1]!]);
+    ingestDailyFindings(db, "ws", { now: 1 });
+    const id = owner(db, f[0]!)!;
+    regroup(db);
+    group(db, [f[1]!], { title: "Only B" });
+    expect(ingestDailyFindings(db, "ws", { now: 2 })).toMatchObject({ changed: 1 });
+    expect(listImprovementProposals(db, id).at(-1)!.title).toBe("Only B");
+    regroup(db);
+    group(db, [f[0]!, f[1]!]);
+    expect(ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({ changed: 1 });
+    expect(listImprovementProposals(db, id).at(-1)!.title).toBe("Shared fix");
+    expect(ingestDailyFindings(db, "ws", { now: 4 })).toMatchObject({ changed: 0 });
+  });
+
+  test("a legacy decision on some members keeps the rest in review", () => {
+    const { db, f } = seed();
+    group(db, [f[0]!, f[1]!]);
+    ingestDailyFindings(db, "ws", { now: 1 });
+    const id = owner(db, f[0]!)!;
+    const item = () =>
+      listInboxItems(db, { workspaceId: "ws" }).find((i) => i.improvement.id === id)!;
+    setReviewFindingStatus(db, {
+      id: f[0]!.id,
+      status: "dismissed",
+      reason: "Noise",
+      by: "Ada",
+      now: 2,
+    });
+    expect(item()).toMatchObject({ lifecycle: "needs_review", undecided: [f[1]!.id] });
+    markReviewFindingFiled(db, { key: f[0]!.key, issue: "PAS-30", by: "Ada", now: 3 });
+    expect(item()).toMatchObject({ lifecycle: "needs_review", undecided: [f[1]!.id] });
+    expect(item().issue).toMatchObject({ identifier: "PAS-30" });
+    expect(reuseChoice(item(), "open")).toMatchObject({ kind: "review", reason: "scope_changed" });
+    markReviewFindingFiled(db, { key: f[1]!.key, issue: "PAS-30", by: "Ada", now: 4 });
+    expect(item()).toMatchObject({ lifecycle: "linked", undecided: [] });
+  });
+
   test("a claimed legacy action stays pending", () => {
     const { db, f } = seed();
     group(db, [f[0]!]);

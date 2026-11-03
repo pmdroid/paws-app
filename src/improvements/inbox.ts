@@ -53,6 +53,7 @@ export type InboxItem = {
   lifecycle: InboxLifecycle;
   issue: KnownIssue | null;
   legacy: LegacyAction[];
+  undecided: number[];
   verification: ImprovementVerificationState;
   members: DailyMember[];
 };
@@ -64,12 +65,17 @@ function allowedRepository(access: ImprovementAccess, repository: string): boole
   );
 }
 
-function lifecycleOf(improvement: Improvement, legacy: readonly LegacyAction[]) {
+function lifecycleOf(
+  improvement: Improvement,
+  legacy: readonly LegacyAction[],
+  undecided: readonly number[],
+): InboxLifecycle {
   if (improvement.reviewState === "rejected") return "rejected";
   if (improvement.issue) return "linked";
   if (improvement.reviewState === "accepted") return "pending";
-  if (legacy.some((a) => a.kind === "filed" || a.kind === "added")) return "linked";
   if (legacy.some((a) => a.kind === "claimed")) return "pending";
+  if (undecided.length) return "needs_review";
+  if (legacy.some((a) => a.kind === "filed" || a.kind === "added")) return "linked";
   if (legacy.length && legacy.every((a) => a.kind === "dismissed")) return "rejected";
   return "needs_review";
 }
@@ -106,6 +112,7 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
     const sourceKeys = [...new Set(proposals.map((p) => p.source.key))];
     let members: DailyMember[] = [];
     let legacy: LegacyAction[] = [];
+    let undecided: number[] = [];
     if (sourceKind === "daily_finding") {
       const findings = improvementFindings(db, improvement.id);
       if (findings.length !== sourceKeys.length) return [];
@@ -123,6 +130,8 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
       );
       if (!visible) return [];
       legacy = legacyActions(findings, groups);
+      const decided = new Set(legacy.flatMap((a) => a.findingIds));
+      undecided = findings.filter((f) => !decided.has(f.id)).map((f) => f.id);
       members = findings.map((f) => ({
         findingId: f.id,
         key: f.key,
@@ -147,9 +156,10 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
         sourceKeys,
         proposal,
         criterion: proposal.verificationCriterion.trim() || null,
-        lifecycle: lifecycleOf(improvement, legacy),
+        lifecycle: lifecycleOf(improvement, legacy, undecided),
         issue: issueOf(improvement, legacy),
         legacy,
+        undecided,
         verification: improvement.verificationState,
         members,
       },
@@ -211,11 +221,10 @@ export function reuseChoice(
     item.members.some((m) => m.status === "open" && m.lastSeenAt > verifiedAt)
   )
     return { kind: "review", issue, reason: "recurred" };
-  const decided = item.legacy.flatMap((a) => a.findingIds);
   const scopeChanged =
     issue.origin === "decision"
       ? item.improvement.reviewedProposal !== item.proposal.version
-      : item.members.some((m) => !decided.includes(m.findingId));
+      : item.undecided.length > 0;
   if (scopeChanged) return { kind: "review", issue, reason: "scope_changed" };
   if (issueState === "unknown") return { kind: "review", issue, reason: "unconfirmed" };
   return { kind: "reuse", issue };

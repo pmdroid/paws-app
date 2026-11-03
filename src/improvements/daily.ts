@@ -196,10 +196,12 @@ function ingestUnit(
     (unit.acted || legacyActions(improvementFindings(db, i.id), groups).length === 0);
   const existing = owners.find((i): i is Improvement => i !== null && open(i)) ?? null;
   if (owners.some((i) => i !== null && i.id !== existing?.id)) result.split++;
-  const members = unit.members.filter(
-    (_, index) => owners[index] === null || owners[index]!.id === existing?.id,
+  const unmapped = unit.members.filter((_, index) => owners[index] === null);
+  if (!existing && !unmapped.length) return false;
+  const owned = existing ? improvementFindings(db, existing.id) : [];
+  const members = [...new Map([...owned, ...unmapped].map((f) => [f.id, f])).values()].sort(
+    (a, b) => a.id - b.id,
   );
-  if (!members.length) return false;
   const proposal = dailyProposal(unit.group, members);
   let target = existing;
   let wrote = false;
@@ -222,14 +224,14 @@ function ingestUnit(
   used.add(target.id);
   const latest = listImprovementProposals(db, target.id).at(-1);
   if (latest && sameProposal(latest, proposal)) return wrote;
-  const anchor = unit.members.find((_, index) => owners[index]?.id === target!.id)!;
-  recordImprovementProposal(db, {
+  const recorded = recordImprovementProposal(db, {
     workspaceId,
-    repository: anchor.repository,
-    source: source(anchor),
+    repository: target.repository,
+    source: latest!.source,
     proposal,
     now,
   });
+  if (!recorded.changed) return wrote;
   result.changed++;
   return true;
 }
