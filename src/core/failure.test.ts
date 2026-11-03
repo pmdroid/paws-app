@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { isTransient, resumeRetrySpreadMs } from "./failure";
+import {
+  AgentServiceError,
+  isAgentServiceError,
+  isTransient,
+  resumeRetrySpreadMs,
+} from "./failure";
 import { PawsShutdown, RunnerSlotsBusyError } from "./user-facing-error";
 
 function named(name: string, message = name): Error {
@@ -110,4 +115,23 @@ test("resume retry spread keeps at least eighty percent of the delay and caps sp
   expect(resumeRetrySpreadMs(5_000, () => 0)).toBe(0);
   expect(resumeRetrySpreadMs(5_000, () => 0.99)).toBe(990);
   expect(resumeRetrySpreadMs(60_000, () => 0.99)).toBe(4_950);
+});
+
+test("agent service errors are the provider's temporary failures, not the task's", () => {
+  for (const message of [
+    "Internal error",
+    "Internal error: API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment.",
+    "API Error: 529 overloaded_error",
+    "API Error: 503 Service Unavailable",
+  ])
+    expect(isAgentServiceError(message), message).toBe(true);
+  for (const message of [
+    undefined,
+    "You've hit your session limit. Retry-After: 120",
+    "Candidate attribution rejected: every new commit must use the authorized App bot as author",
+    "Run stopped (max_tokens).",
+    "API Error: 400 invalid_request_error",
+  ])
+    expect(isAgentServiceError(message), String(message)).toBe(false);
+  expect(isTransient(new AgentServiceError("Internal error"))).toBe(true);
 });

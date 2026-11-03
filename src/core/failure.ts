@@ -1,6 +1,7 @@
 import { retryBackoffMs } from "./backoff";
 
 const TRANSIENT_ERROR_NAMES = new Set([
+  "AgentServiceError",
   "LinearRateLimitError",
   "RetryableRunnerError",
   "UsageLimitPause",
@@ -97,6 +98,19 @@ export class RunnerSetupRequired extends Error {
         : `Runner ${need.runnerName} needs ${need.agent} signed in`,
     );
   }
+}
+
+/** An agent turn that ended on a temporary error from the model provider's service. */
+export class AgentServiceError extends Error {
+  override readonly name = "AgentServiceError";
+}
+
+const AGENT_SERVICE_ERROR =
+  /^Internal error\b|\bAPI Error: (5\d\d|529)\b|\boverloaded_error\b|\bOverloaded\b|\bapi_error\b/;
+
+/** Whether an agent's error message names a temporary provider failure rather than the task. */
+export function isAgentServiceError(message: string | undefined): boolean {
+  return message !== undefined && AGENT_SERVICE_ERROR.test(message);
 }
 
 export function isTransient(error: unknown, depth = 0): boolean {
