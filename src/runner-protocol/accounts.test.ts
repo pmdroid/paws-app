@@ -6,6 +6,7 @@ import {
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
   RunnerResultSchema,
+  runnerAccountAgentUnsupported,
   runnerAccountEchoed,
   signRunnerCommand,
   verifyRunnerCommand,
@@ -135,4 +136,31 @@ test("results echo the command's account exactly", () => {
   expect(runnerAccountEchoed({ account }, { account: { ...account, bindingId: "other" } })).toBe(
     false,
   );
+});
+
+test("a named sign-in may reach a runner that does not hold the binding yet", () => {
+  const login: RunnerCommand = {
+    id: "command-2",
+    runnerId: "runner-1",
+    workspaceId: "workspace-1",
+    issuedAt: 1000,
+    expiresAt: 2000,
+    type: "login",
+    agent: "codex",
+    account,
+  };
+  const check: RunnerCommand = { ...login, id: "command-3", type: "login_check" };
+  const { verifier, claims } = context();
+  expect(verifyRunnerCommand(signed(login), verifier)).toEqual({ ok: true, command: login });
+  expect(verifyRunnerCommand(signed(check), verifier)).toEqual({
+    ok: false,
+    reason: "account_unavailable",
+  });
+  expect(claims()).toBe(1);
+});
+
+test("every runner agent declares whether it can run as a named account", () => {
+  for (const agent of ["claude", "codex", "grok", "opencode"] as const)
+    expect(runnerAccountAgentUnsupported(agent)).toBeNull();
+  expect(runnerAccountAgentUnsupported("other" as "claude")).toMatch(/no isolated account/);
 });

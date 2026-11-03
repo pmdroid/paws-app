@@ -334,6 +334,7 @@ export async function openRunnerHealthRuntime(options: {
               ...result.run,
               executionId: entry.id,
               commandId: entry.command.id,
+              ...(entry.command.account ? { account: entry.command.account } : {}),
               text: result.text,
             });
             db.run("UPDATE health_execution SET phase='publishing',result=? WHERE id=?", [
@@ -357,6 +358,7 @@ export async function openRunnerHealthRuntime(options: {
               ...result.run,
               executionId: entry.id,
               commandId: entry.command.id,
+              ...(entry.command.account ? { account: entry.command.account } : {}),
               ...(result.login ? { login: result.login } : {}),
             });
           }

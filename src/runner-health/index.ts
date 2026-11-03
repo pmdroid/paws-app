@@ -306,19 +306,25 @@ export function createRunnerHealth(options: {
           value,
           at,
         ]);
-        if (assigned.type === "login_check" && result.login)
+        const legacy = !assigned.account;
+        if (legacy && assigned.type === "login_check" && result.login)
           db.run(
             "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?1,?2,?3,1-?3) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=?3,auth_expired=1-?3",
             [runnerId, assigned.agent, result.login.authenticated ? 1 : 0],
           );
-        if (result.agentLimits)
+        if (legacy && result.agentLimits)
           recordRunnerAgentUsage(db, {
             runnerId,
             agent: assigned.type === "login_check" ? assigned.agent : assigned.profile.agent,
             limits: result.agentLimits,
             observedAt: at,
           });
-        if (assigned.type === "login_check" && result.login?.authenticated && result.agentLimits) {
+        if (
+          legacy &&
+          assigned.type === "login_check" &&
+          result.login?.authenticated &&
+          result.agentLimits
+        ) {
           const spent = result.agentLimits.filter((limit) => limit.usedPercent >= 100);
           const resetsAt = spent.length
             ? Math.max(...spent.map((limit) => limit.resetsAt ?? at + 15 * 60_000))

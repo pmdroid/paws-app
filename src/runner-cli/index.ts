@@ -4,7 +4,7 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { createRunnerHostSampler, EnrollmentTokenSchema, openRunnerDaemon } from "../runner-daemon";
-import { ExecutionIdSchema, RUNNER_SKILLS_ENV } from "../runner-execution";
+import { ExecutionIdSchema, RUNNER_SKILLS_ENV, runnerAccountBindings } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
 import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "./cause";
 import { runPairedDaemon } from "./daemon";
@@ -300,6 +300,7 @@ export async function runRunnerCli(
       root: "/var/lib/paws-runner",
       ...loadConfig(args[1]!, ids.runnerUid),
       sampleHost: createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" }),
+      accountBindings: () => runnerAccountBindings("/var/lib/paws-agent"),
     });
     try {
       await runPairedDaemon(daemon, ids, abort.signal, (failure) =>

@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
+  constants,
+  fstatSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -9,9 +13,9 @@ import {
   rmSync,
   writeSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 
-type Agent = "claude" | "codex" | "grok";
+type Agent = "claude" | "codex" | "grok" | "opencode";
 
 /**
  * Files a sign-in writes, relative to the home. `merge` files hold the agent's own state too,
@@ -24,6 +28,7 @@ const CREDENTIALS: Record<Agent, { path: string; merge?: readonly string[] }[]> 
   ],
   codex: [{ path: ".codex/auth.json" }],
   grok: [{ path: ".grok/auth.json" }],
+  opencode: [{ path: ".local/share/opencode/auth.json" }],
 };
 
 /**
@@ -33,7 +38,16 @@ const CREDENTIALS: Record<Agent, { path: string; merge?: readonly string[] }[]> 
 export function stageLoginHome(home: string): string {
   const staged = join(home, `.paws-login-${randomUUID()}`);
   mkdirSync(staged, { mode: 0o700 });
-  for (const directory of [".claude", ".codex", ".grok"])
+  for (const directory of [
+    ".claude",
+    ".codex",
+    ".grok",
+    ".config",
+    ".local",
+    ".local/share",
+    ".local/state",
+    ".cache",
+  ])
     mkdirSync(join(staged, directory), { mode: 0o700 });
   return staged;
 }
@@ -52,23 +66,68 @@ export function publishCredentials(agent: Agent, staged: string, home: string): 
     const source = read(join(staged, file.path));
     if (source === null) continue;
     const target = join(home, file.path);
+    privateParents(home, dirname(target));
+    const existing = liveFile(target);
     let data = source;
-    if (file.merge) {
+    if (file.merge && existing) {
       const live = read(target);
       if (live !== null) data = mergeKeys(live, source, file.merge);
     }
-    replaceFile(target, data);
+    replaceFile(target, data, existing ? (existing.mode & 0o600) | 0o400 : 0o600);
     published += 1;
   }
   if (published === 0) throw new Error("Provider did not write credentials");
 }
 
 function read(path: string): Buffer | null {
+  let descriptor: number;
   try {
-    return readFileSync(path);
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ELOOP")
+      throw new Error("Provider credentials path is a symlink", { cause: error });
+    throw error;
+  }
+  try {
+    if (!fstatSync(descriptor).isFile()) throw new Error("Provider credentials path is not a file");
+    return readFileSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function liveFile(path: string) {
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile()) throw new Error("Provider credentials path is not a file");
+    return info;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
+  }
+}
+
+function privateParents(home: string, directory: string): void {
+  const path = relative(home, directory);
+  if (path.startsWith("..") || path.startsWith(sep))
+    throw new Error("Provider credentials path leaves its home");
+  let current = home;
+  for (const part of ["", ...path.split(sep).filter(Boolean)]) {
+    current = part ? join(current, part) : current;
+    let info;
+    try {
+      info = lstatSync(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      mkdirSync(current, { mode: 0o700 });
+      info = lstatSync(current);
+    }
+    if (info.isSymbolicLink() || !info.isDirectory())
+      throw new Error("Provider credentials folder is not a private directory");
+    if (process.getuid && info.uid !== process.getuid())
+      throw new Error("Provider credentials folder belongs to another user");
+    if (part && (info.mode & 0o077) !== 0) chmodSync(current, info.mode & 0o700);
   }
 }
 
@@ -94,12 +153,11 @@ function object(data: Buffer): Record<string, unknown> | null {
   }
 }
 
-function replaceFile(target: string, data: Buffer): void {
+function replaceFile(target: string, data: Buffer, mode: number): void {
   const directory = dirname(target);
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
   const temporary = join(directory, `.${randomUUID()}.paws-login`);
   try {
-    const descriptor = openSync(temporary, "wx", 0o600);
+    const descriptor = openSync(temporary, "wx", mode);
     try {
       writeSync(descriptor, data);
       fsyncSync(descriptor);

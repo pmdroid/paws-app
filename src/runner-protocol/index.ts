@@ -179,6 +179,8 @@ export {
   RUNNER_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
   RunnerAccountSchema,
+  runnerAccountAgentUnsupported,
+  runnerCommandAccount,
   runnerAccountEchoed,
   type RunnerAccount,
   type RunnerAccountCapability,

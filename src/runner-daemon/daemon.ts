@@ -7,6 +7,8 @@ import { immediate, openDatabase } from "../db";
 import { describeRunnerCertificate } from "../runner-identity";
 import {
   RUNNER_ACCOUNT_PROTOCOL,
+  RunnerAccountCapabilitySchema,
+  type RunnerAccountCapability,
   RunnerCommandSchema,
   RunnerLoginUpdateSchema,
   RunnerLoginExchangeSchema,
@@ -116,6 +118,7 @@ export type RunnerDaemonOptions = {
   now?: () => number;
   /** Host metrics sent with every heartbeat. */
   sampleHost?: () => RunnerHostStatus;
+  accountBindings?: () => RunnerAccountCapability["bindings"];
 };
 
 export function openRunnerDaemon(options: RunnerDaemonOptions) {
@@ -270,6 +273,14 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       throw new Error("Runner helper command is unavailable or expired.");
     return command;
   }
+  function heldBindings(): RunnerAccountCapability["bindings"] {
+    try {
+      return options.accountBindings?.() ?? [];
+    } catch (caughtError1) {
+      journalCaught(caughtError1, "daemon.heldBindings", null);
+      return [];
+    }
+  }
   async function pollCommands(path: string) {
     const identity = paired();
     trustedSigningKeys(identity, pins);
@@ -286,6 +297,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     ensureOpen();
     unchangedIdentity(identity);
     const trustedKeys = trustedSigningKeys(paired(), pins);
+    const accountBindings = new Set(heldBindings().map((binding) => binding.bindingId));
     const rejected: RunnerCommandRejection[] = [];
     const deniedRepositories = new Set<string>();
     for (const envelope of response.commands) {
@@ -296,7 +308,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           workspaceId: identity.workspaceId,
           now: now(),
           allowedRepositories: options.allowedRepositories,
-          accountBindings: new Set(),
+          accountBindings,
           claimCommand: (id, expiresAt) =>
             db.run("INSERT INTO command_receipt VALUES (?,?) ON CONFLICT DO NOTHING", [
               id,
@@ -428,7 +440,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       ];
       attempts.unshift({
         ...(attempts[0] as object),
-        accounts: { protocol: RUNNER_ACCOUNT_PROTOCOL, bindings: [] },
+        accounts: RunnerAccountCapabilitySchema.parse({
+          protocol: RUNNER_ACCOUNT_PROTOCOL,
+          bindings: heldBindings(),
+        }),
       });
       let reply: unknown;
       for (const [index, attempt] of attempts.entries()) {

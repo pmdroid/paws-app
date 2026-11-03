@@ -2,7 +2,10 @@ import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
+  AgentAccountError,
   auditWorkspaceAccess,
+  getAgentAccount,
+  getAgentBinding,
   getRunner,
   immediate,
   legacyAgentAccountId,
@@ -15,6 +18,7 @@ import type { RunnerWork } from "../runner-work";
 import {
   RunnerLoginInputSchema,
   RunnerLoginUpdateSchema,
+  type RunnerAccount,
   type RunnerLoginInput,
   type RunnerLoginUpdate,
 } from "../runner-protocol";
@@ -31,9 +35,11 @@ type Row = {
   terminal: string;
   authorization: string | null;
   inputId: string | null;
+  bindingId: string | null;
 };
 const columns =
-  "id,runner_id AS runnerId,workspace_id AS workspaceId,user_id AS userId,agent,state,expires_at AS expiresAt,terminal,authorization,input_id AS inputId";
+  "id,runner_id AS runnerId,workspace_id AS workspaceId,user_id AS userId,agent,state,expires_at AS expiresAt,terminal,authorization,input_id AS inputId,binding_id AS bindingId";
+const bindingParameter = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const pending = (row: Row) => row.state === "starting" || row.state === "waiting";
 
 class SignInRefused extends Error {
@@ -92,6 +98,7 @@ export function createRunnerLogin(options: {
     return {
       id: row.id,
       agent: row.agent,
+      bindingId: row.bindingId,
       state: row.state,
       expiresAt: row.expiresAt,
       terminal: row.terminal,
@@ -111,6 +118,35 @@ export function createRunnerLogin(options: {
     )
       throw new Error("Login session access denied");
     return row;
+  }
+  function namedAccount(
+    principal: WorkspacePrincipal,
+    runnerId: string,
+    agent: Agent,
+    bindingId: string,
+  ): RunnerAccount | null {
+    const binding = getAgentBinding(db, principal.workspaceId, bindingId);
+    if (binding.legacy && binding.runnerId === runnerId && binding.agent === agent) return null;
+    const account = getAgentAccount(db, principal.workspaceId, binding.accountId);
+    if (
+      binding.legacy ||
+      binding.runnerId !== runnerId ||
+      binding.agent !== agent ||
+      binding.removedAt !== null ||
+      account.removedAt !== null
+    )
+      throw new SignInRefused("This account binding is not available on this runner.", 409);
+    return { accountId: account.id, bindingId: binding.id };
+  }
+  function bindingRunning(bindingId: string, at: number) {
+    return db
+      .query<{ count: number }, [string, number, number]>(
+        `SELECT (SELECT COUNT(*) FROM runner_work w JOIN runner_command_account c ON c.command_id=w.command_id
+            WHERE c.binding_id=?1 AND w.ended_at IS NULL AND w.lease_until>?2)
+          + (SELECT COUNT(*) FROM runner_helper h JOIN runner_command_account c ON c.command_id=h.id
+            WHERE c.binding_id=?1 AND h.ended_at IS NULL AND h.result IS NULL AND h.expires_at>?3) AS count`,
+      )
+      .get(bindingId, runnerLeaseCutoff(at), at)!.count;
   }
   const api = {
     stop() {
@@ -133,7 +169,7 @@ export function createRunnerLogin(options: {
             .get(runnerId, agent);
           const session = db
             .query<{ id: string }, [string, string, string]>(
-              "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? ORDER BY rowid DESC LIMIT 1",
+              "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? AND binding_id IS NULL ORDER BY rowid DESC LIMIT 1",
             )
             .get(runnerId, principal.userId, agent);
           // Sign-in replaces the credentials these tasks read from their next request on.
@@ -154,19 +190,53 @@ export function createRunnerLogin(options: {
             session: session ? snapshot(read(session.id)) : null,
           };
         }),
+        bindings: db
+          .query<
+            {
+              bindingId: string;
+              accountId: string;
+              agent: Agent;
+              label: string;
+              enabled: number;
+            },
+            [string, string]
+          >(
+            "SELECT b.id AS bindingId,b.account_id AS accountId,b.agent,a.label,a.enabled FROM agent_account_binding b JOIN agent_account a ON a.id=b.account_id WHERE b.runner_id=? AND b.workspace_id=? AND b.legacy=0 AND b.removed_at IS NULL AND a.removed_at IS NULL ORDER BY a.agent,a.created_at,b.created_at",
+          )
+          .all(runnerId, principal.workspaceId)
+          .filter((binding) => agents.includes(binding.agent))
+          .map((binding) => {
+            const session = db
+              .query<{ id: string }, [string, string, string]>(
+                "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND binding_id=? ORDER BY rowid DESC LIMIT 1",
+              )
+              .get(runnerId, principal.userId, binding.bindingId);
+            return {
+              ...binding,
+              enabled: binding.enabled === 1,
+              running: bindingRunning(binding.bindingId, now()),
+              session: session ? snapshot(read(session.id)) : null,
+            };
+          }),
       };
     },
-    start(principal: WorkspacePrincipal, runnerId: string, agent: Agent) {
+    start(principal: WorkspacePrincipal, runnerId: string, agent: Agent, bindingId?: string) {
       return immediate(db, () => {
         access(principal.workspaceId, principal.userId, runnerId);
         const at = now();
         for (const sessionId of inputs.keys()) read(sessionId);
+        const account = bindingId ? namedAccount(principal, runnerId, agent, bindingId) : null;
         const existing = db
-          .query<{ id: string }, [string, string, string, number]>(
-            "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? AND state IN ('starting','waiting') AND expires_at>?",
+          .query<{ id: string }, [string, string, string, string | null, number]>(
+            "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? AND binding_id IS ? AND state IN ('starting','waiting') AND expires_at>?",
           )
-          .get(runnerId, principal.userId, agent, at);
+          .get(runnerId, principal.userId, agent, account?.bindingId ?? null, at);
         if (existing) return snapshot(read(existing.id));
+        if (account && bindingRunning(account.bindingId, at) > 0)
+          throw new SignInRefused(
+            "Work is still running with this account. Let it finish or stop it, then sign in again.",
+            409,
+          );
         const count = db
           .query<{ count: number }, [string, number]>(
             "SELECT COUNT(*) AS count FROM runner_login WHERE runner_id=? AND state IN ('starting','waiting') AND expires_at>?",
@@ -187,16 +257,26 @@ export function createRunnerLogin(options: {
           agent,
           issuedAt: at,
           expiresAt,
+          ...(account ? { account } : {}),
         });
         db.run(
-          "INSERT INTO runner_login(id,runner_id,workspace_id,user_id,agent,state,expires_at,updated_at) VALUES(?,?,?,?,?,'starting',?,?)",
-          [id, runnerId, principal.workspaceId, principal.userId, agent, expiresAt, at],
+          "INSERT INTO runner_login(id,runner_id,workspace_id,user_id,agent,state,expires_at,updated_at,binding_id) VALUES(?,?,?,?,?,'starting',?,?,?)",
+          [
+            id,
+            runnerId,
+            principal.workspaceId,
+            principal.userId,
+            agent,
+            expiresAt,
+            at,
+            account?.bindingId ?? null,
+          ],
         );
         auditWorkspaceAccess(db, {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           action: "runner.agent_login",
-          subject: `${runnerId}/${agent}`,
+          subject: `${runnerId}/${agent}${account ? `/${account.bindingId}` : ""}`,
           now: at,
         });
         return snapshot(read(id));
@@ -254,7 +334,8 @@ export function createRunnerLogin(options: {
             id,
           ],
         );
-        if (update.state === "connected") {
+        if (update.state === "connected" && row.bindingId !== null) inputs.delete(id);
+        if (update.state === "connected" && row.bindingId === null) {
           db.run(
             "INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=1,auth_expired=0",
             [runnerId, row.agent],
@@ -288,8 +369,12 @@ export function createRunnerLogin(options: {
         const agent = match[2] as Agent | undefined;
         const id = match[3];
         if (!agent && request.method === "GET") return json(api.list(principal, runnerId));
-        if (agent && !id && request.method === "POST")
-          return json(api.start(principal, runnerId, agent));
+        if (agent && !id && request.method === "POST") {
+          const binding = new URL(request.url).searchParams.get("binding");
+          if (binding !== null && !bindingParameter.test(binding))
+            return json({ error: "Unsupported agent account request." }, 400);
+          return json(api.start(principal, runnerId, agent, binding ?? undefined));
+        }
         if (!agent || !id) return json({ error: "Unsupported agent account request." }, 405);
         const row = own(principal, runnerId, agent, id);
         if (!match[4] && request.method === "GET") return json(snapshot(row));
@@ -320,6 +405,8 @@ export function createRunnerLogin(options: {
       } catch (error) {
         journalCaught(error, "runner-login.browser.json", null);
         if (error instanceof SignInRefused) return json({ error: error.message }, error.status);
+        if (error instanceof AgentAccountError && error.code === "runner_unsupported")
+          return json({ error: error.message }, 409);
         return json(
           { error: "Agent sign-in is unavailable. Refresh your sign-in and try again." },
           403,
