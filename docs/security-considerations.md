@@ -48,6 +48,12 @@ Follow the same rule for every secret added later: put it in an environment limi
 
 ## Docker access for runner work
 
-Members of the `docker` group control the Docker daemon, which runs as root. [Docker's documentation](https://docs.docker.com/engine/install/linux-postinstall/) says the group grants root-level privileges. When you add `paws-runner` to it ([Docker access for runner work](runner-enrollment.md#docker-access-for-runner-work)), every agent and check the runner executes can act as root on the host. A steered agent can mount the host filesystem into a container. The `paws-runner.service` hardening (`NoNewPrivileges`, an empty capability set, `ProtectSystem`) does not contain Docker-enabled work, because the daemon does the privileged work outside the service.
+Agent jobs get Docker only from a [rootless Docker](https://docs.docker.com/engine/security/rootless/) daemon that runs as `paws-agent` ([Docker access for runner work](runner-enrollment.md#docker-access-for-runner-work)). The daemon and its containers run inside a user namespace: root in a container is `paws-agent` on the host, and other container users map to `paws-agent`'s subordinate ids. A steered agent can do in a container what `paws-agent` can already do on the host, and no more. `paws-agent` still can't use the root daemon at `/var/run/docker.sock`. The package never adds a runner account to the `docker` group, whose members can act as root on the host.
 
-Grant it only on a host you would let the agent's input control: a dedicated VM that holds no other secrets. The installer adds only `paws-runner`, never `paws-agent`, and only to an existing `docker` group that no other group name or Paws group shares. Identity checks on later installs and upgrades accept that one membership and still reject any other supplemental group. [Rootless Docker](https://docs.docker.com/engine/security/rootless/) uses a different access model, and the installer leaves it alone.
+Known limits of this setup:
+
+- Containers get no CPU or memory limits. `paws-agent` has no systemd user session, so the daemon uses the cgroupfs driver without a delegated cgroup, and `docker info` reports `CgroupDriver=none`.
+- Networking goes through slirp4netns, so containers can't bind host ports below 1024.
+- One daemon serves every agent job on the runner. Jobs can see and change each other's images, containers and volumes.
+
+An earlier release added `paws-runner` to the `docker` group on opt-in. An upgrade removes that membership only where the install state records that Paws added it; any other membership is left alone with a warning, because the install can't tell who added it. Identity checks on installs and upgrades accept that one membership and still reject any other supplemental group.

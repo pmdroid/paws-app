@@ -38,18 +38,39 @@ Package contents and upgrade behavior are in `deploy/linux`: the release manifes
 
 ### Docker access for runner work
 
-Runner work runs as `paws-runner`. If Docker Engine is already installed and running on the host, that account can't use it until it is in the `docker` group. The installer looks for a local, rootful Docker Engine at `/var/run/docker.sock` and checks access as `paws-runner`, with the environment runner work gets. It adds `paws-runner` to the existing `docker` group only when you opt in. When it asks on a terminal, the default answer is no. For scripted installs, pass the choice:
+Agent jobs (`paws-agent@<id>.service`) run as `paws-agent` and can't use the root Docker daemon at `/var/run/docker.sock`. When you opt in, the package gives them a rootless Docker daemon of their own: `paws-docker.service`, which runs as `paws-agent` and listens on `/run/paws-docker/docker.sock`. When the installer asks on a terminal, the default answer is no. For scripted installs, pass the choice:
 
 ```sh
 curl -fsSL https://get.paws.boo | sudo sh -s -- --docker-access
 curl -fsSL https://get.paws.boo | sudo sh -s -- --no-docker-access
 ```
 
-Package configuration never prompts. It reads `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`; to grant access later, run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner`. Read [Docker access](security-considerations.md#docker-access-for-runner-work) before granting it.
+With `--docker-access` on a host where Docker Engine (`dockerd`) is installed, the installer first runs `apt-get install -y rootlesskit uidmap slirp4netns`. The package never installs Docker Engine itself.
 
-The installer changes nothing when Docker isn't installed, when `paws-runner` already has access, or when you decline. It also leaves rootless Docker, a Docker context that points at another host, and Podman's `docker` command alone. It reports a missing `docker` group, a socket with an unexpected owner, group or mode, and a failed membership change, with the next step for each. A stopped daemon and a refused connection are reported separately. The installer doesn't install or start Docker, and doesn't change the socket.
+Package configuration never prompts. It reads `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`; to grant access later, install the three packages above and run `sudo PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner`. Without a choice, an upgrade keeps the daemon if it's set up and adds nothing if it isn't. Read [Docker access](security-considerations.md#docker-access-for-runner-work) before granting it.
 
-The membership is added before the runner service starts again, so the daemon and the workers it launches get it. Package configuration still refuses to run while agent work is active. A runner daemon or worker you started by hand keeps the groups it started with: stop it and start it again from a new process.
+On a grant, package configuration:
+
+1. Checks for `rootlesskit`, `newuidmap`, `newgidmap` and `slirp4netns`. If any is missing, it names the package, sets nothing up and finishes the install.
+2. Adds a 65536-id range for `paws-agent` to `/etc/subuid` and `/etc/subgid` where it has none, after the highest existing range.
+3. Creates `/var/lib/paws-agent-docker` (owner `paws-agent`, mode 0700) for images and containers.
+4. Writes `/etc/systemd/system/paws-docker.service`, which runs the `dockerd-rootless.sh` launcher the package ships, and the drop-in `/etc/systemd/system/paws-agent@.service.d/docker.conf`, which gives every agent job `DOCKER_HOST=unix:///run/paws-docker/docker.sock` and starts the daemon before it.
+5. Enables and starts `paws-docker.service`, and reports whether `paws-agent` can reach it.
+
+`deny`, or a host without Docker Engine, stops the daemon and removes the unit and the drop-in. The data directory and the subordinate ids stay, so a later grant finds its images. Removing the package does the same; purging it also deletes `/var/lib/paws-agent-docker` and the `paws-agent` lines in `/etc/subuid` and `/etc/subgid`.
+
+An earlier release added `paws-runner` to the `docker` group instead. An upgrade removes that membership when the install state in `/var/lib/paws-runner-install/docker-group.json` records that Paws added it. A membership Paws did not record adding stays, and the install prints a warning.
+
+To check the daemon:
+
+```sh
+D="sudo -u paws-agent env DOCKER_HOST=unix:///run/paws-docker/docker.sock docker"
+$D info --format '{{.SecurityOptions}}'                    # includes name=rootless
+$D run --rm alpine echo ok
+systemctl show 'paws-agent@test.service' -p Environment    # includes DOCKER_HOST
+sudo -u paws-agent docker -H unix:///var/run/docker.sock ps  # permission denied
+journalctl -u paws-docker.service                           # when it does not start
+```
 
 ## Configure the runner
 
