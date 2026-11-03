@@ -104,7 +104,7 @@ export async function probeRunnerDaemon(
       if (path === "/v1/heartbeat") {
         const body = await request.json();
         heartbeatBodies.push(body);
-        if (/"waiting"|"runtimes"|"agents"|"repositories"/.test(JSON.stringify(body)))
+        if (/"waiting"|"runtimes"|"agents"|"repositories"|"accounts"/.test(JSON.stringify(body)))
           return Response.json({}, { status: 403 });
         return deliver(heartbeatResponse);
       }
@@ -454,7 +454,13 @@ export async function probeRunnerDaemon(
       const runtime = { tool: "node", version: "22", status: "installed" as const };
       const sent = heartbeatBodies.length;
       await configured.heartbeat([reported], [runtime]);
-      const attempts = heartbeatBodies.slice(sent) as { skills?: unknown; runtimes?: unknown }[];
+      const sentBodies = heartbeatBodies.slice(sent) as {
+        skills?: unknown;
+        runtimes?: unknown;
+        accounts?: unknown;
+      }[];
+      assert.deepEqual(sentBodies[0]?.accounts, { protocol: 1, bindings: [] });
+      const attempts = sentBodies.filter((body) => body.accounts === undefined);
       assert.deepEqual(
         attempts.map((body) => [body.skills, body.runtimes]),
         [
@@ -468,11 +474,14 @@ export async function probeRunnerDaemon(
       const agent = { agent: "claude" as const, version: "2.0.0", status: "current" as const };
       const agentStart = heartbeatBodies.length;
       await configured.heartbeat([reported], [runtime], [agent]);
-      const withAgents = heartbeatBodies.slice(agentStart) as {
-        skills?: unknown;
-        runtimes?: unknown;
-        agents?: unknown;
-      }[];
+      const withAgents = (
+        heartbeatBodies.slice(agentStart) as {
+          skills?: unknown;
+          runtimes?: unknown;
+          agents?: unknown;
+          accounts?: unknown;
+        }[]
+      ).filter((body) => body.accounts === undefined);
       assert.deepEqual(
         withAgents.map((body) => [body.skills, body.runtimes, body.agents]),
         [
@@ -488,9 +497,11 @@ export async function probeRunnerDaemon(
       await configured.heartbeat(undefined, undefined, undefined, []);
       heartbeatResponse = { leases: [], fenced: [] };
       await configured.heartbeat(undefined, undefined, undefined, []);
-      const cursors = (heartbeatBodies.slice(cursorStart) as { liveAfter?: number }[]).map(
-        (body) => body.liveAfter,
-      );
+      const cursors = (
+        heartbeatBodies.slice(cursorStart) as { liveAfter?: number; accounts?: unknown }[]
+      )
+        .filter((body) => body.accounts === undefined)
+        .map((body) => body.liveAfter);
       assert.equal(cursors[0], 0);
       assert.equal(cursors.filter((cursor) => cursor !== undefined).length, 2);
       assert.equal(

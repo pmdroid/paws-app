@@ -815,3 +815,27 @@ export { wakeMergesBehind } from "./merge-queue";
 export { mergeStopRequested } from "./remote-merges";
 
 export { pendingRestartHandoff } from "./restart";
+export {
+  AgentAccountError,
+  bindAgentAccount,
+  commandAccount,
+  createAgentAccount,
+  ensureLegacyAgentBinding,
+  getAgentAccount,
+  getAgentBinding,
+  legacyAgentAccountId,
+  legacyAgentBindingId,
+  listAgentAccounts,
+  listAgentBindings,
+  recordCommandAccount,
+  recordRunnerAccountCapability,
+  removeAgentAccount,
+  removeAgentBinding,
+  renameAgentAccount,
+  runnerAccountUnsupported,
+  setAgentAccountEnabled,
+  type AgentAccount,
+  type AgentAccountBinding,
+  type AgentAccountErrorCode,
+  type CommandAccount,
+} from "./agent-accounts";

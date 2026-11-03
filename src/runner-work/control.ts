@@ -1,6 +1,8 @@
 import { journalCaught } from "../journal";
 import {
   listSkills,
+  recordCommandAccount,
+  recordRunnerAccountCapability,
   recordRunAgentSetup,
   recordRunnerCapacity,
   recordRunnerAgents,
@@ -47,6 +49,7 @@ import {
   type RunnerCommand,
   RunnerAgentTargetSchema,
   type RunnerAgentTarget,
+  type RunnerAccountCapability,
   type RunnerInstalledAgent,
   type RunnerInstalledRuntime,
   type RunnerInstalledSkill,
@@ -390,6 +393,7 @@ export function createRunnerWork(options: {
       privateKey: options.privateKey,
       command,
     });
+    recordCommandAccount(db, command, now());
     db.run(
       "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at) VALUES(?,?,?,?,?,?,?)",
       [
@@ -631,6 +635,7 @@ export function createRunnerWork(options: {
       repositories?: readonly string[] | null,
       terminated?: readonly { runId: string; generation: number; commandId: string }[],
       liveAfter?: number,
+      accounts?: RunnerAccountCapability,
     ) {
       const running =
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
@@ -657,6 +662,7 @@ export function createRunnerWork(options: {
         if (runtimes) recordRunnerRuntimes(db, runnerId, runtimes, at);
         if (agents) recordRunnerAgents(db, runnerId, agents, at);
         if (repositories !== undefined) recordRunnerRepositories(db, runnerId, repositories, at);
+        recordRunnerAccountCapability(db, runnerId, accounts, at);
         const targets: RunnerAgentTarget[] | undefined =
           agents &&
           runnerAgentTargets(db, runnerId).flatMap((target) => {

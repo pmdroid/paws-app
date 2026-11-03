@@ -19,6 +19,7 @@ import {
   RUNNER_RESULT_BODY_LIMIT,
   RunnerHealthResultSchema,
   RunnerProfileSchema,
+  runnerAccountEchoed,
   type RunnerHealthResult,
 } from "../runner-protocol";
 
@@ -275,6 +276,7 @@ export function createRunnerHealth(options: {
         )
           throw new Error("Runner health command has expired");
         if (
+          !runnerAccountEchoed(assigned, result) ||
           (assigned.type === "probe" && result.login !== undefined) ||
           (assigned.type === "login_check" &&
             (!result.login || result.login.agent !== assigned.agent)) ||

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RunnerAccountSchema } from "./accounts";
 import { RUNNER_HANDOVER_FAILURES } from "./commands";
 
 export const RUNNER_RESULT_BODY_LIMIT = 1_048_576;
@@ -22,6 +23,7 @@ export const RunnerResultSchema = z.strictObject({
   authRequired: z.boolean(),
   agentExited: z.boolean(),
   sessionId: z.string().max(512).optional(),
+  account: RunnerAccountSchema.optional(),
   errorMessage: z.string().max(16384).optional(),
   identity: z
     .strictObject({

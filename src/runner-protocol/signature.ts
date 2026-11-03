@@ -17,6 +17,7 @@ export type RunnerCommandRejection =
   | "not_yet_valid"
   | "expired"
   | "repository_denied"
+  | "account_unavailable"
   | "replayed"
   | "replay_unavailable";
 
@@ -30,6 +31,7 @@ export type RunnerCommandVerifier = {
   workspaceId: string;
   now: number;
   allowedRepositories?: readonly string[];
+  accountBindings?: ReadonlySet<string>;
   claimCommand: (id: string, expiresAt: number) => boolean;
 };
 
@@ -100,6 +102,9 @@ export function verifyRunnerCommand(
     )
   )
     return { ok: false, reason: "repository_denied", repository };
+  const account = "account" in command ? command.account : undefined;
+  if (account && !context.accountBindings?.has(account.bindingId))
+    return { ok: false, reason: "account_unavailable" };
   try {
     if (!context.claimCommand(command.id, command.expiresAt)) {
       return { ok: false, reason: "replayed" };

@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   getLinearSession,
   immediate,
+  recordCommandAccount,
   runnerHelperAvailability,
   yieldFindingGroupHelpers,
   workspaceSessionIds,
@@ -14,6 +15,7 @@ import {
   RunnerCommandSchema,
   RunnerHelperResultSchema,
   RUNNER_RESULT_BODY_LIMIT,
+  runnerAccountEchoed,
   signRunnerCommand,
   type RunnerCommand,
   type RunnerHelperResult,
@@ -143,6 +145,7 @@ export function createRunnerHelpers(options: {
           command,
         });
         // Validate and sign first. Fencing and admission commit together, only on this runner.
+        recordCommandAccount(db, command, at);
         if (input.purpose !== "finding_groups") yieldFindingGroupHelpers(db, input.runnerId, at);
         db.run(
           "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -192,7 +195,9 @@ export function createRunnerHelpers(options: {
     submit(runnerId: string, result: RunnerHelperResult) {
       const parsed = RunnerHelperResultSchema.parse(result);
       return immediate(db, () => {
-        const { row } = current(parsed.commandId, runnerId);
+        const { row, command } = current(parsed.commandId, runnerId);
+        if (!runnerAccountEchoed(command, parsed))
+          throw new Error("Runner helper result account does not match its command");
         const payload = JSON.stringify(parsed);
         if (row.result !== null) {
           if (row.result !== payload) throw new Error("Runner helper result is immutable");
