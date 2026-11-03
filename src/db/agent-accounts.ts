@@ -4,6 +4,7 @@ import {
   LEGACY_ACCOUNT_PREFIX,
   RUNNER_ACCOUNT_PROTOCOL,
   RunnerAccountCapabilitySchema,
+  runnerAccountAgentUnsupported,
   runnerReleaseAtLeast,
   type RunnerAccountCapability,
   type RunnerCodingAgent,
@@ -363,6 +364,7 @@ export function runnerAccountUnsupported(
   runnerId: string,
   bindingId: string,
   agent: RunnerCodingAgent,
+  options: { signIn?: boolean } = {},
 ): string | null {
   const version = db
     .query<{ version: string | null }, [string]>(
@@ -378,6 +380,9 @@ export function runnerAccountUnsupported(
     .get(runnerId);
   if (!row || row.protocol < RUNNER_ACCOUNT_PROTOCOL)
     return "The runner has not reported agent account support";
+  const agentUnsupported = runnerAccountAgentUnsupported(agent);
+  if (agentUnsupported) return agentUnsupported;
+  if (options.signIn) return null;
   const capability = RunnerAccountCapabilitySchema.safeParse({
     protocol: row.protocol,
     bindings: JSON.parse(row.bindings),
@@ -425,7 +430,9 @@ export function recordCommandAccount(
           "binding_mismatch",
           "Agent account binding does not match the command",
         );
-      const unsupported = runnerAccountUnsupported(db, command.runnerId, row.id, agent);
+      const unsupported = runnerAccountUnsupported(db, command.runnerId, row.id, agent, {
+        signIn: command.type === "login",
+      });
       if (unsupported) throw new AgentAccountError("runner_unsupported", unsupported);
     }
     const owner = accountRow(db, row.accountId)!;
