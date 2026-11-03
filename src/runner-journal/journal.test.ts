@@ -559,3 +559,35 @@ test("upgrade reconciles a terminal execution an older release stored in a shape
     rmSync(root, { recursive: true, force: true });
   }
 });
+test("journal lines with and without their write time deliver the same events", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-journal-time-"));
+  const journal = openExecutionJournal(root);
+  try {
+    const lines = [
+      { type: "progress", text: "Working." },
+      {
+        type: "acp",
+        event: {
+          type: "session_update",
+          update: { sessionUpdate: "tool_call", toolCallId: "a", title: "Run", status: "pending" },
+        },
+      },
+    ];
+    const deliver = (id: string, t?: string) => {
+      const execution = journal.admit({ ...command, id, runId: id }, 1000)!;
+      journal.ingest(
+        execution.id,
+        Buffer.from(
+          lines.map((line) => JSON.stringify({ ...line, ...(t ? { t } : {}) }) + "\n").join(""),
+        ),
+      );
+      return journal.pending(execution.id);
+    };
+    const timed = deliver("timed", "2026-11-03T18:09:14.123Z");
+    expect(timed).toHaveLength(2);
+    expect(timed).toEqual(deliver("untimed"));
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

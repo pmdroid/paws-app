@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
@@ -26,15 +26,22 @@ import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerPlacement } from "../src/runner-placement";
-import { RUNNER_LEASE_GRACE_MS, type RunnerCommand } from "../src/runner-protocol";
+import {
+  RUNNER_LEASE_GRACE_MS,
+  RunnerEventSchema,
+  type RunnerCommand,
+} from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { migratedDatabase } from "./helpers";
 
 const ANSWER = "Before the restart. After the restart.";
+const TRANSCRIPT_TIME = "2026-11-03T18:09:14.123Z";
 const TRANSCRIPT = Buffer.from(
   `${JSON.stringify({
+    type: "acp",
+    t: TRANSCRIPT_TIME,
     event: {
       type: "session_update",
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: ANSWER } },
@@ -183,6 +190,7 @@ async function fixture() {
       .get(run.id)?.sequence ?? 0;
 
   return {
+    root,
     runnerId,
     item,
     run,
@@ -200,8 +208,13 @@ async function fixture() {
     get services() {
       return services;
     },
-    say(command: Extract<RunnerCommand, { type: "task" }>, sequence: number, text: string) {
-      services.work.event({
+    say(
+      command: Extract<RunnerCommand, { type: "task" }>,
+      sequence: number,
+      text: string,
+      t?: string,
+    ) {
+      return services.work.event({
         runnerId,
         runId: command.runId,
         generation: command.generation,
@@ -212,10 +225,11 @@ async function fixture() {
           generation: command.generation,
         }).token,
         sequence,
-        event: {
+        event: RunnerEventSchema.parse({
           type: "activity",
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
-        },
+          ...(t === undefined ? {} : { t }),
+        }),
       });
     },
     finish(command: Extract<RunnerCommand, { type: "task" }>) {
@@ -275,6 +289,9 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
     const command = f.tasks[0]!;
     f.say(command, 1, "Before the restart.");
     await f.until(() => f.consumed() === 1);
+    expect(f.say(command, 1, "Before the restart.", "2026-11-03T18:09:13.000Z")).toEqual({
+      duplicate: true,
+    });
     shutdown.abort(new PawsShutdown());
     expect(await first).not.toBeNull();
     expect(f.commandCount("cancel")).toBe(0);
@@ -313,6 +330,15 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
     expect(answers).toHaveLength(1);
     expect(f.events.filter((event) => event.type === "prompt_complete")).toHaveLength(1);
     expect(f.downloads()).toBe(1);
+    const transcript = readFileSync(join(f.root, "runs", f.run.id, "acp.jsonl"), "utf8");
+    expect(transcript).toContain(TRANSCRIPT.toString());
+    expect(
+      transcript
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .find((line) => line.type === "acp").t,
+    ).toBe(TRANSCRIPT_TIME);
     expect(
       f.db
         .query<{ endedAt: number | null }, [string]>(

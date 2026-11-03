@@ -79,3 +79,4 @@ export const CLOSEOUT_RULE_RESULTS_RUNNER_VERSION: RunnerVersion = [0, 1, 60];
 export const AGENT_ACCOUNTS_RUNNER_VERSION: RunnerVersion = [0, 1, 61];
 export const CI_LOG_RUNNER_VERSION: RunnerVersion = [0, 1, 61];
 export const CI_RERUN_RUNNER_VERSION: RunnerVersion = [0, 1, 61];
+export const TRANSCRIPT_TIME_RUNNER_VERSION: RunnerVersion = [0, 1, 62];

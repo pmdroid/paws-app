@@ -12,6 +12,7 @@ import {
   RunnerResultSchema,
   type RunnerResult,
   type RunnerCommand,
+  withoutJournalTime,
 } from "../runner-protocol";
 
 export type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
@@ -494,7 +495,7 @@ export function openExecutionJournal(root: string) {
           const end = bytes.indexOf(10, offset);
           if (end < 0) break;
           if (end - offset > 262_144) throw new Error("Runner journal record exceeds limit");
-          const raw: unknown = JSON.parse(bytes.subarray(offset, end).toString("utf8"));
+          const raw = withoutJournalTime(JSON.parse(bytes.subarray(offset, end).toString("utf8")));
           let event: z.infer<typeof RunnerEventSchema> | undefined;
           let requestId: string | null = null;
           const q = question.safeParse(raw);
