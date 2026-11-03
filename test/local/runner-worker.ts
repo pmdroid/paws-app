@@ -22,7 +22,7 @@ import {
   type RunnerSpool,
 } from "../../src/runner-execution";
 import { executeRunnerCommand } from "../../src/runner-worker";
-import { RunnerArtifactSchema } from "../../src/runner-protocol";
+import { RunnerArtifactSchema, withoutJournalTime } from "../../src/runner-protocol";
 
 export async function probeRunnerWorker(
   root: string,
@@ -211,7 +211,7 @@ export async function probeRunnerWorker(
     const record = readFileSync(join(directory, "events.jsonl"), "utf8")
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line))
+      .map((line) => withoutJournalTime(JSON.parse(line)))
       .find((event) => event.type === "artifact" && event.requestId === requestId);
     if (!record) return null;
     const artifact = RunnerArtifactSchema.parse(record.artifact);
@@ -242,9 +242,14 @@ export async function probeRunnerWorker(
         launch: firstAgent.launch,
         async answer(requestId) {
           if (
-            readFileSync(join(firstOutput, "events.jsonl"), "utf8").includes(
-              JSON.stringify({ type: "closeout_policy", requestId, offset: 0 }),
-            )
+            readFileSync(join(firstOutput, "events.jsonl"), "utf8")
+              .trim()
+              .split("\n")
+              .some(
+                (line) =>
+                  JSON.stringify(withoutJournalTime(JSON.parse(line))) ===
+                  JSON.stringify({ type: "closeout_policy", requestId, offset: 0 }),
+              )
           )
             return {
               answer: encodePolicyFiles(workspacePolicyFiles(runCheckout(first))),
@@ -473,7 +478,7 @@ export async function probeRunnerWorker(
   const journal = readFileSync(join(firstOutput, "events.jsonl"), "utf8")
     .trim()
     .split("\n")
-    .map((line) => JSON.parse(line));
+    .map((line) => withoutJournalTime(JSON.parse(line)));
   assert(journal.some((event) => event.type === "question" && event.requestId === answeredRequest));
   assert.deepEqual(
     journal.filter((event) => event.type === "progress"),

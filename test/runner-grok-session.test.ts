@@ -19,6 +19,7 @@ import { git } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import type { RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { withoutJournalTime } from "../src/runner-protocol";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
 const roots: string[] = [];
@@ -144,7 +145,14 @@ async function fixture() {
     const events = readFileSync(join(output, "events.jsonl"), "utf8")
       .trimEnd()
       .split("\n")
-      .map((line) => JSON.parse(line) as { type: string; restored?: boolean; reason?: string });
+      .map(
+        (line) =>
+          withoutJournalTime(JSON.parse(line)) as {
+            type: string;
+            restored?: boolean;
+            reason?: string;
+          },
+      );
     return {
       result,
       trace,

@@ -25,6 +25,7 @@ import {
   executeRunnerCommand,
   writeClaudeSessionBundle,
 } from "../src/runner-worker";
+import { withoutJournalTime } from "../src/runner-protocol";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
 const roots: string[] = [];
@@ -213,7 +214,10 @@ test.skipIf(!linux)("a bundle over the size cap is skipped with a notice", async
   const events = readFileSync(join(output, "events.jsonl"), "utf8")
     .trimEnd()
     .split("\n")
-    .map((line) => JSON.parse(line) as { type: string; text?: string; notice?: boolean });
+    .map(
+      (line) =>
+        withoutJournalTime(JSON.parse(line)) as { type: string; text?: string; notice?: boolean },
+    );
   expect(events).toContainEqual({ type: "progress", text: CLAUDE_SESSION_TOO_LARGE, notice: true });
 });
 

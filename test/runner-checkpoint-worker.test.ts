@@ -15,6 +15,7 @@ import { git } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
 import type { RunnerJob } from "../src/runner-execution";
 import { CHECKPOINT_COMMIT_MESSAGE, executeRunnerCommand } from "../src/runner-worker";
+import { withoutJournalTime } from "../src/runner-protocol";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
 const roots: string[] = [];
@@ -73,7 +74,13 @@ async function fixture() {
   const checkout = join(workRoot, runId);
   const events = () =>
     existsSync(join(output, "events.jsonl"))
-      ? readFileSync(join(output, "events.jsonl"), "utf8")
+      ? readFileSync(join(output, "events.jsonl"), "utf8").replace(/^.+$/gm, (line) => {
+          try {
+            return JSON.stringify(withoutJournalTime(JSON.parse(line)));
+          } catch {
+            return line;
+          }
+        })
       : "";
   const checkpoints = () =>
     events()

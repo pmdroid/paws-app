@@ -720,7 +720,7 @@ export async function executeRunnerCommand(
   let activityOmitted = false;
   const updates = createUpdateLimiter();
   function emit(event: RunnerWorkerEvent): void {
-    const line = `${JSON.stringify(event)}\n`;
+    const line = `${JSON.stringify({ ...event, t: new Date().toISOString() })}\n`;
     const length = Buffer.byteLength(line);
     if (event.type === "acp" && journalSize + length > ACTIVITY_JOURNAL_LIMIT) {
       if (activityOmitted) return;

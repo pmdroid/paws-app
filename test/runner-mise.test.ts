@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { RunnerCommand } from "../src/runner-protocol";
+import { withoutJournalTime, type RunnerCommand } from "../src/runner-protocol";
 import {
   installRuntimes,
   prependRuntimePath,
@@ -155,7 +155,7 @@ async function runTask(name: string, runtimes: Array<{ tool: string; version: st
     .trim()
     .split("\n")
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as { type: string; text?: string });
+    .map((line) => withoutJournalTime(JSON.parse(line)) as { type: string; text?: string });
   const reportPath = join(outputDirectory, "runtimes.json");
   const report = existsSync(reportPath)
     ? (JSON.parse(readFileSync(reportPath, "utf8")) as unknown)
