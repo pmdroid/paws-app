@@ -113,7 +113,7 @@ Follow the provider's browser instructions. Provider credentials stay in `/var/l
 
 ### Agent accounts and bindings
 
-Paws records each sign-in as a binding of a logical agent account (`src/db/agent-accounts.ts`). An account belongs to one workspace and one agent, and has a label and an enabled flag. It is separate from the agent, model and effort profile in `config.toml`. A binding is one runner's sign-in for one account. One account can have bindings on several runners, and each binding belongs to exactly one workspace, account and agent.
+Paws records each sign-in as a binding of a logical agent account (`src/db/agent-accounts.ts`). An account belongs to one workspace and one agent, and has a label and an enabled flag. It is separate from the agent, model and effort profile in `config.toml`. A binding is one runner's sign-in for one account. One account can have bindings on several runners, and each binding belongs to exactly one workspace, account and agent. The gates before configuring fallback, upgrade and rollback, and what has been tested for each agent are in [Roll out multiple agent accounts](agent-account-rollout.md).
 
 The sign-in above is the runner's default sign-in. Paws keeps it as a legacy binding with id `legacy_<agent>_<runnerId>` under the workspace's legacy account `legacy_<agent>_<workspaceId>`. Its quota scope is `unknown`: Paws does not know whether two runners' default sign-ins are the same provider account, so it treats neither as proof of separate quota. A binding added to a named account is an explicit link, with quota scope `account`: it shares that account's quota. Paws never derives an account from credentials, email addresses or token equality, and credentials stay on the runner.
 
@@ -143,7 +143,7 @@ Paws records the account and binding of every agent command in `runner_command_a
 [agents.defaults.accounts]
 implementer = ["01J...A", "01J...B"]
 reviewer = ["legacy_codex_<workspaceId>"]
-reviewer_fallback = ["01J...X"]   # needs [agents.defaults.reviewer_fallback]
+reviewer_fallback = ["01J...X"] # needs [agents.defaults.reviewer_fallback]
 
 [agents.projects."owner/repo".accounts]
 implementer = ["01J...B"]
