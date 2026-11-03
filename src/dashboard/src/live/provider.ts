@@ -1327,35 +1327,38 @@ export function historyOf(
     created === undefined ? {} : { stateTimes: toStateTimes(totalsOf(record, created, rows, now)) };
   const reruns = listCiReruns(db, record.id);
   if (rows.length === 0 && reruns.length === 0) return stateTimes;
-  const events: Array<StatusItemEvent & { ms: number }> = rows.map((row) => ({
-    ms: row.at,
-    at: iso(row.at),
-    kind: row.kind,
-    from: row.fromState,
-    to: row.toState,
-    event: row.event,
-    reason: row.reason,
-    actor: row.actor,
-  }));
-  for (const rerun of reruns) {
-    const state = rows.findLast((row) => row.at <= rerun.at)?.toState ?? record.state;
+  const events: StatusItemEvent[] = [];
+  const pending = [...reruns];
+  const pushReruns = (until: number, state: string) => {
+    while (pending.length && pending[0]!.at < until) {
+      const rerun = pending.shift()!;
+      events.push({
+        at: iso(rerun.at),
+        kind: "ci_rerun",
+        from: state,
+        to: state,
+        event: "ci_rerun",
+        reason: rerun.reason,
+        actor: "agent",
+        runIds: rerun.runIds,
+      });
+    }
+  };
+  for (const row of rows) {
+    pushReruns(row.at, row.fromState);
     events.push({
-      ms: rerun.at,
-      at: iso(rerun.at),
-      kind: "ci_rerun",
-      from: state,
-      to: state,
-      event: "ci_rerun",
-      reason: rerun.reason,
-      actor: "agent",
-      runIds: rerun.runIds,
+      at: iso(row.at),
+      kind: row.kind,
+      from: row.fromState,
+      to: row.toState,
+      event: row.event,
+      reason: row.reason,
+      actor: row.actor,
     });
   }
+  pushReruns(Number.POSITIVE_INFINITY, rows.at(-1)?.toState ?? record.state);
   return {
-    timeline: events
-      .sort((left, right) => left.ms - right.ms)
-      .slice(-TIMELINE_LIMIT)
-      .map(({ ms: _ms, ...event }) => event),
+    timeline: events.slice(-TIMELINE_LIMIT),
     ...stateTimes,
   };
 }
