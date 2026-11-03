@@ -6,6 +6,7 @@ import { git, SHELL_RESTART_NOTICE } from "../src/acp";
 import type { FakeResult, FakeStep } from "../src/acp/testing/script";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
+import { withoutJournalTime } from "../src/runner-protocol";
 
 const command = (id: string, rawOutput: unknown): FakeStep[] => [
   {
@@ -114,7 +115,12 @@ async function runWithSessions(sessions: FakeStep[][]) {
           .split("\n")
           .filter(Boolean)
           .map(
-            (line) => JSON.parse(line) as { type: string; requestId?: string; question?: string },
+            (line) =>
+              withoutJournalTime(JSON.parse(line)) as {
+                type: string;
+                requestId?: string;
+                question?: string;
+              },
           )
           .find((event) => event.type === "question" && event.requestId === requestId);
         if (!asked?.question) throw new Error("unexpected answer request");
@@ -131,7 +137,7 @@ async function runWithSessions(sessions: FakeStep[][]) {
       events: readFileSync(join(outputDirectory, "events.jsonl"), "utf8")
         .split("\n")
         .filter(Boolean)
-        .map((line) => JSON.parse(line) as Record<string, unknown>),
+        .map((line) => withoutJournalTime(JSON.parse(line)) as Record<string, unknown>),
       trace: JSON.parse(readFileSync(join(root, "trace.json"), "utf8")) as FakeResult,
       worktree,
       cleanup: () => rmSync(root, { recursive: true, force: true }),

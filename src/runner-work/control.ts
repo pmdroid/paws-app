@@ -55,6 +55,7 @@ import {
   type RunnerInstalledSkill,
   type RunnerSkill,
   type SignedRunnerCommand,
+  withoutJournalTime,
 } from "../runner-protocol";
 import { workspaceSecret, workspaceTokenHash } from "../workspace";
 import { findOpenQuestion } from "../questions";
@@ -806,7 +807,7 @@ export function createRunnerWork(options: {
       token: string;
       event: RunnerEvent;
     }) {
-      const event = JSON.stringify(RunnerEventSchema.parse(input.event));
+      const event = JSON.stringify(RunnerEventSchema.parse(withoutJournalTime(input.event)));
       if (!Number.isSafeInteger(input.sequence) || input.sequence < 1)
         throw new Error("Event sequence is invalid.");
       return immediate(db, () => {

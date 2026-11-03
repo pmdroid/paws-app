@@ -9,6 +9,7 @@ import {
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
+  withoutJournalTime,
 } from "../runner-protocol";
 import { RunnerEventSchema, type RunnerWork } from "./control";
 import { runnerFailureStatus } from "./failure";
@@ -41,7 +42,7 @@ const event = z.strictObject({
   runId: id,
   generation,
   sequence: generation,
-  event: RunnerEventSchema,
+  event: z.preprocess(withoutJournalTime, RunnerEventSchema),
 });
 
 /** `skillsRoot` holds registered bundles at `<name>/<version>/skill.tar.gz`. */

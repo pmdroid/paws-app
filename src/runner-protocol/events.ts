@@ -63,6 +63,13 @@ export const RunnerCloseoutProgressSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+export function withoutJournalTime<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  if (!("t" in value) || typeof value.t !== "string") return value;
+  const { t: _t, ...rest } = value;
+  return rest as T;
+}
+
 export const RunnerEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("artifact"),

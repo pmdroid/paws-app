@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { RunnerCommand } from "../src/runner-protocol";
+import { withoutJournalTime, type RunnerCommand } from "../src/runner-protocol";
 import { openExecutionJournal } from "../src/runner-journal";
 import { executeRunnerCommand } from "../src/runner-worker";
 
@@ -97,7 +97,7 @@ for (const purpose of ["answer", "artifact"] as const) {
           const events = readFileSync(join(outputDirectory, "events.jsonl"), "utf8")
             .trim()
             .split("\n")
-            .map((line) => JSON.parse(line));
+            .map((line) => withoutJournalTime(JSON.parse(line)));
           const artifact = events.find(
             (event) => event.type === "artifact" && event.requestId === requestId,
           );
@@ -244,7 +244,7 @@ test("a 21st publish_artifact is a tool error and the run still finishes", async
     const published = readFileSync(join(outputDirectory, "events.jsonl"), "utf8")
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line))
+      .map((line) => withoutJournalTime(JSON.parse(line)))
       .filter((event) => event.type === "artifact");
     expect(published).toHaveLength(20);
     expect(published.map((event) => event.artifact.path)).toEqual(

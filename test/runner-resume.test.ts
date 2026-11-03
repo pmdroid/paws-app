@@ -133,6 +133,8 @@ test("a crashed worker resumes its session in the same workspace", async () => {
     expect(events).toContain("WORKING ON IT");
     expect(events).toContain("The agent restarted after a crash.");
     expect(events).not.toContain("REPLAYED HISTORY");
+    for (const line of events.trimEnd().split("\n"))
+      expect(JSON.parse(line).t).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
     expect(existsSync(join(outputDirectory, "result.json"))).toBe(true);
     crash();
 

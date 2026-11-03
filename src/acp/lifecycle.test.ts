@@ -222,3 +222,37 @@ test("a single replayed entry over the budget is cut to fit", () => {
   ]);
   expect(prompt.length).toBeLessThan(900_000);
 });
+
+test("recovery rebuilds the same conversation from runner lines with and without their time", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-acp-recovery-"));
+  roots.push(root);
+  const updates = [
+    { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Checked." } },
+    { sessionUpdate: "tool_call", toolCallId: "check", title: "Check", status: "in_progress" },
+    {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "check",
+      status: "completed",
+      _meta: { terminal_output: { data: "ok" } },
+    },
+  ];
+  const write = async (name: string, timed: boolean) => {
+    const path = join(root, name);
+    await writeFile(
+      path,
+      updates
+        .map((update, index) =>
+          JSON.stringify({
+            type: "acp",
+            event: { type: "session_update", update },
+            ...(timed ? { t: `2026-11-03T18:09:1${index}.123Z` } : {}),
+          }),
+        )
+        .join("\n") + "\n",
+    );
+    return path;
+  };
+  const timed = await recoverAcpConversation(await write("timed.jsonl", true));
+  expect(timed).toHaveLength(2);
+  expect(timed).toEqual(await recoverAcpConversation(await write("untimed.jsonl", false)));
+});
