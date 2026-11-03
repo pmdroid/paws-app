@@ -1187,7 +1187,9 @@ function evidenceFor(db: Database, records: readonly WorkItemRecord[]): StatusEv
     )
     .sort(
       (left, right) =>
-        left.publishedAt.localeCompare(right.publishedAt) || left.id.localeCompare(right.id),
+        left.publishedAt.localeCompare(right.publishedAt) ||
+        left.attempt - right.attempt ||
+        left.id.localeCompare(right.id),
     );
 }
 
