@@ -262,10 +262,10 @@ export function createRemoteSessionAgentRunner(options: {
                     : "The runner agent exhausted its observed quota.",
                   undefined,
                   false,
-                  undefined,
+                  placed?.named && !result.authRequired ? disposition.usageLimit : undefined,
                   false,
                   false,
-                  placed?.named && result.authRequired ? placed.bindingId : undefined,
+                  placed?.named ? placed.bindingId : undefined,
                 );
               if (purpose === "finding_groups") {
                 if (

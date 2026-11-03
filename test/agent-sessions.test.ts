@@ -617,6 +617,14 @@ describe("agent session snapshots", () => {
     const plan = () =>
       planSessionRestore(db, { runId: run.runId, agent: "claude", targetRunnerId: runnerB });
     expect(plan()).toMatchObject({ eligible: true, restoreSession: { generation: 1 } });
+    expect(
+      planSessionRestore(db, {
+        runId: run.runId,
+        agent: "claude",
+        targetRunnerId: runnerB,
+        targetAccount: { accountId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", named: true },
+      }),
+    ).toEqual({ eligible: false, failure: "other_account" });
 
     work.finish(run.runId, 1);
     await seal(sessions, f.assign(run, runnerA, 2), 2);

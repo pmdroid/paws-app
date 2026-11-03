@@ -1206,6 +1206,7 @@ export function createRemoteAgentRunner(options: {
                       runId: selected.runId,
                       agent: profile.agent,
                       targetRunnerId: selected.id,
+                      ...(selected.account ? { targetAccount: selected.account } : {}),
                     })
                   : undefined;
               const head = taskScope

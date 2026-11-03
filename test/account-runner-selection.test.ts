@@ -557,3 +557,35 @@ test("scheduler readiness counts a runner whose usable named account outlives it
   expect(itemOwnerHasEligibleRunner(f.db, input)).toBe(false);
   expect(itemOwnerRunnerSetupNeed(f.db, input)).toMatchObject({ reason: "agent-not-signed-in" });
 });
+
+test("a helper ended locally keeps its account slot until its result or its expiry", () => {
+  const f = fixture();
+  const helper = (id: string, expiresAt: number) => {
+    f.db.run(
+      "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at,acknowledged_at) VALUES(?,'R1',?,'session',0,0,'{}',?,?)",
+      [id, f.workspaceId, expiresAt, f.now()],
+    );
+    f.db.run(
+      "INSERT INTO runner_command_account(command_id,workspace_id,runner_id,agent,account_id,binding_id,named,recorded_at) VALUES(?,?,'R1','claude',?,?,1,?)",
+      [id, f.workspaceId, f.accounts.a, f.bindings.a1, f.now()],
+    );
+    f.db.run(
+      "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,agent,role,purpose,started_at) VALUES(?,'R1',(SELECT owner_user_id FROM runner WHERE id='R1'),'claude','implementer','helper',?)",
+      [id, f.now()],
+    );
+  };
+  helper("helper-1", f.now() + 60_000);
+  expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(1);
+  f.db.run("UPDATE runner_helper SET ended_at=? WHERE id='helper-1'", [f.now()]);
+  f.db.run(
+    "UPDATE runner_execution_usage SET ended_at=?,outcome='timeout' WHERE command_id='helper-1'",
+    [f.now()],
+  );
+  expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(1);
+  f.db.run("UPDATE runner_helper SET result='{}' WHERE id='helper-1'");
+  expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(0);
+  helper("helper-2", f.now() + 60_000);
+  f.db.run("UPDATE runner_helper SET ended_at=? WHERE id='helper-2'", [f.now()]);
+  expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(1);
+  expect(accountSlotsInUse(f.db, f.accounts.a, f.now() + 60_001)).toBe(0);
+});

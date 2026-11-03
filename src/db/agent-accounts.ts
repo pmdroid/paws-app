@@ -632,7 +632,8 @@ export function accountSlotsInUse(
        LEFT JOIN runner_command c ON c.id=u.command_id
        LEFT JOIN runner_work w ON w.run_id=c.run_id AND w.command_id=u.command_id
        WHERE a.account_id=?1 AND u.command_id IS NOT ?3 AND (
-         (h.id IS NOT NULL AND h.ended_at IS NULL AND h.expires_at>?2)
+         (h.id IS NOT NULL AND h.expires_at>?2
+           AND (h.ended_at IS NULL OR h.result IS NULL))
          OR (w.run_id IS NOT NULL AND ((w.ended_at IS NULL AND w.lease_until>?4)
            OR ${TEARDOWN_UNRESOLVED}))
          OR (h.id IS NULL AND c.id IS NOT NULL AND c.run_id IS NULL
