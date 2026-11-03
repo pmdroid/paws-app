@@ -28,8 +28,8 @@ import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identi
 import { createRunnerPlacement } from "../src/runner-placement";
 import {
   RUNNER_LEASE_GRACE_MS,
-  RunnerEventSchema,
   type RunnerCommand,
+  type RunnerEvent,
 } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
@@ -225,11 +225,11 @@ async function fixture() {
           generation: command.generation,
         }).token,
         sequence,
-        event: RunnerEventSchema.parse({
+        event: {
           type: "activity",
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
           ...(t === undefined ? {} : { t }),
-        }),
+        } as RunnerEvent,
       });
     },
     finish(command: Extract<RunnerCommand, { type: "task" }>) {

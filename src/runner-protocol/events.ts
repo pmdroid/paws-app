@@ -70,7 +70,7 @@ export function withoutJournalTime<T>(value: T): T {
   return rest as T;
 }
 
-const RunnerEventUnionSchema = z.discriminatedUnion("type", [
+export const RunnerEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("artifact"),
     artifact: RunnerArtifactSchema,
@@ -170,7 +170,5 @@ const RunnerEventUnionSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("completed") }),
   z.strictObject({ type: z.literal("failed"), message: z.string().max(16384) }),
 ]);
-
-export const RunnerEventSchema = z.preprocess(withoutJournalTime, RunnerEventUnionSchema);
 
 export type RunnerEvent = z.infer<typeof RunnerEventSchema>;
