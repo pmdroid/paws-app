@@ -126,15 +126,35 @@ export function pendingRestartHandoff(
 ): { handoff?: string; limit?: number } {
   const row = db
     .query<
-      { status: string; handoff: string | null; limit: number | null },
+      { status: string; handoff: string | null; limit: number | null; runAt: number },
       [string, string, string]
     >(`
     SELECT status, json_extract(payload, '$.handoff') AS handoff,
-      json_extract(payload, '$.limit') AS "limit" FROM job
+      json_extract(payload, '$.limit') AS "limit", run_at AS runAt FROM job
     WHERE queue IN (?, ?) AND json_extract(payload, '$.itemId') = ?
     ORDER BY activation_id DESC LIMIT 1
   `)
     .get(JOB_KIND.start, JOB_KIND.resume, itemId);
-  if (!row || row.status === "done" || !row.handoff?.trim()) return {};
+  if (!row || !row.handoff?.trim()) return {};
+  if (row.status === "done" && !turnInterruptedSince(db, itemId, row.runAt)) return {};
   return { handoff: row.handoff, ...(typeof row.limit === "number" ? { limit: row.limit } : {}) };
+}
+
+const UNSETTLED_EXITS = ["lease_expired", "deferred"];
+
+function turnInterruptedSince(db: Database, itemId: string, since: number): boolean {
+  const started = db
+    .query<{ id: number | null }, [string, number]>(
+      "SELECT max(id) AS id FROM work_item_event WHERE item_id = ? AND to_state = 'running' AND at >= ?",
+    )
+    .get(itemId, since)?.id;
+  if (started == null) return false;
+  return (
+    db
+      .query(
+        `SELECT 1 FROM work_item_event WHERE item_id = ? AND from_state = 'running' AND id > ?
+         AND event NOT IN (${UNSETTLED_EXITS.map(() => "?").join(",")}) LIMIT 1`,
+      )
+      .get(itemId, started, ...UNSETTLED_EXITS) === null
+  );
 }
