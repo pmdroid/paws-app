@@ -1,4 +1,10 @@
-import { openedView, fullStatusFixture, itemDetail, type FullStatus } from "../../test/fixtures";
+import {
+  openedView,
+  fullStatusFixture,
+  itemDetail,
+  type FullStatus,
+  issueOf,
+} from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -102,7 +108,7 @@ function page(detail: StatusItemDetail, closeout: CloseoutView = openedView()): 
     route: { view: "issues", id: "ENG-100" },
     phase: "ready",
     snapshot: null,
-    detail,
+    issue: issueOf(detail),
     error: null,
     engineUrl: null,
     closeout,

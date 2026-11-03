@@ -1,3 +1,4 @@
+import { issueOf } from "../src/dashboard/test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { insertQueuedItem, insertRun, migrate, openDatabase, saveEvidence } from "../src/db";
 import type { EvidenceMediaType } from "../src/db";
@@ -90,7 +91,7 @@ function page(
     route,
     phase: "ready",
     snapshot,
-    detail,
+    issue: issueOf(detail),
     error: null,
     engineUrl: null,
     mediaInfo: new Map([

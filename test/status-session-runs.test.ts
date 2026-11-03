@@ -1,3 +1,4 @@
+import { issueOf } from "../src/dashboard/test/fixtures";
 import { expect, test } from "bun:test";
 import {
   applyLinearTurns,
@@ -102,7 +103,7 @@ test("one Linear session shows as one run with every attempt in its timeline", a
       route: route!,
       phase: "ready",
       snapshot: parsed.snapshot,
-      detail: detail.detail,
+      issue: issueOf(detail.detail),
       error: null,
       engineUrl: null,
     });

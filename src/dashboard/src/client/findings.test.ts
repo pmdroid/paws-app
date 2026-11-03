@@ -65,7 +65,6 @@ describe("Findings page", () => {
       route: { view: "findings" },
       phase: "loading",
       snapshot: null,
-      detail: null,
       error: null,
       engineUrl: "http://127.0.0.1:8787",
     });

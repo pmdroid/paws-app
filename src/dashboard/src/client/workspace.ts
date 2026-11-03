@@ -11,6 +11,7 @@ import { DASHBOARD_PATH } from "../../../dashboard-links";
 import { clearSettingsLoads, loadWhenShown, settingsPageShown } from "./settings-loads";
 
 type BrowserSession = {
+  userId?: string;
   role: string;
   user?: { name: string; email: string } | null;
   workspaceId: string;
@@ -19,6 +20,12 @@ type BrowserSession = {
 };
 
 const SIGN_IN_RETURN = "paws.signInReturn";
+
+let signedInReader = "";
+
+export function workspaceReader(): string {
+  return signedInReader;
+}
 
 /** Sign-in always lands on the overview, so the page a signed-out reader opened is kept here. */
 function rememberSignInReturn(): void {
@@ -44,6 +51,7 @@ export function takeSignInReturn(): string | null {
 }
 
 export async function initializeWorkspaceAccess(page: () => SettingsPage | null): Promise<boolean> {
+  signedInReader = "";
   const root = document.querySelector<HTMLElement>("#workspace-access");
   let response: Response;
   try {
@@ -65,6 +73,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
     return false;
   }
   if (response.status === 404) {
+    signedInReader = "local";
     if (root) {
       root.dataset.loaded = "true";
       renderMarkup(
@@ -142,6 +151,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
     return false;
   }
   const session = (await response.json()) as BrowserSession;
+  signedInReader = JSON.stringify([session.userId ?? null, session.workspaceId, session.role]);
   document.body.classList.remove("paws-login");
   setLoginLayout(false);
   const csrf = document.querySelector('meta[name="paws-csrf"]');
