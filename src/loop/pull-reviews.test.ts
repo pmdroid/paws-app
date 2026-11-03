@@ -353,6 +353,12 @@ describe("other reviews", () => {
 
 /** The merge lane reads only these before a review holds it. */
 function laneCapabilities(): MergeCapabilities {
-  const caps: Partial<MergeCapabilities> = { now: () => 10, mergedOutsideLane: async () => null };
+  const caps: Partial<MergeCapabilities> = {
+    now: () => 10,
+    stopped: () => false,
+    mergedOutsideLane: async () => null,
+    feedbackWait: () => ({ quietMs: 60_000, maxMs: 300_000 }),
+    readPullCi: async () => ({ state: "unknown", message: "not read" }),
+  };
   return caps as MergeCapabilities;
 }

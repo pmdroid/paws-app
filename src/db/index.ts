@@ -39,6 +39,17 @@ export {
   type PullCommentSource,
 } from "./pull-comments";
 export {
+  clearPullCiFailures,
+  getPullCiFailure,
+  pendingPullCiFailures,
+  recordPullCiFailure,
+  settlePullCiFailures,
+  type PullCiFailedCheck,
+  type PullCiFailureRecord,
+  type PullCiObservation,
+  type PullCiOutcome,
+} from "./pull-ci";
+export {
   listReviewEscapes,
   openReviewEscapes,
   recordReviewEscape,

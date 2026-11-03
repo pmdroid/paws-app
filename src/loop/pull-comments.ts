@@ -6,9 +6,11 @@ import {
   getWorkItem,
   immediate,
   pendingChangeRequests,
+  pendingPullCiFailures,
   pendingPullComments,
   recordPullComment,
   recordReviewEscape,
+  settlePullCiFailures,
   settlePullComments,
   type PullCommentRecord,
   type PullFeedbackWait,
@@ -16,6 +18,13 @@ import {
 } from "../db";
 import type { ReviewThread } from "../github";
 import { ask, restart } from "./operations";
+import {
+  currentPullCi,
+  pullCiAsked,
+  pullCiHandoff,
+  pullCiQuestion,
+  pullCiRestarted,
+} from "./pull-ci";
 import {
   REVIEW_REPLY_MARKER,
   recordReplyTargets,
@@ -216,26 +225,30 @@ export async function handlePullComments(
   caps: PullReviewCapabilities,
 ): Promise<PullReviewStep> {
   const open = pendingPullComments(db, itemId);
-  if (open.length === 0) return "done";
+  const failures = pendingPullCiFailures(db, itemId);
+  if (open.length === 0 && failures.length === 0) return "done";
   const item = getWorkItem(db, itemId);
   if (item === null || ENDED.has(item.state) || item.cancelRequested) {
     settlePullComments(db, open, "dropped", caps.now());
+    settlePullCiFailures(db, failures, "dropped", caps.now());
     return "dropped";
   }
-  if (settleCovered(db, open, caps.now()) === open.length) return "done";
+  const ci = currentPullCi(db, item, caps.now());
+  if (settleCovered(db, open, caps.now()) === open.length && ci === null) return "done";
   // A changes-requested review still waiting takes these comments with it.
   if (pendingChangeRequests(db, itemId).length > 0) return "wait";
-  const pullNumber = open.at(-1)!.pullNumber;
+  const pullNumber = open.at(-1)?.pullNumber ?? ci!.pullNumber;
   if (item.state === "merge_queue") {
     // Before waiting on anything: GitHub's own merge queue does not wait for Paws.
     const queue = await caps.leaveMergeQueue(item, pullNumber);
     if (queue === "merged" || queue === "closed") {
       settlePullComments(db, pendingPullComments(db, itemId), "dropped", caps.now());
+      settlePullCiFailures(db, pendingPullCiFailures(db, itemId), "dropped", caps.now());
       return "dropped";
     }
   }
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
-  const threads = await caps.threads(item, pullNumber);
+  const threads = open.length > 0 ? await caps.threads(item, pullNumber) : [];
   const findings = await caps.closeoutFindings(item);
   const step = immediate(db, (): PullReviewStep => {
     const current = getWorkItem(db, item.id);
@@ -244,24 +257,29 @@ export async function handlePullComments(
     const now = caps.now();
     settleCovered(db, pendingPullComments(db, itemId), now);
     const batch = pendingPullComments(db, itemId);
-    if (batch.length === 0) return "done";
-    const digest = commentDigest(batch, threads);
-    if (digest === null) {
+    const failure = currentPullCi(db, current, now, pullNumber);
+    if (batch.length === 0 && failure === null) return "done";
+    const digest = batch.length === 0 ? null : commentDigest(batch, threads);
+    if (digest === null && batch.length > 0) {
       settlePullComments(db, batch, "dropped", now);
-      return "dropped";
+      if (failure === null) return "dropped";
     }
+    const comments = digest === null ? [] : batch;
     const rounds = fixRounds(db, current.id);
     const limit = caps.fixRoundLimit(current);
     if (rounds < limit) {
-      const first = batch[0]!;
-      const jobKey = `review:${current.id}:${first.source}:${first.commentId}`;
-      const targets = replyTargets({ pullNumber, threads, reviews: [], comments: batch });
+      const first = comments[0];
+      const jobKey = first
+        ? `review:${current.id}:${first.source}:${first.commentId}`
+        : `ci:${current.id}:${failure!.head}`;
+      const targets = replyTargets({ pullNumber, threads, reviews: [], comments });
       const jobId = restart(db, current, {
-        reason: "review",
+        reason: comments.length > 0 ? "review" : "ci",
         body: [
-          digest,
-          closeoutFindingsNote(findings, batch),
-          COMMENT_FIX_INSTRUCTION,
+          digest ?? "",
+          failure === null ? "" : pullCiHandoff(failure),
+          comments.length > 0 ? closeoutFindingsNote(findings, comments) : "",
+          comments.length > 0 ? COMMENT_FIX_INSTRUCTION : "",
           replyListSection(targets),
         ]
           .filter((part) => part !== "")
@@ -270,48 +288,67 @@ export async function handlePullComments(
         now,
       });
       if (jobId === null) return "wait";
-      postPullFeedback(db, {
-        sessionId: caps.session(current),
-        item: current,
-        key: jobKey,
-        body: `${authors(batch)} commented on pull request #${pullNumber}. The agent is working on the comments.`,
-        now,
-      });
-      recordReplyTargets(db, current.id, jobKey, targets, now);
-      if (current.acceptedHead !== null)
-        recordReviewEscape(db, {
-          triggerKey: jobKey,
-          itemId: current.id,
-          trigger: "comment",
-          acceptedHead: current.acceptedHead,
-          pullNumber,
-          detail: {
-            comments: batch
-              .filter((comment) => comment.body.trim() !== "")
-              .map((comment) => ({
-                id: comment.commentId,
-                author: comment.author,
-                body: comment.body,
-              })),
-          },
-          recordedAt: now,
+      if (comments.length > 0) {
+        postPullFeedback(db, {
+          sessionId: caps.session(current),
+          item: current,
+          key: jobKey,
+          body: `${authors(comments)} commented on pull request #${pullNumber}. The agent is working on the comments.`,
+          now,
         });
-      settlePullComments(db, batch, "restarted", now);
+        recordReplyTargets(db, current.id, jobKey, targets, now);
+        if (current.acceptedHead !== null)
+          recordReviewEscape(db, {
+            triggerKey: jobKey,
+            itemId: current.id,
+            trigger: "comment",
+            acceptedHead: current.acceptedHead,
+            pullNumber,
+            detail: {
+              comments: comments
+                .filter((comment) => comment.body.trim() !== "")
+                .map((comment) => ({
+                  id: comment.commentId,
+                  author: comment.author,
+                  body: comment.body,
+                })),
+            },
+            recordedAt: now,
+          });
+        settlePullComments(db, comments, "restarted", now);
+      }
+      if (failure !== null)
+        postPullFeedback(db, {
+          sessionId: caps.session(current),
+          item: current,
+          key: `${jobKey}:ci`,
+          body: pullCiRestarted(db, { item: current, failure, jobKey, limit, now }),
+          now,
+        });
       return "restarted";
     }
     const sessionId = caps.session(current);
     if (sessionId === null) {
-      settlePullComments(db, batch, "dropped", now);
+      settlePullComments(db, comments, "dropped", now);
+      if (failure !== null) settlePullCiFailures(db, [failure], "dropped", now);
       return "dropped";
     }
     ask(
       db,
       { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
       "ci-help",
-      `${authors(batch)} commented on pull request #${pullNumber}, and all ${limit} fix rounds are spent. Reply with guidance and Paws hands it to the agent with the comments, or stop the task.\n\n${digest}`,
+      comments.length > 0
+        ? [
+            `${authors(comments)} commented on pull request #${pullNumber}, and all ${limit} fix rounds are spent. Reply with guidance and Paws hands it to the agent with the comments, or stop the task.\n\n${digest}`,
+            failure === null ? "" : pullCiHandoff(failure),
+          ]
+            .filter((part) => part !== "")
+            .join("\n\n")
+        : pullCiQuestion(db, failure!, limit),
       { reason: "budget_spent", now },
     );
-    settlePullComments(db, batch, "asked", now);
+    settlePullComments(db, comments, "asked", now);
+    if (failure !== null) pullCiAsked(db, { item: current, failure, limit, now });
     return "asked";
   });
   if (step !== "wait" && step !== "done") await caps.flush();

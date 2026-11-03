@@ -5,28 +5,40 @@ import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
   artifactPublicationReady,
+  clearPullCiFailures,
+  getItemPullRequest,
   getLinearSessionGeneration,
   getWorkItem,
+  immediate,
   joinMergeQueue,
   leaveMergeQueue,
   markMergeQueueNotified,
   mergeQueuePosition,
   pendingChangeRequests,
+  pendingPullCiFailures,
   pendingPullComments,
+  recordPullCiFailure,
   wakePullReviews,
   recordCiRound,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
   type CiRound,
   type CiRoundCheck,
+  type PullFeedbackWait,
   type WorkItemRecord,
 } from "../db";
-import { githubQueueLine, githubQueueMerge, readPullReview, type GitHubBinding } from "../github";
+import {
+  githubQueueLine,
+  githubQueueMerge,
+  readPullReview,
+  type GitHubBinding,
+  type PullCi,
+} from "../github";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
 import type { RebaseConflict } from "./budget";
 import { askMergeHelp, rebaseBudgetFor, returnToAgent, type MergeReturnReason } from "./returns";
 import type { MergeStep } from "./step";
-import { githubQueueWatch, type MergeWait } from "./wait";
+import { ciWaitVerification, githubQueueWatch, type MergeWait } from "./wait";
 
 export const REBASE_CONFLICT_INSTRUCTION =
   "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. Rebase this branch onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
@@ -44,15 +56,72 @@ const CI_FIX_SOURCE = {
  * enqueue call: webhook ingestion runs on the same thread, so feedback recorded before that call
  * always wins.
  */
-export function reviewHold(db: Database, itemId: string, now: number): MergeStep | null {
+export function reviewHold(
+  db: Database,
+  itemId: string,
+  now: number,
+  wait: PullFeedbackWait,
+): MergeStep | null {
   if (!feedbackPending(db, itemId)) return null;
-  wakePullReviews(db, itemId, now);
+  wakePullReviews(db, itemId, now, wait);
   return {
     kind: "wait",
     message: "Requested changes go back to the agent before this pull request merges.",
     queued: true,
     reason: "review",
   };
+}
+
+export async function feedbackHold(
+  merge: MergeContext,
+  payload: unknown,
+): Promise<MergeStep | null> {
+  const { db, item, caps } = merge;
+  if (!feedbackPending(db, item.id)) return null;
+  const pull = getItemPullRequest(db, item.id);
+  const head = ciWaitVerification(payload)?.head ?? item.checkpoint?.wipCommit;
+  if (pull !== null && head) await observeHeldCi(merge, { number: pull.pullNumber, head });
+  if (caps.stopped()) return { kind: "obsolete" };
+  return reviewHold(db, item.id, caps.now(), caps.feedbackWait());
+}
+
+export async function observeHeldCi(
+  { db, item, caps }: MergeContext,
+  pull: { number: number; head: string },
+): Promise<void> {
+  const ci = await caps.readPullCi(item, pull).catch((error: unknown): PullCi => {
+    journalCaught(error, "orders.observeHeldCi.readPullCi", item.id);
+    return { state: "unknown", message: "could not read GitHub CI" };
+  });
+  if (caps.stopped() || ci.state === "unknown") return;
+  immediate(db, () => {
+    const current = getWorkItem(db, item.id);
+    if (
+      current === null ||
+      current.version !== item.version ||
+      current.state !== "merge_queue" ||
+      current.cancelRequested ||
+      mergeStopRequested(db, item.id)
+    )
+      return;
+    if (ci.state !== "failed") {
+      clearPullCiFailures(db, item.id, pull.head, caps.now());
+      return;
+    }
+    recordPullCiFailure(
+      db,
+      {
+        itemId: item.id,
+        head: pull.head,
+        pullNumber: pull.number,
+        itemVersion: current.version,
+        failedChecks: ci.failedChecks,
+        checks: ci.checks,
+        observedAt: caps.now(),
+      },
+      caps.feedbackWait(),
+    );
+  });
 }
 
 /** Whether the merge call must not be made now: stopped, artifacts missing, or a review pending. */
@@ -66,7 +135,10 @@ export function mergeHeld({ db, item, caps }: MergeContext): boolean {
 }
 
 function feedbackPending(db: Database, itemId: string): boolean {
-  return pendingChangeRequests(db, itemId).length > 0 || pendingPullComments(db, itemId).length > 0;
+  if (pendingChangeRequests(db, itemId).length > 0 || pendingPullComments(db, itemId).length > 0)
+    return true;
+  const version = getWorkItem(db, itemId)?.version;
+  return pendingPullCiFailures(db, itemId).some((failure) => failure.itemVersion === version);
 }
 
 export type MergeVoice = {
@@ -84,6 +156,8 @@ export type OrderCapabilities = {
   /** Fetch main into the item's worktree. Main's commit, or null without a worktree. */
   fetchMain(item: WorkItemRecord): Promise<string | null>;
   ciFixAttempts(item: WorkItemRecord): number;
+  feedbackWait(): PullFeedbackWait;
+  readPullCi(item: WorkItemRecord, pull: { number: number; head: string }): Promise<PullCi>;
   /**
    * Null when the task's Linear dependencies let it merge. Otherwise the identifiers of the
    * blockers it waits for, empty when none can be named. A held task takes no place in the queue.
@@ -203,6 +277,8 @@ export async function mergeQueueTurn(
       reviewWaitNotice(review, prNumber, pull.url, name),
       reviewWaitKey(db, item, caps, review, pull.head),
     );
+    await observeHeldCi({ db, item, caps }, pull);
+    if (caps.stopped()) return undefined;
     return { message: body, queued: true, reason: "review" };
   }
   joinMergeQueue(db, { itemId: item.id, repository: name, now: caps.now() });
@@ -275,7 +351,7 @@ export async function mergeThroughGitHubQueue(
   // The review job may take the pull request out of GitHub's queue meanwhile; that removal is
   // the review's, not a person's or a failed check's.
   if (result.outcome !== "merged") {
-    const held = reviewHold(db, item.id, caps.now());
+    const held = reviewHold(db, item.id, caps.now(), caps.feedbackWait());
     if (held) return held;
   }
   switch (result.outcome) {

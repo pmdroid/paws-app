@@ -21,6 +21,7 @@ import type { StoredReviewFinding } from "../closeout";
 import type { LeaveMergeQueueResult, ReviewThread } from "../github";
 import { ask, restart } from "./operations";
 import { commentDigest } from "./pull-comments";
+import { currentPullCi, pullCiAsked, pullCiHandoff, pullCiRestarted } from "./pull-ci";
 import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
 import { recordReplyTargets, replyListSection, replyTargets } from "./review-replies";
 import { worktreeBranch } from "./sources";
@@ -184,9 +185,11 @@ export async function handlePullReview(
     const others = comments.filter(
       (comment) => !(comment.source === "inline" && comment.reviewId === review.reviewId),
     );
+    const failure = currentPullCi(db, current, caps.now(), review.pullNumber);
     const digest = [
       reviewDigest(review, threads),
       others.length > 0 ? (commentDigest(others, threads) ?? "") : "",
+      failure === null ? "" : pullCiHandoff(failure),
     ]
       .filter((part) => part !== "")
       .join("\n\n");
@@ -229,6 +232,14 @@ export async function handlePullReview(
       });
       recordReplyTargets(db, current.id, jobKey, targets, caps.now());
       settlePullComments(db, comments, "covered", caps.now());
+      if (failure !== null)
+        postPullFeedback(db, {
+          sessionId: caps.session(current),
+          item: current,
+          key: `${jobKey}:ci`,
+          body: pullCiRestarted(db, { item: current, failure, jobKey, limit, now: caps.now() }),
+          now: caps.now(),
+        });
       if (current.acceptedHead !== null)
         recordReviewEscape(db, {
           triggerKey: jobKey,
@@ -261,6 +272,7 @@ export async function handlePullReview(
       `${reviewer(review)} requested changes on pull request #${review.pullNumber}, and all ${limit} fix rounds are spent. Reply with guidance and Paws hands it to the agent with the review, or stop the task.\n\n${digest}`,
       { reason: "budget_spent", now: caps.now() },
     );
+    if (failure !== null) pullCiAsked(db, { item: current, failure, limit, now: caps.now() });
     settlePullReview(db, reviewId, "asked", caps.now());
     return "asked";
   });
