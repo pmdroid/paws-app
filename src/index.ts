@@ -1553,7 +1553,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       );
       created.jobs.register(RUNNER_EVENT_PRUNE_JOB, (_job, context) =>
         pruneRunnerEvents({ db, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
-          ({ deleted }) => journal(`runner events pruned: ${deleted} events deleted`),
+          ({ deleted }) => {
+            if (deleted) journal(`runner events pruned: ${deleted} events deleted`);
+          },
         ),
       );
       enqueueJobOnce(db, {

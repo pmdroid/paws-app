@@ -1,6 +1,5 @@
 import type { Database } from "bun:sqlite";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
-import { TERMINAL_WORK_ITEM_STATES } from "../core";
 import { immediate } from "../db";
 
 export const RUNNER_EVENT_PRUNE_JOB = "runner-events.prune";
@@ -12,7 +11,7 @@ const PRUNABLE_RUNS = `
   SELECT r.id FROM run r
   WHERE r.status IN ('ended','lost') AND r.updated_at<?1
     AND NOT EXISTS(SELECT 1 FROM work_item i WHERE i.current_run_id=r.id
-      AND i.state NOT IN (${TERMINAL_WORK_ITEM_STATES.map((state) => `'${state}'`).join(",")}))
+      AND i.state NOT IN ('merged','completed','cancelled'))
     AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=r.id AND w.ended_at IS NULL)
     AND NOT EXISTS(SELECT 1 FROM runner_event q
       WHERE q.run_id=r.id
