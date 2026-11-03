@@ -77,6 +77,7 @@ export type {
   SerialMergeInput,
 } from "./merge";
 export { readPullCi } from "./readiness";
+export { readCiLog } from "./ci-log";
 export type { FailedCheck, PassedCheck, PullCi, Readiness } from "./readiness";
 export { createAppTokenProvider, parseGitHubRemote, runGitHubGit } from "./auth";
 export type {

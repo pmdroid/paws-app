@@ -448,12 +448,7 @@ async function readLogTail(
  * does not push the failure out. Timestamps, colour codes and group markers are removed.
  */
 export function logTail(log: string): string {
-  const lines = log
-    // oxlint-disable-next-line no-control-regex -- ANSI colour codes
-    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/, ""))
-    .filter((line) => !/^##\[(?:end)?group\]/.test(line));
+  const lines = cleanLogLines(log);
   const lastError = lines.findLastIndex((line) => line.startsWith("##[error]"));
   const kept = (lastError === -1 ? lines : lines.slice(0, lastError + 1)).slice(-LOG_TAIL_LINES);
   const tail = kept
@@ -461,6 +456,16 @@ export function logTail(log: string): string {
     .replace(/^(?:[ \t]*\n)+/, "")
     .trimEnd();
   return tail.length > LOG_TAIL_CHARS ? tail.slice(tail.length - LOG_TAIL_CHARS) : tail;
+}
+
+const ANSI_COLOUR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, "g");
+
+export function cleanLogLines(log: string): string[] {
+  return log
+    .replace(ANSI_COLOUR, "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/, ""))
+    .filter((line) => !/^##\[(?:end)?group\]/.test(line));
 }
 
 const protectionSchema = z.object({
