@@ -119,6 +119,8 @@ import {
   type QuestionDetailResponse,
   type QuestionListResponse,
   type ItemState,
+  type MergeQueueIssue,
+  type MergeQueueResponse,
   type OverviewResponse,
   type RunState,
   type StatusActivity,
@@ -223,6 +225,7 @@ export function createLiveStatusProvider(
   issues(): IssueListResponse;
   issue(id: string): IssueDetailResponse | null;
   overview(): OverviewResponse;
+  mergeQueue(): MergeQueueResponse;
   questions(): QuestionListResponse;
   question(id: string): QuestionDetailResponse | null;
   alias(kind: AliasKind, id: string): string | null;
@@ -230,6 +233,9 @@ export function createLiveStatusProvider(
   return {
     overview() {
       return readOverview(db, options);
+    },
+    mergeQueue() {
+      return readMergeQueue(db, options);
     },
     questions() {
       return readQuestionList(db, options);
@@ -384,6 +390,59 @@ function readQuestionList(db: Database, options: LiveStatusOptions): QuestionLis
 
 export function emptyQuestionList(now = new Date()): QuestionListResponse {
   return { source: "live", generatedAt: now.toISOString(), questions: [] };
+}
+
+function readMergeQueue(db: Database, options: LiveStatusOptions): MergeQueueResponse {
+  const now = options.now?.() ?? new Date();
+  const generatedAt = now.toISOString();
+  const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
+  const visible = listWorkItemsByStates(db, WORK_ITEM_STATES)
+    .filter(
+      (record) =>
+        options.sessionIds === undefined ||
+        (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
+    )
+    .sort((left, right) => compareNewest(left, right, facts));
+  const records = listedRecords(db, visible, facts, now.getTime());
+  const rows = records.length
+    ? listOutbox(db).filter(
+        (row) =>
+          options.sessionIds === undefined ||
+          (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
+      )
+    : [];
+  const issues = records.map((record): MergeQueueIssue => ({
+    id: publicId(record),
+    title: textOr(record.title, publicId(record)),
+    owner: ownerName(facts.get(record.id)),
+    project: itemProject(facts.get(record.id)),
+    pr: pullRequest(record, rows, options.project?.repo),
+  }));
+  const merge = records.length
+    ? mergeQueueFor(db, {
+        records: visible,
+        items: issues,
+        jobs: listJobs(db),
+        queues: listMergeQueues(db),
+        generatedAt,
+        now: now.getTime(),
+        repo: options.project?.repo,
+      })
+    : { mergeQueue: [], mergeHistory: [] };
+  const listed = new Set(issues.map((issue) => issue.id));
+  const entries = merge.mergeQueue.filter((entry) => listed.has(entry.itemId));
+  const history = (merge.mergeHistory ?? []).filter((entry) => listed.has(entry.itemId));
+  const shown = new Set([...entries, ...history].map((entry) => entry.itemId));
+  return {
+    source: "live",
+    generatedAt,
+    project: projectOf(visible, options.project),
+    entries,
+    history,
+    issues: issues.filter((issue) => shown.has(issue.id)),
+    pushOutages: readPushOutages(db).pushOutages ?? [],
+    policyRunnerWarnings: readPolicyRunnerWarnings(db).policyRunnerWarnings ?? [],
+  };
 }
 
 function toIssueDetail(detail: StatusItemDetail): IssueDetailResponse {
@@ -591,6 +650,22 @@ export function emptyLiveSnapshot(
   project?: LiveStatusOptions["project"],
 ): StatusSnapshot {
   return { ...emptyBase(now, project), verdicts: [] };
+}
+
+export function emptyMergeQueue(
+  now = new Date(),
+  project?: LiveStatusOptions["project"],
+): MergeQueueResponse {
+  return {
+    source: "live",
+    generatedAt: now.toISOString(),
+    project: projectOf([], project),
+    entries: [],
+    history: [],
+    issues: [],
+    pushOutages: [],
+    policyRunnerWarnings: [],
+  };
 }
 
 export function emptyIssueList(
@@ -2022,7 +2097,7 @@ function impliedDecision(state: WorkItemRecord["state"]): VerdictDecision | null
 
 type MergeQueueInput = {
   records: readonly WorkItemRecord[];
-  items: readonly StatusItem[];
+  items: readonly Pick<StatusItem, "id" | "pr">[];
   jobs: readonly Job[];
   queues: readonly MergeQueuePosition[];
   generatedAt: string;
@@ -2141,7 +2216,10 @@ function compareRepositories(left: string | null, right: string | null): number 
   return left.localeCompare(right);
 }
 
-function aheadLabel(record: WorkItemRecord, items: ReadonlyMap<string, StatusItem>): string {
+function aheadLabel(
+  record: WorkItemRecord,
+  items: ReadonlyMap<string, Pick<StatusItem, "pr">>,
+): string {
   const pr = items.get(publicId(record))?.pr;
   return pr ? `#${pr.number}` : publicId(record);
 }

@@ -1348,6 +1348,66 @@ export function parseQuestionDetailResponse(input: unknown) {
   );
 }
 
+export const MERGE_QUEUE_API_PATH = "/api/merge-queue";
+
+export interface MergeQueueIssue {
+  id: string;
+  title: string;
+  owner: string | null;
+  project: { id: string; name: string } | null;
+  pr: StatusPullRequest | null;
+}
+
+export interface MergeQueueResponse {
+  source: StatusSource;
+  generatedAt: string;
+  project: StatusProject;
+  entries: StatusMergeEntry[];
+  history: StatusMergeOutcome[];
+  issues: MergeQueueIssue[];
+  pushOutages: StatusPushOutage[];
+  policyRunnerWarnings: StatusPolicyRunnerWarning[];
+}
+
+export type MergeQueueParseResult =
+  | { ok: true; response: MergeQueueResponse }
+  | { ok: false; error: string };
+
+export function parseMergeQueueResponse(input: unknown): MergeQueueParseResult {
+  return parsed(
+    () => {
+      const path = "mergeQueue";
+      const body = object(input, path);
+      const head = readResourceHead(body, path);
+      const list = <T>(key: string, read: (entry: unknown, at: string) => T) =>
+        array(body, key, path).map((entry, index) => read(entry, `${path}.${key}[${index}]`));
+      return {
+        ...head,
+        entries: array(body, "entries", path).map((entry, index) =>
+          readMerge(entry, index, head.project.repo),
+        ),
+        history: list("history", (entry, at) => readMergeOutcome(entry, at, head.project.repo)),
+        issues: list("issues", readMergeQueueIssue),
+        pushOutages: list("pushOutages", readPushOutage),
+        policyRunnerWarnings: list("policyRunnerWarnings", readPolicyRunnerWarning),
+      };
+    },
+    "contract.parseMergeQueueResponse",
+    "Invalid merge queue",
+  );
+}
+
+function readMergeQueueIssue(input: unknown, path: string): MergeQueueIssue {
+  const body = object(input, path);
+  return {
+    id: text(body, "id", path),
+    title: text(body, "title", path),
+    owner: nullableText(body, "owner", path),
+    project: readItemProject(body.project, `${path}.project`),
+    pr: readPr(body.pr, `${path}.pr`),
+  };
+}
+
 /** The list's summary of a full verdict: decision, head, and each check's id, kind and state. */
 export function verdictSummary(verdict: StatusVerdict): StatusVerdictSummary {
   return {
