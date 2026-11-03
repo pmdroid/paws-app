@@ -2,6 +2,16 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-03: The status snapshot API is removed
+
+### Removed
+
+- **`GET /api/status` is gone.** So are its `slices` query, `GET /api/status/items/<id>` and the item's check log route; each answers 404. A script that read them reads the page resource it needs instead: `/api/overview`, `/api/issues`, `/api/issues/<id>` (and its `/attempts/<n>/checks/<check id>/log`), `/api/questions`, `/api/merge-queue` or `/api/evidence`. Old `/status` page links still redirect to `/dashboard`.
+
+### Changed
+
+- The per-minute response-size journal line is now `dashboard payload minute=… largest_bytes=… path=… responses=…`. Search for `dashboard payload` instead of `status payload`.
+
 ## 2026-11-01: The command reviewer gets the issue brief and earlier findings
 
 ### Changed
