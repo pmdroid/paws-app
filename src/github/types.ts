@@ -16,6 +16,11 @@ export const ACTIONS_LOG_PERMISSIONS = {
   metadata: "read",
 } as const;
 
+export const ACTIONS_RERUN_PERMISSIONS = {
+  actions: "write",
+  metadata: "read",
+} as const;
+
 export const UPSTREAM_MAIN_REF = "refs/paws/upstream-main";
 
 export type GitHubMethod = "GET" | "POST" | "PUT" | "PATCH";

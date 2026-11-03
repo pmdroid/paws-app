@@ -5,6 +5,7 @@ import { createFetchGitHubClient } from "./client";
 import { assertScopedToken, mintInstallationToken } from "./token";
 import {
   ACTIONS_LOG_PERMISSIONS,
+  ACTIONS_RERUN_PERMISSIONS,
   INSTALLATION_PERMISSIONS,
   GitHubTokenError,
   type GitHubClient,
@@ -86,7 +87,7 @@ describe("GitHub App tokens", () => {
           now,
           "actions",
         ),
-      ).toThrow("Actions log token grants unexpected permissions");
+      ).toThrow("Actions token grants unexpected permissions");
     expect(() =>
       assertScopedToken(
         tokenBody("ghs_wide", { permissions: { ...INSTALLATION_PERMISSIONS, actions: "read" } }),
@@ -95,6 +96,32 @@ describe("GitHub App tokens", () => {
         now,
       ),
     ).toThrow("installation token grants unexpected permission actions");
+  });
+
+  test("the CI re-run token holds only Actions write and metadata read", () => {
+    const now = new Date();
+    expect(
+      assertScopedToken(
+        tokenBody("ghs_rerun", { permissions: ACTIONS_RERUN_PERMISSIONS }),
+        "pmdroid",
+        "paws-demo",
+        now,
+        "actions_write",
+      ).token,
+    ).toBe("ghs_rerun");
+    for (const permissions of [
+      { ...ACTIONS_RERUN_PERMISSIONS, actions: "read" },
+      { ...ACTIONS_RERUN_PERMISSIONS, contents: "write" },
+    ])
+      expect(() =>
+        assertScopedToken(
+          tokenBody("ghs_rerun", { permissions }),
+          "pmdroid",
+          "paws-demo",
+          now,
+          "actions_write",
+        ),
+      ).toThrow("Actions token grants unexpected permissions");
   });
 
   test("requests one repository and refuses a token that is too wide or too long-lived", async () => {

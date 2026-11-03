@@ -311,23 +311,39 @@ export function remoteCiLog(
   return async (job) => {
     const requestId = randomUUID();
     emit({ type: "ci_log", requestId, ...(job === undefined ? {} : { job }) });
-    const response = (await answer(requestId, signal)).answer;
-    let decoded: { answer?: unknown; error?: unknown };
-    try {
-      decoded = JSON.parse(response) as { answer?: unknown; error?: unknown };
-    } catch {
-      throw new Error("Paws sent an invalid CI log answer");
-    }
-    if (typeof decoded.error === "string") throw new Error(decoded.error);
-    if (typeof decoded.answer !== "string") throw new Error("Paws sent an invalid CI log answer");
-    return decoded.answer;
+    return decodeHostAnswer((await answer(requestId, signal)).answer, "CI log");
   };
+}
+
+export function remoteCiRerun(
+  emit: (event: { type: "ci_rerun"; requestId: string; reason: string }) => void,
+  answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
+  signal: AbortSignal,
+): (reason: string) => Promise<string> {
+  return async (reason) => {
+    const requestId = randomUUID();
+    emit({ type: "ci_rerun", requestId, reason });
+    return decodeHostAnswer((await answer(requestId, signal)).answer, "CI re-run");
+  };
+}
+
+function decodeHostAnswer(response: string, what: string): string {
+  let decoded: { answer?: unknown; error?: unknown };
+  try {
+    decoded = JSON.parse(response) as { answer?: unknown; error?: unknown };
+  } catch {
+    throw new Error(`Paws sent an invalid ${what} answer`);
+  }
+  if (typeof decoded.error === "string") throw new Error(decoded.error);
+  if (typeof decoded.answer !== "string") throw new Error(`Paws sent an invalid ${what} answer`);
+  return decoded.answer;
 }
 
 export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
   | { type: "closeout_policy"; requestId: string; offset?: number; hash?: string }
   | { type: "ci_log"; requestId: string; job?: string }
+  | { type: "ci_rerun"; requestId: string; reason: string }
   | { type: "acp"; event: AcpEvent }
   | {
       type: "question";
@@ -1052,6 +1068,15 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.ciLog && options.answer
         ? {
             ciLog: remoteCiLog(
+              emit,
+              options.answer,
+              options.signal ?? new AbortController().signal,
+            ),
+          }
+        : {}),
+      ...(command.type === "run" && command.ciRerun && options.answer
+        ? {
+            ciRerun: remoteCiRerun(
               emit,
               options.answer,
               options.signal ?? new AbortController().signal,

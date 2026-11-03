@@ -95,7 +95,7 @@ function fixRounds(item: Pick<StatusItem, "timeline">): number {
 }
 
 function lastFrom(item: Pick<StatusItem, "timeline">): JourneyStepId {
-  const last = item.timeline?.at(-1);
+  const last = item.timeline?.findLast((event) => event.kind !== "ci_rerun");
   return (last && FROM_STEP[last.from]) ?? "implementing";
 }
 
@@ -106,7 +106,9 @@ function journeyBase(
 ): Omit<Journey, "pill" | "review"> {
   const fix = currentFix(item);
   const rounds = fixRounds(item);
-  const last = [...(item.timeline ?? [])].reverse().find((event) => FIXES[event.reason ?? ""]);
+  const last = [...(item.timeline ?? [])]
+    .reverse()
+    .find((event) => event.kind === "restart" && FIXES[event.reason ?? ""]);
   const fixLabel = fix ? FIXES[fix]!.label : last ? FIXES[last.reason!]!.label : null;
   const base = { fixLabel, fixRounds: rounds };
   const doing = doingLabel(item);

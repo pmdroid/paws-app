@@ -77,6 +77,7 @@ export function closeoutPrompt(): string {
     "If you cannot fix it, call ask_team with the error and what you tried.",
     "Reviews stay in required and are not pending. An independent reviewer runs those.",
     "When CI failed, call get_ci_log to list the failed jobs and read their logs before changing code.",
+    "If a failed job is outside your change and looks flaky, call rerun_ci once with your evidence instead of asking.",
   ].join(" ");
 }
 

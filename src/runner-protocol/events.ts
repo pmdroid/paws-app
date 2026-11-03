@@ -158,6 +158,7 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
       .optional(),
   }),
   z.strictObject({ type: z.literal("ci_log"), job: z.string().min(1).max(256).optional() }),
+  z.strictObject({ type: z.literal("ci_rerun"), reason: z.string().min(1).max(2000) }),
   RunnerPreviewEventSchema,
   z.strictObject({ type: z.literal("completed") }),
   z.strictObject({ type: z.literal("failed"), message: z.string().max(16384) }),

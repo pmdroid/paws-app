@@ -200,6 +200,7 @@ export const RunnerCommandSchema = z
       checkpoint: z.literal(false).optional(),
       closeoutRulesFirst: z.literal(true).optional(),
       ciLog: z.literal(true).optional(),
+      ciRerun: z.literal(true).optional(),
       resumeSessionId: id.optional(),
       livePreview: RunnerLivePreviewSchema.optional(),
       /** The sealed session snapshot to unpack before the agent starts, when the run moved. */
