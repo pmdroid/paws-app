@@ -127,10 +127,10 @@ for (const delivered of [true, false, "completed"] as const)
         await orchestrator.onLinearEvent({ ...event("prompted", null), signal: "stop" });
       } else {
         expect(resumes).toHaveLength(1);
-        expect(tracker.progress.at(-1)).toMatchObject({
-          kind: "thought",
-          body: "Received your update.",
-        });
+        expect(tracker.progress.slice(-2)).toMatchObject([
+          { kind: "thought", body: "Received your update." },
+          { kind: "thought", body: "Starting on your request with a fresh 3-hour time limit." },
+        ]);
       }
       await running;
     } finally {
