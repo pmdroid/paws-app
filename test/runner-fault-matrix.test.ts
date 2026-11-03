@@ -42,6 +42,7 @@ type Fault =
   | "busy"
   | "unpaired"
   | "usage-limit"
+  | "api-error"
   | "preparation-usage-limit"
   | "linear-503"
   | "restarted"
@@ -207,6 +208,14 @@ test("a usage limit is waited out inside failover and the task reaches Closeout 
     result.thoughts.some((body) => body.includes("reached its usage limit")),
     result.detail,
   ).toBe(true);
+}, 60_000);
+
+test("a temporary agent API error is retried and the task reaches Closeout", async () => {
+  const result = await runRemoteFault("api-error");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  expect(result.retries, result.detail).toEqual([1]);
 }, 60_000);
 
 test("a usage limit while the implementer is prepared posts one thought naming the agent and the reset time", async () => {
@@ -503,6 +512,11 @@ async function runRemoteFault(fault: Fault) {
     });
     const limited = fault === "usage-limit" && runner.faulty;
     if (limited) runner.faultedAttempts++;
+    const outage = fault === "api-error" && runner.faulty;
+    if (outage) {
+      runner.faultedAttempts++;
+      runner.faulty = false;
+    }
     results.submit({
       runnerId,
       runId: command.runId,
@@ -514,7 +528,14 @@ async function runRemoteFault(fault: Fault) {
             stopReason: "error",
             errorMessage: "You've hit your session limit. Retry-After: 120",
           }
-        : { ...receipt(command), candidateSha, closeoutReport: passedReport(candidateSha) },
+        : outage
+          ? {
+              ...receipt(command),
+              stopReason: "error",
+              errorMessage:
+                "Internal error: API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment.",
+            }
+          : { ...receipt(command), candidateSha, closeoutReport: passedReport(candidateSha) },
     });
   }
   const loop = (async () => {
