@@ -176,7 +176,11 @@ function accountMarkup(
     account.bindings.length
       ? `<ul class="flex min-w-0 flex-col gap-3" role="list" aria-label="Runners for ${esc(account.label)}">${account.bindings.map((binding) => bindingMarkup(account, binding, data.canManage)).join("")}</ul>`
       : '<p class="muted">No runner is linked. Link a runner, then its owner signs in from Runners.</p>'
-  }${link}${controls}</li>`;
+  }${
+    link || controls
+      ? `<details class="flex min-w-0 flex-col gap-2"${confirming ? " open" : ""}><summary>Manage ${esc(account.label)}</summary>${link}${controls}</details>`
+      : ""
+  }</li>`;
 }
 
 export function previewMarkup(view: AccountSettingsView): string {
