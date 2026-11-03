@@ -45,7 +45,7 @@ A task installs at most 32 runtimes. Paws skips the rest and says so in Linear.
 
 ## What Paws ignores
 
-Paws sends the runner only the tool and version list, never the file. `[env]`, `[hooks]`, `[tasks]`, `[settings]`, `[plugins]`, and templated values do not run. mise on the runner reads no repository or global config. The task's `PATH` gets each version's own `bin` folder, not mise shims.
+Paws sends the runner only the tool and version list, never the file. `[env]`, `[hooks]`, `[tasks]`, `[settings]`, `[plugins]`, and templated values do not run. mise on the runner reads no repository or global config. The task's `PATH` gets the folders `mise bin-paths` reports for each version (some tools keep their binary in a nested folder rather than `bin`), or the version's `bin` folder when mise reports none, never mise shims. The order of the runtime list decides which version comes first.
 
 ## On the runner
 

@@ -157,8 +157,24 @@ async function installLocked(
                   where.kind === "failed" ? where.detail : "mise where printed no usable path."
                 }`,
         };
+      const reported = await mise(["bin-paths", label(runtime)]);
+      const lines =
+        reported.kind === "ok"
+          ? reported.stdout
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean)
+          : [];
+      const unusable = lines.find((path) => !isAbsolute(path) || path.includes(delimiter));
+      if (unusable !== undefined)
+        return {
+          ok: false,
+          durationMs: Date.now() - context.started,
+          runtime,
+          message: `Paws could not find the installed runtime ${label(runtime)}: mise bin-paths printed an unusable path.`,
+        };
       installed.push(runtime);
-      binPaths.push(join(dir, "bin"));
+      binPaths.push(...(lines.length ? lines : [join(dir, "bin")]));
       // A later `npm:`, `cargo:` or `pipx:` install finds the node, rust or python listed before it.
       env.PATH = [...binPaths, base].join(delimiter);
     }
