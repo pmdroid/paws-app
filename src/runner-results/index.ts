@@ -5,11 +5,16 @@ import { immediate, recordRunnerAgentUsage, runnerLeaseCutoff } from "../db";
 import {
   RUNNER_RESULT_BODY_LIMIT,
   RunnerResultSchema,
-  RunnerEventSchema,
   runnerAccountEchoed,
   type RunnerResult,
 } from "../runner-protocol";
-import { RunnerWorkFencedError, runnerFailureStatus, type RunnerWork } from "../runner-work";
+import {
+  RUNNER_EVENT_COLUMNS,
+  RunnerWorkFencedError,
+  runnerFailureStatus,
+  type RunnerWork,
+  type StoredRunnerEvent,
+} from "../runner-work";
 
 const integer = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
@@ -111,14 +116,12 @@ export function createRunnerResults(options: {
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(after);
       current(runId, generation);
       return db
-        .query<{ sequence: number; payload: string }, [string, number, number]>(
-          "SELECT sequence,payload FROM runner_event WHERE run_id=? AND generation=? AND sequence>? ORDER BY sequence LIMIT 64",
+        .query<StoredRunnerEvent, [string, number, number]>(
+          `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
+           WHERE run_id=? AND generation=? AND sequence>? ORDER BY sequence LIMIT 64`,
         )
         .all(runId, generation, after)
-        .map((row) => ({
-          sequence: row.sequence,
-          event: RunnerEventSchema.parse(JSON.parse(row.payload)),
-        }));
+        .map((row) => ({ sequence: row.sequence, event: work.openEvent(row) }));
     },
     /** The stored answer to a runner event, or null before Paws answered it. */
     answered(runId: string, generation: number, sequence: number): string | null {
@@ -140,13 +143,14 @@ export function createRunnerResults(options: {
       immediate(db, () => {
         current(input.runId, input.generation);
         const question = db
-          .query<{ payload: string }, [string, number, number]>(
-            "SELECT payload FROM runner_event WHERE run_id=? AND generation=? AND sequence=?",
+          .query<StoredRunnerEvent, [string, number, number]>(
+            `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
+             WHERE run_id=? AND generation=? AND sequence=?`,
           )
           .get(input.runId, input.generation, input.sequence);
         if (
           !question ||
-          !["question", "artifact", "closeout_policy"].includes(JSON.parse(question.payload).type)
+          !["question", "artifact", "closeout_policy"].includes(work.openEvent(question).type)
         )
           throw new Error("Runner question is unavailable.");
         const existing = db
@@ -182,7 +186,7 @@ export function createRunnerResults(options: {
            LEFT JOIN runner_question_answer a
              ON a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence
            WHERE e.run_id=? AND e.generation=? AND a.sequence IS NULL
-             AND json_extract(e.payload, '$.type') IN ('question','artifact','closeout_policy')
+             AND e.type IN ('question','artifact','closeout_policy')
            ORDER BY e.sequence LIMIT 1`,
         )
         .get(input.runId, input.generation);

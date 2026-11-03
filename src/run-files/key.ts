@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { readSecretFile, writeSecretFile } from "../credentials";
+import { loadSecretKey } from "../credentials";
 import { RUN_FILE_KINDS, type RunFileKind } from "./kinds";
 
 /**
@@ -7,19 +7,7 @@ import { RUN_FILE_KINDS, type RunFileKind } from "./kinds";
  * created on first use. It never leaves Paws.
  */
 export function loadRunFileKey(kind: RunFileKind, path: string): Buffer {
-  let text = readSecretFile(path);
-  if (text === null) {
-    try {
-      writeSecretFile(path, randomBytes(32).toString("base64"), true);
-    } catch (error) {
-      if (readSecretFile(path) === null) throw error;
-    }
-    text = readSecretFile(path);
-  }
-  const key = Buffer.from(text ?? "", "base64");
-  if (key.length !== 32 || key.toString("base64") !== text)
-    throw new Error(`${RUN_FILE_KINDS[kind].title} key is invalid.`);
-  return key;
+  return loadSecretKey(path, RUN_FILE_KINDS[kind].title);
 }
 
 /** Recorded with each chunk, so a chunk sealed under another key is refused before decrypting. */

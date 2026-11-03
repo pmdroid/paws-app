@@ -127,12 +127,9 @@ export function createRemoteHandover(options: {
               { type: string; handedOver: number | null; reason: string | null },
               [string, number, number]
             >(
-              `SELECT json_extract(payload,'$.type') AS type,
-               json_extract(payload,'$.handedOver') AS handedOver,
-               json_extract(payload,'$.reason') AS reason FROM runner_event
+              `SELECT type,handed_over AS handedOver,reason FROM runner_event
                WHERE run_id=? AND generation=? AND sequence>?
-               AND json_extract(payload,'$.type') IN ('handover','handover_interrupted')
-               ORDER BY sequence`,
+               AND type IN ('handover','handover_interrupted') ORDER BY sequence`,
             )
             .all(request.runId, request.generation, request.after);
       const failure = events.find((event) => event.type === "handover" && !event.handedOver);

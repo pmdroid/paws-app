@@ -14,7 +14,7 @@ import {
   pawsAliveAt,
   runnerLeaseCutoff,
 } from "../db";
-import type { KeyObject } from "node:crypto";
+import { randomBytes, type KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   getLinearSessionAccess,
@@ -58,6 +58,13 @@ import {
 } from "../runner-protocol";
 import { workspaceSecret, workspaceTokenHash } from "../workspace";
 import { findOpenQuestion } from "../questions";
+import {
+  openRunnerEvent,
+  payloadSha256,
+  RUNNER_EVENT_COLUMNS,
+  sealRunnerEvent,
+  type StoredRunnerEvent,
+} from "./events";
 
 export { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
@@ -96,9 +103,11 @@ export function createRunnerWork(options: {
   db: Database;
   keyId: string;
   privateKey: KeyObject;
+  eventKey?: Buffer;
   now?: () => number;
 }) {
   const { db } = options;
+  const eventKey = options.eventKey ?? randomBytes(32);
   const now = options.now ?? Date.now;
   function assignment(runId: string) {
     return db
@@ -803,8 +812,9 @@ export function createRunnerWork(options: {
       return immediate(db, () => {
         const at = now();
         const saved = db
-          .query<{ payload: string }, [string, number, number]>(
-            "SELECT payload FROM runner_event WHERE run_id=? AND generation=? AND sequence=?",
+          .query<StoredRunnerEvent, [string, number, number]>(
+            `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
+             WHERE run_id=? AND generation=? AND sequence=?`,
           )
           .get(input.runId, input.generation, input.sequence);
         const work = authorized(input, saved !== null);
@@ -816,23 +826,37 @@ export function createRunnerWork(options: {
         )
           throw new Error("Response task event is not authorized");
         if (saved) {
-          if (saved.payload !== event) throw new Error("Event replay changed its payload.");
+          if ((saved.payloadSha256 ?? payloadSha256(saved.payload)) !== payloadSha256(event))
+            throw new Error("Event replay changed its payload.");
           return { duplicate: true };
         }
         if (input.sequence !== work.lastSequence + 1) throw new Error("Event sequence has a gap.");
-        db.run("INSERT INTO runner_event VALUES(?,?,?,?,?)", [
-          input.runId,
-          input.generation,
-          input.sequence,
-          event,
-          at,
-        ]);
+        const sealed = sealRunnerEvent(eventKey, input, event);
+        db.run(
+          `INSERT INTO runner_event(run_id,generation,sequence,payload,received_at,key_id,
+           payload_sha256,type,handed_over,reason) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+          [
+            input.runId,
+            input.generation,
+            input.sequence,
+            sealed.payload,
+            at,
+            sealed.keyId,
+            sealed.payloadSha256,
+            sealed.type,
+            sealed.handedOver,
+            sealed.reason,
+          ],
+        );
         db.run("UPDATE runner_work SET last_sequence=? WHERE run_id=?", [
           input.sequence,
           input.runId,
         ]);
         return { duplicate: false };
       });
+    },
+    openEvent(row: StoredRunnerEvent): RunnerEvent {
+      return openRunnerEvent(db, eventKey, row);
     },
     authorize(input: { runnerId: string; runId: string; generation: number; token: string }) {
       const work = authorized(input);
