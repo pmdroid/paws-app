@@ -1,4 +1,3 @@
-import { afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -12,4 +11,4 @@ for (const role of ["AUTHOR", "COMMITTER"]) {
   process.env[`GIT_${role}_NAME`] = "Paws Test";
   process.env[`GIT_${role}_EMAIL`] = "test@paws.invalid";
 }
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+process.on("exit", () => rmSync(root, { recursive: true, force: true }));

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   advanceLinearSessionGeneration,
@@ -7,18 +7,20 @@ import {
   bindLinearSessionTask,
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
+  enrollRunner,
   insertQueuedItem,
   migrate,
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
 } from "../../src/db";
-import { readSecretFile } from "../../src/credentials";
-import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
-import { openRunnerDaemon } from "../../src/runner-daemon";
+import { writeSecretFile } from "../../src/credentials";
+import { openRunnerCoordinator } from "../../src/runner-coordinator";
+import { describeRunnerCertificate } from "../../src/runner-identity";
 import { verifyRunnerCommand, type RunnerHelperResult } from "../../src/runner-protocol";
-import { createPublicKey } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { request as https } from "node:https";
+import { RUNNER_AUTHORITY, RUNNER_IDENTITIES, SERVER_TLS } from "../fixtures/runner-identity";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
 
 export async function probeRunnerSessionHelpers(
@@ -27,37 +29,19 @@ export async function probeRunnerSessionHelpers(
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const identity = join(root, "identity");
-  await initializeRunnerCoordinator(identity);
-  const keyPath = join(root, "server.key");
-  const certPath = join(root, "server.pem");
-  const generated = Bun.spawnSync(
-    [
-      "/usr/bin/openssl",
-      "req",
-      "-x509",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:P-256",
-      "-nodes",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-days",
-      "1",
-      "-subj",
-      "/CN=localhost",
-      "-config",
-      "/dev/null",
-      "-addext",
-      "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    ],
-    { env: { PATH: "/usr/bin:/bin", HOME: root }, stdout: "ignore", stderr: "pipe" },
+  mkdirSync(identity, { mode: 0o700 });
+  writeSecretFile(join(identity, "runner-authority.json"), JSON.stringify(RUNNER_AUTHORITY), true);
+  const { privateKey } = generateKeyPairSync("ed25519");
+  writeSecretFile(
+    join(identity, "runner-command-key.pem"),
+    privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    true,
   );
-  assert.equal(generated.exitCode, 0, generated.stderr.toString());
-  chmodSync(keyPath, 0o600);
-  const tls = { key: readFileSync(keyPath, "utf8"), cert: readFileSync(certPath, "utf8") };
+  const signingKey = createPublicKey(privateKey).export({ type: "spki", format: "pem" }).toString();
+  const trustedKeys = new Map([
+    [createHash("sha256").update(signingKey).digest("hex"), createPublicKey(signingKey)],
+  ]);
+  const tls = SERVER_TLS;
   const dbPath = join(root, "paws.db");
   let db = openDatabase(dbPath);
   migrate(db);
@@ -98,35 +82,22 @@ export async function probeRunnerSessionHelpers(
     port: 0,
   });
   const runnerPort = coordinator.port;
-  const browser = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    tls,
-    fetch: (input) => coordinator.hostEnrollment(input),
-  });
-  const daemonOptions = {
-    root: join(root, "daemon"),
-    controlPlaneUrl: `https://127.0.0.1:${browser.port}`,
-    runnerApiUrl: `https://127.0.0.1:${runnerPort}`,
-    serverCa: tls.cert,
-    allowedRepositories: [],
-    now: () => now,
-  };
-  let daemon = openRunnerDaemon(daemonOptions);
-  try {
-    const enrollment = coordinator.control.createEnrollment(principal, {
-      name: "Session helper runner",
+  function pair(name: string, runner: (typeof RUNNER_IDENTITIES)[number]) {
+    const { token } = coordinator.control.createEnrollment(principal, { name });
+    const runnerId = workspaceId(now);
+    enrollRunner(db, {
+      tokenHash: workspaceTokenHash(token),
+      runnerId,
+      name,
+      certificate: describeRunnerCertificate(runner.certificate),
+      now,
     });
-
-    const paired = await daemon.enroll("Session helper runner", enrollment.token);
-    if (paired.phase !== "paired") throw new Error("Runner enrollment failed");
-    coordinator.control.setStatus(principal, paired.runnerId, "active");
-    assert.equal(paired.phase, "paired");
-    if (paired.phase !== "paired") throw new Error("Missing runner identity");
-    const localIdentity = JSON.parse(
-      readSecretFile(join(daemonOptions.root, "identity/state.json"))!,
-    );
-    const key = readSecretFile(join(daemonOptions.root, "identity/runner-key.pem"))!;
+    coordinator.control.setStatus(principal, runnerId, "active");
+    return runnerId;
+  }
+  try {
+    const runnerId = pair("Session helper runner", RUNNER_IDENTITIES[0]);
+    const { key, certificate } = RUNNER_IDENTITIES[0];
     async function call(path: string, value?: unknown) {
       return await new Promise<{ status: number; body: Record<string, unknown> }>(
         (resolve, reject) => {
@@ -138,7 +109,7 @@ export async function probeRunnerSessionHelpers(
               method: value === undefined ? "GET" : "POST",
               ca: tls.cert,
               key,
-              cert: localIdentity.certificate,
+              cert: certificate,
               agent: false,
               headers: value === undefined ? {} : { "content-type": "application/json" },
             },
@@ -170,7 +141,7 @@ export async function probeRunnerSessionHelpers(
       observedAtMs: now,
     });
     const input = {
-      runnerId: paired.runnerId,
+      runnerId: runnerId,
       sessionId: "session",
       purpose: "classify" as const,
       profile: { agent: "codex" as const, model: null },
@@ -184,14 +155,9 @@ export async function probeRunnerSessionHelpers(
     assert(Array.isArray(queued.body.commands));
     assert.equal(queued.body.commands.length, 1);
     const verified = verifyRunnerCommand(queued.body.commands[0], {
-      trustedKeys: new Map(
-        localIdentity.signingKeys.map((entry: { keyId: string; publicKeyPem: string }) => [
-          entry.keyId,
-          createPublicKey(entry.publicKeyPem),
-        ]),
-      ),
-      runnerId: paired.runnerId,
-      workspaceId: paired.workspaceId,
+      trustedKeys,
+      runnerId: runnerId,
+      workspaceId: workspace.id,
       now,
       allowedRepositories: [],
       claimCommand: () => true,
@@ -291,7 +257,7 @@ export async function probeRunnerSessionHelpers(
     db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/app", "team"]);
     const workCommand = {
       id: workspaceId(),
-      runnerId: paired.runnerId,
+      runnerId: runnerId,
       workspaceId: workspace.id,
       issuedAt: now,
       expiresAt: now + 120_000,
@@ -340,7 +306,7 @@ export async function probeRunnerSessionHelpers(
       /authority changed/,
     );
     const fenced = coordinator.helpers.dispatch(input);
-    db.run("UPDATE runner SET fence=fence+1 WHERE id=?", [paired.runnerId]);
+    db.run("UPDATE runner SET fence=fence+1 WHERE id=?", [runnerId]);
     assert.throws(() => coordinator.helpers.result(fenced.command.id), /identity changed/);
     coordinator.helpers.finish(fenced.command.id);
     const removed = coordinator.helpers.dispatch(input);
@@ -365,39 +331,16 @@ export async function probeRunnerSessionHelpers(
       },
     );
     coordinator.helpers.finish(removed.command.id);
-    const revocationDaemon = openRunnerDaemon({
-      ...daemonOptions,
-      root: join(root, "daemon-revocation"),
+    const replacement = pair("Revoked helper runner", RUNNER_IDENTITIES[1]);
+    const pending = coordinator.helpers.dispatch({ ...input, runnerId: replacement });
+    coordinator.control.setStatus(principal, replacement, "revoked");
+    assert.throws(() => coordinator.helpers.current(pending.command.id), /identity is unavailable/);
+    assert.throws(() => coordinator.helpers.commands(replacement), /identity is unavailable/);
+    observe("administrative runner revocation prevents helper result acceptance", true, {
+      revoked: true,
     });
-    try {
-      const challenge = coordinator.control.createEnrollment(principal, {
-        name: "Revoked helper runner",
-      });
-
-      const replacement = await revocationDaemon.enroll("Revoked helper runner", challenge.token);
-      if (replacement.phase !== "paired") throw new Error("Runner enrollment failed");
-      coordinator.control.setStatus(principal, replacement.runnerId, "active");
-      if (replacement.phase !== "paired") throw new Error("Missing paired runner");
-      const pending = coordinator.helpers.dispatch({ ...input, runnerId: replacement.runnerId });
-      coordinator.control.setStatus(principal, replacement.runnerId, "revoked");
-      assert.throws(
-        () => coordinator.helpers.current(pending.command.id),
-        /identity is unavailable/,
-      );
-      assert.throws(
-        () => coordinator.helpers.commands(replacement.runnerId),
-        /identity is unavailable/,
-      );
-      observe("administrative runner revocation prevents helper result acceptance", true, {
-        revoked: true,
-      });
-    } finally {
-      revocationDaemon.close();
-    }
     assert.deepEqual(errors, []);
   } finally {
-    daemon.close();
-    await browser.stop(true);
     await coordinator.stop();
     db.close();
   }
