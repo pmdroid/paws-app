@@ -75,7 +75,7 @@ export const ACTIVITY_KINDS = [
   "err",
   "prompt",
 ] as const;
-export const ITEM_EVENT_KINDS = ["transition", "restart", "ask"] as const;
+export const ITEM_EVENT_KINDS = ["transition", "restart", "ask", "ci_rerun"] as const;
 export const SOURCES = ["live"] as const;
 
 export type ItemState = (typeof ITEM_STATES)[number];
@@ -135,7 +135,10 @@ export interface StatusItem {
   session?: StatusItemSession;
   /** Set on an earlier attempt that a newer Linear session on the same issue replaced. */
   endedAt?: string;
-  /** Every state change of the item, oldest first, from `work_item_event`. */
+  /**
+   * Every state change of the item from `work_item_event`, and every CI re-run the agent
+   * requested from `ci_rerun`, oldest first.
+   */
   timeline?: StatusItemEvent[];
   /** How long the item spent in each state since it was delegated. */
   stateTimes?: StatusStateTimes;
@@ -201,6 +204,8 @@ export interface StatusItemEvent {
   event: string;
   reason: string | null;
   actor: string | null;
+  /** On a `ci_rerun` entry: the workflow runs whose failed jobs GitHub re-runs. */
+  runIds?: number[];
 }
 
 export interface StatusItemSession {
@@ -2127,6 +2132,13 @@ function readItemEvent(input: unknown, path: string): StatusItemEvent {
     event: text(body, "event", path),
     reason: nullableText(body, "reason", path),
     actor: nullableText(body, "actor", path),
+    ...(body.runIds === undefined
+      ? {}
+      : {
+          runIds: array(body, "runIds", path).map((_, at) =>
+            positiveInteger(body.runIds as Record<string, unknown>, String(at), `${path}.runIds`),
+          ),
+        }),
   };
 }
 
