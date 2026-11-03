@@ -15,10 +15,16 @@ import {
   workspaceMember,
   workspaceSessionIds,
   findingGroupingAdmins,
+  commandAccount,
+  legacyAgentBindingId,
+  legacyBindingAccountHealth,
+  recordAccountObservation,
+  type AccountObservation,
 } from "../db";
+import type { RunnerCodingAgent } from "../runner-protocol";
 import type { PlacementReason, PlacementRequest, RunnerPlacement } from "./index";
 import { eligibleRunners, runnerSetupNeed, RUNNER_ONLINE_MS } from "./eligible";
-import { quotaSignal } from "./quota";
+import { accountHealthBlock, BINDING_REASON_TEXT, classifyAgentFailure } from "./account-health";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
 const RETRYABLE_OUTCOMES = new Set([
@@ -245,6 +251,55 @@ export function createRunnerPlacement(options: {
       leadUserIds: current.placement?.leadUserIds ?? [],
     };
   }
+  function observeAccount(
+    commandId: string,
+    input: {
+      classified: ReturnType<typeof classifyAgentFailure>;
+      model: string | null;
+      observedAt: number;
+      startedAt: number;
+      prepare: boolean;
+    },
+  ): number | null {
+    const owner = commandAccount(db, commandId);
+    if (!owner) return null;
+    const base = {
+      bindingId: owner.bindingId,
+      source: "result" as const,
+      sourceId: commandId,
+      observedAt: input.observedAt,
+      now: now(),
+    };
+    const { kind, quota } = input.classified;
+    const observations: AccountObservation[] = [];
+    if (kind === "auth") observations.push({ ...base, state: "auth_required" });
+    else if (kind === "quota")
+      observations.push({ ...base, state: "exhausted", resetsAt: quota!.resetsAt });
+    else if (kind === "provider") observations.push({ ...base, state: "restricted" });
+    else if (kind === "model" && input.model)
+      observations.push({ ...base, state: "unsupported_model", model: input.model });
+    else if (kind === "ok")
+      observations.push({
+        ...base,
+        observedAt: input.startedAt,
+        model: input.model,
+        state: "ok",
+        clears:
+          input.prepare || quota?.state === "low"
+            ? ["auth", "provider", "model"]
+            : ["auth", "provider", "model", "quota"],
+      });
+    if (quota?.state === "low" && kind !== "quota") observations.push({ ...base, state: "low" });
+    for (const observation of observations) recordAccountObservation(db, observation);
+    if (kind !== "quota") return null;
+    return (
+      db
+        .query<{ at: number | null }, [string, string]>(
+          "SELECT next_check_at AS at FROM agent_account_health WHERE kind='quota' AND source_id=? AND workspace_id=?",
+        )
+        .get(commandId, owner.workspaceId)?.at ?? null
+    );
+  }
   return {
     async candidates(input) {
       input.signal?.throwIfAborted();
@@ -350,6 +405,17 @@ export function createRunnerPlacement(options: {
           return reject("excluded after failed attempt");
         const own = runner.reason === "own";
         if (runner.cooldownUntil > at) return reject("agent quota cooldown");
+        const agent = input.profile!.agent as RunnerCodingAgent;
+        const health = accountHealthBlock(
+          db,
+          legacyAgentBindingId(runner.id, agent),
+          legacyBindingAccountHealth(db, runner.id, agent, input.profile?.model).filter(
+            (row) => row.kind !== "quota" && row.kind !== "auth",
+          ),
+          at,
+          input.purpose,
+        );
+        if (health) return reject(BINDING_REASON_TEXT[health.reason]);
         // Preparation must probe fresh identities; preflight compares them against each other.
         // A fresh session may correct a reported model mismatch. The work receipt still rejects
         // actual implementer-model reuse, and failover bounds the number of attempts.
@@ -520,13 +586,14 @@ export function createRunnerPlacement(options: {
               agent: string | null;
               itemId: string | null;
               role: string;
+              startedAt: number;
               endedAt: number | null;
               outcome: string | null;
               resetsAt: number | null;
             },
             [string, string]
           >(
-            "SELECT owner_user_id AS ownerId,purpose,agent,item_id AS itemId,role,ended_at AS endedAt,outcome,resets_at AS resetsAt FROM runner_execution_usage WHERE command_id=? AND runner_id=?",
+            "SELECT owner_user_id AS ownerId,purpose,agent,item_id AS itemId,role,started_at AS startedAt,ended_at AS endedAt,outcome,resets_at AS resetsAt FROM runner_execution_usage WHERE command_id=? AND runner_id=?",
           )
           .get(input.commandId, input.runnerId);
         if (!usage) throw new Error("Runner usage receipt is not bound to an assignment");
@@ -541,9 +608,12 @@ export function createRunnerPlacement(options: {
               ? { usageLimit: { resetsAt: usage.resetsAt } }
               : {}),
           };
-        const quota = result?.errorMessage
-          ? quotaSignal(result.errorMessage, input.finishedAt)
-          : null;
+        const classified = classifyAgentFailure({
+          ...(result ? { result } : {}),
+          ...(input.failure ? { failure: input.failure } : {}),
+          now: input.finishedAt,
+        });
+        const quota = classified.quota;
         const retryable =
           input.failure === "heartbeat_lost" ||
           result?.authRequired === true ||
@@ -622,9 +692,29 @@ export function createRunnerPlacement(options: {
             ],
           );
         }
+        const recheckAt = observeAccount(input.commandId, {
+          classified,
+          model: input.profile?.model ?? model,
+          observedAt: input.finishedAt,
+          startedAt: usage.startedAt,
+          prepare: usage.purpose === "prepare",
+        });
+        if (usage.agent && quota?.state === "exhausted" && quota.resetsAt === null && recheckAt)
+          db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id=? AND agent=?", [
+            recheckAt,
+            input.runnerId,
+            usage.agent,
+          ]);
         return {
           retryable: retryable || modelConflict,
-          ...(quota?.state === "exhausted" ? { usageLimit: { resetsAt: quota.resetsAt } } : {}),
+          ...(quota?.state === "exhausted"
+            ? {
+                usageLimit: {
+                  resetsAt: quota.resetsAt,
+                  ...(quota.resetsAt === null && recheckAt ? { recheckAt } : {}),
+                },
+              }
+            : {}),
         };
       });
     },

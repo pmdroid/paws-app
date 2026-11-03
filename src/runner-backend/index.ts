@@ -340,7 +340,12 @@ export function createRemoteAgentRunner(options: {
         .query<{ resetsAt: number | null }, [string, string | null, number]>(
           `SELECT MIN(resets_at) AS resetsAt FROM (
          SELECT p.cooldown_until AS resets_at FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
-         WHERE p.agent=?1 AND p.cooldown_until>?3 AND ${runnerInScope})`,
+         WHERE p.agent=?1 AND p.cooldown_until>?3 AND ${runnerInScope}
+         UNION ALL
+         SELECT h.next_check_at FROM agent_account_health h JOIN runner r ON r.id=h.runner_id
+         WHERE h.agent=?1 AND h.state IN ('exhausted','restricted') AND h.scope<>'binding'
+         AND h.next_check_at>?3
+         AND ${runnerInScope})`,
         )
         .get(agent, sessionId, now())?.resetsAt ?? null
     );

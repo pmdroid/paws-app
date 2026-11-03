@@ -838,6 +838,7 @@ export {
   removeAgentBinding,
   renameAgentAccount,
   runnerAccountUnsupported,
+  setAgentAccountConcurrency,
   setAgentAccountEnabled,
   type AgentAccount,
   type AgentAccountBinding,
@@ -845,3 +846,20 @@ export {
   type AgentAccountErrorCode,
   type CommandAccount,
 } from "./agent-accounts";
+export {
+  ACCOUNT_MODEL_RECHECK_MS,
+  ACCOUNT_RECHECK_BASE_MS,
+  ACCOUNT_RECHECK_MAX_MS,
+  ACCOUNT_RESET_SLACK_MS,
+  accountAttemptsInFlight,
+  accountRecheckDelay,
+  bindingAccountHealth,
+  legacyBindingAccountHealth,
+  recordAccountObservation,
+  resumeAccountHealthNow,
+  type AccountHealth,
+  type AccountHealthKind,
+  type AccountHealthState,
+  type AccountObservation,
+  type AccountObservationOutcome,
+} from "./agent-account-health";

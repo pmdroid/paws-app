@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { systemClock } from "../core";
+import { resumeAccountHealthNow } from "./agent-account-health";
 import { accrueAwake } from "./items";
 import { immediate } from "./tx";
 
@@ -69,6 +70,7 @@ export function resumeUsagePauseNow(db: Database, runId: string, now: number): b
         `UPDATE runner_agent_policy SET cooldown_until=0 WHERE agent=? AND cooldown_until>0${runner}`,
         args,
       );
+      resumeAccountHealthNow(db, pause.agent, pause.runnerId, now);
       return true;
     })
     .immediate();

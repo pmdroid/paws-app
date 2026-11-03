@@ -1,6 +1,15 @@
 import type { RunnerProfile, RunnerResult, RunnerHelperResult } from "../runner-protocol";
 
 export { quotaSignal, type QuotaSignal } from "./quota";
+export {
+  BINDING_REASON_TEXT,
+  bindingReadiness,
+  classifyAgentFailure,
+  type AgentFailure,
+  type AgentFailureKind,
+  type BindingReadiness,
+  type BindingUnavailableReason,
+} from "./account-health";
 
 export type PlacementPurpose = "prepare" | "work" | "helper";
 
@@ -117,7 +126,7 @@ export type RunnerPlacement = {
     result?: RunnerResult | RunnerHelperResult;
     failure?: "heartbeat_lost" | "cancelled" | "timeout" | "error";
     finishedAt: number;
-  }): { retryable: boolean; usageLimit?: { resetsAt: number | null } };
+  }): { retryable: boolean; usageLimit?: { resetsAt: number | null; recheckAt?: number } };
 };
 
 /** Why placement ranked a runner ahead of the others, recorded with its usage. */

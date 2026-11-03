@@ -5,7 +5,9 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import {
   auditWorkspaceAccess,
+  commandAccount,
   getRunner,
+  recordAccountObservation,
   immediate,
   recordRunnerAgentUsage,
   runnerAgentUsage,
@@ -307,7 +309,36 @@ export function createRunnerHealth(options: {
           at,
         ]);
         const legacy = !assigned.account;
-        if (legacy && assigned.type === "login_check" && result.login)
+        const owner = assigned.type === "login_check" ? commandAccount(db, assigned.id) : null;
+        const observe = (
+          state: "ok" | "auth_required" | "exhausted" | "low",
+          kind: "auth" | "quota",
+          resetsAt: number | null = null,
+        ) => {
+          if (!owner) return true;
+          const base = {
+            bindingId: owner.bindingId,
+            source: "login_check" as const,
+            sourceId: assigned.id,
+            observedAt: assigned.issuedAt,
+            now: at,
+          };
+          const outcome = recordAccountObservation(
+            db,
+            state === "ok"
+              ? { ...base, state, clears: [kind] }
+              : state === "exhausted"
+                ? { ...base, state, resetsAt }
+                : { ...base, state },
+          )[kind];
+          return outcome === "applied";
+        };
+        if (
+          assigned.type === "login_check" &&
+          result.login &&
+          observe(result.login.authenticated ? "ok" : "auth_required", "auth") &&
+          legacy
+        )
           db.run(
             "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?1,?2,?3,1-?3) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=?3,auth_expired=1-?3",
             [runnerId, assigned.agent, result.login.authenticated ? 1 : 0],
@@ -319,20 +350,18 @@ export function createRunnerHealth(options: {
             limits: result.agentLimits,
             observedAt: at,
           });
-        if (
-          legacy &&
-          assigned.type === "login_check" &&
-          result.login?.authenticated &&
-          result.agentLimits
-        ) {
+        if (assigned.type === "login_check" && result.login?.authenticated && result.agentLimits) {
           const spent = result.agentLimits.filter((limit) => limit.usedPercent >= 100);
-          const resetsAt = spent.length
+          const until = spent.length
             ? Math.max(...spent.map((limit) => limit.resetsAt ?? at + 15 * 60_000))
             : null;
-          db.run(
-            "UPDATE runner_agent_policy SET quota_state=?,resets_at=?,cooldown_until=? WHERE runner_id=? AND agent=?",
-            [spent.length ? "exhausted" : "ok", resetsAt, resetsAt ?? 0, runnerId, assigned.agent],
-          );
+          const resetsAt = spent.every((limit) => limit.resetsAt !== null) ? until : null;
+          const low = result.agentLimits.some((limit) => limit.usedPercent >= 80);
+          if (observe(spent.length ? "exhausted" : low ? "low" : "ok", "quota", resetsAt) && legacy)
+            db.run(
+              "UPDATE runner_agent_policy SET quota_state=?,resets_at=?,cooldown_until=? WHERE runner_id=? AND agent=?",
+              [spent.length ? "exhausted" : "ok", until, until ?? 0, runnerId, assigned.agent],
+            );
         }
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         return { duplicate: false };

@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   bindAgentAccount,
+  bindingAccountHealth,
   consumeWorkspaceBootstrap,
   createAgentAccount,
   migrate,
   openDatabase,
   putWorkspaceUser,
+  recordAccountObservation,
   setAgentAccountEnabled,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
@@ -208,6 +210,39 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
       session: expect.objectContaining({ id: again.id, bindingId: binding.id, state: "starting" }),
     },
   ]);
+  db.close();
+});
+
+test("a completed named sign-in repairs only its binding's sign-in failure", async () => {
+  const { db, now, runnerId, otherRunner, workspace, principal, login, account, binding } =
+    await fixture();
+  const other = bindAgentAccount(db, {
+    workspaceId: workspace,
+    accountId: account.id,
+    runnerId: otherRunner,
+    now,
+  });
+  for (const bindingId of [binding.id, other.id])
+    recordAccountObservation(db, {
+      bindingId,
+      source: "result",
+      sourceId: `failed-${bindingId}`,
+      observedAt: now - 1,
+      now: now - 1,
+      state: "auth_required",
+    });
+  const named = login.start(principal, runnerId, "codex", binding.id);
+  login.exchange(runnerId, named.id, {
+    state: "connected",
+    terminal: "",
+    authorization: null,
+    inputId: null,
+  });
+  const auth = (bindingId: string) =>
+    bindingAccountHealth(db, bindingId).find((row) => row.kind === "auth")?.state;
+  expect(auth(binding.id)).toBe("ok");
+  expect(auth(other.id)).toBe("auth_required");
+  expect(policy(db, runnerId)).toBeNull();
   db.close();
 });
 
