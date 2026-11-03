@@ -20,6 +20,7 @@ import {
   LinearEntityNotFoundError,
   LinearRateLimitError,
   linearBudget,
+  linearCommentOf,
   createLinearLedger,
   type LinearLedger,
   openLinear,
@@ -763,6 +764,57 @@ describe("linear intake poll", () => {
     expect(store.getCursor("linear")).toBe(NOW);
     await poller.stop();
     await poller.settled;
+    db.close();
+  });
+
+  test("catch-up records an ordinary comment with its author, parent and team once", async () => {
+    const db = tempDb();
+    const store = createInboxStore(db);
+    const seen: AcceptedLinearEvent[] = [];
+    const comment = {
+      id: "c_plain",
+      body: "Please keep the old flag.",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:05.000Z",
+      user: { id: "user_1" },
+      parent: { id: "c_root" },
+      botActor: null,
+      issue: { id: "iss_1", team: { id: TEAM } },
+    };
+    const { client } = scripted(({ query }) => {
+      if (!query.includes("IntakePoll")) return { issue: emptyRelations() };
+      return page([], [comment]);
+    });
+    const gate = hold();
+    const waits: number[] = [];
+    const poller = startCatchUpPoller({
+      source: createIntakePollSource(client, { teamId: TEAM }),
+      store,
+      db,
+      onEvent: async (event) => {
+        seen.push(event);
+      },
+      sleeper: recordingSleeper(waits, gate),
+      now: () => NOW,
+    });
+    await waitFor(() => waits.length > 0);
+    gate.release?.();
+    await waitFor(() => waits.length > 1);
+    await poller.stop();
+    await poller.settled;
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.dedupeKey).toBe(`comment:c_plain:at:${Date.parse(comment.updatedAt)}`);
+    expect(linearCommentOf(seen[0]!)).toMatchObject({
+      commentId: "c_plain",
+      issueId: "iss_1",
+      teamId: TEAM,
+      authorId: "user_1",
+      parentId: "c_root",
+      botActor: null,
+      createdAtMs: Date.parse(comment.createdAt),
+      updatedAtMs: Date.parse(comment.updatedAt),
+      source: "poll",
+    });
     db.close();
   });
 

@@ -125,7 +125,6 @@ export function routeLinearComment(
       };
     return settle("ignored", "not_delegated");
   }
-  if (open.length > 1) return settle("rejected", "ambiguous");
   const item = getWorkItem(db, open[0]!.id)!;
   if (comment.createdAtMs < open[0]!.created_at) return settle("ignored", "before_delegation");
   if (item.cancelRequested) return settle("ignored", "ended");
