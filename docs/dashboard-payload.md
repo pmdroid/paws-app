@@ -9,12 +9,18 @@ The resource contract is in [`src/dashboard/README.md`](../src/dashboard/README.
 | `GET /api/overview` (the Overview page)       | 50 KB  |
 | `GET /api/merge-queue` (the Merge queue page) | 64 KB  |
 | `GET /api/evidence` (the Evidence gallery)    | 200 KB |
+| `GET /api/questions` (the Questions page)     | 64 KB  |
+| `GET /api/questions/<id>` (one question)      | 8 KB   |
+| `GET /api/evidence/<id>/metadata` (one file)  | 16 KB  |
+| One check's log, 64 KB of each stream         | 160 KB |
 
-Check `stdout` and `stderr` are in none of them. They come from `GET /api/issues/<id>/attempts/<n>/checks/<check id>/log`, 64 KB of each stream unless the page asks for the full log.
+Check `stdout` and `stderr` are in none of the page resources. They come from `GET /api/issues/<id>/attempts/<n>/checks/<check id>/log`, 64 KB of each stream unless the page asks for the full log.
 
 ## The test
 
-`src/dashboard/src/live/payload-budget.test.ts` builds 100 finished items and 10 open ones. Each finished item has one Closeout attempt with two failing checks; each open item has three attempts of six failing checks. Every check stores `stdout` and `stderr` at the 64 KB cap. The test serves the issue list, a finished and an open issue's page, the overview and the merge queue through the dashboard handler and fails when any is over its budget, or when the overview is not under a tenth of the issue list. A second test serves `/api/issues` and `/api/overview` from the same fixture and fails if either reads a check log or carries check output. A change that puts check output or every finished item back in the list fails them. A third test lists eight files on each of the 60 issues the list keeps and serves `/api/evidence`; it is about 170 KB of its 200 KB. `GET /api/evidence/<id>/metadata` carries one issue's files and has no separate budget.
+`src/dashboard/src/live/payload-budget.test.ts` builds 100 finished items and 10 open ones. Each finished item has one Closeout attempt with two failing checks; each open item has three attempts of six failing checks. Every check stores `stdout` and `stderr` at the 64 KB cap. Each open item also waits on a question of about 2 KB. The test serves the issue list, a finished and an open issue's page, the overview, the merge queue, the questions, one question and one check's log tail through the dashboard handler and fails when any is over its budget, or when the overview is not under a tenth of the issue list. A second test serves `/api/issues` and `/api/overview` from the same fixture and fails if either reads a check log or carries check output. A change that puts check output or every finished item back in the list fails them. A third test lists eight files on each of the 60 issues the list keeps and serves `/api/evidence`; it is about 170 KB of its 200 KB, and one file's metadata with its issue's eight files is about 3 KB of its 16 KB.
+
+Measured on that fixture: the issue list 152 KB, an open issue's page 15 KB, the overview 9 KB, the merge queue 5 KB, ten questions 25 KB, one question 2.5 KB and one check's log tail 134 KB.
 
 ## The journal line
 
