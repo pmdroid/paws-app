@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   applyWorkItemEvent,
   beginMergeCall,
+  DEFAULT_PULL_FEEDBACK_WAIT,
   mergeCallInFlight,
   beginImplementRun,
   enterMergeQueue,
@@ -42,6 +43,8 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     session: () => "s-1",
     fetchMain: unused("fetchMain"),
     ciFixAttempts: () => 3,
+    feedbackWait: () => DEFAULT_PULL_FEEDBACK_WAIT,
+    readPullCi: unused("readPullCi"),
     dependencyHold: () => null,
     mergedOutsideLane: async () => null,
     completed: () => calls.push("completed"),

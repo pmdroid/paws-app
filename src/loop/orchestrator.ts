@@ -59,6 +59,7 @@ import {
   prepareRepositorySnapshot,
 } from "../acp";
 import {
+  DEFAULT_COMMENT_WAIT,
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
   checkoutExclusionsFor,
   highRiskPaths,
@@ -261,6 +262,7 @@ import {
   type OutboxDeliveryContext,
   type OutboxDispatcher,
   type OutboxRow,
+  type PullFeedbackWait,
   type WorkItemRecord,
   type RunnerCapacityWaitState,
   type CloseoutFaults,
@@ -1794,6 +1796,21 @@ export class Orchestrator {
           prNumber: pullNumber,
           ...this.gitHubCredentials(github),
         });
+      },
+      pullHead: async (item, pullNumber) => {
+        const repository = this.repositoryForItem(item);
+        const github = repository ? this.githubForRepository(repository) : null;
+        if (!repository || !github) return null;
+        const pull = await readPullMergeable({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pullNumber,
+          reads: 1,
+          ...this.gitHubCredentials(github),
+          signal: context.signal,
+        });
+        return pull?.head ?? null;
       },
       leaveMergeQueue: async (item, pullNumber) => {
         const repository = this.repositoryForItem(item);
@@ -4835,6 +4852,21 @@ export class Orchestrator {
       session: (item) => this.activitySession(item),
       fetchMain: (item) => this.fetchUpstreamMain(item),
       ciFixAttempts: (item) => this.fixRoundLimit(item),
+      feedbackWait: () => this.feedbackWait(),
+      readPullCi: async (item, pull) => {
+        const repository = this.repositoryForItem(item);
+        const github = repository ? this.githubForRepository(repository) : null;
+        if (!repository || !github)
+          return { state: "unknown", message: "GitHub App is not configured." };
+        return readPullCi({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pull.number,
+          head: pull.head,
+          ...this.gitHubCredentials(github),
+        });
+      },
       dependencyHold: (id) => {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
         const admitted = this.admission.canMerge(id);
@@ -4921,6 +4953,22 @@ export class Orchestrator {
     const rounds = this.fixRoundLimit(item);
     if (reason !== "findings") return rounds;
     return Math.min(rounds, restartLimit(this.db, item.id) ?? rounds);
+  }
+
+  private feedbackWait(): PullFeedbackWait {
+    let wait = DEFAULT_COMMENT_WAIT;
+    try {
+      wait = this.readMergePolicy().commentWait;
+    } catch (caughtError) {
+      journalCaught(
+        caughtError,
+        "orchestrator.feedbackWait",
+        null,
+        undefined,
+        this.options.journal,
+      );
+    }
+    return { quietMs: wait.quietSeconds * 1000, maxMs: wait.maxWaitSeconds * 1000 };
   }
 
   private readMergePolicy(): MergeSettings {

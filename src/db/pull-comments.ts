@@ -111,23 +111,38 @@ export function recordPullComment(
     ],
   );
   if (inserted.changes === 0) return false;
-  const settle = comment.receivedAt + wait.quietMs;
-  deferPullFeedback(db, comment.itemId, comment.receivedAt, wait);
+  gatherPullFeedback(
+    db,
+    comment.itemId,
+    comment.receivedAt,
+    wait,
+    `pull-comments:${comment.itemId}:${comment.source}:${comment.commentId}`,
+  );
+  return true;
+}
+
+export function gatherPullFeedback(
+  db: Database,
+  itemId: string,
+  receivedAt: number,
+  wait: PullFeedbackWait,
+  jobKey: string,
+): void {
+  deferPullFeedback(db, itemId, receivedAt, wait);
   const gathering = db
     .query<{ n: number }, [string, string]>(
       `SELECT count(*) AS n FROM job WHERE queue = ? AND status = 'pending'
        AND json_extract(payload, '$.pullCommentsFor') = ?`,
     )
-    .get(JOB_KIND.pullComments, comment.itemId);
-  if ((gathering?.n ?? 0) > 0) return true;
+    .get(JOB_KIND.pullComments, itemId);
+  if ((gathering?.n ?? 0) > 0) return;
   enqueueJobOnce(db, {
     queue: JOB_KIND.pullComments,
-    jobKey: `pull-comments:${comment.itemId}:${comment.source}:${comment.commentId}`,
-    payload: { pullCommentsFor: comment.itemId },
-    runAt: settle,
-    now: comment.receivedAt,
+    jobKey,
+    payload: { pullCommentsFor: itemId },
+    runAt: receivedAt + wait.quietMs,
+    now: receivedAt,
   });
-  return true;
 }
 
 /** This item's comments that have not reached the agent or the team yet, oldest first. */

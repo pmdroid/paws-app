@@ -20,6 +20,8 @@ import {
   openDatabase,
   recordItemPullRequest,
   saveCheckpoint,
+  DEFAULT_PULL_FEEDBACK_WAIT,
+  type PullFeedbackWait,
   type TaskMergeSettings,
 } from "../db";
 import {
@@ -27,6 +29,7 @@ import {
   defaultGitExec,
   fakeMergeReadiness,
   fakeRequiredChecks,
+  readPullCi,
   readPullMergeable,
   type FakeMergeQueue,
   type GitHubClient,
@@ -136,6 +139,8 @@ export async function mergeHarness(
      */
     recheckDigest: CLOSEOUT_RECHECK_DIGEST,
     ciFixAttempts: 3,
+    feedbackWait: DEFAULT_PULL_FEEDBACK_WAIT as PullFeedbackWait,
+    ciReads: [] as string[],
     stopped: false,
     orders: new Map<string, TaskMergeSettings["order"]>(),
     /** GitHub's "Require branches to be up to date before merging" on main. */
@@ -396,6 +401,18 @@ export async function mergeHarness(
         return git(item.worktree, "rev-parse", "refs/paws/upstream-main");
       },
       ciFixAttempts: () => state.ciFixAttempts,
+      feedbackWait: () => state.feedbackWait,
+      readPullCi: async (_, pull) => {
+        state.ciReads.push(pull.head);
+        return readPullCi({
+          client,
+          owner: "acme",
+          repo: "app",
+          prNumber: pull.number,
+          head: pull.head,
+          tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
+        });
+      },
       dependencyHold: (itemId) => {
         const open = (state.blockedBy.get(itemId) ?? []).filter(
           (blocker) => getConfirmedRemoteMerge(db, blocker) === null,

@@ -107,6 +107,7 @@ function setup() {
     busy: () => false,
     threads: (_, prNumber) =>
       readReviewThreads({ client, owner: "acme", repo: "one", prNumber, tokenProvider }),
+    pullHead: async () => null,
     leaveMergeQueue: (_, prNumber) =>
       leaveGitHubMergeQueue({ client, owner: "acme", repo: "one", prNumber, tokenProvider }),
     fixRoundLimit: () => 3,

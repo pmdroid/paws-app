@@ -39,6 +39,7 @@ import {
   REBASE_CONFLICT_THOUGHT,
   askHelp,
   ciRound,
+  feedbackHold,
   mergeHeld,
   mergeQueueTurn,
   mergeThroughGitHubQueue,
@@ -129,13 +130,13 @@ export async function advanceMerge(
     reverifyAfterRestart(db, item, input.jobId, caps.now());
     return { kind: "returned" };
   }
-  const held = reviewHold(db, item.id, caps.now());
+  const merge: MergeContext = { db, item, caps };
+  const held = await feedbackHold(merge, input.payload);
   if (held) return held;
   const waiting = dependencyWait(item, caps);
   if (waiting) return waiting;
   const published = await caps.publish(item);
   if ("kind" in published) return published;
-  const merge: MergeContext = { db, item, caps };
   // A high-risk head waits for a person in Paws before it joins any merge queue.
   const riskApproval = await caps.riskApproval(item, published);
   if (caps.stopped()) return { kind: "obsolete" };
@@ -228,7 +229,7 @@ export async function advanceMerge(
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
   if ((turn.kind === "stopped" || turn.kind === "blocked") && !caps.stopped()) {
-    const late = reviewHold(db, item.id, caps.now());
+    const late = reviewHold(db, item.id, caps.now(), caps.feedbackWait());
     if (late) return late;
   }
   const ciFixLimit = caps.ciFixAttempts(item);

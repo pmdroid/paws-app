@@ -11,7 +11,7 @@ test("a closed pull request adds no CI section and reads no CI", async () => {
     readPull: async () => ({ head: HEAD, open: false, merges: "clean" }),
     readCi: async () => {
       reads += 1;
-      return { state: "failed", failedChecks: [{ name: "test", url: null }] };
+      return { state: "failed", failedChecks: [{ name: "test", url: null }], checks: [] };
     },
     now: () => 0,
   });
@@ -43,6 +43,7 @@ test("failed CI reads CI on the pull request's own head and redacts given secret
       return {
         state: "failed",
         failedChecks: [{ name: "test", url: null, logTail: "key=-----private-material-----" }],
+        checks: [],
       };
     },
     now: () => Date.UTC(2026, 10, 3),

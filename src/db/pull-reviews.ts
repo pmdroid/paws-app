@@ -98,12 +98,32 @@ export function pendingChangeRequests(db: Database, itemId: string): PullReviewR
 }
 
 /** Run this item's pending review jobs now, for a merge that waits on them. */
-export function wakePullReviews(db: Database, itemId: string, now: number): void {
+export function wakePullReviews(
+  db: Database,
+  itemId: string,
+  now: number,
+  wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
+): void {
+  const latest = db
+    .query<{ at: number | null }, [string, string, string]>(
+      `SELECT MAX(at) AS at FROM (
+         SELECT received_at AS at FROM pull_review WHERE item_id = ? AND handled_at IS NULL
+         UNION ALL SELECT received_at FROM pull_comment WHERE item_id = ? AND handled_at IS NULL
+         UNION ALL SELECT observed_at FROM pull_ci_failure WHERE item_id = ? AND handled_at IS NULL)`,
+    )
+    .get(itemId, itemId, itemId)?.at;
   db.run(
-    `UPDATE job SET run_at = MIN(run_at, ?) WHERE queue = ? AND status = 'pending'
+    `UPDATE job SET run_at = MIN(run_at, MAX(?, MIN(created_at + ?, ?)))
+     WHERE queue = ? AND status = 'pending'
        AND job_key IN (SELECT 'pull-review:' || review_id FROM pull_review
                        WHERE item_id = ? AND handled_at IS NULL)`,
-    [now, JOB_KIND.pullReview, itemId],
+    [
+      now,
+      Math.max(wait.maxMs, wait.quietMs),
+      latest == null ? now : latest + wait.quietMs,
+      JOB_KIND.pullReview,
+      itemId,
+    ],
   );
 }
 

@@ -12,6 +12,7 @@ import {
   listJobs,
   listMergeQueues,
   listReviewEscapes,
+  pendingPullCiFailures,
 } from "../db";
 import { createFakeMergeQueue } from "../github";
 import { findOpenQuestion } from "../questions";
@@ -303,6 +304,81 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(mergedOrder(h, ids)).toEqual(["ENG-142"]);
     // ENG-141 keeps its row, so its place comes back when ENG-140 merges.
     expect(queued(h)).toEqual(["ENG-141"]);
+  });
+});
+
+describe("advanceMerge on failed CI while a review is required", () => {
+  const feedbackJobs = (h: MergeHarness) =>
+    listJobs(h.db).filter((job) => job.queue === JOB_KIND.pullComments);
+
+  test("the review gate records the failure once and sends nothing back before the batch", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    const item = await h.addItem("ENG-131");
+    h.state.reviews.set(item.pull, "REVIEW_REQUIRED");
+    h.state.ci = failingTest;
+    const observed = h.clock.now();
+    expect(await h.pass("ENG-131")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(h.state.ciReads).toEqual([item.accepted]);
+    const [failure] = pendingPullCiFailures(h.db, "ENG-131");
+    expect(failure).toMatchObject({
+      head: item.accepted,
+      pullNumber: item.pull,
+      observedAt: observed,
+    });
+    expect(failure?.failedChecks).toEqual([
+      { name: "test", url: "https://ci.example/1", failsOnBase: false, logTail: LOG_TAIL },
+    ]);
+    expect(feedbackJobs(h).map((job) => job.runAt)).toEqual([observed + 60_000]);
+
+    h.clock.advance(20_000);
+    expect(await h.pass("ENG-131")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(pendingPullCiFailures(h.db, "ENG-131")[0]?.observedAt).toBe(observed);
+    expect(feedbackJobs(h).map((job) => job.runAt)).toEqual([observed + 60_000]);
+    expect(resumes(h)).toEqual([]);
+    expect(listCiRounds(h.db, "ENG-131")).toEqual([]);
+    expect(getWorkItem(h.db, "ENG-131")?.state).toBe("merge_queue");
+    expect(h.github.merged).toEqual([]);
+  });
+
+  test("approval during the batch does not merge; green CI on the same head then merges it", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    const item = await h.addItem("ENG-132");
+    h.state.reviews.set(item.pull, "REVIEW_REQUIRED");
+    h.state.ci = failingTest;
+    await h.pass("ENG-132");
+    h.state.reviews.set(item.pull, "APPROVED");
+    expect(await h.pass("ENG-132")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(h.github.merged).toEqual([]);
+    expect(resumes(h)).toEqual([]);
+
+    h.state.ci = () => undefined;
+    expect(await h.pass("ENG-132")).toEqual({ kind: "merged" });
+    expect(pendingPullCiFailures(h.db, "ENG-132")).toEqual([]);
+    expect(h.github.merged.map((merge) => merge.expectedHeadSha)).toEqual([item.accepted]);
+    expect(listCiRounds(h.db, "ENG-132")).toEqual([]);
+  });
+
+  test("pending or green CI waits for the review and records nothing; a moved head drops the failure", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    const item = await h.addItem("ENG-133");
+    h.state.reviews.set(item.pull, "CHANGES_REQUESTED");
+    h.state.ci = pendingCi;
+    expect(await h.pass("ENG-133")).toMatchObject({ kind: "wait", reason: "review" });
+    h.state.ci = () => undefined;
+    expect(await h.pass("ENG-133")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(pendingPullCiFailures(h.db, "ENG-133")).toEqual([]);
+    expect(feedbackJobs(h)).toEqual([]);
+
+    h.state.ci = failingTest;
+    await h.pass("ENG-133");
+    expect(pendingPullCiFailures(h.db, "ENG-133").map((failure) => failure.head)).toEqual([
+      item.accepted,
+    ]);
+    h.state.pullHead = () => "0".repeat(40);
+    expect(await h.pass("ENG-133")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(pendingPullCiFailures(h.db, "ENG-133")).toEqual([]);
+    expect(resumes(h)).toEqual([]);
+    expect(listCiRounds(h.db, "ENG-133")).toEqual([]);
   });
 });
 
