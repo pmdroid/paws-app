@@ -10,6 +10,12 @@ export const INSTALLATION_PERMISSIONS = {
   issues: "write",
 } as const;
 
+export const ACTIONS_LOG_PERMISSIONS = {
+  actions: "read",
+  checks: "read",
+  metadata: "read",
+} as const;
+
 export const UPSTREAM_MAIN_REF = "refs/paws/upstream-main";
 
 export type GitHubMethod = "GET" | "POST" | "PUT" | "PATCH";

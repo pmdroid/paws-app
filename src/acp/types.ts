@@ -144,6 +144,7 @@ export interface RunAgentOptions {
   checkpointIdentity?: GitCommitIdentity;
   commitPolicy?: GitCommitPolicy;
   closeoutPolicy?: () => Promise<PolicyFilesLoad>;
+  ciLog?: (job?: string) => Promise<string>;
   /**
    * The task repository's runtime list from its mise config on origin/main. A remote runner
    * installs these before the agent starts. `notices` are lines for the task's Linear session.

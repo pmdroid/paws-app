@@ -396,6 +396,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         },
         commandGuard: guard,
         ...(options.closeoutPolicy ? { closeoutPolicy: options.closeoutPolicy } : {}),
+        ...(options.ciLog && options.readOnly !== true ? { ciLog: options.ciLog } : {}),
         ...(options.runtimeBinPaths?.length ? { runtimeBinPaths: options.runtimeBinPaths } : {}),
         ...(options.closeoutBasePath !== undefined
           ? { closeoutBasePath: options.closeoutBasePath }

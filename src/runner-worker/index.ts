@@ -303,9 +303,31 @@ export function remoteCloseoutPolicy(
   };
 }
 
+export function remoteCiLog(
+  emit: (event: { type: "ci_log"; requestId: string; job?: string }) => void,
+  answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
+  signal: AbortSignal,
+): (job?: string) => Promise<string> {
+  return async (job) => {
+    const requestId = randomUUID();
+    emit({ type: "ci_log", requestId, ...(job === undefined ? {} : { job }) });
+    const response = (await answer(requestId, signal)).answer;
+    let decoded: { answer?: unknown; error?: unknown };
+    try {
+      decoded = JSON.parse(response) as { answer?: unknown; error?: unknown };
+    } catch {
+      throw new Error("Paws sent an invalid CI log answer");
+    }
+    if (typeof decoded.error === "string") throw new Error(decoded.error);
+    if (typeof decoded.answer !== "string") throw new Error("Paws sent an invalid CI log answer");
+    return decoded.answer;
+  };
+}
+
 export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
   | { type: "closeout_policy"; requestId: string; offset?: number; hash?: string }
+  | { type: "ci_log"; requestId: string; job?: string }
   | { type: "acp"; event: AcpEvent }
   | {
       type: "question";
@@ -1027,6 +1049,15 @@ export async function executeRunnerCommand(
       readOnly: command.type === "task" ? command.purpose !== "artifact" : command.type !== "run",
       checkpoint: command.type === "run" && command.checkpoint !== false,
       ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
+      ...(command.type === "run" && command.ciLog && options.answer
+        ? {
+            ciLog: remoteCiLog(
+              emit,
+              options.answer,
+              options.signal ?? new AbortController().signal,
+            ),
+          }
+        : {}),
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : job.executionId,
       runId: job.executionId,

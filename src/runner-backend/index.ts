@@ -66,6 +66,7 @@ import {
   REVIEW_COMMAND_RUNNER_VERSION,
   REVIEW_CONTEXT_RUNNER_VERSION,
   CLOSEOUT_RULES_FIRST_RUNNER_VERSION,
+  CI_LOG_RUNNER_VERSION,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
@@ -1511,6 +1512,12 @@ export function createRemoteAgentRunner(options: {
                       versionAtLeast(runnerVersion, CLOSEOUT_RULES_FIRST_RUNNER_VERSION)
                         ? { closeoutRulesFirst: true as const }
                         : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.ciLog &&
+                      input.readOnly !== true &&
+                      versionAtLeast(runnerVersion, CI_LOG_RUNNER_VERSION)
+                        ? { ciLog: true as const }
+                        : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
                       ...(restorePlan?.eligible
                         ? { restoreSession: restorePlan.restoreSession }
@@ -1848,7 +1855,9 @@ export function createRemoteAgentRunner(options: {
               }
               // A replay after a restart keeps the stored answer instead of publishing again.
               const answered =
-                (event.type === "artifact" || event.type === "closeout_policy") &&
+                (event.type === "artifact" ||
+                  event.type === "closeout_policy" ||
+                  event.type === "ci_log") &&
                 results.answered(assigned.runId, assigned.generation, row.sequence) !== null;
               if (answered && event.type === "artifact" && event.dropped === undefined)
                 publishedEffects = true;
@@ -1874,6 +1883,24 @@ export function createRemoteAgentRunner(options: {
                     event.offset === undefined
                       ? encodePolicyFiles(policy)
                       : encodePolicyChunk(policy, event.offset, event.hash),
+                });
+              }
+              if (event.type === "ci_log" && !answered) {
+                const read = input.ciLog
+                  ? await input.ciLog(event.job).then(
+                      (answer) => ({ answer }),
+                      (error: unknown) => {
+                        journalCaught(error, "runner-backend.forItem.ciLog", itemId);
+                        return { error: error instanceof Error ? error.message : String(error) };
+                      },
+                    )
+                  : { error: "get_ci_log is unavailable for this run" };
+                signal.throwIfAborted();
+                results.answer({
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  sequence: row.sequence,
+                  answer: JSON.stringify(read),
                 });
               }
               if (event.type === "artifact" && !answered && event.dropped !== undefined) {

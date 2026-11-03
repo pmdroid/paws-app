@@ -24,11 +24,12 @@ export function createAppTokenProvider(options: AppTokenProviderOptions): GitHub
   const repository = `${options.owner}/${options.repo}`;
   return {
     mode: "app",
-    async tokenFor(): Promise<string> {
+    async tokenFor(purpose): Promise<string> {
+      const access = purpose === "ci_log" ? "actions" : options.access;
       const minted = await app.mintInstallationToken({
         installationId: options.installationId,
         repository,
-        ...(options.access ? { access: options.access } : {}),
+        ...(access ? { access } : {}),
       });
       return minted.token;
     },
@@ -64,6 +65,7 @@ export async function acquireOperationToken(
     privateKeyPem: input.privateKeyPem,
     owner: input.owner,
     repo: input.repo,
+    ...(purpose === "ci_log" ? { access: "actions" as const } : {}),
     ...(input.now ? { now: input.now } : {}),
   });
   return minted.token;

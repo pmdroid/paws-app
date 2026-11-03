@@ -3,7 +3,12 @@ import { describe, expect, test } from "bun:test";
 import { signAppJwt } from "./jwt";
 import { createFetchGitHubClient } from "./client";
 import { assertScopedToken, mintInstallationToken } from "./token";
-import { INSTALLATION_PERMISSIONS, GitHubTokenError, type GitHubClient } from "./types";
+import {
+  ACTIONS_LOG_PERMISSIONS,
+  INSTALLATION_PERMISSIONS,
+  GitHubTokenError,
+  type GitHubClient,
+} from "./types";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", {
   modulusLength: 2048,
@@ -43,6 +48,53 @@ describe("GitHub App tokens", () => {
     expect(claims.iss).toBe("12345");
     expect(claims.exp - claims.iat).toBeLessThanOrEqual(600);
     expect(claims.exp).toBeLessThanOrEqual(Math.floor(now.getTime() / 1000) + 600);
+  });
+
+  test("an Actions log token asks for Actions, Checks and Metadata read and nothing more", async () => {
+    const seen: Array<{ body: { permissions: unknown } }> = [];
+    const client: GitHubClient = {
+      async request(req) {
+        seen.push(req as { body: { permissions: unknown } });
+        return {
+          status: 201,
+          body: tokenBody("ghs_actions", { permissions: ACTIONS_LOG_PERMISSIONS }),
+        };
+      },
+    };
+    const minted = await mintInstallationToken({
+      client,
+      appId: "99",
+      installationId: "7",
+      privateKeyPem: PRIVATE_KEY,
+      owner: "pmdroid",
+      repo: "paws-demo",
+      access: "actions",
+    });
+    expect(minted.token).toBe("ghs_actions");
+    expect(seen.map((request) => request.body.permissions)).toEqual([ACTIONS_LOG_PERMISSIONS]);
+    const now = new Date();
+    for (const permissions of [
+      { checks: "read", metadata: "read" },
+      { ...ACTIONS_LOG_PERMISSIONS, actions: "write" },
+      { ...ACTIONS_LOG_PERMISSIONS, contents: "write" },
+    ])
+      expect(() =>
+        assertScopedToken(
+          tokenBody("ghs_actions", { permissions }),
+          "pmdroid",
+          "paws-demo",
+          now,
+          "actions",
+        ),
+      ).toThrow("Actions log token grants unexpected permissions");
+    expect(() =>
+      assertScopedToken(
+        tokenBody("ghs_wide", { permissions: { ...INSTALLATION_PERMISSIONS, actions: "read" } }),
+        "pmdroid",
+        "paws-demo",
+        now,
+      ),
+    ).toThrow("installation token grants unexpected permission actions");
   });
 
   test("requests one repository and refuses a token that is too wide or too long-lived", async () => {

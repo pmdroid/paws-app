@@ -2,6 +2,7 @@ import { isTransient } from "../core";
 import type { GitHubApp, InstallationToken, MintTokenInput } from "./app";
 import { signAppJwt } from "./jwt";
 import {
+  ACTIONS_LOG_PERMISSIONS,
   INSTALLATION_PERMISSIONS,
   MAX_TOKEN_TTL_MS,
   TOKEN_TTL_SKEW_MS,
@@ -20,6 +21,8 @@ const ALLOWED_PERMISSIONS = new Set([
 ]);
 const withoutWorkflows = new Set<string>();
 
+export type TokenAccess = "read" | "write" | "actions";
+
 export type MintedToken = {
   token: string;
   expiresAt: Date;
@@ -36,7 +39,7 @@ export async function mintInstallationToken(input: {
   privateKeyPem: string;
   owner: string;
   repo: string;
-  access?: "read" | "write";
+  access?: TokenAccess;
   now?: Date;
 }): Promise<MintedToken> {
   if (!/^\d+$/.test(input.installationId)) {
@@ -55,6 +58,7 @@ export async function mintInstallationToken(input: {
     });
   let response: GitHubResponse;
   if (input.access === "read") response = await request({ contents: "read", metadata: "read" });
+  else if (input.access === "actions") response = await request(ACTIONS_LOG_PERMISSIONS);
   else if (withoutWorkflows.has(input.installationId))
     response = await request(INSTALLATION_PERMISSIONS);
   else {
@@ -83,7 +87,7 @@ export function assertScopedToken(
   owner: string,
   repo: string,
   now: Date,
-  access: "read" | "write" = "write",
+  access: TokenAccess = "write",
 ): MintedToken {
   if (!isRecord(body)) throw new GitHubTokenError("installation token response is not an object");
   if (typeof body.token !== "string" || body.token.length === 0 || /\s/.test(body.token)) {
@@ -115,6 +119,15 @@ export function assertScopedToken(
   }
   if (!isRecord(body.permissions))
     throw new GitHubTokenError("installation token permissions are missing");
+  if (access === "actions") {
+    const granted = Object.entries(body.permissions);
+    if (
+      body.permissions.actions !== "read" ||
+      granted.some(([key, value]) => !(key in ACTIONS_LOG_PERMISSIONS) || value !== "read")
+    )
+      throw new GitHubTokenError("Actions log token grants unexpected permissions");
+    return { token: body.token, expiresAt };
+  }
   for (const [key, value] of Object.entries(body.permissions)) {
     if (!ALLOWED_PERMISSIONS.has(key)) {
       throw new GitHubTokenError(`installation token grants unexpected permission ${key}`);
