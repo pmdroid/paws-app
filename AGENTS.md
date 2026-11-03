@@ -46,6 +46,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/finding-issues`                                     | Linear issues filed from pre-existing review findings                 |
 | `src/github`                                             | GitHub App API, repository access, pull requests and Git operations   |
 | `src/host`                                               | Sleep, wake and process supervision                                   |
+| `src/improvements`                                       | Improvement inbox sources: daily findings and legacy actions          |
 | `src/install`                                            | Agent adapter installation, login and usage probes                    |
 | `src/install-host`                                       | Host installation checks and package verification                     |
 | `src/installer`                                          | `paws install`: prompts, env file and the secrets step                |
