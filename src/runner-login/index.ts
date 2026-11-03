@@ -11,6 +11,7 @@ import {
   legacyAgentAccountId,
   legacyAgentBindingId,
   recordAccountObservation,
+  runnerAccountUnsupported,
   runnerLeaseCutoff,
   workspaceMember,
 } from "../db";
@@ -215,6 +216,8 @@ export function createRunnerLogin(options: {
             return {
               ...binding,
               enabled: binding.enabled === 1,
+              held:
+                runnerAccountUnsupported(db, runnerId, binding.bindingId, binding.agent) === null,
               running: bindingRunning(binding.bindingId, now()),
               session: session ? snapshot(read(session.id)) : null,
             };

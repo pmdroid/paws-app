@@ -25,6 +25,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | -------------------------------------------------------- | --------------------------------------------------------------------- |
 | `src/index.ts`                                           | Process composition, startup and shutdown                             |
 | `src/onboarding-start.ts`, `src/onboarding-readiness.ts` | Onboarding startup and readiness wiring                               |
+| `src/account-management`                                 | Dashboard agent accounts, runner bindings and eligibility preview     |
 | `src/acp`                                                | ACP agents, permissions, worktrees, checkpoints and tool servers      |
 | `src/agent-catalog`                                      | Agent and model catalog and registry                                  |
 | `src/agent-sessions`                                     | Stored agent session snapshots and their object storage               |

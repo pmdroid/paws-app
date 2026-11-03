@@ -206,6 +206,7 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
       agent: "codex",
       label: "Second",
       enabled: true,
+      held: expect.any(Boolean),
       running: 0,
       session: expect.objectContaining({ id: again.id, bindingId: binding.id, state: "starting" }),
     },
