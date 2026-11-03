@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { JOB_KIND, systemClock } from "../src/core";
+import { DEFAULT_MAX_AWAKE_MS, JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
   acceptLinearStop,
+  applyWorkItemEvent,
   beginImplementRun,
   bindWorkItemRepository,
   enterMergeQueue,
@@ -12,6 +13,7 @@ import {
   getLinearSession,
   getWorkItem,
   listJobs,
+  listOutbox,
   listPendingLinearTurns,
   migrate,
   openDatabase,
@@ -19,6 +21,7 @@ import {
   recordItemBranchState,
   recordItemPullRequest,
   recordPullComment,
+  restart,
 } from "../src/db";
 import { fakeMergeReadiness, type GitHubClient, type GitHubResponse } from "../src/github";
 
@@ -359,6 +362,67 @@ test("two replies before dispatch make one handoff with both and one CI section"
     expect(handoff).toStartWith("Please fix the build\n\nAnd keep the flag name\n\n");
     expect(handoff.split("CI failed on the pull request")).toHaveLength(2);
     expect(listPendingLinearTurns(f.db, "session")).toHaveLength(2);
+  } finally {
+    await f.close();
+  }
+}, 20_000);
+
+const spent = (db: ReturnType<typeof openDatabase>, itemId: string) =>
+  db.run(
+    "UPDATE work_item SET awake_ms = max_awake_ms, agent_ms = 90 * 60000, closeout_ms = 90 * 60000 WHERE id = ?",
+    [itemId],
+  );
+
+test("a person's follow-up on accepted work starts with a fresh time budget and says so", async () => {
+  const f = await waitingTask({ ci: "green" });
+  try {
+    spent(f.db, f.itemId);
+    await f.orchestrator.onLinearEvent(linearEvent("reply-1", "CI still fails, fix the acme lint"));
+    expect(f.resumes()).toHaveLength(1);
+    expect(getWorkItem(f.db, f.itemId)).toMatchObject({
+      awakeMs: 0,
+      maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
+    });
+    const notes = listOutbox(f.db).filter((row) => row.idempotencyKey.startsWith("fresh-budget:"));
+    expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
+      "Starting on your request with a fresh 3-hour time limit.",
+    ]);
+  } finally {
+    await f.close();
+  }
+}, 20_000);
+
+test("an automatic CI repair restart keeps adding to the same clock", async () => {
+  const f = await waitingTask({ ci: "green" });
+  try {
+    spent(f.db, f.itemId);
+    const before = getWorkItem(f.db, f.itemId)!;
+    restart(f.db, before, {
+      reason: "ci",
+      body: "CI failed on the pull request.",
+      now: Date.now(),
+    });
+    expect(getWorkItem(f.db, f.itemId)!.awakeMs).toBe(before.awakeMs);
+  } finally {
+    await f.close();
+  }
+}, 20_000);
+
+test("a failed item's follow-up clears the stop and the retries and resets the clock", async () => {
+  const f = await waitingTask({ ci: "green" });
+  try {
+    applyWorkItemEvent(f.db, f.itemId, "work_failed");
+    f.db.run("UPDATE work_item SET cancel_requested = 1, recovery_attempts = 2 WHERE id = ?", [
+      f.itemId,
+    ]);
+    spent(f.db, f.itemId);
+    await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Try again on the acme widgets"));
+    expect(getWorkItem(f.db, f.itemId)).toMatchObject({
+      cancelRequested: false,
+      recoveryAttempts: 0,
+      awakeMs: 0,
+      maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
+    });
   } finally {
     await f.close();
   }
