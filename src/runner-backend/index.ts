@@ -19,7 +19,9 @@ import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   getTaskMode,
+  closeFallbackAttempts,
   dispatchAccount,
+  fallbackHistory,
   legacyAgentAccountId,
   legacyAgentBindingId,
   getWorkItem,
@@ -29,6 +31,7 @@ import {
   pinnedSlotsReserved,
   releasePinnedSlot,
   restartedFromMergeQueue,
+  recordFallbackAttempt,
   runnerHasCapacity,
   runnerSlotsHeldBetweenCommands,
   saveCheckpoint,
@@ -92,10 +95,12 @@ import {
 import {
   RetryableRunnerError,
   AccountPolicyUnavailable,
+  failoverCallId,
   runWithFailover,
   USAGE_LIMIT_RESUME_SLACK_MS,
   UsageLimitPause,
   type FailoverAttempt,
+  type FailoverLedger,
   type UsageLimit,
 } from "./failover";
 import {
@@ -867,11 +872,12 @@ export function createRemoteAgentRunner(options: {
           input.role === "implementer" &&
           input.checkpoint !== false
             ? {
-                restore: (runnerId: string) => {
+                restore: (runnerId: string, account?: PlacementAccount) => {
                   const plan = planSessionRestore(db, {
                     runId,
                     agent: profile.agent,
                     targetRunnerId: runnerId,
+                    ...(account ? { targetAccount: account } : {}),
                   });
                   return plan.eligible
                     ? { sameVersion: plan.restoreSession.agentVersion === plan.targetVersion }
@@ -1591,9 +1597,13 @@ export function createRemoteAgentRunner(options: {
                   type: "progress",
                   text: resumeSessionId
                     ? `Continuing the agent's session on ${where}.\n`
-                    : selected.id === session.runnerId
-                      ? `Starting a new session on ${where}; this runner version can't resume the earlier session.\n`
-                      : `Starting a new session on ${where}; ${name(session.runnerId)} is ${sessionBusy ? "busy" : "unavailable"}.\n`,
+                    : selected.id === session.runnerId &&
+                        selected.account &&
+                        selected.account.bindingId !== session.bindingId
+                      ? `Starting a new session on ${where} with another ${agentName(profile.agent)} account; the earlier session stays with its own account.\n`
+                      : selected.id === session.runnerId
+                        ? `Starting a new session on ${where}; this runner version can't resume the earlier session.\n`
+                        : `Starting a new session on ${where}; ${name(session.runnerId)} is ${sessionBusy ? "busy" : "unavailable"}.\n`,
                 });
               else if (input.role === "implementer")
                 await emit({ type: "progress", text: `Starting on ${where}.\n` });
@@ -2332,6 +2342,15 @@ export function createRemoteAgentRunner(options: {
           const move: HandoverMove = {};
           const moving: FailoverAttempt = (next, excluded, limit) =>
             attempt(next, excluded, limit, move);
+          const callId = failoverCallId(input);
+          const ledger: FailoverLedger | undefined = runId
+            ? {
+                load: (policyKey) => fallbackHistory(db, runId, callId, policyKey),
+                record: (entry) =>
+                  void recordFallbackAttempt(db, { ...entry, runId, callId, now: now() }),
+                finish: () => closeFallbackAttempts(db, runId, callId, now()),
+              }
+            : undefined;
           return await runWithFailover(
             input,
             moving,
@@ -2344,6 +2363,7 @@ export function createRemoteAgentRunner(options: {
               },
               input,
             ),
+            ledger,
           );
         } finally {
           if (runId) readers.delete(runId);

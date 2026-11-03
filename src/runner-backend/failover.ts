@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import type { FallbackHistory, FallbackOutcome } from "../db";
 import { journalCaught } from "../journal";
 import {
   DEFAULT_RUN_TIMEOUT_MS,
@@ -81,11 +83,42 @@ export type UsageLimitWait = {
   pause(limit: UsageLimitPause, profilesChanged?: () => boolean): Promise<void>;
 };
 
+export type FailoverLedger = {
+  load(policyKey: string): FallbackHistory;
+  record(entry: {
+    policyKey: string;
+    outcome: FallbackOutcome;
+    runnerId: string;
+    excludedKey: string;
+  }): void;
+  finish(): void;
+};
+
+export const MAX_FAILOVER_FAILURES = 3;
+
+export function failoverCallId(input: RunAgentOptions): string {
+  const purpose = input.prepareOnly ? "prepare" : "work";
+  if (input.role !== "reviewer") return `${input.role}:${purpose}:${input.runId}`;
+  const review = createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.prompt,
+        input.reviewCommand ?? null,
+        input.mainSha ?? null,
+        input.resume?.replayPrompt ?? null,
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 40);
+  return `reviewer:${purpose}:${review}`;
+}
+
 export async function runWithFailover(
   input: RunAgentOptions,
   attempt: FailoverAttempt,
   settle: (error: RetryableRunnerError) => Promise<void>,
   usageLimits?: UsageLimitWait,
+  ledger?: FailoverLedger,
 ): Promise<RunAgentResult> {
   const excluded: string[] = [];
   let prompt = input.prompt;
@@ -111,12 +144,24 @@ export async function runWithFailover(
   const profilesChanged = () =>
     input.resolveProfiles !== undefined &&
     profileKey(input.resolveProfiles()) !== configuredProfilesKey;
-  for (let index = 0; index < 3;) {
+  let index = 0;
+  if (ledger) {
+    const history = ledger.load(configuredProfilesKey);
+    excluded.push(...history.excluded);
+    index = history.failures;
+    usageLimitEvents = history.usageLimits;
+    if (usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
+      throw new UsageLimitExhaustedError(
+        null,
+        new UsageLimitPause(profile?.agent ?? "agent", 0, null, null),
+      );
+  }
+  while (index < MAX_FAILOVER_FAILURES) {
     input.signal?.throwIfAborted();
     try {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) throw new Error("Remote runner request timed out during failover");
-      return await attempt(
+      const result = await attempt(
         {
           ...input,
           profile,
@@ -128,6 +173,8 @@ export async function runWithFailover(
         excluded,
         limit,
       );
+      ledger?.finish();
+      return result;
     } catch (error) {
       if (
         error instanceof UsageLimitPause &&
@@ -189,6 +236,14 @@ export async function runWithFailover(
             accounts = latest.accounts;
             configuredProfilesKey = latestKey;
             excluded.length = 0;
+            if (ledger) {
+              const history = ledger.load(configuredProfilesKey);
+              excluded.push(...history.excluded);
+              index = Math.max(index, history.failures);
+              usageLimitEvents = Math.max(usageLimitEvents, history.usageLimits);
+              if (usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
+                throw new UsageLimitExhaustedError(error.runnerId, error);
+            }
           }
         }
         input.signal?.throwIfAborted();
@@ -204,10 +259,26 @@ export async function runWithFailover(
       }
       if (!(error instanceof RetryableRunnerError)) throw error;
       input.signal?.throwIfAborted();
+      const usageLimit = usageLimits ? error.usageLimit : undefined;
+      const excludedKey = usageLimit
+        ? ""
+        : error.handedOver
+          ? error.runnerId
+          : error.restarted
+            ? ""
+            : (error.bindingId ?? error.runnerId);
+      ledger?.record({
+        policyKey: configuredProfilesKey,
+        outcome: usageLimit ? "usage_limit" : error.handedOver ? "handed_over" : "failed",
+        runnerId: error.runnerId,
+        excludedKey,
+      });
       await settle(error);
       input.signal?.throwIfAborted();
-      const usageLimit = usageLimits ? error.usageLimit : undefined;
-      if ((!usageLimit && !error.handedOver && index === 2) || performance.now() >= deadline)
+      if (
+        (!usageLimit && !error.handedOver && index === MAX_FAILOVER_FAILURES - 1) ||
+        performance.now() >= deadline
+      )
         throw error;
       if (usageLimit && ++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
         throw new UsageLimitExhaustedError(error.runnerId, error);
@@ -224,10 +295,10 @@ export async function runWithFailover(
         };
       else if (error.handedOver) {
         // A handover is not a failure: it spends no attempt, and the old runner stays out.
-        if (!excluded.includes(error.runnerId)) excluded.push(error.runnerId);
+        if (!excluded.includes(excludedKey)) excluded.push(excludedKey);
       } else {
         index++;
-        if (!error.restarted) excluded.push(error.bindingId ?? error.runnerId);
+        if (excludedKey && !excluded.includes(excludedKey)) excluded.push(excludedKey);
       }
       let approved = "";
       if (error.publishedEffects) {

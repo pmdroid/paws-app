@@ -3,12 +3,14 @@ import type { RunAgentOptions, RunAgentResult } from "../acp";
 import { isTransient } from "../core";
 import {
   AccountPolicyUnavailable,
+  failoverCallId,
   RetryableRunnerError,
   runWithFailover,
   UsageLimitPause,
   UsageLimitExhaustedError,
   MAX_USAGE_LIMIT_EVENTS,
   type FailoverAttempt,
+  type FailoverLedger,
   type UsageLimit,
 } from "./failover";
 
@@ -553,4 +555,278 @@ test("a failed named account binding is excluded on its own, not its whole runne
     async () => {},
   );
   expect(excluded).toEqual([[], ["binding-a"], ["binding-a", "runner-2"]]);
+});
+
+function memoryLedger() {
+  const rows: (Parameters<FailoverLedger["record"]>[0] & { closed: boolean })[] = [];
+  const ledger: FailoverLedger = {
+    load(policyKey) {
+      const mine = rows.filter((row) => row.policyKey === policyKey && !row.closed);
+      return {
+        excluded: [...new Set(mine.map((row) => row.excludedKey).filter(Boolean))],
+        failures: mine.filter((row) => row.outcome === "failed").length,
+        usageLimits: mine.filter((row) => row.outcome === "usage_limit").length,
+      };
+    },
+    record(entry) {
+      rows.push({ ...entry, closed: false });
+    },
+    finish() {
+      for (const row of rows) row.closed = true;
+    },
+  };
+  return { rows, ledger };
+}
+
+describe("persisted fallback attempts", () => {
+  test("a restart keeps the failed binding out instead of trying A, B, then A again", async () => {
+    const { rows, ledger } = memoryLedger();
+    const seen: string[][] = [];
+    await expect(
+      runWithFailover(
+        input(),
+        async (_options, avoid) => {
+          seen.push([...avoid]);
+          if (seen.length === 1)
+            throw new RetryableRunnerError(
+              "runner-1",
+              "The runner agent requires sign-in.",
+              undefined,
+              false,
+              undefined,
+              false,
+              false,
+              "binding-a",
+            );
+          throw new Error("Paws stopped");
+        },
+        async () => {},
+        undefined,
+        ledger,
+      ),
+    ).rejects.toThrow("Paws stopped");
+    const resumed: string[][] = [];
+    await runWithFailover(
+      input(),
+      async (_options, avoid) => {
+        resumed.push([...avoid]);
+        return done();
+      },
+      async () => {},
+      undefined,
+      ledger,
+    );
+    expect(seen).toEqual([[], ["binding-a"]]);
+    expect(resumed).toEqual([["binding-a"]]);
+    expect(rows.map((row) => [row.outcome, row.runnerId, row.excludedKey])).toEqual([
+      ["failed", "runner-1", "binding-a"],
+    ]);
+  });
+
+  test("the failure budget spent before a restart is not granted again", async () => {
+    const { ledger } = memoryLedger();
+    const fail = (runnerId: string) => new RetryableRunnerError(runnerId, "Interrupted");
+    let calls = 0;
+    await expect(
+      runWithFailover(
+        input(),
+        async () => {
+          calls++;
+          if (calls === 1) throw fail("runner-1");
+          throw new Error("Paws stopped");
+        },
+        async () => {},
+        undefined,
+        ledger,
+      ),
+    ).rejects.toThrow("Paws stopped");
+    const after: string[] = [];
+    await expect(
+      runWithFailover(
+        input(),
+        async () => {
+          const runnerId = `runner-${after.length + 2}`;
+          after.push(runnerId);
+          throw fail(runnerId);
+        },
+        async () => {},
+        undefined,
+        ledger,
+      ),
+    ).rejects.toBeInstanceOf(RetryableRunnerError);
+    expect(after).toEqual(["runner-2", "runner-3"]);
+  });
+
+  test("the old execution is recorded before it settles, so an unconfirmed teardown keeps the attempt", async () => {
+    const { rows, ledger } = memoryLedger();
+    const order: string[] = [];
+    const tracked: FailoverLedger = {
+      ...ledger,
+      record(entry) {
+        order.push("record");
+        ledger.record(entry);
+      },
+    };
+    await expect(
+      runWithFailover(
+        input(),
+        async () => {
+          throw new RetryableRunnerError("runner-1", "Interrupted");
+        },
+        async () => {
+          order.push("settle");
+          throw new Error("teardown unconfirmed");
+        },
+        undefined,
+        tracked,
+      ),
+    ).rejects.toThrow("teardown unconfirmed");
+    expect(order).toEqual(["record", "settle"]);
+    expect(ledger.load(rows[0]!.policyKey)).toEqual({
+      excluded: ["runner-1"],
+      failures: 1,
+      usageLimits: 0,
+    });
+  });
+
+  test("a handover is recorded without spending an attempt, and a pure wait is not recorded", async () => {
+    const { rows, ledger } = memoryLedger();
+    const runners = fleet((limit, now) =>
+      limit && limit.resumeAt > now
+        ? new UsageLimitPause("claude", limit.resumeAt, limit.resetsAt, limit.runnerId)
+        : "agentbox",
+    );
+    runners.outcomes.push(
+      new RetryableRunnerError("old", "Handed over", undefined, false, undefined, false, true),
+      limited("agentbox", RESET),
+    );
+    await runWithFailover(input(), runners.attempt, async () => {}, runners.wait, ledger);
+    expect(runners.pauses).toHaveLength(1);
+    expect(rows.map((row) => [row.outcome, row.excludedKey])).toEqual([
+      ["handed_over", "old"],
+      ["usage_limit", ""],
+    ]);
+    expect(ledger.load(rows[0]!.policyKey).failures).toBe(0);
+  });
+
+  test("usage-limit events spent before a restart stay spent", async () => {
+    const { ledger } = memoryLedger();
+    for (let event = 0; event < MAX_USAGE_LIMIT_EVENTS; event++)
+      ledger.record({
+        policyKey: JSON.stringify([null, null, null]),
+        outcome: "usage_limit",
+        runnerId: "agentbox",
+        excludedKey: "",
+      });
+    let calls = 0;
+    await expect(
+      runWithFailover(
+        input(),
+        async () => {
+          calls++;
+          return done();
+        },
+        async () => {},
+        fleet(oneRunner).wait,
+        ledger,
+      ),
+    ).rejects.toBeInstanceOf(UsageLimitExhaustedError);
+    expect(calls).toBe(0);
+  });
+
+  test("changed agent settings start from that configuration's own attempts", async () => {
+    const { ledger } = memoryLedger();
+    ledger.record({
+      policyKey: "another configuration",
+      outcome: "failed",
+      runnerId: "runner-1",
+      excludedKey: "runner-1",
+    });
+    const seen: string[][] = [];
+    await runWithFailover(
+      input(),
+      async (_options, avoid) => {
+        seen.push([...avoid]);
+        return done();
+      },
+      async () => {},
+      undefined,
+      ledger,
+    );
+    expect(seen).toEqual([[]]);
+  });
+});
+
+test("a finished call closes its attempts, so a later call on the same run starts fresh", async () => {
+  const { rows, ledger } = memoryLedger();
+  let calls = 0;
+  await runWithFailover(
+    input(),
+    async () => {
+      if (++calls === 1) throw new RetryableRunnerError("runner-1", "Interrupted");
+      return done();
+    },
+    async () => {},
+    undefined,
+    ledger,
+  );
+  expect(rows.map((row) => row.closed)).toEqual([true]);
+  const seen: string[][] = [];
+  await runWithFailover(
+    input(),
+    async (_options, avoid) => {
+      seen.push([...avoid]);
+      return done();
+    },
+    async () => {},
+    undefined,
+    ledger,
+  );
+  expect(seen).toEqual([[]]);
+});
+
+test("switching to saved settings keeps that configuration's spent failures and exclusions", async () => {
+  const claude = { agent: "claude" as const, model: "opus" };
+  const codex = { agent: "codex" as const, model: "gpt-6-sol" };
+  const { ledger } = memoryLedger();
+  const codexKey = JSON.stringify([["codex", "gpt-6-sol", null], null, null]);
+  for (const runnerId of ["runner-1", "runner-2"])
+    ledger.record({ policyKey: codexKey, outcome: "failed", runnerId, excludedKey: runnerId });
+  let profiles: ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>> = { profile: claude };
+  let now = RESET - 1;
+  const attempted: [string, string[]][] = [];
+  await expect(
+    runWithFailover(
+      { ...input(), ...profiles, resolveProfiles: () => profiles },
+      async (options, avoid) => {
+        attempted.push([options.profile!.agent, [...avoid]]);
+        if (attempted.length === 1) throw new UsageLimitPause("claude", RESET, RESET, null);
+        throw new RetryableRunnerError("runner-3", "Interrupted");
+      },
+      async () => undefined,
+      {
+        now: () => now,
+        async pause() {
+          profiles = { profile: codex };
+          now = RESET;
+        },
+      },
+      ledger,
+    ),
+  ).rejects.toBeInstanceOf(RetryableRunnerError);
+  expect(attempted).toEqual([
+    ["claude", []],
+    ["codex", ["runner-1", "runner-2"]],
+  ]);
+});
+
+test("a reviewer call keeps its fallback identity across a restart that renumbers its run id", () => {
+  const review = (runId: string, prompt = "Review base..head") =>
+    failoverCallId({ ...input(), role: "reviewer", readOnly: true, runId, prompt });
+  expect(review("rev-task-1")).toBe(review("rev-task-7"));
+  expect(review("rev-task-1")).not.toBe(review("rev-task-1", "Review another head"));
+  expect(failoverCallId({ ...input(), runId: "run-1" })).toBe("implementer:work:run-1");
+  expect(failoverCallId({ ...input(), runId: "run-1", prepareOnly: true })).toBe(
+    "implementer:prepare:run-1",
+  );
 });

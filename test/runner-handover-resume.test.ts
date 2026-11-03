@@ -388,6 +388,7 @@ async function setup() {
   return {
     db,
     now,
+    root,
     paws,
     git,
     runners,
@@ -447,6 +448,39 @@ test("a handed-over session continues on the second runner from its WIP commit, 
     `Moved from A to B. Continuing the agent's session from turn ${onA.generation}.\n`,
   ]);
   expect(notices.some((notice) => notice.startsWith("Waiting"))).toBe(false);
+});
+
+test("a reviewer after a moved session never carries the implementer's native session", async () => {
+  const { runners } = context;
+  const { record, wip, running } = await context.handOverTurn();
+  const onB = (await context.next(runners.b)) as RunCommand;
+  expect(onB.restoreSession).toBeDefined();
+  context.events(onB, runners.b, [{ type: "session_restore", restored: true }]);
+  context.submit(onB, runners.b, { candidateSha: wip });
+  await running;
+  const stop = new AbortController();
+  const reviewing = context.backend
+    .forItem(record.id)({
+      profile: { agent: "claude", model: "reviewer-model" },
+      role: "reviewer",
+      readOnly: true,
+      itemId: `display-${record.id}`,
+      runId: `rev-${record.id}-1`,
+      prompt: "Review fixture",
+      worktreePath: context.paws,
+      pawsRoot: context.root,
+      signal: stop.signal,
+    })
+    .catch((error: unknown) => error);
+  let review: RunnerCommand | null = null;
+  for (let index = 0; index < 50 && !review; index++)
+    review = (await context.next(runners.a, 20)) ?? (await context.next(runners.b, 20)) ?? null;
+  stop.abort();
+  await reviewing;
+  for (const runner of [runners.a, runners.b]) while (await context.next(runner, 20));
+  expect(review?.type).toBe("review");
+  expect(review).not.toHaveProperty("restoreSession");
+  expect(review).not.toHaveProperty("resumeSessionId");
 });
 
 test("with no eligible runner the session waits, says why once, and moves when one fits", async () => {
