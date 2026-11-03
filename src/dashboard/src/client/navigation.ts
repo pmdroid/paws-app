@@ -13,6 +13,10 @@ export const PAGES = {
     title: "Issues",
     description: "Every issue delegated to Paws, who owns it and what blocks it.",
   },
+  alias: {
+    title: "Issues",
+    description: "Every issue delegated to Paws, who owns it and what blocks it.",
+  },
   mergeQueue: {
     title: "Merge queue",
     description: "Every issue Closeout accepted that is waiting to merge, per repository.",

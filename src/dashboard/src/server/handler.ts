@@ -43,6 +43,7 @@ import {
   type LiveStatusOptions,
 } from "../live/provider";
 import { emptyOverview } from "../live/overview";
+import { ALIAS_API_PATH, isAliasKind, type AliasKind, type AliasResponse } from "../aliases";
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
 import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
 import { injectCsrf } from "./csrf";
@@ -67,6 +68,7 @@ export interface StatusProvider {
   overview?(): OverviewResponse | Promise<OverviewResponse>;
   questions?(): QuestionListResponse | Promise<QuestionListResponse>;
   question?(id: string): QuestionDetailResponse | null | Promise<QuestionDetailResponse | null>;
+  alias?(kind: AliasKind, id: string): string | null | Promise<string | null>;
 }
 
 export interface StatusServerOptions {
@@ -129,6 +131,9 @@ export function fakeStatusProvider(): StatusProvider {
     question() {
       return null;
     },
+    alias() {
+      return null;
+    },
   };
 }
 
@@ -186,6 +191,8 @@ export async function handleStatusRequest(
     return issuesResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname === QUESTIONS_API_PATH || pathname.startsWith(`${QUESTIONS_API_PATH}/`))
     return questionsResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
+  if (pathname.startsWith(`${ALIAS_API_PATH}/`))
+    return aliasResponse(request, providerFor(options), pathname);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (isDashboardPath(pathname)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
@@ -265,6 +272,7 @@ function liveProvider(options?: {
     overview: () => emptyOverview(),
     questions: () => emptyQuestionList(),
     question: () => null,
+    alias: () => null,
   };
 }
 
@@ -660,6 +668,28 @@ function tail(output: string): string {
   let start = bytes.length - CHECK_LOG_TAIL_BYTES;
   while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start += 1;
   return new TextDecoder().decode(bytes.subarray(start));
+}
+
+async function aliasResponse(
+  request: Request,
+  provider: StatusProvider,
+  pathname: string,
+): Promise<Response> {
+  if (request.method !== "GET" && request.method !== "HEAD")
+    return json({ error: "Method not allowed" }, 405);
+  const [kind, raw, ...rest] = pathname.slice(ALIAS_API_PATH.length + 1).split("/");
+  const id = itemId(raw ?? "");
+  if (!isAliasKind(kind) || id === null || rest.length > 0 || provider.alias === undefined)
+    return json({ error: "Not found" }, 404);
+  try {
+    const issueId = await provider.alias(kind, id);
+    if (issueId === null) return json({ error: "Not found" }, 404);
+    const body: AliasResponse = { issueId };
+    return json(body, 200);
+  } catch (caughtError) {
+    journalCaught(caughtError, "handler.aliasResponse.alias", null);
+    return json({ error: "status unavailable" }, 500);
+  }
 }
 
 function itemId(raw: string): string | null {

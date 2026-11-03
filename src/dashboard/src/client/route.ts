@@ -1,40 +1,30 @@
 import { journalCaught } from "../journal";
-import {
-  hasStatusSlice,
-  type StatusItem,
-  type StatusRun,
-  type StatusSlice,
-  type StatusSnapshot,
-} from "../contract";
+import { hasStatusSlice, type StatusSlice, type StatusSnapshot } from "../contract";
 import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
 import { DASHBOARD_PATH, isDashboardPath } from "../../../dashboard-links";
+import { isAliasKind, type AliasKind } from "../aliases";
 
 export type Route =
   | { view: "overview" }
   | { view: "runners"; id: string | null }
   | { view: "issues"; id: string | null }
   | { view: "runs"; id: string | null }
+  | { view: "alias"; kind: AliasKind; id: string }
   | { view: "mergeQueue" }
   | { view: "findings" }
   | { view: "evidence"; id: string | null }
   | { view: "questions"; id: string | null }
   | { view: "settings"; page?: SettingsPage };
 
-export interface RouteIndex {
-  items: readonly Pick<StatusItem, "id" | "session">[];
-  runs: readonly Pick<StatusRun, "id" | "itemId" | "attempts">[];
-  verdicts: readonly { itemId: string; runId?: string }[];
-}
-
 export function routerBase(pathname: string): string {
   return isDashboardPath(pathname) ? DASHBOARD_PATH : "";
 }
 
-export function parseRoute(path: string, snapshot?: RouteIndex | null): Route {
-  return matchRoute(path, snapshot) ?? { view: "overview" };
+export function parseRoute(path: string): Route {
+  return matchRoute(path) ?? { view: "overview" };
 }
 
-export function matchRoute(path: string, snapshot?: RouteIndex | null): Route | null {
+export function matchRoute(path: string): Route | null {
   const parts = path
     .replace(/^#/, "")
     .split("/")
@@ -42,6 +32,10 @@ export function matchRoute(path: string, snapshot?: RouteIndex | null): Route | 
     .map(decodePart);
   const head = parts[0];
   const id = parts[1] ?? null;
+  if (isAliasKind(head)) {
+    if (id === null) return { view: "issues", id: null };
+    return parts.length === 2 ? { view: "alias", kind: head, id } : null;
+  }
   switch (head) {
     case undefined:
     case "overview":
@@ -53,23 +47,14 @@ export function matchRoute(path: string, snapshot?: RouteIndex | null): Route | 
       return { view: "issues", id };
     case "epics":
       return { view: "issues", id: null };
-    case "runs": {
-      if (id === null) return { view: "issues", id: null };
-      const issue = issueForRun(id, snapshot);
-      return issue ? { view: "issues", id: issue } : { view: "runs", id };
-    }
     case "merge-queue":
       return { view: "mergeQueue" };
     case "findings":
       return { view: "findings" };
     case "evidence":
       return { view: "evidence", id };
-    case "sessions":
-      return { view: "issues", id: id === null ? null : issueForSession(id, snapshot) };
     case "questions":
       return { view: "questions", id };
-    case "verdicts":
-      return { view: "issues", id: id === null ? null : (issueForVerdict(id, snapshot) ?? id) };
     case "settings":
       return SETTINGS_PAGES.some((entry) => entry.id === id)
         ? { view: "settings", page: id as SettingsPage }
@@ -84,6 +69,7 @@ export function routePath(route: Route): string {
   if (route.view === "settings") return route.page ? `/settings/${route.page}` : "/settings";
   if (route.view === "mergeQueue") return "/merge-queue";
   if (route.view === "findings") return "/findings";
+  if (route.view === "alias") return `/${route.kind}/${encodeURIComponent(route.id)}`;
   return route.id ? `/${route.view}/${encodeURIComponent(route.id)}` : `/${route.view}`;
 }
 
@@ -96,6 +82,7 @@ export const ROUTE_SLICES: Record<Route["view"], readonly StatusSlice[]> = {
   overview: [],
   issues: [],
   runs: [],
+  alias: [],
   mergeQueue: ["items", "mergeQueue", "mergeHistory"],
   questions: [],
   evidence: ["items", "evidence"],
@@ -134,46 +121,12 @@ export function routeResource(route: Route): RouteResource {
   return needsSnapshot(route) ? "status" : null;
 }
 
-const FOLDED = new Set(["runs", "sessions", "verdicts"]);
-
-/**
- * The issue page a run, session or verdict link now opens, such as `/issues/PAS-367`.
- * A session link the snapshot does not know opens the issue list, since the Conversations
- * page it used to open no longer exists.
- * Null when the path is not one of those, or the snapshot has not arrived yet.
- */
-export function issueRedirect(path: string, snapshot: RouteIndex | null): string | null {
-  if (snapshot === null) return null;
-  const head = path
+export function issueListRedirect(path: string): string | null {
+  const parts = path
     .replace(/^#/, "")
     .split("/")
-    .find((part) => part.length > 0);
-  if (head === undefined || !FOLDED.has(head)) return null;
-  const route = matchRoute(path, snapshot);
-  if (route?.view !== "issues") return null;
-  return route.id !== null || head === "sessions" ? routePath(route) : null;
-}
-
-/** Any of a task's engine run ids, or the run id the dashboard shows for it. */
-function issueForRun(id: string, snapshot: RouteIndex | null | undefined): string | null {
-  const run = snapshot?.runs.find((entry) => entry.id === id || entry.attempts?.includes(id));
-  return run?.itemId ?? null;
-}
-
-/**
- * The Linear session's issue. Sub-issues that share a session open the one delegated first;
- * items arrive newest first.
- */
-function issueForSession(id: string, snapshot: RouteIndex | null | undefined): string | null {
-  return snapshot?.items.findLast((item) => item.session?.id === id)?.id ?? null;
-}
-
-function issueForVerdict(id: string, snapshot: RouteIndex | null | undefined): string | null {
-  if (!snapshot) return null;
-  if (snapshot.items.some((item) => item.id === id)) return id;
-  return (
-    snapshot.verdicts.find((verdict) => verdict.runId === id)?.itemId ?? issueForRun(id, snapshot)
-  );
+    .filter((part) => part.length > 0);
+  return parts.length === 1 && isAliasKind(parts[0]) ? "/issues" : null;
 }
 
 function decodePart(part: string): string {

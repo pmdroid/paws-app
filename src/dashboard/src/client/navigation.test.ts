@@ -10,7 +10,7 @@ import { expect, test } from "bun:test";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";
 import {
-  issueRedirect,
+  issueListRedirect,
   matchRoute,
   needsSnapshot,
   parseRoute,
@@ -36,7 +36,7 @@ test("sidebar exposes every page exactly once and all page links round-trip", ()
   const views = NAVIGATION.flatMap((group) => [...group.views]);
   // Settings has its own menu, and an evidence page is opened from a run or a copied link.
   const linked = Object.keys(PAGES).filter(
-    (view) => !["settings", "evidence", "runs"].includes(view),
+    (view) => !["settings", "evidence", "runs", "alias"].includes(view),
   );
   expect(new Set(views).size).toBe(linked.length);
   expect(views.length).toBe(linked.length);
@@ -107,7 +107,8 @@ test("path routes keep the engine base and only claim dashboard pages", () => {
   expect(routerBase("/status/runs/r-1")).toBe("");
   expect(routerBase("/runs/r-1")).toBe("");
   expect(routeHref({ view: "runs", id: "r/1" })).toBe("/runs/r%2F1");
-  expect(parseRoute("/runs/r%2F1")).toEqual({ view: "runs", id: "r/1" });
+  expect(parseRoute("/runs/r%2F1")).toEqual({ view: "alias", kind: "runs", id: "r/1" });
+  expect(routeHref({ view: "alias", kind: "sessions", id: "s/1" })).toBe("/sessions/s%2F1");
   expect(parseRoute("#/settings/account")).toEqual({ view: "settings", page: "account" });
   expect(matchRoute("/auth/linear")).toBeNull();
   expect(matchRoute("/api/status")).toBeNull();
@@ -120,11 +121,13 @@ test("the Conversations page is gone and its old links open the issue list", () 
   expect(NAVIGATION.flatMap((group) => [...group.views])).not.toContain("sessions");
   expect(Object.values(PAGES).map((page) => page.title)).not.toContain("Conversations");
   expect(parseRoute("/sessions")).toEqual({ view: "issues", id: null });
-  expect(parseRoute("/sessions/unknown")).toEqual({ view: "issues", id: null });
-  const snapshot = statusFixture();
-  expect(issueRedirect("/sessions", snapshot)).toBe("/issues");
-  expect(issueRedirect("/sessions/unknown-session", snapshot)).toBe("/issues");
-  expect(issueRedirect("/sessions", null)).toBeNull();
+  expect(parseRoute("/sessions/unknown")).toEqual({
+    view: "alias",
+    kind: "sessions",
+    id: "unknown",
+  });
+  expect(issueListRedirect("/sessions")).toBe("/issues");
+  expect(issueListRedirect("/sessions/unknown-session")).toBeNull();
 });
 
 test("only work pages read the status snapshot; issue, Overview and Questions pages read their own resources", () => {
@@ -137,6 +140,7 @@ test("only work pages read the status snapshot; issue, Overview and Questions pa
   expect(routeResource({ view: "questions", id: null })).toBe("questions");
   expect(routeResource({ view: "questions", id: "Q-41" })).toBe("question");
   expect(routeResource({ view: "settings" })).toBeNull();
+  expect(routeResource({ view: "alias", kind: "runs", id: "r-1" })).toBeNull();
 });
 
 test("every route names the status slices it renders", () => {
@@ -147,6 +151,7 @@ test("every route names the status slices it renders", () => {
     overview: [],
     issues: [],
     runs: [],
+    alias: [],
     mergeQueue: ["items", "mergeQueue", "mergeHistory"],
     questions: [],
     evidence: ["items", "evidence"],

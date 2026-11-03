@@ -97,7 +97,17 @@ Closeout videos and screenshots arrive in the snapshot's `evidence` list, limite
 
 `null` means the request is not `/status` or `/api/status`. Leave webhook routes alone.
 
-The process binds `127.0.0.1`. `GET /api/status` responds with `Cache-Control: no-store`; the page sends `If-None-Match` itself. The dashboard uses path routes such as `/status/issues/PAS-367`. Each issue has one page: its state, project, runner and agent, the timeline of every engine run, Closeout with checks and evidence, reviews, questions, fix rounds, and the pull request and merge state. An earlier Linear session on the same issue (`endedAt` on its item) is a section further down, and `session.shared` names sub-issues worked in the same session. `/status/runs/<id>` (any engine run id), `/status/sessions/<id>` and `/status/verdicts/<id>` redirect to that issue page, so links already posted in Linear keep working. HTML served by the process gets `<base href="/status/">` so relative assets resolve on every route.
+The process binds `127.0.0.1`. `GET /api/status` responds with `Cache-Control: no-store`; the page sends `If-None-Match` itself. The dashboard uses path routes such as `/status/issues/PAS-367`. Each issue has one page: its state, project, runner and agent, the timeline of every engine run, Closeout with checks and evidence, reviews, questions, fix rounds, and the pull request and merge state. An earlier Linear session on the same issue (`endedAt` on its item) is a section further down, and `session.shared` names sub-issues worked in the same session. Run, session and verdict links keep working under `/status` and `/dashboard`; see [Run, session and verdict links](#run-session-and-verdict-links). HTML served by the process gets `<base href="/status/">` so relative assets resolve on every route.
+
+## Run, session and verdict links
+
+`/dashboard/runs/<id>`, `/dashboard/sessions/<id>` and `/dashboard/verdicts/<id>`, and the same paths under `/status`, open the owning issue's page. The page asks `GET /api/aliases/<runs|sessions|verdicts>/<id>` (`AliasResponse`, `{ "issueId": "PAS-367" }`, in [`src/aliases.ts`](src/aliases.ts)) and replaces the address with `/dashboard/issues/<issueId>`, keeping the query and fragment. The lookup reads stored work items and runs (`resolveDashboardAlias` in `src/db`), so finished issues outside the issue list resolve too:
+
+- a run id is any engine run of the issue, the first or a later attempt;
+- a session shared by sub-issues opens the one delegated first;
+- a verdict id is the issue id or one of its run ids.
+
+The endpoint has the same sign-in and session filter as the issue resources. An unknown id and one outside the reader's sessions both answer the same 404, and the page says the link was not found instead of opening the issue list. `/runs`, `/sessions` and `/verdicts` without an id open the issue list. `/dashboard/runs/<id>/transcript` is the transcript page, never an alias.
 
 ## Local
 

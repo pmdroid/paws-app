@@ -87,9 +87,12 @@ test("one Linear session shows as one run with every attempt in its timeline", a
     );
     expect(parsed.snapshot.items.find((entry) => entry.id === "ENG-7")?.runId).toBe(first.id);
 
-    // A run link opens the issue page, which loads that issue's detail.
-    const route = parseRoute(`/runs/${review.id}`, parsed.snapshot);
-    expect(route).toEqual({ view: "issues", id: "ENG-7" });
+    const alias = await handleStatusRequest(
+      new Request(`http://127.0.0.1/api/aliases/runs/${review.id}`),
+      { db, env: {} },
+    );
+    expect(await alias?.json()).toEqual({ issueId: "ENG-7" });
+    const route = parseRoute("/issues/ENG-7");
     const itemResponse = await handleStatusRequest(
       new Request("http://127.0.0.1/api/status/items/ENG-7"),
       {

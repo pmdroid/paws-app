@@ -1,10 +1,4 @@
-import {
-  openedView,
-  fullStatusFixture,
-  pageData,
-  statusList,
-  type FullStatus,
-} from "../../test/fixtures";
+import { openedView, fullStatusFixture, pageData, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
@@ -516,19 +510,28 @@ describe("status views", () => {
     expect(view.content).not.toContain("Audit log export");
   });
 
-  test("retired hashes fall back to issues, the matching run, or overview", () => {
-    const snapshot = statusList(fullStatusFixture());
+  test("retired hashes fall back to issues, an alias the server resolves, or overview", () => {
     expect(parseRoute("")).toEqual({ view: "overview" });
     expect(parseRoute("/issues/ENG-104")).toEqual({ view: "issues", id: "ENG-104" });
-    expect(parseRoute("/runs/r-102")).toEqual({ view: "runs", id: "r-102" });
-    expect(parseRoute("/runs/r-102", snapshot)).toEqual({ view: "issues", id: "ENG-102" });
+    expect(parseRoute("/runs/r-102")).toEqual({ view: "alias", kind: "runs", id: "r-102" });
     expect(parseRoute("/questions/Q-41")).toEqual({ view: "questions", id: "Q-41" });
     expect(parseRoute("/epics/x")).toEqual({ view: "issues", id: null });
-    expect(parseRoute("/epics/ENG-98", snapshot)).toEqual({ view: "issues", id: null });
     expect(parseRoute("/queue")).toEqual({ view: "overview" });
-    expect(parseRoute("/verdicts/ENG-101", snapshot)).toEqual({ view: "issues", id: "ENG-101" });
-    expect(parseRoute("/verdicts/missing", snapshot)).toEqual({ view: "issues", id: "missing" });
-    expect(parseRoute("/verdicts/ENG-101")).toEqual({ view: "issues", id: "ENG-101" });
+    expect(parseRoute("/verdicts/ENG-101")).toEqual({
+      view: "alias",
+      kind: "verdicts",
+      id: "ENG-101",
+    });
+    expect(parseRoute("/runs")).toEqual({ view: "issues", id: null });
+  });
+
+  test("an alias shows loading until resolved, then the same not-found for absent and hidden ids", () => {
+    const route = { view: "alias", kind: "sessions", id: "s-1" } as const;
+    expect(render(model({ route, phase: "loading" })).content).toContain("Loading status");
+    const missing = render(model({ route, phase: "ready" })).content;
+    expect(missing).toContain("Link not found.");
+    expect(missing).toContain('href="/issues"');
+    expect(missing).not.toContain("No issues yet");
   });
 });
 
