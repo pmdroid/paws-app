@@ -375,7 +375,7 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
   async () => {
     const f = await fixture();
     try {
-      f.refuse(403, 1);
+      f.refuse(403, 2);
       await f.tickUntil(() => f.posted.length > 0);
       expect(f.posted.map((result) => result.stopReason)).toEqual(["error"]);
       expect(f.errors.join("\n")).toContain("Runner interrupted");
@@ -731,7 +731,7 @@ test("a failure whose transcript was sealed retries only the result after restar
   const f = await fixture();
   try {
     f.rejectSealed();
-    f.refuse(403, 1);
+    f.refuse(403, 2);
     f.rejectResults(1);
     await f.tickUntil(() => f.postAttempts() > 0);
     expect(f.seals()).toBe(1);
@@ -799,7 +799,7 @@ test("shutdown cannot renew a grant or post a result after an upload stops", asy
       stopping = f.stop();
       throw new RunnerRequestError(403, "POST", "/finish", 1, "Run grant is invalid or expired.");
     };
-    f.refuse(403, 1);
+    f.refuse(403, 2);
     await f.tickUntil(() => stopping !== undefined);
     const grants = f.grantAttempts();
     await stopping;
@@ -824,7 +824,7 @@ test("a lost transcript seal acknowledgement cannot reject the failure result", 
       }
       return result;
     };
-    f.refuse(403, 1);
+    f.refuse(403, 2);
     await f.tickUntil(() => f.posted.length > 0);
     expect(f.seals()).toBe(1);
     expect(f.posted).toHaveLength(1);
