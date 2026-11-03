@@ -155,6 +155,7 @@ export async function advanceMerge(
   if (queued) {
     const wait = await mergeQueueTurn(merge, repository, github, {
       number: pull.number,
+      url: pull.url,
       head: published.head,
     });
     if (wait?.reason === "ahead" && recheckChanged(db, item, caps, published.worktree)) {

@@ -5,6 +5,7 @@ import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
   artifactPublicationReady,
+  getLinearSessionGeneration,
   getWorkItem,
   joinMergeQueue,
   leaveMergeQueue,
@@ -172,7 +173,7 @@ export async function mergeQueueTurn(
   { db, item, caps }: MergeContext,
   repository: { owner: string; repo: string },
   github: GitHubBinding,
-  pull: { number: number; head: string },
+  pull: { number: number; url: string | null; head: string },
 ): Promise<MergeWait | undefined> {
   const prNumber = pull.number;
   const name = `${repository.owner}/${repository.repo}`;
@@ -197,7 +198,11 @@ export async function mergeQueueTurn(
       review === "required"
         ? `Waiting for an approving review on pull request #${prNumber}. It joins the ${name} merge queue once approved.`
         : `Changes were requested on pull request #${prNumber}. It joins the ${name} merge queue once approved.`;
-    caps.voice.afterPullRequest(item, body, `${item.id}:merge-review:${review}:${pull.head}`);
+    caps.voice.afterPullRequest(
+      item,
+      reviewWaitNotice(review, prNumber, pull.url, name),
+      reviewWaitKey(db, item, caps, review, pull.head),
+    );
     return { message: body, queued: true, reason: "review" };
   }
   joinMergeQueue(db, { itemId: item.id, repository: name, now: caps.now() });
@@ -217,6 +222,30 @@ export async function mergeQueueTurn(
   }
   if (place.nextItemId === null) return undefined;
   return { message: `${mergeQueueLine(place)}. ${first}`, queued: true, reason: "ahead" };
+}
+
+function reviewWaitNotice(
+  review: "required" | "changes_requested",
+  prNumber: number,
+  url: string | null,
+  repository: string,
+): string {
+  const pull = url === null ? `pull request #${prNumber}` : `[pull request #${prNumber}](${url})`;
+  return review === "required"
+    ? `Waiting for an approving review on ${pull}. It joins the ${repository} merge queue once approved.`
+    : `Changes were requested on ${pull}. Paws collects the review feedback before the next fix turn, and the pull request joins the ${repository} merge queue once approved.`;
+}
+
+function reviewWaitKey(
+  db: Database,
+  item: WorkItemRecord,
+  caps: OrderCapabilities,
+  review: string,
+  head: string,
+): string {
+  const session = caps.session(item);
+  const generation = session === null ? 0 : getLinearSessionGeneration(db, session);
+  return `merge-review:${item.id}:${generation}:${review}:${head}`;
 }
 
 export async function mergeThroughGitHubQueue(
