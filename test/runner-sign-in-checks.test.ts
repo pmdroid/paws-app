@@ -2,8 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { Database } from "bun:sqlite";
 import {
+  legacyAgentBindingId,
   migrate,
   putWorkspaceUser,
+  recordAccountObservation,
   recordRunnerAgentUsage,
   runnerAgentUsage,
   syncWorkspaceMember,
@@ -382,6 +384,41 @@ test("a login check readies the runner's agent or marks it signed out", () => {
     false,
   );
   expect(policy()).toEqual({ ready: 0, authExpired: 1 });
+});
+
+test("a login check issued before a newer sign-in failure cannot mark the agent ready", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  const policy = () =>
+    f.db
+      .query<{ ready: number; authExpired: number }, [string]>(
+        "SELECT ready,auth_expired AS authExpired FROM runner_agent_policy WHERE runner_id=? AND agent='claude'",
+      )
+      .get(runnerId);
+  f.health.refresh();
+  const late = f.checks(runnerId).find((command) => command.agent === "claude")!;
+  f.advance(10_000);
+  f.db.run(
+    "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',0,1) ON CONFLICT DO UPDATE SET ready=0,auth_expired=1",
+    [runnerId],
+  );
+  recordAccountObservation(f.db, {
+    bindingId: legacyAgentBindingId(runnerId, "claude"),
+    source: "result",
+    sourceId: "failed-run",
+    observedAt: f.now(),
+    now: f.now(),
+    state: "auth_required",
+  });
+  f.advance(10_000);
+  f.answer(late);
+  expect(policy()).toEqual({ ready: 0, authExpired: 1 });
+
+  f.advance(5 * 60_000 + 1);
+  f.seen(runnerId);
+  f.health.refresh();
+  f.answer(f.checks(runnerId).findLast((command) => command.agent === "claude")!);
+  expect(policy()).toEqual({ ready: 1, authExpired: 0 });
 });
 
 test("a sign-in check's usage reading replaces a stale usage limit", () => {

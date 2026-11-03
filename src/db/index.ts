@@ -852,7 +852,6 @@ export {
   ACCOUNT_RECHECK_MAX_MS,
   ACCOUNT_RESET_SLACK_MS,
   accountAttemptsInFlight,
-  accountHealthRecheckAt,
   accountRecheckDelay,
   bindingAccountHealth,
   legacyBindingAccountHealth,

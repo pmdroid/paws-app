@@ -241,22 +241,6 @@ export function accountAttemptsInFlight(
     .get(bindingId, since)!.count;
 }
 
-export function accountHealthRecheckAt(
-  db: Database,
-  workspaceId: string,
-  agent: string,
-  now: number,
-): number | null {
-  return (
-    db
-      .query<{ at: number | null }, [string, string, number]>(
-        `SELECT MIN(next_check_at) AS at FROM agent_account_health WHERE workspace_id=? AND agent=?
-         AND state IN ('exhausted','restricted') AND next_check_at>?`,
-      )
-      .get(workspaceId, agent, now)?.at ?? null
-  );
-}
-
 export function resumeAccountHealthNow(
   db: Database,
   agent: string,

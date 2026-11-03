@@ -157,6 +157,25 @@ Each run's `agent-profile.json` keeps the resolved lists with a short policy `re
 
 Until Paws selects named accounts at dispatch, it runs only the default sign-in, and only when the default sign-in is the first eligible account in the list (`dispatchAccount`). Every agent turn, review and session helper checks this before placement. Otherwise nothing is placed and Paws never uses the default sign-in instead. A reviewer with a reviewer fallback profile moves to that profile, and other work waits and retries as a transient `AccountPolicyUnavailable`. The journal records each decision with the policy revision, the chosen account and the accounts skipped and why.
 
+### Account health
+
+Paws records what each agent result, login check and completed sign-in shows about an account in `agent_account_health` (`src/db/agent-account-health.ts`), at the scope the fact holds:
+
+| Kind       | Scope                                                              | Set by                                               | Cleared by                                                      |
+| ---------- | ------------------------------------------------------------------ | ---------------------------------------------------- | --------------------------------------------------------------- |
+| `quota`    | The account for a named binding; the binding for a default sign-in | A usage limit (`exhausted`) or a low reading (`low`) | A successful turn, or a login check that reads spare usage      |
+| `auth`     | The binding: its runner-local sign-in                              | A result that needs sign-in, or a failed login check | A completed sign-in, a passing login check or a successful turn |
+| `provider` | Every account of the agent in the workspace                        | An overloaded or region-restricted provider          | A successful turn on any account of the agent                   |
+| `model`    | One model at the quota scope                                       | A model the account cannot use                       | A successful turn with that model, or six hours                 |
+
+Runner and network faults (a lost heartbeat, a timeout) and ordinary task or test failures record nothing, so they never disable a healthy binding or account. `classifyAgentFailure` in `src/runner-placement/account-health.ts` decides the kind.
+
+Each row keeps the command that produced it, when the fact was observed, the reset time and the next check. A failure is observed when it finished, a success when its turn started and a login check when Paws issued it. A newer observation replaces an older one and a failure wins a tie, so a late login check or result cannot erase a newer failure. A repeated command id changes nothing. A success from a removed binding, a disabled or removed account, or a revoked runner is ignored, so it cannot make that binding usable again.
+
+A known reset is rechecked a minute after it passes. An unknown one backs off from 15 minutes, doubling per repeat up to 4 hours, with up to 20% jitter derived from the scope. Once the next check passes, one real attempt on the account may run; the account's other bindings wait for its result. A low reading only ranks the account later. A sign-in failure has no next check: the binding waits for a completed sign-in. A provider restriction blocks every account of that agent, so rotating accounts cannot bypass it. Rows are in SQLite, so cooldowns survive a restart, and **Resume now** on a usage-limit pause makes the agent's account cooldowns due.
+
+`bindingReadiness` reports why a binding cannot run as one of `revoked`, `removed`, `disabled`, `offline`, `paused`, `auth-required`, `provider-restricted`, `unsupported-model`, `exhausted` or `busy`. `busy` covers a full runner and an account at its `concurrency` limit. Placement still chooses among runners' default sign-ins, which keep their quota and sign-in state on the runner's agent row; it rejects a runner whose agent is restricted or whose model is unavailable. A usage-limit wait resumes at the earliest reset or account recheck, and waiting spends no part of the run's usage-limit budget: only usage-limited attempts, and waits that end early or would not wait, count toward it.
+
 ## Add the host
 
 1. Open your Paws dashboard at `https://paws.example.com:8787/dashboard/runners` and sign in. Any workspace member can add a host and owns the runner it adds.
