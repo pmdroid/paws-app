@@ -86,31 +86,230 @@ def write_atomic(path, content, mode):
         pathlib.Path(temporary).unlink(missing_ok=True)
 
 
-def validate_identity_separation():
-    accounts = {}
+def approved_docker_gid(groups):
+    """The docker group's id when paws-runner may belong to it: a real group no other name or Paws group shares."""
+    try:
+        docker = grp.getgrnam(DOCKER_GROUP)
+    except KeyError:
+        return None
+    if docker.gr_gid <= 0 or docker.gr_gid in groups.values():
+        return None
+    if any(group.gr_gid == docker.gr_gid and group.gr_name != DOCKER_GROUP for group in grp.getgrall()):
+        return None
+    return docker.gr_gid
+
+
+def service_groups():
     groups = {}
-    for name in ("paws-runner", "paws-agent"):
-        try:
-            accounts[name] = pwd.getpwnam(name)
-        except KeyError:
-            pass
     for name in ("paws-runner", "paws-agent", "paws-results", "paws-check-input"):
         try:
             groups[name] = grp.getgrnam(name).gr_gid
         except KeyError:
             pass
+    return groups
+
+
+def validate_identity_separation():
+    accounts = {}
+    for name in ("paws-runner", "paws-agent"):
+        try:
+            accounts[name] = pwd.getpwnam(name)
+        except KeyError:
+            pass
+    groups = service_groups()
     identifiers = [account.pw_uid for account in accounts.values()]
     if any(identifier <= 0 for identifier in identifiers) or len(set(identifiers)) != len(identifiers) or any(identifier <= 0 for identifier in groups.values()) or len(set(groups.values())) != len(groups):
         raise ValueError("Runner service identities must be distinct")
     private_groups = {groups[name] for name in ("paws-runner", "paws-check-input") if name in groups}
     allowed_names = {"paws-runner": ("paws-runner", "paws-agent", "paws-results", "paws-check-input"), "paws-agent": ("paws-agent", "paws-results")}
+    # The host owner may give the runner daemon, and so its workers, the local Docker Engine (`docker_access`).
+    docker = approved_docker_gid(groups)
     for name, account in accounts.items():
         membership = set(os.getgrouplist(name, account.pw_gid))
         if name != "paws-runner" and private_groups & membership:
             raise ValueError("Untrusted service identity belongs to a private runner group")
         allowed = {groups[group] for group in allowed_names[name] if group in groups}
+        if name == "paws-runner" and docker is not None:
+            allowed.add(docker)
         if not membership <= allowed:
             raise ValueError("Runner service identity has an unrelated supplemental group")
+
+
+# Docker access for runner work. Workers run as paws-runner with the environment `workerLaunch` in
+# src/runner-execution/supervisor.ts gives them, so the check runs as that identity with that environment.
+DOCKER_GROUP = "docker"
+DOCKER_SOCKET = pathlib.Path("/var/run/docker.sock")
+DOCKER_ROOTLESS = pathlib.Path("/run/user")
+DOCKER_ACCESS_ENV = "PAWS_RUNNER_DOCKER_ACCESS"
+WORKER_HOME = "/var/lib/paws-agent"
+WORKER_PATH = "/opt/paws-runner/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+DOCKER_RISK = "Members of the docker group control the Docker daemon, which runs as root: every agent and check this runner executes can then act as root on this host, and the runner's systemd hardening does not contain it."
+DOCKER_STARTED_BY_HAND = "A runner daemon or worker started by hand keeps the groups it started with; stop it and start it again from a new process (systemctl, or runuser --user paws-runner) to use them."
+# Asks the daemon for its version over the socket, with a bounded wait. It changes nothing.
+DOCKER_PROBE = r'''
+import json, socket, sys
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+try:
+    client.connect(sys.argv[1])
+    client.sendall(b"GET /version HTTP/1.0\r\nHost: docker\r\n\r\n")
+    response = b""
+    while len(response) < 65536:
+        chunk = client.recv(65536)
+        if not chunk:
+            break
+        response += chunk
+except PermissionError:
+    print("permission-denied")
+    sys.exit()
+except (OSError, socket.timeout):
+    print("daemon-unavailable")
+    sys.exit()
+head, _, body = response.partition(b"\r\n\r\n")
+if not head.startswith(b"HTTP/1.") or head.split(b" ", 2)[1:2] != [b"200"]:
+    print("daemon-unavailable")
+    sys.exit()
+try:
+    components = [item.get("Name") for item in json.loads(body).get("Components") or []]
+except (ValueError, AttributeError):
+    components = []
+print("ready" if "Engine" in components else "alternative-runtime")
+'''
+
+
+def docker_access_choice(environ=os.environ):
+    """`grant`, `deny` or None from PAWS_RUNNER_DOCKER_ACCESS. Package configuration never prompts."""
+    value = environ.get(DOCKER_ACCESS_ENV, "")
+    if value not in ("", "grant", "deny"):
+        raise ValueError(f"{DOCKER_ACCESS_ENV} must be grant or deny")
+    return value or None
+
+
+def as_runner(arguments, timeout=30):
+    """Run a command as paws-runner, in a fresh group context, with the environment runner work gets."""
+    try:
+        result = subprocess.run(["/usr/sbin/runuser", "--user", "paws-runner", "--", "/usr/bin/env", "-i", "--chdir=" + WORKER_HOME, "HOME=" + WORKER_HOME, "PATH=" + WORKER_PATH, "LANG=C.UTF-8", "USER=paws-runner", "LOGNAME=paws-runner", *arguments], env=release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+    return result
+
+
+def docker_probe(socket_path):
+    result = as_runner(["/usr/bin/python3", "-I", "-B", "-c", DOCKER_PROBE, str(socket_path)])
+    if result is None or result.returncode != 0:
+        return "daemon-unavailable"
+    return result.stdout.decode(errors="replace").strip()
+
+
+def socket_info(path):
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def docker_cli_endpoint(cli):
+    """What the docker command on the worker PATH is, and the endpoint its context resolves to for runner work."""
+    version = as_runner([cli, "--version"])
+    text = version.stdout.decode(errors="replace").strip() if version is not None and version.returncode == 0 else ""
+    if not text.startswith("Docker version "):
+        return "alternative-runtime", None
+    context = as_runner([cli, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"])
+    if context is None or context.returncode != 0:
+        return "docker", None
+    return "docker", context.stdout.decode(errors="replace").strip()
+
+
+def add_docker_member():
+    """Append paws-runner to the docker group, keeping its other groups."""
+    usermod = pathlib.Path("/usr/sbin/usermod")
+    if not usermod.is_file():
+        return "usermod is not installed at /usr/sbin/usermod"
+    result = subprocess.run([str(usermod), "--append", "--groups", DOCKER_GROUP, "paws-runner"], env=release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    if result.returncode != 0:
+        return " ".join(result.stderr.decode(errors="replace").split())[:300] or f"usermod exited {result.returncode}"
+    return None
+
+
+def docker_report(status, message, changed=False):
+    return {"status": status, "changed": changed, "message": message}
+
+
+def docker_access(choice, socket_path=DOCKER_SOCKET):
+    """Find the local rootful Docker Engine and, when the host owner chose `grant`, add paws-runner to its group.
+
+    Runs as root after the service identities exist and before the runner service starts again.
+    Rootless, remote and other runtimes are reported and left alone; nothing here installs Docker,
+    changes a context or the socket, or gives any other identity access.
+    """
+    try:
+        runner = pwd.getpwnam("paws-runner")
+    except KeyError:
+        return docker_report("missing-account", "The paws-runner service account does not exist; install the runner package first.")
+    cli = shutil.which("docker", path=WORKER_PATH)
+    info = socket_info(socket_path)
+    if info is None:
+        if any(DOCKER_ROOTLESS.glob("*/docker.sock")):
+            return docker_report("rootless", "Rootless Docker uses its own user's socket; the runner's groups were not changed. Run runner work under that setup yourself if it needs Docker.")
+        if cli is None:
+            return docker_report("absent", "Docker is not installed; nothing changed.")
+        kind, _ = docker_cli_endpoint(cli)
+        if kind != "docker":
+            return docker_report("alternative-runtime", f"{cli} is not the Docker CLI (for example Podman's compatibility command); the runner's groups were not changed.")
+        return docker_report("no-engine", f"The Docker CLI is installed but no local Docker Engine socket is at {socket_path}; nothing changed. Install and start Docker Engine, then reconfigure the runner.")
+    if stat.S_ISLNK(info.st_mode):
+        return docker_report("alternative-runtime", f"{socket_path} links to another runtime's socket (for example Podman); the runner's groups were not changed.")
+    if cli is not None:
+        kind, endpoint = docker_cli_endpoint(cli)
+        if kind != "docker":
+            return docker_report("alternative-runtime", f"{cli} is not the Docker CLI (for example Podman's compatibility command); the runner's groups were not changed.")
+        if endpoint is not None and endpoint not in ("unix://" + str(socket_path), "unix:///run/docker.sock"):
+            if endpoint.startswith("unix:///run/user/"):
+                return docker_report("rootless", f"Runner work's Docker context uses rootless Docker at {endpoint}; the runner's groups were not changed.")
+            return docker_report("remote-context", f"Runner work's Docker context points at {endpoint}, not the local Docker Engine; the runner's groups were not changed.")
+    try:
+        docker = grp.getgrnam(DOCKER_GROUP)
+    except KeyError:
+        return docker_report("missing-group", f"Docker Engine is running at {socket_path} but there is no {DOCKER_GROUP} group; nothing changed. Create the group with Docker's post-install steps (it must own the socket), then reconfigure the runner.")
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != 0 or info.st_gid != docker.gr_gid or info.st_mode & 0o060 != 0o060:
+        return docker_report("unexpected-socket", f"{socket_path} is not a socket owned by root and readable and writable by the {DOCKER_GROUP} group; nothing changed. Check the Docker Engine installation, then reconfigure the runner.")
+    member = docker.gr_gid in os.getgrouplist("paws-runner", runner.pw_gid)
+    probe = docker_probe(socket_path)
+    if probe == "alternative-runtime":
+        return docker_report("alternative-runtime", f"The daemon at {socket_path} is not Docker Engine; the runner's groups were not changed.")
+    if probe == "ready":
+        return docker_report("ready", "Runner work can already reach the local Docker Engine; nothing changed.")
+    if member:
+        if probe == "daemon-unavailable":
+            return docker_report("daemon-unavailable", f"paws-runner is in the {DOCKER_GROUP} group, but the Docker daemon at {socket_path} did not answer. Start Docker (systemctl start docker); runner work cannot use Docker until it does.")
+        return docker_report("permission-denied", f"paws-runner is in the {DOCKER_GROUP} group but was refused at {socket_path}. Check the socket's permissions, ACLs and security modules; runner work cannot use Docker until then.")
+    if approved_docker_gid(service_groups()) is None:
+        return docker_report("unsafe-group", f"The {DOCKER_GROUP} group shares its id with another group or a Paws group; nothing changed. Give it its own id, then reconfigure the runner.")
+    if choice != "grant":
+        intro = "Docker access was declined" if choice == "deny" else "Runner work cannot use the local Docker Engine"
+        return docker_report("declined" if choice == "deny" else "opt-in-required", f"{intro}; paws-runner is not in the {DOCKER_GROUP} group. {DOCKER_RISK} To grant it: sudo {DOCKER_ACCESS_ENV}=grant dpkg-reconfigure paws-runner")
+    failure = add_docker_member()
+    if failure is None and docker.gr_gid not in os.getgrouplist("paws-runner", runner.pw_gid):
+        failure = f"paws-runner is still not in the {DOCKER_GROUP} group"
+    if failure is not None:
+        return docker_report("grant-failed", f"Could not add paws-runner to the {DOCKER_GROUP} group: {failure}. Add it with your account tooling, then reconfigure the runner; runner work cannot use Docker until then.")
+    validate_identity_separation()
+    probe = docker_probe(socket_path)
+    if probe == "ready":
+        return docker_report("granted", f"Added paws-runner to the {DOCKER_GROUP} group; new runner work can reach the local Docker Engine. {DOCKER_RISK} {DOCKER_STARTED_BY_HAND}", True)
+    if probe == "daemon-unavailable":
+        return docker_report("granted-daemon-unavailable", f"Added paws-runner to the {DOCKER_GROUP} group, but the Docker daemon at {socket_path} did not answer. Start Docker (systemctl start docker). {DOCKER_RISK} {DOCKER_STARTED_BY_HAND}", True)
+    return docker_report("granted-permission-denied", f"Added paws-runner to the {DOCKER_GROUP} group, but it was still refused at {socket_path}. Check the socket's permissions, ACLs and security modules. {DOCKER_RISK} {DOCKER_STARTED_BY_HAND}", True)
+
+
+def configure_docker_access(choice):
+    """`docker_access` for an installer: a failed check is reported, not raised, so the runner service still comes back."""
+    try:
+        report = docker_access(choice)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        report = docker_report("check-failed", f"Could not check Docker access for runner work: {' '.join(str(error).split())[:300]}. Runner work may not be able to use Docker; reconfigure the runner to try again.")
+    print("Docker access: " + report["message"], file=sys.stderr)
+    return report
 
 
 def prerequisites():
@@ -849,12 +1048,15 @@ def main():
     for name in ("manifest", "signature", "artifact", "release-key"):
         parser.add_argument("--" + name, required=True)
     arguments = parser.parse_args()
+    docker = docker_access_choice()
     with tempfile.TemporaryDirectory(prefix="paws-release-") as temporary:
         manifest, artifact, fingerprint = release.verify_release(arguments, pathlib.Path(temporary))
         prerequisites()
         agents = prepare_agents(artifact)
         installed = install(manifest, artifact, fingerprint)
         installed["agents"] = finish_agents(agents)
+        # The installer leaves the runner service stopped, so it starts with these groups.
+        installed["docker"] = configure_docker_access(docker)
         print(json.dumps(installed))
 
 
