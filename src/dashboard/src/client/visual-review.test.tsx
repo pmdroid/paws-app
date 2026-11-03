@@ -79,6 +79,7 @@ function fixture(
           urgency: "blocking",
           options: ["Accept", "Request changes"],
           recommendedOption: null,
+          answerable: false,
           askedAt: NOW,
           claimedBy: null,
           links: [{ label: "Answer in Linear", href: LINK }],

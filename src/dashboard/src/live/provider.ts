@@ -1701,6 +1701,7 @@ export function questionsFor(
       askedAt: iso(question.createdAt),
       claimedBy: null,
       links: questionLinks(db, question.sessionId, record.linearIdentifier),
+      answerable: answerableInPaws(db, question.id),
     });
   }
   const waiting = records.filter((record) => record.state === "awaiting_input");
@@ -1738,9 +1739,31 @@ export function questionsFor(
       askedAt: iso(row.createdAt),
       claimedBy: null,
       links: questionLinks(db, session, record.linearIdentifier),
+      answerable: false,
     });
   }
   return questions;
+}
+
+const PAWS_ANSWER_KINDS: ReadonlySet<string> = new Set([
+  "agent",
+  "clarification",
+  "repository",
+  "runner-wait",
+  "time-limit",
+  "closeout-help",
+  "ci-help",
+  "plan-approval",
+  "push-outage",
+]);
+
+function answerableInPaws(db: Database, id: string): boolean {
+  const row = db
+    .query<{ kind: string }, [string]>(
+      "SELECT kind FROM question WHERE id = ? AND status = 'open' AND cancelled_at IS NULL",
+    )
+    .get(id);
+  return row !== null && PAWS_ANSWER_KINDS.has(row.kind);
 }
 
 function questionLinks(

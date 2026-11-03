@@ -341,6 +341,7 @@ export interface StatusQuestion {
   askedAt: string;
   claimedBy: string | null;
   links: StatusLink[];
+  answerable: boolean;
   /** Present when the question is answered on the item page, not in Linear. */
   linkAsk?: StatusLinkAsk;
 }
@@ -2245,6 +2246,7 @@ function readQuestion(input: unknown, index: number): StatusQuestion {
     askedAt: dateString(body, "askedAt", path),
     claimedBy,
     links: readLinks(body.links, `${path}.links`),
+    answerable: body.answerable === true,
     ...(body.linkAsk === undefined
       ? {}
       : { linkAsk: readLinkAsk(body.linkAsk, `${path}.linkAsk`) }),

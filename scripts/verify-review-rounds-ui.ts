@@ -28,6 +28,7 @@ snapshot.questions = [
     context: "",
     options: [],
     recommendedOption: null,
+    answerable: false,
     linkAsk: {
       kind: "rounds",
       head: "4b317d5bb2",
