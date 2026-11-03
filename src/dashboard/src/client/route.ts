@@ -83,7 +83,7 @@ export const ROUTE_SLICES: Record<Route["view"], readonly StatusSlice[]> = {
   issues: [],
   runs: [],
   alias: [],
-  mergeQueue: ["items", "mergeQueue", "mergeHistory"],
+  mergeQueue: [],
   questions: [],
   evidence: ["items", "evidence"],
   // The Findings page loads `/api/findings` itself.
@@ -108,6 +108,7 @@ export type RouteResource =
   | "overview"
   | "issue"
   | "issues"
+  | "mergeQueue"
   | "questions"
   | "question"
   | "status"
@@ -117,6 +118,7 @@ export function routeResource(route: Route): RouteResource {
   if (route.view === "overview") return "overview";
   if (route.view === "issues") return route.id === null ? "issues" : "issue";
   if (route.view === "runs") return "issues";
+  if (route.view === "mergeQueue") return "mergeQueue";
   if (route.view === "questions") return route.id === null ? "questions" : "question";
   return needsSnapshot(route) ? "status" : null;
 }

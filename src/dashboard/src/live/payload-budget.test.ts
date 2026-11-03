@@ -17,6 +17,7 @@ import { createLiveStatusProvider, handleStatusRequest } from "../engine";
 const LIST_BUDGET_BYTES = 200 * 1024;
 const DETAIL_BUDGET_BYTES = 1024 * 1024;
 const OVERVIEW_BUDGET_BYTES = 50 * 1024;
+const MERGE_QUEUE_BUDGET_BYTES = 64 * 1024;
 /** What `src/db` keeps of one check stream. */
 const OUTPUT_CAP_BYTES = 64 * 1024;
 
@@ -119,6 +120,7 @@ describe("status payload budget", () => {
     expect(overviewBytes * 10).toBeLessThan(
       await get("/api/status?slices=items,questions,mergeQueue,intake"),
     );
+    expect(await get("/api/merge-queue")).toBeLessThanOrEqual(MERGE_QUEUE_BUDGET_BYTES);
 
     const live = createLiveStatusProvider(db, { env: {} });
     const calls: string[] = [];

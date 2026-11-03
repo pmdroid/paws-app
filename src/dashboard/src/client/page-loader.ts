@@ -1,9 +1,11 @@
 import {
   ISSUES_API_PATH,
+  MERGE_QUEUE_API_PATH,
   OVERVIEW_API_PATH,
   issuePath,
   parseIssueDetailResponse,
   parseIssueListResponse,
+  parseMergeQueueResponse,
   parseOverviewResponse,
   parseQuestionDetailResponse,
   parseQuestionListResponse,
@@ -11,6 +13,7 @@ import {
   QUESTIONS_API_PATH,
   type IssueDetailResponse,
   type IssueListResponse,
+  type MergeQueueResponse,
   type OverviewResponse,
   type QuestionDetailResponse,
   type QuestionListResponse,
@@ -26,6 +29,7 @@ export interface PageResources {
   issues: IssueListResponse | null;
   issue: IssueDetailResponse | null;
   overview: OverviewResponse | null;
+  mergeQueue: MergeQueueResponse | null;
   questions: QuestionListResponse | null;
   question: QuestionDetailResponse | null;
   missingQuestion: string | null;
@@ -46,6 +50,11 @@ function parseList(input: unknown) {
 
 function parseOverview(input: unknown) {
   const parsed = parseOverviewResponse(input);
+  return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
+}
+
+function parseMergeQueue(input: unknown) {
+  const parsed = parseMergeQueueResponse(input);
   return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
 }
 
@@ -72,6 +81,7 @@ export function createPageLoader(options: PageLoaderOptions) {
     issues: null,
     issue: null,
     overview: null,
+    mergeQueue: null,
     questions: null,
     question: null,
     missingQuestion: null,
@@ -115,6 +125,11 @@ export function createPageLoader(options: PageLoaderOptions) {
         const read = await resources.read(OVERVIEW_API_PATH, reader, parseOverview);
         if (read.kind === "response") return await refused(read.response);
         return apply(() => (data.overview = read.body));
+      }
+      if (resource === "mergeQueue") {
+        const read = await resources.read(MERGE_QUEUE_API_PATH, reader, parseMergeQueue);
+        if (read.kind === "response") return await refused(read.response);
+        return apply(() => (data.mergeQueue = read.body));
       }
       if (resource === "issues") {
         const list = await resources.read(ISSUES_API_PATH, reader, parseList);
@@ -168,6 +183,7 @@ export function createPageLoader(options: PageLoaderOptions) {
       data.issues = null;
       data.issue = null;
       data.overview = null;
+      data.mergeQueue = null;
       data.questions = null;
       data.question = null;
       data.missingQuestion = null;

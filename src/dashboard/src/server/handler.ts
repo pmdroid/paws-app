@@ -7,11 +7,13 @@ import {
   CHECK_LOG_TAIL_BYTES,
   GENERATED_AT_HEADER,
   ISSUES_API_PATH,
+  MERGE_QUEUE_API_PATH,
   OVERVIEW_API_PATH,
   issueCheckLogPath,
   parseIssueCheckLogResponse,
   parseIssueDetailResponse,
   parseIssueListResponse,
+  parseMergeQueueResponse,
   parseOverviewResponse,
   parseQuestionDetailResponse,
   parseQuestionListResponse,
@@ -26,6 +28,7 @@ import {
   type IssueCheckLogResponse,
   type IssueDetailResponse,
   type IssueListResponse,
+  type MergeQueueResponse,
   type OverviewResponse,
   type QuestionDetailResponse,
   type QuestionListResponse,
@@ -36,6 +39,7 @@ import {
 import {
   createLiveStatusProvider,
   emptyIssueList,
+  emptyMergeQueue,
   emptyLiveSnapshot,
   emptyQuestionList,
   type CheckLogRequest,
@@ -66,6 +70,7 @@ export interface StatusProvider {
   issues?(): IssueListResponse | Promise<IssueListResponse>;
   issue?(id: string): IssueDetailResponse | null | Promise<IssueDetailResponse | null>;
   overview?(): OverviewResponse | Promise<OverviewResponse>;
+  mergeQueue?(): MergeQueueResponse | Promise<MergeQueueResponse>;
   questions?(): QuestionListResponse | Promise<QuestionListResponse>;
   question?(id: string): QuestionDetailResponse | null | Promise<QuestionDetailResponse | null>;
   alias?(kind: AliasKind, id: string): string | null | Promise<string | null>;
@@ -124,6 +129,9 @@ export function fakeStatusProvider(): StatusProvider {
     },
     overview() {
       return emptyOverview();
+    },
+    mergeQueue() {
+      return emptyMergeQueue();
     },
     questions() {
       return emptyQuestionList();
@@ -193,6 +201,8 @@ export async function handleStatusRequest(
     return questionsResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname.startsWith(`${ALIAS_API_PATH}/`))
     return aliasResponse(request, providerFor(options), pathname);
+  if (pathname === MERGE_QUEUE_API_PATH)
+    return mergeQueueResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (isDashboardPath(pathname)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
@@ -270,6 +280,7 @@ function liveProvider(options?: {
     issues: () => emptyIssueList(),
     issue: () => null,
     overview: () => emptyOverview(),
+    mergeQueue: () => emptyMergeQueue(),
     questions: () => emptyQuestionList(),
     question: () => null,
     alias: () => null,
@@ -549,6 +560,36 @@ async function overviewResponse(
     return conditional(sizes, request, built.value);
   } catch (caught) {
     journalCaught(caught, "handler.overviewResponse", null);
+    return json({ error: "status unavailable" }, 500);
+  }
+}
+
+async function mergeQueueResponse(
+  request: Request,
+  options: StatusServerOptions,
+  sizes: ResponseSizeJournal,
+  cache: StatusSnapshotCache,
+): Promise<Response> {
+  if (request.method === "OPTIONS")
+    return new Response(null, { status: 204, headers: { ...CORS } });
+  if (request.method !== "GET" && request.method !== "HEAD")
+    return json({ error: "Method not allowed" }, 405);
+  const provider = providerFor(options);
+  if (provider.mergeQueue === undefined) return json({ error: "Not found" }, 404);
+  const read = provider.mergeQueue.bind(provider);
+  try {
+    const built = await cache.get<MergeQueueResponse>(
+      options.provider ?? options.db ?? EMPTY_SOURCE,
+      cacheKey("merge-queue", "", options),
+      async () => {
+        const parsed = parseMergeQueueResponse(await read());
+        return parsed.ok ? { value: parsed.response } : { error: parsed.error };
+      },
+    );
+    if ("error" in built) return json({ error: built.error }, 500);
+    return conditional(sizes, request, built.value);
+  } catch (caughtError7) {
+    journalCaught(caughtError7, "handler.mergeQueueResponse", null);
     return json({ error: "status unavailable" }, 500);
   }
 }

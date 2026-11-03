@@ -1,4 +1,4 @@
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { mergeQueueOf, statusFixture } from "../src/dashboard/test/fixtures";
 // The Merge queue page with two repositories and a task whose repository is not known, against
 // the real status handler.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-merge-queue-page.ts <screenshot dir>
@@ -84,17 +84,43 @@ snapshot.mergeHistory = [
   },
 ];
 
+snapshot.pushOutages = [
+  {
+    repository: "acme/web",
+    since: at(90),
+    lastError: "remote: Permission to acme/web.git denied to paws-helper[bot].",
+    nextProbeAt: at(-5),
+    installationUrl: null,
+  },
+];
+snapshot.policyRunnerWarnings = [
+  {
+    repository: "acme/platform",
+    policyDigest: `sha256:${"a".repeat(64)}`,
+    runnerVersion: "0.1.48",
+    keys: [{ key: "items[].ci", needs: "0.1.49" }],
+    checkedAt: at(1),
+  },
+];
+
+const requested: string[] = [];
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    if (path.startsWith("/api/")) requested.push(path);
     if (path === "/api/auth/session") return new Response(null, { status: 404 });
     if (path === "/api/runners")
       return Response.json({ setupRequired: false, workspaceReady: true, runners: [] });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: {
+          snapshot: () => {
+            throw new Error("the Merge queue page must not read the status snapshot");
+          },
+          mergeQueue: () => ({ ...mergeQueueOf(snapshot), source: "live" }),
+        },
         csrfToken: "ui-fixture",
       })) ?? new Response(null, { status: 404 })
     );
@@ -119,6 +145,11 @@ try {
     await expect(page.getByRole("heading", { name: "unknown", exact: true })).toHaveCount(0);
     await expect(page.getByText("Back with the agent")).toBeVisible();
     await expect(page.getByText("Waiting for review")).toBeVisible();
+    await expect(page.getByRole("alert", { name: "Push outage on acme/web" })).toBeVisible();
+    await expect(
+      page.getByRole("alert", { name: "Closeout policy needs a newer runner for acme/platform" }),
+    ).toBeVisible();
+    await expect(page.locator('a[href="/dashboard/issues/ENG-101"]').first()).toBeVisible();
     if (width > 768) {
       const navigation = page.getByRole("link", { name: /Merge queue/ });
       await expect(navigation).toHaveAttribute("aria-current", "page");
@@ -137,6 +168,8 @@ try {
     await page.close();
   }
   expect(errors).toEqual([]);
+  expect(requested).toContain("/api/merge-queue");
+  expect(requested.filter((path) => path.startsWith("/api/status"))).toEqual([]);
   console.log(`Merge queue page checks passed. Screenshots in ${directory}`);
 } finally {
   await browser.close();

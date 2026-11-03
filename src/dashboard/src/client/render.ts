@@ -1,5 +1,6 @@
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
+  MergeQueueResponse,
   OverviewIssue,
   OverviewResponse,
   IssueDetailResponse,
@@ -64,6 +65,7 @@ export interface RenderModel {
   phase: "loading" | "ready" | "error";
   snapshot: StatusSnapshot | null;
   overview?: OverviewResponse | null;
+  mergeQueue?: MergeQueueResponse | null;
   issues?: IssueListResponse | null;
   issue?: IssueDetailResponse | null;
   questions?: QuestionListResponse | null;
@@ -119,19 +121,23 @@ export function render(model: RenderModel): Rendered {
                   ? model.overview
                     ? viewOverview(model.overview)
                     : renderPending(model)
-                  : model.phase !== "loading" && openDetail(model)
-                    ? issuePage(
-                        model.issue!,
-                        model.closeout ?? emptyCloseoutView(),
-                        model.engineUrl,
-                      )
-                    : model.phase !== "loading" && model.issues && route.view === "issues"
-                      ? viewIssues(model.issues, route.id)
-                      : model.phase !== "loading" && model.issues && route.view === "runs"
-                        ? viewRuns(model.issues, route.id)
-                        : snapshot && model.phase !== "loading" && routeResource(route) === "status"
-                          ? renderView(snapshot, model)
-                          : renderPending(model),
+                  : model.route.view === "mergeQueue"
+                    ? viewMergeQueue(model)
+                    : model.phase !== "loading" && openDetail(model)
+                      ? issuePage(
+                          model.issue!,
+                          model.closeout ?? emptyCloseoutView(),
+                          model.engineUrl,
+                        )
+                      : model.phase !== "loading" && model.issues && route.view === "issues"
+                        ? viewIssues(model.issues, route.id)
+                        : model.phase !== "loading" && model.issues && route.view === "runs"
+                          ? viewRuns(model.issues, route.id)
+                          : snapshot &&
+                              model.phase !== "loading" &&
+                              routeResource(route) === "status"
+                            ? renderView(snapshot, model)
+                            : renderPending(model),
     title,
   };
 }
@@ -155,16 +161,24 @@ function renderBanner(model: RenderModel): string {
     const kept =
       resource === "overview"
         ? model.overview
-        : resource === "questions"
-          ? model.questions
-          : resource === "question"
-            ? model.question
-            : resource === "status"
-              ? model.snapshot
-              : openDetail(model) || model.issues;
+        : resource === "mergeQueue"
+          ? model.mergeQueue
+          : resource === "questions"
+            ? model.questions
+            : resource === "question"
+              ? model.question
+              : resource === "status"
+                ? model.snapshot
+                : openDetail(model) || model.issues;
     return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${kept ? " Showing the last snapshot." : ""}</span></div>`;
   }
   return "";
+}
+
+function viewMergeQueue(model: RenderModel): string {
+  const queue = model.mergeQueue;
+  if (!queue || model.phase === "loading") return renderPending(model);
+  return `${pageHeading("mergeQueue")}${renderPushOutages(queue)}${renderPolicyRunnerWarnings(queue)}${renderMergeQueue(queue)}`;
 }
 
 function renderPending(model: RenderModel): string {
@@ -187,7 +201,7 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "runs":
       return renderPending(model);
     case "mergeQueue":
-      return `${pageHeading("mergeQueue")}${renderPushOutages(snapshot)}${renderPolicyRunnerWarnings(snapshot)}${renderMergeQueue(snapshot)}`;
+      return viewMergeQueue(model);
     case "questions":
       return renderPending(model);
     case "evidence":
