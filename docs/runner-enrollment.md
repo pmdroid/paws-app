@@ -38,7 +38,7 @@ Package contents and upgrade behavior are in `deploy/linux`: the release manifes
 
 ### Docker access for runner work
 
-Agent jobs (`paws-agent@<id>.service`) run as `paws-agent` and can't use the root Docker daemon at `/var/run/docker.sock`. When you opt in, the package gives them a rootless Docker daemon of their own: `paws-docker.service`, which runs as `paws-agent` and listens on `/run/paws-docker/docker.sock`. When the installer asks on a terminal, the default answer is no. For scripted installs, pass the choice:
+Runner work never uses the root Docker daemon at `/var/run/docker.sock`. When you opt in, the package gives it a rootless Docker daemon of its own: `paws-docker.service`, which runs as `paws-agent` and listens on `/run/paws-docker/docker.sock`. The socket's directory is open to the `paws-agent` group, which `paws-runner` belongs to. When the socket exists, the runner gives every worker it starts `DOCKER_HOST=unix:///run/paws-docker/docker.sock`; the agent and the Closeout checks inherit it. An agent only ever gets a `DOCKER_HOST` that names a local `unix://` socket. When the installer asks on a terminal, the default answer is no. For scripted installs, pass the choice:
 
 ```sh
 curl -fsSL https://get.paws.boo | sudo sh -s -- --docker-access
@@ -54,8 +54,8 @@ On a grant, package configuration:
 1. Checks for `rootlesskit`, `newuidmap`, `newgidmap` and `slirp4netns`. If any is missing, it names the package, sets nothing up and finishes the install.
 2. Adds a 65536-id range for `paws-agent` to `/etc/subuid` and `/etc/subgid` where it has none, after the highest existing range.
 3. Creates `/var/lib/paws-agent-docker` (owner `paws-agent`, mode 0700) for images and containers.
-4. Writes `/etc/systemd/system/paws-docker.service`, which runs the `dockerd-rootless.sh` launcher the package ships, and the drop-in `/etc/systemd/system/paws-agent@.service.d/docker.conf`, which gives every agent job `DOCKER_HOST=unix:///run/paws-docker/docker.sock` and starts the daemon before it.
-5. Enables and starts `paws-docker.service`, and reports whether `paws-agent` can reach it.
+4. Writes `/etc/systemd/system/paws-docker.service`, which runs the `dockerd-rootless.sh` launcher the package ships, and the drop-in `/etc/systemd/system/paws-agent@.service.d/docker.conf`, which gives a job started as `paws-agent@<id>.service` the same `DOCKER_HOST` and starts the daemon before it.
+5. Enables and starts `paws-docker.service`, and reports whether `paws-runner` can reach it.
 
 `deny`, or a host without Docker Engine, stops the daemon and removes the unit and the drop-in. The data directory and the subordinate ids stay, so a later grant finds its images. Removing the package does the same; purging it also deletes `/var/lib/paws-agent-docker` and the `paws-agent` lines in `/etc/subuid` and `/etc/subgid`.
 
@@ -67,6 +67,7 @@ To check the daemon:
 D="sudo -u paws-agent env DOCKER_HOST=unix:///run/paws-docker/docker.sock docker"
 $D info --format '{{.SecurityOptions}}'                    # includes name=rootless
 $D run --rm alpine echo ok
+sudo -u paws-runner env DOCKER_HOST=unix:///run/paws-docker/docker.sock docker info  # what runner work sees
 systemctl show 'paws-agent@test.service' -p Environment    # includes DOCKER_HOST
 sudo -u paws-agent docker -H unix:///var/run/docker.sock ps  # permission denied
 journalctl -u paws-docker.service                           # when it does not start

@@ -137,9 +137,11 @@ def validate_identity_separation():
             raise ValueError("Runner service identity has an unrelated supplemental group")
 
 
-# Docker access for runner work: a rootless Docker daemon that runs as paws-agent, the identity agent
-# jobs (paws-agent@.service) run as. The drop-in gives every job DOCKER_HOST, so no job needs the
-# root daemon at /var/run/docker.sock. The package never installs Docker or its rootless tools.
+# Docker access for runner work: a rootless Docker daemon that runs as paws-agent. Its socket directory
+# is open to the paws-agent group, which paws-runner (and so every worker it launches) belongs to; the
+# supervisor gives workers DOCKER_HOST when the socket exists (runnerDockerEnv in
+# src/runner-execution/supervisor.ts), and the drop-in gives it to paws-agent@.service. No runner work
+# needs the root daemon at /var/run/docker.sock. The package never installs Docker or its rootless tools.
 DOCKER_GROUP = "docker"
 DOCKER_ACCESS_ENV = "PAWS_RUNNER_DOCKER_ACCESS"
 DOCKER_RISK = "Members of the docker group control the Docker daemon, which runs as root: every agent and check this runner executes can then act as root on this host, and the runner's systemd hardening does not contain it."
@@ -168,7 +170,7 @@ Type=simple
 User=paws-agent
 Group=paws-agent
 RuntimeDirectory=paws-docker
-RuntimeDirectoryMode=0700
+RuntimeDirectoryMode=0750
 Environment=XDG_RUNTIME_DIR=/run/paws-docker
 Environment=HOME={DOCKER_DATA}
 Environment=PATH={DOCKER_PATH}
@@ -243,11 +245,11 @@ def run_tool(arguments, timeout=60):
 
 
 def docker_probe():
-    """What a new agent job sees at the rootless socket, as paws-agent, waiting up to 30 seconds for the daemon."""
+    """What runner work sees at the rootless socket, as paws-runner, waiting up to 30 seconds for the daemon."""
     outcome = "daemon-unavailable"
     for _ in range(30):
         try:
-            result = subprocess.run(["/usr/sbin/runuser", "--user", "paws-agent", "--", "/usr/bin/env", "-i", "PATH=" + DOCKER_PATH, "LANG=C.UTF-8", "/usr/bin/python3", "-I", "-B", "-c", DOCKER_PROBE, DOCKER_SOCKET], env=release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+            result = subprocess.run(["/usr/sbin/runuser", "--user", "paws-runner", "--", "/usr/bin/env", "-i", "PATH=" + DOCKER_PATH, "LANG=C.UTF-8", "/usr/bin/python3", "-I", "-B", "-c", DOCKER_PROBE, DOCKER_SOCKET], env=release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
         except subprocess.TimeoutExpired:
             return outcome
         outcome = result.stdout.decode(errors="replace").strip() if result.returncode == 0 else "daemon-unavailable"
@@ -374,10 +376,10 @@ def rootless_docker(choice):
         return docker_report("start-failed", f"Could not start paws-docker.service: {failure}. Check journalctl -u paws-docker.service; agent jobs cannot use Docker until it runs.", changed)
     probe = docker_probe()
     if probe == "ready":
-        return docker_report("granted" if changed else "ready", ("Set up" if changed else "Kept") + f" a rootless Docker daemon for agent jobs (paws-docker.service, running as paws-agent at {DOCKER_SOCKET}); new agent jobs get DOCKER_HOST for it.", changed)
+        return docker_report("granted" if changed else "ready", ("Set up" if changed else "Kept") + f" a rootless Docker daemon for agent jobs (paws-docker.service, running as paws-agent at {DOCKER_SOCKET}); new runner work gets DOCKER_HOST for it.", changed)
     if probe == "daemon-unavailable":
         return docker_report("daemon-unavailable", f"paws-docker.service is enabled, but the daemon at {DOCKER_SOCKET} did not answer. Check journalctl -u paws-docker.service; agent jobs cannot use Docker until it does.", changed)
-    return docker_report(probe, f"paws-docker.service is enabled, but paws-agent could not use the daemon at {DOCKER_SOCKET} ({probe}). Check journalctl -u paws-docker.service.", changed)
+    return docker_report(probe, f"paws-docker.service is enabled, but paws-runner could not use the daemon at {DOCKER_SOCKET} ({probe}). Check that paws-runner is in the paws-agent group and journalctl -u paws-docker.service.", changed)
 
 
 def docker_group_membership():

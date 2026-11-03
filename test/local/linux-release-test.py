@@ -973,7 +973,7 @@ Type=simple
 User=paws-agent
 Group=paws-agent
 RuntimeDirectory=paws-docker
-RuntimeDirectoryMode=0700
+RuntimeDirectoryMode=0750
 Environment=XDG_RUNTIME_DIR=/run/paws-docker
 Environment=HOME=/var/lib/paws-agent-docker
 Environment=PATH=/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin

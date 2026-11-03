@@ -48,7 +48,7 @@ Follow the same rule for every secret added later: put it in an environment limi
 
 ## Docker access for runner work
 
-Agent jobs get Docker only from a [rootless Docker](https://docs.docker.com/engine/security/rootless/) daemon that runs as `paws-agent` ([Docker access for runner work](runner-enrollment.md#docker-access-for-runner-work)). The daemon and its containers run inside a user namespace: root in a container is `paws-agent` on the host, and other container users map to `paws-agent`'s subordinate ids. A steered agent can do in a container what `paws-agent` can already do on the host, and no more. `paws-agent` still can't use the root daemon at `/var/run/docker.sock`. The package never adds a runner account to the `docker` group, whose members can act as root on the host.
+Runner work gets Docker only from a [rootless Docker](https://docs.docker.com/engine/security/rootless/) daemon that runs as `paws-agent` ([Docker access for runner work](runner-enrollment.md#docker-access-for-runner-work)). The daemon and its containers run inside a user namespace: root in a container is `paws-agent` on the host, and other container users map to `paws-agent`'s subordinate ids. A steered agent can do in a container what `paws-agent` can already do on the host, and no more. The daemon's socket is reachable by `paws-agent` and the members of its group, which include `paws-runner`, so every worker can use it; other local users can't. The package never gives runner work the root daemon at `/var/run/docker.sock`. The package never adds a runner account to the `docker` group, whose members can act as root on the host.
 
 Known limits of this setup:
 
