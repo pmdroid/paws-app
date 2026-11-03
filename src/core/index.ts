@@ -128,6 +128,8 @@ export {
   RunnerSetupRequired,
   type RunnerSetupNeed,
   TRANSIENT_RETRY_BASE_MS,
+  AgentServiceError,
+  isAgentServiceError,
   isTransient,
   placementWaitMs,
   resumeRetrySpreadMs,

@@ -134,6 +134,8 @@ import {
   type RepositoryBinding,
   PawsShutdown,
   RunnerSlotsBusyError,
+  AgentServiceError,
+  isAgentServiceError,
   ordinal,
   queueLine,
   systemClock,
@@ -2992,6 +2994,8 @@ export class Orchestrator {
         await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
         return;
       }
+      if (executed.run.stopReason === "error" && isAgentServiceError(executed.run.errorMessage))
+        throw new AgentServiceError(executed.run.errorMessage!);
       if (executed.run.stopReason !== "end_turn") {
         this.fail(
           finished,
