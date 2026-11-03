@@ -139,6 +139,9 @@ export interface StatusItem {
 
 export const DOING_KINDS = ["running", "slot", "paused", "person", "idle"] as const;
 export type DoingKind = (typeof DOING_KINDS)[number];
+export const DOING_PHASES = ["preparing", "agent"] as const;
+/** Live runner work: `preparing` until the runner reports its first agent activity. */
+export type DoingPhase = (typeof DOING_PHASES)[number];
 
 export interface StatusDoing {
   kind: DoingKind;
@@ -148,6 +151,7 @@ export interface StatusDoing {
   agent?: string;
   question?: string;
   stalled?: boolean;
+  phase?: DoingPhase;
 }
 
 /**
@@ -1806,6 +1810,9 @@ function readDoing(input: unknown, path: string): StatusDoing {
     ...(body.agent === undefined ? {} : { agent: text(body, "agent", path) }),
     ...(body.question === undefined ? {} : { question: text(body, "question", path) }),
     ...(body.stalled === undefined ? {} : { stalled: boolean(body, "stalled", path) }),
+    ...(body.phase === undefined
+      ? {}
+      : { phase: oneOf(string(body, "phase", path), DOING_PHASES, `${path}.phase`) }),
   };
 }
 

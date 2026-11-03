@@ -4,12 +4,15 @@ import { hoursLabel, itemAge } from "./state-times";
 
 const HOUR = 3_600_000;
 
+export const PREPARING_LABEL = "Preparing: checking out and installing runtimes";
+
 export function doingLabel(item: Pick<StatusItem, "doing" | "state">): string | null {
   const doing = item.doing;
   if (!doing) return null;
   const on = doing.runners.join(", ");
   switch (doing.kind) {
     case "running":
+      if (doing.phase === "preparing") return on ? `${PREPARING_LABEL} on ${on}` : PREPARING_LABEL;
       return on ? `Running on ${on}` : item.state === "verifying" ? "Running Closeout" : "Running";
     case "slot":
       return on ? `Waiting for a slot on ${on}` : "Waiting for a slot";

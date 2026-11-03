@@ -115,6 +115,7 @@ import {
   type StatusDeadDelivery,
   type ActivityKind,
   type CheckKind,
+  type DoingPhase,
   type CheckState,
   type EvidenceListResponse,
   type EvidenceMetadataResponse,
@@ -1383,8 +1384,26 @@ export function doingFor(
     ...input,
     state: record.state,
     facts: itemActivityFacts(db, record, input.now),
+    phase: record.state === "running" ? runnerPhase(db, record.currentRunId) : null,
   });
   return doing === undefined ? { activeMs: record.awakeMs } : { doing, activeMs: record.awakeMs };
+}
+
+/**
+ * Runner work is preparing (checkout, mise installs) until its current generation reports an
+ * `activity` event. Reads only the plain `type` column; a run without runner work has no phase.
+ */
+function runnerPhase(db: Database, runId: string | null): DoingPhase | null {
+  if (runId === null) return null;
+  const row = db
+    .query<{ agent: number }, [string]>(
+      `SELECT EXISTS(SELECT 1 FROM runner_event e WHERE e.run_id=w.run_id
+       AND e.generation=w.generation AND e.type='activity') AS agent
+       FROM runner_work w WHERE w.run_id=?`,
+    )
+    .get(runId);
+  if (row === null) return null;
+  return row.agent === 1 ? "agent" : "preparing";
 }
 
 export function questionLine(body: string): string {

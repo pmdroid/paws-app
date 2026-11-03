@@ -229,7 +229,10 @@ function journeyBase(
         step: "implementing",
         tone: "now",
         headline: "Implementing",
-        reason: withDoing("The agent is working on the issue."),
+        reason:
+          item.doing?.phase === "preparing"
+            ? `${doing}.`
+            : withDoing("The agent is working on the issue."),
       };
   }
 }

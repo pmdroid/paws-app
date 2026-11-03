@@ -1,5 +1,5 @@
 import type { ItemActivityFacts, ItemHold } from "../../../db";
-import type { StatusDoing } from "../contract";
+import type { DoingPhase, StatusDoing } from "../contract";
 
 export const STALL_MS = 30 * 60_000;
 
@@ -18,6 +18,7 @@ export type DoingInput = {
   facts: ItemActivityFacts;
   hold: ItemHold | undefined;
   question: string | null;
+  phase: DoingPhase | null;
   lastChange: number;
   now: number;
 };
@@ -32,7 +33,7 @@ export function doingOf(input: DoingInput): StatusDoing | undefined {
   return stalled ? { ...doing, stalled: true } : doing;
 }
 
-function baseDoing({ state, facts, hold, question, lastChange }: DoingInput): StatusDoing {
+function baseDoing({ state, facts, hold, question, phase, lastChange }: DoingInput): StatusDoing {
   const changed = new Date(lastChange).toISOString();
   if (state === "awaiting_input")
     return { kind: "person", runners: [], since: changed, ...(question ? { question } : {}) };
@@ -46,7 +47,12 @@ function baseDoing({ state, facts, hold, question, lastChange }: DoingInput): St
       agent: pause.agent,
     };
   if (facts.liveRunner !== null)
-    return { kind: "running", runners: [facts.liveRunner], since: null };
+    return {
+      kind: "running",
+      runners: [facts.liveRunner],
+      since: null,
+      ...(state === "running" && phase !== null ? { phase } : {}),
+    };
   if (facts.slotWait)
     return {
       kind: "slot",

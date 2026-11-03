@@ -157,6 +157,38 @@ describe("status views", () => {
     expect(order).toEqual([...order].sort((left, right) => left - right));
   });
 
+  test("runner work still preparing shows Preparing on Overview, Issues and the issue page", () => {
+    const snapshot = fullStatusFixture();
+    snapshot.questions = [];
+    snapshot.verdicts = [];
+    const item = snapshot.items.find((entry) => entry.id === "ENG-102")!;
+    item.timeline = [];
+    item.activeMs = 3 * 60_000;
+    const label = "Preparing: checking out and installing runtimes on agentbox";
+    const views = () => {
+      const overview = render(model({ snapshot })).content;
+      return {
+        overview: overview.slice(overview.indexOf('data-item="ENG-102"')).split("</li>")[0]!,
+        issues: issueRow(
+          render(model({ snapshot, route: { view: "issues", id: null } })).content,
+          "ENG-102",
+        ),
+        page: render(model({ snapshot, route: { view: "issues", id: "ENG-102" } })).content,
+      };
+    };
+    item.doing = { kind: "running", runners: ["agentbox"], since: null, phase: "preparing" };
+    const preparing = views();
+    expect(preparing.overview).toContain(`${label}.`);
+    expect(preparing.overview).not.toContain("The agent is working on the issue.");
+    expect(preparing.issues).toContain(label);
+    expect(preparing.page).toContain(`Implementing · ${label}`);
+    item.doing = { ...item.doing, phase: "agent" };
+    const agent = views();
+    for (const html of Object.values(agent)) expect(html).not.toContain("Preparing");
+    expect(agent.overview).toContain("The agent is working on the issue. Running on agentbox.");
+    expect(agent.issues).toContain("Running on agentbox");
+  });
+
   test("overview includes input holds without a question and paused work under Needs you", () => {
     const snapshot = fullStatusFixture();
     snapshot.questions = [];

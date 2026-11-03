@@ -57,7 +57,7 @@ import { renderIntake } from "./intake";
 import { renderPushOutages } from "./push-outage";
 import { renderPolicyRunnerWarnings } from "./policy-runners";
 import { itemAge, itemAgeLine, mergedTimesSection, stateTimeBar } from "./state-times";
-import { doingTimeLine, itemPill, itemTime } from "./doing";
+import { doingLabel, doingTimeLine, itemPill, itemTime, PREPARING_LABEL } from "./doing";
 import { JOURNEY_ORDER, journey, journeyPill, journeyStepper } from "./journey";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection } from "./visual-review";
@@ -513,9 +513,11 @@ function issuePage(
       ${item.links.length ? `<div class="row wrap">${linkButtons(item.links)}</div>` : ""}
     </header>
     ${journeyStepper(now, {
-      ...(agent?.attempts.at(-1)?.checks.length
-        ? { implementing: `Agent Closeout ${agentProgress(agent)}` }
-        : {}),
+      ...(item.doing?.phase === "preparing"
+        ? { implementing: doingLabel(item) ?? PREPARING_LABEL }
+        : agent?.attempts.at(-1)?.checks.length
+          ? { implementing: `Agent Closeout ${agentProgress(agent)}` }
+          : {}),
       ...(item.state === "merge_queue" && item.mergeQueue
         ? { queue: item.mergeQueue.position }
         : {}),
