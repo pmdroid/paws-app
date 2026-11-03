@@ -82,7 +82,6 @@ export async function probeRunnerSessionHelpers(
     port: 0,
   });
   const runnerPort = coordinator.port;
-  // Pairs a runner with a fixture certificate the way enrollment records it, without issuing one.
   function pair(name: string, runner: (typeof RUNNER_IDENTITIES)[number]) {
     const { token } = coordinator.control.createEnrollment(principal, { name });
     const runnerId = workspaceId(now);

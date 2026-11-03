@@ -1,6 +1,3 @@
-// Test-only identity material, generated once with OpenSSL and valid until 2126, so runner tests
-// that are not about certificate issuance need not spawn it. The runner certificates are signed by
-// the authority with the client extensions Paws issues.
 export const RUNNER_AUTHORITY = {
   key: `-----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgNrsGLKupdLLzt/OI
@@ -22,7 +19,6 @@ bslSS+C/N6DIy+5e2IOP6Relg6k8SBE=
 `,
 };
 
-/** A server certificate for 127.0.0.1 and localhost. */
 export const SERVER_TLS = {
   key: `-----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgGcIPvgIiEPVApFOp

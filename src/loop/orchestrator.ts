@@ -590,10 +590,7 @@ export type OrchestratorOptions = {
     commandsGone?(itemId: string, since: number): boolean;
   };
   remoteCloseoutRetry?: { attempts: number; delayMs: number };
-  /**
-   * How often Closeout rechecks an unavailable runner, and when it asks the team. Tests pass
-   * `sleep` to step the wait with a fake clock instead of real time.
-   */
+  /** How often Closeout rechecks an unavailable runner, and when it asks the team. */
   runnerWait?: { pollMs: number; askAfterMs: number; sleep?: (ms: number) => Promise<void> };
   publicationReady?: (
     itemId: string,

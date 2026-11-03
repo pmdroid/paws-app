@@ -255,8 +255,6 @@ export async function probeRunnerOrchestration(
         [runId, "runner-1", "ws-1", `cmd-${runId}`, now + 600_000],
       );
     }
-    // The wait parks in runnerWaitSleep on each poll; the watcher checks while it is parked and
-    // releases one poll at a time, so no step depends on real time.
     let parked: { resolve(): void; reject(error: unknown): void } | undefined;
     let onPark: (() => void) | undefined;
     let watchFailed: { error: unknown } | undefined;
