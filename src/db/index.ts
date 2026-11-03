@@ -983,3 +983,19 @@ export {
   type ImprovementSourceKind,
   type ImprovementVerificationState,
 } from "./improvements";
+export {
+  readRetroActivity,
+  type RetroActivityCheck,
+  type RetroActivityCiRound,
+  type RetroActivityEscape,
+  type RetroActivityFinding,
+  type RetroActivityFindingGroup,
+  type RetroActivityImprovement,
+  type RetroActivityItem,
+  type RetroActivityMessage,
+  type RetroActivityQuestion,
+  type RetroActivityRebaseReturn,
+  type RetroActivityRun,
+  type RetroActivitySnapshot,
+  type RetroActivityTransition,
+} from "./retro-activity";
