@@ -7,7 +7,9 @@ import json
 import os
 import pathlib
 import platform
+import shlex
 import shutil
+import stat
 import socket
 import subprocess
 import sys
@@ -959,22 +961,81 @@ class AgentInstallation(unittest.TestCase):
 
 
 class FakeDockerHost:
-    """Accounts, groups, the socket and the daemon as runner work would see them. Nothing touches the real host."""
+    """A fake root for rootless Docker setup: accounts, groups, the files it writes, and recording systemctl, usermod and gpasswd."""
 
-    def __init__(self, installer, docker=True, members=(), daemon="up", cli="/usr/bin/docker", version="Docker version 29.2.1, build a5c7197", endpoint="unix:///var/run/docker.sock", socket=True):
+    UNIT = """[Unit]
+Description=Rootless Docker daemon for paws-agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=paws-agent
+Group=paws-agent
+RuntimeDirectory=paws-docker
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/paws-docker
+Environment=HOME=/var/lib/paws-agent-docker
+Environment=PATH=/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
+ExecStart=/usr/lib/paws-runner-package/dockerd-rootless.sh --data-root /var/lib/paws-agent-docker/data --exec-root /run/paws-docker/exec --pidfile /run/paws-docker/docker.pid --host unix:///run/paws-docker/docker.sock --exec-opt native.cgroupdriver=cgroupfs
+Delegate=yes
+KillMode=mixed
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=infinity
+LimitNPROC=infinity
+TasksMax=infinity
+
+[Install]
+WantedBy=multi-user.target
+"""
+    DROP_IN = """[Unit]
+Wants=paws-docker.service
+After=paws-docker.service
+[Service]
+Environment=DOCKER_HOST=unix:///run/paws-docker/docker.sock
+"""
+
+    def __init__(self, installer, root, members=()):
         self.installer = installer
-        self.accounts = {"paws-runner": SimpleNamespace(pw_name="paws-runner", pw_uid=980, pw_gid=980), "paws-agent": SimpleNamespace(pw_name="paws-agent", pw_uid=979, pw_gid=979)}
-        self.groups = {"paws-runner": [980, []], "paws-agent": [979, ["paws-runner"]], "paws-results": [981, ["paws-runner", "paws-agent"]], "sudo": [27, []]}
-        if docker:
-            self.groups["docker"] = [988, list(members)]
-        self.daemon = daemon
-        self.cli = cli
-        self.version = version
-        self.endpoint = endpoint
-        self.socket = SimpleNamespace(st_mode=0o140660, st_uid=0, st_gid=988) if socket else None
-        self.grant_error = None
-        self.commands = []
-        self.grants = 0
+        self.root = root
+        self.bin = root / "bin"
+        self.bin.mkdir(parents=True)
+        self.log = root / "commands.log"
+        self.log.touch()
+        self.members = root / "docker-members"
+        self.members.write_text("".join(name + "\n" for name in members))
+        # paws-agent is the test's own user, so the data directory can be given to it without root.
+        uid, gid = os.getuid() or 60979, os.getgid() or 60979
+        self.accounts = {"paws-runner": SimpleNamespace(pw_name="paws-runner", pw_uid=uid + 1, pw_gid=60980), "paws-agent": SimpleNamespace(pw_name="paws-agent", pw_uid=uid, pw_gid=gid)}
+        self.groups = {"paws-runner": [60980, []], "paws-agent": [gid, ["paws-runner"]], "paws-results": [60981, ["paws-runner", "paws-agent"]], "docker": [60988, None], "sudo": [27, []]}
+        for name in ("dockerd", "rootlesskit", "newuidmap", "newgidmap", "slirp4netns"):
+            self.tool(name, "exit 0\n")
+        log = shlex.quote(str(self.log))
+        self.tool("systemctl", f'printf "systemctl %s\\n" "$*" >> {log}\n')
+        self.tool("usermod", f'printf "usermod %s\\n" "$*" >> {log}\ncase "$1" in --add-subuids) file={shlex.quote(str(root / "etc/subuid"))} ;; --add-subgids) file={shlex.quote(str(root / "etc/subgid"))} ;; *) exit 2 ;; esac\nstart=${{2%-*}}; last=${{2#*-}}\nprintf "%s:%s:%s\\n" "$3" "$start" "$((last - start + 1))" >> "$file"\n')
+        self.tool("gpasswd", f'printf "gpasswd %s\\n" "$*" >> {log}\ntest "$1 $2 $3" = "-d paws-runner docker" || exit 2\ngrep -vx paws-runner {shlex.quote(str(self.members))} > {shlex.quote(str(self.members))}.new || true\nmv {shlex.quote(str(self.members))}.new {shlex.quote(str(self.members))}\n')
+        (root / "etc").mkdir()
+        (root / "etc/subuid").write_text("")
+        (root / "etc/subgid").write_text("")
+        (root / "var/lib").mkdir(parents=True)
+        (root / "state").mkdir()
+        launcher = root / "usr/lib/paws-runner-package/dockerd-rootless.sh"
+        launcher.parent.mkdir(parents=True)
+        shutil.copyfile(pathlib.Path(sys.argv[1]).with_name("dockerd-rootless.sh"), launcher)
+        launcher.chmod(0o755)
+        self.probe = "ready"
+
+    def tool(self, name, body):
+        path = self.bin / name
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+
+    def path(self, name):
+        return self.root / name.lstrip("/")
+
+    def commands(self):
+        return self.log.read_text().splitlines()
 
     def getpwnam(self, name):
         if name not in self.accounts:
@@ -985,197 +1046,264 @@ class FakeDockerHost:
         if name not in self.groups:
             raise KeyError(name)
         gid, members = self.groups[name]
-        return SimpleNamespace(gr_name=name, gr_gid=gid, gr_mem=list(members))
+        return SimpleNamespace(gr_name=name, gr_gid=gid, gr_mem=self.members.read_text().split() if members is None else list(members))
 
     def getgrall(self):
         return [self.getgrnam(name) for name in self.groups]
 
     def getgrouplist(self, name, gid):
-        return [gid, *(group_gid for group_gid, members in self.groups.values() if name in members and group_gid != gid)]
+        return [gid, *(group.gr_gid for group in self.getgrall() if name in group.gr_mem and group.gr_gid != gid)]
 
-    def member(self):
-        return "docker" in self.groups and self.groups["docker"][0] in self.getgrouplist("paws-runner", 980)
+    def write_atomic(self, path, content, mode):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        path.chmod(mode)
 
-    def as_runner(self, arguments, timeout=30):
-        self.commands.append(arguments)
-        if arguments[1:] == ["--version"]:
-            return subprocess.CompletedProcess(arguments, 0, (self.version + "\n").encode(), b"")
-        if arguments[1:3] == ["context", "inspect"]:
-            return subprocess.CompletedProcess(arguments, 0, (self.endpoint + "\n").encode(), b"")
-        if arguments[0] == "/usr/bin/python3":
-            if self.daemon == "acl":
-                outcome = "ready"
-            elif not self.member():
-                outcome = "permission-denied"
-            else:
-                outcome = {"up": "ready", "down": "daemon-unavailable", "refused": "permission-denied", "podman": "alternative-runtime"}[self.daemon]
-            return subprocess.CompletedProcess(arguments, 0, (outcome + "\n").encode(), b"")
-        raise AssertionError(arguments)
-
-    def add_docker_member(self):
-        self.grants += 1
-        if self.grant_error:
-            return self.grant_error
-        if "paws-runner" not in self.groups["docker"][1]:
-            self.groups["docker"][1].append("paws-runner")
-        return None
-
-    def patches(self, rootless):
-        installer = self.installer
+    def patches(self, installer=None):
+        installer = installer or self.installer
         return [
             mock.patch.object(installer.pwd, "getpwnam", self.getpwnam),
             mock.patch.object(installer.grp, "getgrnam", self.getgrnam),
             mock.patch.object(installer.grp, "getgrall", self.getgrall),
             mock.patch.object(installer.os, "getgrouplist", self.getgrouplist),
-            mock.patch.object(installer.shutil, "which", lambda name, path=None: self.cli if name == "docker" and path == installer.WORKER_PATH else None),
-            mock.patch.object(installer, "socket_info", lambda path: self.socket),
-            mock.patch.object(installer, "as_runner", self.as_runner),
-            mock.patch.object(installer, "add_docker_member", self.add_docker_member),
-            mock.patch.object(installer, "DOCKER_ROOTLESS", rootless),
+            mock.patch.object(installer, "write_atomic", self.write_atomic),
+            mock.patch.object(installer, "docker_probe", lambda: self.probe),
+            mock.patch.object(installer, "DOCKER_PATH", str(self.bin)),
+            mock.patch.object(installer, "DOCKER_LAUNCHER", self.path("/usr/lib/paws-runner-package/dockerd-rootless.sh")),
+            mock.patch.object(installer, "DOCKER_UNIT", self.path("/etc/systemd/system/paws-docker.service")),
+            mock.patch.object(installer, "DOCKER_DROP_IN", self.path("/etc/systemd/system/paws-agent@.service.d/docker.conf")),
+            mock.patch.object(installer, "DOCKER_DATA", self.path("/var/lib/paws-agent-docker")),
+            mock.patch.object(installer, "DOCKER_SUBORDINATE", {"uid": self.path("/etc/subuid"), "gid": self.path("/etc/subgid")}),
+            mock.patch.object(installer, "DOCKER_GROUP_GRANT", self.path("/state/docker-group.json")),
+            mock.patch.object(installer, "SYSTEMCTL", str(self.bin / "systemctl")),
+            mock.patch.object(installer, "USERMOD", str(self.bin / "usermod")),
+            mock.patch.object(installer, "GPASSWD", str(self.bin / "gpasswd")),
         ]
+
+    def snapshot(self):
+        return {str(path.relative_to(self.root)): (path.read_bytes() if path.is_file() else None, stat.S_IMODE(path.lstat().st_mode)) for path in sorted(self.root.rglob("*")) if path != self.log}
 
 
 class DockerAccess(unittest.TestCase):
     def setUp(self):
         self.installer = load("install")
         self.temporary = tempfile.TemporaryDirectory(prefix="paws-docker-access-")
-        self.rootless = pathlib.Path(self.temporary.name) / "run-user"
-        self.rootless.mkdir()
+        self.host = FakeDockerHost(self.installer, pathlib.Path(self.temporary.name) / "root")
 
     def tearDown(self):
         self.temporary.cleanup()
 
-    def access(self, host, choice):
+    def configure(self, choice, host=None):
+        host = host or self.host
         with contextlib.ExitStack() as stack:
-            for patch in host.patches(self.rootless):
+            for patch in host.patches():
                 stack.enter_context(patch)
-            return self.installer.docker_access(choice)
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            return self.installer.configure_docker_access(choice)
 
-    def validate(self, host):
+    def validate(self):
         with contextlib.ExitStack() as stack:
-            for patch in host.patches(self.rootless):
+            for patch in self.host.patches():
                 stack.enter_context(patch)
             self.installer.validate_identity_separation()
 
-    def test_missing_docker_is_a_no_op(self):
-        host = FakeDockerHost(self.installer, docker=False, cli=None, socket=False)
-        report = self.access(host, "grant")
-        self.assertEqual((report["status"], report["changed"], host.grants), ("absent", False, 0))
+    def test_grant_sets_up_the_rootless_daemon_for_paws_agent(self):
+        host = self.host
+        host.path("/etc/subuid").write_text("pascal:100000:65536\nbuilder:300000:10000\n")
+        report = self.configure("grant")
+        self.assertEqual((report["status"], report["changed"]), ("granted", True), report)
+        self.assertEqual(host.path("/etc/systemd/system/paws-docker.service").read_text(), FakeDockerHost.UNIT)
+        self.assertEqual(host.path("/etc/systemd/system/paws-agent@.service.d/docker.conf").read_text(), FakeDockerHost.DROP_IN)
+        data = host.path("/var/lib/paws-agent-docker").lstat()
+        self.assertTrue(stat.S_ISDIR(data.st_mode))
+        self.assertEqual((data.st_uid, data.st_gid, stat.S_IMODE(data.st_mode)), (host.accounts["paws-agent"].pw_uid, host.accounts["paws-agent"].pw_gid, 0o700))
+        # The highest range ends at 310000; the next 65536-aligned id is 327680. An empty file starts at 100000.
+        self.assertEqual(host.path("/etc/subuid").read_text(), "pascal:100000:65536\nbuilder:300000:10000\npaws-agent:327680:65536\n")
+        self.assertEqual(host.path("/etc/subgid").read_text(), "paws-agent:100000:65536\n")
+        self.assertEqual(host.commands(), ["usermod --add-subuids 327680-393215 paws-agent", "usermod --add-subgids 100000-165535 paws-agent", "systemctl daemon-reload", "systemctl enable -- paws-docker.service", "systemctl restart -- paws-docker.service"])
+        self.assertIn("/run/paws-docker/docker.sock", report["message"])
+        self.assertNotIn("dockerGroup", report)
 
-    def test_opt_in_adds_only_paws_runner_to_docker_and_new_work_reaches_the_daemon(self):
-        host = FakeDockerHost(self.installer)
-        report = self.access(host, "grant")
-        self.assertEqual((report["status"], report["changed"]), ("granted", True))
-        self.assertEqual(host.groups["docker"][1], ["paws-runner"])
-        self.assertEqual(host.groups["paws-agent"][1], ["paws-runner"])
-        self.assertIn("root", report["message"])
-        self.assertIn("started by hand", report["message"])
-        self.assertNotIn("log in", report["message"])
-        # The final check is a new process as paws-runner, after the membership change.
-        self.assertEqual(host.commands[-1][0], "/usr/bin/python3")
-        self.validate(host)
-        again = self.access(host, "grant")
-        self.assertEqual((again["status"], again["changed"], host.grants), ("ready", False, 1))
+    def test_a_second_grant_changes_nothing(self):
+        self.configure("grant")
+        before = self.host.snapshot()
+        self.host.log.write_text("")
+        report = self.configure("grant")
+        self.assertEqual((report["status"], report["changed"]), ("ready", False))
+        self.assertEqual(self.host.snapshot(), before)
+        self.assertEqual(self.host.commands(), ["systemctl enable --now -- paws-docker.service"])
 
-    def test_existing_member_or_working_access_changes_nothing(self):
-        member = FakeDockerHost(self.installer, members=["pascal", "paws-runner"])
-        self.assertEqual(self.access(member, "grant")["status"], "ready")
-        self.assertEqual((member.grants, member.groups["docker"][1]), (0, ["pascal", "paws-runner"]))
-        acl = FakeDockerHost(self.installer, daemon="acl")
-        self.assertEqual(self.access(acl, "grant")["status"], "ready")
-        self.assertEqual((acl.grants, acl.member()), (0, False))
+    def test_a_missing_prerequisite_is_reported_and_nothing_is_set_up(self):
+        for name in ("slirp4netns", "newgidmap"):
+            (self.host.bin / name).unlink()
+        before = self.host.snapshot()
+        report = self.configure("grant")
+        self.assertEqual((report["status"], report["changed"]), ("missing-prerequisites", False))
+        self.assertIn("needs slirp4netns, uidmap", report["message"])
+        self.assertNotIn("rootlesskit", report["message"])
+        self.assertFalse(self.host.path("/etc/systemd/system/paws-docker.service").exists())
+        self.assertEqual((self.host.snapshot(), self.host.commands()), (before, []))
 
-    def test_without_opt_in_or_declined_nothing_changes_and_the_risk_is_explained(self):
-        for choice, status in ((None, "opt-in-required"), ("deny", "declined")):
-            host = FakeDockerHost(self.installer, members=["pascal"])
-            report = self.access(host, choice)
-            self.assertEqual((report["status"], report["changed"], host.grants, host.groups["docker"][1]), (status, False, 0, ["pascal"]))
-            self.assertIn("act as root", report["message"])
-            self.assertIn("PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner", report["message"])
+    def test_package_configuration_finishes_when_a_prerequisite_is_missing(self):
+        (self.host.bin / "rootlesskit").unlink()
+        deb = load("deb-control")
+        order = []
+        state = pathlib.Path(self.temporary.name) / "debian-services.json"
+        installer = deb.installer
+        def command(arguments):
+            order.append(tuple(arguments[1:]))
+            return b""
+        patches = [
+            *self.host.patches(installer),
+            mock.patch.object(deb, "RESTART", state),
+            mock.patch.object(deb, "active_services", lambda: ["paws-runner.service"]),
+            mock.patch.object(deb, "enabled_services", lambda: []),
+            mock.patch.object(installer.release, "verify_release", lambda arguments, root: ({"version": "1.0.0"}, None, "key")),
+            mock.patch.object(installer.release, "command", command),
+            mock.patch.object(installer, "prerequisites", lambda: None),
+            mock.patch.object(installer, "prepare_agents", lambda artifact: None),
+            mock.patch.object(installer, "install", lambda *arguments, **options: {"installed": True}),
+            mock.patch.object(installer, "finish_agents", lambda agents: {}),
+            mock.patch.dict(os.environ, {"PAWS_RUNNER_DOCKER_ACCESS": "grant"}),
+        ]
+        output = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            stack.enter_context(contextlib.redirect_stdout(output))
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            deb.configure()
+        installed = json.loads(output.getvalue().strip().splitlines()[-1])
+        self.assertEqual(installed["docker"]["status"], "missing-prerequisites")
+        self.assertIn(("start", "--", "paws-runner.service"), order)
+        self.assertFalse(self.host.path("/etc/systemd/system/paws-docker.service").exists())
 
-    def test_missing_group_or_account_is_diagnosed_without_creating_either(self):
-        host = FakeDockerHost(self.installer, docker=False)
-        report = self.access(host, "grant")
-        self.assertEqual((report["status"], host.grants, "docker" in host.groups), ("missing-group", 0, False))
-        host = FakeDockerHost(self.installer)
-        del host.accounts["paws-runner"]
-        self.assertEqual(self.access(host, "grant")["status"], "missing-account")
-        self.assertEqual(host.grants, 0)
+    def test_deny_removes_the_unit_and_drop_in_and_keeps_the_data_and_ids(self):
+        self.configure("grant")
+        ids = (self.host.path("/etc/subuid").read_text(), self.host.path("/etc/subgid").read_text())
+        self.host.path("/var/lib/paws-agent-docker/data").mkdir()
+        self.host.log.write_text("")
+        report = self.configure("deny")
+        self.assertEqual((report["status"], report["changed"]), ("declined", True))
+        self.assertFalse(self.host.path("/etc/systemd/system/paws-docker.service").exists())
+        self.assertFalse(self.host.path("/etc/systemd/system/paws-agent@.service.d/docker.conf").exists())
+        self.assertTrue(self.host.path("/var/lib/paws-agent-docker/data").is_dir())
+        self.assertEqual((self.host.path("/etc/subuid").read_text(), self.host.path("/etc/subgid").read_text()), ids)
+        self.assertEqual(self.host.commands(), ["systemctl disable --now -- paws-docker.service", "systemctl daemon-reload"])
+        self.host.log.write_text("")
+        again = self.configure("deny")
+        self.assertEqual((again["status"], again["changed"], self.host.commands()), ("declined", False, []))
 
-    def test_stopped_daemon_and_permission_failure_are_reported_separately(self):
-        stopped = FakeDockerHost(self.installer, daemon="down")
-        report = self.access(stopped, "grant")
-        self.assertEqual((report["status"], report["changed"]), ("granted-daemon-unavailable", True))
-        self.assertNotIn("can reach", report["message"])
-        self.assertEqual(self.access(stopped, "grant")["status"], "daemon-unavailable")
-        refused = FakeDockerHost(self.installer, members=["paws-runner"], daemon="refused")
-        self.assertEqual(self.access(refused, "grant")["status"], "permission-denied")
-        self.assertEqual(refused.grants, 0)
-        still_refused = FakeDockerHost(self.installer, daemon="refused")
-        self.assertEqual(self.access(still_refused, "grant")["status"], "granted-permission-denied")
+    def test_without_a_choice_an_existing_setup_stays_and_a_new_host_gets_nothing(self):
+        before = self.host.snapshot()
+        report = self.configure(None)
+        self.assertEqual((report["status"], report["changed"]), ("opt-in-required", False))
+        self.assertIn("PAWS_RUNNER_DOCKER_ACCESS=grant dpkg-reconfigure paws-runner", report["message"])
+        self.assertEqual((self.host.snapshot(), self.host.commands()), (before, []))
+        self.configure("grant")
+        self.assertEqual(self.configure(None)["status"], "ready")
+        self.assertTrue(self.host.path("/etc/systemd/system/paws-docker.service").exists())
 
-    def test_a_failed_membership_change_does_not_claim_access(self):
-        host = FakeDockerHost(self.installer)
-        host.grant_error = "cannot lock /etc/group"
-        report = self.access(host, "grant")
-        self.assertEqual((report["status"], report["changed"], host.member()), ("grant-failed", False, False))
-        self.assertIn("cannot lock /etc/group", report["message"])
+    def test_a_host_without_docker_engine_gets_no_daemon(self):
+        self.configure("grant")
+        (self.host.bin / "dockerd").unlink()
+        report = self.configure("grant")
+        self.assertEqual((report["status"], report["changed"]), ("absent", True))
+        self.assertFalse(self.host.path("/etc/systemd/system/paws-docker.service").exists())
+        self.assertTrue(self.host.path("/var/lib/paws-agent-docker").is_dir())
 
-    def test_rootless_and_remote_docker_leave_groups_alone(self):
-        (self.rootless / "1000").mkdir()
-        (self.rootless / "1000/docker.sock").touch()
-        only_rootless = FakeDockerHost(self.installer, socket=False)
-        self.assertEqual(self.access(only_rootless, "grant")["status"], "rootless")
-        rootless_context = FakeDockerHost(self.installer, endpoint="unix:///run/user/1000/docker.sock")
-        self.assertEqual(self.access(rootless_context, "grant")["status"], "rootless")
-        remote = FakeDockerHost(self.installer, endpoint="ssh://builder@example.com")
-        self.assertEqual(self.access(remote, "grant")["status"], "remote-context")
-        for host in (only_rootless, rootless_context, remote):
-            self.assertEqual((host.grants, host.member()), (0, False))
+    def test_an_upgrade_removes_the_docker_group_membership_paws_recorded_adding(self):
+        host = FakeDockerHost(self.installer, pathlib.Path(self.temporary.name) / "recorded", members=["pascal", "paws-runner"])
+        self.host = host
+        self.validate()
+        host.path("/state/docker-group.json").write_text(json.dumps({"added": True}))
+        report = self.configure(None, host)
+        self.assertEqual((report["dockerGroup"]["status"], report["dockerGroup"]["changed"]), ("group-removed", True))
+        self.assertIn("Removed paws-runner from the docker group", report["dockerGroup"]["message"])
+        self.assertEqual(host.commands(), ["gpasswd -d paws-runner docker"])
+        self.assertEqual(host.members.read_text().split(), ["pascal"])
+        self.assertFalse(host.path("/state/docker-group.json").exists())
+        self.assertNotIn("dockerGroup", self.configure(None, host))
 
-    def test_alternative_runtimes_and_a_cli_without_an_engine_are_not_docker_engine(self):
-        podman_cli = FakeDockerHost(self.installer, version="podman version 5.0.3")
-        linked = FakeDockerHost(self.installer, cli=None)
-        linked.socket = SimpleNamespace(st_mode=0o120777, st_uid=0, st_gid=0)
-        podman_daemon = FakeDockerHost(self.installer, members=["paws-runner"], daemon="podman")
-        cli_only = FakeDockerHost(self.installer, socket=False)
-        self.assertEqual(self.access(podman_cli, "grant")["status"], "alternative-runtime")
-        self.assertEqual(self.access(linked, "grant")["status"], "alternative-runtime")
-        self.assertEqual(self.access(podman_daemon, "grant")["status"], "alternative-runtime")
-        self.assertEqual(self.access(cli_only, "grant")["status"], "no-engine")
-        self.assertEqual(sum(host.grants for host in (podman_cli, linked, podman_daemon, cli_only)), 0)
+    def test_an_unrecorded_docker_group_membership_is_left_alone_with_a_warning(self):
+        host = FakeDockerHost(self.installer, pathlib.Path(self.temporary.name) / "unrecorded", members=["paws-runner"])
+        self.host = host
+        self.validate()
+        report = self.configure("grant", host)
+        self.assertEqual(report["status"], "granted")
+        self.assertEqual((report["dockerGroup"]["status"], report["dockerGroup"]["changed"]), ("group-kept", False))
+        self.assertIn(self.installer.DOCKER_RISK, report["dockerGroup"]["message"])
+        self.assertFalse(any(command.startswith("gpasswd") for command in host.commands()))
+        self.assertEqual(host.members.read_text().split(), ["paws-runner"])
 
-    def test_unexpected_socket_owner_group_or_mode_is_left_alone(self):
-        for socket in (SimpleNamespace(st_mode=0o140660, st_uid=1000, st_gid=988), SimpleNamespace(st_mode=0o140660, st_uid=0, st_gid=0), SimpleNamespace(st_mode=0o140600, st_uid=0, st_gid=988), SimpleNamespace(st_mode=0o100660, st_uid=0, st_gid=988)):
-            host = FakeDockerHost(self.installer)
-            host.socket = socket
-            self.assertEqual(self.access(host, "grant")["status"], "unexpected-socket")
-            self.assertEqual(host.grants, 0)
-
-    def test_a_docker_group_that_aliases_another_group_is_not_granted_or_accepted(self):
-        host = FakeDockerHost(self.installer)
-        host.groups["wheel-alias"] = [988, []]
-        self.assertEqual(self.access(host, "grant")["status"], "unsafe-group")
-        self.assertEqual(host.grants, 0)
-        host.groups["docker"][1].append("paws-runner")
+    def test_identity_validation_still_rejects_other_groups(self):
+        self.host.members.write_text("paws-runner\npaws-agent\n")
         with self.assertRaisesRegex(ValueError, "unrelated supplemental group"):
-            self.validate(host)
+            self.validate()
+        self.host.members.write_text("paws-runner\n")
+        self.host.groups["sudo"][1].append("paws-runner")
+        with self.assertRaisesRegex(ValueError, "unrelated supplemental group"):
+            self.validate()
 
-    def test_identity_validation_accepts_only_paws_runner_in_a_distinct_docker_group(self):
-        host = FakeDockerHost(self.installer, members=["paws-runner"])
-        self.validate(host)
-        agent = FakeDockerHost(self.installer, members=["paws-runner", "paws-agent"])
-        with self.assertRaisesRegex(ValueError, "unrelated supplemental group"):
-            self.validate(agent)
-        for gid in (0, 27):
-            aliased = FakeDockerHost(self.installer, members=["paws-runner"])
-            aliased.groups["docker"][0] = gid
-            with self.assertRaises(ValueError):
-                self.validate(aliased)
-        privileged = FakeDockerHost(self.installer, members=["paws-runner"])
-        privileged.groups["sudo"][1].append("paws-runner")
-        with self.assertRaisesRegex(ValueError, "unrelated supplemental group"):
-            self.validate(privileged)
+    def test_the_vendored_launcher_is_checked_against_its_pinned_sha256(self):
+        vendored = pathlib.Path(sys.argv[1]).with_name("dockerd-rootless.sh").read_bytes()
+        self.assertEqual(release.verify_dockerd_rootless(vendored), vendored)
+        self.assertEqual(hashlib.sha256(vendored).hexdigest(), release.DOCKERD_ROOTLESS_SHA256)
+        package = load("deb-package")
+        source = pathlib.Path(self.temporary.name) / "source"
+        source.mkdir()
+        (source / "dockerd-rootless.sh").write_bytes(vendored + b"# changed\n")
+        output = pathlib.Path(self.temporary.name) / "output"
+        with mock.patch.object(package, "ROOT", source), mock.patch.object(package.release, "verify_release", lambda arguments, root: self.fail("packaged with a changed launcher")):
+            with self.assertRaisesRegex(ValueError, "dockerd-rootless.sh checksum mismatch"):
+                package.build(SimpleNamespace(output=str(output)))
+        self.assertFalse(output.exists())
+        self.host.path("/usr/lib/paws-runner-package/dockerd-rootless.sh").write_bytes(vendored + b"# changed\n")
+        report = self.configure("grant")
+        self.assertEqual(report["status"], "missing-launcher")
+        self.assertFalse(self.host.path("/etc/systemd/system/paws-docker.service").exists())
+
+    def test_postrm_remove_and_purge_clean_up_rootless_docker(self):
+        package = load("deb-package")
+        units = sorted(name for name in release.ASSETS if name.endswith((".service", ".socket", ".path")))
+        for action in ("remove", "purge"):
+            root = pathlib.Path(self.temporary.name) / action
+            log = root / "systemctl.log"
+            (root / "bin").mkdir(parents=True)
+            (root / "bin/systemctl").write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {shlex.quote(str(log))}\n')
+            (root / "bin/systemctl").chmod(0o755)
+            for name in ("etc/systemd/system/paws-docker.service", "etc/systemd/system/paws-agent@.service.d/docker.conf", "var/lib/paws-agent-docker/data/image"):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text("x")
+            (root / "etc/subuid").write_text("pascal:100000:65536\npaws-agent:165536:65536\n")
+            (root / "etc/subgid").write_text("paws-agent:100000:65536\npascal:165536:65536\n")
+            script = root / "postrm"
+            script.write_text(package.postrm(units, str(root)))
+            run = lambda argument: subprocess.run(["/bin/sh", str(script), argument], env={"PATH": f"{root / 'bin'}:/usr/bin:/bin", "LANG": "C"}, capture_output=True, timeout=30)
+            # dpkg runs postrm remove, then postrm purge.
+            for argument in ("remove", "purge") if action == "purge" else ("remove",):
+                result = run(argument)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertFalse((root / "etc/systemd/system/paws-docker.service").exists())
+            self.assertFalse((root / "etc/systemd/system/paws-agent@.service.d").exists())
+            self.assertIn("disable --now -- paws-docker.service", log.read_text().splitlines())
+            self.assertIn("daemon-reload", log.read_text().splitlines())
+            if action == "remove":
+                self.assertTrue((root / "var/lib/paws-agent-docker/data/image").exists())
+                self.assertEqual((root / "etc/subuid").read_text(), "pascal:100000:65536\npaws-agent:165536:65536\n")
+                self.assertEqual((root / "etc/subgid").read_text(), "paws-agent:100000:65536\npascal:165536:65536\n")
+            else:
+                self.assertFalse((root / "var/lib/paws-agent-docker").exists())
+                self.assertEqual((root / "etc/subuid").read_text(), "pascal:100000:65536\n")
+                self.assertEqual((root / "etc/subgid").read_text(), "pascal:165536:65536\n")
+
+    def test_subordinate_ranges_start_on_a_65536_boundary_past_the_highest_range(self):
+        start = self.installer.next_subordinate_start
+        self.assertEqual(start(""), 100000)
+        self.assertEqual(start("# comment\n\n"), 100000)
+        self.assertEqual(start("pascal:100000:65536\n"), 196608)
+        self.assertEqual(start("a:65536:65536\nb:0:10\n"), 131072)
+        self.assertEqual(start("a:200000:1\nb:100000:65536\n"), 262144)
 
     def test_choice_comes_from_the_environment_and_never_prompts(self):
         self.assertIsNone(self.installer.docker_access_choice({}))
@@ -1183,21 +1311,6 @@ class DockerAccess(unittest.TestCase):
         self.assertEqual(self.installer.docker_access_choice({"PAWS_RUNNER_DOCKER_ACCESS": "deny"}), "deny")
         with self.assertRaisesRegex(ValueError, "grant or deny"):
             self.installer.docker_access_choice({"PAWS_RUNNER_DOCKER_ACCESS": "yes"})
-
-    def test_checks_run_as_paws_runner_with_the_worker_environment(self):
-        calls = []
-        def run(arguments, **options):
-            calls.append((arguments, options))
-            return subprocess.CompletedProcess(arguments, 0, b"ready\n", b"")
-        with mock.patch.object(self.installer.subprocess, "run", run):
-            self.assertEqual(self.installer.docker_probe(pathlib.Path("/var/run/docker.sock")), "ready")
-        arguments, options = calls[0]
-        self.assertEqual(arguments[:5], ["/usr/sbin/runuser", "--user", "paws-runner", "--", "/usr/bin/env"])
-        self.assertIn("-i", arguments)
-        self.assertIn("HOME=/var/lib/paws-agent", arguments)
-        self.assertIn("PATH=" + self.installer.WORKER_PATH, arguments)
-        self.assertEqual(arguments[-1], "/var/run/docker.sock")
-        self.assertEqual(options["stdin"], subprocess.DEVNULL)
 
     def test_the_probe_tells_docker_engine_apart_from_other_answers(self):
         directory = pathlib.Path(self.temporary.name)
@@ -1219,23 +1332,13 @@ class DockerAccess(unittest.TestCase):
             finally:
                 thread.join(10)
                 server.close()
-        engine = json.dumps({"Platform": {"Name": "Docker Engine - Community"}, "Components": [{"Name": "Engine", "Version": "29.2.1"}]}).encode()
+        engine = json.dumps({"Platform": {"Name": "Docker Engine - Community"}, "Components": [{"Name": "Engine", "Version": "29.1.3"}]}).encode()
         podman = json.dumps({"Components": [{"Name": "Podman Engine", "Version": "5.0.3"}]}).encode()
         self.assertEqual(probe(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n" + engine), "ready")
         self.assertEqual(probe(b"HTTP/1.0 200 OK\r\n\r\n" + podman), "alternative-runtime")
         self.assertEqual(probe(b"HTTP/1.0 500 Internal Server Error\r\n\r\n"), "daemon-unavailable")
         missing = subprocess.run([sys.executable, "-I", "-B", "-c", self.installer.DOCKER_PROBE, str(directory / "absent.sock")], capture_output=True, timeout=30)
         self.assertEqual(missing.stdout.decode().strip(), "daemon-unavailable")
-        private = directory / "private.sock"
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(private))
-        try:
-            private.chmod(0)
-            if os.getuid() != 0:
-                denied = subprocess.run([sys.executable, "-I", "-B", "-c", self.installer.DOCKER_PROBE, str(private)], capture_output=True, timeout=30)
-                self.assertEqual(denied.stdout.decode().strip(), "permission-denied")
-        finally:
-            server.close()
 
     def test_package_configuration_sets_docker_access_before_the_runner_starts(self):
         deb = load("deb-control")
@@ -1247,7 +1350,7 @@ class DockerAccess(unittest.TestCase):
             return b""
         def configure_docker_access(choice):
             order.append(("docker", choice))
-            return {"status": "granted", "changed": True, "message": "Added"}
+            return {"status": "granted", "changed": True, "message": "Set up"}
         patches = [
             mock.patch.object(deb, "RESTART", state),
             mock.patch.object(deb, "active_services", lambda: ["paws-runner.service"]),
