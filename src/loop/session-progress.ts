@@ -301,6 +301,13 @@ export function createLinearSessionProgress(
         }
         return;
       }
+      if (next === "publishing" && afterPr()) {
+        publish("linear.session.summary", {
+          sessionId,
+          summary: `${identifier}: updating the pull request`,
+        });
+        return;
+      }
       if (next === "merging")
         milestones = milestones.map((step, index) =>
           index >= hostSteps.length ? { ...step, status: "completed" } : step,
@@ -319,6 +326,11 @@ export function createLinearSessionProgress(
             : next;
       const summary = `${identifier}: ${status}`.slice(0, 255);
       publish("linear.session.summary", { sessionId, summary }, next === "completed");
+    },
+    reach(next: "merging") {
+      const current = (latestPlan()?.payload as typeof saved)?.phase ?? phase;
+      if (current === next || current === "completed") return;
+      this.phase(next);
     },
     /**
      * The keepalive line: the agent's current plan step while it works, else the last
