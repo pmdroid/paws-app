@@ -5,7 +5,7 @@ export type InstallationToken = {
 };
 
 export type MintTokenInput = {
-  access?: "read" | "write";
+  access?: "read" | "write" | "actions";
   installationId: string;
   repository: string;
 };

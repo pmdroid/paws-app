@@ -3,11 +3,13 @@ import { journalCaught } from "../journal";
 import { acquireOperationToken, type GitHubTokenProvider } from "./auth";
 import { repoApiPath } from "./client";
 import { cleanLogLines } from "./readiness";
-import type { GitHubClient } from "./types";
+import { GitHubTokenError, type GitHubClient } from "./types";
 
 export const CI_LOG_CONTEXT_LINES = 30;
 export const CI_LOG_MAX_BYTES = 24 * 1024;
 const CHECK_RUN_PAGES = 10;
+const ACTIONS_PERMISSION_MISSING =
+  "Paws can't read job logs: its GitHub App needs the Actions: Read-only permission. Ask a workspace admin to grant it on the App and accept it on the installation.";
 const FAILED = new Set(["failure", "timed_out", "cancelled", "startup_failure", "action_required"]);
 
 const pullSchema = z.object({ state: z.string(), head: z.object({ sha: z.string() }) });
@@ -53,11 +55,11 @@ export async function readCiLog(input: CiLogInput): Promise<string> {
 
 async function readCiLogOnce(input: CiLogInput): Promise<string> {
   const token = await acquireOperationToken(input, "merge");
-  const request = (path: string, accept?: "text") =>
+  const request = (path: string, accept?: "text", as = token) =>
     input.client.request({
       method: "GET",
       path: repoApiPath(input.owner, input.repo, path),
-      token,
+      token: as,
       signal: input.signal ?? AbortSignal.timeout(30_000),
       ...(accept ? { accept } : {}),
     });
@@ -100,7 +102,13 @@ async function readCiLogOnce(input: CiLogInput): Promise<string> {
     );
   if (run.app?.slug !== "github-actions")
     throw new CiLogRefusal(`${run.name} is not a GitHub Actions job, so it has no log to read.`);
-  const response = await request(`/actions/jobs/${run.id}/logs`, "text");
+  const logToken = await acquireOperationToken(input, "ci_log").catch((error: unknown) => {
+    if (error instanceof GitHubTokenError && (error.status === 403 || error.status === 422))
+      throw new CiLogRefusal(ACTIONS_PERMISSION_MISSING, { cause: error });
+    throw error;
+  });
+  const response = await request(`/actions/jobs/${run.id}/logs`, "text", logToken);
+  if (response.status === 403) throw new CiLogRefusal(ACTIONS_PERMISSION_MISSING);
   if (response.status !== 200 || typeof response.body !== "string")
     throw new CiLogRefusal(`Paws could not read the log of ${run.name}: status ${response.status}`);
   return `Log of ${run.name} (job ${run.id}, ${run.conclusion ?? "running"}) on ${head.slice(0, 7)}, reduced to its errors:\n\n${reduceCiLog(response.body)}`;

@@ -1,6 +1,8 @@
+import { generateKeyPairSync } from "node:crypto";
 import { expect, test } from "bun:test";
 import { CI_LOG_MAX_BYTES, readCiLog, reduceCiLog } from "./ci-log";
-import type { GitHubClient } from "./types";
+import type { TokenPurpose } from "./auth";
+import { GitHubTokenError, type GitHubClient } from "./types";
 
 const head = "a".repeat(40);
 const token = "ghs_syntheticInstallationToken";
@@ -29,7 +31,7 @@ const checkRuns = [
   },
 ];
 
-function fakeGitHub(log: string) {
+function fakeGitHub(log: string, logStatus = 200) {
   const requests: Array<{ path: string; token: string }> = [];
   const client: GitHubClient = {
     async request(request) {
@@ -40,7 +42,7 @@ function fakeGitHub(log: string) {
         return { status: 200, body: { total_count: 3, check_runs: checkRuns } };
       if (request.path === "/repos/owner/repo/actions/jobs/101/logs") {
         expect(request.accept).toBe("text");
-        return { status: 200, body: log };
+        return { status: logStatus, body: log };
       }
       throw new Error(`unexpected request ${request.path}`);
     },
@@ -48,16 +50,51 @@ function fakeGitHub(log: string) {
   return { client, requests };
 }
 
-function read(client: GitHubClient, job?: string) {
+function read(
+  client: GitHubClient,
+  job?: string,
+  tokenFor: (purpose: TokenPurpose) => Promise<string> = async () => token,
+) {
   return readCiLog({
     client,
     owner: "owner",
     repo: "repo",
     prNumber: 7,
     job,
-    tokenProvider: { mode: "token", tokenFor: async () => token },
+    tokenProvider: { mode: "token", tokenFor },
   });
 }
+
+test("the job log is read with an Actions log token, the checks with the merge token", async () => {
+  const github = fakeGitHub("##[error]boom");
+  const purposes: TokenPurpose[] = [];
+  await read(github.client, "test", async (purpose) => {
+    purposes.push(purpose);
+    return `${token}-${purpose}`;
+  });
+  expect(purposes).toEqual(["merge", "ci_log"]);
+  expect(github.requests.map((request) => request.token)).toEqual([
+    `${token}-merge`,
+    `${token}-merge`,
+    `${token}-ci_log`,
+  ]);
+});
+
+test("an App without Actions read says which permission to grant", async () => {
+  const message = /needs the Actions: Read-only permission/;
+  const refused = async () => {
+    throw new GitHubTokenError("installation token request failed with status 422", {
+      status: 422,
+      body: {},
+    });
+  };
+  await expect(
+    read(fakeGitHub("").client, "test", async (purpose) =>
+      purpose === "ci_log" ? refused() : token,
+    ),
+  ).rejects.toThrow(message);
+  await expect(read(fakeGitHub("", 403).client, "test")).rejects.toThrow(message);
+});
 
 test("lists the failed check runs on the pull request's head commit", async () => {
   const github = fakeGitHub("");
@@ -130,4 +167,45 @@ test("an unexpected failure reaches the agent without a URL or token", async () 
   await expect(read(client)).rejects.toThrow(
     /^Paws could not read CI from GitHub\. Try again later\.$/,
   );
+});
+
+test("with App credentials, the job log is read with a minted Actions log token", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const github = fakeGitHub("##[error]boom");
+  const asked: unknown[] = [];
+  const client: GitHubClient = {
+    async request(request) {
+      if (!request.path.endsWith("/access_tokens")) return github.client.request(request);
+      const permissions = (request.body as { permissions: Record<string, string> }).permissions;
+      asked.push(permissions);
+      return {
+        status: 201,
+        body: {
+          token: permissions.actions ? "ghs_actions" : "ghs_merge",
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          repository_selection: "selected",
+          repositories: [{ name: "repo", full_name: "owner/repo" }],
+          permissions,
+        },
+      };
+    },
+  };
+  const answer = await readCiLog({
+    client,
+    owner: "owner",
+    repo: "repo",
+    prNumber: 7,
+    job: "test",
+    appId: "1",
+    installationId: "2",
+    privateKeyPem: privateKey as string,
+  });
+  expect(answer.endsWith("##[error]boom")).toBe(true);
+  expect(asked.at(-1)).toEqual({ actions: "read", checks: "read", metadata: "read" });
+  expect(github.requests.at(-1)?.token).toBe("ghs_actions");
+  expect(answer).not.toContain("ghs_");
 });

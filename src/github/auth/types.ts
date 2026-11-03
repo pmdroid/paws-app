@@ -1,7 +1,7 @@
 import type { GitHubClient } from "../types";
 
 /** One GitHub operation. Each call fetches a new token; nothing is cached. */
-export type TokenPurpose = "push" | "pr" | "merge";
+export type TokenPurpose = "push" | "pr" | "merge" | "ci_log";
 
 /**
  * Where an operation token comes from. Paws mints `app` installation tokens.
