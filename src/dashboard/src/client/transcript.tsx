@@ -149,7 +149,7 @@ function Session({ session, latest }: { session: TranscriptSession; latest: bool
       </h2>
       <ol
         role={latest ? "log" : undefined}
-        aria-label={`Session ${session.session} transcript`}
+        aria-label={latest ? "Agent transcript" : `Session ${session.session} transcript`}
         className="m-0 list-none divide-y divide-foreground/15 rounded-base border-2 border-border bg-secondary-background p-0 shadow-shadow"
       >
         {session.entries.map((entry, index) => (
