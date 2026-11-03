@@ -145,7 +145,10 @@ export async function probeRunnerOrchestration(
     ]);
     const leaseScenario = scenario.endsWith("-lease");
     const initialLease = scenario === "start-lease" || scenario === "resume-lease";
-    const clock = leaseScenario || mergeDependencyYield ? new FakeClock(Date.now()) : systemClock;
+    // runner-wait: the task's runner is paused when Closeout starts and resumes later.
+    const runnerWait = scenario === "runner-wait";
+    const clock =
+      leaseScenario || mergeDependencyYield || runnerWait ? new FakeClock(Date.now()) : systemClock;
     const jobs = new JobLoop(db, clock, leaseScenario ? { leaseMs: 300 } : {});
     const outbox = new OutboxDispatcher(db, systemClock);
     const calls: {
@@ -223,13 +226,11 @@ export async function probeRunnerOrchestration(
       leaseAborted = signal.aborted;
       assert(leaseAborted);
     }
-    // runner-wait: the task's runner is paused when Closeout starts and resumes later.
-    const runnerWait = scenario === "runner-wait";
     const waitReason = "Waiting: runner goldbox is paused. Resume it on the Runners page.";
     let runnerResumed = false;
     let runnerWatch: Promise<void> | undefined;
     function pauseTaskRunner(runId: string) {
-      const now = Date.now();
+      const now = clock.now();
       const userId = putWorkspaceUser(db, {
         id: "user-1",
         linearUserId: "user-linear",
@@ -254,12 +255,37 @@ export async function probeRunnerOrchestration(
         [runId, "runner-1", "ws-1", `cmd-${runId}`, now + 600_000],
       );
     }
+    // The wait parks in runnerWaitSleep on each poll; the watcher checks while it is parked and
+    // releases one poll at a time, so no step depends on real time.
+    let parked: { resolve(): void; reject(error: unknown): void } | undefined;
+    let onPark: (() => void) | undefined;
+    let watchFailed: { error: unknown } | undefined;
+    function runnerWaitSleep(ms: number) {
+      if (watchFailed) return Promise.reject(watchFailed.error);
+      if (runnerResumed) return Promise.resolve();
+      assert(clock instanceof FakeClock);
+      clock.advance(ms);
+      return new Promise<void>((resolve, reject) => {
+        parked = { resolve, reject };
+        onPark?.();
+        onPark = undefined;
+      });
+    }
+    async function poll() {
+      if (!parked) await new Promise<void>((resolve) => (onPark = resolve));
+    }
+    function release() {
+      const current = parked!;
+      parked = undefined;
+      current.resolve();
+    }
     async function until(label: string, check: () => boolean) {
-      for (let tries = 0; tries < 500; tries++) {
+      for (let polls = 0; polls < 1_000; polls++) {
+        await poll();
         if (check()) return;
-        await Bun.sleep(10);
+        release();
       }
-      throw new Error(`Timed out waiting until ${label}`);
+      throw new Error(`The runner wait polled 1000 times before ${label}`);
     }
     async function watchRunnerWait(itemId: string) {
       const waiting = () =>
@@ -304,18 +330,22 @@ export async function probeRunnerOrchestration(
         actorId: "human-1",
         body: "Keep waiting",
         signal: null,
-        updatedAtMs: Date.now() + 1_000,
+        updatedAtMs: clock.now() + 1_000,
         payload: "{}",
       });
       await until("the answer is recorded", () => !findOpenQuestion(db, "session"));
       assert.equal(getWorkItem(db, itemId)?.state, "verifying");
-      await Bun.sleep(100);
+      for (let polls = 0; polls < 5; polls++) {
+        release();
+        await poll();
+      }
       const held = waiting();
       assert(held.some((step) => step.detail === waitReason && step.attempt <= 1));
       assert.equal(calls.filter((call) => call.checks).length, 0);
       assert.equal(thoughts(), 1, "one Linear thought for the wait");
       runnerResumed = true;
-      db.run("UPDATE runner SET status='active',last_seen_at=? WHERE id='runner-1'", [Date.now()]);
+      db.run("UPDATE runner SET status='active',last_seen_at=? WHERE id='runner-1'", [clock.now()]);
+      release();
       observe("Closeout waits for a paused runner and asks after the wait limit", true, {
         steps: held,
         question: question.body,
@@ -371,7 +401,9 @@ export async function probeRunnerOrchestration(
           }
         : {}),
       remoteCloseoutRetry: { attempts: 2, delayMs: 0 },
-      ...(runnerWait ? { runnerWait: { pollMs: 20, askAfterMs: 300 } } : {}),
+      ...(runnerWait
+        ? { runnerWait: { pollMs: 20, askAfterMs: 300, sleep: runnerWaitSleep } }
+        : {}),
       ...(merging
         ? {
             githubForRepository: () => ({
@@ -586,7 +618,11 @@ export async function probeRunnerOrchestration(
             if (!reviewer && !options.prepareOnly) implementationCount++;
             if (runnerWait && !reviewer && !options.prepareOnly && implementationCount === 1) {
               pauseTaskRunner(item.currentRunId!);
-              runnerWatch = watchRunnerWait(item.id);
+              runnerWatch = watchRunnerWait(item.id).catch((error: unknown) => {
+                watchFailed = { error };
+                parked?.reject(error);
+                throw error;
+              });
             }
             if (reverifying && reviewing) {
               assert.equal(item.state, "verifying");
@@ -761,6 +797,7 @@ export async function probeRunnerOrchestration(
         });
       }
       await jobs.tick();
+      if (runnerWait) await runnerWatch;
       if (runnerWait)
         db.run("UPDATE runner_work SET ended_at=? WHERE ended_at IS NULL", [clock.now()]);
       if (!initialLease && listWorkItems(db)[0]?.state === "queued") {

@@ -590,8 +590,11 @@ export type OrchestratorOptions = {
     commandsGone?(itemId: string, since: number): boolean;
   };
   remoteCloseoutRetry?: { attempts: number; delayMs: number };
-  /** How often Closeout rechecks an unavailable runner, and when it asks the team. */
-  runnerWait?: { pollMs: number; askAfterMs: number };
+  /**
+   * How often Closeout rechecks an unavailable runner, and when it asks the team. Tests pass
+   * `sleep` to step the wait with a fake clock instead of real time.
+   */
+  runnerWait?: { pollMs: number; askAfterMs: number; sleep?: (ms: number) => Promise<void> };
   publicationReady?: (
     itemId: string,
     phase: "publish" | "merge",
@@ -3727,7 +3730,8 @@ export class Orchestrator {
         return runner;
       },
       now: () => this.now(),
-      sleep: (ms) => this.waitWithoutAwake(item.id, "runner", ms, signal),
+      sleep: (ms) =>
+        this.waitWithoutAwake(item.id, "runner", ms, signal, this.options.runnerWait?.sleep),
       waiting: (reason) => {
         if (stepId)
           setRunningCloseoutStepDetail(this.db, item.id, head, stepId, reason, this.now());
@@ -8423,12 +8427,14 @@ export class Orchestrator {
     reason: "ci" | "runner" | "backoff",
     ms: number,
     signal?: AbortSignal,
+    sleep?: (ms: number) => Promise<void>,
   ): Promise<void> {
     const clock = this.options.clock ?? systemClock;
     const job = this.leasedJobs.get(itemId);
     if (job) markJobAwakeWait(this.db, job, true, clock.mono(), clock.now(), reason);
     try {
-      await delay(ms, undefined, signal ? { signal } : {});
+      if (sleep) await sleep(ms);
+      else await delay(ms, undefined, signal ? { signal } : {});
     } finally {
       if (job) markJobAwakeWait(this.db, job, false, clock.mono(), clock.now(), reason);
     }
