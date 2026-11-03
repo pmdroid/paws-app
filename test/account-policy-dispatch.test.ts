@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import type { RunAgentOptions } from "../src/acp";
-import { createAgentAccount, insertQueuedItem, setAgentAccountEnabled } from "../src/db";
+import {
+  beginImplementRun,
+  createAgentAccount,
+  insertQueuedItem,
+  setAgentAccountEnabled,
+} from "../src/db";
+import type { RunnerCommand } from "../src/runner-protocol";
 import {
   AccountPolicyUnavailable,
   createRemoteAgentRunner,
@@ -131,4 +137,81 @@ test("session helpers check the same account order before placing a helper", asy
   accounts = [f.named.id, "legacy_claude_W1"];
   await expect(helper()).rejects.not.toBeInstanceOf(AccountPolicyUnavailable);
   expect(f.orders.at(-1)?.accountIds).toEqual(["legacy_claude_W1"]);
+});
+
+test("a placed named account is the account the signed command and its admission carry", async () => {
+  const f = fixture();
+  const { run } = beginImplementRun(f.db, "I1", NOW);
+  const account = { accountId: f.named.id, bindingId: "01ARZ3NDEKTSV4RRFFQ69G5FAW", named: true };
+  const enqueued: RunnerCommand[] = [];
+  const started: unknown[] = [];
+  const backend = createRemoteAgentRunner({
+    db: f.db,
+    work: {
+      scope() {
+        return {};
+      },
+      enqueue(command: RunnerCommand) {
+        enqueued.push(command);
+      },
+    } as never,
+    results: {} as never,
+    health: {
+      read: (_runnerId: string, commandId: string) => ({
+        executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        commandId,
+        role: "implementer",
+        stopReason: "end_turn",
+        timedOut: false,
+        cancelled: false,
+        authRequired: false,
+        agentExited: true,
+      }),
+    } as never,
+    placement: {
+      async candidates(request: PlacementRequest) {
+        f.orders.push(request.accounts);
+        return [{ id: "R1", workspaceId: "W1", account }];
+      },
+      started(input: unknown) {
+        started.push(input);
+      },
+      finished() {
+        return { retryable: false };
+      },
+    },
+    now: () => NOW,
+    async fetchCandidate() {
+      throw new Error("unused");
+    },
+  });
+  await backend.forItem("I1")({
+    role: "implementer",
+    itemId: "I1",
+    runId: run.id,
+    pawsRoot: f.root,
+    worktreePath: f.root,
+    prompt: "Work",
+    prepareOnly: true,
+    profile: { agent: "claude", model: null },
+    accounts: {
+      revision: "r1",
+      profile: { agent: "claude", accounts: [f.named.id], source: "defaults" },
+    },
+  });
+  expect(f.orders).toEqual([{ revision: "r1", accountIds: [f.named.id] }]);
+  expect(enqueued).toHaveLength(1);
+  expect(enqueued[0]).toMatchObject({
+    type: "probe",
+    runnerId: "R1",
+    account: { accountId: f.named.id, bindingId: account.bindingId },
+  });
+  expect(started).toEqual([
+    expect.objectContaining({
+      runnerId: "R1",
+      account,
+      accounts: { revision: "r1", accountIds: [f.named.id] },
+      purpose: "prepare",
+    }),
+  ]);
 });
