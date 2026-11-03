@@ -1,4 +1,4 @@
-import { openedView, fullStatusFixture, itemDetail } from "../../test/fixtures";
+import { openedView, fullStatusFixture, itemDetail, issueOf } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -18,7 +18,7 @@ function page(risk: StatusItemRisk | null): string {
     route: { view: "issues", id: "ENG-101" },
     phase: "ready",
     snapshot: null,
-    detail: parsed.detail,
+    issue: issueOf(parsed.detail),
     error: null,
     engineUrl: null,
     closeout: openedView(),

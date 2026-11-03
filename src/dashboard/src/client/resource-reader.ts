@@ -1,51 +1,81 @@
 import { GENERATED_AT_HEADER } from "../contract";
 
 export type ResourceRead<T> =
-  | { kind: "loaded"; response: T }
+  | { kind: "loaded"; body: T }
   | { kind: "response"; response: Response };
 
-type Parse<T> = (input: unknown) => { ok: true; response: T } | { ok: false; error: string };
+export type ResourceParse<T> = (
+  input: unknown,
+) => { ok: true; body: T } | { ok: false; error: string };
+
 type Fetch = (path: string, init: RequestInit) => Promise<Response>;
 
-export interface ResourceReader<T> {
-  read(): Promise<ResourceRead<T>>;
-  forget(): void;
+const KEPT_BODIES = 16;
+
+export interface ResourceReader {
+  read<T extends { generatedAt: string }>(
+    path: string,
+    reader: string,
+    parse: ResourceParse<T>,
+    signal?: AbortSignal,
+  ): Promise<ResourceRead<T>>;
+  clear(): void;
 }
 
-export function createResourceReader<T extends { generatedAt: string }>(
-  path: string,
-  parse: Parse<T>,
-  fetcher: Fetch = (url, init) => fetch(url, init),
-): ResourceReader<T> {
-  let last: { etag: string; response: T } | null = null;
+export function createResourceReader(
+  fetcher: Fetch = (path, init) => fetch(path, init),
+): ResourceReader {
+  const kept = new Map<string, { etag: string; body: { generatedAt: string } }>();
+  let era = 0;
   return {
-    forget() {
-      last = null;
-    },
-    async read() {
-      const previous = last;
+    async read<T extends { generatedAt: string }>(
+      path: string,
+      reader: string,
+      parse: ResourceParse<T>,
+      signal?: AbortSignal,
+    ): Promise<ResourceRead<T>> {
+      const key = JSON.stringify([reader, path]);
+      const started = era;
+      const previous = kept.get(key) as { etag: string; body: T } | undefined;
       const response = await fetcher(path, {
         headers: {
           Accept: "application/json",
           ...(previous ? { "If-None-Match": previous.etag } : {}),
         },
         cache: "no-store",
+        ...(signal ? { signal } : {}),
       });
       if (response.status === 304 && previous) {
         const generatedAt = response.headers.get(GENERATED_AT_HEADER);
-        const fresh =
+        const body =
           generatedAt && !Number.isNaN(Date.parse(generatedAt))
-            ? { ...previous.response, generatedAt }
-            : previous.response;
-        last = { ...previous, response: fresh };
-        return { kind: "loaded", response: fresh };
+            ? { ...previous.body, generatedAt }
+            : previous.body;
+        if (started === era) keep(key, { etag: previous.etag, body });
+        return { kind: "loaded", body };
       }
       if (response.status !== 200) return { kind: "response", response };
       const parsed = parse(await response.json());
       if (!parsed.ok) throw new Error(parsed.error);
       const etag = response.headers.get("ETag");
-      last = etag ? { etag, response: parsed.response } : null;
-      return { kind: "loaded", response: parsed.response };
+      if (started === era) {
+        if (etag) keep(key, { etag, body: parsed.body });
+        else kept.delete(key);
+      }
+      return { kind: "loaded", body: parsed.body };
+    },
+    clear() {
+      era += 1;
+      kept.clear();
     },
   };
+
+  function keep(key: string, entry: { etag: string; body: { generatedAt: string } }): void {
+    kept.delete(key);
+    kept.set(key, entry);
+    for (const oldest of kept.keys()) {
+      if (kept.size <= KEPT_BODIES) break;
+      kept.delete(oldest);
+    }
+  }
 }

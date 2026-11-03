@@ -5,6 +5,8 @@ import {
   parseOverviewResponse,
   verdictSummary,
   type OverviewResponse,
+  type IssueDetailResponse,
+  type IssueListResponse,
   type StatusAgentCloseout,
   type StatusCheck,
   type StatusItemDetail,
@@ -527,6 +529,53 @@ export function itemDetail(full: FullStatus, id: string): StatusItemDetail {
   };
 }
 
+export function issueList(full: FullStatus): IssueListResponse {
+  return listResponse(statusList(full));
+}
+
+export function listResponse(list: StatusSnapshot): IssueListResponse {
+  return {
+    source: list.source,
+    generatedAt: list.generatedAt,
+    project: list.project,
+    issues: list.items,
+    runs: list.runs,
+    verdicts: list.verdicts,
+    agentCloseout: list.agentCloseout ?? [],
+    mergedTimes: list.mergedTimes ?? null,
+  };
+}
+
+function detailResponse(detail: StatusItemDetail): IssueDetailResponse {
+  const issue = detail.items.find((entry) => entry.endedAt === undefined) ?? detail.items[0]!;
+  return {
+    source: detail.source,
+    generatedAt: detail.generatedAt,
+    project: detail.project,
+    issue,
+    earlierSessions: detail.items.filter((entry) => entry !== issue),
+    blocks: detail.blocks,
+    risk: detail.risk ?? null,
+    runs: detail.runs,
+    questions: detail.questions,
+    verdicts: detail.verdicts,
+    agentCloseout: detail.agentCloseout ?? [],
+    evidence: detail.evidence ?? [],
+    ciRounds: detail.ciRounds ?? [],
+    mergeQueue: detail.mergeQueue,
+    mergeHistory: detail.mergeHistory ?? [],
+    dead: detail.dead ?? [],
+  };
+}
+
+export function issueOf(detail: StatusItemDetail | null | undefined): IssueDetailResponse | null {
+  return detail ? detailResponse(detail) : null;
+}
+
+export function issueResource(full: FullStatus, id: string): IssueDetailResponse {
+  return detailResponse(itemDetail(full, id));
+}
+
 function item(input: {
   id: string;
   title: string;
@@ -704,7 +753,8 @@ export function pageData(
 ): {
   route: Route;
   snapshot: StatusSnapshot;
-  detail: StatusItemDetail | null;
+  issues: IssueListResponse;
+  issue: IssueDetailResponse | null;
   overview: OverviewResponse;
 } {
   const issue =
@@ -718,7 +768,8 @@ export function pageData(
   return {
     route: shown,
     snapshot: statusList(full),
-    detail: known ? itemDetail(full, issue) : null,
+    issues: issueList(full),
+    issue: known ? issueResource(full, issue) : null,
     overview: overviewOf(statusList(full)),
   };
 }

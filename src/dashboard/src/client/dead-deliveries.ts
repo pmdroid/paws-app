@@ -13,7 +13,10 @@ const NAMES: Record<string, string> = {
  * Dead outbox rows and dead jobs of one issue, each with a retry unless it is obsolete. A dead Linear delivery holds
  * every later update of its session, so the page names it instead of leaving the session quiet.
  */
-export function deadDeliveriesSection(snapshot: StatusSnapshotBase, itemId: string): string {
+export function deadDeliveriesSection(
+  snapshot: Pick<StatusSnapshotBase, "dead">,
+  itemId: string,
+): string {
   const dead = (snapshot.dead ?? []).filter((entry) => entry.itemId === itemId);
   if (dead.length === 0) return "";
   return `<section class="closeout-result blocked dead-deliveries" id="dead-deliveries" aria-labelledby="dead-heading"><div class="min-w-0">
