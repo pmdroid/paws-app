@@ -18,6 +18,7 @@ import {
   pendingPullCiFailures,
   pendingPullComments,
   recordPullCiFailure,
+  settlePullCiFailures,
   wakePullReviews,
   recordCiRound,
   recordConfirmedRemoteMerge,
@@ -93,7 +94,7 @@ export async function observeHeldCi(
     journalCaught(error, "orders.observeHeldCi.readPullCi", item.id);
     return { state: "unknown", message: "could not read GitHub CI" };
   });
-  if (caps.stopped() || ci.state === "unknown") return;
+  if (caps.stopped() || (ci.state === "unknown" && ci.moved !== true)) return;
   immediate(db, () => {
     const current = getWorkItem(db, item.id);
     if (
@@ -104,6 +105,10 @@ export async function observeHeldCi(
       mergeStopRequested(db, item.id)
     )
       return;
+    if (ci.state === "unknown") {
+      settlePullCiFailures(db, pendingPullCiFailures(db, item.id), "dropped", caps.now());
+      return;
+    }
     if (ci.state !== "failed") {
       clearPullCiFailures(db, item.id, pull.head, caps.now());
       return;

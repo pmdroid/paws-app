@@ -542,7 +542,7 @@ export type PullCi =
   | { state: "pending"; message: string }
   | { state: "failed"; failedChecks: FailedCheck[]; checks: CiCheck[] }
   /** The head is not the pull request's, the pull request is closed, or GitHub was unreadable. */
-  | { state: "unknown"; message: string };
+  | { state: "unknown"; message: string; moved?: true };
 
 export async function readPullCi(input: {
   client: GitHubClient;
@@ -567,5 +567,6 @@ export async function readPullCi(input: {
   if (read.outcome === "ci_failed")
     return { state: "failed", failedChecks: read.failedChecks ?? [], checks: read.checks ?? [] };
   if (read.outcome === "pending") return { state: "pending", message: read.message };
+  if (read.outcome === "sha_moved") return { state: "unknown", message: read.message, moved: true };
   return { state: "unknown", message: read.message };
 }
