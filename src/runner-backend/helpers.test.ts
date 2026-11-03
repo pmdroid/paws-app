@@ -6,6 +6,9 @@ import { join } from "node:path";
 import {
   advanceLinearSessionGeneration,
   beginImplementRun,
+  bindAgentAccount,
+  createAgentAccount,
+  recordRunnerAccountCapability,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   migrate,
@@ -600,4 +603,102 @@ test("a helper with no runner in a cooldown keeps the unavailable-runner error",
     .catch((caught: unknown) => caught);
   expect(error).toBeInstanceOf(UserFacingError);
   expect((error as Error).message).toMatch(/No paired runner can run codex/);
+});
+
+test("a helper whose named account hits its quota retries with the next account on the same runner", async () => {
+  const requests: (readonly string[] | undefined)[] = [];
+  let exhausted = "";
+  const bindings: { accountId: string; bindingId: string }[] = [];
+  const f = fixture((db) => ({
+    async candidates(request) {
+      requests.push(request.excludeRunnerIds);
+      if (bindings.length === 0) {
+        const workspace = db
+          .query<{ id: string }, []>("SELECT workspace_id AS id FROM runner WHERE id='runner'")
+          .get()!.id;
+        for (const label of ["A", "B"]) {
+          const account = createAgentAccount(db, {
+            workspaceId: workspace,
+            agent: "codex",
+            label,
+            now: Date.now(),
+          });
+          const binding = bindAgentAccount(db, {
+            workspaceId: workspace,
+            accountId: account.id,
+            runnerId: "runner",
+            now: Date.now(),
+          });
+          bindings.push({ accountId: account.id, bindingId: binding.id });
+        }
+        db.run(
+          "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner','0.1.60',?)",
+          [Date.now()],
+        );
+        recordRunnerAccountCapability(
+          db,
+          "runner",
+          {
+            protocol: 1,
+            bindings: bindings.map(({ bindingId }) => ({ bindingId, agent: "codex" })),
+          },
+          Date.now(),
+        );
+      }
+      const runnerWorkspace = db
+        .query<{ id: string }, []>("SELECT workspace_id AS id FROM runner WHERE id='runner'")
+        .get()!.id;
+      return bindings
+        .filter(({ bindingId }) => bindingId !== exhausted)
+        .map((account) => ({
+          id: "runner",
+          workspaceId: runnerWorkspace,
+          account: { ...account, named: true },
+        }));
+    },
+    started() {},
+    finished(observation) {
+      const limited = quotaSignal(observation.result?.errorMessage ?? "", Date.now());
+      if (limited?.state !== "exhausted") return { retryable: false };
+      exhausted = bindings[0]!.bindingId;
+      return { retryable: true, usageLimit: { resetsAt: null, recheckAt: Date.now() + 60_000 } };
+    },
+  }));
+  const pending = f.backend.forSession("session", "classify")(f.input);
+  const helperCount = () =>
+    f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n;
+  for (let attempt = 0; attempt < 1000 && helperCount() < 1; attempt++) await Bun.sleep(1);
+  const first = f.current();
+  expect(first.account?.bindingId).toBe(bindings[0]!.bindingId);
+  f.helpers.submit(first.runnerId, {
+    executionId: workspaceId(),
+    commandId: first.id,
+    role: "implementer",
+    stopReason: "error",
+    cancelled: false,
+    timedOut: false,
+    authRequired: false,
+    agentExited: true,
+    text: "",
+    errorMessage: "You've hit your session limit. Retry-After: 120",
+    account: first.account!,
+  });
+  for (let attempt = 0; attempt < 1000 && helperCount() < 2; attempt++) await Bun.sleep(1);
+  const second = f.current();
+  expect(second.runnerId).toBe("runner");
+  expect(second.account?.bindingId).toBe(bindings[1]!.bindingId);
+  expect(requests.at(-1) ?? []).not.toContain("runner");
+  f.helpers.submit(second.runnerId, {
+    executionId: workspaceId(),
+    commandId: second.id,
+    role: "implementer",
+    stopReason: "end_turn",
+    cancelled: false,
+    timedOut: false,
+    authRequired: false,
+    agentExited: true,
+    text: '{"mode":"answer"}',
+    account: second.account!,
+  });
+  expect((await pending).stopReason).toBe("end_turn");
 });

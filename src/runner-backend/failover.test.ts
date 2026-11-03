@@ -528,3 +528,29 @@ describe("agent settings changed during a quota wait", () => {
     expect(isTransient(error)).toBe(true);
   });
 });
+
+test("a failed named account binding is excluded on its own, not its whole runner", async () => {
+  const excluded: string[][] = [];
+  let attempts = 0;
+  await runWithFailover(
+    input(),
+    async (_options, avoid) => {
+      excluded.push([...avoid]);
+      if (++attempts === 1)
+        throw new RetryableRunnerError(
+          "runner-1",
+          "The runner agent requires sign-in.",
+          undefined,
+          false,
+          undefined,
+          false,
+          false,
+          "binding-a",
+        );
+      if (attempts === 2) throw new RetryableRunnerError("runner-2", "Interrupted");
+      return done();
+    },
+    async () => {},
+  );
+  expect(excluded).toEqual([[], ["binding-a"], ["binding-a", "runner-2"]]);
+});

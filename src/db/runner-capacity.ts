@@ -4,7 +4,7 @@ import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 
-const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confirmed_at IS NULL
+export const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confirmed_at IS NULL
   AND NOT EXISTS(SELECT 1 FROM runner_result exited WHERE exited.run_id=w.run_id
     AND exited.generation=w.generation AND exited.command_id=w.command_id)
   AND NOT EXISTS(SELECT 1 FROM runner owner WHERE owner.id=w.runner_id AND (

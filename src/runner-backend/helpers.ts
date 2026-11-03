@@ -4,7 +4,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from "../acp";
 import type { RunnerHelpers } from "../runner-helpers";
-import type { RunnerPlacement } from "../runner-placement";
+import type {
+  PlacementAccount,
+  PlacementAccounts,
+  PlacementCandidate,
+  RunnerPlacement,
+} from "../runner-placement";
 import { RunnerSlotsBusyError, systemClock, UserFacingError } from "../core";
 import type { RoleAccountPolicy } from "../config";
 import { dispatchAccount, immediate, runnerHasCapacity, workspaceSessionIds } from "../db";
@@ -74,22 +79,29 @@ export function createRemoteSessionAgentRunner(options: {
             "Remote session helper requires a read-only prompt without tools or files",
           );
         const accountPolicy = options.accountPolicy?.();
+        let accounts: PlacementAccounts | undefined;
         if (accountPolicy) {
-          const choice = dispatchAccount(
-            options.db,
-            { sessionId },
-            input.profile.agent,
+          const policy =
             accountPolicy.agent === input.profile.agent
               ? accountPolicy
-              : { agent: input.profile.agent, accounts: [] },
-          );
+              : { agent: input.profile.agent, accounts: [] };
+          const choice = dispatchAccount(options.db, { sessionId }, input.profile.agent, policy);
           if (!choice.dispatch)
             throw new AccountPolicyUnavailable(input.profile.agent, choice.reason);
+          accounts = {
+            revision: new Bun.CryptoHasher("sha256")
+              .update(JSON.stringify([policy.agent, policy.accounts]))
+              .digest("hex")
+              .slice(0, 16),
+            accountIds: choice.admission.eligible,
+          };
         }
         const profile = { ...input.profile, model: input.profile.model ?? null };
         const waitUntil = now() + (input.timeoutMs ?? 60_000);
         let command: HelperCommand | undefined;
+        let placed: PlacementAccount | undefined;
         const cooling: string[] = [];
+        const checks: { runnerId: string; until: number }[] = [];
         const request = {
           sessionId,
           ...(purpose === "finding_groups" ? { findingGroups: true } : {}),
@@ -97,24 +109,31 @@ export function createRemoteSessionAgentRunner(options: {
           role: input.role,
           purpose: "helper" as const,
           excludeRunnerIds: excluded,
+          ...(accounts ? { accounts } : {}),
           signal: input.signal,
         };
         while (!command) {
           cooling.length = 0;
-          const runners = options.placement
+          checks.length = 0;
+          const runners: readonly PlacementCandidate[] = options.placement
             ? await options.placement.candidates({
                 ...request,
-                onRejected: (runnerId, reason) => {
+                onRejected: (runnerId, reason, until) => {
                   if (reason === "agent quota cooldown") cooling.push(runnerId);
+                  if (until !== undefined && until > now()) checks.push({ runnerId, until });
                 },
               })
             : options.db
-                .query<{ id: string }, [number]>(
-                  "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? ORDER BY r.last_seen_at DESC,r.id",
+                .query<{ id: string; workspaceId: string }, [number]>(
+                  "SELECT r.id,r.workspace_id AS workspaceId FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? ORDER BY r.last_seen_at DESC,r.id",
                 )
                 .all(now() - 60_000);
           for (const runner of runners) {
-            if (excluded.includes(runner.id)) continue;
+            if (
+              excluded.includes(runner.id) ||
+              (runner.account && excluded.includes(runner.account.bindingId))
+            )
+              continue;
             if (purpose === "finding_groups") {
               const host = options.db
                 .query<{ version: string | null }, [string]>(
@@ -145,6 +164,7 @@ export function createRemoteSessionAgentRunner(options: {
                 continue;
             }
             try {
+              placed = runner.account;
               command = immediate(options.db, () => {
                 const dispatched = options.helpers.dispatch({
                   runnerId: runner.id,
@@ -152,12 +172,22 @@ export function createRemoteSessionAgentRunner(options: {
                   purpose,
                   profile,
                   prompt: input.prompt,
+                  ...(runner.account?.named
+                    ? {
+                        account: {
+                          accountId: runner.account.accountId,
+                          bindingId: runner.account.bindingId,
+                        },
+                      }
+                    : {}),
                 }).command;
                 options.placement?.started({
                   commandId: dispatched.id,
                   runnerId: runner.id,
                   sessionId,
                   profile,
+                  ...(runner.account ? { account: runner.account } : {}),
+                  ...(accounts ? { accounts } : {}),
                   role: input.role,
                   purpose: "helper",
                   startedAt: now(),
@@ -183,7 +213,10 @@ export function createRemoteSessionAgentRunner(options: {
             .some((runner) => !runnerHasCapacity(options.db, runner.id, now()));
           if (workFull && now() >= waitUntil) throw new RunnerSlotsBusyError();
           if ((!helperBusy && !workFull) || now() >= waitUntil) {
-            const cooldown = earliestCooldown(cooling, profile.agent);
+            const runnerCooldown = earliestCooldown(cooling, profile.agent);
+            const cooldown = [...(runnerCooldown ? [runnerCooldown] : []), ...checks].sort(
+              (a, b) => a.until - b.until,
+            )[0];
             if (cooldown)
               throw new UsageLimitPause(
                 profile.agent,
@@ -227,6 +260,12 @@ export function createRemoteSessionAgentRunner(options: {
                   result.authRequired
                     ? "The runner agent requires sign-in."
                     : "The runner agent exhausted its observed quota.",
+                  undefined,
+                  false,
+                  placed?.named && !result.authRequired ? disposition.usageLimit : undefined,
+                  false,
+                  false,
+                  placed?.named ? placed.bindingId : undefined,
                 );
               if (purpose === "finding_groups") {
                 if (

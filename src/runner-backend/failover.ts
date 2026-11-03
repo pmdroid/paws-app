@@ -17,6 +17,7 @@ export class RetryableRunnerError extends Error {
     readonly restarted = false,
     /** The runner stopped the session at a safe point so another runner continues it. */
     readonly handedOver = false,
+    readonly bindingId?: string,
   ) {
     super(message);
   }
@@ -226,7 +227,7 @@ export async function runWithFailover(
         if (!excluded.includes(error.runnerId)) excluded.push(error.runnerId);
       } else {
         index++;
-        if (!error.restarted) excluded.push(error.runnerId);
+        if (!error.restarted) excluded.push(error.bindingId ?? error.runnerId);
       }
       let approved = "";
       if (error.publishedEffects) {

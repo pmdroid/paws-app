@@ -64,7 +64,12 @@ export function versionAtLeast(
  */
 export function planSessionRestore(
   db: Database,
-  input: { runId: string; agent: string; targetRunnerId: string },
+  input: {
+    runId: string;
+    agent: string;
+    targetRunnerId: string;
+    targetAccount?: { accountId: string; named: boolean };
+  },
 ): SessionRestorePlan {
   const snapshot = db
     .query<
@@ -107,7 +112,22 @@ export function planSessionRestore(
     return { eligible: false, failure: "old_runner" };
   if (target.ownerUserId !== snapshot.ownerUserId)
     return { eligible: false, failure: "other_account" };
+  const source = db
+    .query<{ accountId: string; named: number }, [string, number]>(
+      `SELECT a.account_id AS accountId,a.named FROM runner_command c
+       JOIN runner_command_account a ON a.command_id=c.id
+       WHERE c.run_id=? AND c.generation=? AND c.kind='run' ORDER BY c.ordinal DESC LIMIT 1`,
+    )
+    .get(input.runId, snapshot.generation);
+  const sourceNamed = source?.named === 1;
+  const targetNamed = input.targetAccount?.named === true;
   if (
+    sourceNamed !== targetNamed ||
+    (sourceNamed && source!.accountId !== input.targetAccount!.accountId)
+  )
+    return { eligible: false, failure: "other_account" };
+  if (
+    !targetNamed &&
     !db
       .query(
         "SELECT 1 FROM runner_agent_policy WHERE runner_id=? AND agent=? AND ready=1 AND auth_expired=0",

@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
   accountAttemptsInFlight,
+  accountSlotsInUse,
   bindingAccountHealth,
   runnerHasCapacity,
   type AccountHealth,
@@ -135,13 +136,7 @@ export function bindingReadiness(
   if (!runnerHasCapacity(db, binding.runnerId, input.now)) return unavailable("busy");
   if (
     binding.concurrency !== null &&
-    (db
-      .query<{ count: number }, [string]>(
-        `SELECT COUNT(*) AS count FROM runner_execution_usage u
-         JOIN runner_command_account c ON c.command_id=u.command_id
-         WHERE u.ended_at IS NULL AND c.account_id=?`,
-      )
-      .get(binding.accountId)?.count ?? 0) >= binding.concurrency
+    accountSlotsInUse(db, binding.accountId, input.now) >= binding.concurrency
   )
     return unavailable("busy");
   return {

@@ -1,13 +1,19 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import type { RunAgentOptions } from "../src/acp";
-import { createAgentAccount, insertQueuedItem } from "../src/db";
+import {
+  beginImplementRun,
+  createAgentAccount,
+  insertQueuedItem,
+  setAgentAccountEnabled,
+} from "../src/db";
+import type { RunnerCommand } from "../src/runner-protocol";
 import {
   AccountPolicyUnavailable,
   createRemoteAgentRunner,
   createRemoteSessionAgentRunner,
 } from "../src/runner-backend";
-import type { RunnerPlacement } from "../src/runner-placement";
+import type { PlacementRequest, RunnerPlacement } from "../src/runner-placement";
 import { migratedDatabase, tempHome } from "./helpers";
 
 const NOW = 1_800_000_000_000;
@@ -23,9 +29,11 @@ function fixture() {
   ]);
   insertQueuedItem(db, { id: "I1", now: NOW, sessionKey: "S1" });
   const placed: string[] = [];
+  const orders: (PlacementRequest["accounts"] | undefined)[] = [];
   const placement = {
-    async candidates() {
+    async candidates(request: PlacementRequest) {
       placed.push("candidates");
+      orders.push(request.accounts);
       return [];
     },
   } as unknown as RunnerPlacement;
@@ -62,21 +70,30 @@ function fixture() {
       },
       ...extra,
     });
-  return { db, root, placed, placement, named, run };
+  return { db, root, placed, orders, placement, named, run };
 }
 
-test("a configured order whose first eligible account is named never runs on the default sign-in", async () => {
+test("a configured order with no eligible account waits visibly and never reaches placement", async () => {
   const f = fixture();
-  await expect(f.run([f.named.id, "legacy_claude_W1"])).rejects.toBeInstanceOf(
+  setAgentAccountEnabled(f.db, {
+    workspaceId: "W1",
+    accountId: f.named.id,
+    enabled: false,
+    now: NOW,
+  });
+  await expect(f.run([f.named.id])).rejects.toThrow("No configured Claude account is eligible");
+  await expect(f.run(["01ARZ3NDEKTSV4RRFFQ69G5FAV"])).rejects.toBeInstanceOf(
     AccountPolicyUnavailable,
   );
-  await expect(f.run([f.named.id])).rejects.toThrow(/cannot run a named account/);
   expect(f.placed).toEqual([]);
   expect(f.db.query("SELECT count(*) AS n FROM runner_command").get()).toEqual({ n: 0 });
 });
 
-test("a configured order led by the default sign-in passes the gate and reaches placement", async () => {
+test("a configured order reaches placement with its eligible accounts in order", async () => {
   const f = fixture();
+  await expect(f.run([f.named.id, "legacy_claude_W1"])).rejects.toThrow(
+    "Remote task has no current run",
+  );
   await expect(f.run(["legacy_claude_W1", f.named.id])).rejects.toThrow(
     "Remote task has no current run",
   );
@@ -105,9 +122,96 @@ test("session helpers check the same account order before placing a helper", asy
       readOnly: true,
       profile: { agent: "claude", model: null },
     });
-  await expect(helper()).rejects.toBeInstanceOf(AccountPolicyUnavailable);
-  expect(f.placed).toEqual([]);
-  accounts = ["legacy_claude_W1"];
   await expect(helper()).rejects.not.toBeInstanceOf(AccountPolicyUnavailable);
-  expect(f.placed.length).toBeGreaterThan(0);
+  expect(f.orders.at(-1)?.accountIds).toEqual([f.named.id, "legacy_claude_W1"]);
+  setAgentAccountEnabled(f.db, {
+    workspaceId: "W1",
+    accountId: f.named.id,
+    enabled: false,
+    now: NOW,
+  });
+  const before = f.placed.length;
+  accounts = [f.named.id];
+  await expect(helper()).rejects.toBeInstanceOf(AccountPolicyUnavailable);
+  expect(f.placed.length).toBe(before);
+  accounts = [f.named.id, "legacy_claude_W1"];
+  await expect(helper()).rejects.not.toBeInstanceOf(AccountPolicyUnavailable);
+  expect(f.orders.at(-1)?.accountIds).toEqual(["legacy_claude_W1"]);
+});
+
+test("a placed named account is the account the signed command and its admission carry", async () => {
+  const f = fixture();
+  const { run } = beginImplementRun(f.db, "I1", NOW);
+  const account = { accountId: f.named.id, bindingId: "01ARZ3NDEKTSV4RRFFQ69G5FAW", named: true };
+  const enqueued: RunnerCommand[] = [];
+  const started: unknown[] = [];
+  const backend = createRemoteAgentRunner({
+    db: f.db,
+    work: {
+      scope() {
+        return {};
+      },
+      enqueue(command: RunnerCommand) {
+        enqueued.push(command);
+      },
+    } as never,
+    results: {} as never,
+    health: {
+      read: (_runnerId: string, commandId: string) => ({
+        executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        commandId,
+        role: "implementer",
+        stopReason: "end_turn",
+        timedOut: false,
+        cancelled: false,
+        authRequired: false,
+        agentExited: true,
+      }),
+    } as never,
+    placement: {
+      async candidates(request: PlacementRequest) {
+        f.orders.push(request.accounts);
+        return [{ id: "R1", workspaceId: "W1", account }];
+      },
+      started(input: unknown) {
+        started.push(input);
+      },
+      finished() {
+        return { retryable: false };
+      },
+    },
+    now: () => NOW,
+    async fetchCandidate() {
+      throw new Error("unused");
+    },
+  });
+  await backend.forItem("I1")({
+    role: "implementer",
+    itemId: "I1",
+    runId: run.id,
+    pawsRoot: f.root,
+    worktreePath: f.root,
+    prompt: "Work",
+    prepareOnly: true,
+    profile: { agent: "claude", model: null },
+    accounts: {
+      revision: "r1",
+      profile: { agent: "claude", accounts: [f.named.id], source: "defaults" },
+    },
+  });
+  expect(f.orders).toEqual([{ revision: "r1", accountIds: [f.named.id] }]);
+  expect(enqueued).toHaveLength(1);
+  expect(enqueued[0]).toMatchObject({
+    type: "probe",
+    runnerId: "R1",
+    account: { accountId: f.named.id, bindingId: account.bindingId },
+  });
+  expect(started).toEqual([
+    expect.objectContaining({
+      runnerId: "R1",
+      account,
+      accounts: { revision: "r1", accountIds: [f.named.id] },
+      purpose: "prepare",
+    }),
+  ]);
 });

@@ -103,6 +103,10 @@ function attempt(db: Database, commandId: string, bindingId: string, startedAt: 
     "INSERT INTO runner_command_account(command_id,workspace_id,runner_id,agent,account_id,binding_id,named,recorded_at) VALUES(?,'W1',?,?,?,?,1,?)",
     [commandId, binding.runnerId, binding.agent, binding.accountId, bindingId, startedAt],
   );
+  db.run(
+    "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES(?,?,'probe','{}',?)",
+    [commandId, binding.runnerId, startedAt + 3_600_000],
+  );
 }
 
 test("the same account on two runners shares a quota cooldown; other accounts and providers stay ready", () => {
