@@ -20,7 +20,9 @@ import { evidenceAttemptKey } from "./retry";
 import { approvalsAtHead, publishedAtHead } from "./published";
 import {
   loadCommitPolicy,
+  confirmedOriginMain,
   loadOriginMainRootFiles,
+  loadRootFilesAt,
   loadPolicy,
   loadPolicyFiles,
   treeFiles,
@@ -232,6 +234,20 @@ export function trustedPolicyFiles(
  */
 export function trustedRootFiles(repo: string, names: readonly string[]): RootFilesLoad {
   return loadOriginMainRootFiles({ repo, git: gitReader }, names);
+}
+
+export function trustedOriginMain(
+  repo: string,
+): { ok: true; commit: string } | { ok: false; message: string } {
+  return confirmedOriginMain({ repo, git: gitReader });
+}
+
+export function trustedRootFilesAt(
+  repo: string,
+  commit: string,
+  names: readonly string[],
+): RootFilesLoad {
+  return loadRootFilesAt({ repo, git: gitReader }, commit, names);
 }
 
 export function workspacePolicyFiles(root: string): PolicyFilesLoad {
