@@ -231,6 +231,7 @@ import {
   saveOpenFindings,
   getPublishedHead,
   getItemPullRequest,
+  getItemBranchState,
   saveVisualReviewMarks,
   type VisualReviewMark,
   saveRunResult,
@@ -412,6 +413,7 @@ import {
 import { handlePullComments } from "./pull-comments";
 import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
 import { ciForRecheck, conflictsAt, type CiRecheck } from "./ci-recheck";
+import { followUpCi, unavailableCi, type FollowUpCi } from "./follow-up-ci";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
   REBASE_CONFLICT_INSTRUCTION,
@@ -6524,11 +6526,41 @@ export class Orchestrator {
     const conflict: RebaseConflict = { base: upstream, files: null };
     const rebase =
       upstream !== null && rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed;
-    const handoff = turns.map((turn) => turn.body).join("\n\n");
-    const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
+    const generation = getLinearSessionGeneration(this.db, sessionId);
+    const jobKey = `linear-turn:${sessionId}:${generation}`;
+    const before = getWorkItem(this.db, item.id);
+    const branchHead = getItemBranchState(this.db, item.id)?.head ?? null;
+    const ci = rebase ? null : await this.followUpCi(item);
     const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
     immediate(this.db, () => {
+      const current = getWorkItem(this.db, item!.id);
+      if (
+        !current ||
+        current.state === "cancelled" ||
+        getLinearSessionGeneration(this.db, sessionId) !== generation ||
+        (current.cancelRequested && !before?.cancelRequested)
+      )
+        return;
+      const pending = listPendingLinearTurns(this.db, sessionId);
+      if (!pending.length) return;
+      const moved =
+        current.version !== before?.version ||
+        (getItemBranchState(this.db, item!.id)?.head ?? null) !== branchHead;
+      const pull = getItemPullRequest(this.db, item!.id);
+      const context =
+        ci === null || pull === null
+          ? null
+          : moved
+            ? unavailableCi(
+                { number: pull.pullNumber, url: pull.pullUrl },
+                ci.head,
+                "the task changed while Paws read it",
+              ).section
+            : ci.section;
+      const handoff = [...pending.map((turn) => turn.body), ...(context ? [context] : [])].join(
+        "\n\n",
+      );
       if (item!.cancelRequested || item!.state === "failed") {
         this.db.run(
           "UPDATE work_item SET cancel_requested = 0, recovery_attempts = 0 WHERE id = ?",
@@ -6555,6 +6587,36 @@ export class Orchestrator {
         });
     });
     await this.flush();
+  }
+
+  private async followUpCi(item: WorkItemRecord): Promise<FollowUpCi | null> {
+    const pull = getItemPullRequest(this.db, item.id);
+    if (pull === null) return null;
+    const ref = { number: pull.pullNumber, url: pull.pullUrl };
+    const repository = this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!repository || !github)
+      return unavailableCi(ref, null, "GitHub is not connected for this repository");
+    const target = { client: github.client, owner: repository.owner, repo: repository.repo };
+    return followUpCi({
+      pull: ref,
+      readPull: () =>
+        readPullMergeable({
+          ...target,
+          prNumber: pull.pullNumber,
+          reads: 1,
+          ...this.gitHubCredentials(github),
+        }),
+      readCi: (head) =>
+        readPullCi({
+          ...target,
+          prNumber: pull.pullNumber,
+          head,
+          ...this.gitHubCredentials(github),
+        }),
+      now: () => this.now(),
+      secrets: [github.privateKeyPem],
+    });
   }
 
   /**
