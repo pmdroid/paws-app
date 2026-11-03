@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import * as versions from "../src/runner-protocol/versions";
-import { versionsAbove } from "../scripts/check-runner-versions";
+import {
+  latestRelease,
+  newSinceRelease,
+  releasedVersions,
+  versionsAbove,
+} from "../scripts/check-runner-versions";
 
 const ROOT = new URL("../", import.meta.url).pathname;
 
@@ -48,4 +53,46 @@ test("a release below a constant names it; an equal or higher release passes", (
       });
   }
   expect(() => versionsAbove("v0.1.47")).toThrow();
+});
+
+const RELEASED = `
+export const ACME_OLD: RunnerVersion = [0, 1, 40];
+export const ACME_SHIPPED: RunnerVersion = [0, 1, 61];
+`;
+
+test("the latest release is the highest vmajor.minor.patch tag", () => {
+  expect(latestRelease(["v0.1.9", "v0.1.61", "v0.1.10", "nightly", "v0.1.60"])).toBe("v0.1.61");
+  expect(latestRelease(["nightly"])).toBeUndefined();
+});
+
+test("a released versions file reads as name to version", () => {
+  expect(releasedVersions(RELEASED)).toEqual({
+    ACME_OLD: "0.1.40",
+    ACME_SHIPPED: "0.1.61",
+  });
+});
+
+test("a minimum added after a release must name a later release", () => {
+  const released = releasedVersions(RELEASED);
+  expect(
+    newSinceRelease("v0.1.61", released, {
+      ACME_OLD: [0, 1, 40],
+      ACME_SHIPPED: [0, 1, 61],
+      ACME_SLIPPED: [0, 1, 61],
+      ACME_NEXT: [0, 1, 62],
+    }),
+  ).toEqual([{ name: "ACME_SLIPPED", version: "0.1.61" }]);
+});
+
+test("lowering a released minimum to an older release is a slip too", () => {
+  expect(
+    newSinceRelease("v0.1.61", releasedVersions(RELEASED), {
+      ACME_OLD: [0, 1, 40],
+      ACME_SHIPPED: [0, 1, 50],
+    }),
+  ).toEqual([{ name: "ACME_SHIPPED", version: "0.1.50" }]);
+});
+
+test("the current versions file has no minimum the latest release shipped without", () => {
+  expect(newSinceRelease("v0.0.0", {})).toEqual([]);
 });
