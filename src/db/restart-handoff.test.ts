@@ -72,6 +72,7 @@ test("completed input is not resurrected by recovery", () => {
     now: 1,
   });
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
+  applyWorkItemEvent(db, "item", "turn_ended");
   recoverOnStartup(db, 10);
   expect(listJobs(db).at(-1)!.payload).not.toHaveProperty("handoff");
   expect(pendingRestartHandoff(db, "item")).toEqual({});
@@ -102,6 +103,51 @@ test("pending input follows activation order when an older job row is reused", (
   });
   expect(pendingRestartHandoff(db, "item")).toEqual({ handoff: "new CI failure" });
   db.run("UPDATE job SET status='done' WHERE id=?", [first]);
+  expect(pendingRestartHandoff(db, "item")).toEqual({});
+  db.close();
+});
+
+function acceptedFollowUp() {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  insertQueuedItem(db, { id: "item" });
+  beginImplementRun(db, "item", 1, checkpoint);
+  applyWorkItemEvent(db, "item", "turn_ended");
+  applyWorkItemEvent(db, "item", "closeout_accepted");
+  markCloseoutAccepted(db, "item", "s");
+  const body = "Fix the failing CI checks on acme/widgets";
+  const jobId = restart(db, getWorkItem(db, "item")!, {
+    reason: "follow_up",
+    body,
+    now: Date.now(),
+  })!;
+  applyWorkItemEvent(db, "item", "dispatched");
+  return { db, body, jobId };
+}
+
+test("a follow-up whose turn a clean stop aborted is carried into the recovery resume", () => {
+  const { db, body, jobId } = acceptedFollowUp();
+  db.run("UPDATE job SET status='done', finished_at=6 WHERE id=?", [jobId]);
+  recoverOnStartup(db, 10);
+  expect(listJobs(db).at(-1)!.payload).toMatchObject({ handoff: body });
+  expect(pendingRestartHandoff(db, "item").handoff).toBe(body);
+  db.close();
+});
+
+test("a follow-up whose turn a crash cut off is carried into the recovery resume", () => {
+  const { db, body, jobId } = acceptedFollowUp();
+  db.run("UPDATE job SET status='running', locked_until=5 WHERE id=?", [jobId]);
+  recoverOnStartup(db, 10);
+  expect(listJobs(db).at(-1)!.payload).toMatchObject({ handoff: body });
+  db.close();
+});
+
+test("a follow-up whose turn finished is not repeated after a restart", () => {
+  const { db, jobId } = acceptedFollowUp();
+  db.run("UPDATE job SET status='done', finished_at=6 WHERE id=?", [jobId]);
+  applyWorkItemEvent(db, "item", "turn_ended");
+  applyWorkItemEvent(db, "item", "closeout_accepted");
+  recoverOnStartup(db, 10);
   expect(pendingRestartHandoff(db, "item")).toEqual({});
   db.close();
 });
