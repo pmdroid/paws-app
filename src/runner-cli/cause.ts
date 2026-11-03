@@ -74,7 +74,11 @@ function requestCause(error: RunnerRequestError): string {
     return `The enrollment token is invalid, expired or already used (HTTP 401${path}).`;
   if (error.path === "/api/runner-enrollments" && error.status === 404)
     return `Paws does not accept runner enrollments at this URL (HTTP 404${path}).`;
-  return `Paws answered HTTP ${error.status}${path}.`;
+  const reason =
+    error.reason !== undefined && PLAIN_SENTENCE.test(error.reason)
+      ? ` ${error.reason.replace(/\.?$/, ".")}`
+      : "";
+  return `Paws answered HTTP ${error.status}${path}.${reason}`;
 }
 
 function zodCause(error: ZodError): string {
