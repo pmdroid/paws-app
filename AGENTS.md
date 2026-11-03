@@ -21,85 +21,86 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 
 ## Layout
 
-| Path                                                     | Owns                                                                  |
-| -------------------------------------------------------- | --------------------------------------------------------------------- |
-| `src/index.ts`                                           | Process composition, startup and shutdown                             |
-| `src/onboarding-start.ts`, `src/onboarding-readiness.ts` | Onboarding startup and readiness wiring                               |
-| `src/account-management`                                 | Dashboard agent accounts, runner bindings and eligibility preview     |
-| `src/acp`                                                | ACP agents, permissions, worktrees, checkpoints and tool servers      |
-| `src/agent-catalog`                                      | Agent and model catalog and registry                                  |
-| `src/agent-sessions`                                     | Stored agent session snapshots and their object storage               |
-| `src/auth`                                               | GitHub App credentials and hosted workspace authentication            |
-| `src/closeout`                                           | Verification gate, fix loop, reports and independent review           |
-| `src/closeout-spec`                                      | Closeout policy schema, sessions, retries and evidence approval       |
-| `src/config`                                             | Home paths, environment, config.toml, agent and merge settings        |
-| `src/core`                                               | Domain types, states, pure transition() and execution policies        |
-| `src/credentials`                                        | Secret file access and credential refresh                             |
-| `src/dashboard`                                          | Dashboard client, server contract and build                           |
-| `src/dashboard-links`                                    | Canonical dashboard paths, links and old `/status` redirects          |
-| `src/db`                                                 | SQLite migrations, domain rows, jobs, outbox and transactional writes |
-| `src/decisions`                                          | Workspace decisions and repository access choices                     |
-| `src/deployment`                                         | Deployment configuration, TLS certificates and renewal                |
-| `src/doctor`                                             | Local prerequisites, agent profiles and external access probes        |
-| `src/evidence`                                           | Evidence storage, media, review marks and HTTP routes                 |
-| `src/execution-controls`                                 | Pause, resume, stop and take-over controls                            |
-| `src/finding-issues`                                     | Linear issues filed from pre-existing review findings                 |
-| `src/github`                                             | GitHub App API, repository access, pull requests and Git operations   |
-| `src/host`                                               | Sleep, wake and process supervision                                   |
-| `src/install`                                            | Agent adapter installation, login and usage probes                    |
-| `src/install-host`                                       | Host installation checks and package verification                     |
-| `src/installer`                                          | `paws install`: prompts, env file and the secrets step                |
-| `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness    |
-| `src/journal`                                            | Durable journal lines for process and workflow events                 |
-| `src/linear`                                             | Tracker adapter, webhooks, polling, sessions and workspace access     |
-| `src/loop`                                               | Agent turns, `restart()` and `ask()`, Closeout, publication, recovery |
-| `src/live-preview`                                       | Runner live preview: start, owner check, Tailscale service and stop   |
-| `src/member-vm`                                          | Member VM provisioning, persistence and HTTP routes                   |
-| `src/merge`                                              | Merge lane: `mergeable(S)`, squash at head S, rebase returns, CI      |
-| `src/onboarding`                                         | Onboarding routes and reconnection                                    |
-| `src/probe-collector`                                    | Runner probe collection and result storage                            |
-| `src/process`                                            | Owned child processes and process anchors                             |
-| `src/provisioning`                                       | Remote VM bootstrap, releases, mise and Tailscale setup               |
-| `src/questions`                                          | Elicitations, answer authorization, lifecycle and visual review       |
-| `src/run-files`                                          | Encrypted, chunked run files: transcripts and session snapshots       |
-| `src/review-score`                                       | Reviewer score report: escapes after merge and after the PR           |
-| `src/runner-answers`                                     | Runner answer storage and delivery                                    |
-| `src/runner-artifacts`                                   | Runner artifact storage                                               |
-| `src/runner-backend`                                     | Remote execution backend, helper turns and failover                   |
-| `src/runner-cli`                                         | Runner command line entry point and daemon startup                    |
-| `src/runner-control`                                     | Runner control HTTP routes and enrollment                             |
-| `src/runner-coordinator`                                 | Runner authority initialization and service composition               |
-| `src/runner-daemon`                                      | Runner connection, durable state and work dispatch                    |
-| `src/runner-execution`                                   | Execution broker, jobs, processes, skills, spool and supervisor       |
-| `src/runner-health`                                      | Runner health commands and observations                               |
-| `src/runner-health-runtime`                              | Runtime health probes on the runner                                   |
-| `src/runner-helpers`                                     | Runner helper commands and their lifecycle                            |
-| `src/runner-identity`                                    | Runner certificates, identity authority and listener                  |
-| `src/runner-inputs`                                      | Runner input storage                                                  |
-| `src/runner-journal`                                     | Runner journal storage and delivery                                   |
-| `src/runner-login`                                       | Runner login command coordination                                     |
-| `src/runner-login-worker`                                | Login execution on the runner                                         |
-| `src/runner-mise`                                        | Runner tool installation and mise locking                             |
-| `src/runner-models`                                      | Runner model discovery and commands                                   |
-| `src/runner-placement`                                   | Runner eligibility, quotas and placement                              |
-| `src/runner-protocol`                                    | Shared runner command, event and transport contracts                  |
-| `src/runner-repositories`                                | Repository checkout and preparation on the runner                     |
-| `src/runner-repository-access`                           | Runner repository credential access                                   |
-| `src/runner-results`                                     | Runner command results and lifecycle                                  |
-| `src/runner-runtime`                                     | Runner agent and runtime installation                                 |
-| `src/runner-transcript-config`                           | Runner transcript configuration                                       |
-| `src/runner-transcripts`                                 | Transcript persistence, object storage and HTTP access                |
-| `src/runner-work`                                        | Runner work command coordination and HTTP routes                      |
-| `src/runner-worker`                                      | Agent turn execution and conversation compaction                      |
-| `src/runtimes`                                           | Runtime definitions and parsing                                       |
-| `src/scheduler`                                          | Job scheduling and admission                                          |
-| `src/server`                                             | HTTP server, route composition and GitHub connection flows            |
-| `src/settings`                                           | Settings API for agents, merge policy, hooks and skills               |
-| `src/skills`                                             | Skill discovery, sources, bundles, hooks and updates                  |
-| `src/slack`                                              | Slack OAuth, identity, authorization and webhooks                     |
-| `src/webhook-body`                                       | Bounded webhook request bodies and raw signature checks               |
-| `src/workspace`                                          | Workspace membership, integrations, assignments and policies          |
-| `src/worktree-checkout`                                  | Worktree checkout and folder exclusion policies                       |
+| Path                                                     | Owns                                                                   |
+| -------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `src/index.ts`                                           | Process composition, startup and shutdown                              |
+| `src/onboarding-start.ts`, `src/onboarding-readiness.ts` | Onboarding startup and readiness wiring                                |
+| `src/account-management`                                 | Dashboard agent accounts, runner bindings and eligibility preview      |
+| `src/acp`                                                | ACP agents, permissions, worktrees, checkpoints and tool servers       |
+| `src/agent-catalog`                                      | Agent and model catalog and registry                                   |
+| `src/agent-sessions`                                     | Stored agent session snapshots and their object storage                |
+| `src/auth`                                               | GitHub App credentials and hosted workspace authentication             |
+| `src/closeout`                                           | Verification gate, fix loop, reports and independent review            |
+| `src/closeout-spec`                                      | Closeout policy schema, sessions, retries and evidence approval        |
+| `src/config`                                             | Home paths, environment, config.toml, agent and merge settings         |
+| `src/core`                                               | Domain types, states, pure transition() and execution policies         |
+| `src/credentials`                                        | Secret file access and credential refresh                              |
+| `src/dashboard`                                          | Dashboard client, server contract and build                            |
+| `src/dashboard-links`                                    | Canonical dashboard paths, links and old `/status` redirects           |
+| `src/db`                                                 | SQLite migrations, domain rows, jobs, outbox and transactional writes  |
+| `src/decisions`                                          | Workspace decisions and repository access choices                      |
+| `src/deployment`                                         | Deployment configuration, TLS certificates and renewal                 |
+| `src/doctor`                                             | Local prerequisites, agent profiles and external access probes         |
+| `src/evidence`                                           | Evidence storage, media, review marks and HTTP routes                  |
+| `src/execution-controls`                                 | Pause, resume, stop and take-over controls                             |
+| `src/finding-issues`                                     | Linear issues filed from pre-existing review findings                  |
+| `src/github`                                             | GitHub App API, repository access, pull requests and Git operations    |
+| `src/host`                                               | Sleep, wake and process supervision                                    |
+| `src/improvements`                                       | Improvement inbox sources: daily findings, retro items, legacy actions |
+| `src/install`                                            | Agent adapter installation, login and usage probes                     |
+| `src/install-host`                                       | Host installation checks and package verification                      |
+| `src/installer`                                          | `paws install`: prompts, env file and the secrets step                 |
+| `src/intake`                                             | Delegation intake, dependencies, ordering and repository readiness     |
+| `src/journal`                                            | Durable journal lines for process and workflow events                  |
+| `src/linear`                                             | Tracker adapter, webhooks, polling, sessions and workspace access      |
+| `src/loop`                                               | Agent turns, `restart()` and `ask()`, Closeout, publication, recovery  |
+| `src/live-preview`                                       | Runner live preview: start, owner check, Tailscale service and stop    |
+| `src/member-vm`                                          | Member VM provisioning, persistence and HTTP routes                    |
+| `src/merge`                                              | Merge lane: `mergeable(S)`, squash at head S, rebase returns, CI       |
+| `src/onboarding`                                         | Onboarding routes and reconnection                                     |
+| `src/probe-collector`                                    | Runner probe collection and result storage                             |
+| `src/process`                                            | Owned child processes and process anchors                              |
+| `src/provisioning`                                       | Remote VM bootstrap, releases, mise and Tailscale setup                |
+| `src/questions`                                          | Elicitations, answer authorization, lifecycle and visual review        |
+| `src/run-files`                                          | Encrypted, chunked run files: transcripts and session snapshots        |
+| `src/review-score`                                       | Reviewer score report: escapes after merge and after the PR            |
+| `src/runner-answers`                                     | Runner answer storage and delivery                                     |
+| `src/runner-artifacts`                                   | Runner artifact storage                                                |
+| `src/runner-backend`                                     | Remote execution backend, helper turns and failover                    |
+| `src/runner-cli`                                         | Runner command line entry point and daemon startup                     |
+| `src/runner-control`                                     | Runner control HTTP routes and enrollment                              |
+| `src/runner-coordinator`                                 | Runner authority initialization and service composition                |
+| `src/runner-daemon`                                      | Runner connection, durable state and work dispatch                     |
+| `src/runner-execution`                                   | Execution broker, jobs, processes, skills, spool and supervisor        |
+| `src/runner-health`                                      | Runner health commands and observations                                |
+| `src/runner-health-runtime`                              | Runtime health probes on the runner                                    |
+| `src/runner-helpers`                                     | Runner helper commands and their lifecycle                             |
+| `src/runner-identity`                                    | Runner certificates, identity authority and listener                   |
+| `src/runner-inputs`                                      | Runner input storage                                                   |
+| `src/runner-journal`                                     | Runner journal storage and delivery                                    |
+| `src/runner-login`                                       | Runner login command coordination                                      |
+| `src/runner-login-worker`                                | Login execution on the runner                                          |
+| `src/runner-mise`                                        | Runner tool installation and mise locking                              |
+| `src/runner-models`                                      | Runner model discovery and commands                                    |
+| `src/runner-placement`                                   | Runner eligibility, quotas and placement                               |
+| `src/runner-protocol`                                    | Shared runner command, event and transport contracts                   |
+| `src/runner-repositories`                                | Repository checkout and preparation on the runner                      |
+| `src/runner-repository-access`                           | Runner repository credential access                                    |
+| `src/runner-results`                                     | Runner command results and lifecycle                                   |
+| `src/runner-runtime`                                     | Runner agent and runtime installation                                  |
+| `src/runner-transcript-config`                           | Runner transcript configuration                                        |
+| `src/runner-transcripts`                                 | Transcript persistence, object storage and HTTP access                 |
+| `src/runner-work`                                        | Runner work command coordination and HTTP routes                       |
+| `src/runner-worker`                                      | Agent turn execution and conversation compaction                       |
+| `src/runtimes`                                           | Runtime definitions and parsing                                        |
+| `src/scheduler`                                          | Job scheduling and admission                                           |
+| `src/server`                                             | HTTP server, route composition and GitHub connection flows             |
+| `src/settings`                                           | Settings API for agents, merge policy, hooks and skills                |
+| `src/skills`                                             | Skill discovery, sources, bundles, hooks and updates                   |
+| `src/slack`                                              | Slack OAuth, identity, authorization and webhooks                      |
+| `src/webhook-body`                                       | Bounded webhook request bodies and raw signature checks                |
+| `src/workspace`                                          | Workspace membership, integrations, assignments and policies           |
+| `src/worktree-checkout`                                  | Worktree checkout and folder exclusion policies                        |
 
 Import another module only through its `index.ts`. `test/boundaries.test.ts` fails the build otherwise. A new npm dependency is fine; a deep import is not.
 
