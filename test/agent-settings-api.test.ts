@@ -68,8 +68,80 @@ describe("local agent settings API", () => {
       ],
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
+      revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
     expect(JSON.stringify(body)).not.toContain("/secret/bin");
+  });
+
+  test("a save from a stale revision is refused and the newer file is kept", async () => {
+    const { options } = fixture();
+    writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
+    const loaded = (await (await handleAgentSettingsRequest(request(), options))!.json()) as {
+      revision: string;
+    };
+    const first = await handleAgentSettingsRequest(
+      request(undefined, "PUT", { ...settings, revision: loaded.revision }),
+      options,
+    );
+    expect(first?.status).toBe(200);
+    const saved = readFileSync(options.configPath, "utf8");
+    const { revision } = (await first!.json()) as { revision: string };
+    expect(revision).not.toBe(loaded.revision);
+    const stale = await handleAgentSettingsRequest(
+      request(undefined, "PUT", {
+        ...settings,
+        defaults: {
+          ...settings.defaults,
+          implementer: { agent: "claude", model: "claude-opus-5" },
+        },
+        revision: loaded.revision,
+      }),
+      options,
+    );
+    expect(stale?.status).toBe(409);
+    expect(await stale!.json()).toEqual({ error: expect.stringMatching(/changed/), revision });
+    expect(readFileSync(options.configPath, "utf8")).toBe(saved);
+    const bad = await handleAgentSettingsRequest(
+      request(undefined, "PUT", { ...settings, revision: 7 }),
+      options,
+    );
+    expect(bad?.status).toBe(400);
+  });
+
+  test("account lists must name enabled accounts that sign in the profile's agent", async () => {
+    const { options } = fixture();
+    const claude = "01J0000000000000000000000A";
+    options.agentAccounts = () => [
+      { id: claude, agent: "claude", enabled: true, removed: false },
+      { id: "01J0000000000000000000000B", agent: "claude", enabled: false, removed: false },
+    ];
+    const save = (accounts: unknown) =>
+      handleAgentSettingsRequest(
+        request(undefined, "PUT", {
+          ...settings,
+          defaults: {
+            ...settings.defaults,
+            implementer: { agent: "claude", model: "claude-opus-5" },
+            accounts,
+          },
+        }),
+        options,
+      );
+    const rejected = async (accounts: unknown, message: RegExp) => {
+      const response = await save(accounts);
+      expect(response?.status).toBe(400);
+      expect(((await response!.json()) as { error: string }).error).toMatch(message);
+    };
+    await rejected({ reviewer: [claude] }, /claude account for a codex profile/);
+    await rejected({ implementer: ["01J0000000000000000000000B"] }, /disabled/);
+    await rejected({ implementer: ["01J0000000000000000000000C"] }, /unknown/);
+    await rejected({ implementer: ["../../secrets/claude"] }, /account ids/);
+    expect(existsSync(options.configPath)).toBe(false);
+    const saved = await save({ implementer: [claude] });
+    expect(saved?.status).toBe(200);
+    expect(readAgentSettings(loadConfigFile(options.configPath)).defaults.accounts).toEqual({
+      implementer: [claude],
+    });
   });
 
   test("applyToWaiting is a per-save boolean and is never stored", async () => {
@@ -106,6 +178,7 @@ describe("local agent settings API", () => {
       ...settings,
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
+      revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
     expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
@@ -442,6 +515,7 @@ describe("reviewer profile validation", () => {
       ...settings,
       merge: { ciFixAttempts: 3 },
       queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
+      revision: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
   });
 

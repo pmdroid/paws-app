@@ -120,6 +120,28 @@ Agents on a runner all run as the one runner account, so a binding home is isola
 
 Paws records the account and binding of every agent command in `runner_command_account` before it queues the command. Disabling or removing an account keeps those rows. A disabled account takes no new execution commands but can still sign in and be checked. Removing an account removes its bindings too, and the default sign-in account cannot be removed.
 
+### Account order
+
+`config.toml` may list the accounts each role tries, in order, by account id. A list never changes the agent, model or effort: every account in it must sign in the agent of the profile it runs, and a different account is not an independent reviewer.
+
+```toml
+[agents.defaults.accounts]
+implementer = ["01J...A", "01J...B"]
+reviewer = ["legacy_codex_<workspaceId>"]
+reviewer_fallback = ["01J...X"]   # needs [agents.defaults.reviewer_fallback]
+
+[agents.projects."owner/repo".accounts]
+implementer = ["01J...B"]
+```
+
+A project's list replaces the default list for that role. Without one, the project inherits the default list only while it runs the default agent for that role; a project that switches agent and lists no accounts uses that agent's default sign-in. The reviewer fallback list is set only at the defaults and is tried after the reviewer's accounts are spent. With no list, a role runs the default sign-in as before.
+
+Each list holds 1 to 8 distinct account ids (a ULID or a `legacy_<agent>_<id>` default sign-in). Names, paths and credentials are refused. Saving in Settings also refuses an id this server does not know, a removed or disabled account, and an account for another agent. `GET /api/settings/agents` returns a `revision` of `config.toml`; a `PUT` that sends an older `revision` gets HTTP 409 and changes nothing.
+
+Each run's `agent-profile.json` keeps the resolved lists with a short policy `revision`. A save reaches runs that are waiting, including a run in a usage-limit wait, which then retries with the new order; a run holding a live runner lease keeps its lists until its turn ends. Admission (`admitAgentAccounts` in `src/db/agent-accounts.ts`) reads accounts again, so a disabled, removed, foreign or other-agent account is skipped even when a saved list still names it.
+
+Until Paws selects named accounts at dispatch, it runs only the default sign-in, and only when the default sign-in is the first eligible account in the list (`dispatchAccount`). Every agent turn, review and session helper checks this before placement. Otherwise nothing is placed and Paws never uses the default sign-in instead. A reviewer with a reviewer fallback profile moves to that profile, and other work waits and retries as a transient `AccountPolicyUnavailable`. The journal records each decision with the policy revision, the chosen account and the accounts skipped and why.
+
 ## Add the host
 
 1. Open your Paws dashboard at `https://paws.example.com:8787/dashboard/runners` and sign in. Any workspace member can add a host and owns the runner it adds.

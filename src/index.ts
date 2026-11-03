@@ -53,6 +53,7 @@ import {
   ignoredCommentBots,
   LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,
+  resolveAccountPolicy,
   resolveAgentProfiles,
   loadEnv,
   loadConfigFile,
@@ -85,6 +86,7 @@ import {
   workspaceForOrganization,
   applyLinearUserChange,
   listWorkspaceMembers,
+  listAgentAccountReferences,
   listRepositoryCandidates,
   getLinearSessionInstallation,
   isLinearAppRevoked,
@@ -833,6 +835,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             db,
             helpers: coordinator.helpers,
             placement,
+            accountPolicy: () =>
+              resolveAccountPolicy(loadConfigFile(paths.configFile))?.implementer,
           }),
         };
       })
@@ -852,6 +856,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             return coordinator.helpers;
           },
           profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+          accountPolicy: () => resolveAccountPolicy(loadConfigFile(paths.configFile))?.implementer,
         }),
         sources: (workspaceId) => {
           if (!runtime.linearClientId) return [];
@@ -1016,6 +1021,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       agentSettings: {
         applyToWaiting: () => orchestrator?.applyAgentSettingsToWaiting() ?? 0,
         runnerReadiness: (agent) => activeRunnerReadiness(db, agent),
+        agentAccounts: () => listAgentAccountReferences(db),
         ...(linear?.tracker?.readBriefIssue
           ? {
               readIssue: (identifier: string, signal: AbortSignal) =>

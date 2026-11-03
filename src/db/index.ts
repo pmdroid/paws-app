@@ -828,6 +828,9 @@ export {
   legacyAgentAccountId,
   legacyAgentBindingId,
   listAgentAccounts,
+  listAgentAccountReferences,
+  admitAgentAccounts,
+  dispatchAccount,
   listAgentBindings,
   recordCommandAccount,
   recordRunnerAccountCapability,
@@ -838,6 +841,7 @@ export {
   setAgentAccountEnabled,
   type AgentAccount,
   type AgentAccountBinding,
+  type AccountAdmission,
   type AgentAccountErrorCode,
   type CommandAccount,
 } from "./agent-accounts";

@@ -35,10 +35,20 @@ export type { GitHubAppCredentials } from "./github-app";
 export {
   parseAgentSettings,
   readAgentSettings,
+  resolveAccountPolicy,
   resolveAgentProfiles,
+  validateAccountReferences,
   writeAgentSettings,
 } from "./agents";
-export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles } from "./agents";
+export type {
+  AccountPolicy,
+  AgentAccountReference,
+  AgentProfile,
+  AgentProfiles,
+  AgentSettings,
+  ProjectAgentProfiles,
+  RoleAccountPolicy,
+} from "./agents";
 
 export {
   DEFAULT_CI_FIX_ATTEMPTS,

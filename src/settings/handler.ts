@@ -1,5 +1,6 @@
 import { journalCaught } from "../journal";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import {
   DEFAULT_CI_FIX_ATTEMPTS,
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
@@ -11,7 +12,9 @@ import {
   readMergeSettings,
   readQueueSettings,
   storedMerge,
+  validateAccountReferences,
   writeAgentSettings,
+  type AgentAccountReference,
   type ImplementerName,
   type QueueSettings,
   type StoredMerge,
@@ -28,7 +31,13 @@ export type AgentSettingsOptions = {
   /** Records a changed workspace setting in the audit history. */
   audit?: (action: string, subject: string) => void;
   runnerReadiness?: (agent: ImplementerName) => RunnerReadiness[];
+  agentAccounts?: () => AgentAccountReference[];
 };
+
+function settingsRevision(configPath: string): string {
+  const text = existsSync(configPath) ? readFileSync(configPath) : "";
+  return createHash("sha256").update(text).digest("hex").slice(0, 32);
+}
 
 const SETTINGS_PATH = "/api/settings/agents";
 
@@ -55,6 +64,7 @@ export async function handleAgentSettingsRequest(
         projects: [...projects.values()],
         merge: { ciFixAttempts: readMergeSettings(config).ciFixAttempts },
         queue: readQueueSettings(config),
+        revision: settingsRevision(options.configPath),
       });
     } catch (caughtError1) {
       journalCaught(caughtError1, "handler.handleAgentSettingsRequest.loadConfigFile", null);
@@ -75,18 +85,24 @@ export async function handleAgentSettingsRequest(
   let mergeBody: unknown;
   let queueBody: unknown;
   let applyToWaiting = false;
+  let expectedRevision: string | undefined;
   try {
     // The workspace merge and queue settings travel next to the agent profiles.
     const {
       merge,
       queue,
       applyToWaiting: apply,
+      revision,
       ...agents
     }: Record<string, unknown> = isRecord(body) ? body : {};
     if (apply !== undefined && typeof apply !== "boolean")
       throw new Error("applyToWaiting must be a boolean");
+    if (revision !== undefined && typeof revision !== "string")
+      throw new Error("revision must be a string");
     applyToWaiting = apply === true;
+    expectedRevision = revision;
     settings = parseAgentSettings(isRecord(body) ? agents : body);
+    if (options.agentAccounts) validateAccountReferences(settings, options.agentAccounts());
     mergeBody = merge;
     queueBody = queue;
   } catch (error) {
@@ -119,6 +135,14 @@ export async function handleAgentSettingsRequest(
     journalCaught(error, "handler.handleAgentSettingsRequest.parseMergeSettings", null);
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
+  if (expectedRevision !== undefined && expectedRevision !== settingsRevision(options.configPath))
+    return json(
+      {
+        error: "Settings changed since they were loaded. Reload them and apply your change again.",
+        revision: settingsRevision(options.configPath),
+      },
+      409,
+    );
   let saved: number;
   let savedQueue: QueueSettings;
   let waitingRuns = 0;
@@ -161,6 +185,7 @@ export async function handleAgentSettingsRequest(
     ...settings,
     merge: { ciFixAttempts: saved },
     queue: savedQueue,
+    revision: settingsRevision(options.configPath),
     ...(applyToWaiting ? { waitingRuns } : {}),
     ...(warnings.length ? { warnings } : {}),
   });

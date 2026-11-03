@@ -19,6 +19,7 @@ import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   getTaskMode,
+  dispatchAccount,
   getWorkItem,
   immediate,
   inMergeQueue,
@@ -87,6 +88,7 @@ import {
 } from "./session-restore";
 import {
   RetryableRunnerError,
+  AccountPolicyUnavailable,
   runWithFailover,
   USAGE_LIMIT_RESUME_SLACK_MS,
   UsageLimitPause,
@@ -744,6 +746,22 @@ export function createRemoteAgentRunner(options: {
           throw new Error(
             "The reviewer profile needs a Claude or Codex model to run the agent's review command",
           );
+        const accountPolicy = input.accounts?.profile;
+        if (accountPolicy) {
+          const choice = dispatchAccount(db, { itemId }, input.profile.agent, accountPolicy);
+          const skipped = (choice.admission?.skipped ?? [])
+            .map((entry) => `${entry.accountId} ${entry.reason}`)
+            .join(", ");
+          if (!choice.dispatch) {
+            journal(
+              `item ${itemId}: account policy ${input.accounts!.revision} for ${input.role} cannot run${skipped ? ` (skipped ${skipped})` : ""}: ${choice.reason}`,
+            );
+            throw new AccountPolicyUnavailable(input.profile.agent, choice.reason);
+          }
+          journal(
+            `item ${itemId}: account policy ${input.accounts!.revision} for ${input.role} chose ${choice.accountId}${skipped ? ` (skipped ${skipped})` : ""}`,
+          );
+        }
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
         const continuesSession =
@@ -2342,5 +2360,5 @@ function handoverWaitNotice(db: Database, move: HandoverMove, why: string): stri
   return `Waiting to move this session from ${from}: ${why} Paws moves it as soon as a runner fits.\n`;
 }
 
-export { UsageLimitExhaustedError, UsageLimitPause } from "./failover";
+export { AccountPolicyUnavailable, UsageLimitExhaustedError, UsageLimitPause } from "./failover";
 export { createFindingGroupHelper } from "./finding-groups";
