@@ -15,6 +15,7 @@ import { createLiveStatusProvider } from "./provider";
 import { fullAgentTranscript } from "./transcript";
 import { render } from "../client/render";
 import { handleStatusRequest } from "../server/handler";
+import { setJournalSink } from "../journal";
 
 function tempHome() {
   return mkdtempSync(join(tmpdir(), "paws-transcript-"));
@@ -190,4 +191,39 @@ test("a failing workspace hook shows on the run page as an error", () => {
       text: "Workspace hook failed (after a file edit): bun run fmt · exited with 1: fmt failed",
     },
   ]);
+});
+
+test("untimed lines take the previous line's time, and a partly written last line is skipped quietly", () => {
+  const home = tempHome();
+  mkdirSync(join(home, "runs", "resumed-run"), { recursive: true });
+  const start = "2026-11-03T18:00:00.000Z";
+  const first = "2026-11-03T18:05:00.000Z";
+  const last = "2026-11-03T18:28:00.000Z";
+  const tool = (title: string, t?: string) => ({
+    ...(t ? { t } : {}),
+    event: { type: "session_update", update: { sessionUpdate: "tool_call", title } },
+  });
+  writeFileSync(
+    join(home, "runs", "resumed-run", "acp.jsonl"),
+    [tool("before"), tool("first", first), tool("a"), tool("b"), tool("c"), tool("last", last)]
+      .map((x) => JSON.stringify(x) + "\n")
+      .join("") + '{"event":{"type":"progr',
+  );
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    expect(
+      [...fullAgentTranscript(home, "resumed-run", start, {})].map((x) => [x.text, x.at]),
+    ).toEqual([
+      ["before", start],
+      ["first", first],
+      ["a", first],
+      ["b", first],
+      ["c", first],
+      ["last", last],
+    ]);
+  } finally {
+    restore();
+  }
+  expect(lines.filter((line) => line.includes("transcript.readFile.parse"))).toEqual([]);
 });
