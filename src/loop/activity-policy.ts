@@ -2,11 +2,13 @@ import type { Database } from "bun:sqlite";
 
 /**
  * Responses that may follow the PR response: the final merged, closed or stopped line, a
- * comment-only GitHub review's threads, posted once per review id, and what a person decided on
- * the risk approval. A response keeps the session complete, so neither reopens it.
+ * comment-only GitHub review's threads, posted once per review id, what a person decided on
+ * the risk approval, the record of a question answered in Paws, and the merge queue's review
+ * wait, once per generation, head and reason (`merge-review:`). A response keeps the session
+ * complete, so none reopens it.
  */
 export const AFTER_PULL_REQUEST_RESPONSE =
-  /^(merged:|closed:|command:stop:|pull-review:|risk-approval:|paws-answer:)/;
+  /^(merged:|closed:|command:stop:|pull-review:|risk-approval:|paws-answer:|merge-review:)/;
 
 /**
  * Thoughts that may follow the PR response: a change request on the risk approval, from the

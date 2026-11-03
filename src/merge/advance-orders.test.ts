@@ -108,7 +108,7 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(queued(h)).toEqual(["ENG-111", "ENG-112"]);
     expect(mergedOrder(h, ids)).toEqual(["ENG-114"]);
     expect(h.bodies("afterPullRequest")).toEqual([
-      "Waiting for an approving review on pull request #3. It joins the acme/app merge queue once approved.",
+      "Waiting for an approving review on [pull request #3](https://github.com/acme/app/pull/3). It joins the acme/app merge queue once approved.",
     ]);
 
     h.state.ci = () => undefined;

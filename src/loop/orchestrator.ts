@@ -4864,7 +4864,8 @@ export class Orchestrator {
 
   /** Progress is quiet once the pull request is open, so this posts like the pull request note. */
   private postAfterPullRequest(item: WorkItemRecord, body: string, key: string): void {
-    this.post(item, "response", body, key, {}, "ordered");
+    if (this.stopped(item.id)) return;
+    this.post(item, "response", body, key, { id: randomUUID() }, "ordered");
   }
 
   /** `[queue] start_timeout_hours`, read on every dispatch. Missing or unreadable means 24. */
