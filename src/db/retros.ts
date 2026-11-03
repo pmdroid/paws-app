@@ -302,6 +302,8 @@ export function createRetro(
     origin: RetroOrigin;
     scheduledFor?: number;
     settingsRevision: number;
+    agentProfile?: Record<string, unknown>;
+    repositories?: string[];
     now: number;
   },
 ): { retro: Retro; created: boolean } {
@@ -315,6 +317,10 @@ export function createRetro(
     const settings = getRetroSettingsRevision(db, input.workspaceId, input.settingsRevision);
     if (settings === null)
       throw new Error(`Unknown retro settings revision ${input.settingsRevision}`);
+    const allowed = new Set(settings.repositories.map((name) => name.toLowerCase()));
+    const repositories = input.repositories ?? settings.repositories;
+    if (repositories.some((name) => !allowed.has(name.toLowerCase())))
+      throw new Error(`Retro repositories must come from settings revision ${settings.revision}`);
     db.run(
       `INSERT INTO retro (id, workspace_id, window_start, window_end, origin, scheduled_for,
          settings_revision, prompt, agent_profile, repositories, output_limits, execution_limits,
@@ -329,8 +335,8 @@ export function createRetro(
         input.scheduledFor ?? null,
         settings.revision,
         settings.prompt,
-        JSON.stringify(settings.agentProfile),
-        JSON.stringify(settings.repositories),
+        JSON.stringify(input.agentProfile ?? settings.agentProfile),
+        JSON.stringify(repositories),
         JSON.stringify(settings.outputLimits),
         JSON.stringify(settings.executionLimits),
         input.now,
