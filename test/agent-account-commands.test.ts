@@ -136,25 +136,25 @@ test("an old runner keeps running the default sign-in and never receives a named
     now,
   });
   const named = { accountId: account.id, bindingId: binding.id };
-  expect(() => check(named)).toThrow(/runner 0\.1\.60 or later/);
+  expect(() => check(named)).toThrow(/runner 0\.1\.61 or later/);
   expect(
     await heartbeat({
       runnerVersion: "0.1.59",
       accounts: { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
     }),
   ).toBe(200);
-  expect(() => check(named)).toThrow(/runner 0\.1\.60 or later/);
-  expect(await heartbeat({ runnerVersion: "0.1.60" })).toBe(200);
+  expect(() => check(named)).toThrow(/runner 0\.1\.61 or later/);
+  expect(await heartbeat({ runnerVersion: "0.1.61" })).toBe(200);
   expect(() => check(named)).toThrow(/not reported agent account support/);
   expect(
-    await heartbeat({ runnerVersion: "0.1.60", accounts: { protocol: 1, bindings: [] } }),
+    await heartbeat({ runnerVersion: "0.1.61", accounts: { protocol: 1, bindings: [] } }),
   ).toBe(200);
   expect(() => check(named)).toThrow(/not reported this account binding/);
   expect(queued()).toEqual([{ id: legacy, account: undefined }]);
 
   expect(
     await heartbeat({
-      runnerVersion: "0.1.60",
+      runnerVersion: "0.1.61",
       accounts: { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
     }),
   ).toBe(200);
@@ -166,7 +166,7 @@ test("an old runner keeps running the default sign-in and never receives a named
   ]);
   expect(
     await heartbeat({
-      runnerVersion: "0.1.60",
+      runnerVersion: "0.1.61",
       accounts: { protocol: 1, bindings: [{ bindingId: "legacy_claude_x", agent: "claude" }] },
     }),
   ).toBe(403);

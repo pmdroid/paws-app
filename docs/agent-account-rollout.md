@@ -6,7 +6,7 @@ Leave fallback unconfigured until every gate below is met. An installation with 
 
 ## Gates before configuring an order
 
-1. **Paws and every runner that will hold a binding are current.** Named accounts need runner 0.1.60 or later (`AGENT_ACCOUNTS_RUNNER_VERSION` in `src/runner-protocol/versions.ts`). An older runner is never offered a named account and never runs one as its default sign-in.
+1. **Paws and every runner that will hold a binding are current.** Named accounts need runner 0.1.61 or later (`AGENT_ACCOUNTS_RUNNER_VERSION` in `src/runner-protocol/versions.ts`). An older runner is never offered a named account and never runs one as its default sign-in.
 2. **The agent is supported.** Use only an agent marked Supported in [the adapter matrix](#adapter-matrix). An agent with a reason in `runnerAccountAgentUnsupported` (`src/runner-protocol/accounts.ts`) is refused by Paws and by the runner, and the dashboard shows it as unsupported.
 3. **The accounts are authorized.** Use only provider accounts the workspace is allowed to use under the provider's terms. Paws never buys, shares or distributes credentials. Do not post credentials, tokens or sign-in codes in Linear, the dashboard or `config.toml`; only opaque account and binding ids leave the runner.
 4. **Each binding is signed in and reported.** In **Settings › Agents › Agent accounts** every binding you intend to use shows `eligible`, not `auth-required` or `unavailable`.
@@ -51,7 +51,7 @@ Upgrading applies the account migrations once. Each runner and agent pair that a
 
 To turn fallback off, remove the `accounts` lists from Settings or `config.toml`. Every role returns to the default sign-in at its next admission; running work keeps the account its command carries until its turn ends. Disable an account rather than removing it if you may want it back: a disabled account keeps its bindings and can still sign in.
 
-To roll Paws back to a release without accounts, first remove the `accounts` lists, wait for running work on named accounts to finish, then install the older release. The older release applies none of its migrations again and does not touch the account tables: accounts, bindings, `runner_command_account` and health rows stay, and the schema refuses deleting them. Reinstalling the newer release finds every account, binding and recorded command account where it was. On a runner, a rollback below 0.1.60 leaves the binding homes under `/var/lib/paws-agent/.paws-accounts` in place and unused; the older runner refuses any command that names an account.
+To roll Paws back to a release without accounts, first remove the `accounts` lists, wait for running work on named accounts to finish, then install the older release. The older release applies none of its migrations again and does not touch the account tables: accounts, bindings, `runner_command_account` and health rows stay, and the schema refuses deleting them. Reinstalling the newer release finds every account, binding and recorded command account where it was. On a runner, a rollback below 0.1.61 leaves the binding homes under `/var/lib/paws-agent/.paws-accounts` in place and unused; the older runner refuses any command that names an account.
 
 ## Adapter matrix
 

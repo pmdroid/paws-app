@@ -632,7 +632,7 @@ test("a helper whose named account hits its quota retries with the next account 
           bindings.push({ accountId: account.id, bindingId: binding.id });
         }
         db.run(
-          "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner','0.1.60',?)",
+          "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner','0.1.61',?)",
           [Date.now()],
         );
         recordRunnerAccountCapability(

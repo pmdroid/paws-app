@@ -117,7 +117,7 @@ Paws records each sign-in as a binding of a logical agent account (`src/db/agent
 
 The sign-in above is the runner's default sign-in. Paws keeps it as a legacy binding with id `legacy_<agent>_<runnerId>` under the workspace's legacy account `legacy_<agent>_<workspaceId>`. Its quota scope is `unknown`: Paws does not know whether two runners' default sign-ins are the same provider account, so it treats neither as proof of separate quota. A binding added to a named account is an explicit link, with quota scope `account`: it shares that account's quota. Paws never derives an account from credentials, email addresses or token equality, and credentials stay on the runner.
 
-A command without `account` runs as the default sign-in, as before. A signed `run`, `review`, `task`, `helper`, `probe`, `login` or `login_check` command may name `account: { accountId, bindingId }`. Paws queues a named command only when the runner is at least 0.1.60, its latest heartbeat reported `accounts.protocol` 1 or later, and `accounts.bindings` lists that binding for the command's agent. A named `login` is the exception: it is how a runner first holds a binding, so it needs only the version and protocol. A runner older than 0.1.60 refuses the unknown field, and a newer runner refuses any other named command for a binding it does not hold (`account_unavailable`). Neither runs the default sign-in instead. A result must repeat the command's `account` exactly.
+A command without `account` runs as the default sign-in, as before. A signed `run`, `review`, `task`, `helper`, `probe`, `login` or `login_check` command may name `account: { accountId, bindingId }`. Paws queues a named command only when the runner is at least 0.1.61, its latest heartbeat reported `accounts.protocol` 1 or later, and `accounts.bindings` lists that binding for the command's agent. A named `login` is the exception: it is how a runner first holds a binding, so it needs only the version and protocol. A runner older than 0.1.61 refuses the unknown field, and a newer runner refuses any other named command for a binding it does not hold (`account_unavailable`). Neither runs the default sign-in instead. A result must repeat the command's `account` exactly.
 
 ### Isolated binding homes
 
@@ -161,7 +161,7 @@ Every agent turn, review, probe and session helper (classification, repository s
 
 Placement (`src/runner-placement/placement.ts`) chooses an account and a runner together. Each runner that passes the runner checks (who may use it, its owner, online and active, repository access, version, load and work affinity) is offered once per admitted account, in the list's order. Without a list the only account is the default sign-in, so single-account installations place exactly as before. An account is offered on a runner only when:
 
-- for a named account, the runner holds a live binding of it, the runner is at least 0.1.60 and reported that binding, and the binding's health does not block it;
+- for a named account, the runner holds a live binding of it, the runner is at least 0.1.61 and reported that binding, and the binding's health does not block it;
 - for the default sign-in, the runner's agent is signed in and outside its quota cooldown, and the provider and model are not blocked;
 - the account is below its `concurrency`, counted across every binding of the account, so binding one account to several runners never multiplies its slots.
 

@@ -84,7 +84,7 @@ function fixture() {
     );
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [id]);
     db.run(
-      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.60',?)",
+      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.61',?)",
       [id, clock],
     );
   }
@@ -599,7 +599,7 @@ test("a legacy installation upgrades to default sign-in accounts and rolls back 
       now: 10,
     });
     db.run(
-      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('r','0.1.60',10)",
+      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('r','0.1.61',10)",
     );
     recordRunnerAccountCapability(
       db,

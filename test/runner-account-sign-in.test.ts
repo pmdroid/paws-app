@@ -31,7 +31,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function fixture(runnerVersion = "0.1.60") {
+async function fixture(runnerVersion = "0.1.61") {
   const root = mkdtempSync(join(tmpdir(), "paws-account-sign-in-"));
   roots.push(root);
   const db = openDatabase(join(root, "paws.sqlite"));
@@ -273,10 +273,10 @@ test("a disabled account can still sign in; a foreign or removed binding cannot"
 
 test("a runner without account sign-in keeps refusing a named sign-in", async () => {
   const { db, runnerId, principal, login, binding, queued, browser } = await fixture("0.1.59");
-  expect(() => login.start(principal, runnerId, "codex", binding.id)).toThrow(/0\.1\.60/);
+  expect(() => login.start(principal, runnerId, "codex", binding.id)).toThrow(/0\.1\.61/);
   const response = (await browser(`codex/login?binding=${binding.id}`))!;
   expect(response.status).toBe(409);
-  expect(((await response.json()) as { error: string }).error).toMatch(/0\.1\.60/);
+  expect(((await response.json()) as { error: string }).error).toMatch(/0\.1\.61/);
   expect(queued()).toEqual([]);
   db.close();
 });

@@ -58,7 +58,7 @@ function fixture() {
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [id]);
     db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
       id,
-      "0.1.60",
+      "0.1.61",
       clock,
     ]);
   }
