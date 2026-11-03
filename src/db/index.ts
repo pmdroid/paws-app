@@ -830,6 +830,7 @@ export {
   listAgentAccounts,
   listAgentAccountReferences,
   admitAgentAccounts,
+  dispatchAccount,
   listAgentBindings,
   recordCommandAccount,
   recordRunnerAccountCapability,

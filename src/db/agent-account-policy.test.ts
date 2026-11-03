@@ -1,13 +1,12 @@
 import { expect, test } from "bun:test";
 import {
   admitAgentAccounts,
-  bindAgentAccount,
   createAgentAccount,
+  dispatchAccount,
+  insertQueuedItem,
   listAgentAccountReferences,
   migrate,
   openDatabase,
-  recordCommandAccount,
-  recordRunnerAccountCapability,
   removeAgentAccount,
   setAgentAccountEnabled,
 } from "./index";
@@ -106,41 +105,51 @@ test("references list every account and each workspace's default sign-in", () =>
   db.close();
 });
 
-test("a command records the account policy revision it was chosen under", () => {
+test("dispatch runs only the default sign-in, and only when it is first among eligible accounts", () => {
   const db = fresh();
-  db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
-    "R-W1",
-    "99.0.0",
+  db.run("INSERT INTO linear_session(session_id,organization_id,created_at) VALUES(?,?,?)", [
+    "S1",
+    "org-W1",
     NOW,
   ]);
+  insertQueuedItem(db, { id: "I1", now: NOW, sessionKey: "S1" });
+  insertQueuedItem(db, { id: "I2", now: NOW });
   const a = createAgentAccount(db, { workspaceId: "W1", agent: "claude", label: "A", now: NOW });
-  const binding = bindAgentAccount(db, {
-    workspaceId: "W1",
-    accountId: a.id,
-    runnerId: "R-W1",
-    now: NOW,
+  const legacy = "legacy_claude_W1";
+  const policy = (accounts: string[]) => ({ agent: "claude", accounts });
+  expect(dispatchAccount(db, { itemId: "I1" }, "claude", policy([legacy, a.id]))).toMatchObject({
+    dispatch: true,
+    accountId: legacy,
   });
-  recordRunnerAccountCapability(
-    db,
-    "R-W1",
-    { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
-    NOW,
-  );
-  const recorded = recordCommandAccount(
-    db,
-    {
-      id: "C1",
-      runnerId: "R-W1",
-      workspaceId: "W1",
-      issuedAt: NOW,
-      expiresAt: NOW + 60_000,
-      type: "login_check",
-      agent: "claude",
-      account: { accountId: a.id, bindingId: binding.id },
-    },
-    NOW,
-    "0123456789abcdef",
-  );
-  expect(recorded).toMatchObject({ accountId: a.id, policyRevision: "0123456789abcdef" });
+  expect(dispatchAccount(db, { itemId: "I1" }, "claude", policy([a.id, legacy]))).toMatchObject({
+    dispatch: false,
+    reason: expect.stringMatching(/cannot run a named account/),
+  });
+  setAgentAccountEnabled(db, { workspaceId: "W1", accountId: a.id, enabled: false, now: NOW });
+  expect(dispatchAccount(db, { itemId: "I1" }, "claude", policy([a.id, legacy]))).toMatchObject({
+    dispatch: true,
+    accountId: legacy,
+    admission: { skipped: [{ accountId: a.id, reason: "disabled" }] },
+  });
+  expect(dispatchAccount(db, { itemId: "I1" }, "claude", policy([a.id]))).toMatchObject({
+    dispatch: false,
+    reason: "No configured Claude account is eligible",
+  });
+  expect(
+    dispatchAccount(db, { itemId: "I1" }, "claude", policy(["legacy_claude_W2"])),
+  ).toMatchObject({
+    dispatch: false,
+  });
+  expect(dispatchAccount(db, { itemId: "I2" }, "claude", policy([legacy]))).toMatchObject({
+    dispatch: false,
+    admission: null,
+  });
+  expect(dispatchAccount(db, { sessionId: "S1" }, "claude", policy([a.id, legacy]))).toMatchObject({
+    dispatch: true,
+    accountId: legacy,
+  });
+  expect(dispatchAccount(db, { sessionId: "unknown" }, "claude", policy([legacy]))).toMatchObject({
+    dispatch: false,
+  });
   db.close();
 });

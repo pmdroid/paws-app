@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { RunnerHelpers } from "../runner-helpers";
-import type { AgentProfile } from "../config";
+import type { AgentProfile, RoleAccountPolicy } from "../config";
 import { createRunnerPlacement, type RunnerPlacement } from "../runner-placement";
 import type { GroupingHelper } from "../finding-groups";
 import { createRemoteSessionAgentRunner } from "./helpers";
@@ -11,6 +11,7 @@ export function createFindingGroupHelper(options: {
   helpers: () => Promise<RunnerHelpers>;
   profile: () => AgentProfile;
   placement?: RunnerPlacement;
+  accountPolicy?: () => RoleAccountPolicy | undefined;
 }): GroupingHelper {
   const placement = options.placement ?? createRunnerPlacement({ db: options.db });
   return async (input) => {
@@ -25,6 +26,7 @@ export function createFindingGroupHelper(options: {
       db: options.db,
       helpers: await options.helpers(),
       placement,
+      ...(options.accountPolicy ? { accountPolicy: options.accountPolicy } : {}),
     });
     const result = await helper.forSession(
       input.sessionId,

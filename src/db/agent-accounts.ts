@@ -45,7 +45,6 @@ export type CommandAccount = {
   accountId: string;
   bindingId: string;
   named: boolean;
-  policyRevision: string | null;
   recordedAt: number;
 };
 
@@ -75,7 +74,7 @@ const accountColumns =
 const bindingColumns =
   "id,workspace_id AS workspaceId,account_id AS accountId,agent,runner_id AS runnerId,legacy,quota_scope AS quotaScope,created_at AS createdAt,removed_at AS removedAt";
 const commandColumns =
-  "command_id AS commandId,workspace_id AS workspaceId,runner_id AS runnerId,agent,account_id AS accountId,binding_id AS bindingId,named,policy_revision AS policyRevision,recorded_at AS recordedAt";
+  "command_id AS commandId,workspace_id AS workspaceId,runner_id AS runnerId,agent,account_id AS accountId,binding_id AS bindingId,named,recorded_at AS recordedAt";
 const AGENT_NAMES: Record<RunnerCodingAgent, string> = {
   claude: "Claude",
   codex: "Codex",
@@ -408,7 +407,6 @@ export function recordCommandAccount(
   db: Database,
   command: RunnerCommand,
   at: number,
-  policyRevision?: string,
 ): CommandAccount | null {
   const agent = commandAgent(command);
   if (!agent) return null;
@@ -443,7 +441,7 @@ export function recordCommandAccount(
     if (!owner.enabled && command.type !== "login" && command.type !== "login_check")
       throw new AgentAccountError("disabled", "Agent account is disabled");
     db.run(
-      "INSERT INTO runner_command_account(command_id,workspace_id,runner_id,agent,account_id,binding_id,named,policy_revision,recorded_at) VALUES(?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO runner_command_account(command_id,workspace_id,runner_id,agent,account_id,binding_id,named,recorded_at) VALUES(?,?,?,?,?,?,?,?)",
       [
         command.id,
         row.workspaceId,
@@ -452,7 +450,6 @@ export function recordCommandAccount(
         row.accountId,
         row.id,
         named ? 1 : 0,
-        policyRevision ?? null,
         at,
       ],
     );
@@ -529,4 +526,54 @@ export function admitAgentAccounts(
     else eligible.push(id);
   }
   return { agent, configured: policy !== undefined, eligible, skipped };
+}
+
+export type AccountDispatch =
+  | { dispatch: true; accountId: string; admission: AccountAdmission }
+  | { dispatch: false; reason: string; admission: AccountAdmission | null };
+
+export function dispatchAccount(
+  db: Database,
+  scope: { itemId: string } | { sessionId: string },
+  agent: RunnerCodingAgent,
+  policy: { agent: string; accounts: readonly string[] },
+): AccountDispatch {
+  const sessionId =
+    "sessionId" in scope
+      ? scope.sessionId
+      : db
+          .query<{ sessionKey: string | null }, [string]>(
+            "SELECT session_key AS sessionKey FROM work_item WHERE id=?",
+          )
+          .get(scope.itemId)?.sessionKey;
+  const workspaceId = sessionId
+    ? db
+        .query<{ id: string }, [string]>(
+          `SELECT w.id FROM linear_session s
+           JOIN workspace w ON w.linear_organization_id=s.organization_id
+           WHERE s.session_id=?`,
+        )
+        .get(sessionId)?.id
+    : undefined;
+  if (!workspaceId)
+    return {
+      dispatch: false,
+      reason: "The task has no workspace to check its agent accounts against",
+      admission: null,
+    };
+  const admission = admitAgentAccounts(db, workspaceId, agent, policy);
+  const first = admission.eligible[0];
+  if (first === undefined)
+    return {
+      dispatch: false,
+      reason: `No configured ${AGENT_NAMES[agent]} account is eligible`,
+      admission,
+    };
+  if (first !== legacyAgentAccountId(workspaceId, agent))
+    return {
+      dispatch: false,
+      reason: `${AGENT_NAMES[agent]} account ${first} is first in the account order, and Paws cannot run a named account yet`,
+      admission,
+    };
+  return { dispatch: true, accountId: first, admission };
 }

@@ -53,6 +53,7 @@ import {
   ignoredCommentBots,
   LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,
+  resolveAccountPolicy,
   resolveAgentProfiles,
   loadEnv,
   loadConfigFile,
@@ -834,6 +835,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             db,
             helpers: coordinator.helpers,
             placement,
+            accountPolicy: () =>
+              resolveAccountPolicy(loadConfigFile(paths.configFile))?.implementer,
           }),
         };
       })
@@ -853,6 +856,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             return coordinator.helpers;
           },
           profile: () => resolveAgentProfiles(loadConfigFile(paths.configFile)).implementer,
+          accountPolicy: () => resolveAccountPolicy(loadConfigFile(paths.configFile))?.implementer,
         }),
         sources: (workspaceId) => {
           if (!runtime.linearClientId) return [];

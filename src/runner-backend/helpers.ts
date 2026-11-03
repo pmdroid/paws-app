@@ -6,12 +6,14 @@ import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from
 import type { RunnerHelpers } from "../runner-helpers";
 import type { RunnerPlacement } from "../runner-placement";
 import { RunnerSlotsBusyError, systemClock, UserFacingError } from "../core";
-import { immediate, runnerHasCapacity, workspaceSessionIds } from "../db";
+import type { RoleAccountPolicy } from "../config";
+import { dispatchAccount, immediate, runnerHasCapacity, workspaceSessionIds } from "../db";
 import { FINDING_GROUPS_RUNNER_VERSION, type RunnerCommand } from "../runner-protocol";
 import { versionAtLeast } from "./session-restore";
 import { usageLimitWait } from "./usage-limit-wait";
 
 import {
+  AccountPolicyUnavailable,
   RetryableRunnerError,
   runWithFailover,
   USAGE_LIMIT_RESUME_SLACK_MS,
@@ -27,6 +29,7 @@ export function createRemoteSessionAgentRunner(options: {
   mono?: () => number;
   pollIntervalMs?: number;
   placement?: RunnerPlacement;
+  accountPolicy?: () => RoleAccountPolicy | undefined;
 }) {
   const now = options.now ?? Date.now;
   const mono = options.mono ?? systemClock.mono;
@@ -70,6 +73,19 @@ export function createRemoteSessionAgentRunner(options: {
           throw new Error(
             "Remote session helper requires a read-only prompt without tools or files",
           );
+        const accountPolicy = options.accountPolicy?.();
+        if (accountPolicy) {
+          const choice = dispatchAccount(
+            options.db,
+            { sessionId },
+            input.profile.agent,
+            accountPolicy.agent === input.profile.agent
+              ? accountPolicy
+              : { agent: input.profile.agent, accounts: [] },
+          );
+          if (!choice.dispatch)
+            throw new AccountPolicyUnavailable(input.profile.agent, choice.reason);
+        }
         const profile = { ...input.profile, model: input.profile.model ?? null };
         const waitUntil = now() + (input.timeoutMs ?? 60_000);
         let command: HelperCommand | undefined;

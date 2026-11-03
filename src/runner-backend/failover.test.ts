@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { RunAgentOptions, RunAgentResult } from "../acp";
+import { isTransient } from "../core";
 import {
+  AccountPolicyUnavailable,
   RetryableRunnerError,
   runWithFailover,
   UsageLimitPause,
@@ -444,5 +446,52 @@ describe("agent settings changed during a quota wait", () => {
       ["claude", accounts],
       ["codex", { revision: "r1", profile: accounts.fallback }],
     ]);
+  });
+
+  test("an account order that cannot run moves review to the explicit fallback, never another account of the reviewer", async () => {
+    const accounts = {
+      revision: "r1",
+      profile: { agent: "claude" as const, accounts: ["A"], source: "defaults" as const },
+      fallback: {
+        agent: "codex" as const,
+        accounts: ["legacy_codex_W"],
+        source: "defaults" as const,
+      },
+    };
+    const seen: [string, RunAgentOptions["accounts"]][] = [];
+    await runWithFailover(
+      { ...input(), profile: claude, fallbackProfile: codex, accounts, role: "reviewer" },
+      async (options) => {
+        seen.push([options.profile!.agent, options.accounts]);
+        if (options.profile!.agent === "claude")
+          throw new AccountPolicyUnavailable("claude", "No configured Claude account is eligible");
+        return done();
+      },
+      async () => undefined,
+    );
+    expect(seen).toEqual([
+      ["claude", accounts],
+      ["codex", { revision: "r1", profile: accounts.fallback }],
+    ]);
+  });
+
+  test("without a fallback an account order that cannot run waits as a transient error", async () => {
+    const error = new AccountPolicyUnavailable(
+      "claude",
+      "No configured Claude account is eligible",
+    );
+    let attempts = 0;
+    await expect(
+      runWithFailover(
+        { ...input(), profile: claude },
+        async () => {
+          attempts++;
+          throw error;
+        },
+        async () => undefined,
+      ),
+    ).rejects.toBe(error);
+    expect(attempts).toBe(1);
+    expect(isTransient(error)).toBe(true);
   });
 });

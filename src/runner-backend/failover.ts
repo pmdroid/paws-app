@@ -42,6 +42,16 @@ export class UsageLimitPause extends Error {
   }
 }
 
+export class AccountPolicyUnavailable extends Error {
+  override readonly name = "AccountPolicyUnavailable";
+  constructor(
+    readonly agent: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /** Usage-limit responses and waits share this budget across the whole failover call. */
 export const MAX_USAGE_LIMIT_EVENTS = 3;
 
@@ -133,6 +143,29 @@ export async function runWithFailover(
         journalCaught(
           error,
           "failover.runWithFailover.fallback",
+          input.itemId,
+          "moving to the fallback profile",
+        );
+        profile = fallback;
+        fallback = undefined;
+        if (accounts) accounts = { revision: accounts.revision, profile: accounts.fallback };
+        limit = undefined;
+        limitedSincePause.clear();
+        continue;
+      }
+      if (
+        error instanceof AccountPolicyUnavailable &&
+        fallback &&
+        profile?.agent === error.agent &&
+        fallback.agent !== error.agent
+      ) {
+        await input.onEvent?.({
+          type: "progress",
+          text: `${error.message}. Reviewing with ${fallback.agent}${fallback.model ? ` ${fallback.model}` : ""} instead.`,
+        });
+        journalCaught(
+          error,
+          "failover.runWithFailover.accountFallback",
           input.itemId,
           "moving to the fallback profile",
         );

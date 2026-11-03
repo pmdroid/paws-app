@@ -273,7 +273,6 @@ test("commands without an account record the runner's legacy identity", () => {
     accountId: "legacy_claude_W1",
     bindingId: "legacy_claude_R1",
     named: false,
-    policyRevision: null,
     recordedAt: NOW,
   });
   recordCommandAccount(db, probe("C2", "R2", "W1"), NOW);
