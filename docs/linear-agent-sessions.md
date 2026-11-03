@@ -102,14 +102,14 @@ One `linear.comments` job per item gathers queued comments with the pull request
 
 - **Running:** it waits. A runner follow-up interrupts the agent's prompt, so comments are not pushed into a turn; they go out with the next handoff once the turn has ended.
 - **Verifying or recovering, or a job still running for the item:** it waits.
-- **Resting in the merge queue:** one `restart(follow_up)` with the comments in the handoff. Pending pull request comments, CI failures or change requests keep their own wait; the Linear comments then ride along in that restart's brief. The restart's job key starts `linear-comment:`, so it does not reset the fix-round window a Linear session reply opens.
-- **Queued (capacity, quota or dependency waits):** nothing is dispatched; the next attempt's brief takes the comments.
+- **Resting in the merge queue:** a queued comment holds the merge (`reviewHold` in `src/merge/orders.ts`), so the pull request cannot merge during the quiet window. The job first takes the pull request out of GitHub's merge queue; if GitHub already merged or closed it, nothing restarts. Otherwise one `restart(follow_up)` with the comments in the handoff. Pending pull request comments, CI failures or change requests keep their own wait; the Linear comments then ride along in that restart's brief. The restart's job key starts `linear-comment:`, so it does not reset the fix-round window a Linear session reply opens.
+- **Queued (capacity, quota or dependency waits):** nothing is dispatched; the next attempt's brief takes the comments. That covers answer, plan and artifact tasks too. A comment counts as delivered only once the agent's turn with that brief ends (or asks a question). A preflight failure, a quota deferral or a recovery before then leaves it queued for the next attempt, whatever the item version.
 - **Paused, manual or failed:** the comments wait with the item; a comment never resumes it, clears a hold or resets a budget.
 - **Awaiting input:** an issue comment never answers a question, the agent's own included. Questions are asked in the session thread, and a reply there takes the session reply path, so an issue comment has no unambiguous target. The comment stays as context and the session says the question still needs an answer.
 
 These thoughts follow the post-PR rule above; the comment's state in `linear_comment` (`received`, `queued`, `delivered`, `answered`, `ignored`, `rejected`, `removed`, with a reason) is the record either way.
 
-A handoff holds at most 12,000 characters (each comment is cut at 4,000). Comments that do not fit stay queued for the next handoff; only the ones handed over are marked delivered.
+A handoff holds at most 12,000 characters (each comment is cut at 4,000). Comments that do not fit stay queued for the next handoff; only the ones handed over are marked delivered, and the delivery job is armed again for the rest.
 
 Before delivery each comment is checked again: a stop since it was routed, a new session for the item, or a member who lost access drops it. While the member check is not available yet, for example right after a restart, the comment waits rather than passing.
 

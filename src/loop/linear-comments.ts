@@ -8,10 +8,10 @@ import {
   getLinearSession,
   getLinearSessionAccess,
   getLinearSessionInstallation,
+  getItemPullRequest,
   getWorkItem,
   immediate,
   linearCommentAuthor,
-  linearCommentsInBrief,
   markLinearCommentsDelivered,
   pendingChangeRequests,
   pendingLinearComments,
@@ -24,6 +24,7 @@ import {
   type PullFeedbackWait,
   type WorkItemRecord,
 } from "../db";
+import type { LeaveMergeQueueResult } from "../github";
 import { isPawsStop } from "../linear";
 import { findOpenQuestion } from "../questions";
 import { restart } from "./operations";
@@ -61,6 +62,7 @@ export type LinearCommentCapabilities = {
   now(): number;
   policy: LinearCommentPolicy;
   busy(item: WorkItemRecord): boolean;
+  leaveMergeQueue(item: WorkItemRecord, pullNumber: number): Promise<LeaveMergeQueueResult>;
   flush(): Promise<void>;
 };
 
@@ -296,6 +298,11 @@ export async function deliverLinearComments(
   if (HELD_STATES.has(item.state) || item.state === "queued") return "done";
   if (ACTIVE_STATES.has(item.state)) return "wait";
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
+  const pull = getItemPullRequest(db, item.id);
+  if (pull !== null) {
+    const queue = await caps.leaveMergeQueue(item, pull.pullNumber);
+    if (queue === "merged" || queue === "closed") return "wait";
+  }
   if (
     pendingPullComments(db, item.id).length > 0 ||
     pendingPullCiFailures(db, item.id).length > 0 ||
@@ -335,31 +342,47 @@ export async function deliverLinearComments(
     return "restarted";
   });
   if (step === "restarted") await caps.flush();
+  if (step === "restarted" && pendingLinearComments(db, item.id).length > 0) return "wait";
   return step;
 }
 
-export function takeLinearCommentBrief(
+export type LinearCommentBrief = { text: string; commentIds: string[] };
+
+export function linearCommentBrief(
   db: Database,
   item: WorkItemRecord,
   caps: Pick<LinearCommentCapabilities, "now" | "policy">,
-): string | null {
+): LinearCommentBrief | null {
   return immediate(db, () => {
-    const already = linearCommentsInBrief(db, item.id, item.version);
-    const room = fitLinearComments(
-      [...already, ...current(db, item, pendingLinearComments(db, item.id), caps).kept],
-      already.length,
+    const batch = fitLinearComments(
+      current(db, item, pendingLinearComments(db, item.id), caps).kept,
     );
-    const taken = room.slice(already.length);
-    if (taken.length > 0)
-      markLinearCommentsDelivered(
+    const text = linearCommentSection(batch, item.linearIdentifier);
+    return text === null ? null : { text, commentIds: batch.map((comment) => comment.commentId) };
+  });
+}
+
+export function settleLinearCommentBrief(
+  db: Database,
+  item: WorkItemRecord,
+  brief: LinearCommentBrief,
+  options: { now: number; wait?: PullFeedbackWait },
+): void {
+  immediate(db, () => {
+    markLinearCommentsDelivered(db, brief.commentIds, {
+      via: "brief",
+      itemVersion: item.version,
+      now: options.now,
+    });
+    const left = pendingLinearComments(db, item.id);
+    if (left.length > 0)
+      gatherLinearComments(
         db,
-        taken.map((comment) => comment.commentId),
-        { via: "brief", itemVersion: item.version, now: caps.now() },
+        item.id,
+        options.now,
+        options.wait ?? DEFAULT_PULL_FEEDBACK_WAIT,
+        `linear-comments:${item.id}:${left[0]!.commentId}:${item.version}`,
       );
-    return linearCommentSection(
-      linearCommentsInBrief(db, item.id, item.version),
-      item.linearIdentifier,
-    );
   });
 }
 

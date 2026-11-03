@@ -430,7 +430,9 @@ import {
   commitLinearCommentRoute,
   deliverLinearComments,
   routeLinearComment,
-  takeLinearCommentBrief,
+  linearCommentBrief,
+  settleLinearCommentBrief,
+  type LinearCommentBrief,
   type LinearCommentCapabilities,
   type LinearCommentPolicy,
 } from "./linear-comments";
@@ -936,7 +938,10 @@ export class Orchestrator {
     });
   }
 
-  private linearCommentCapabilities(policy: LinearCommentPolicy): LinearCommentCapabilities {
+  private linearCommentCapabilities(
+    policy: LinearCommentPolicy,
+    signal?: AbortSignal,
+  ): LinearCommentCapabilities {
     return {
       now: () => this.now(),
       policy,
@@ -947,8 +952,35 @@ export class Orchestrator {
             "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
           )
           .get(this.now(), item.id) !== null,
+      leaveMergeQueue: async (item, pullNumber) => {
+        const repository = this.repositoryForItem(item);
+        const github = repository ? this.githubForRepository(repository) : null;
+        if (!repository || !github) return "not_queued";
+        return leaveGitHubMergeQueue({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pullNumber,
+          ...this.gitHubCredentials(github),
+          ...(signal ? { signal } : {}),
+        });
+      },
       flush: () => this.flush(),
     };
+  }
+
+  private linearCommentBrief(item: WorkItemRecord): LinearCommentBrief | null {
+    const policy = this.options.linearComments;
+    return policy ? linearCommentBrief(this.db, item, { now: () => this.now(), policy }) : null;
+  }
+
+  private settleLinearCommentBrief(item: WorkItemRecord, brief: LinearCommentBrief | null): void {
+    const policy = this.options.linearComments;
+    if (brief === null || policy === undefined) return;
+    settleLinearCommentBrief(this.db, item, brief, {
+      now: this.now(),
+      wait: policy.wait?.() ?? this.feedbackWait(),
+    });
   }
 
   private admitLinearEvent(
@@ -1833,7 +1865,7 @@ export class Orchestrator {
       const step = await deliverLinearComments(
         this.db,
         itemId,
-        this.linearCommentCapabilities(policy),
+        this.linearCommentCapabilities(policy, context.signal),
       );
       if (step === "wait" && context.isCurrent())
         waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
@@ -2713,6 +2745,7 @@ export class Orchestrator {
         ].join("\n");
       }
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
+      const responseComments = this.linearCommentBrief(item);
       const prompt = [
         mode === "answer"
           ? "Answer the user's request in this Linear conversation. Provide the complete answer in your final message."
@@ -2725,6 +2758,7 @@ export class Orchestrator {
         repositoryContext,
         this.workContext(item),
         handoff ?? "",
+        responseComments?.text ?? "",
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -2758,6 +2792,8 @@ export class Orchestrator {
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
       });
+      if (result.stopReason === "end_turn" || this.askedRuns.has(run.id))
+        this.settleLinearCommentBrief(item, responseComments);
       controller.signal.throwIfAborted();
       if (this.stopped(item.id) || this.askedRuns.has(run.id)) return;
       if (
@@ -2971,11 +3007,8 @@ export class Orchestrator {
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const checkout = this.runCheckout(item);
-      const policy = this.options.linearComments;
-      const comments = policy
-        ? takeLinearCommentBrief(this.db, item, { now: () => this.now(), policy })
-        : null;
-      const turnHandoff = [handoff, comments].filter((part) => part).join("\n\n");
+      const comments = this.linearCommentBrief(item);
+      const turnHandoff = [handoff, comments?.text].filter((part) => part).join("\n\n");
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
@@ -3058,6 +3091,8 @@ export class Orchestrator {
         ...(launched.env ? { env: launched.env } : {}),
         ...(launched.cancelGraceMs !== undefined ? { cancelGraceMs: launched.cancelGraceMs } : {}),
       });
+      if (executed.run.stopReason === "end_turn" || this.askedRuns.has(run.id))
+        this.settleLinearCommentBrief(item, comments);
       this.assertJobCurrent(item.id);
       controller.signal.throwIfAborted();
       const finished = getWorkItem(this.db, item.id);

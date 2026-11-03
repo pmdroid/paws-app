@@ -249,21 +249,6 @@ export function pendingLinearComments(db: Database, itemId: string): LinearComme
     .map(mapRow);
 }
 
-export function linearCommentsInBrief(
-  db: Database,
-  itemId: string,
-  itemVersion: number,
-): LinearCommentRecord[] {
-  return db
-    .query<Row, [string, number]>(
-      `SELECT * FROM linear_comment WHERE item_id = ? AND state = 'delivered'
-         AND via = 'brief' AND item_version = ?
-       ORDER BY created_at_ms, comment_id`,
-    )
-    .all(itemId, itemVersion)
-    .map(mapRow);
-}
-
 export function linearCommentAuthor(db: Database, commentId: string): string | null {
   return (
     db

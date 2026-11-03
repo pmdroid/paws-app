@@ -16,6 +16,7 @@ import {
   mergeQueuePosition,
   pendingChangeRequests,
   pendingPullCiFailures,
+  pendingLinearComments,
   pendingPullComments,
   recordPullCiFailure,
   settlePullCiFailures,
@@ -64,6 +65,13 @@ export function reviewHold(
   wait: PullFeedbackWait,
 ): MergeStep | null {
   if (!feedbackPending(db, itemId)) return null;
+  if (!pullFeedbackPending(db, itemId))
+    return {
+      kind: "wait",
+      message: "A comment on the Linear issue goes to the agent before this pull request merges.",
+      queued: true,
+      reason: "review",
+    };
   wakePullReviews(db, itemId, now, wait);
   return {
     kind: "wait",
@@ -140,6 +148,10 @@ export function mergeHeld({ db, item, caps }: MergeContext): boolean {
 }
 
 function feedbackPending(db: Database, itemId: string): boolean {
+  return pullFeedbackPending(db, itemId) || pendingLinearComments(db, itemId).length > 0;
+}
+
+function pullFeedbackPending(db: Database, itemId: string): boolean {
   if (pendingChangeRequests(db, itemId).length > 0 || pendingPullComments(db, itemId).length > 0)
     return true;
   const version = getWorkItem(db, itemId)?.version;

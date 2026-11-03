@@ -42,7 +42,6 @@ export {
   gatherLinearComments,
   getLinearComment,
   linearCommentAuthor,
-  linearCommentsInBrief,
   markLinearCommentsDelivered,
   pendingLinearComments,
   queueLinearComment,
