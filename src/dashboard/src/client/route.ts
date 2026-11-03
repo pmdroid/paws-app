@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import { hasStatusSlice, type StatusSlice, type StatusSnapshot } from "../contract";
 import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
 import { DASHBOARD_PATH, isDashboardPath } from "../../../dashboard-links";
 import { isAliasKind, type AliasKind } from "../aliases";
@@ -78,32 +77,6 @@ export function routeHref(route: Route): string {
   return `${routerBase(page?.pathname ?? "")}${routePath(route)}`;
 }
 
-export const ROUTE_SLICES: Record<Route["view"], readonly StatusSlice[]> = {
-  overview: [],
-  issues: [],
-  runs: [],
-  alias: [],
-  mergeQueue: [],
-  questions: [],
-  evidence: [],
-  // The Findings page loads `/api/findings` itself.
-  findings: [],
-  runners: [],
-  settings: [],
-};
-
-export function routeSlices(route: Route): readonly StatusSlice[] {
-  return ROUTE_SLICES[route.view];
-}
-
-export function routeCovered(route: Route, snapshot: StatusSnapshot | null): boolean {
-  return routeSlices(route).every((slice) => hasStatusSlice(snapshot, slice));
-}
-
-export function needsSnapshot(route: Route): boolean {
-  return routeSlices(route).length > 0;
-}
-
 export type RouteResource =
   | "overview"
   | "issue"
@@ -113,9 +86,12 @@ export type RouteResource =
   | "question"
   | "evidenceGallery"
   | "evidence"
-  | "status"
   | null;
 
+/**
+ * The resource the page loads and polls. Runners, Findings and Settings load their own APIs, and
+ * an alias resolves once through `/api/aliases`.
+ */
 export function routeResource(route: Route): RouteResource {
   if (route.view === "overview") return "overview";
   if (route.view === "issues") return route.id === null ? "issues" : "issue";
@@ -123,7 +99,7 @@ export function routeResource(route: Route): RouteResource {
   if (route.view === "mergeQueue") return "mergeQueue";
   if (route.view === "questions") return route.id === null ? "questions" : "question";
   if (route.view === "evidence") return route.id === null ? "evidenceGallery" : "evidence";
-  return needsSnapshot(route) ? "status" : null;
+  return null;
 }
 
 export function issueListRedirect(path: string): string | null {

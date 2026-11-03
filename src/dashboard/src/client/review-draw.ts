@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
-import type { StatusSnapshotBase } from "../contract";
+import type { StatusEvidence, StatusItem } from "../contract";
 
-type ReviewShotSource = Pick<StatusSnapshotBase, "items" | "evidence">;
+type ReviewShotSource = { items: readonly StatusItem[]; evidence?: readonly StatusEvidence[] };
 import { evidenceFileUrl } from "./evidence";
 import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
@@ -34,18 +34,18 @@ export function drawStrokes(
 }
 
 export function reviewShots(
-  snapshot: ReviewShotSource,
+  data: ReviewShotSource,
   questionId: string,
   engineUrl: string | null,
 ): ReviewShot[] {
-  const review = snapshot.items
+  const review = data.items
     .flatMap((item) => item.visualReviews ?? [])
     .find((entry) => entry.questionId === questionId);
   // Screens that carried an approval over were not asked about.
   const carried = new Set((review?.carried ?? []).map((entry) => entry.evidenceId));
   return (review?.evidenceIds ?? []).flatMap((id) => {
     if (carried.has(id)) return [];
-    const entry = snapshot.evidence?.find((row) => row.id === id && row.kind === "image");
+    const entry = data.evidence?.find((row) => row.id === id && row.kind === "image");
     return entry ? [{ id, name: entry.displayName, src: evidenceFileUrl(id, engineUrl) }] : [];
   });
 }
@@ -239,14 +239,14 @@ export function createReviewDraw(reload: () => Promise<void>) {
   return {
     mount(
       element: HTMLElement,
-      snapshot: ReviewShotSource | null,
+      data: ReviewShotSource | null,
       engineUrl: string | null,
       source: string | undefined,
     ) {
       const local =
         engineUrl !== null && new URL(engineUrl).origin === location.origin && source === "live";
       const questionId = element.dataset["question"] ?? "";
-      const shots = snapshot && local ? reviewShots(snapshot, questionId, engineUrl) : [];
+      const shots = data && local ? reviewShots(data, questionId, engineUrl) : [];
       element.hidden = shots.length === 0;
       if (element.hidden || element.querySelector("button")) return;
       renderMarkup(

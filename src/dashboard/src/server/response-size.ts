@@ -33,7 +33,7 @@ export function createResponseSizeJournal(
     const { start, path, bytes, responses } = window;
     window = null;
     write(
-      `status payload minute=${new Date(start).toISOString()} largest_bytes=${bytes} path=${path} responses=${responses}`,
+      `dashboard payload minute=${new Date(start).toISOString()} largest_bytes=${bytes} path=${path} responses=${responses}`,
     );
   };
 
@@ -61,4 +61,4 @@ export function createResponseSizeJournal(
 }
 
 /** The process's journal, shared by every status request it serves. */
-export const statusResponseSizes = createResponseSizeJournal();
+export const dashboardResponseSizes = createResponseSizeJournal();

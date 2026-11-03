@@ -7,6 +7,9 @@ export type Visibility = Pick<
   "visibilityState" | "addEventListener" | "removeEventListener"
 >;
 
+/** How often a visible page reloads its resource. */
+export const PAGE_POLL_MS = 5000;
+
 export function livePoll(
   tick: () => void,
   every: number,

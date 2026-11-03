@@ -3,10 +3,14 @@ import type {
   EvidenceListResponse,
   EvidenceMetadataResponse,
   StatusEvidence,
-  StatusSnapshotBase,
+  StatusRun,
 } from "../contract";
 
-export type RunEvidenceSource = Pick<StatusSnapshotBase, "runs" | "evidence">;
+/** An issue's runs and the evidence they published. */
+export type RunEvidenceSource = {
+  runs: readonly StatusRun[];
+  evidence?: readonly StatusEvidence[];
+};
 import { parseEngineUrl } from "./format";
 import { checkHash } from "./closeout";
 import { esc } from "./format";
@@ -27,9 +31,9 @@ export const EVIDENCE_FILTERS: readonly { id: EvidenceFilter; label: string }[] 
   { id: "image", label: "Images" },
 ];
 
-export function runEvidence(snapshot: RunEvidenceSource, runId: string): StatusEvidence[] {
-  const attempts = snapshot.runs.find((run) => run.id === runId)?.attempts ?? [runId];
-  return (snapshot.evidence ?? []).filter((entry) => attempts.includes(entry.runId));
+export function runEvidence(data: RunEvidenceSource, runId: string): StatusEvidence[] {
+  const attempts = data.runs.find((run) => run.id === runId)?.attempts ?? [runId];
+  return (data.evidence ?? []).filter((entry) => attempts.includes(entry.runId));
 }
 
 export type EvidenceVersions = { latest: StatusEvidence; earlier: StatusEvidence[] };
@@ -54,7 +58,7 @@ export function filterEvidence(
   return filter === "all" ? [...list] : list.filter((entry) => entry.kind === filter);
 }
 
-/** `GET /api/evidence/<id>` on the engine that served the snapshot. */
+/** `GET /api/evidence/<id>` on the engine that served the page. */
 export function evidenceFileUrl(id: string, engineUrl: string | null): string {
   const path = `/api/evidence/${encodeURIComponent(id)}`;
   const engine = parseEngineUrl(engineUrl ?? "");
@@ -118,8 +122,8 @@ export function thumbnailMedia(evidence: StatusEvidence, engineUrl: string | nul
 }
 
 /** The run page placeholder. A run without evidence has no Evidence section at all. */
-export function evidenceSlot(snapshot: RunEvidenceSource, runId: string): string {
-  return runEvidence(snapshot, runId).length
+export function evidenceSlot(data: RunEvidenceSource, runId: string): string {
+  return runEvidence(data, runId).length
     ? `<div id="evidence-gallery" data-run="${esc(runId)}"></div>`
     : "";
 }

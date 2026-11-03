@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 /**
- * Live status snapshot.
+ * Live dashboard resources: the issue list and detail, check logs, questions, the merge queue
+ * and evidence, each read for the page that shows it.
  *
  * Reads through `src/db`'s public index only. There is no SQL here.
  *
@@ -21,7 +22,7 @@ import { journalCaught } from "../journal";
  * - No pull-request table. Number and URL come from outbox activity
  *   `${itemId}:pr:${number}`.
  * - No enqueue timestamp on the work item. Merge `enqueuedAt` is the merge
- *   job's `createdAt`, or the snapshot time when no job exists. Step state
+ *   job's `createdAt`, or the read time when no job exists. Step state
  *   follows that job's status.
  */
 
@@ -108,7 +109,6 @@ import { itemReviews } from "./reviews";
 import { isRuleStep, skippedRules, withRuleDetail } from "./rules";
 import { mergedTimes, stateTotals, toStateTimes, type StateTotals } from "./state-times";
 import {
-  STATUS_API_VERSION,
   agentCloseoutSummary,
   isBlockerSatisfied,
   verdictSummary,
@@ -137,7 +137,6 @@ import {
   type StatusGitHubQueue,
   type StatusHeld,
   type StatusItem,
-  type StatusItemDetail,
   type StatusItemRisk,
   type StatusItemEvent,
   type StatusMergedTimes,
@@ -151,8 +150,12 @@ import {
   type StatusPullRequest,
   type StatusQuestion,
   type StatusRun,
-  type StatusSnapshot,
-  type StatusSnapshotBase,
+  type StatusSource,
+  type StatusIntakeEntry,
+  type StatusLinearBudget,
+  type StatusLinearWebhook,
+  type StatusPolicyRunnerWarning,
+  type StatusPushOutage,
   type StatusVerdict,
   type StatusVisualReview,
   type StatusRiskCarryOver,
@@ -224,8 +227,6 @@ export function createLiveStatusProvider(
   db: Database,
   options: LiveStatusOptions = {},
 ): {
-  snapshot(): StatusSnapshot;
-  item(id: string): StatusItemDetail | null;
   checkLog(request: CheckLogRequest): CheckOutput | null;
   issues(): IssueListResponse;
   issue(id: string): IssueDetailResponse | null;
@@ -270,17 +271,6 @@ export function createLiveStatusProvider(
     alias(kind, id) {
       return resolveDashboardAlias(db, kind, id, options.sessionIds);
     },
-    snapshot() {
-      return {
-        ...readLiveSnapshot(db, options),
-        ...readIntake(db, options),
-        ...readPushOutages(db),
-        ...readPolicyRunnerWarnings(db),
-      };
-    },
-    item(id) {
-      return readItemDetail(db, id, options);
-    },
     checkLog(request) {
       return readCheckLog(db, request, options);
     },
@@ -300,42 +290,47 @@ export interface CheckOutput {
   stderr: string;
 }
 
-/** Finished items stay in `/api/status` this long after their last state change. */
+/** Finished items stay in `/api/issues` this long after their last state change. */
 export const STATUS_RECENT_MS = 24 * 60 * 60 * 1000;
-/** At most this many finished items are in `/api/status`, the most recently finished first. */
+/** At most this many finished items are in `/api/issues`, the most recently finished first. */
 export const STATUS_RECENT_LIMIT = 50;
 
-/** Every field of the visible items, before the list trims it or the detail picks one item. */
-type FullSnapshot = StatusSnapshotBase & {
+/** Every field of the scoped items, before the list trims it or the detail picks one session. */
+type IssueScope = {
+  source: StatusSource;
+  generatedAt: string;
+  project: StatusProject;
+  items: StatusItem[];
+  runs: StatusRun[];
+  questions: StatusQuestion[];
   verdicts: StatusVerdict[];
-  agentCloseout?: StatusAgentCloseout[];
+  agentCloseout: StatusAgentCloseout[];
+  mergeQueue: StatusMergeEntry[];
+  mergeHistory?: StatusMergeOutcome[];
+  evidence: StatusEvidence[];
+  ciRounds: StatusCiRound[];
+  dead: StatusDeadDelivery[];
+  mergedTimes?: StatusMergedTimes;
 };
 
-/**
- * The status list: one Closeout summary per item and each run's latest agent Closeout state.
- * Attempts, check output and findings are only in the item detail.
- */
-function toList(snapshot: FullSnapshot): StatusSnapshot {
-  const { verdicts, agentCloseout, ...rest } = snapshot;
-  return {
-    ...rest,
-    verdicts: verdicts.map(verdictSummary),
-    ...(agentCloseout ? { agentCloseout: agentCloseout.map(agentCloseoutSummary) } : {}),
-  };
-}
+/** One issue's sessions with `blocks` and the Risk card, before `toIssueDetail` names them. */
+type ItemDetail = IssueScope & { id: string; blocks: string[]; risk: StatusItemRisk | null };
 
+/**
+ * The issue list: one Closeout summary per item and each run's latest agent Closeout state.
+ * Attempts, check output and findings are only in the issue detail.
+ */
 function readIssueList(db: Database, options: LiveStatusOptions): IssueListResponse {
-  const { snapshot } = readScopedSnapshot(db, options, undefined, "issues");
-  const list = toList(snapshot);
+  const { scope } = readIssueScope(db, options);
   return {
-    source: list.source,
-    generatedAt: list.generatedAt,
-    project: list.project,
-    issues: list.items,
-    runs: list.runs,
-    verdicts: list.verdicts,
-    agentCloseout: list.agentCloseout ?? [],
-    mergedTimes: list.mergedTimes ?? null,
+    source: scope.source,
+    generatedAt: scope.generatedAt,
+    project: scope.project,
+    issues: scope.items,
+    runs: scope.runs,
+    verdicts: scope.verdicts.map(verdictSummary),
+    agentCloseout: scope.agentCloseout.map(agentCloseoutSummary),
+    mergedTimes: scope.mergedTimes ?? null,
   };
 }
 
@@ -516,7 +511,7 @@ export function emptyEvidenceList(
   };
 }
 
-function toIssueDetail(detail: StatusItemDetail): IssueDetailResponse {
+function toIssueDetail(detail: ItemDetail): IssueDetailResponse {
   const current = detail.items.find((item) => item.endedAt === undefined) ?? detail.items[0]!;
   return {
     source: detail.source,
@@ -525,13 +520,13 @@ function toIssueDetail(detail: StatusItemDetail): IssueDetailResponse {
     issue: current,
     earlierSessions: detail.items.filter((item) => item !== current),
     blocks: detail.blocks,
-    risk: detail.risk ?? null,
+    risk: detail.risk,
     runs: detail.runs,
     questions: detail.questions,
     verdicts: detail.verdicts,
-    agentCloseout: detail.agentCloseout ?? [],
-    evidence: detail.evidence ?? [],
-    ciRounds: detail.ciRounds ?? [],
+    agentCloseout: detail.agentCloseout,
+    evidence: detail.evidence,
+    ciRounds: detail.ciRounds,
     mergeQueue: detail.mergeQueue,
     mergeHistory: detail.mergeHistory ?? [],
     dead: detail.dead ?? [],
@@ -539,7 +534,7 @@ function toIssueDetail(detail: StatusItemDetail): IssueDetailResponse {
 }
 
 /**
- * The items `/api/status` lists, in `visible` order: every open item, and the
+ * The items `/api/issues` lists, in `visible` order: every open item, and the
  * `STATUS_RECENT_LIMIT` most recently finished ones that finished within `STATUS_RECENT_MS`.
  * An item finished when it last changed state; one from before `work_item_event` counts from
  * its creation.
@@ -568,17 +563,13 @@ export function listedRecords(
 
 /**
  * One issue's sessions with their runs, Closeout attempts, agent Closeout, evidence and CI
- * rounds, for `GET /api/status/items/:id`, also for an issue that left the list. Null when no
+ * rounds, for `GET /api/issues/:id`, also for an issue that left the list. Null when no
  * visible item has that id. Check `stdout` and `stderr` are left out; the issue page loads
  * logs separately.
  */
-function readItemDetail(
-  db: Database,
-  id: string,
-  options: LiveStatusOptions,
-): StatusItemDetail | null {
-  const { snapshot, blocks, records, current } = readScopedSnapshot(db, options, id);
-  if (snapshot.items.length === 0 || current === null) return null;
+function readItemDetail(db: Database, id: string, options: LiveStatusOptions): ItemDetail | null {
+  const { scope, blocks, records, current } = readIssueScope(db, options, id);
+  if (scope.items.length === 0 || current === null) return null;
   let risk: StatusItemRisk | null;
   try {
     risk = itemRisk(db, current, options);
@@ -594,7 +585,7 @@ function readItemDetail(
       automaticApproval: "Manual approval required",
     };
   }
-  const detail = withoutOutputs(snapshot);
+  const detail = withoutOutputs(scope);
   const env = options.env ?? process.env;
   const pawsHome = options.pawsHome ?? env.PAWS_HOME;
   if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks, risk };
@@ -659,7 +650,7 @@ function itemRisk(
 }
 
 /**
- * The whole output of one check, for `GET /api/status/items/:id/attempts/:n/checks/:check/log`.
+ * The whole output of one check, for `GET /api/issues/:id/attempts/:n/checks/:check/log`.
  * Null when the issue is not visible or that attempt of its Closeout has no such check.
  */
 function readCheckLog(
@@ -667,18 +658,18 @@ function readCheckLog(
   request: CheckLogRequest,
   options: LiveStatusOptions,
 ): CheckOutput | null {
-  const { snapshot } = readScopedSnapshot(db, options, request.itemId);
-  if (snapshot.items.length === 0) return null;
+  const { scope } = readIssueScope(db, options, request.itemId);
+  if (scope.items.length === 0) return null;
   // A verdict without recorded attempts is one attempt, as the issue page shows it.
   let attempts: Array<Pick<StatusCloseoutAttempt, "number" | "checks">>;
   if (request.run === null) {
-    const verdict = snapshot.verdicts.find((entry) => entry.itemId === request.itemId);
+    const verdict = scope.verdicts.find((entry) => entry.itemId === request.itemId);
     if (!verdict) return null;
     attempts = verdict.attempts?.length
       ? verdict.attempts
       : [{ number: Math.max(verdict.attempt, 1), checks: verdict.checks }];
   } else {
-    attempts = snapshot.agentCloseout?.find((entry) => entry.runId === request.run)?.attempts ?? [];
+    attempts = scope.agentCloseout.find((entry) => entry.runId === request.run)?.attempts ?? [];
   }
   const check = attempts
     .find((entry) => entry.number === request.attempt)
@@ -687,23 +678,19 @@ function readCheckLog(
   return { stdout: check.stdout ?? "", stderr: check.stderr ?? "" };
 }
 
-/** The snapshot without check `stdout` and `stderr`, which the issue page loads per check. */
-function withoutOutputs<T extends FullSnapshot>(snapshot: T): T {
+/** The scope without check `stdout` and `stderr`, which the issue page loads per check. */
+function withoutOutputs(scope: IssueScope): IssueScope {
   return {
-    ...snapshot,
-    verdicts: snapshot.verdicts.map((verdict) => ({
+    ...scope,
+    verdicts: scope.verdicts.map((verdict) => ({
       ...verdict,
       checks: verdict.checks.map(withoutOutput),
       ...(verdict.attempts ? { attempts: verdict.attempts.map(attemptWithoutOutput) } : {}),
     })),
-    ...(snapshot.agentCloseout
-      ? {
-          agentCloseout: snapshot.agentCloseout.map((entry) => ({
-            ...entry,
-            attempts: entry.attempts.map(attemptWithoutOutput),
-          })),
-        }
-      : {}),
+    agentCloseout: scope.agentCloseout.map((entry) => ({
+      ...entry,
+      attempts: entry.attempts.map(attemptWithoutOutput),
+    })),
   };
 }
 
@@ -714,13 +701,6 @@ function attemptWithoutOutput(attempt: StatusCloseoutAttempt): StatusCloseoutAtt
 function withoutOutput(check: StatusCheck): StatusCheck {
   const { stdout: _stdout, stderr: _stderr, ...rest } = check;
   return rest;
-}
-
-export function emptyLiveSnapshot(
-  now = new Date(),
-  project?: LiveStatusOptions["project"],
-): StatusSnapshot {
-  return { ...emptyBase(now, project), verdicts: [] };
 }
 
 export function emptyMergeQueue(
@@ -755,21 +735,25 @@ export function emptyIssueList(
   };
 }
 
-function emptyBase(now: Date, project: LiveStatusOptions["project"]): StatusSnapshotBase {
+function emptyScope(now: Date, project: LiveStatusOptions["project"]): IssueScope {
   return {
-    version: STATUS_API_VERSION,
     source: "live",
     generatedAt: now.toISOString(),
     project: projectOf([], project),
     items: [],
     runs: [],
     questions: [],
+    verdicts: [],
+    agentCloseout: [],
     mergeQueue: [],
+    evidence: [],
+    ciRounds: [],
+    dead: [],
   };
 }
 
 /** Repositories GitHub refuses pushes from the Paws App for (PAS-867). */
-export function readPushOutages(db: Database): Pick<StatusSnapshot, "pushOutages"> {
+export function readPushOutages(db: Database): { pushOutages?: StatusPushOutage[] } {
   const outages = listPushOutages(db);
   if (!outages.length) return {};
   return {
@@ -784,9 +768,9 @@ export function readPushOutages(db: Database): Pick<StatusSnapshot, "pushOutages
 }
 
 /** Repositories whose Closeout policy uses keys the lowest online runner does not know (PAS-888). */
-export function readPolicyRunnerWarnings(
-  db: Database,
-): Pick<StatusSnapshot, "policyRunnerWarnings"> {
+export function readPolicyRunnerWarnings(db: Database): {
+  policyRunnerWarnings?: StatusPolicyRunnerWarning[];
+} {
   const warnings = listPolicyRunnerWarnings(db);
   if (!warnings.length) return {};
   return {
@@ -803,7 +787,11 @@ export function readPolicyRunnerWarnings(
 export function readIntake(
   db: Database,
   options: LiveStatusOptions,
-): Pick<StatusSnapshot, "intake" | "linearBudget" | "linearWebhook"> {
+): {
+  intake: StatusIntakeEntry[];
+  linearBudget?: StatusLinearBudget;
+  linearWebhook?: StatusLinearWebhook;
+} {
   const at = (ms: number | null) => (ms === null ? null : iso(ms));
   const warning = linearWebhookWarning(db, (options.now?.() ?? new Date()).getTime());
   const webhook =
@@ -888,8 +876,8 @@ export function mergePlaces(
   );
 }
 
-type ScopedSnapshot = {
-  snapshot: FullSnapshot;
+type ScopedIssues = {
+  scope: IssueScope;
   blocks: string[];
   records: WorkItemRecord[];
   /** The newest of the scoped items, with its Closeout verdict and its latest Closeout run. */
@@ -902,22 +890,14 @@ type CurrentItem = {
   progress: CloseoutProgressRecord | null;
 };
 
-function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnapshot {
-  return toList(readScopedSnapshot(db, options).snapshot);
-}
-
 /**
  * The listed items (see `listedRecords`), or with `only` the visible items with that public id.
  * Blockers, shared sessions and merge places still read every visible item; `blocks` lists
  * the issues `only` blocks.
  */
-function readScopedSnapshot(
-  db: Database,
-  options: LiveStatusOptions,
-  only?: string,
-  scope: "snapshot" | "issues" = "snapshot",
-): ScopedSnapshot {
-  const issuesOnly = scope === "issues";
+function readIssueScope(db: Database, options: LiveStatusOptions, only?: string): ScopedIssues {
+  // The list reads summaries only: no merge queue, questions, evidence, CI rounds or deliveries.
+  const issuesOnly = only === undefined;
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
   const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
@@ -928,7 +908,7 @@ function readScopedSnapshot(
       : visible.filter((record) => publicId(record) === only);
   if (records.length === 0)
     return {
-      snapshot: { ...emptyBase(now, options.project), verdicts: [] },
+      scope: emptyScope(now, options.project),
       blocks: [],
       records: [],
       current: null,
@@ -978,7 +958,7 @@ function readScopedSnapshot(
   }));
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
-  const merge: Pick<StatusSnapshot, "mergeQueue" | "mergeHistory"> = issuesOnly
+  const merge: Pick<IssueScope, "mergeQueue" | "mergeHistory"> = issuesOnly
     ? { mergeQueue: [] }
     : mergeQueueFor(db, {
         records: visible,
@@ -1005,8 +985,7 @@ function readScopedSnapshot(
       ];
     }),
   );
-  const snapshot: FullSnapshot = {
-    version: STATUS_API_VERSION,
+  const scope: IssueScope = {
     source: "live",
     generatedAt,
     project: projectOf(visible, options.project),
@@ -1025,14 +1004,14 @@ function readScopedSnapshot(
     ...(only === undefined ? mergedTimesFor(db, visible, facts, now.getTime()) : {}),
   };
   if (!issuesOnly)
-    snapshot.questions = questionsFor(
+    scope.questions = questionsFor(
       db,
       records,
       rows,
       (runId) => sessionRunId(runId, runs),
       openQuestions,
     ).map((question) =>
-      withRiskDetail(db, withBypassChecks(db, question, snapshot.verdicts, env), snapshot.verdicts),
+      withRiskDetail(db, withBypassChecks(db, question, scope.verdicts, env), scope.verdicts),
     );
   const blocks =
     only === undefined
@@ -1049,7 +1028,7 @@ function readScopedSnapshot(
         ];
   const current = records[0]!;
   return {
-    snapshot,
+    scope,
     blocks,
     records,
     current: {
@@ -2231,7 +2210,7 @@ type MergeQueueInput = {
 function mergeQueueFor(
   db: Database,
   input: MergeQueueInput,
-): Pick<StatusSnapshot, "mergeQueue" | "mergeHistory"> {
+): Pick<IssueScope, "mergeQueue" | "mergeHistory"> {
   const { records, jobs, generatedAt } = input;
   const items = new Map(input.items.map((item) => [item.id, item]));
   const places = new Map(input.queues.map((entry) => [entry.itemId, entry]));

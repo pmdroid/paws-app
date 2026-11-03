@@ -2,19 +2,10 @@ export { holdsExecution, isBlockerSatisfied } from "../../core";
 
 import { journalCaught } from "./journal";
 /**
- * Read-only status snapshot served by the local Paws engine.
- *
- * `GET /api/status` returns JSON of this shape. `source` is `"live"` because the body comes from the serving process.
- * The array `questions` lists open questions only. The list carries open items and items that
- * finished in the last 24 hours, with one Closeout summary per item; `GET /api/status/items/<id>`
- * carries everything about one item.
+ * Dashboard resource responses served by the local Paws engine. Each page reads its own
+ * resource (`/api/overview`, `/api/issues`, `/api/questions`, `/api/merge-queue`,
+ * `/api/evidence`); `source` is `"live"` because the body comes from the serving process.
  */
-
-export const STATUS_API_VERSION = 2 as const;
-
-export const STATUS_API_PATH = "/api/status";
-/** `GET /api/status/items/<id>` returns a `StatusItemDetail` for the issue with that id. */
-export const STATUS_ITEM_API_PATH = "/api/status/items";
 
 export const ITEM_STATES = [
   "queued",
@@ -645,7 +636,7 @@ export interface StatusCiCheck {
   logSource: CiLogSource | null;
 }
 
-/** One failed CI read of a head, oldest first in `StatusSnapshot.ciRounds`. */
+/** One failed CI read of a head, oldest first in `IssueDetailResponse.ciRounds`. */
 export interface StatusCiRound {
   itemId: string;
   /** The stored run (an attempt in `StatusRun.attempts`) that was current when CI failed. */
@@ -717,122 +708,7 @@ export interface StatusProject {
   workspace: string | null;
 }
 
-/** The fields the status list and the item detail share. */
-export interface StatusSnapshotBase {
-  version: typeof STATUS_API_VERSION;
-  source: StatusSource;
-  generatedAt: string;
-  project: StatusProject;
-  items: StatusItem[];
-  runs: StatusRun[];
-  questions: StatusQuestion[];
-  mergeQueue: StatusMergeEntry[];
-  /** Merged in the last 24 hours, and tasks back with the agent after CI or a conflict. */
-  mergeHistory?: StatusMergeOutcome[];
-  /** Closeout videos and screenshots of the visible items, oldest first. */
-  evidence?: StatusEvidence[];
-  /** Failed CI reads of the visible items' pull requests, with every check on each head. */
-  ciRounds?: StatusCiRound[];
-  intake?: StatusIntakeEntry[];
-  /** Dead outbox rows and dead jobs of the visible items, oldest first. Each can be retried. */
-  dead?: StatusDeadDelivery[];
-  linearBudget?: StatusLinearBudget;
-  linearWebhook?: StatusLinearWebhook;
-  /** Repositories GitHub refuses pushes from the Paws App for, the oldest outage first. */
-  pushOutages?: StatusPushOutage[];
-  /** Repositories whose Closeout policy uses keys the lowest online runner does not know. */
-  policyRunnerWarnings?: StatusPolicyRunnerWarning[];
-  /** Only in the list, while an item merged in the last 24 hours. */
-  mergedTimes?: StatusMergedTimes;
-}
-
-/**
- * The status list from `GET /api/status`: open items, and items that finished in the last
- * 24 hours (at most 50). Each item has one Closeout summary and each run its agent Closeout
- * state; the attempts, checks and findings are in the item detail.
- */
-export interface StatusSnapshot extends StatusSnapshotBase {
-  verdicts: StatusVerdictSummary[];
-  agentCloseout?: StatusAgentCloseoutSummary[];
-  slices?: StatusSlice[];
-}
-
-export const STATUS_SLICES = [
-  "items",
-  "questions",
-  "mergeQueue",
-  "mergeHistory",
-  "evidence",
-  "intake",
-  "ciRounds",
-  "dead",
-] as const;
-export type StatusSlice = (typeof STATUS_SLICES)[number];
-
-export const STATUS_SLICE_FIELDS = {
-  items: ["items", "runs", "verdicts", "agentCloseout", "mergedTimes"],
-  questions: ["questions"],
-  mergeQueue: ["mergeQueue", "pushOutages", "policyRunnerWarnings"],
-  mergeHistory: ["mergeHistory"],
-  evidence: ["evidence"],
-  intake: ["intake", "linearBudget", "linearWebhook"],
-  ciRounds: ["ciRounds"],
-  dead: ["dead"],
-} as const satisfies Record<StatusSlice, readonly (keyof StatusSnapshot)[]>;
-
 export const GENERATED_AT_HEADER = "Paws-Generated-At";
-
-export function statusSlicesPath(slices: readonly StatusSlice[]): string {
-  const named = STATUS_SLICES.filter((slice) => slices.includes(slice));
-  return `${STATUS_API_PATH}?slices=${named.join(",")}`;
-}
-
-export function parseStatusSlices(
-  raw: string | null,
-): { ok: true; slices: StatusSlice[] | null } | { ok: false; error: string } {
-  if (raw === null) return { ok: true, slices: null };
-  const named = raw.split(",").map((part) => part.trim());
-  const unknown = named.filter((part) => !(STATUS_SLICES as readonly string[]).includes(part));
-  if (unknown.length) return { ok: false, error: `unknown status slice ${unknown.join(", ")}` };
-  return { ok: true, slices: STATUS_SLICES.filter((slice) => named.includes(slice)) };
-}
-
-export function selectStatusSlices(
-  snapshot: StatusSnapshot,
-  slices: readonly StatusSlice[],
-): StatusSnapshot {
-  const body: Record<string, unknown> = {
-    version: snapshot.version,
-    source: snapshot.source,
-    generatedAt: snapshot.generatedAt,
-    project: snapshot.project,
-    slices: [...slices],
-  };
-  for (const slice of slices)
-    for (const field of STATUS_SLICE_FIELDS[slice])
-      if (snapshot[field] !== undefined) body[field] = snapshot[field];
-  return body as unknown as StatusSnapshot;
-}
-
-export function hasStatusSlice(snapshot: StatusSnapshot | null, slice: StatusSlice): boolean {
-  return snapshot !== null && (snapshot.slices === undefined || snapshot.slices.includes(slice));
-}
-
-/**
- * One issue for its page, from `GET /api/status/items/<id>`: every visible session of the issue
- * (`items`, an earlier one with `endedAt`), its runs, questions, Closeout verdicts with every
- * attempt, agent Closeout, evidence, CI rounds and merge state, whether or not the issue is in
- * the list. Check `stdout` and `stderr` are left out; `statusCheckLogPath` loads one check's
- * log. `blocks` lists the issues this one blocks.
- */
-export interface StatusItemDetail extends StatusSnapshotBase {
-  id: string;
-  blocks: string[];
-  verdicts: StatusVerdict[];
-  agentCloseout?: StatusAgentCloseout[];
-  /** The Risk card. Null while Paws has neither classified a head nor run Closeout on one. */
-  risk?: StatusItemRisk | null;
-}
 
 export const RISK_TIERS = ["high", "normal"] as const;
 export const RISK_LISTS = ["settings", "file"] as const;
@@ -863,95 +739,8 @@ export interface StatusItemRisk {
   securityReview: { state: CheckState; detail: string | null; head: string | null } | null;
 }
 
-export type ItemDetailParseResult =
-  | { ok: true; detail: StatusItemDetail }
-  | { ok: false; error: string };
-
-export function statusItemPath(id: string): string {
-  return `${STATUS_ITEM_API_PATH}/${encodeURIComponent(id)}`;
-}
-
 /** Bytes of each stream the check log endpoint returns unless the full log is asked for. */
 export const CHECK_LOG_TAIL_BYTES = 64 * 1024;
-
-/**
- * One check's output, from `GET /api/status/items/<id>/attempts/<n>/checks/<check id>/log`.
- * Each stream is its last `CHECK_LOG_TAIL_BYTES` unless the path carries `full=1`.
- */
-export interface StatusCheckLog {
-  stdout: string;
-  stderr: string;
-  /** True when either stream was cut here. `fullPath` returns all of both. */
-  truncated: boolean;
-  fullPath: string | null;
-}
-
-export type CheckLogParseResult = { ok: true; log: StatusCheckLog } | { ok: false; error: string };
-
-/**
- * The log path of check `checkId` in Closeout attempt `attempt` of the issue `itemId`. `run`
- * names the run whose agent Closeout holds the check; without it the check is Paws' Closeout.
- */
-export function statusCheckLogPath(
-  itemId: string,
-  attempt: number,
-  checkId: string,
-  options: { run?: string | null; full?: boolean } = {},
-): string {
-  const query = new URLSearchParams();
-  if (options.run) query.set("run", options.run);
-  if (options.full) query.set("full", "1");
-  const search = query.toString() ? `?${query.toString()}` : "";
-  return `${statusItemPath(itemId)}/attempts/${attempt}/checks/${encodeURIComponent(checkId)}/log${search}`;
-}
-
-export function parseStatusCheckLog(input: unknown): CheckLogParseResult {
-  try {
-    const body = object(input, "log");
-    return {
-      ok: true,
-      log: {
-        stdout: string(body, "stdout", "log"),
-        stderr: string(body, "stderr", "log"),
-        truncated: boolean(body, "truncated", "log"),
-        fullPath: body.fullPath === null ? null : text(body, "fullPath", "log"),
-      },
-    };
-  } catch (error) {
-    journalCaught(error, "contract.parseStatusCheckLog.object", null);
-    const message = error instanceof Error ? error.message : "Invalid check log";
-    return { ok: false, error: message };
-  }
-}
-
-export function parseStatusItemDetail(input: unknown): ItemDetailParseResult {
-  try {
-    const body = object(input, "detail");
-    return {
-      ok: true,
-      detail: {
-        ...readBase(body),
-        id: text(body, "id", "detail"),
-        blocks: stringArray(body, "blocks", "detail"),
-        verdicts: array(body, "verdicts", "status").map((entry, index) =>
-          readVerdict(entry, index),
-        ),
-        ...(body.agentCloseout === undefined
-          ? {}
-          : {
-              agentCloseout: array(body, "agentCloseout", "status").map((entry, index) =>
-                readAgentCloseout(entry, `agentCloseout[${index}]`),
-              ),
-            }),
-        ...(body.risk === undefined ? {} : { risk: readItemRisk(body.risk) }),
-      },
-    };
-  } catch (error) {
-    journalCaught(error, "contract.parseStatusItemDetail.readBase", null);
-    const message = error instanceof Error ? error.message : "Invalid item detail";
-    return { ok: false, error: message };
-  }
-}
 
 export const ISSUES_API_PATH = "/api/issues";
 
@@ -985,8 +774,17 @@ export interface IssueDetailResponse {
   dead: StatusDeadDelivery[];
 }
 
-export interface IssueCheckLogResponse extends StatusCheckLog {
+/**
+ * One check's output, from `GET /api/issues/<id>/attempts/<n>/checks/<check id>/log`.
+ * Each stream is its last `CHECK_LOG_TAIL_BYTES` unless the path carries `full=1`.
+ */
+export interface IssueCheckLogResponse {
   generatedAt: string;
+  stdout: string;
+  stderr: string;
+  /** True when either stream was cut here. `fullPath` returns all of both. */
+  truncated: boolean;
+  fullPath: string | null;
 }
 
 export type IssueListParseResult =
@@ -1003,7 +801,10 @@ export function issuePath(id: string): string {
   return `${ISSUES_API_PATH}/${encodeURIComponent(id)}`;
 }
 
-/** As `statusCheckLogPath`, under the issue resource. */
+/**
+ * The log path of check `checkId` in Closeout attempt `attempt` of the issue `issueId`. `run`
+ * names the run whose agent Closeout holds the check; without it the check is Paws' Closeout.
+ */
 export function issueCheckLogPath(
   issueId: string,
   attempt: number,
@@ -1316,7 +1117,7 @@ function readQuestionCard(input: unknown, index: number): QuestionCard {
     },
   };
   if (card.issue.id !== card.itemId)
-    throw new StatusContractError(`${path}.id must be the question's itemId`);
+    throw new DashboardContractError(`${path}.id must be the question's itemId`);
   return card;
 }
 
@@ -1624,48 +1425,44 @@ export interface StatusEvidence {
   publisher: string;
 }
 
-export type ParseResult = { ok: true; snapshot: StatusSnapshot } | { ok: false; error: string };
-
-export class StatusContractError extends Error {
+export class DashboardContractError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "StatusContractError";
+    this.name = "DashboardContractError";
   }
 }
 
-export function parseStatusSnapshot(input: unknown): ParseResult {
-  try {
-    return { ok: true, snapshot: readSnapshot(input) };
-  } catch (error) {
-    journalCaught(error, "contract.parseStatusSnapshot.readSnapshot", null);
-    const message = error instanceof Error ? error.message : "Invalid status snapshot";
-    return { ok: false, error: message };
-  }
+/** The records `statusIntegrity` cross-checks: an issue's sessions or a list of issues. */
+export interface IssueRecords {
+  items: readonly StatusItem[];
+  runs: readonly StatusRun[];
+  questions: readonly StatusQuestion[];
+  verdicts: readonly { itemId: string }[];
+  mergeQueue: readonly StatusMergeEntry[];
+  mergeHistory?: readonly StatusMergeOutcome[];
 }
 
-export function statusIntegrity(
-  snapshot: StatusSnapshotBase & { verdicts: readonly { itemId: string }[] },
-): string[] {
+export function statusIntegrity(records: IssueRecords): string[] {
   const problems: string[] = [];
   // An earlier attempt (a replaced Linear session) shares its issue's id with the current one.
   const items = ids(
-    snapshot.items.filter((item) => item.endedAt === undefined).map((item) => item.id),
+    records.items.filter((item) => item.endedAt === undefined).map((item) => item.id),
     "item",
     problems,
   );
-  for (const item of snapshot.items) if (item.endedAt !== undefined) items.add(item.id);
+  for (const item of records.items) if (item.endedAt !== undefined) items.add(item.id);
   const runs = ids(
-    snapshot.runs.map((run) => run.id),
+    records.runs.map((run) => run.id),
     "run",
     problems,
   );
   ids(
-    snapshot.questions.map((question) => question.id),
+    records.questions.map((question) => question.id),
     "question",
     problems,
   );
 
-  for (const item of snapshot.items) {
+  for (const item of records.items) {
     for (const blocker of item.blockers) {
       if (!items.has(blocker)) problems.push(`${item.id} blocker ${blocker} is missing`);
     }
@@ -1673,10 +1470,10 @@ export function statusIntegrity(
       problems.push(`${item.id} run ${item.runId} is missing`);
     }
   }
-  for (const run of snapshot.runs) {
+  for (const run of records.runs) {
     if (!items.has(run.itemId)) problems.push(`${run.id} item ${run.itemId} is missing`);
   }
-  for (const question of snapshot.questions) {
+  for (const question of records.questions) {
     if (!items.has(question.itemId)) {
       problems.push(`${question.id} item ${question.itemId} is missing`);
     }
@@ -1685,13 +1482,13 @@ export function statusIntegrity(
     }
   }
   const seenVerdicts = new Set<string>();
-  for (const verdict of snapshot.verdicts) {
+  for (const verdict of records.verdicts) {
     if (!items.has(verdict.itemId)) problems.push(`verdict item ${verdict.itemId} is missing`);
     if (seenVerdicts.has(verdict.itemId)) problems.push(`duplicate verdict for ${verdict.itemId}`);
     seenVerdicts.add(verdict.itemId);
   }
   const positions = new Set<string>();
-  for (const entry of snapshot.mergeQueue) {
+  for (const entry of records.mergeQueue) {
     if (!items.has(entry.itemId)) problems.push(`queue item ${entry.itemId} is missing`);
     if (entry.position === null) continue;
     const place = `${entry.repository}#${entry.position}`;
@@ -1699,7 +1496,7 @@ export function statusIntegrity(
       problems.push(`duplicate queue position ${entry.position} in ${entry.repository}`);
     positions.add(place);
   }
-  for (const entry of snapshot.mergeHistory ?? [])
+  for (const entry of records.mergeHistory ?? [])
     if (!items.has(entry.itemId)) problems.push(`merge history item ${entry.itemId} is missing`);
   return problems;
 }
@@ -1711,116 +1508,6 @@ function ids(values: string[], label: string, problems: string[]): Set<string> {
     seen.add(value);
   }
   return seen;
-}
-
-function readSnapshot(input: unknown): StatusSnapshot {
-  const sent = object(input, "status");
-  const slices = readSlices(sent);
-  const body: Record<string, unknown> = { ...sent };
-  if (slices !== undefined) {
-    const carried = new Set<string>(slices.flatMap((slice) => STATUS_SLICE_FIELDS[slice]));
-    for (const field of ["items", "runs", "questions", "mergeQueue", "verdicts"])
-      if (!carried.has(field)) body[field] = [];
-  }
-  return {
-    ...readBase(body),
-    ...(slices === undefined ? {} : { slices }),
-    verdicts: array(body, "verdicts", "status").map((entry, index) =>
-      readVerdictSummary(entry, `verdicts[${index}]`),
-    ),
-    ...(body.agentCloseout === undefined
-      ? {}
-      : {
-          agentCloseout: array(body, "agentCloseout", "status").map((entry, index) =>
-            readAgentCloseoutSummary(entry, `agentCloseout[${index}]`),
-          ),
-        }),
-  };
-}
-
-function readSlices(body: Record<string, unknown>): StatusSlice[] | undefined {
-  if (body.slices === undefined) return undefined;
-  return array(body, "slices", "status").map((entry, index) =>
-    oneOf(typeof entry === "string" ? entry : "", STATUS_SLICES, `status.slices[${index}]`),
-  );
-}
-
-function readBase(body: Record<string, unknown>): StatusSnapshotBase {
-  const version = body.version;
-  if (version !== STATUS_API_VERSION) {
-    throw new StatusContractError(`status.version must be ${STATUS_API_VERSION}`);
-  }
-  const project = readProject(body.project);
-  return {
-    version: STATUS_API_VERSION,
-    source: oneOf(string(body, "source", "status"), SOURCES, "status.source"),
-    generatedAt: dateString(body, "generatedAt", "status"),
-    project,
-    items: array(body, "items", "status").map((entry, index) => readItem(entry, index)),
-    runs: array(body, "runs", "status").map((entry, index) => readRun(entry, index)),
-    questions: array(body, "questions", "status").map((entry, index) => readQuestion(entry, index)),
-    mergeQueue: array(body, "mergeQueue", "status").map((entry, index) =>
-      readMerge(entry, index, project.repo),
-    ),
-    ...(body.mergeHistory === undefined
-      ? {}
-      : {
-          mergeHistory: array(body, "mergeHistory", "status").map((entry, index) =>
-            readMergeOutcome(entry, `mergeHistory[${index}]`, project.repo),
-          ),
-        }),
-    ...(body.evidence === undefined
-      ? {}
-      : {
-          evidence: array(body, "evidence", "status").map((entry, index) =>
-            readEvidence(entry, `evidence[${index}]`),
-          ),
-        }),
-    ...(body.ciRounds === undefined
-      ? {}
-      : {
-          ciRounds: array(body, "ciRounds", "status").map((entry, index) =>
-            readCiRound(entry, `ciRounds[${index}]`),
-          ),
-        }),
-    ...(body.intake === undefined
-      ? {}
-      : {
-          intake: array(body, "intake", "status").map((entry, index) =>
-            readIntake(entry, `intake[${index}]`),
-          ),
-        }),
-    ...(body.dead === undefined
-      ? {}
-      : {
-          dead: array(body, "dead", "status").map((entry, index) =>
-            readDeadDelivery(entry, `dead[${index}]`),
-          ),
-        }),
-    ...(body.linearBudget === undefined || body.linearBudget === null
-      ? {}
-      : { linearBudget: readLinearBudget(body.linearBudget, "linearBudget") }),
-    ...(body.linearWebhook === undefined || body.linearWebhook === null
-      ? {}
-      : { linearWebhook: readLinearWebhook(body.linearWebhook, "linearWebhook") }),
-    ...(body.pushOutages === undefined
-      ? {}
-      : {
-          pushOutages: array(body, "pushOutages", "status").map((entry, index) =>
-            readPushOutage(entry, `pushOutages[${index}]`),
-          ),
-        }),
-    ...(body.policyRunnerWarnings === undefined
-      ? {}
-      : {
-          policyRunnerWarnings: array(body, "policyRunnerWarnings", "status").map((entry, index) =>
-            readPolicyRunnerWarning(entry, `policyRunnerWarnings[${index}]`),
-          ),
-        }),
-    ...(body.mergedTimes === undefined
-      ? {}
-      : { mergedTimes: readMergedTimes(body.mergedTimes, "mergedTimes") }),
-  };
 }
 
 function readPolicyRunnerWarning(input: unknown, path: string): StatusPolicyRunnerWarning {
@@ -1908,7 +1595,7 @@ function readDeadDelivery(input: unknown, path: string): StatusDeadDelivery {
   const kind = oneOf(string(body, "kind", path), DEAD_DELIVERY_KINDS, `${path}.kind`);
   const target = text(body, "target", path);
   if (!new RegExp(`^${kind}:[1-9][0-9]*$`).test(target))
-    throw new StatusContractError(`${path}.target must be ${kind}:<id>`);
+    throw new DashboardContractError(`${path}.target must be ${kind}:<id>`);
   return {
     itemId: text(body, "itemId", path),
     kind,
@@ -2023,7 +1710,7 @@ function readEvidence(input: unknown, path: string): StatusEvidence {
 function positiveInteger(body: Record<string, unknown>, key: string, path: string): number {
   const value = body[key];
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
-    throw new StatusContractError(`${path}.${key} must be an integer >= 1`);
+    throw new DashboardContractError(`${path}.${key} must be an integer >= 1`);
   }
   return value;
 }
@@ -2032,7 +1719,7 @@ function readProject(input: unknown): StatusProject {
   const body = object(input, "project");
   const workspace = body.workspace;
   if (workspace !== null && typeof workspace !== "string") {
-    throw new StatusContractError("project.workspace must be a string or null");
+    throw new DashboardContractError("project.workspace must be a string or null");
   }
   return {
     name: text(body, "name", "project"),
@@ -2048,10 +1735,10 @@ function readItem(input: unknown, index: number): StatusItem {
   const branch = body.branch;
   const runId = body.runId;
   if (branch !== null && typeof branch !== "string") {
-    throw new StatusContractError(`${path}.branch must be a string or null`);
+    throw new DashboardContractError(`${path}.branch must be a string or null`);
   }
   if (runId !== null && typeof runId !== "string") {
-    throw new StatusContractError(`${path}.runId must be a string or null`);
+    throw new DashboardContractError(`${path}.runId must be a string or null`);
   }
   return {
     id: text(body, "id", path),
@@ -2294,18 +1981,18 @@ function readQuestion(input: unknown, index: number): StatusQuestion {
   const runId = body.runId;
   const claimedBy = body.claimedBy;
   if (runId !== null && typeof runId !== "string") {
-    throw new StatusContractError(`${path}.runId must be a string or null`);
+    throw new DashboardContractError(`${path}.runId must be a string or null`);
   }
   if (claimedBy !== null && typeof claimedBy !== "string") {
-    throw new StatusContractError(`${path}.claimedBy must be a string or null`);
+    throw new DashboardContractError(`${path}.claimedBy must be a string or null`);
   }
   const options = stringArray(body, "options", path);
   const recommended = body.recommendedOption;
   if (recommended !== null && (typeof recommended !== "number" || !Number.isInteger(recommended))) {
-    throw new StatusContractError(`${path}.recommendedOption must be an integer or null`);
+    throw new DashboardContractError(`${path}.recommendedOption must be an integer or null`);
   }
   if (recommended !== null && (recommended < 0 || recommended >= options.length)) {
-    throw new StatusContractError(`${path}.recommendedOption is outside options`);
+    throw new DashboardContractError(`${path}.recommendedOption is outside options`);
   }
   return {
     id: text(body, "id", path),
@@ -2418,17 +2105,17 @@ function readVerdict(input: unknown, index: number): StatusVerdict {
   const baseSha = body.baseSha;
   const headSha = body.headSha;
   if (failing !== null && typeof failing !== "string") {
-    throw new StatusContractError(`${path}.failingCheck must be a string or null`);
+    throw new DashboardContractError(`${path}.failingCheck must be a string or null`);
   }
   if (baseSha !== null && typeof baseSha !== "string") {
-    throw new StatusContractError(`${path}.baseSha must be a string or null`);
+    throw new DashboardContractError(`${path}.baseSha must be a string or null`);
   }
   if (headSha !== null && typeof headSha !== "string") {
-    throw new StatusContractError(`${path}.headSha must be a string or null`);
+    throw new DashboardContractError(`${path}.headSha must be a string or null`);
   }
   const maxAttempts = body.maxAttempts;
   if (typeof maxAttempts !== "number" || !Number.isInteger(maxAttempts) || maxAttempts < 1) {
-    throw new StatusContractError(`${path}.maxAttempts must be an integer >= 1`);
+    throw new DashboardContractError(`${path}.maxAttempts must be an integer >= 1`);
   }
   return {
     itemId: text(body, "itemId", path),
@@ -2546,7 +2233,7 @@ function readAttempt(input: unknown, path: string): StatusCloseoutAttempt {
   const body = object(input, path);
   const number = body.number;
   if (typeof number !== "number" || !Number.isInteger(number) || number < 1) {
-    throw new StatusContractError(`${path}.number must be an integer >= 1`);
+    throw new DashboardContractError(`${path}.number must be an integer >= 1`);
   }
   return {
     number,
@@ -2569,7 +2256,7 @@ function readCheck(input: unknown, path: string): StatusCheck {
   const body = object(input, path);
   const detail = body.detail;
   if (detail !== null && typeof detail !== "string") {
-    throw new StatusContractError(`${path}.detail must be a string or null`);
+    throw new DashboardContractError(`${path}.detail must be a string or null`);
   }
   return {
     id: text(body, "id", path),
@@ -2619,7 +2306,7 @@ function readMerge(input: unknown, index: number, repo: string): StatusMergeEntr
     position !== null &&
     (typeof position !== "number" || !Number.isInteger(position) || position < 1)
   ) {
-    throw new StatusContractError(`${path}.position must be an integer >= 1 or null`);
+    throw new DashboardContractError(`${path}.position must be an integer >= 1 or null`);
   }
   const enqueuedAt = dateString(body, "enqueuedAt", path);
   return {
@@ -2656,7 +2343,7 @@ function readMergeOutcome(input: unknown, path: string, repo: string): StatusMer
   const body = object(input, path);
   const reason = body.reason;
   if (reason !== undefined && reason !== null && reason !== "ci_failed" && reason !== "conflict")
-    throw new StatusContractError(`${path}.reason must be ci_failed, conflict or null`);
+    throw new DashboardContractError(`${path}.reason must be ci_failed, conflict or null`);
   return {
     itemId: text(body, "itemId", path),
     repository: body.repository === undefined ? repo : nullableText(body, "repository", path),
@@ -2675,7 +2362,7 @@ function readStep(input: unknown, path: string): StatusMergeStep {
   const body = object(input, path);
   const detail = body.detail;
   if (detail !== null && typeof detail !== "string") {
-    throw new StatusContractError(`${path}.detail must be a string or null`);
+    throw new DashboardContractError(`${path}.detail must be a string or null`);
   }
   return {
     name: text(body, "name", path),
@@ -2704,13 +2391,13 @@ function readPr(input: unknown, path: string): StatusPullRequest | null {
   const body = object(input, path);
   const number = body.number;
   if (typeof number !== "number" || !Number.isInteger(number) || number < 1) {
-    throw new StatusContractError(`${path}.number must be an integer >= 1`);
+    throw new DashboardContractError(`${path}.number must be an integer >= 1`);
   }
   return { number, url: text(body, "url", path) };
 }
 
 function readLinks(input: unknown, path: string): StatusLink[] {
-  if (!Array.isArray(input)) throw new StatusContractError(`${path} must be an array`);
+  if (!Array.isArray(input)) throw new DashboardContractError(`${path} must be an array`);
   return input.map((entry, index) => {
     const body = object(entry, `${path}[${index}]`);
     return {
@@ -2722,26 +2409,27 @@ function readLinks(input: unknown, path: string): StatusLink[] {
 
 function object(input: unknown, path: string): Record<string, unknown> {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
-    throw new StatusContractError(`${path} must be an object`);
+    throw new DashboardContractError(`${path} must be an object`);
   }
   return input as Record<string, unknown>;
 }
 
 function array(body: Record<string, unknown>, key: string, path: string): unknown[] {
   const value = body[key];
-  if (!Array.isArray(value)) throw new StatusContractError(`${path}.${key} must be an array`);
+  if (!Array.isArray(value)) throw new DashboardContractError(`${path}.${key} must be an array`);
   return value;
 }
 
 function string(body: Record<string, unknown>, key: string, path: string): string {
   const value = body[key];
-  if (typeof value !== "string") throw new StatusContractError(`${path}.${key} must be a string`);
+  if (typeof value !== "string")
+    throw new DashboardContractError(`${path}.${key} must be a string`);
   return value;
 }
 
 function text(body: Record<string, unknown>, key: string, path: string): string {
   const value = string(body, key, path).trim();
-  if (!value) throw new StatusContractError(`${path}.${key} must not be empty`);
+  if (!value) throw new DashboardContractError(`${path}.${key} must not be empty`);
   return value;
 }
 
@@ -2749,7 +2437,7 @@ function nullableText(body: Record<string, unknown>, key: string, path: string):
   const value = body[key];
   if (value === null) return null;
   if (typeof value !== "string" || !value.trim()) {
-    throw new StatusContractError(`${path}.${key} must be a string or null`);
+    throw new DashboardContractError(`${path}.${key} must be a string or null`);
   }
   return value.trim();
 }
@@ -2757,7 +2445,7 @@ function nullableText(body: Record<string, unknown>, key: string, path: string):
 function stringArray(body: Record<string, unknown>, key: string, path: string): string[] {
   return array(body, key, path).map((entry, index) => {
     if (typeof entry !== "string" || !entry.trim()) {
-      throw new StatusContractError(`${path}.${key}[${index}] must be a non-empty string`);
+      throw new DashboardContractError(`${path}.${key}[${index}] must be a non-empty string`);
     }
     return entry;
   });
@@ -2765,7 +2453,8 @@ function stringArray(body: Record<string, unknown>, key: string, path: string): 
 
 function boolean(body: Record<string, unknown>, key: string, path: string): boolean {
   const value = body[key];
-  if (typeof value !== "boolean") throw new StatusContractError(`${path}.${key} must be a boolean`);
+  if (typeof value !== "boolean")
+    throw new DashboardContractError(`${path}.${key} must be a boolean`);
   return value;
 }
 
@@ -2784,7 +2473,7 @@ function optionalCount(body: Record<string, unknown>, key: string, path: string)
   const value = body[key];
   if (value === undefined || value === null) return null;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-    throw new StatusContractError(`${path}.${key} must be an integer >= 0`);
+    throw new DashboardContractError(`${path}.${key} must be an integer >= 0`);
   }
   return value;
 }
@@ -2792,7 +2481,7 @@ function optionalCount(body: Record<string, unknown>, key: string, path: string)
 function count(body: Record<string, unknown>, key: string, path: string): number {
   const value = body[key];
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-    throw new StatusContractError(`${path}.${key} must be an integer >= 0`);
+    throw new DashboardContractError(`${path}.${key} must be an integer >= 0`);
   }
   return value;
 }
@@ -2800,7 +2489,7 @@ function count(body: Record<string, unknown>, key: string, path: string): number
 function dateString(body: Record<string, unknown>, key: string, path: string): string {
   const value = text(body, key, path);
   if (Number.isNaN(Date.parse(value))) {
-    throw new StatusContractError(`${path}.${key} must be a timestamp`);
+    throw new DashboardContractError(`${path}.${key} must be a timestamp`);
   }
   return value;
 }
@@ -2811,7 +2500,7 @@ function nullableDate(body: Record<string, unknown>, key: string, path: string):
 
 function oneOf<T extends string>(value: string, allowed: readonly T[], path: string): T {
   if (!(allowed as readonly string[]).includes(value)) {
-    throw new StatusContractError(`${path} must be one of ${allowed.join(", ")}`);
+    throw new DashboardContractError(`${path} must be one of ${allowed.join(", ")}`);
   }
   return value as T;
 }

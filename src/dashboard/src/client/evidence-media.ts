@@ -38,7 +38,7 @@ export interface EvidenceMedia {
   detach(): void;
   /** Puts them back into their placeholders, so thumbnails and playback are not reloaded. */
   attach(
-    snapshot: RunEvidenceSource | null,
+    data: RunEvidenceSource | null,
     engineUrl: string | null,
     shown?: StatusEvidence | null,
   ): void;
@@ -92,11 +92,11 @@ export function createEvidenceMedia(changed: () => void): EvidenceMedia {
       gallery?.root.remove();
       player?.root.remove();
     },
-    attach(snapshot, engineUrl, shown = null) {
+    attach(data, engineUrl, shown = null) {
       const slot = document.querySelector<HTMLElement>("#evidence-gallery[data-run]");
       const runId = slot?.dataset.run;
-      if (slot && runId && snapshot) {
-        const list = runEvidence(snapshot, runId);
+      if (slot && runId && data) {
+        const list = runEvidence(data, runId);
         const key = `${engineUrl ?? ""}\n${runId}\n${list.map((entry) => entry.id).join(",")}`;
         if (gallery?.key !== key) gallery = buildGallery(key, list, engineUrl);
         if (gallery.root.parentElement !== slot) slot.append(gallery.root);
