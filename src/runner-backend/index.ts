@@ -1595,9 +1595,13 @@ export function createRemoteAgentRunner(options: {
                   type: "progress",
                   text: resumeSessionId
                     ? `Continuing the agent's session on ${where}.\n`
-                    : selected.id === session.runnerId
-                      ? `Starting a new session on ${where}; this runner version can't resume the earlier session.\n`
-                      : `Starting a new session on ${where}; ${name(session.runnerId)} is ${sessionBusy ? "busy" : "unavailable"}.\n`,
+                    : selected.id === session.runnerId &&
+                        selected.account &&
+                        selected.account.bindingId !== session.bindingId
+                      ? `Starting a new session on ${where} with another ${agentName(profile.agent)} account; the earlier session stays with its own account.\n`
+                      : selected.id === session.runnerId
+                        ? `Starting a new session on ${where}; this runner version can't resume the earlier session.\n`
+                        : `Starting a new session on ${where}; ${name(session.runnerId)} is ${sessionBusy ? "busy" : "unavailable"}.\n`,
                 });
               else if (input.role === "implementer")
                 await emit({ type: "progress", text: `Starting on ${where}.\n` });
