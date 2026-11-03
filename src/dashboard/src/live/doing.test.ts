@@ -45,10 +45,24 @@ function running(db: Database, id: string): string {
   return runId;
 }
 
-function work(db: Database, runId: string, runner: string, live: boolean, now: number): void {
+function work(
+  db: Database,
+  runId: string,
+  runner: string,
+  live: boolean,
+  now: number,
+  generation = 1,
+): void {
   db.run(
-    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,?,'workspace',1,0,?,?,?)",
-    [runId, runner, `command-${runId}`, now + 10 * MINUTE, live ? null : now - MINUTE],
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,?,'workspace',?,0,?,?,?)",
+    [runId, runner, generation, `command-${runId}`, now + 10 * MINUTE, live ? null : now - MINUTE],
+  );
+}
+
+function event(db: Database, runId: string, generation: number, type: string): void {
+  db.run(
+    "INSERT INTO runner_event(run_id,generation,sequence,payload,received_at,type) VALUES(?,?,(SELECT COUNT(*)+1 FROM runner_event WHERE run_id=?1 AND generation=?2),'{}',?,?)",
+    [runId, generation, START, type],
   );
 }
 
@@ -64,11 +78,44 @@ describe("what an item does now", () => {
   test("an item with live runner work shows Running on its runner", () => {
     const db = database();
     const now = START + 5 * MINUTE;
-    work(db, running(db, "live"), "agentbox", true, now);
+    const runId = running(db, "live");
+    work(db, runId, "agentbox", true, now);
+    event(db, runId, 1, "activity");
     const shown = item(db, "live", now);
-    expect(shown.doing).toEqual({ kind: "running", runners: ["agentbox"], since: null });
+    expect(shown.doing).toEqual({
+      kind: "running",
+      runners: ["agentbox"],
+      since: null,
+      phase: "agent",
+    });
     expect(itemPill(shown)).toContain(">Running<");
     expect(itemTime(shown, now)).toContain("Running on agentbox");
+  });
+
+  test("live runner work is preparing until its current generation reports agent activity", () => {
+    const db = database();
+    const now = START + 5 * MINUTE;
+    const runId = running(db, "setup");
+    work(db, runId, "agentbox", true, now, 2);
+    event(db, runId, 1, "activity");
+    event(db, runId, 2, "progress");
+    event(db, runId, 2, "progress");
+    const preparing = item(db, "setup", now);
+    expect(preparing.doing).toMatchObject({ kind: "running", phase: "preparing" });
+    expect(itemTime(preparing, now)).toContain(
+      "Preparing: checking out and installing runtimes on agentbox",
+    );
+    event(db, runId, 2, "activity");
+    const agent = item(db, "setup", now);
+    expect(agent.doing).toMatchObject({ kind: "running", phase: "agent" });
+    expect(itemTime(agent, now)).toContain("Running on agentbox");
+  });
+
+  test("a run without runner work has no phase", () => {
+    const db = database();
+    const now = START + MINUTE;
+    running(db, "local");
+    expect(item(db, "local", now).doing?.phase).toBeUndefined();
   });
 
   test("an item parked in a slot wait shows Waiting for a slot with its runners and wait time", () => {
