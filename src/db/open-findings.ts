@@ -17,6 +17,16 @@ export function saveOpenFindings(
   );
 }
 
+export function getPublishedHead(db: Database, itemId: string): string | null {
+  return (
+    db
+      .query<{ head: string }, [string]>(
+        "SELECT head_sha AS head FROM open_findings WHERE item_id = ?",
+      )
+      .get(itemId)?.head ?? null
+  );
+}
+
 /** The open-findings line of the item's last published head, or null when nothing was open. */
 export function getOpenFindingsLine(db: Database, itemId: string): string | null {
   const row = db
