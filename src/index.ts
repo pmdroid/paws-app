@@ -85,6 +85,7 @@ import {
   workspaceForOrganization,
   applyLinearUserChange,
   listWorkspaceMembers,
+  listAgentAccountReferences,
   listRepositoryCandidates,
   getLinearSessionInstallation,
   isLinearAppRevoked,
@@ -1016,6 +1017,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       agentSettings: {
         applyToWaiting: () => orchestrator?.applyAgentSettingsToWaiting() ?? 0,
         runnerReadiness: (agent) => activeRunnerReadiness(db, agent),
+        agentAccounts: () => listAgentAccountReferences(db),
         ...(linear?.tracker?.readBriefIssue
           ? {
               readIssue: (identifier: string, signal: AbortSignal) =>

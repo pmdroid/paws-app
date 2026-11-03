@@ -45,6 +45,7 @@ export type CommandAccount = {
   accountId: string;
   bindingId: string;
   named: boolean;
+  policyRevision: string | null;
   recordedAt: number;
 };
 
@@ -74,7 +75,7 @@ const accountColumns =
 const bindingColumns =
   "id,workspace_id AS workspaceId,account_id AS accountId,agent,runner_id AS runnerId,legacy,quota_scope AS quotaScope,created_at AS createdAt,removed_at AS removedAt";
 const commandColumns =
-  "command_id AS commandId,workspace_id AS workspaceId,runner_id AS runnerId,agent,account_id AS accountId,binding_id AS bindingId,named,recorded_at AS recordedAt";
+  "command_id AS commandId,workspace_id AS workspaceId,runner_id AS runnerId,agent,account_id AS accountId,binding_id AS bindingId,named,policy_revision AS policyRevision,recorded_at AS recordedAt";
 const AGENT_NAMES: Record<RunnerCodingAgent, string> = {
   claude: "Claude",
   codex: "Codex",
@@ -407,6 +408,7 @@ export function recordCommandAccount(
   db: Database,
   command: RunnerCommand,
   at: number,
+  policyRevision?: string,
 ): CommandAccount | null {
   const agent = commandAgent(command);
   if (!agent) return null;
@@ -441,7 +443,7 @@ export function recordCommandAccount(
     if (!owner.enabled && command.type !== "login" && command.type !== "login_check")
       throw new AgentAccountError("disabled", "Agent account is disabled");
     db.run(
-      "INSERT INTO runner_command_account(command_id,workspace_id,runner_id,agent,account_id,binding_id,named,recorded_at) VALUES(?,?,?,?,?,?,?,?)",
+      "INSERT INTO runner_command_account(command_id,workspace_id,runner_id,agent,account_id,binding_id,named,policy_revision,recorded_at) VALUES(?,?,?,?,?,?,?,?,?)",
       [
         command.id,
         row.workspaceId,
@@ -450,6 +452,7 @@ export function recordCommandAccount(
         row.accountId,
         row.id,
         named ? 1 : 0,
+        policyRevision ?? null,
         at,
       ],
     );
@@ -464,4 +467,66 @@ export function commandAccount(db: Database, commandId: string): CommandAccount 
     )
     .get(commandId);
   return row ? { ...row, named: row.named === 1 } : null;
+}
+
+export function listAgentAccountReferences(db: Database) {
+  const references = db
+    .query<{ id: string; agent: RunnerCodingAgent; enabled: number; removedAt: number | null }, []>(
+      "SELECT id,agent,enabled,removed_at AS removedAt FROM agent_account ORDER BY rowid",
+    )
+    .all()
+    .map((row) => ({
+      id: row.id,
+      agent: row.agent,
+      enabled: row.enabled === 1,
+      removed: row.removedAt !== null,
+    }));
+  const known = new Set(references.map((reference) => reference.id));
+  for (const { id: workspaceId } of db
+    .query<{ id: string }, []>("SELECT id FROM workspace ORDER BY rowid")
+    .all())
+    for (const agent of Object.keys(AGENT_NAMES) as RunnerCodingAgent[]) {
+      const id = legacyAgentAccountId(workspaceId, agent);
+      if (!known.has(id)) references.push({ id, agent, enabled: true, removed: false });
+    }
+  return references;
+}
+
+export type AccountAdmission = {
+  agent: RunnerCodingAgent;
+  configured: boolean;
+  eligible: string[];
+  skipped: { accountId: string; reason: AgentAccountErrorCode }[];
+};
+
+export function admitAgentAccounts(
+  db: Database,
+  workspaceId: string,
+  agent: RunnerCodingAgent,
+  policy?: { agent: string; accounts: readonly string[] },
+): AccountAdmission {
+  if (policy && policy.agent !== agent)
+    throw new AgentAccountError("invalid", "The account policy belongs to another agent");
+  const ids = [...new Set(policy?.accounts ?? [legacyAgentAccountId(workspaceId, agent)])];
+  const eligible: string[] = [];
+  const skipped: AccountAdmission["skipped"] = [];
+  for (const id of ids) {
+    const row = accountRow(db, id);
+    const reason: AgentAccountErrorCode | null = !row
+      ? id === legacyAgentAccountId(workspaceId, agent)
+        ? null
+        : "not_found"
+      : row.workspaceId !== workspaceId
+        ? "foreign_workspace"
+        : row.agent !== agent
+          ? "binding_mismatch"
+          : row.removedAt !== null
+            ? "removed"
+            : !row.enabled
+              ? "disabled"
+              : null;
+    if (reason) skipped.push({ accountId: id, reason });
+    else eligible.push(id);
+  }
+  return { agent, configured: policy !== undefined, eligible, skipped };
 }
