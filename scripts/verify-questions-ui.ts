@@ -1,15 +1,14 @@
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { questionReaders, statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 import { handleStatusRequest } from "../src/dashboard";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
 
-const snapshot = statusFixture();
-const readers = questionReaders(snapshot);
+const snapshot = fullStatusFixture();
 const requests: string[] = [];
 const held = new Map<string, Promise<void>>();
 const server = Bun.serve({
@@ -22,7 +21,7 @@ const server = Bun.serve({
     await held.get(url.pathname);
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot, ...readers },
+        provider: fixtureProvider(snapshot),
         csrfToken: "ui-fixture",
       })) ?? new Response(null, { status: 404 })
     );

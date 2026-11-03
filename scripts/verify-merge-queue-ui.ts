@@ -1,4 +1,4 @@
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 // The run page of a task second in its repository's merge queue, against the real status handler.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-merge-queue-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
@@ -9,7 +9,7 @@ import { handleStatusRequest } from "../src/dashboard";
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const run = snapshot.runs.find((entry) => entry.id === "r-102");
 const item = snapshot.items.find((entry) => entry.id === run?.itemId);
@@ -26,7 +26,7 @@ const server = Bun.serve({
       return Response.json({ setupRequired: false, workspaceReady: true, runners: [] });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "ui-fixture",
       })) ?? new Response(null, { status: 404 })
     );

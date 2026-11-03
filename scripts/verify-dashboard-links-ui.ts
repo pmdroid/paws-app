@@ -1,4 +1,4 @@
-import { fullStatusFixture, itemDetail, statusList } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 import { chromium, expect } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,9 +9,6 @@ const directory = await mkdtemp(join(tmpdir(), "paws-dashboard-links-"));
 const evidence = process.env.PAWS_UI_EVIDENCE_DIR ?? directory;
 const full = fullStatusFixture();
 full.source = "live";
-const snapshot = statusList(full);
-const detail = (id: string) =>
-  full.items.some((item) => item.id === id) ? itemDetail(full, id) : null;
 const requested: string[] = [];
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -36,7 +33,7 @@ const server = Bun.serve({
       return Response.json({ available: true, actions: [] });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot, item: detail },
+        provider: fixtureProvider(full),
         csrfToken: "ui-fixture",
       })) ?? new Response(null, { status: 404 })
     );

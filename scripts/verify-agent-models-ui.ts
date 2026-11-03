@@ -1,4 +1,4 @@
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 // Settings → Agents with a Claude catalog that offers a 1M context entry.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-agent-models-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
@@ -9,7 +9,7 @@ import { handleStatusRequest } from "../src/dashboard";
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const high = [{ id: "high", name: "High" }];
 const catalogs = [
@@ -49,7 +49,7 @@ const server = Bun.serve({
       return Response.json({ setupRequired: false, workspaceReady: true, runners: [] });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "ui-fixture",
       })) ?? new Response(null, { status: 404 })
     );

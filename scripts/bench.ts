@@ -76,17 +76,24 @@ function measure<T>(label: string, run: () => T, n = rounds) {
 }
 
 const recentItems = provider
-  .snapshot()
-  .items.slice(0, 5)
+  .issues()
+  .issues.slice(0, 5)
   .map((item) => item.id);
 
-const results = [measure("GET /api/status snapshot()", () => provider.snapshot())];
+const results = [
+  measure("GET /api/overview overview()", () => provider.overview()),
+  measure("GET /api/issues issues()", () => provider.issues()),
+  measure("GET /api/questions questions()", () => provider.questions()),
+  measure("GET /api/merge-queue mergeQueue()", () => provider.mergeQueue()),
+  measure("GET /api/evidence evidence()", () => provider.evidence()),
+];
 for (const id of recentItems)
-  results.push(measure(`GET /api/status/items/${id} item()`, () => provider.item(id)));
+  results.push(measure(`GET /api/issues/${id} issue()`, () => provider.issue(id)));
 
 tracing = true;
-provider.snapshot();
-for (const id of recentItems) provider.item(id);
+provider.overview();
+provider.issues();
+for (const id of recentItems) provider.issue(id);
 tracing = false;
 
 function dirBytes(dir: string): number {

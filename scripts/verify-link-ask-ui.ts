@@ -1,4 +1,4 @@
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 // The overview's Needs you list with the four kinds of link asks, the "Closeout needs your
 // help" card and the Risk card on the issue page, against the real status handler, and the
 // risk gate note in Settings › Merging on a Paws without an https link.
@@ -15,7 +15,7 @@ const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const template = snapshot.items.find((item) => item.id === "ENG-103")!;
 const question = snapshot.questions[0]!;
@@ -141,7 +141,7 @@ const server = Bun.serve({
     if (merging) return merging;
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "ui-fixture",
       })) ?? new Response(null, { status: 404 })
     );
