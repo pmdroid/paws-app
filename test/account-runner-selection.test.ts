@@ -332,12 +332,14 @@ test("a stale generation's result or a lost command cannot release the newer gen
   );
   expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(1);
   f.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [f.now(), run.id]);
+  expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(1);
+  f.db.run("UPDATE runner_work SET teardown_confirmed_at=? WHERE run_id=?", [f.now(), run.id]);
   expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(0);
   const newer = f.admit("R2", candidate(f, await f.choices(order), "R2", f.accounts.a), order, {
     runId: run.id,
   });
   f.db.run(
-    "UPDATE runner_work SET runner_id='R2',generation=2,command_id=?,ended_at=NULL WHERE run_id=?",
+    "UPDATE runner_work SET runner_id='R2',generation=2,command_id=?,ended_at=NULL,teardown_confirmed_at=NULL WHERE run_id=?",
     [newer, run.id],
   );
   expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(1);
@@ -494,4 +496,45 @@ test("a named account's usage limit leaves the runner's default sign-in and othe
   });
   expect(codex.map((row) => row.id).sort()).toEqual(["R1", "R2", "R3"]);
   expect(codex.every((row) => row.account?.named === false)).toBe(true);
+});
+
+test("a cancelled execution keeps its account slot until the runner confirms teardown", async () => {
+  const f = fixture();
+  setAgentAccountConcurrency(f.db, {
+    workspaceId: f.workspaceId,
+    accountId: f.accounts.a,
+    concurrency: 1,
+    now: f.now(),
+  });
+  const { run } = beginImplementRun(f.db, f.item.id, f.now());
+  const order = [f.accounts.a];
+  const running = f.admit("R1", candidate(f, await f.choices(order), "R1", f.accounts.a), order, {
+    runId: run.id,
+  });
+  f.db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
+    [run.id, "R1", f.workspaceId, running, f.now() + 60_000],
+  );
+  f.db.run(
+    "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at) VALUES('cancel-1','R1',?,1,'cancel','{}',?)",
+    [run.id, f.now() + 65_000],
+  );
+  f.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [f.now(), run.id]);
+  f.placement.finished({
+    commandId: running,
+    runnerId: "R1",
+    failure: "cancelled",
+    finishedAt: f.now(),
+  });
+  expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(1);
+  const waiting = await f.choices(order);
+  expect(waiting.placed).toEqual([]);
+  expect(waiting.rejected).toContainEqual({
+    runnerId: "R2",
+    reason: "A: account at its concurrency limit",
+  });
+  f.db.run("UPDATE runner_work SET teardown_confirmed_at=? WHERE run_id=?", [f.now(), run.id]);
+  const freed = await f.choices(order);
+  f.admit("R2", candidate(f, freed, "R2", f.accounts.a), order);
+  expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(1);
 });

@@ -10,6 +10,8 @@ import {
   type RunnerCodingAgent,
   type RunnerCommand,
 } from "../runner-protocol";
+import { TEARDOWN_UNRESOLVED } from "./runner-capacity";
+import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { ulid } from "./ulid";
 
@@ -623,16 +625,18 @@ export function accountSlotsInUse(
   exceptCommandId: string | null = null,
 ): number {
   return db
-    .query<{ count: number }, [string, number, string | null]>(
+    .query<{ count: number }, [string, number, string | null, number]>(
       `SELECT COUNT(*) AS count FROM runner_execution_usage u
        JOIN runner_command_account a ON a.command_id=u.command_id
        LEFT JOIN runner_helper h ON h.id=u.command_id
        LEFT JOIN runner_command c ON c.id=u.command_id
-       LEFT JOIN runner_work w ON w.run_id=c.run_id
-       WHERE u.ended_at IS NULL AND a.account_id=?1 AND u.command_id IS NOT ?3 AND (
+       LEFT JOIN runner_work w ON w.run_id=c.run_id AND w.command_id=u.command_id
+       WHERE a.account_id=?1 AND u.command_id IS NOT ?3 AND (
          (h.id IS NOT NULL AND h.ended_at IS NULL AND h.expires_at>?2)
-         OR (c.id IS NOT NULL AND c.expires_at>?2
-           AND (c.run_id IS NULL OR (w.command_id=u.command_id AND w.ended_at IS NULL))))`,
+         OR (w.run_id IS NOT NULL AND ((w.ended_at IS NULL AND w.lease_until>?4)
+           OR ${TEARDOWN_UNRESOLVED}))
+         OR (h.id IS NULL AND c.id IS NOT NULL AND c.run_id IS NULL
+           AND u.ended_at IS NULL AND c.expires_at>?2))`,
     )
-    .get(accountId, at, exceptCommandId)!.count;
+    .get(accountId, at, exceptCommandId, runnerLeaseCutoff(at))!.count;
 }
