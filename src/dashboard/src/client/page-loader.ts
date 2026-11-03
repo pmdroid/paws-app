@@ -1,8 +1,12 @@
 import {
+  EVIDENCE_RESOURCE_PATH,
+  evidenceMetadataPath,
   ISSUES_API_PATH,
   MERGE_QUEUE_API_PATH,
   OVERVIEW_API_PATH,
   issuePath,
+  parseEvidenceListResponse,
+  parseEvidenceMetadataResponse,
   parseIssueDetailResponse,
   parseIssueListResponse,
   parseMergeQueueResponse,
@@ -11,6 +15,8 @@ import {
   parseQuestionListResponse,
   questionPath,
   QUESTIONS_API_PATH,
+  type EvidenceListResponse,
+  type EvidenceMetadataResponse,
   type IssueDetailResponse,
   type IssueListResponse,
   type MergeQueueResponse,
@@ -33,6 +39,9 @@ export interface PageResources {
   questions: QuestionListResponse | null;
   question: QuestionDetailResponse | null;
   missingQuestion: string | null;
+  evidenceList: EvidenceListResponse | null;
+  evidence: EvidenceMetadataResponse | null;
+  missingEvidence: string | null;
 }
 
 export type PageLoad = "applied" | "stale" | "signed-out" | { error: string };
@@ -68,6 +77,16 @@ function parseQuestion(input: unknown) {
   return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
 }
 
+function parseEvidenceList(input: unknown) {
+  const parsed = parseEvidenceListResponse(input);
+  return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
+}
+
+function parseEvidence(input: unknown) {
+  const parsed = parseEvidenceMetadataResponse(input);
+  return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
+}
+
 function parseDetail(input: unknown) {
   const parsed = parseIssueDetailResponse(input);
   return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
@@ -85,6 +104,9 @@ export function createPageLoader(options: PageLoaderOptions) {
     questions: null,
     question: null,
     missingQuestion: null,
+    evidenceList: null,
+    evidence: null,
+    missingEvidence: null,
   };
   let generation = 0;
   let started = 0;
@@ -156,6 +178,26 @@ export function createPageLoader(options: PageLoaderOptions) {
           data.missingQuestion = null;
         });
       }
+      if (resource === "evidenceGallery") {
+        const read = await resources.read(EVIDENCE_RESOURCE_PATH, reader, parseEvidenceList);
+        if (read.kind === "response") return await refused(read.response);
+        return apply(() => (data.evidenceList = read.body));
+      }
+      if (resource === "evidence" && route.view === "evidence" && route.id !== null) {
+        const id = route.id;
+        const read = await resources.read(evidenceMetadataPath(id), reader, parseEvidence);
+        if (read.kind === "response" && read.response.status === 404)
+          return apply(() => {
+            data.evidence = null;
+            data.missingEvidence = id;
+          });
+        if (read.kind === "response") return await refused(read.response);
+        if (read.body.evidence.id !== id) throw new Error("The engine returned other evidence");
+        return apply(() => {
+          data.evidence = read.body;
+          data.missingEvidence = null;
+        });
+      }
       if (resource === "status") {
         const read = await readStatus(routeSlices(route), reader);
         if (read.kind === "response") return await refused(read.response);
@@ -187,6 +229,9 @@ export function createPageLoader(options: PageLoaderOptions) {
       data.questions = null;
       data.question = null;
       data.missingQuestion = null;
+      data.evidenceList = null;
+      data.evidence = null;
+      data.missingEvidence = null;
     },
   };
 }

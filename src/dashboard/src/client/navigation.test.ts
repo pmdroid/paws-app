@@ -130,9 +130,11 @@ test("the Conversations page is gone and its old links open the issue list", () 
   expect(issueListRedirect("/sessions/unknown-session")).toBeNull();
 });
 
-test("only work pages read the status snapshot; issue, Overview and Questions pages read their own resources", () => {
+test("no page reads the status snapshot; every work page reads its own resource", () => {
   const pages = Object.keys(PAGES).filter((view) => needsSnapshot({ view, id: null } as Route));
-  expect(pages).toEqual(["evidence"]);
+  expect(pages).toEqual([]);
+  expect(routeResource({ view: "evidence", id: null })).toBe("evidenceGallery");
+  expect(routeResource({ view: "evidence", id: "01JA0000000000000000000001" })).toBe("evidence");
   expect(routeResource({ view: "mergeQueue" })).toBe("mergeQueue");
   expect(routeResource({ view: "issues", id: null })).toBe("issues");
   expect(routeResource({ view: "issues", id: "ENG-101" })).toBe("issue");
@@ -155,19 +157,15 @@ test("every route names the status slices it renders", () => {
     alias: [],
     mergeQueue: [],
     questions: [],
-    evidence: ["items", "evidence"],
+    evidence: [],
     findings: [],
     runners: [],
     settings: [],
   });
 });
 
-test("a list loaded for one page does not stand in for another page's slices", () => {
-  const evidence = { ...statusFixture(), slices: ["items", "evidence"] };
-  const evidenceOnly = { ...statusFixture(), slices: ["evidence"] } as typeof evidence;
-  expect(routeCovered({ view: "evidence", id: null }, evidence as never)).toBe(true);
-  expect(routeCovered({ view: "evidence", id: null }, evidenceOnly as never)).toBe(false);
-  expect(routeCovered({ view: "runners", id: null }, null)).toBe(true);
-  expect(routeCovered({ view: "mergeQueue" }, statusFixture())).toBe(true);
-  expect(routeCovered({ view: "evidence", id: null }, null)).toBe(false);
+test("no route waits for a status slice", () => {
+  for (const view of Object.keys(PAGES))
+    expect(routeCovered({ view, id: null } as Route, null)).toBe(true);
+  expect(routeCovered({ view: "evidence", id: "01JA0000000000000000000001" }, null)).toBe(true);
 });

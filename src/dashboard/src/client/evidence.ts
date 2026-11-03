@@ -1,4 +1,10 @@
-import type { EvidenceKind, StatusEvidence, StatusSnapshotBase } from "../contract";
+import type {
+  EvidenceKind,
+  EvidenceListResponse,
+  EvidenceMetadataResponse,
+  StatusEvidence,
+  StatusSnapshotBase,
+} from "../contract";
 
 export type RunEvidenceSource = Pick<StatusSnapshotBase, "runs" | "evidence">;
 import { parseEngineUrl } from "./format";
@@ -118,17 +124,33 @@ export function evidenceSlot(snapshot: RunEvidenceSource, runId: string): string
     : "";
 }
 
-export function renderEvidencePage(
-  snapshot: StatusSnapshotBase,
-  id: string | null,
+export function renderEvidenceGallery(
+  list: EvidenceListResponse,
   info: ReadonlyMap<string, MediaInfo>,
   engineUrl: string | null,
 ): string {
-  const evidence = id === null ? undefined : snapshot.evidence?.find((entry) => entry.id === id);
-  if (!evidence) return noEvidenceAccess();
+  const heading = '<header class="run-heading"><h1>Evidence</h1></header>';
+  if (list.evidence.length === 0)
+    return `${heading}<section class="card" aria-label="Evidence"><p class="muted">No evidence from the issues Paws lists.</p></section>`;
+  const entries = [...list.evidence].reverse();
+  return `${heading}<section class="card" aria-label="Evidence"><ul class="evidence-more">${entries
+    .map(
+      (entry) =>
+        `<li><a class="evidence-thumb" href="${esc(evidencePageHref(entry.id))}" aria-label="${esc(`${kindLabel(entry.kind)} ${entry.displayName}`)}">${thumbnailMedia(entry, engineUrl)}</a><div class="row"><a class="lin-id" href="${esc(routeHref({ view: "issues", id: entry.itemId }))}">${esc(entry.itemId)}</a><a class="tag" href="${esc(closeoutOutputHref(entry))}">${esc(entry.checkId)}</a></div><div class="muted" data-evidence-measure="${esc(entry.id)}" data-evidence-kind="${entry.kind}">${esc(mediaSummary(entry.kind, info.get(entry.id)))}</div></li>`,
+    )
+    .join("")}</ul></section>`;
+}
+
+export function renderEvidencePage(
+  page: EvidenceMetadataResponse | null,
+  info: ReadonlyMap<string, MediaInfo>,
+  engineUrl: string | null,
+): string {
+  if (page === null) return noEvidenceAccess();
+  const evidence = page.evidence;
   const file = evidenceFileUrl(evidence.id, engineUrl);
   const measure = measureLabel(evidence.kind, info.get(evidence.id));
-  const others = runEvidence(snapshot, evidence.runId);
+  const others = page.related.filter((entry) => entry.id !== evidence.id);
   const issue = `<a class="lin-id" href="${esc(routeHref({ view: "issues", id: evidence.itemId }))}">${esc(evidence.itemId)}</a>`;
   const more = others.length
     ? `<ul class="evidence-more">${others
@@ -139,7 +161,7 @@ export function renderEvidencePage(
         .join("")}</ul>`
     : '<p class="muted">No other evidence from this issue.</p>';
   return `<nav class="crumbs" aria-label="Breadcrumb"><span>Evidence</span><span>/</span>${issue}<span>/</span><span class="mono">${esc(evidence.id)}</span></nav>
-    <header class="run-heading"><div class="row">${issue}<span class="tag">${esc(evidence.checkId)}</span><span class="mono muted">${esc(snapshot.project.repo)} · head ${esc(evidence.headCommit.slice(0, 7))}</span></div><h1>${esc(evidence.displayName)}</h1><p class="muted">Anyone signed in to Paws with access to ${esc(snapshot.project.repo)} sees this evidence.</p></header>
+    <header class="run-heading"><div class="row">${issue}<span class="tag">${esc(evidence.checkId)}</span><span class="mono muted">${esc(page.project.repo)} · head ${esc(evidence.headCommit.slice(0, 7))}</span></div><h1>${esc(evidence.displayName)}</h1><p class="muted">Anyone signed in to Paws with access to ${esc(page.project.repo)} sees this evidence.</p></header>
     <div class="evidence-layout"><div>
       <div id="evidence-player" data-evidence="${esc(evidence.id)}"></div>
 

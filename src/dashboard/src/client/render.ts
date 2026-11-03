@@ -1,5 +1,7 @@
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
+  EvidenceListResponse,
+  EvidenceMetadataResponse,
   MergeQueueResponse,
   OverviewIssue,
   OverviewResponse,
@@ -44,7 +46,12 @@ import {
 import { renderRuleResults } from "./rules";
 import { agentProgress, findAgentCloseout, renderAgentCloseout } from "./agent-closeout";
 import { reviewFindingsSection } from "./review-findings";
-import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
+import {
+  evidenceSlot,
+  renderEvidenceGallery,
+  renderEvidencePage,
+  type MediaInfo,
+} from "./evidence";
 import { PAGES } from "./navigation";
 import { renderMergeQueue } from "./merge-queue";
 import { renderIntake } from "./intake";
@@ -71,6 +78,9 @@ export interface RenderModel {
   questions?: QuestionListResponse | null;
   question?: QuestionDetailResponse | null;
   missingQuestion?: string | null;
+  evidenceList?: EvidenceListResponse | null;
+  evidence?: EvidenceMetadataResponse | null;
+  missingEvidence?: string | null;
   error: string | null;
   engineUrl: string | null;
   closeout?: CloseoutView;
@@ -117,27 +127,29 @@ export function render(model: RenderModel): Rendered {
                     missing: model.route.id !== null && model.missingQuestion === model.route.id,
                     error: model.phase === "error" ? model.error : null,
                   })
-                : model.route.view === "overview"
-                  ? model.overview
-                    ? viewOverview(model.overview)
-                    : renderPending(model)
-                  : model.route.view === "mergeQueue"
-                    ? viewMergeQueue(model)
-                    : model.phase !== "loading" && openDetail(model)
-                      ? issuePage(
-                          model.issue!,
-                          model.closeout ?? emptyCloseoutView(),
-                          model.engineUrl,
-                        )
-                      : model.phase !== "loading" && model.issues && route.view === "issues"
-                        ? viewIssues(model.issues, route.id)
-                        : model.phase !== "loading" && model.issues && route.view === "runs"
-                          ? viewRuns(model.issues, route.id)
-                          : snapshot &&
-                              model.phase !== "loading" &&
-                              routeResource(route) === "status"
-                            ? renderView(snapshot, model)
-                            : renderPending(model),
+                : model.route.view === "evidence"
+                  ? renderEvidence(model)
+                  : model.route.view === "overview"
+                    ? model.overview
+                      ? viewOverview(model.overview)
+                      : renderPending(model)
+                    : model.route.view === "mergeQueue"
+                      ? viewMergeQueue(model)
+                      : model.phase !== "loading" && openDetail(model)
+                        ? issuePage(
+                            model.issue!,
+                            model.closeout ?? emptyCloseoutView(),
+                            model.engineUrl,
+                          )
+                        : model.phase !== "loading" && model.issues && route.view === "issues"
+                          ? viewIssues(model.issues, route.id)
+                          : model.phase !== "loading" && model.issues && route.view === "runs"
+                            ? viewRuns(model.issues, route.id)
+                            : snapshot &&
+                                model.phase !== "loading" &&
+                                routeResource(route) === "status"
+                              ? renderView(snapshot, model)
+                              : renderPending(model),
     title,
   };
 }
@@ -167,9 +179,13 @@ function renderBanner(model: RenderModel): string {
             ? model.questions
             : resource === "question"
               ? model.question
-              : resource === "status"
-                ? model.snapshot
-                : openDetail(model) || model.issues;
+              : resource === "evidenceGallery"
+                ? model.evidenceList
+                : resource === "evidence"
+                  ? model.evidence
+                  : resource === "status"
+                    ? model.snapshot
+                    : openDetail(model) || model.issues;
     return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${kept ? " Showing the last snapshot." : ""}</span></div>`;
   }
   return "";
@@ -193,6 +209,20 @@ function renderAlias(model: RenderModel): string {
   return `${pageHeading("alias")}<div class="empty">Link not found. It points to work that does not exist or that you cannot see.<div><a class="btn" href="${esc(routeHref({ view: "issues", id: null }))}">Open the issue list</a></div></div>`;
 }
 
+function renderEvidence(model: RenderModel): string {
+  const route = model.route;
+  if (route.view !== "evidence") return renderPending(model);
+  const info = model.mediaInfo ?? new Map();
+  if (route.id === null)
+    return model.evidenceList
+      ? renderEvidenceGallery(model.evidenceList, info, model.engineUrl)
+      : renderPending(model);
+  if (model.evidence?.evidence.id === route.id)
+    return renderEvidencePage(model.evidence, info, model.engineUrl);
+  if (model.missingEvidence === route.id) return renderEvidencePage(null, info, model.engineUrl);
+  return renderPending(model);
+}
+
 function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
   switch (model.route.view) {
     case "overview":
@@ -205,12 +235,7 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "questions":
       return renderPending(model);
     case "evidence":
-      return renderEvidencePage(
-        snapshot,
-        model.route.id,
-        model.mediaInfo ?? new Map(),
-        model.engineUrl,
-      );
+      return renderEvidence(model);
     case "alias":
       return renderAlias(model);
     case "runners":

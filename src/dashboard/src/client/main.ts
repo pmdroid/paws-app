@@ -190,7 +190,12 @@ function routeChanged(): void {
                 : resource === "question"
                   ? page.question?.question.id === openQuestion(route) ||
                     page.missingQuestion === openQuestion(route)
-                  : routeCovered(route, page.snapshot);
+                  : resource === "evidenceGallery"
+                    ? page.evidenceList !== null
+                    : resource === "evidence"
+                      ? page.evidence?.evidence.id === openEvidence(route) ||
+                        page.missingEvidence === openEvidence(route)
+                      : routeCovered(route, page.snapshot);
   phase = shown ? "ready" : "loading";
   error = null;
   paint();
@@ -223,6 +228,10 @@ async function reload(): Promise<void> {
 
 function openQuestion(route: Route): string | null {
   return route.view === "questions" ? route.id : null;
+}
+
+function openEvidence(route: Route): string | null {
+  return route.view === "evidence" ? route.id : null;
 }
 
 function openIssue(route: Route): string | null {
@@ -375,6 +384,9 @@ function paint(): void {
     questions: page.questions,
     question: page.question,
     missingQuestion: page.missingQuestion,
+    evidenceList: page.evidenceList,
+    evidence: page.evidence,
+    missingEvidence: page.missingEvidence,
     error,
     engineUrl: currentEngine(),
     closeout,
@@ -384,8 +396,8 @@ function paint(): void {
   const route = model.route;
   const data = pageData();
   const shown =
-    route.view === "evidence"
-      ? page.snapshot?.evidence?.find((entry) => entry.id === route.id)
+    route.view === "evidence" && page.evidence?.evidence.id === route.id
+      ? page.evidence.evidence
       : null;
   if (route.view === "overview" && page.overview !== null)
     shell.setCounts({ mergeQueue: page.overview.mergeQueueCount });
@@ -412,7 +424,7 @@ function paint(): void {
   setHtml("#top", view.top);
   setHtml("#banner", view.banner);
   setHtml("#page-content", view.content);
-  evidence.attach(data, currentEngine());
+  evidence.attach(data, currentEngine(), shown);
   applyIssueFilter();
   if (openLinkedCheck()) return;
   scrollToLinkedCard();
