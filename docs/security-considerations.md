@@ -48,11 +48,11 @@ Follow the same rule for every secret added later: put it in an environment limi
 
 ## Docker access for runner work
 
-Runner work gets Docker only from a [rootless Docker](https://docs.docker.com/engine/security/rootless/) daemon that runs as `paws-agent` ([Docker access for runner work](runner-enrollment.md#docker-access-for-runner-work)). The daemon and its containers run inside a user namespace: root in a container is `paws-agent` on the host, and other container users map to `paws-agent`'s subordinate ids. A steered agent can do in a container what `paws-agent` can already do on the host, and no more. The daemon's socket is reachable by `paws-agent` and the members of its group, which include `paws-runner`, so every worker can use it; other local users can't. The package never gives runner work the root daemon at `/var/run/docker.sock`. The package never adds a runner account to the `docker` group, whose members can act as root on the host.
+Runner work gets Docker only from a [rootless Docker](https://docs.docker.com/engine/security/rootless/) daemon that runs as `paws-runner`, the account workers already run as ([Docker access for runner work](runner-enrollment.md#docker-access-for-runner-work)). The daemon and its containers run inside a user namespace: root in a container is `paws-runner` on the host, and other container users map to `paws-runner`'s subordinate ids. A steered agent can do in a container what a worker can already do as `paws-runner`, with one difference: the daemon runs outside `paws-runner.service`, so its `ProtectSystem`, `ProtectHome` and `PrivateTmp` settings don't apply to containers. A container can bind-mount any path `paws-runner` can read, including the runner's configuration and state, and write any path `paws-runner` owns. Only `paws-runner` can reach the daemon's socket. The package never gives runner work the root daemon at `/var/run/docker.sock`. The package never adds a runner account to the `docker` group, whose members can act as root on the host.
 
 Known limits of this setup:
 
-- Containers get no CPU or memory limits. `paws-agent` has no systemd user session, so the daemon uses the cgroupfs driver without a delegated cgroup, and `docker info` reports `CgroupDriver=none`.
+- Containers get no CPU or memory limits. `paws-runner` has no systemd user session, so the daemon uses the cgroupfs driver without a delegated cgroup, and `docker info` reports `CgroupDriver=none`.
 - Networking goes through slirp4netns, so containers can't bind host ports below 1024.
 - One daemon serves every agent job on the runner. Jobs can see and change each other's images, containers and volumes.
 

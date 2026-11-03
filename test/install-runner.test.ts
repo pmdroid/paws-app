@@ -427,6 +427,6 @@ test("the installer's Docker prompt offers rootless Docker for agent jobs, not t
     text.indexOf("Installing paws-runner"),
   );
   expect(prompt).toContain("Set up rootless Docker for agent jobs? [y/N]");
-  expect(prompt).toContain("runs as the paws-agent account, not as root");
+  expect(prompt).toContain("runs as the paws-runner account, not as root");
   expect(prompt).not.toContain("Add the paws-runner service account to the docker group");
 });

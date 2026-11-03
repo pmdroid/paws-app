@@ -134,7 +134,7 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
             configured = json.loads(run(["/usr/bin/python3", "-I", "-B", "/usr/lib/paws-runner-package/deb-control.py", "configure"], env={"PAWS_RUNNER_DOCKER_ACCESS": "grant"}).strip().splitlines()[-1])
             assert configured["docker"]["status"] == "absent" and configured["docker"]["dockerGroup"]["status"] == "group-kept", configured["docker"]
             assert source.docker_group_members() == ["paws-runner"] and set(json.loads(services.read_text())) == set(active)
-            assert not source.installer.DOCKER_UNIT.exists() and not source.installer.DOCKER_DROP_IN.exists()
+            assert not source.installer.DOCKER_UNIT.exists()
             observations.append({"name": "package configuration without Docker Engine sets up no daemon and leaves a docker group membership Paws did not add", "passed": True})
             source.installer.write_atomic(source.installer.DOCKER_GROUP_GRANT, json.dumps({"added": True}).encode(), 0o600)
             install(second)

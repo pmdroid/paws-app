@@ -40,8 +40,7 @@ case "$1" in
     fi
     rm -rf -- {root}/opt/paws-runner
     rm -f -- {" ".join(paths)} {root}/var/lib/paws-runner-install/debian-services.json
-    rm -f -- {root}/etc/systemd/system/paws-docker.service {root}/etc/systemd/system/paws-agent@.service.d/docker.conf
-    rmdir -- {root}/etc/systemd/system/paws-agent@.service.d 2>/dev/null || true
+    rm -f -- {root}/etc/systemd/system/paws-docker.service
     if command -v systemctl >/dev/null 2>&1; then
       systemctl daemon-reload || true
     fi
@@ -49,10 +48,10 @@ case "$1" in
 esac
 if [ "$1" = purge ]; then
   rm -f -- {root}/etc/paws-runner/config.json
-  rm -rf -- {root}/var/lib/paws-agent-docker
+  rm -rf -- {root}/var/lib/paws-runner-docker
   for file in {root}/etc/subuid {root}/etc/subgid; do
-    if [ -f "$file" ] && grep -q '^paws-agent:' "$file"; then
-      sed -i '/^paws-agent:/d' "$file"
+    if [ -f "$file" ] && grep -q '^paws-runner:' "$file"; then
+      sed -i '/^paws-runner:/d' "$file"
     fi
   done
 fi

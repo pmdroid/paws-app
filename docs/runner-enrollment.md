@@ -38,7 +38,7 @@ Package contents and upgrade behavior are in `deploy/linux`: the release manifes
 
 ### Docker access for runner work
 
-Runner work never uses the root Docker daemon at `/var/run/docker.sock`. When you opt in, the package gives it a rootless Docker daemon of its own: `paws-docker.service`, which runs as `paws-agent` and listens on `/run/paws-docker/docker.sock`. The socket's directory is open to the `paws-agent` group, which `paws-runner` belongs to. When the socket exists, the runner gives every worker it starts `DOCKER_HOST=unix:///run/paws-docker/docker.sock`; the agent and the Closeout checks inherit it. An agent only ever gets a `DOCKER_HOST` that names a local `unix://` socket. When the installer asks on a terminal, the default answer is no. For scripted installs, pass the choice:
+Runner work never uses the root Docker daemon at `/var/run/docker.sock`. When you opt in, the package gives it a rootless Docker daemon of its own: `paws-docker.service`, which listens on `/run/paws-docker/docker.sock`. It runs as `paws-runner`, the account workers run as, so a container can bind-mount the worker's checkout (`docker run -v "$PWD":/workspace`, Compose volumes). Only `paws-runner` can reach the socket. When the socket exists, the runner gives every worker it starts `DOCKER_HOST=unix:///run/paws-docker/docker.sock`; the agent and the Closeout checks inherit it. An agent only ever gets a `DOCKER_HOST` that names a local `unix://` socket. When the installer asks on a terminal, the default answer is no. For scripted installs, pass the choice:
 
 ```sh
 curl -fsSL https://get.paws.boo | sudo sh -s -- --docker-access
@@ -52,25 +52,25 @@ Package configuration never prompts. It reads `PAWS_RUNNER_DOCKER_ACCESS=grant` 
 On a grant, package configuration:
 
 1. Checks for `rootlesskit`, `newuidmap`, `newgidmap` and `slirp4netns`. If any is missing, it names the package, sets nothing up and finishes the install.
-2. Adds a 65536-id range for `paws-agent` to `/etc/subuid` and `/etc/subgid` where it has none, after the highest existing range.
-3. Creates `/var/lib/paws-agent-docker` (owner `paws-agent`, mode 0700) for images and containers.
-4. Writes `/etc/systemd/system/paws-docker.service`, which runs the `dockerd-rootless.sh` launcher the package ships, and the drop-in `/etc/systemd/system/paws-agent@.service.d/docker.conf`, which gives a job started as `paws-agent@<id>.service` the same `DOCKER_HOST` and starts the daemon before it.
+2. Adds a 65536-id range for `paws-runner` to `/etc/subuid` and `/etc/subgid` where it has none, after the highest existing range.
+3. Creates `/var/lib/paws-runner-docker` (owner `paws-runner`, mode 0700) for images and containers.
+4. Writes `/etc/systemd/system/paws-docker.service`, which runs the `dockerd-rootless.sh` launcher the package ships.
 5. Enables and starts `paws-docker.service`, and reports whether `paws-runner` can reach it.
 
-`deny`, or a host without Docker Engine, stops the daemon and removes the unit and the drop-in. The data directory and the subordinate ids stay, so a later grant finds its images. Removing the package does the same; purging it also deletes `/var/lib/paws-agent-docker` and the `paws-agent` lines in `/etc/subuid` and `/etc/subgid`.
+`deny`, or a host without Docker Engine, stops the daemon and removes the unit. The data directory and the subordinate ids stay, so a later grant finds its images. Removing the package does the same; purging it also deletes `/var/lib/paws-runner-docker` and the `paws-runner` lines in `/etc/subuid` and `/etc/subgid`.
 
 An earlier release added `paws-runner` to the `docker` group instead. An upgrade removes that membership when the install state in `/var/lib/paws-runner-install/docker-group.json` records that Paws added it. A membership Paws did not record adding stays, and the install prints a warning.
 
 To check the daemon:
 
 ```sh
-D="sudo -u paws-agent env DOCKER_HOST=unix:///run/paws-docker/docker.sock docker"
-$D info --format '{{.SecurityOptions}}'                    # includes name=rootless
+D="sudo -u paws-runner env DOCKER_HOST=unix:///run/paws-docker/docker.sock docker"
+$D info --format '{{.SecurityOptions}}'                       # includes name=rootless
 $D run --rm alpine echo ok
-sudo -u paws-runner env DOCKER_HOST=unix:///run/paws-docker/docker.sock docker info  # what runner work sees
-systemctl show 'paws-agent@test.service' -p Environment    # includes DOCKER_HOST
-sudo -u paws-agent docker -H unix:///var/run/docker.sock ps  # permission denied
-journalctl -u paws-docker.service                           # when it does not start
+$D run --rm -v /var/lib/paws-agent:/w alpine ls /w             # a checkout's parent is readable
+$D run -d --rm alpine sleep 20; ps -eo user,cmd | grep '[s]leep 20'  # host user is paws-runner
+sudo -u paws-runner docker -H unix:///var/run/docker.sock ps    # permission denied
+journalctl -u paws-docker.service                              # when it does not start
 ```
 
 ## Configure the runner

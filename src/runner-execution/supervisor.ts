@@ -102,7 +102,7 @@ function killRecorded(pid: number): void {
   }
 }
 
-/** The rootless Docker daemon's socket that `paws-docker.service` (deploy/linux/install.py) runs for agent work. */
+/** The rootless Docker daemon's socket that `paws-docker.service` (deploy/linux/install.py) runs for runner work as paws-runner. */
 export const RUNNER_DOCKER_SOCKET = "/run/paws-docker/docker.sock";
 
 /** `DOCKER_HOST` for runner work when the rootless Docker daemon's socket exists. */
