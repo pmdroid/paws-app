@@ -71,6 +71,9 @@ const ACTIVE_STATES = new Set(["running", "verifying", "recovering"]);
 const COMMENT_CHARS = 4_000;
 const SECTION_CHARS = 12_000;
 
+export const LINEAR_COMMENT_RESTART =
+  "Comments on the Linear issue came in after this work was accepted. They follow in this turn's instructions. Address them, then finish the work as before.";
+
 export const LINEAR_COMMENT_INSTRUCTION =
   "These comments were posted on the Linear issue while you worked on it. Treat them as direction from the team. A comment can be a question, a note or a status line rather than a request; change nothing for those.";
 
@@ -301,7 +304,31 @@ export async function deliverLinearComments(
   const pull = getItemPullRequest(db, item.id);
   if (pull !== null) {
     const queue = await caps.leaveMergeQueue(item, pull.pullNumber);
-    if (queue === "merged" || queue === "closed") return "wait";
+    if (queue === "merged") return "wait";
+    if (queue === "closed") {
+      immediate(db, () => {
+        settleLinearComments(
+          db,
+          pendingLinearComments(db, item.id).map((comment) => comment.commentId),
+          { state: "ignored", reason: "pull_closed", now: caps.now() },
+        );
+        enqueueOutboxOnce(db, {
+          target: "linear",
+          op: "activity",
+          orderingKey: item.sessionKey!,
+          idempotencyKey: `linear-comment:pull-closed:${item.id}:${pull.pullNumber}`,
+          payload: {
+            sessionId: item.sessionKey!,
+            kind: "thought",
+            body: `Pull request #${pull.pullNumber} was closed without merging, so Paws did not pass the comment on ${item.linearIdentifier} to the agent.`,
+            id: crypto.randomUUID(),
+          },
+          now: caps.now(),
+        });
+      });
+      await caps.flush();
+      return "done";
+    }
   }
   if (
     pendingPullComments(db, item.id).length > 0 ||
@@ -314,18 +341,17 @@ export async function deliverLinearComments(
     if (latest === null || latest.version !== item.version || latest.state !== "merge_queue")
       return "wait";
     const ready = current(db, latest, pendingLinearComments(db, item.id), caps);
-    const batch = fitLinearComments(ready.kept);
-    const body = linearCommentSection(batch, latest.linearIdentifier);
-    if (body === null) return ready.unknown ? "wait" : "done";
+    const batch = ready.kept;
+    if (linearCommentSection(batch, latest.linearIdentifier) === null)
+      return ready.unknown ? "wait" : "done";
     const jobKey = `linear-comment:${latest.id}:${batch[0]!.commentId}`;
-    const jobId = restart(db, latest, { reason: "follow_up", body, jobKey, now: caps.now() });
+    const jobId = restart(db, latest, {
+      reason: "follow_up",
+      body: LINEAR_COMMENT_RESTART,
+      jobKey,
+      now: caps.now(),
+    });
     if (jobId === null) return "wait";
-    const restarted = getWorkItem(db, latest.id)!;
-    markLinearCommentsDelivered(
-      db,
-      batch.map((comment) => comment.commentId),
-      { via: "restart", itemVersion: restarted.version, now: caps.now() },
-    );
     enqueueOutboxOnce(db, {
       target: "linear",
       op: "activity",
@@ -334,7 +360,7 @@ export async function deliverLinearComments(
       payload: {
         sessionId: latest.sessionKey!,
         kind: "thought",
-        body: `Handed ${count(batch)} on ${latest.linearIdentifier} to the agent. It works on ${batch.length === 1 ? "it" : "them"} now.`,
+        body: `Sent ${latest.linearIdentifier} back to the agent for ${count(batch)}. The agent reads ${batch.length === 1 ? "it" : "them"} when its next turn starts.`,
         id: crypto.randomUUID(),
       },
       now: caps.now(),
@@ -342,11 +368,13 @@ export async function deliverLinearComments(
     return "restarted";
   });
   if (step === "restarted") await caps.flush();
-  if (step === "restarted" && pendingLinearComments(db, item.id).length > 0) return "wait";
   return step;
 }
 
-export type LinearCommentBrief = { text: string; commentIds: string[] };
+export type LinearCommentBrief = {
+  text: string;
+  comments: { commentId: string; updatedAtMs: number }[];
+};
 
 export function linearCommentBrief(
   db: Database,
@@ -358,7 +386,15 @@ export function linearCommentBrief(
       current(db, item, pendingLinearComments(db, item.id), caps).kept,
     );
     const text = linearCommentSection(batch, item.linearIdentifier);
-    return text === null ? null : { text, commentIds: batch.map((comment) => comment.commentId) };
+    return text === null
+      ? null
+      : {
+          text,
+          comments: batch.map((comment) => ({
+            commentId: comment.commentId,
+            updatedAtMs: comment.updatedAtMs,
+          })),
+        };
   });
 }
 
@@ -369,13 +405,16 @@ export function settleLinearCommentBrief(
   options: { now: number; wait?: PullFeedbackWait },
 ): void {
   immediate(db, () => {
-    markLinearCommentsDelivered(db, brief.commentIds, {
+    const seen = brief.comments
+      .filter((entry) => getLinearComment(db, entry.commentId)?.updatedAtMs === entry.updatedAtMs)
+      .map((entry) => entry.commentId);
+    markLinearCommentsDelivered(db, seen, {
       via: "brief",
       itemVersion: item.version,
       now: options.now,
     });
     const left = pendingLinearComments(db, item.id);
-    if (left.length > 0)
+    if (left.length > 0 && !isTerminalWorkItemState(getWorkItem(db, item.id)?.state ?? "cancelled"))
       gatherLinearComments(
         db,
         item.id,

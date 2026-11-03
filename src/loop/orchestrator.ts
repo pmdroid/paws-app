@@ -915,9 +915,38 @@ export class Orchestrator {
         authorized,
       });
     }
+    await this.leaveMergeQueueForComments(policy, comment.issueId);
     await this.flush();
     const stored = getLinearComment(this.db, comment.commentId);
     return stored !== null && stored.state !== "rejected" && stored.state !== "ignored";
+  }
+
+  private async leaveMergeQueueForComments(
+    policy: LinearCommentPolicy,
+    issueId: string,
+  ): Promise<void> {
+    const row = this.db
+      .query<{ id: string }, [string]>(
+        `SELECT DISTINCT item_id AS id FROM linear_comment
+         WHERE issue_id = ? AND state = 'queued' AND item_id IS NOT NULL`,
+      )
+      .all(issueId);
+    for (const { id } of row) {
+      const item = getWorkItem(this.db, id);
+      const pull = item ? getItemPullRequest(this.db, item.id) : null;
+      if (!item || item.state !== "merge_queue" || pull === null) continue;
+      await this.linearCommentCapabilities(policy)
+        .leaveMergeQueue(item, pull.pullNumber)
+        .catch((error: unknown) =>
+          journalCaught(
+            error,
+            "orchestrator.leaveMergeQueueForComments",
+            item.id,
+            undefined,
+            this.options.journal,
+          ),
+        );
+    }
   }
 
   private commentAlreadyHandedOff(event: AcceptedLinearEvent): boolean {
@@ -2772,37 +2801,47 @@ export class Orchestrator {
             worktree: workspace,
             prompt,
           });
-      const result = await promptRunner({
-        ...launched,
-        role: "implementer",
-        profile,
-        itemId: itemPathId(item),
-        runId: run.id,
-        worktreePath: workspace,
-        pawsRoot: this.options.pawsRoot,
-        home: this.options.home,
-        prompt,
-        readOnly: isReadOnlyTaskMode(mode),
-        publishArtifact: mode === "artifact" ? this.artifactPublisher(item) : undefined,
-        checkpoint: false,
-        signal: controller.signal,
-        askTeam: this.askHook(item, run.id),
-        updatePlan: this.planHook(item, sessionProgress),
-        postUpdate: this.updateHook(item),
-        prepareInputFiles: this.prepareInputFiles(item, run.id),
-        onEvent: activity.onEvent,
-      });
-      if (result.stopReason === "end_turn" || this.askedRuns.has(run.id))
-        this.settleLinearCommentBrief(item, responseComments);
-      controller.signal.throwIfAborted();
-      if (this.stopped(item.id) || this.askedRuns.has(run.id)) return;
-      if (
-        result.stopReason !== "end_turn" ||
-        result.authRequired ||
-        !result.agentExited ||
-        result.errorMessage
-      )
-        throw new Error(result.errorMessage ?? `Answer stopped (${result.stopReason})`);
+      const turn = async (text: string, comments: LinearCommentBrief | null) => {
+        const result = await promptRunner({
+          ...launched,
+          role: "implementer",
+          profile,
+          itemId: itemPathId(item),
+          runId: run.id,
+          worktreePath: workspace,
+          pawsRoot: this.options.pawsRoot,
+          home: this.options.home,
+          prompt: text,
+          readOnly: isReadOnlyTaskMode(mode),
+          publishArtifact: mode === "artifact" ? this.artifactPublisher(item) : undefined,
+          checkpoint: false,
+          signal: controller.signal,
+          askTeam: this.askHook(item, run.id),
+          updatePlan: this.planHook(item, sessionProgress),
+          postUpdate: this.updateHook(item),
+          prepareInputFiles: this.prepareInputFiles(item, run.id),
+          onEvent: activity.onEvent,
+        });
+        if (result.stopReason === "end_turn" || this.askedRuns.has(run.id))
+          this.settleLinearCommentBrief(item, comments);
+        controller.signal.throwIfAborted();
+        if (this.stopped(item.id) || this.askedRuns.has(run.id)) return false;
+        if (
+          result.stopReason !== "end_turn" ||
+          result.authRequired ||
+          !result.agentExited ||
+          result.errorMessage
+        )
+          throw new Error(result.errorMessage ?? `Answer stopped (${result.stopReason})`);
+        return true;
+      };
+      if (!(await turn(prompt, responseComments))) return;
+      for (let extra = 0; extra < RESPONSE_COMMENT_TURNS; extra++) {
+        const later = this.linearCommentBrief(item);
+        if (later === null) break;
+        const again = [later.text, RESPONSE_COMMENT_PROMPT[mode]].join("\n\n");
+        if (!(await turn(again, later))) return;
+      }
       activity.flush();
       if (mode === "plan") {
         await this.proposePlan(item, run.id, activity.resultBody());
@@ -8652,6 +8691,16 @@ const OUTBOX_WAIT_MS = 30_000;
 const FIRST_ACTIVITY_HOLD_MS = 5_000;
 const CHECKS_RATE_LIMIT_RETRY_MS = 60_000;
 const CHECKS_RATE_LIMIT_WAIT_MS = 60 * 60_000;
+
+const RESPONSE_COMMENT_TURNS = 3;
+
+const RESPONSE_COMMENT_PROMPT: Record<string, string> = {
+  answer:
+    "These comments arrived while you answered. Take them into account and give your complete answer again in your final message.",
+  plan: "These comments arrived while you planned. Take them into account and give your complete plan again in your final message.",
+  artifact:
+    "These comments arrived while you worked. Take them into account, publish any changed deliverables with publish_artifact, and give your complete final response with the published file links again.",
+};
 
 export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
   return new Orchestrator(options);
