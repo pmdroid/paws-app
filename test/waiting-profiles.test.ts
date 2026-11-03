@@ -316,3 +316,59 @@ test("automatic reconciliation waits for a live runner lease to end", () => {
   internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
   expect(JSON.parse(readFileSync(waiting.file, "utf8")).profiles).toEqual(profiles);
 });
+
+test("an account order edit reaches waiting runs only; a run with a live lease stays pinned", async () => {
+  const f = fixture();
+  writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
+  const waiting = f.seed("paused");
+  const executing = f.seed("running");
+  f.db.run("PRAGMA foreign_keys=OFF");
+  f.db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
+    [executing.run.id, "runner", "workspace", 1, 0, "command", 2000],
+  );
+  const pinned = readFileSync(executing.file, "utf8");
+  const accounts = {
+    implementer: ["01J0000000000000000000000A", "01J0000000000000000000000B"],
+    reviewer: ["01J0000000000000000000000X"],
+  };
+  writeAgentSettings(join(f.root, "config.toml"), {
+    defaults: { ...oldProfiles, accounts },
+    projects: [],
+  });
+  expect(f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
+  const saved = JSON.parse(readFileSync(waiting.file, "utf8"));
+  expect(saved).toEqual({
+    profiles: oldProfiles,
+    candidate: waiting.candidate,
+    accounts: {
+      revision: expect.stringMatching(/^[0-9a-f]{16}$/),
+      implementer: { agent: "claude", accounts: accounts.implementer, source: "defaults" },
+      reviewer: { agent: "codex", accounts: accounts.reviewer, source: "defaults" },
+    },
+  });
+  expect(readFileSync(executing.file, "utf8")).toBe(pinned);
+  expect(f.orchestrator.applyAgentSettingsToWaiting()).toBe(0);
+  const internal = f.orchestrator as unknown as {
+    remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
+  };
+  await internal.remoteAgentForItem(waiting.item.id)({
+    role: "reviewer",
+    runId: waiting.run.id,
+    itemId: waiting.item.id,
+    pawsRoot: f.root,
+    worktreePath: f.root,
+    prompt: "Review",
+  });
+  expect(f.calls[0]!.accounts).toEqual({
+    revision: saved.accounts.revision,
+    profile: saved.accounts.reviewer,
+    fallback: undefined,
+  });
+  writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
+  expect(f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
+  expect(JSON.parse(readFileSync(waiting.file, "utf8"))).toEqual({
+    profiles: oldProfiles,
+    candidate: waiting.candidate,
+  });
+});

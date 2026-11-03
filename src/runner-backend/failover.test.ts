@@ -388,4 +388,61 @@ describe("agent settings changed during a quota wait", () => {
     );
     expect(attempted).toEqual(["claude", "claude", "codex"]);
   });
+
+  test("an account order edit during a quota wait wakes it and applies to the next attempt", async () => {
+    const first = {
+      revision: "r1",
+      profile: { agent: "claude" as const, accounts: ["A"], source: "defaults" as const },
+    };
+    const second = {
+      revision: "r2",
+      profile: { agent: "claude" as const, accounts: ["B", "A"], source: "defaults" as const },
+    };
+    let profiles: ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>> = {
+      profile: claude,
+      accounts: first,
+    };
+    const seen: (RunAgentOptions["accounts"] | undefined)[] = [];
+    await runWithFailover(
+      { ...input(), ...profiles, resolveProfiles: () => profiles },
+      async (options) => {
+        seen.push(options.accounts);
+        if (seen.length === 1) throw new UsageLimitPause("claude", RESET, RESET, null);
+        return done();
+      },
+      async () => undefined,
+      {
+        now: () => RESET - 60_000,
+        async pause(_limit, changed) {
+          expect(changed?.()).toBe(false);
+          profiles = { profile: claude, accounts: second };
+          expect(changed?.()).toBe(true);
+        },
+      },
+    );
+    expect(seen).toEqual([first, second]);
+  });
+
+  test("the reviewer fallback runs with its own accounts after the reviewer's are spent", async () => {
+    const accounts = {
+      revision: "r1",
+      profile: { agent: "claude" as const, accounts: ["A", "B"], source: "defaults" as const },
+      fallback: { agent: "codex" as const, accounts: ["X"], source: "defaults" as const },
+    };
+    const seen: [string, RunAgentOptions["accounts"]][] = [];
+    await runWithFailover(
+      { ...input(), profile: claude, fallbackProfile: codex, accounts, role: "reviewer" },
+      async (options) => {
+        seen.push([options.profile!.agent, options.accounts]);
+        if (options.profile!.agent === "claude")
+          throw new UsageLimitPause("claude", RESET, RESET, null);
+        return done();
+      },
+      async () => undefined,
+    );
+    expect(seen).toEqual([
+      ["claude", accounts],
+      ["codex", { revision: "r1", profile: accounts.fallback }],
+    ]);
+  });
 });

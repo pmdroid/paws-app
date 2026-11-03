@@ -86,15 +86,18 @@ export async function runWithFailover(
   const limitedSincePause = new Set<string>();
   let profile = input.profile;
   let fallback = input.fallbackProfile;
+  let accounts = input.accounts;
   const profileKey = (profiles: {
     profile?: RunAgentOptions["profile"];
     fallbackProfile?: RunAgentOptions["fallbackProfile"];
+    accounts?: RunAgentOptions["accounts"];
   }) =>
-    JSON.stringify(
-      [profiles.profile, profiles.fallbackProfile].map((value) =>
+    JSON.stringify([
+      ...[profiles.profile, profiles.fallbackProfile].map((value) =>
         value ? [value.agent, value.model, value.effort] : null,
       ),
-    );
+      profiles.accounts?.revision ?? null,
+    ]);
   let configuredProfilesKey = profileKey(input);
   const profilesChanged = () =>
     input.resolveProfiles !== undefined &&
@@ -105,7 +108,14 @@ export async function runWithFailover(
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) throw new Error("Remote runner request timed out during failover");
       return await attempt(
-        { ...input, profile, fallbackProfile: fallback, prompt, timeoutMs: remaining },
+        {
+          ...input,
+          profile,
+          fallbackProfile: fallback,
+          accounts,
+          prompt,
+          timeoutMs: remaining,
+        },
         excluded,
         limit,
       );
@@ -128,6 +138,7 @@ export async function runWithFailover(
         );
         profile = fallback;
         fallback = undefined;
+        if (accounts) accounts = { revision: accounts.revision, profile: accounts.fallback };
         limit = undefined;
         limitedSincePause.clear();
         continue;
@@ -144,6 +155,7 @@ export async function runWithFailover(
           if (latestKey !== configuredProfilesKey) {
             profile = latest.profile;
             fallback = latest.fallbackProfile;
+            accounts = latest.accounts;
             configuredProfilesKey = latestKey;
             excluded.length = 0;
           }
