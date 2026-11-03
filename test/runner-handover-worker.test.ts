@@ -16,6 +16,7 @@ import { git } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
 import type { RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand, HANDOVER_COMMIT_MESSAGE } from "../src/runner-worker";
+import { withoutJournalTime } from "../src/runner-protocol";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
 const roots: string[] = [];
@@ -74,7 +75,13 @@ async function fixture(agent: "claude" | "codex" | "grok" = "claude") {
   const project = join(home, ".claude", "projects", checkout.replace(/[^a-zA-Z0-9]/g, "-"));
   const events = () =>
     existsSync(join(output, "events.jsonl"))
-      ? readFileSync(join(output, "events.jsonl"), "utf8")
+      ? readFileSync(join(output, "events.jsonl"), "utf8").replace(/^.+$/gm, (line) => {
+          try {
+            return JSON.stringify(withoutJournalTime(JSON.parse(line)));
+          } catch {
+            return line;
+          }
+        })
       : "";
   const until = async (marker: string, signal: AbortSignal) => {
     while (!events().includes(marker)) await delay(10, undefined, { signal });
