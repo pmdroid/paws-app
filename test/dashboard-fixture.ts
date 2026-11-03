@@ -13,9 +13,10 @@ import {
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import { startServer } from "../src/server";
+import { screenshotPng } from "./png";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 
-const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 73, 72, 68, 82]);
+const PNG = screenshotPng(320, 200, [{ x: 40, y: 40, width: 240, height: 120, rgb: 0x7c3aed }]);
 
 export type DashboardFixture = Awaited<ReturnType<typeof startDashboardFixture>>;
 
@@ -51,7 +52,12 @@ export async function startDashboardFixture() {
         installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
       [session, team],
     );
-    insertQueuedItem(db, { id: item, sessionKey: session, title: `Fixture ${item}` });
+    insertQueuedItem(db, {
+      id: item,
+      sessionKey: session,
+      title: `Fixture ${item}`,
+      now: Date.now(),
+    });
     runs[item] = beginImplementRun(db, item, Date.now()).run.id;
     applyWorkItemEvent(db, item, "blocking_question");
     db.run(
@@ -73,7 +79,12 @@ export async function startDashboardFixture() {
     ["PAS-3", "session-mine"],
     ["PAS-4", "session-other"],
   ] as const) {
-    insertQueuedItem(db, { id: item, sessionKey: session, title: `Fixture ${item}` });
+    insertQueuedItem(db, {
+      id: item,
+      sessionKey: session,
+      title: `Fixture ${item}`,
+      now: Date.now(),
+    });
     const head = beginImplementRun(db, item, Date.now()).run.id.padEnd(40, "0").slice(0, 40);
     enterMergeQueue(db, item, { phase: "merge_queue", baseSha: head, wipCommit: head });
   }

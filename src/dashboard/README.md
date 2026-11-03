@@ -6,7 +6,7 @@ The Paws process serves the dashboard files and its resource routes. The live re
 
 ## Contract
 
-Each page loads one resource shaped for what it renders. Types and runtime parsers are in [`src/contract.ts`](src/contract.ts); a parser rejects a body that does not match instead of reading a missing field as empty, and ignores unknown fields.
+Each page loads one resource shaped for what it renders. [Dashboard API](../../docs/dashboard-api.md) has the canonical paths, old links, authorization, caching, lazy logs and media, the route coverage guard and how to verify them. Types and runtime parsers are in [`src/contract.ts`](src/contract.ts); a parser rejects a body that does not match instead of reading a missing field as empty, and ignores unknown fields.
 
 | Page                          | Resource                                                                 |
 | ----------------------------- | ------------------------------------------------------------------------ |
@@ -135,6 +135,8 @@ bun run check
 ```
 
 That runs oxlint, oxfmt, `tsc` (engine plus the browser client), the tests, and the static build.
+
+`bun run verify:ui <evidence directory>` builds the dashboard and drives it in Chromium against the production server over a disposable SQLite file; see [Verify](../../docs/dashboard-api.md#verify).
 
 The Findings page also loads `GET /api/finding-groups`. Its Groups view lists the shared fix, scope, member severities and links to individual rows, alongside the last grouping run's time, duration, tokens when reported, and group count. `POST /api/finding-groups` accepts `run` for admins, or `file`, `add`, and `dismiss` with a group `id`; dismissal includes `reason`. Workspace access and CSRF apply to every mutation. Each member must have access to every finding in a group to act on it. Filing and commenting use stable Linear ids for safe retries. The daily job never writes to Linear. `GET /api/finding-groups` also reports `enabled`; Settings → Findings switches it with `POST /api/settings/findings` and `{ grouping: boolean }`, for admins only.
 
