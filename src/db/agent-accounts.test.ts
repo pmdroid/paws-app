@@ -314,11 +314,11 @@ test("a named account is refused unless the runner reports the binding", () => {
     code(() => recordCommandAccount(db, probe(id, runner, workspace, account), NOW));
   expect(attempt("N1")).toBe("runner_unsupported");
   db.run(
-    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('R1','0.1.58',?)",
+    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('R1','0.1.59',?)",
     [NOW],
   );
   expect(attempt("N2")).toBe("runner_unsupported");
-  db.run("UPDATE runner_host_status SET runner_version='0.1.59' WHERE runner_id='R1'");
+  db.run("UPDATE runner_host_status SET runner_version='0.1.60' WHERE runner_id='R1'");
   expect(attempt("N3")).toBe("runner_unsupported");
   recordRunnerAccountCapability(db, "R1", { protocol: 1, bindings: [] }, NOW);
   expect(attempt("N4")).toBe("runner_unsupported");
@@ -361,7 +361,7 @@ test("identity stays attached after an account is disabled or removed", () => {
     now: NOW,
   });
   db.run(
-    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('R1','0.1.59',?)",
+    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('R1','0.1.60',?)",
     [NOW],
   );
   recordRunnerAccountCapability(
