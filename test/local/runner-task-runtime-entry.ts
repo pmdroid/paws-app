@@ -71,6 +71,7 @@ async function coordinator(port: number) {
   const db = openDatabase(join(server, "paws.db"));
   migrate(db);
   const service = await openRunnerCoordinator({
+    eventKey: Buffer.alloc(32, 7),
     db,
     root: join(server, "identity"),
     tls: tls(),

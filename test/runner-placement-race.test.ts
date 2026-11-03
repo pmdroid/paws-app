@@ -132,6 +132,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
   });
   work.heartbeat(runnerId, 8);
   const results = createRunnerResults({ db, work });

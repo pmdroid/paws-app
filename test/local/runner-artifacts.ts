@@ -102,7 +102,12 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
       "team",
     ]);
     const keys = generateKeyPairSync("ed25519");
-    const work = createRunnerWork({ db, keyId: "fixture", privateKey: keys.privateKey });
+    const work = createRunnerWork({
+      db,
+      keyId: "fixture",
+      privateKey: keys.privateKey,
+      eventKey: Buffer.alloc(32, 7),
+    });
     const command: Extract<RunnerCommand, { type: "run" }> = {
       type: "run",
       id: workspaceId(),

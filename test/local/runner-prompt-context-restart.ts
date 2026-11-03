@@ -11,6 +11,7 @@ try {
     db,
     keyId: "restart",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => input.now,
   });
   const store = createRunnerInputStore({ root: input.root, work });

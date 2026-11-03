@@ -245,7 +245,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-transcripts",
     "agent-sessions",
   ],
-  "runner-work": ["journal", "db", "workspace", "runner-protocol", "questions"],
+  "runner-work": ["journal", "credentials", "db", "workspace", "runner-protocol", "questions"],
   "runner-placement": ["journal", "db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
     "finding-groups",

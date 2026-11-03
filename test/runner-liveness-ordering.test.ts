@@ -71,6 +71,7 @@ function fixture() {
     db,
     keyId: "fixture",
     privateKey: keys.privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => clock.now,
   });
   const host = { runnerVersion: CONFIRMED_TEARDOWN_RUNNER_VERSION.join(".") };

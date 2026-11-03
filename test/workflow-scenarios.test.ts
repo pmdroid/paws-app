@@ -311,7 +311,13 @@ function runnerWorld() {
   const w = new World(Date.now());
   const keys = generateKeyPairSync("ed25519");
   const controller = () =>
-    createRunnerWork({ db: w.db, keyId: "fixture", privateKey: keys.privateKey, now: () => w.now });
+    createRunnerWork({
+      db: w.db,
+      keyId: "fixture",
+      privateKey: keys.privateKey,
+      eventKey: Buffer.alloc(32, 7),
+      now: () => w.now,
+    });
   const userId = putWorkspaceUser(w.db, {
     id: "me",
     linearUserId: "owner",

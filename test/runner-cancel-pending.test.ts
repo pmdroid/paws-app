@@ -30,7 +30,13 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
   let now = Date.now();
   const keys = generateKeyPairSync("ed25519");
   const controller = () =>
-    createRunnerWork({ db, keyId: "fixture", privateKey: keys.privateKey, now: () => now });
+    createRunnerWork({
+      db,
+      keyId: "fixture",
+      privateKey: keys.privateKey,
+      eventKey: Buffer.alloc(32, 7),
+      now: () => now,
+    });
   try {
     migrate(db);
     const userId = putWorkspaceUser(db, {

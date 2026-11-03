@@ -317,6 +317,7 @@ async function runRemoteFault(fault: Fault) {
     db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
   });
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });

@@ -16,6 +16,7 @@ test("unavailable placement names the saved agent and why no runner can take it"
       db,
       keyId: "fixture",
       privateKey: generateKeyPairSync("ed25519").privateKey,
+      eventKey: Buffer.alloc(32, 7),
     });
     const backend = createRemoteAgentRunner({
       db,

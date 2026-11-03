@@ -91,7 +91,12 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       "team",
     ]);
     const keys = generateKeyPairSync("ed25519");
-    const work = createRunnerWork({ db, keyId: "fixture", privateKey: keys.privateKey });
+    const work = createRunnerWork({
+      db,
+      keyId: "fixture",
+      privateKey: keys.privateKey,
+      eventKey: Buffer.alloc(32, 7),
+    });
     const results = createRunnerResults({ db, work });
     let generation = 0;
     function verify(envelope: unknown) {
@@ -200,6 +205,31 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         event: { type: "question", text: "Which fixture?", options: ["A", "B"] },
       });
       assert.equal(results.events(run.id, generation, 1).length, 1);
+      const stored = db
+        .query<{ payload: string; type: string }, [string, number]>(
+          "SELECT payload,type FROM runner_event WHERE run_id=? AND generation=? ORDER BY sequence",
+        )
+        .all(run.id, generation);
+      assert.deepEqual(
+        stored.map((row) => row.type),
+        ["progress", "question"],
+      );
+      assert(!stored.some((row) => /Working|Which fixture/.test(row.payload)));
+      assert.deepEqual(
+        results.events(run.id, generation, 0).map((row) => row.event),
+        [
+          { type: "progress", text: "Working" },
+          { type: "question", text: "Which fixture?", options: ["A", "B"] },
+        ],
+      );
+      assert.deepEqual(
+        work.event({ ...access, sequence: 1, event: { type: "progress", text: "Working" } }),
+        { duplicate: true },
+      );
+      assert.throws(
+        () => work.event({ ...access, sequence: 1, event: { type: "progress", text: "Changed" } }),
+        /changed its payload/,
+      );
       assert.throws(
         () => results.answer({ runId: run.id, generation, sequence: 1, answer: "A" }),
         /unavailable/,

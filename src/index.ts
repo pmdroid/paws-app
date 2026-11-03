@@ -239,6 +239,12 @@ import {
 import { createRunnerSessionMoves } from "./runner-control";
 import { cacheRepositoryCredentials } from "./runner-repository-access";
 import {
+  encryptRunnerEvents,
+  loadRunnerEventKey,
+  RUNNER_EVENT_ENCRYPT_JOB,
+  RUNNER_EVENT_KEY_FILE,
+} from "./runner-work";
+import {
   encryptRunnerTranscripts,
   loadRunnerTranscriptKey,
   RUNNER_TRANSCRIPT_ENCRYPT_JOB,
@@ -717,6 +723,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             objects: transcriptObjects,
             key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
           },
+          eventKey: loadRunnerEventKey(join(paths.secretsDir, RUNNER_EVENT_KEY_FILE)),
           agentSessions: placeOnRunner
             ? {
                 objects: agentSessionObjects(),
@@ -1533,6 +1540,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             `runner transcripts encrypted: ${converted} chunks sealed, ${skipped} unreadable`,
           ),
         ),
+      );
+      created.jobs.register(RUNNER_EVENT_ENCRYPT_JOB, (_job, context) =>
+        encryptRunnerEvents({
+          db,
+          key: loadRunnerEventKey(join(paths.secretsDir, RUNNER_EVENT_KEY_FILE)),
+          signal: AbortSignal.any([context.signal, abort.signal]),
+        }).then(({ sealed }) => journal(`runner events encrypted: ${sealed} events sealed`)),
       );
       // Enqueued once by a migration; it fills the Findings page from the review evidence of runs
       // Closeout accepted before the page stored findings.

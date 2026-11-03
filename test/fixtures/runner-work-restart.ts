@@ -10,6 +10,7 @@ try {
     db,
     keyId: "fixture",
     privateKey: createPrivateKey(readFileSync(keyPath!)),
+    eventKey: Buffer.alloc(32, 7),
     now: () => Number(at),
   });
   console.log(

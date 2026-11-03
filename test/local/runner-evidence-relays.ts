@@ -90,6 +90,7 @@ export async function probeRunnerEvidenceRelays(
   const issuer = join(root, "issuer");
   await initializeRunnerCoordinator(issuer);
   const coordinator = await openRunnerCoordinator({
+    eventKey: Buffer.alloc(32, 7),
     db,
     root: issuer,
     tls,

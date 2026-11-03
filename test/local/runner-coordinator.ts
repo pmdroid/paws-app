@@ -122,6 +122,7 @@ export async function probeRunnerCoordinator(
   const member = { ...principal, userId: memberId, role: "member" as const };
   const options = {
     db,
+    eventKey: Buffer.alloc(32, 7),
     root: identityRoot,
     tls,
     port: 0,

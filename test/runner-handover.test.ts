@@ -98,7 +98,13 @@ async function setup() {
     );
   release("0.1.44");
   const signing = generateKeyPairSync("ed25519");
-  const work = createRunnerWork({ db, keyId: "fixture", privateKey: signing.privateKey, now });
+  const work = createRunnerWork({
+    db,
+    keyId: "fixture",
+    privateKey: signing.privateKey,
+    eventKey: Buffer.alloc(32, 7),
+    now,
+  });
   const results = createRunnerResults({ db, work, now });
   const health = createRunnerHealth({ db, work, now });
   const sessions = createAgentSessions({

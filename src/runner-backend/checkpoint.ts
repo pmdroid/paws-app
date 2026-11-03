@@ -13,12 +13,11 @@ import { OUTBOX_ACTIVITY } from "../core";
 import {
   CHECKPOINT_RUNNER_VERSION,
   RUNNER_CHECKPOINT_LIMIT_MS,
-  RunnerEventSchema,
   type RunnerCommand,
   type RunnerEvent,
 } from "../runner-protocol";
 import { RUNNER_ONLINE_MS } from "../runner-placement";
-import type { RunnerWork } from "../runner-work";
+import { RUNNER_EVENT_COLUMNS, type RunnerWork, type StoredRunnerEvent } from "../runner-work";
 import { versionAtLeast } from "./session-restore";
 
 /** Past the runner's limit: polling and delivery of its checkpoint. */
@@ -161,14 +160,14 @@ export function createRemoteCheckpoint(options: {
     let cursor = request.after;
     while (now() < request.deadline) {
       const rows = db
-        .query<{ sequence: number; payload: string }, [string, number, number]>(
-          `SELECT sequence,payload FROM runner_event WHERE run_id=? AND generation=? AND sequence>?
-           AND json_extract(payload,'$.type')='checkpoint' ORDER BY sequence`,
+        .query<StoredRunnerEvent, [string, number, number]>(
+          `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
+           WHERE run_id=? AND generation=? AND sequence>? AND (type='checkpoint' OR (type IS NULL AND key_id IS NULL)) ORDER BY sequence`,
         )
         .all(runId, command.generation, cursor);
       for (const row of rows) {
         cursor = row.sequence;
-        const event = RunnerEventSchema.parse(JSON.parse(row.payload));
+        const event = work.openEvent(row);
         if (event.type !== "checkpoint") continue;
         recordRunnerCheckpoint(db, {
           itemId: command.itemId,

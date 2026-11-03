@@ -119,6 +119,7 @@ async function blockedAfterCleanupFailure() {
     db,
     keyId: "fixture",
     privateKey: keys.privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
   return {

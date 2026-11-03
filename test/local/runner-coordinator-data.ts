@@ -167,7 +167,12 @@ export async function probeRunnerCoordinatorData(
     },
     transcripts: { objects, key: randomBytes(32) },
   };
-  let coordinator = await openRunnerCoordinator({ ...coordinatorOptions, db, port: 0 });
+  let coordinator = await openRunnerCoordinator({
+    eventKey: Buffer.alloc(32, 7),
+    ...coordinatorOptions,
+    db,
+    port: 0,
+  });
   now = Date.now();
   const enrollment = Bun.serve({
     hostname: "127.0.0.1",
@@ -333,7 +338,12 @@ export async function probeRunnerCoordinatorData(
     daemon.close();
     const port = coordinator.port;
     await coordinator.stop();
-    coordinator = await openRunnerCoordinator({ ...coordinatorOptions, db, port });
+    coordinator = await openRunnerCoordinator({
+      eventKey: Buffer.alloc(32, 7),
+      ...coordinatorOptions,
+      db,
+      port,
+    });
     daemon = openRunnerDaemon(options);
     assert.deepEqual(await daemon.uploadTranscript(run.id, transcriptChunk(0), grant.token), {
       offset: RUNNER_TRANSCRIPT_CHUNK_BYTES,

@@ -11,6 +11,7 @@ try {
     db,
     keyId: "fixture",
     privateKey: createPrivateKey(readFileSync(keyPath!)),
+    eventKey: Buffer.alloc(32, 7),
     now: () => Number(at),
   });
   const command = JSON.parse(readFileSync(commandPath!, "utf8"));

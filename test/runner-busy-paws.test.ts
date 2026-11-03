@@ -84,7 +84,13 @@ async function fixture() {
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
   bindWorkItemRepository(db, item.id, repository);
   const keys = generateKeyPairSync("ed25519");
-  const work = createRunnerWork({ db, keyId: "fixture", privateKey: keys.privateKey, now });
+  const work = createRunnerWork({
+    db,
+    keyId: "fixture",
+    privateKey: keys.privateKey,
+    eventKey: Buffer.alloc(32, 7),
+    now,
+  });
   const command: Extract<RunnerCommand, { type: "run" }> = {
     type: "run",
     id: workspaceId(),

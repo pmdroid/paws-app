@@ -58,6 +58,7 @@ function fixture() {
     db,
     keyId: "sign-in",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
   const health = createRunnerHealth({ db, work, now: () => at });

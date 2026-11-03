@@ -99,6 +99,7 @@ export async function probeRunnerHealth(
     db,
     keyId: "health-fixture",
     privateKey: signing.privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
   const health = createRunnerHealth({ db, work, now: () => now });

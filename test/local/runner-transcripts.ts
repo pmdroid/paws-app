@@ -79,6 +79,7 @@ export async function probeRunnerTranscripts(
     db,
     keyId: "fixture",
     privateKey: keys.privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
   const item = insertQueuedItem(db, {

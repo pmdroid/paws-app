@@ -13,6 +13,7 @@ try {
     db,
     keyId: "read-only-fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
   });
   const health = createRunnerHealth({ db, work, now: () => Number(timestamp) });
   console.log(JSON.stringify({ pid: process.pid, result: health.read(runnerId, commandId) }));

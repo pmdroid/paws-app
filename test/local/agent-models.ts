@@ -57,7 +57,13 @@ export async function probeAgentModels(
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [runnerId]);
   const key = generateKeyPairSync("ed25519");
   const work = () =>
-    createRunnerWork({ db, keyId: "models-proof", privateKey: key.privateKey, now: () => now });
+    createRunnerWork({
+      db,
+      keyId: "models-proof",
+      privateKey: key.privateKey,
+      eventKey: Buffer.alloc(32, 7),
+      now: () => now,
+    });
   const health = () => createRunnerHealth({ db, work: work(), now: () => now });
   let catalog = createRunnerModels({ db, work: work(), now: () => now });
   const principal = { workspaceId: workspace, userId };

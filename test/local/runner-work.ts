@@ -97,6 +97,7 @@ export async function probeRunnerWork(
     db,
     keyId: "fixture",
     privateKey: keys.privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
   const confirmStopped = (
@@ -702,6 +703,7 @@ export async function probeRunnerWork(
           db: waitingForTeardown,
           keyId: "fixture",
           privateKey: keys.privateKey,
+          eventKey: Buffer.alloc(32, 7),
           now: () => now,
         });
         assert.throws(() => reconstructed.assign(afterCancel), /(?:cancellation|free slot)/);

@@ -82,6 +82,7 @@ async function fixture(runnerVersion = "0.1.60") {
     db,
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
   const http = createRunnerWorkHttp(work, {});

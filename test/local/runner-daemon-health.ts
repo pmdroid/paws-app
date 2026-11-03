@@ -76,7 +76,12 @@ export async function probeRunnerDaemonHealth(
     hostname: "127.0.0.1",
     onError: (error: unknown) => errors.push(error),
   };
-  let coordinator = await openRunnerCoordinator({ ...options, db, port: 0 });
+  let coordinator = await openRunnerCoordinator({
+    eventKey: Buffer.alloc(32, 7),
+    ...options,
+    db,
+    port: 0,
+  });
   const runnerPort = coordinator.port;
   const browser = Bun.serve({
     hostname: "127.0.0.1",
@@ -185,7 +190,12 @@ export async function probeRunnerDaemonHealth(
     db.close();
     db = openDatabase(dbPath);
     migrate(db);
-    coordinator = await openRunnerCoordinator({ ...options, db, port: runnerPort });
+    coordinator = await openRunnerCoordinator({
+      eventKey: Buffer.alloc(32, 7),
+      ...options,
+      db,
+      port: runnerPort,
+    });
     daemon = openRunnerDaemon(daemonOptions);
     assert.deepEqual(await daemon.postHealth(result), { duplicate: true });
     assert.deepEqual(coordinator.health.read(paired.runnerId, login.commandId), loginResult);

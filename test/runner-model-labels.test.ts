@@ -65,6 +65,7 @@ test("the catalog lists the 1M entry next to its standard model", () => {
     db,
     keyId: "labels",
     privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
   });
   const [catalog] = createRunnerModels({ db, work }).read(principal);
   expect(catalog?.models.map(({ id, name, longContext }) => ({ id, name, longContext }))).toEqual([
