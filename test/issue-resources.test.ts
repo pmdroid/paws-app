@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import {
+  applyWorkItemEvent,
+  beginImplementRun,
   insertQueuedItem,
   migrate,
   openDatabase,
@@ -9,7 +11,7 @@ import {
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 
-test("issue resources need a Paws session, show only the member's sessions and follow membership changes", async () => {
+test("issue and question resources need a Paws session, show only the member's sessions and follow membership changes", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   db.run(
@@ -36,8 +38,18 @@ test("issue resources need a Paws session, show only the member's sessions and f
         installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
       [session!, team!],
     );
-  insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine" });
-  insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other" });
+  for (const [item, session] of [
+    ["PAS-1", "session-mine"],
+    ["PAS-2", "session-other"],
+  ] as const) {
+    insertQueuedItem(db, { id: item, sessionKey: session });
+    beginImplementRun(db, item, Date.now());
+    applyWorkItemEvent(db, item, "blocking_question");
+    db.run(
+      "INSERT INTO question (id, item_id, session_id, body, status, created_at) VALUES (?, ?, ?, 'Which way?', 'open', 1)",
+      [`q-${item}`, item, session],
+    );
+  }
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;
   await reservation.stop(true);
@@ -64,16 +76,25 @@ test("issue resources need a Paws session, show only the member's sessions and f
     userId: "member",
     now: Date.now(),
   });
-  const url = (path: string) => `http://127.0.0.1:${server.port}/api/issues${path}`;
+  const url = (path: string, resource = "issues") =>
+    `http://127.0.0.1:${server.port}/api/${resource}${path}`;
   const cookie = `${WORKSPACE_COOKIE}=${session.token}`;
   const signedIn = (headers: Record<string, string> = {}) => ({ headers: { cookie, ...headers } });
   const listed = async () =>
     (
       (await (await fetch(url(""), signedIn())).json()) as { issues: Array<{ id: string }> }
     ).issues.map((issue) => issue.id);
+  const asked = async () =>
+    (
+      (await (await fetch(url("", "questions"), signedIn())).json()) as {
+        questions: Array<{ id: string; issue: { id: string } }>;
+      }
+    ).questions.map((question) => `${question.id}@${question.issue.id}`);
   try {
     for (const path of ["", "/PAS-1", "/PAS-1/attempts/1/checks/test/log"])
       expect((await fetch(url(path))).status).toBe(401);
+    for (const path of ["", "/q-PAS-1"])
+      expect((await fetch(url(path, "questions"))).status).toBe(401);
 
     expect(await listed()).toEqual(["PAS-1"]);
     const mine = await fetch(url("/PAS-1"), signedIn());
@@ -89,12 +110,28 @@ test("issue resources need a Paws session, show only the member's sessions and f
     expect(unknown.status).toBe(404);
     expect(await other.text()).toBe(await unknown.text());
     expect((await fetch(url("/PAS-2/attempts/1/checks/test/log"), signedIn())).status).toBe(404);
+    expect(await asked()).toEqual(["q-PAS-1@PAS-1"]);
+    const question = await fetch(url("/q-PAS-1", "questions"), signedIn());
+    expect(question.status).toBe(200);
+    expect(question.headers.get("cache-control")).toBe("no-store");
+    const questionTag = question.headers.get("etag")!;
+    const hidden = await fetch(url("/q-PAS-2", "questions"), signedIn());
+    expect(hidden.status).toBe(404);
+    expect(await hidden.text()).toBe(
+      await (await fetch(url("/q-404", "questions"), signedIn())).text(),
+    );
 
     teamIds = ["other-team"];
     member();
     const revoked = await fetch(url("/PAS-1"), signedIn({ "If-None-Match": etag }));
     expect(revoked.status).toBe(404);
     expect(await listed()).toEqual(["PAS-2"]);
+    const stale = await fetch(
+      url("/q-PAS-1", "questions"),
+      signedIn({ "If-None-Match": questionTag }),
+    );
+    expect(stale.status).toBe(404);
+    expect(await asked()).toEqual(["q-PAS-2@PAS-2"]);
     expect((await fetch(url("/PAS-2"), signedIn())).status).toBe(200);
   } finally {
     await server.stop(true);

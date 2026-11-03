@@ -177,7 +177,12 @@ function routeChanged(): void {
         ? page.issues !== null
         : resource === "overview"
           ? page.overview !== null
-          : routeCovered(route, page.snapshot);
+          : resource === "questions"
+            ? page.questions !== null
+            : resource === "question"
+              ? page.question?.question.id === openQuestion(route) ||
+                page.missingQuestion === openQuestion(route)
+              : routeCovered(route, page.snapshot);
   phase = shown ? "ready" : "loading";
   error = null;
   paint();
@@ -202,6 +207,10 @@ async function reload(): Promise<void> {
   }
   paint();
   schedule();
+}
+
+function openQuestion(route: Route): string | null {
+  return route.view === "questions" ? route.id : null;
 }
 
 function openIssue(route: Route): string | null {
@@ -321,6 +330,9 @@ function paint(): void {
     issues: page.issues,
     issue: page.issue,
     overview: page.overview,
+    questions: page.questions,
+    question: page.question,
+    missingQuestion: page.missingQuestion,
     error,
     engineUrl: currentEngine(),
     closeout,

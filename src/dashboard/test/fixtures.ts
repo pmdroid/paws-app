@@ -5,6 +5,9 @@ import {
   parseOverviewResponse,
   verdictSummary,
   type OverviewResponse,
+  type QuestionCard,
+  type QuestionDetailResponse,
+  type QuestionListResponse,
   type IssueDetailResponse,
   type IssueListResponse,
   type StatusAgentCloseout,
@@ -756,7 +759,12 @@ export function pageData(
   issues: IssueListResponse;
   issue: IssueDetailResponse | null;
   overview: OverviewResponse;
+  questions: QuestionListResponse;
+  question: QuestionDetailResponse | null;
+  missingQuestion: string | null;
 } {
+  const readers = questionReaders(full);
+  const asked = route.view === "questions" ? route.id : null;
   const issue =
     route.view === "runs" && route.id !== null
       ? full.runs.find((run) => run.id === route.id || run.attempts?.includes(route.id!))?.itemId
@@ -771,6 +779,58 @@ export function pageData(
     issues: issueList(full),
     issue: known ? issueResource(full, issue) : null,
     overview: overviewOf(statusList(full)),
+    questions: readers.questions(),
+    question: asked === null ? null : readers.question(asked),
+    missingQuestion: asked !== null && readers.question(asked) === null ? asked : null,
+  };
+}
+
+export function questionCardFixture(id: string, itemId = "PAS-1"): QuestionCard {
+  return {
+    id,
+    itemId,
+    runId: null,
+    title: `Question ${id}`,
+    body: "Which way?",
+    context: "",
+    kind: "decision",
+    urgency: "blocking",
+    options: ["Left", "Right"],
+    recommendedOption: null,
+    askedAt: "2026-11-02T08:00:00.000Z",
+    claimedBy: null,
+    links: [{ label: "Answer in Linear", href: "https://linear.app/paws/issue/PAS-1" }],
+    issue: { id: itemId, title: "Ship it", agent: "claude" },
+  };
+}
+
+export function questionCards(full: Pick<FullStatus, "questions" | "items">): QuestionCard[] {
+  return full.questions.map((question) => {
+    const owner = full.items.find((entry) => entry.id === question.itemId);
+    return {
+      ...question,
+      issue: {
+        id: question.itemId,
+        title: owner?.title ?? question.itemId,
+        agent: owner?.agent ?? "Paws",
+      },
+    };
+  });
+}
+
+export function questionReaders(
+  full: Pick<FullStatus, "questions" | "items" | "source" | "generatedAt">,
+) {
+  return {
+    questions: (): QuestionListResponse => ({
+      source: full.source,
+      generatedAt: full.generatedAt,
+      questions: questionCards(full),
+    }),
+    question: (id: string): QuestionDetailResponse | null => {
+      const question = questionCards(full).find((entry) => entry.id === id);
+      return question ? { source: full.source, generatedAt: full.generatedAt, question } : null;
+    },
   };
 }
 
