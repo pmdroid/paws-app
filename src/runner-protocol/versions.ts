@@ -72,7 +72,7 @@ export const LIVE_PREVIEW_RUNNER_VERSION: RunnerVersion = [0, 1, 56];
 export const CONFIRMED_TEARDOWN_RUNNER_VERSION: RunnerVersion = [0, 1, 55];
 export const OFFLINE_AUTHORITY_RUNNER_VERSION: RunnerVersion = [0, 1, 59];
 
-export const CAUSAL_LIVENESS_RUNNER_VERSION: RunnerVersion = [0, 1, 59];
-export const CLOSEOUT_RULES_FIRST_RUNNER_VERSION: RunnerVersion = [0, 1, 59];
+export const CAUSAL_LIVENESS_RUNNER_VERSION: RunnerVersion = [0, 1, 60];
+export const CLOSEOUT_RULES_FIRST_RUNNER_VERSION: RunnerVersion = [0, 1, 60];
 /** First runner release whose `get_closeout` runs rule probes in implement and fix turns. */
-export const CLOSEOUT_RULE_RESULTS_RUNNER_VERSION: RunnerVersion = [0, 1, 59];
+export const CLOSEOUT_RULE_RESULTS_RUNNER_VERSION: RunnerVersion = [0, 1, 60];

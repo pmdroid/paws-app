@@ -529,8 +529,8 @@ test("a review command carries the brief and earlier findings only to a runner t
 
 test("a checks run asks for rules first only on a runner that accepts it", async () => {
   for (const [version, expected] of [
-    ["0.1.58", undefined],
-    ["0.1.59", true],
+    ["0.1.59", undefined],
+    ["0.1.60", true],
   ] as const) {
     const f = await fixture();
     try {
