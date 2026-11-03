@@ -822,6 +822,7 @@ export function questionCardFixture(id: string, itemId = "PAS-1"): QuestionCard 
     urgency: "blocking",
     options: ["Left", "Right"],
     recommendedOption: null,
+    answerable: false,
     askedAt: "2026-11-02T08:00:00.000Z",
     claimedBy: null,
     links: [{ label: "Answer in Linear", href: "https://linear.app/paws/issue/PAS-1" }],

@@ -2,6 +2,11 @@ import type { QuestionCard, QuestionDetailResponse, QuestionListResponse } from 
 import { agentChip, ago, avatar, esc, linkList } from "./format";
 import { LINK_ASK_ACTIONS, LINK_ASK_ANCHORS } from "./link-ask";
 import { PAGES } from "./navigation";
+import {
+  questionAnswerDraft,
+  questionAnswerLocked,
+  questionAnswerMessage,
+} from "./question-answer";
 import { routeHref } from "./route";
 
 export interface QuestionsView {
@@ -36,6 +41,7 @@ function pending(error: string | null): string {
 }
 
 function questionCard(question: QuestionCard, generatedAt: string, highlight: boolean): string {
+  const disabled = questionAnswerLocked(question.id) ? ' disabled=""' : "";
   const options = question.options
     .map((option, index) => {
       const selected = index === question.recommendedOption ? " sel" : "";
@@ -43,7 +49,9 @@ function questionCard(question: QuestionCard, generatedAt: string, highlight: bo
         index === question.recommendedOption
           ? '<span class="rec tag lin">agent recommends</span>'
           : "";
-      return `<div class="opt static${selected}"><span class="mono dim">${index + 1}</span>${esc(option)}${rec}</div>`;
+      return question.answerable
+        ? `<button class="opt btn${selected}" type="submit" name="option" value="${esc(option)}"${disabled}><span class="mono dim">${index + 1}</span>${esc(option)}${rec}</button>`
+        : `<div class="opt static${selected}"><span class="mono dim">${index + 1}</span>${esc(option)}${rec}</div>`;
     })
     .join("");
   const claimed = question.claimedBy
@@ -54,6 +62,11 @@ function questionCard(question: QuestionCard, generatedAt: string, highlight: bo
     ? `<a class="btn primary" href="${issueHref}#${LINK_ASK_ANCHORS[question.linkAsk.kind]}">${LINK_ASK_ACTIONS[question.linkAsk.kind]}</a>`
     : "";
   const links = question.links.length ? linkList(question.links) : "";
+  const note = question.answerable
+    ? '<span class="dim">Answering here also posts your answer in Linear.</span>'
+    : decide || links
+      ? ""
+      : '<span class="dim">Answer in the source conversation to continue.</span>';
   return `<article class="q${highlight ? " hl" : ""}" id="q-${esc(question.id)}">
     <div class="qh">
       <div class="row wrap min-w-0"><span class="lin-id">${esc(question.id)}</span><span class="tag${question.kind === "exhausted" ? " bad" : ""}">${esc(question.kind)}</span><span class="tag">${esc(question.urgency)}</span><a class="lin-id" href="${issueHref}" title="${esc(question.issue.title)}">${esc(question.issue.id)}</a>${agentChip(question.issue.agent)}</div>
@@ -62,7 +75,12 @@ function questionCard(question: QuestionCard, generatedAt: string, highlight: bo
     </div>
     <div class="qb"><div class="muted">${esc(question.body)}</div>
       ${question.context ? `<div class="ctx">${esc(question.context)}</div>` : ""}
-      ${options ? `<div class="opts">${options}</div>` : ""}
-      <div class="row">${decide || links ? `${decide}${links}` : '<span class="dim">Answer in the source conversation to continue.</span>'}</div>
+      ${question.answerable ? questionAnswerForm(question, options, disabled) : options ? `<div class="opts">${options}</div>` : ""}
+      <div class="row">${decide}${links}${note}</div>
     </div></article>`;
+}
+
+function questionAnswerForm(question: QuestionCard, options: string, disabled: string): string {
+  const id = esc(question.id);
+  return `<form class="question-answer" data-question-answer="${id}">${options ? `<div class="opts">${options}</div>` : ""}<label class="field"><span>Or write an answer</span><textarea name="answer" rows="3" maxlength="10000"${disabled}>${esc(questionAnswerDraft(question.id))}</textarea></label><div class="row wrap"><button class="btn primary" type="submit"${disabled}>Answer</button></div><p class="muted" role="status">${esc(questionAnswerMessage(question.id))}</p></form>`;
 }
