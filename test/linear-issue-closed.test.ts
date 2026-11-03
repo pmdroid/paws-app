@@ -97,8 +97,8 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
   const status = createLiveStatusProvider(f.db);
   const needsPerson = () =>
     status
-      .snapshot()
-      .items.filter((item) => item.state === "needs_human")
+      .issues()
+      .issues.filter((item) => item.state === "needs_human")
       .map((item) => item.title);
   expect(needsPerson()).toEqual(["Task"]);
 

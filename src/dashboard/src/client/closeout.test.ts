@@ -1,7 +1,7 @@
 import {
   openedView,
   fullStatusFixture,
-  itemDetail,
+  issueResource,
   pageData,
   type FullStatus,
 } from "../../test/fixtures";
@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStatusItemDetail } from "../contract";
+import { parseIssueDetailResponse } from "../contract";
 import {
   checkHash,
   checkKey,
@@ -40,10 +40,10 @@ function runPage(snapshot: FullStatus = fullStatusFixture()): string {
 
 describe("closeout checks", () => {
   test("the fixture with attempts passes the contract", () => {
-    const detail = itemDetail(fullStatusFixture(), "ENG-100");
-    const parsed = parseStatusItemDetail(JSON.parse(JSON.stringify(detail)));
+    const detail = issueResource(fullStatusFixture(), "ENG-100");
+    const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     if (!parsed.ok) throw new Error(parsed.error);
-    const attempts = parsed.detail.verdicts.find((entry) => entry.itemId === "ENG-100")?.attempts;
+    const attempts = parsed.response.verdicts.find((entry) => entry.itemId === "ENG-100")?.attempts;
     expect(attempts?.map((entry) => entry.decision)).toEqual(["rejected", "rejected", "exhausted"]);
   });
 
@@ -288,11 +288,11 @@ describe("independent review measurements", () => {
   test("a measured review survives the item detail contract", () => {
     const snapshot = fullStatusFixture();
     snapshot.verdicts = [measured()];
-    const parsed = parseStatusItemDetail(
-      JSON.parse(JSON.stringify(itemDetail(snapshot, "ENG-101"))),
+    const parsed = parseIssueDetailResponse(
+      JSON.parse(JSON.stringify(issueResource(snapshot, "ENG-101"))),
     );
     if (!parsed.ok) throw new Error(parsed.error);
-    const review = parsed.detail.verdicts[0]!.checks.find((check) => check.kind === "review");
+    const review = parsed.response.verdicts[0]!.checks.find((check) => check.kind === "review");
     expect(review?.tokens).toBe(52_300);
   });
 });

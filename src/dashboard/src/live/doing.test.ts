@@ -54,8 +54,8 @@ function work(db: Database, runId: string, runner: string, live: boolean, now: n
 
 function item(db: Database, id: string, now: number): StatusItem {
   const found = createLiveStatusProvider(db, { now: () => new Date(now) })
-    .snapshot()
-    .items.find((entry) => entry.title === id);
+    .issues()
+    .issues.find((entry) => entry.title === id);
   if (!found) throw new Error(`no item ${id}`);
   return found;
 }

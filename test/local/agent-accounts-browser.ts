@@ -1,4 +1,3 @@
-import { statusFixture } from "../../src/dashboard/test/fixtures";
 import { chromium } from "@playwright/test";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { resolve, join } from "node:path";
@@ -50,8 +49,6 @@ const server = Bun.serve({
         authenticatedAt: Date.now(),
         workspaces: [{ id: "workspace", name: "Team workspace", role: "member" }],
       });
-    if (url.pathname === "/api/status")
-      return Response.json({ ...statusFixture(), source: "live" });
     const match = url.pathname.match(
       /^\/api\/runners\/runner-a\/accounts\/(claude|codex|grok|opencode)\/login(?:\/([^/]+))?(\/input)?$/,
     );

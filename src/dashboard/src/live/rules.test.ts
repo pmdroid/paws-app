@@ -18,7 +18,7 @@ import {
   upsertCloseoutStep,
   type CloseoutStepWrite,
 } from "../../../db";
-import { parseStatusItemDetail, parseStatusSnapshot } from "../contract";
+import { parseIssueDetailResponse, parseIssueListResponse } from "../contract";
 import { handleStatusRequest } from "../engine";
 import { createLiveStatusProvider } from "./provider";
 
@@ -158,17 +158,17 @@ function seed(): { db: Database; home: string } {
   return { db, home };
 }
 
-describe("rule results in the status payload", () => {
+describe("rule results in the issue resources", () => {
   test("the list summarizes each rule as a check of kind rule", async () => {
     const { db, home } = seed();
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},
       closeoutHome: home,
     });
-    const parsed = parseStatusSnapshot(await response!.json());
+    const parsed = parseIssueListResponse(await response!.json());
     if (!parsed.ok) throw new Error(parsed.error);
-    expect(parsed.snapshot.verdicts[0]?.checks).toEqual([
+    expect(parsed.response.verdicts[0]?.checks).toEqual([
       { id: "api-contract", kind: "rule", state: "failed" },
       { id: "migrations-append-only", kind: "rule", state: "passed" },
       { id: "restart-and-ask-from-loop", kind: "rule", state: "failed" },
@@ -178,13 +178,14 @@ describe("rule results in the status payload", () => {
 
   test("the item detail carries each rule's probe hash, exit code, duration and decision", async () => {
     const { db, home } = seed();
-    const response = await handleStatusRequest(
-      new Request("http://127.0.0.1/api/status/items/ENG-7"),
-      { db, env: {}, closeoutHome: home },
-    );
-    const parsed = parseStatusItemDetail(await response!.json());
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues/ENG-7"), {
+      db,
+      env: {},
+      closeoutHome: home,
+    });
+    const parsed = parseIssueDetailResponse(await response!.json());
     if (!parsed.ok) throw new Error(parsed.error);
-    const verdict = parsed.detail.verdicts[0]!;
+    const verdict = parsed.response.verdicts[0]!;
     const rules = verdict.checks.filter((check) => check.kind === "rule");
     expect(
       rules.map((rule) => [rule.id, rule.state, rule.probeSha256, rule.exitCode, rule.elapsedMs]),
@@ -226,7 +227,7 @@ describe("rule results in the status payload", () => {
 
   test("without the evidence record the probe hash is null", () => {
     const { db } = seed();
-    const detail = createLiveStatusProvider(db, { env: {} }).item("ENG-7");
+    const detail = createLiveStatusProvider(db, { env: {} }).issue("ENG-7");
     expect(detail?.verdicts[0]?.checks[0]?.probeSha256).toBeNull();
   });
 });

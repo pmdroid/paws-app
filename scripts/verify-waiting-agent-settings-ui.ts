@@ -18,7 +18,7 @@ import {
 import { Orchestrator } from "../src/loop";
 import { handleAgentSettingsRequest, handleHookSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a proof directory");
@@ -47,7 +47,7 @@ for (let index = 0; index < 3; index++) {
   writeFileSync(file, JSON.stringify({ profiles: original }));
   files.push(file);
 }
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -71,7 +71,7 @@ const server = Bun.serve({
         applyToWaiting: () => orchestrator.applyAgentSettingsToWaiting(),
       })) ??
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "fixture",
       })) ??
       new Response(null, { status: 404 })

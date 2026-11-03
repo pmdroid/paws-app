@@ -23,15 +23,12 @@ import {
   type OverviewResponse,
   type QuestionDetailResponse,
   type QuestionListResponse,
-  type StatusSnapshot,
 } from "../contract";
 import { journalCaught } from "../journal";
 import { createResourceReader, type ResourceReader } from "./resource-reader";
-import { routeResource, routeSlices, type Route } from "./route";
-import { createStatusReader } from "./status-reader";
+import { routeResource, type Route } from "./route";
 
 export interface PageResources {
-  snapshot: StatusSnapshot | null;
   issues: IssueListResponse | null;
   issue: IssueDetailResponse | null;
   overview: OverviewResponse | null;
@@ -94,9 +91,7 @@ function parseDetail(input: unknown) {
 
 export function createPageLoader(options: PageLoaderOptions) {
   const resources = options.resources ?? createResourceReader();
-  const readStatus = createStatusReader(resources);
   const data: PageResources = {
-    snapshot: null,
     issues: null,
     issue: null,
     overview: null,
@@ -198,11 +193,6 @@ export function createPageLoader(options: PageLoaderOptions) {
           data.missingEvidence = null;
         });
       }
-      if (resource === "status") {
-        const read = await readStatus(routeSlices(route), reader);
-        if (read.kind === "response") return await refused(read.response);
-        return apply(() => (data.snapshot = read.snapshot));
-      }
       return "stale";
     } catch (caught) {
       journalCaught(caught, "pageLoader.load.fetch", null);
@@ -221,7 +211,6 @@ export function createPageLoader(options: PageLoaderOptions) {
     reset(): void {
       generation += 1;
       resources.clear();
-      data.snapshot = null;
       data.issues = null;
       data.issue = null;
       data.overview = null;

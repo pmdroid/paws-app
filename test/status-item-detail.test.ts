@@ -10,7 +10,7 @@ import {
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 
-test("the item detail endpoint needs a Paws session and shows only the member's sessions", async () => {
+test("the issue endpoint needs a Paws session and shows only the member's sessions", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   db.run(
@@ -63,15 +63,18 @@ test("the item detail endpoint needs a Paws session and shows only the member's 
     userId: "member",
     now: Date.now(),
   });
-  const url = (id: string) => `http://127.0.0.1:${server.port}/api/status/items/${id}`;
+  const url = (id: string) => `http://127.0.0.1:${server.port}/api/issues/${id}`;
   const signedIn = { headers: { cookie: `${WORKSPACE_COOKIE}=${session.token}` } };
   try {
     expect((await fetch(url("PAS-1"))).status).toBe(401);
     const mine = await fetch(url("PAS-1"), signedIn);
     expect(mine.status).toBe(200);
-    const body = (await mine.json()) as { id: string; items: Array<{ id: string }> };
-    expect(body.id).toBe("PAS-1");
-    expect(body.items.map((item) => item.id)).toEqual(["PAS-1"]);
+    const body = (await mine.json()) as {
+      issue: { id: string };
+      earlierSessions: Array<{ id: string }>;
+    };
+    expect(body.issue.id).toBe("PAS-1");
+    expect(body.earlierSessions).toEqual([]);
     const other = await fetch(url("PAS-2"), signedIn);
     const unknown = await fetch(url("PAS-404"), signedIn);
     expect(other.status).toBe(404);

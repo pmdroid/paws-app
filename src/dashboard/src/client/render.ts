@@ -14,7 +14,6 @@ import type {
   QuestionListResponse,
   StatusRun,
   StatusRunSetup,
-  StatusSnapshot,
   StatusUsagePause,
   StatusVerdict,
 } from "../contract";
@@ -70,7 +69,6 @@ import { dashboardPath } from "../../../dashboard-links";
 export interface RenderModel {
   route: Route;
   phase: "loading" | "ready" | "error";
-  snapshot: StatusSnapshot | null;
   overview?: OverviewResponse | null;
   mergeQueue?: MergeQueueResponse | null;
   issues?: IssueListResponse | null;
@@ -100,7 +98,6 @@ const FINDINGS_ROOT = `${pageHeading("findings")}<div id="findings-page"></div>`
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
 
 export function render(model: RenderModel): Rendered {
-  const snapshot = model.snapshot;
   const route = model.route;
   const pageTitle =
     route.view === "settings"
@@ -145,16 +142,12 @@ export function render(model: RenderModel): Rendered {
                           ? viewIssues(model.issues, route.id)
                           : model.phase !== "loading" && model.issues && route.view === "runs"
                             ? viewRuns(model.issues, route.id)
-                            : snapshot &&
-                                model.phase !== "loading" &&
-                                routeResource(route) === "status"
-                              ? renderView(snapshot, model)
-                              : renderPending(model),
+                            : renderPending(model),
     title,
   };
 }
 
-/** The issue page has its detail; the list snapshot is not read for it. */
+/** The issue page has its detail; the issue list is not read for it. */
 export function openDetail(model: Pick<RenderModel, "route" | "issue">): boolean {
   return (
     model.route.view === "issues" &&
@@ -183,10 +176,8 @@ function renderBanner(model: RenderModel): string {
                 ? model.evidenceList
                 : resource === "evidence"
                   ? model.evidence
-                  : resource === "status"
-                    ? model.snapshot
-                    : openDetail(model) || model.issues;
-    return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${kept ? " Showing the last snapshot." : ""}</span></div>`;
+                  : openDetail(model) || model.issues;
+    return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${kept ? " Showing the last loaded page." : ""}</span></div>`;
   }
   return "";
 }
@@ -199,7 +190,7 @@ function viewMergeQueue(model: RenderModel): string {
 
 function renderPending(model: RenderModel): string {
   if (model.phase === "error") {
-    return `${pageHeading(model.route.view)}<div class="empty"><div>Status unavailable</div>${esc(model.error ?? "The engine did not return a snapshot.")}<div><button class="btn primary" type="button" data-action="refresh">Retry</button></div></div>`;
+    return `${pageHeading(model.route.view)}<div class="empty"><div>Status unavailable</div>${esc(model.error ?? "The engine did not return this page.")}<div><button class="btn primary" type="button" data-action="refresh">Retry</button></div></div>`;
   }
   return `${pageHeading(model.route.view)}<div class="empty" role="status">Loading status…</div>`;
 }
@@ -221,30 +212,6 @@ function renderEvidence(model: RenderModel): string {
     return renderEvidencePage(model.evidence, info, model.engineUrl);
   if (model.missingEvidence === route.id) return renderEvidencePage(null, info, model.engineUrl);
   return renderPending(model);
-}
-
-function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
-  switch (model.route.view) {
-    case "overview":
-      return renderPending(model);
-    case "issues":
-    case "runs":
-      return renderPending(model);
-    case "mergeQueue":
-      return viewMergeQueue(model);
-    case "questions":
-      return renderPending(model);
-    case "evidence":
-      return renderEvidence(model);
-    case "alias":
-      return renderAlias(model);
-    case "runners":
-      return '<div id="runner-settings"></div>';
-    case "findings":
-      return FINDINGS_ROOT;
-    case "settings":
-      return renderSettingsPage(model.route.page);
-  }
 }
 
 /** One row of the overview's Needs you list. A primary button is a decision only a person makes. */

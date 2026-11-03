@@ -1,7 +1,7 @@
 import type {
   StatusItem,
   StatusQuestion,
-  StatusSnapshotBase,
+  StatusEvidence,
   StatusVisualReview,
   StatusVisualReviewCarry,
 } from "../contract";
@@ -10,7 +10,11 @@ import { evidenceFileUrl, evidencePageHref, evidenceVersions, thumbnailMedia } f
 import { linkAskDraft, linkAskMessage, linkAskPending } from "./link-ask";
 import { drawnMarkCount, drawnStrokes, strokesOverlay } from "./review-marks";
 
-type ReviewSource = Pick<StatusSnapshotBase, "questions" | "generatedAt" | "evidence">;
+type ReviewSource = {
+  generatedAt: string;
+  questions: readonly StatusQuestion[];
+  evidence?: readonly StatusEvidence[];
+};
 
 const STATE_TAG: Record<StatusVisualReview["state"], [string, string]> = {
   waiting: ["warn", "Waiting"],
@@ -50,11 +54,11 @@ export function waitingVisualReview(item: StatusItem | undefined): StatusVisualR
 
 /** The open screenshots link ask of the item's latest review, decided on this page. */
 export function visualReviewAsk(
-  snapshot: ReviewSource,
+  data: ReviewSource,
   item: StatusItem,
 ): { question: StatusQuestion; review: StatusVisualReview } | undefined {
   const review = item.visualReviews?.at(-1);
-  const question = snapshot.questions.find(
+  const question = data.questions.find(
     (entry) => entry.id === review?.questionId && entry.linkAsk?.kind === "screenshots",
   );
   return question && review ? { question, review } : undefined;
@@ -67,7 +71,7 @@ export function visualReviewAsk(
  * is the item the execution controls stop.
  */
 export function visualReviewSection(
-  snapshot: ReviewSource,
+  data: ReviewSource,
   item: StatusItem,
   engineUrl: string | null,
   stopItemId?: string,
@@ -75,21 +79,21 @@ export function visualReviewSection(
   const reviews = item.visualReviews ?? [];
   const last = reviews.at(-1);
   if (!last) return "";
-  const ask = visualReviewAsk(snapshot, item);
-  if (ask) return askCard(snapshot, item, ask, engineUrl, stopItemId);
+  const ask = visualReviewAsk(data, item);
+  if (ask) return askCard(data, item, ask, engineUrl, stopItemId);
   const waiting = waitingVisualReview(item);
-  const links = snapshot.questions.find((question) => question.id === waiting?.questionId)?.links;
+  const links = data.questions.find((question) => question.id === waiting?.questionId)?.links;
   const summary = waiting
     ? `<section class="closeout-result blocked"><div class="min-w-0"><h3>Waiting for ${esc(item.owner ?? "the person who delegated this issue")} or the project lead · round ${waiting.round}</h3><p>Reply in Linear with the changes you want. A reply in Linear never approves the screens.</p>${links?.length ? `<div class="row">${linkButtons(links)}</div>` : ""}<div id="review-draw" data-question="${esc(waiting.questionId)}" hidden></div></div></section>`
     : last.state === "accepted" && carriedInFull(last)
-      ? carriedSummary(snapshot, reviews, last)
+      ? carriedSummary(data, reviews, last)
       : last.state === "accepted"
-        ? `<section class="closeout-result accepted"><div class="min-w-0"><h3>Accepted by ${esc(last.answeredBy ?? "a reviewer")}${last.answeredAt ? ` · ${esc(ago(last.answeredAt, snapshot.generatedAt))}` : ""}</h3><p>The pull request records the approved screenshots.</p></div></section>`
+        ? `<section class="closeout-result accepted"><div class="min-w-0"><h3>Accepted by ${esc(last.answeredBy ?? "a reviewer")}${last.answeredAt ? ` · ${esc(ago(last.answeredAt, data.generatedAt))}` : ""}</h3><p>The pull request records the approved screenshots.</p></div></section>`
         : "";
   const rounds = reviews
     .map((review, index) => {
       const next = reviews.slice(index + 1).find((entry) => entry.checkId === review.checkId);
-      return roundEntry(snapshot, review, next, engineUrl);
+      return roundEntry(data, review, next, engineUrl);
     })
     .reverse()
     .join("");
@@ -97,18 +101,18 @@ export function visualReviewSection(
 }
 
 function carriedSummary(
-  snapshot: ReviewSource,
+  data: ReviewSource,
   reviews: readonly StatusVisualReview[],
   review: StatusVisualReview,
 ): string {
   const from = carriedFrom(review)!;
   const source = reviews.find((entry) => entry.questionId === from.approvalId);
   const similar = review.carried!.some((entry) => entry.match === "similar");
-  return `<section class="closeout-result accepted"><div class="min-w-0"><h3>Carried over from ${esc(from.approvedBy)}'s approval${source ? ` in round ${source.round}` : ""} · ${esc(ago(from.approvedAt, snapshot.generatedAt))}</h3><p>The new screenshots ${similar ? "look the same as" : "are identical to"} the ones ${esc(from.approvedBy)} accepted, so Paws didn't ask again. The pull request names the original approval.</p></div></section>`;
+  return `<section class="closeout-result accepted"><div class="min-w-0"><h3>Carried over from ${esc(from.approvedBy)}'s approval${source ? ` in round ${source.round}` : ""} · ${esc(ago(from.approvedAt, data.generatedAt))}</h3><p>The new screenshots ${similar ? "look the same as" : "are identical to"} the ones ${esc(from.approvedBy)} accepted, so Paws didn't ask again. The pull request names the original approval.</p></div></section>`;
 }
 
 function roundEntry(
-  snapshot: ReviewSource,
+  data: ReviewSource,
   review: StatusVisualReview,
   next: StatusVisualReview | undefined,
   engineUrl: string | null,
@@ -118,17 +122,17 @@ function roundEntry(
   const from = carriedFrom(review);
   const who =
     full && from
-      ? `<span class="muted">${esc(`Approved by ${from.approvedBy}`)} · ${esc(ago(from.approvedAt, snapshot.generatedAt))}</span>`
+      ? `<span class="muted">${esc(`Approved by ${from.approvedBy}`)} · ${esc(ago(from.approvedAt, data.generatedAt))}</span>`
       : review.answeredBy
-        ? `<span class="muted">${esc(review.state === "changes_requested" ? `${review.answeredBy} requested changes` : review.answeredBy)}${review.answeredAt ? ` · ${esc(ago(review.answeredAt, snapshot.generatedAt))}` : ""}</span>`
-        : `<span class="muted">Sent ${esc(ago(review.askedAt, snapshot.generatedAt))}</span>`;
+        ? `<span class="muted">${esc(review.state === "changes_requested" ? `${review.answeredBy} requested changes` : review.answeredBy)}${review.answeredAt ? ` · ${esc(ago(review.answeredAt, data.generatedAt))}` : ""}</span>`
+        : `<span class="muted">Sent ${esc(ago(review.askedAt, data.generatedAt))}</span>`;
   const feedback = review.feedback ? `<div class="ctx">${esc(review.feedback)}</div>` : "";
   const addressed =
     review.state === "changes_requested"
       ? `<p class="muted">${next?.commit ? `Addressed in <span class="mono">${esc(next.commit.slice(0, 7))}</span>, sent as round ${next.round}.` : "The agent is addressing these changes."}</p>`
       : "";
   const files = evidenceVersions(
-    review.evidenceIds.flatMap((id) => snapshot.evidence?.find((entry) => entry.id === id) ?? []),
+    review.evidenceIds.flatMap((id) => data.evidence?.find((entry) => entry.id === id) ?? []),
   )
     .map(({ latest: entry }) => {
       const mark = review.marks?.find((row) => row.evidenceId === entry.id);
@@ -150,7 +154,7 @@ function marksLabel(count: number): string {
 }
 
 function askCard(
-  snapshot: ReviewSource,
+  data: ReviewSource,
   item: StatusItem,
   ask: { question: StatusQuestion; review: StatusVisualReview },
   engineUrl: string | null,
@@ -165,7 +169,7 @@ function askCard(
     review.evidenceIds.flatMap((evidenceId) =>
       carried.has(evidenceId)
         ? []
-        : (snapshot.evidence?.find((entry) => entry.id === evidenceId) ?? []),
+        : (data.evidence?.find((entry) => entry.id === evidenceId) ?? []),
     ),
   ).map(({ latest }) => latest);
   const shots = files
@@ -183,7 +187,7 @@ function askCard(
     })
     .join("");
   const carriedNames = (review.carried ?? []).flatMap(
-    (entry) => snapshot.evidence?.find((row) => row.id === entry.evidenceId)?.displayName ?? [],
+    (entry) => data.evidence?.find((row) => row.id === entry.evidenceId)?.displayName ?? [],
   );
   const reviews = item.visualReviews ?? [];
   const earlier = reviews

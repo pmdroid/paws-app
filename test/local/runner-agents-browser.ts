@@ -1,4 +1,4 @@
-import { statusFixture } from "../../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../../src/dashboard/test/fixtures";
 // Captures a runner card's coding agents before, during and after an update, at desktop and
 // 390 px, for visual proof. The Update and Update all runners buttons are clicked for real.
 // Usage: bun run build:dashboard && bun --no-env-file test/local/runner-agents-browser.ts <evidence-directory>
@@ -10,7 +10,7 @@ import { handleStatusRequest } from "../../src/dashboard";
 const directory = resolve(process.argv[2] ?? "runner-agents-evidence");
 await mkdir(directory, { recursive: true });
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const GB = 1024 ** 3;
 const id = "01JRUNNER00000000000GOLD01";
@@ -140,7 +140,7 @@ const server = Bun.serve({
     }
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "runner-agents-fixture",
       })) ?? new Response(null, { status: 404 })
     );

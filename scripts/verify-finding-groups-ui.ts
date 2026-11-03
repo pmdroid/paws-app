@@ -6,11 +6,11 @@ import {
   type FindingsResponse,
   type FindingGroupsResponse,
 } from "../src/dashboard";
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 
 const output = process.argv[2] ?? "/tmp/pas892-evidence";
 await mkdir(output, { recursive: true });
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const findings: FindingsResponse = {
   findings: [
@@ -120,7 +120,7 @@ const server = Bun.serve({
     }
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "fixture-csrf",
       })) ?? new Response(null, { status: 404 })
     );

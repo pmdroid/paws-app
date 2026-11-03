@@ -1,12 +1,12 @@
 import {
   openedView,
   fullStatusFixture,
+  mergeQueueOf,
   pageData,
-  statusList,
   type FullStatus,
 } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
-import { parseStatusSnapshot, type StatusPushOutage } from "../contract";
+import { parseMergeQueueResponse, type StatusPushOutage } from "../contract";
 import type { Route } from "./route";
 import { render } from "./render";
 
@@ -49,16 +49,15 @@ describe("a GitHub push outage on the dashboard", () => {
     expect(html).not.toContain("push-outage");
   });
 
-  test("the status API carries the outage through the contract", () => {
-    const parsed = parseStatusSnapshot(
-      JSON.parse(JSON.stringify({ ...statusList(fullStatusFixture()), pushOutages: [OUTAGE] })),
+  test("the merge queue API carries the outage through the contract", () => {
+    const parsed = parseMergeQueueResponse(
+      JSON.parse(JSON.stringify(mergeQueueOf({ ...fullStatusFixture(), pushOutages: [OUTAGE] }))),
     );
     if (!parsed.ok) throw new Error(parsed.error);
-    expect(parsed.snapshot.pushOutages).toEqual([OUTAGE]);
-    const broken = parseStatusSnapshot({
-      ...statusList(fullStatusFixture()),
-      pushOutages: [{ ...OUTAGE, since: "soon" }],
-    });
+    expect(parsed.response.pushOutages).toEqual([OUTAGE]);
+    const broken = parseMergeQueueResponse(
+      mergeQueueOf({ ...fullStatusFixture(), pushOutages: [{ ...OUTAGE, since: "soon" }] }),
+    );
     expect(broken.ok).toBe(false);
   });
 });

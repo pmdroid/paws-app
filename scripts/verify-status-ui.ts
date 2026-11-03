@@ -1,4 +1,4 @@
-import { questionReaders, statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { handleStatusRequest } from "../src/dashboard";
 
 const directory = await mkdtemp(join(tmpdir(), "paws-status-ui-"));
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 let settings = {
   defaults: {
@@ -16,14 +16,15 @@ let settings = {
   projects: [],
 };
 let saves = 0;
-let statusReads = 0;
+let resourceReads = 0;
 const actions: string[] = [];
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   async fetch(request) {
     const path = new URL(request.url).pathname;
-    if (path === "/api/status") statusReads++;
+    if (/^\/api\/(overview|issues|questions|merge-queue|evidence)(\/|$)/.test(path))
+      resourceReads++;
     if (path === "/api/auth/session") return new Response(null, { status: 404 });
     if (path === "/api/settings/agents") {
       if (request.method === "PUT") {
@@ -45,7 +46,7 @@ const server = Bun.serve({
     }
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot, ...questionReaders(snapshot) },
+        provider: fixtureProvider(snapshot),
         csrfToken: "ui-fixture",
       })) ?? new Response(null, { status: 404 })
     );
@@ -305,12 +306,12 @@ try {
     if (width >= 768) {
       await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners`);
       await expect(page.getByRole("heading", { name: "Set up remote runners" })).toBeVisible();
-      const reads = statusReads;
+      const reads = resourceReads;
       await navigate(page, "Agents", width);
       await page.waitForTimeout(5_500);
-      expect(statusReads).toBe(reads);
+      expect(resourceReads).toBe(reads);
       await navigate(page, "Questions", width);
-      await expect.poll(() => statusReads).toBeGreaterThan(reads);
+      await expect.poll(() => resourceReads).toBeGreaterThan(reads);
       await navigate(page, "Agents", width);
     }
     await expect(page.locator("#defaults-implementer-model")).toBeDisabled();
@@ -328,23 +329,30 @@ try {
     await expect(page.locator("#content")).toContainText("Run not found");
     await page.getByRole("combobox", { name: "Run", exact: true }).selectOption({ index: 1 });
     await expect(page.locator("#content")).not.toContainText("Run not found");
-    const empty = {
+    const empty = fixtureProvider({
       ...snapshot,
       items: [],
       runs: [],
       questions: [],
       verdicts: [],
       mergeQueue: [],
-      events: [],
+    });
+    const emptyResources: Record<string, unknown> = {
+      "/api/overview": empty.overview(),
+      "/api/issues": empty.issues(),
+      "/api/questions": empty.questions(),
     };
-    await page.route("**/api/status", (route) => route.fulfill({ json: empty }));
+    const resources = /\/api\/(overview|issues|questions)$/;
+    await page.route(resources, (route) =>
+      route.fulfill({ json: emptyResources[new URL(route.request().url()).pathname] }),
+    );
     await page.reload();
     for (const name of ["Overview", "Issues", "Questions", "Runs"]) {
       await navigate(page, name, width);
       await expect(page.locator("#content .empty")).toBeVisible();
     }
-    await page.unroute("**/api/status");
-    await page.route("**/api/status", (route) =>
+    await page.unroute(resources);
+    await page.route(resources, (route) =>
       route.fulfill({ status: 503, json: { error: "Fixture unavailable" } }),
     );
     await page.reload();

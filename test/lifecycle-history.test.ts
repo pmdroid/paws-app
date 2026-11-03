@@ -21,7 +21,7 @@ import {
 } from "../src/db";
 import { ask, questionEffects, restart } from "../src/loop";
 import { answer } from "../src/questions";
-import { parseStatusSnapshot } from "../src/dashboard/src/contract";
+import { parseIssueListResponse } from "../src/dashboard";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 
 const MINUTE = 60_000;
@@ -95,9 +95,9 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
 
   clock.advance(5 * MINUTE);
   const provider = createLiveStatusProvider(db, { now: () => new Date(clock.now()), env: {} });
-  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(provider.snapshot())));
+  const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(provider.issues())));
   if (!parsed.ok) throw new Error(parsed.error);
-  const times = parsed.snapshot.items.find((entry) => entry.id === itemId)!.stateTimes!;
+  const times = parsed.response.issues.find((entry) => entry.id === itemId)!.stateTimes!;
   expect(times.current).toBe("merge_queue");
   const ms = Object.fromEntries(times.states.map((entry) => [entry.state, entry.ms]));
   expect(ms.awaiting_input).toBe(10 * MINUTE);

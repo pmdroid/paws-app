@@ -1,4 +1,4 @@
-import { fullStatusFixture, itemDetail, statusList } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture, issueResource } from "../src/dashboard/test/fixtures";
 // The Risk card on the issue page from the item detail, and Settings › Merging › High-risk paths
 // against the real settings handler and a temporary config.toml: edit, save, reload, and the
 // repository file read-only. Light and dark, at 1440 and 390 px.
@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { highRiskPaths, loadConfigFile, readMergeSettings } from "../src/config";
 import { handleMergeSettingsRequest } from "../src/settings";
 import { handleStatusRequest } from "../src/dashboard";
-import type { StatusItemDetail, StatusItemRisk } from "../src/dashboard/src/contract";
+import type { IssueDetailResponse, StatusItemRisk } from "../src/dashboard/src/contract";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
@@ -18,7 +18,6 @@ mkdirSync(directory, { recursive: true });
 
 const HEAD = "7f65200".padEnd(40, "a");
 const full = fullStatusFixture();
-const snapshot = statusList(full);
 const RISKS: Record<string, StatusItemRisk> = {
   "ENG-101": {
     tier: "high",
@@ -40,9 +39,9 @@ const RISKS: Record<string, StatusItemRisk> = {
     securityReview: { state: "skipped", detail: "no changed path matches", head: HEAD },
   },
 };
-const detail = (id: string): StatusItemDetail | null =>
+const detail = (id: string): IssueDetailResponse | null =>
   full.items.some((item) => item.id === id)
-    ? { ...itemDetail(full, id), risk: RISKS[id] ?? null }
+    ? { ...issueResource(full, id), risk: RISKS[id] ?? null }
     : null;
 
 const configPath = join(mkdtempSync(join(tmpdir(), "paws-risk-")), "config.toml");
@@ -67,7 +66,7 @@ const server = Bun.serve({
               : null,
       })) ??
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot, item: detail },
+        provider: { ...fixtureProvider(full), issue: detail },
         csrfToken: "ui-fixture",
       })) ??
       new Response(null, { status: 404 })

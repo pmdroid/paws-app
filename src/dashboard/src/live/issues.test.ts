@@ -70,7 +70,6 @@ describe("issue resources", () => {
     });
     finish(db, "ENG-3", NOW - 5_000);
     const live = provider(db);
-    const snapshot = live.snapshot();
     const list = live.issues();
     expect(Object.keys(list).sort()).toEqual([
       "agentCloseout",
@@ -82,10 +81,6 @@ describe("issue resources", () => {
       "source",
       "verdicts",
     ]);
-    expect(list.issues).toEqual(snapshot.items);
-    expect(list.runs).toEqual(snapshot.runs);
-    expect(list.verdicts).toEqual(snapshot.verdicts);
-    expect(list.agentCloseout).toEqual(snapshot.agentCloseout ?? []);
     expect(list.issues.find((issue) => issue.id === "ENG-1")?.doing).toBeDefined();
   });
 
@@ -106,7 +101,6 @@ describe("issue resources", () => {
     insertQueuedItem(db, { id: "NEW", title: "Keep runs", sessionKey: "current", now: NOW - 1 });
     identify("NEW");
     const live = provider(db);
-    const legacy = live.item("PAS-367")!;
     const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(live.issue("PAS-367"))));
     if (!parsed.ok) throw new Error(parsed.error);
     const detail = parsed.response;
@@ -115,12 +109,6 @@ describe("issue resources", () => {
     expect(detail.earlierSessions.map((session) => [session.session?.id, session.endedAt])).toEqual(
       [["earlier", new Date(NOW - 3_600_000).toISOString()]],
     );
-    expect([detail.issue, ...detail.earlierSessions]).toEqual(
-      expect.arrayContaining(legacy.items) as never,
-    );
-    expect(detail.runs).toEqual(legacy.runs);
-    expect(detail.verdicts).toEqual(legacy.verdicts);
-    expect(detail.blocks).toEqual(legacy.blocks);
-    expect(detail.risk).toEqual(legacy.risk ?? null);
+    expect(detail.blocks).toEqual([]);
   });
 });

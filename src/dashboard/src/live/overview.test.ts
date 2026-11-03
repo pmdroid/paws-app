@@ -13,8 +13,7 @@ import {
   saveCandidateRisk,
   upsertCloseoutStep,
 } from "../../../db";
-import { parseOverviewResponse, parseStatusSnapshot, type OverviewResponse } from "../contract";
-import { overviewOf } from "../../test/fixtures";
+import { parseOverviewResponse, type OverviewResponse } from "../contract";
 import { render } from "../client/render";
 import { LINK_ASK_ANCHORS } from "../client/link-ask";
 import { createLiveStatusProvider } from "./provider";
@@ -128,7 +127,6 @@ function overviewHtml(overview: OverviewResponse): string {
   return render({
     route: { view: "overview" },
     phase: "ready",
-    snapshot: null,
     overview,
     error: null,
     engineUrl: null,
@@ -149,15 +147,12 @@ function recordSql(db: Database): string[] {
 }
 
 describe("overview resource", () => {
-  test("draws the same Overview the status slices drew", () => {
+  test("draws Overview from its own resource", () => {
     const db = fixture();
     const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
     const parsed = parseOverviewResponse(JSON.parse(JSON.stringify(live.overview())));
     if (!parsed.ok) throw new Error(parsed.error);
-    const slices = parseStatusSnapshot(JSON.parse(JSON.stringify(live.snapshot())));
-    if (!slices.ok) throw new Error(slices.error);
-    const html = overviewHtml(parsed.response);
-    expect(html).toBe(overviewHtml(overviewOf(slices.snapshot)));
+    expect(overviewHtml(parsed.response)).toContain('id="attention-heading"');
     expect(parsed.response.issues.map((issue) => issue.id)).toEqual([
       "ENG-5",
       "ENG-4",
@@ -167,7 +162,7 @@ describe("overview resource", () => {
     ]);
     expect(parsed.response.mergeQueueCount).toBe(1);
     expect(parsed.response.issues.find((issue) => issue.id === "ENG-2")?.verdict?.decision).toBe(
-      slices.snapshot.verdicts.find((verdict) => verdict.itemId === "ENG-2")?.decision,
+      live.issues().verdicts.find((verdict) => verdict.itemId === "ENG-2")?.decision,
     );
   });
 
@@ -203,8 +198,10 @@ describe("overview resource", () => {
     const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
     const body = JSON.stringify(live.overview());
     const overview = statements.splice(0);
-    live.snapshot();
-    const snapshot = statements.splice(0);
+    // The issue pages and the merge queue do read those tables.
+    for (const issue of live.issues().issues) live.issue(issue.id);
+    live.mergeQueue();
+    const detail = statements.splice(0);
     const unrelated = [
       /SELECT \* FROM closeout_step/,
       /\bstdout\b/,
@@ -218,10 +215,10 @@ describe("overview resource", () => {
     ];
     for (const pattern of unrelated)
       expect(overview.filter((sql) => pattern.test(sql))).toEqual([]);
-    expect(snapshot.some((sql) => /SELECT \* FROM closeout_step/.test(sql))).toBe(true);
-    expect(snapshot.some((sql) => /FROM agent_closeout_event\b/.test(sql))).toBe(true);
-    expect(snapshot.some((sql) => /FROM work_item_merge_settings\b/.test(sql))).toBe(true);
-    expect(overview.length).toBeLessThan(snapshot.length);
+    expect(detail.some((sql) => /SELECT \* FROM closeout_step/.test(sql))).toBe(true);
+    expect(detail.some((sql) => /FROM agent_closeout_event\b/.test(sql))).toBe(true);
+    expect(detail.some((sql) => /FROM work_item_merge_settings\b/.test(sql))).toBe(true);
+    expect(overview.length).toBeLessThan(detail.length);
     expect(body).not.toContain("check output that only the issue page reads");
   });
 

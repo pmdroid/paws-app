@@ -162,8 +162,8 @@ test("the status API shows a queued item's place in line until it starts", () =>
     saveQueuePositions(db, ["ahead", "waiting"], { busy: 4, total: 4 }, 2);
     const queueOf = (id: string) =>
       createLiveStatusProvider(db)
-        .snapshot()
-        .items.find((item) => item.id === id)?.queue;
+        .issues()
+        .issues.find((item) => item.id === id)?.queue;
     expect(queueOf("waiting")).toEqual({ position: 2, busySlots: 4, totalSlots: 4 });
     applyWorkItemEvent(db, "ahead", "dispatched");
     saveQueuePositions(db, ["waiting"], { busy: 4, total: 4 }, 3);

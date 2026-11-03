@@ -84,7 +84,6 @@ describe("question resources", () => {
     });
     asking(db, "ENG-3", "s2", "q-3");
     const live = provider(db, ["s1", "s1b"]);
-    const snapshot = live.snapshot();
     const parsed = parseQuestionListResponse(JSON.parse(JSON.stringify(live.questions())));
     if (!parsed.ok) throw new Error(parsed.error);
     const list = parsed.response;
@@ -92,13 +91,14 @@ describe("question resources", () => {
     expect(list.questions.map((question) => question.id)).toEqual(["q-1", "q-2"]);
     for (const card of list.questions) {
       const { issue, ...question } = card;
-      const shown = snapshot.questions.find((entry) => entry.id === card.id)!;
+      const page = live.issue(card.itemId)!;
+      const shown = page.questions.find((entry) => entry.id === card.id)!;
       const { risk: _risk, bypass: _bypass, ...ask } = shown.linkAsk ?? {};
       expect(question).toEqual({
         ...shown,
         ...(shown.linkAsk ? { linkAsk: ask as typeof shown.linkAsk } : {}),
       });
-      const item = snapshot.items.find((entry) => entry.id === card.itemId)!;
+      const item = page.issue;
       expect(issue).toEqual({ id: item.id, title: item.title, agent: item.agent });
     }
     expect(list.questions[1]?.linkAsk).toMatchObject({ kind: "risk", head: "a".repeat(40) });
@@ -135,8 +135,8 @@ describe("question resources", () => {
       "outbox",
       "job",
     ];
-    const snapshot = tablesRead(db, () => live.snapshot());
-    expect(unread.filter((table) => snapshot.has(table)).length).toBeGreaterThan(3);
+    const page = tablesRead(db, () => live.issue("ENG-1"));
+    expect(unread.filter((table) => page.has(table)).length).toBeGreaterThan(3);
     const questions = tablesRead(db, () => live.questions());
     const detail = tablesRead(db, () => live.question("q-1"));
     for (const table of unread) {

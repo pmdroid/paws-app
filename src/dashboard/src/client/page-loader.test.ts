@@ -57,7 +57,6 @@ describe("issue page loading", () => {
       "/api/issues",
     ]);
     expect(pages.data.issue?.issue.id).toBe("ENG-101");
-    expect(pages.data.snapshot).toBeNull();
   });
 
   test("a delayed 404 for the issue left behind does not clear the newly selected issue", async () => {
@@ -280,7 +279,6 @@ describe("evidence page loading", () => {
     ]);
     expect(pages.data.evidenceList?.evidence.map((entry) => entry.id)).toEqual([first]);
     expect(pages.data.evidence?.evidence.id).toBe(first);
-    expect(pages.data.snapshot).toBeNull();
   });
 
   test("an unknown or hidden file is remembered as missing, and a late answer for the page left behind is dropped", async () => {

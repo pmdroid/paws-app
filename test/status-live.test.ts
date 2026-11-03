@@ -18,8 +18,10 @@ import {
 } from "../src/db";
 import { elicitationBody, openQuestion } from "../src/questions";
 import {
+  parseIssueListResponse,
+  parseMergeQueueResponse,
   parseOverviewResponse,
-  parseStatusSnapshot,
+  parseQuestionListResponse,
   statusIntegrity,
 } from "../src/dashboard/src/contract";
 import { render } from "../src/dashboard/src/client/render";
@@ -29,7 +31,7 @@ const BASE = "a".repeat(40);
 const HEAD = "b".repeat(40);
 const NOW = 1_700_000_000_000;
 
-test("fake e2e rows show up on /api/status as live work", async () => {
+test("fake e2e rows show up on the issue, question and merge queue resources as live work", async () => {
   const db = openDatabase(":memory:");
   try {
     migrate(db);
@@ -167,58 +169,64 @@ test("fake e2e rows show up on /api/status as live work", async () => {
       now: NOW,
     });
 
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
-      db,
-      env: {},
-    });
-    expect(response?.status).toBe(200);
-    const body: unknown = await response?.json();
-    const parsed = parseStatusSnapshot(body);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(statusIntegrity(parsed.snapshot)).toEqual([]);
-    expect(parsed.snapshot.source).toBe("live");
+    const read = async (path: string) => {
+      const response = await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
+        db,
+        env: {},
+      });
+      expect(response?.status).toBe(200);
+      return (await response?.json()) as unknown;
+    };
+    const body = await read("/api/issues");
+    const list = parseIssueListResponse(body);
+    if (!list.ok) throw new Error(list.error);
+    const questions = parseQuestionListResponse(await read("/api/questions"));
+    if (!questions.ok) throw new Error(questions.error);
+    const queue = parseMergeQueueResponse(await read("/api/merge-queue"));
+    if (!queue.ok) throw new Error(queue.error);
+    const records = {
+      items: list.response.issues,
+      runs: list.response.runs,
+      verdicts: list.response.verdicts,
+      questions: questions.response.questions,
+      mergeQueue: queue.response.entries,
+    };
+    expect(statusIntegrity(records)).toEqual([]);
+    expect(list.response.source).toBe("live");
     expect(JSON.stringify(body)).not.toContain("Audit log export");
-    expect(parsed.snapshot.items.map((item) => item.id)).not.toContain("01WAITINGITEM");
-    expect(parsed.snapshot.runs.map((run) => run.itemId)).not.toContain("01MERGINGITEM");
+    expect(records.items.map((item) => item.id)).not.toContain("01WAITINGITEM");
+    expect(records.runs.map((run) => run.itemId)).not.toContain("01MERGINGITEM");
 
-    const rows = parsed.snapshot.items.map((item) => [
-      item.id,
-      item.state,
-      item.owner,
-      item.project,
-    ]);
+    const rows = records.items.map((item) => [item.id, item.state, item.owner, item.project]);
     expect(rows).toEqual([
       ["ENG-2", "awaiting_input", "Ada Owner", { id: "linear-exports", name: "Exports" }],
       ["ENG-3", "merge_queue", null, null],
     ]);
-    expect(parsed.snapshot.items.find((item) => item.id === "ENG-2")?.blockers).toEqual([]);
-    expect(parsed.snapshot.items.find((item) => item.id === "ENG-3")?.blockers).toEqual(["ENG-2"]);
+    expect(records.items.find((item) => item.id === "ENG-2")?.blockers).toEqual([]);
+    expect(records.items.find((item) => item.id === "ENG-3")?.blockers).toEqual(["ENG-2"]);
 
-    const parkedRun = parsed.snapshot.runs.find((run) => run.itemId === "ENG-2");
+    const parkedRun = records.runs.find((run) => run.itemId === "ENG-2");
     expect(parkedRun?.state).toBe("awaiting_input");
     expect(parkedRun?.activity.some((line) => line.text === "Need a product decision.")).toBe(true);
-    expect(parsed.snapshot.runs.some((run) => run.itemId === "ENG-3")).toBe(true);
+    expect(records.runs.some((run) => run.itemId === "ENG-3")).toBe(true);
 
-    expect(parsed.snapshot.questions.map((entry) => entry.title)).toEqual([
-      "Include archived rows?",
-    ]);
-    expect(parsed.snapshot.questions[0]?.itemId).toBe("ENG-2");
-    expect(parsed.snapshot.questions[0]?.options).toEqual(["yes", "no"]);
-    expect(parsed.snapshot.questions[0]?.runId).toBe(parked.run.id);
+    expect(records.questions.map((entry) => entry.title)).toEqual(["Include archived rows?"]);
+    expect(records.questions[0]?.itemId).toBe("ENG-2");
+    expect(records.questions[0]?.options).toEqual(["yes", "no"]);
+    expect(records.questions[0]?.runId).toBe(parked.run.id);
 
-    const verdict = parsed.snapshot.verdicts.find((entry) => entry.itemId === "ENG-3");
+    const verdict = records.verdicts.find((entry) => entry.itemId === "ENG-3");
     expect(verdict?.decision).toBe("accepted");
     expect(verdict?.checks.map((check) => check.id)).toEqual(["typecheck", "adversarial-review"]);
     expect(verdict?.headSha).toBe(HEAD);
 
     expect(
-      parsed.snapshot.mergeQueue.map((entry) => [entry.position, entry.itemId, entry.repository]),
+      records.mergeQueue.map((entry) => [entry.position, entry.itemId, entry.repository]),
     ).toEqual([[1, "ENG-3", "pmdroid/paws-demo"]]);
-    expect(parsed.snapshot.items.find((item) => item.id === "ENG-3")?.pr?.number).toBe(4);
+    expect(records.items.find((item) => item.id === "ENG-3")?.pr?.number).toBe(4);
 
     const hidden = await handleStatusRequest(
-      new Request("http://127.0.0.1/api/status?engine=demo"),
+      new Request("http://127.0.0.1/api/issues?engine=demo"),
       { db, env: {} },
     );
     const demo = (await hidden?.json()) as { source: string };
@@ -228,21 +236,21 @@ test("fake e2e rows show up on /api/status as live work", async () => {
   }
 });
 
-test("each task on /api/status carries the Linear requests it made", async () => {
+test("each task on /api/issues carries the Linear requests it made", async () => {
   const db = openDatabase(":memory:");
   try {
     migrate(db);
     insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: NOW });
     insertQueuedItem(db, { id: "item-2", sessionKey: "ses_2", now: NOW });
     for (let request = 0; request < 3; request++) countLinearRequest(db, "item-1", "outbox");
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},
     });
-    const parsed = parseStatusSnapshot(await response?.json());
+    const parsed = parseIssueListResponse(await response?.json());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(
-      Object.fromEntries(parsed.snapshot.items.map((item) => [item.id, item.linearRequests])),
+      Object.fromEntries(parsed.response.issues.map((item) => [item.id, item.linearRequests])),
     ).toEqual({ "item-1": 3, "item-2": 0 });
   } finally {
     db.close();
@@ -263,7 +271,6 @@ test("an empty live overview asks the operator to delegate a Linear issue", asyn
     const view = render({
       route: { view: "overview" },
       phase: "ready",
-      snapshot: null,
       overview: parsed.response,
       error: null,
       engineUrl: "http://127.0.0.1:8787",
@@ -296,13 +303,13 @@ test("a merge-queue item whose re-verify waits for a runner slot says it is next
       },
       now: NOW,
     });
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/merge-queue"), {
       db,
       env: {},
     });
-    const parsed = parseStatusSnapshot(await response?.json());
+    const parsed = parseMergeQueueResponse(await response?.json());
     if (!parsed.ok) throw new Error(parsed.error);
-    expect(parsed.snapshot.mergeQueue.map((entry) => [entry.itemId, entry.detail])).toEqual([
+    expect(parsed.response.entries.map((entry) => [entry.itemId, entry.detail])).toEqual([
       ["ENG-3", "Waiting for a runner slot (next in line)."],
     ]);
   } finally {

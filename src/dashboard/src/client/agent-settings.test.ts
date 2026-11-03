@@ -129,7 +129,6 @@ describe("agent settings", () => {
     const rendered = render({
       route: { view: "settings" },
       phase: "loading",
-      snapshot: null,
       error: null,
       engineUrl: "http://localhost:8787",
     });

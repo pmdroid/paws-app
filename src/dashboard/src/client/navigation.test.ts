@@ -1,32 +1,20 @@
-import {
-  fullStatusFixture,
-  issueList,
-  listResponse,
-  pageData,
-  statusFixture,
-  statusList,
-} from "../../test/fixtures";
+import { fullStatusFixture, issueList, pageData } from "../../test/fixtures";
 import { expect, test } from "bun:test";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";
 import {
   issueListRedirect,
   matchRoute,
-  needsSnapshot,
   parseRoute,
-  ROUTE_SLICES,
-  routeCovered,
   routeHref,
   routeResource,
   routerBase,
   type Route,
 } from "./route";
 import { render } from "./render";
-import { STATUS_SLICES } from "../contract";
 
 const model = {
   phase: "ready" as const,
-  snapshot: statusList(fullStatusFixture()),
   issues: issueList(fullStatusFixture()),
   error: null,
   engineUrl: null,
@@ -56,7 +44,7 @@ test("sidebar exposes every page exactly once and all page links round-trip", ()
 
 test("empty pages retain their own heading and empty state", () => {
   const snapshot = {
-    ...statusFixture(),
+    ...fullStatusFixture(),
     items: [],
     runs: [],
     questions: [],
@@ -66,8 +54,7 @@ test("empty pages retain their own heading and empty state", () => {
   for (const view of ["overview", "issues", "runs", "questions"] as const) {
     const html = render({
       ...model,
-      snapshot,
-      issues: listResponse(snapshot),
+      issues: issueList(snapshot),
       route: { view, id: null },
     }).content;
     expect(html.match(/<h1 /g)?.length).toBe(1);
@@ -130,9 +117,7 @@ test("the Conversations page is gone and its old links open the issue list", () 
   expect(issueListRedirect("/sessions/unknown-session")).toBeNull();
 });
 
-test("no page reads the status snapshot; every work page reads its own resource", () => {
-  const pages = Object.keys(PAGES).filter((view) => needsSnapshot({ view, id: null } as Route));
-  expect(pages).toEqual([]);
+test("every work page reads its own resource", () => {
   expect(routeResource({ view: "evidence", id: null })).toBe("evidenceGallery");
   expect(routeResource({ view: "evidence", id: "01JA0000000000000000000001" })).toBe("evidence");
   expect(routeResource({ view: "mergeQueue" })).toBe("mergeQueue");
@@ -143,29 +128,7 @@ test("no page reads the status snapshot; every work page reads its own resource"
   expect(routeResource({ view: "questions", id: null })).toBe("questions");
   expect(routeResource({ view: "questions", id: "Q-41" })).toBe("question");
   expect(routeResource({ view: "settings" })).toBeNull();
+  expect(routeResource({ view: "findings" })).toBeNull();
+  expect(routeResource({ view: "runners", id: null })).toBeNull();
   expect(routeResource({ view: "alias", kind: "runs", id: "r-1" })).toBeNull();
-});
-
-test("every route names the status slices it renders", () => {
-  expect(Object.keys(ROUTE_SLICES).sort()).toEqual(Object.keys(PAGES).sort());
-  for (const slices of Object.values(ROUTE_SLICES))
-    for (const slice of slices) expect(STATUS_SLICES).toContain(slice);
-  expect(ROUTE_SLICES).toEqual({
-    overview: [],
-    issues: [],
-    runs: [],
-    alias: [],
-    mergeQueue: [],
-    questions: [],
-    evidence: [],
-    findings: [],
-    runners: [],
-    settings: [],
-  });
-});
-
-test("no route waits for a status slice", () => {
-  for (const view of Object.keys(PAGES))
-    expect(routeCovered({ view, id: null } as Route, null)).toBe(true);
-  expect(routeCovered({ view: "evidence", id: "01JA0000000000000000000001" }, null)).toBe(true);
 });

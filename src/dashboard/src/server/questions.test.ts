@@ -6,7 +6,7 @@ import {
   type QuestionDetailResponse,
 } from "../contract";
 import { questionCardFixture } from "../../test/fixtures";
-import { createStatusSnapshotCache, handleStatusRequest, type StatusProvider } from "./handler";
+import { createResourceCache, handleStatusRequest, type StatusProvider } from "./handler";
 
 const NO_SIZES = { record() {}, flush() {} };
 
@@ -15,14 +15,6 @@ const card = questionCardFixture;
 function recording(generatedAt = () => new Date().toISOString()) {
   const calls: string[] = [];
   const provider: StatusProvider = {
-    snapshot() {
-      calls.push("snapshot");
-      throw new Error("the snapshot is not a question resource");
-    },
-    item(id) {
-      calls.push(`item:${id}`);
-      return null;
-    },
     issues() {
       calls.push("issues");
       throw new Error("the issue list is not a question resource");
@@ -102,9 +94,6 @@ describe("question resource routes", () => {
 
   test("an invalid body is a 500, not a partial page", async () => {
     const provider: StatusProvider = {
-      snapshot: () => {
-        throw new Error("unused");
-      },
       question: (id) =>
         ({
           source: "live",
@@ -118,11 +107,11 @@ describe("question resource routes", () => {
   test("a warm cache is keyed by resource, question and reader, so a permission change reads again", async () => {
     let now = 1_700_000_000_000;
     const { calls, provider } = recording();
-    const snapshotCache = createStatusSnapshotCache({ now: () => now });
+    const resourceCache = createResourceCache({ now: () => now });
     const read = (path: string, sessionIds?: string[]) =>
       handleStatusRequest(get(path), {
         provider,
-        snapshotCache,
+        resourceCache,
         responseSizes: NO_SIZES,
         ...(sessionIds === undefined ? {} : { sessionIds }),
       });

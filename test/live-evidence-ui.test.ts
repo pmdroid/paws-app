@@ -1,13 +1,12 @@
-import { issueOf } from "../src/dashboard/test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { insertQueuedItem, insertRun, migrate, openDatabase, saveEvidence } from "../src/db";
 import type { EvidenceMediaType } from "../src/db";
 import { handleStatusRequest } from "../src/dashboard";
 import {
+  parseEvidenceListResponse,
   parseEvidenceMetadataResponse,
-  parseStatusSnapshot,
-  type StatusItemDetail,
-  type StatusSnapshot,
+  type EvidenceListResponse,
+  type IssueDetailResponse,
 } from "../src/dashboard/src/contract";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 import { render, type RenderModel } from "../src/dashboard/src/client/render";
@@ -60,14 +59,14 @@ function seeded() {
   return { db, run, later, hidden };
 }
 
-function snapshotFor(db: ReturnType<typeof seeded>["db"]): StatusSnapshot {
+function galleryFor(db: ReturnType<typeof seeded>["db"]): EvidenceListResponse {
   const raw = createLiveStatusProvider(db, {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
-  }).snapshot();
-  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(raw)));
+  }).evidence();
+  const parsed = parseEvidenceListResponse(JSON.parse(JSON.stringify(raw)));
   if (!parsed.ok) throw new Error(parsed.error);
-  return parsed.snapshot;
+  return parsed.response;
 }
 
 /** A run's issue page, rendered from that issue's detail as the dashboard loads it. */
@@ -76,11 +75,10 @@ function runPage(db: ReturnType<typeof seeded>["db"], runId: string): string {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   });
-  const snapshot = snapshotFor(db);
-  const itemId = snapshot.runs.find(
-    (run) => run.id === runId || run.attempts?.includes(runId),
-  )!.itemId;
-  return page(snapshot, { view: "issues", id: itemId }, provider.item(itemId));
+  const itemId = provider
+    .issues()
+    .runs.find((run) => run.id === runId || run.attempts?.includes(runId))!.itemId;
+  return page({ view: "issues", id: itemId }, provider.issue(itemId));
 }
 
 function evidencePage(db: ReturnType<typeof seeded>["db"], id: string): string {
@@ -90,23 +88,21 @@ function evidencePage(db: ReturnType<typeof seeded>["db"], id: string): string {
   }).evidenceMetadata(id);
   const parsed = response === null ? null : parseEvidenceMetadataResponse(response);
   if (parsed !== null && !parsed.ok) throw new Error(parsed.error);
-  return page(snapshotFor(db), { view: "evidence", id }, null, {
+  return page({ view: "evidence", id }, null, {
     evidence: parsed === null ? null : parsed.response,
     missingEvidence: parsed === null ? id : null,
   });
 }
 
 function page(
-  snapshot: StatusSnapshot,
   route: RenderModel["route"],
-  detail: StatusItemDetail | null = null,
+  detail: IssueDetailResponse | null = null,
   evidence: Pick<RenderModel, "evidence" | "missingEvidence"> = {},
 ): string {
   return render({
     route,
     phase: "ready",
-    snapshot,
-    issue: issueOf(detail),
+    issue: detail,
     ...evidence,
     error: null,
     engineUrl: null,
@@ -118,25 +114,25 @@ function page(
 }
 
 describe("live evidence", () => {
-  test("the snapshot lists only the evidence of items the reader can see", () => {
+  test("the gallery lists only the evidence of items the reader can see", () => {
     const { db, run, later } = seeded();
-    const snapshot = snapshotFor(db);
-    expect(snapshot.evidence?.map((entry) => [entry.id, entry.kind, entry.runId])).toEqual([
+    const gallery = galleryFor(db);
+    expect(gallery.evidence.map((entry) => [entry.id, entry.kind, entry.runId])).toEqual([
       [VIDEO, "video", run.id],
       [IMAGE, "image", run.id],
       [OTHER_RUN, "image", later.id],
     ]);
-    const video = snapshot.evidence![0]!;
+    const video = gallery.evidence[0]!;
     expect(video.publisher).toBe("Claude");
     expect(video.publishedAt).toBe(new Date(1_700_000_000_000).toISOString());
-    expect(JSON.stringify(snapshot)).not.toContain("secret-file.png");
+    expect(JSON.stringify(gallery)).not.toContain("secret-file.png");
   });
 
   test("the run page has an Evidence slot only when the run has evidence", () => {
     const { db, run, later } = seeded();
-    const snapshot = snapshotFor(db);
+    const gallery = galleryFor(db);
     expect(runPage(db, run.id)).toContain(`<div id="evidence-gallery" data-run="${run.id}"></div>`);
-    expect(filterEvidence(snapshot.evidence!, "video").map((entry) => entry.id)).toEqual([VIDEO]);
+    expect(filterEvidence(gallery.evidence, "video").map((entry) => entry.id)).toEqual([VIDEO]);
     expect(runPage(db, later.id)).toContain("evidence-gallery");
     insertQueuedItem(db, { id: "bare-item", title: "No evidence", sessionKey: "visible", now: 3 });
     const bare = insertRun(db, { itemId: "bare-item", now: 40, agent: "claude" });
@@ -145,9 +141,8 @@ describe("live evidence", () => {
 
   test("the evidence page shows the file details and the rest of the run", () => {
     const { db } = seeded();
-    const snapshot = snapshotFor(db);
     const html = evidencePage(db, VIDEO);
-    const item = snapshot.evidence![0]!.itemId;
+    const item = galleryFor(db).evidence[0]!.itemId;
     for (const text of [
       item,
 
@@ -209,11 +204,11 @@ describe("live evidence", () => {
 
   test("the contract rejects malformed evidence", () => {
     const { db } = seeded();
-    const raw = JSON.parse(JSON.stringify(snapshotFor(db)));
+    const raw = JSON.parse(JSON.stringify(galleryFor(db)));
     raw.evidence[0].kind = "audio";
-    expect(parseStatusSnapshot(raw).ok).toBe(false);
+    expect(parseEvidenceListResponse(raw).ok).toBe(false);
     raw.evidence[0].kind = "video";
     raw.evidence[0].attempt = 0;
-    expect(parseStatusSnapshot(raw).ok).toBe(false);
+    expect(parseEvidenceListResponse(raw).ok).toBe(false);
   });
 });

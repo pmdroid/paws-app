@@ -59,7 +59,6 @@ describe("question page loading", () => {
     expect(await one).toBe("applied");
     expect(sent.map((entry) => entry.path)).toEqual(["/api/questions", "/api/questions/q-1"]);
     expect(pages.data.question?.question.id).toBe("q-1");
-    expect(pages.data.snapshot).toBeNull();
   });
 
   test("late success, error and 404 for the question left behind are dropped", async () => {

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { GENERATED_AT_HEADER, type StatusSnapshot } from "../contract";
-import { statusFixture } from "../../test/fixtures";
-import { livePoll } from "./poll";
-import { createStatusReader, STATUS_POLL_MS } from "./status-reader";
+import { OVERVIEW_API_PATH, parseOverviewResponse } from "../contract";
+import { emptyOverview } from "../live/overview";
+import { livePoll, PAGE_POLL_MS } from "./poll";
+import { createResourceReader } from "./resource-reader";
 
 function fakes() {
   const listeners = new Set<() => void>();
@@ -55,16 +55,20 @@ describe("live polling", () => {
     expect(fake.listeners.size).toBe(0);
   });
 
-  test("a hidden dashboard tab requests no status, and one when it is shown again", async () => {
+  test("a hidden dashboard tab requests nothing, and its resource once when it is shown again", async () => {
     const fake = fakes();
     const requests: string[] = [];
-    const read = createStatusReader(async (path) => {
+    const resources = createResourceReader(async (path) => {
       requests.push(path);
-      return Response.json(statusFixture(), { headers: { ETag: 'W/"a"' } });
+      return Response.json(emptyOverview(), { headers: { ETag: 'W/"a"' } });
     });
+    const parse = (input: unknown) => {
+      const parsed = parseOverviewResponse(input);
+      return parsed.ok ? { ok: true as const, body: parsed.response } : parsed;
+    };
     const stop = livePoll(
-      () => void read(["items", "questions"]),
-      STATUS_POLL_MS,
+      () => void resources.read(OVERVIEW_API_PATH, "", parse),
+      PAGE_POLL_MS,
       fake.doc as never,
       fake.timers as never,
     );
@@ -77,53 +81,7 @@ describe("live polling", () => {
     expect(requests).toHaveLength(1);
 
     fake.show("visible");
-    expect(requests).toEqual([
-      "/api/status?slices=items,questions",
-      "/api/status?slices=items,questions",
-    ]);
+    expect(requests).toEqual([OVERVIEW_API_PATH, OVERVIEW_API_PATH]);
     stop();
-  });
-});
-
-describe("status reader", () => {
-  test("asks with the last ETag of the same slices and keeps the list on a 304", async () => {
-    const sent: { path: string; match: string | null }[] = [];
-    let unchanged = false;
-    const read = createStatusReader(async (path, init) => {
-      const match = new Headers(init.headers).get("If-None-Match");
-      sent.push({ path, match });
-      if (unchanged && match === 'W/"v1"')
-        return new Response(null, {
-          status: 304,
-          headers: { ETag: 'W/"v1"', [GENERATED_AT_HEADER]: "2026-10-27T10:00:05.000Z" },
-        });
-      return Response.json(
-        { ...statusFixture(), slices: ["items"] },
-        { headers: { ETag: 'W/"v1"' } },
-      );
-    });
-
-    const first = await read(["items"]);
-    unchanged = true;
-    const second = await read(["items"]);
-    const other = await read(["evidence"]);
-
-    expect(sent).toEqual([
-      { path: "/api/status?slices=items", match: null },
-      { path: "/api/status?slices=items", match: 'W/"v1"' },
-      { path: "/api/status?slices=evidence", match: null },
-    ]);
-    if (first.kind !== "loaded" || second.kind !== "loaded" || other.kind !== "loaded")
-      throw new Error("expected loaded lists");
-    const { generatedAt: _first, ...before } = first.snapshot;
-    const { generatedAt, ...after } = second.snapshot as StatusSnapshot;
-    expect(after).toEqual(before);
-    expect(generatedAt).toBe("2026-10-27T10:00:05.000Z");
-  });
-
-  test("hands any other response back to the page", async () => {
-    const read = createStatusReader(async () => Response.json({ error: "no" }, { status: 401 }));
-    const result = await read(["items"]);
-    expect(result.kind).toBe("response");
   });
 });

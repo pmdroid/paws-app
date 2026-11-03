@@ -14,7 +14,7 @@ import {
 } from "../../../db";
 import { createLiveStatusProvider, handleStatusRequest } from "../engine";
 
-/** The budget in `docs/status-payload.md`. */
+/** The budget in `docs/dashboard-payload.md`. */
 const LIST_BUDGET_BYTES = 200 * 1024;
 const DETAIL_BUDGET_BYTES = 1024 * 1024;
 const OVERVIEW_BUDGET_BYTES = 50 * 1024;
@@ -106,27 +106,19 @@ describe("status payload budget", () => {
       expect(response.status).toBe(200);
       return Buffer.byteLength(await response.text());
     };
-    const list = await get("/api/status");
-    expect(list).toBeLessThanOrEqual(LIST_BUDGET_BYTES);
     // The busiest issue: three attempts of six checks, each with capped `stdout` and `stderr`.
     expect(3 * CHECKS.length * 2 * OUTPUT_CAP_BYTES).toBeGreaterThan(DETAIL_BUDGET_BYTES);
-    const detail = await get("/api/status/items/PAS-2000");
-    expect(detail).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
-    expect(await get("/api/status/items/PAS-1000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
     expect(await get("/api/issues")).toBeLessThanOrEqual(LIST_BUDGET_BYTES);
     expect(await get("/api/issues/PAS-2000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
     expect(await get("/api/issues/PAS-1000")).toBeLessThanOrEqual(DETAIL_BUDGET_BYTES);
     const overviewBytes = await get("/api/overview");
     expect(overviewBytes).toBeLessThanOrEqual(OVERVIEW_BUDGET_BYTES);
-    expect(overviewBytes * 10).toBeLessThan(
-      await get("/api/status?slices=items,questions,mergeQueue,intake"),
-    );
+    expect(overviewBytes * 10).toBeLessThan(await get("/api/issues"));
     expect(await get("/api/merge-queue")).toBeLessThanOrEqual(MERGE_QUEUE_BUDGET_BYTES);
 
     const live = createLiveStatusProvider(db, { env: {} });
     const calls: string[] = [];
     const provider = {
-      snapshot: () => live.snapshot(),
       issues: () => (calls.push("issues"), live.issues()),
       overview: () => (calls.push("overview"), live.overview()),
       checkLog: (request: Parameters<typeof live.checkLog>[0]) => (

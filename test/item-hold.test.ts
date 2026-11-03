@@ -54,8 +54,8 @@ test("a blocked item names its blocker once in the journal and once more when it
     ]);
     expect(
       createLiveStatusProvider(db)
-        .snapshot()
-        .items.find((entry) => entry.id === "PAS-368")?.blockers,
+        .issues()
+        .issues.find((entry) => entry.id === "PAS-368")?.blockers,
     ).toEqual(["PAS-367"]);
     confirmFakeMerge(db, "PAS-367");
     expect(workspaceDispatch(db, { now: 3, log })).toEqual(["PAS-368"]);
@@ -194,8 +194,8 @@ test("without a workspace every queued item is held for the workspace, journaled
     ]);
     expect(
       createLiveStatusProvider(db)
-        .snapshot()
-        .items.find((entry) => entry.id === "PAS-9")?.held,
+        .issues()
+        .issues.find((entry) => entry.id === "PAS-9")?.held,
     ).toEqual({ reason: "workspace", blockers: [] });
   } finally {
     db.close();
@@ -209,7 +209,7 @@ test("the status API carries the held reason of a queued item", () => {
     item(db, "PAS-368", "queued", 1);
     db.run("INSERT INTO task_block VALUES('issue-PAS-367','issue-PAS-368')");
     workspaceDispatch(db, { now: 1 });
-    const items = createLiveStatusProvider(db).snapshot().items;
+    const items = createLiveStatusProvider(db).issues().issues;
     expect(items.find((entry) => entry.id === "PAS-368")?.held).toEqual({
       reason: "blocked",
       blockers: ["PAS-367"],

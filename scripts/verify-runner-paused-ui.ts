@@ -5,12 +5,12 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { onboardingPage } from "../src/workspace";
 import { handleStatusRequest } from "../src/dashboard";
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const runner = {
   id: "01JRUNNER0000000000000000A",
@@ -68,7 +68,7 @@ const server = Bun.serve({
     if (path === "/api/runners/usage") return Response.json({ usage: [] });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "fixture",
       })) ?? new Response(null, { status: 404 })
     );

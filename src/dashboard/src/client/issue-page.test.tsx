@@ -1,16 +1,14 @@
 import {
   openedView,
   fullStatusFixture,
-  itemDetail,
+  issueResource,
   pageData,
-  statusList,
   type FullStatus,
-  issueOf,
 } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStatusItemDetail, parseStatusSnapshot, statusIntegrity } from "../contract";
+import { parseIssueDetailResponse, statusIntegrity } from "../contract";
 import { plainTask, render, timelineGroups } from "./render";
 import { themedMarkup } from "./theme";
 
@@ -41,9 +39,14 @@ function redelegated(): FullStatus {
     startedAt: "2026-10-09T19:00:00.000Z",
     activity: [{ at: "2026-10-09T19:05:00.000Z", kind: "thought", text: "Earlier session turn." }],
   });
-  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(statusList(snapshot))));
+  const parsed = parseIssueDetailResponse(
+    JSON.parse(JSON.stringify(issueResource(snapshot, "ENG-101"))),
+  );
   if (!parsed.ok) throw new Error(parsed.error);
-  expect(statusIntegrity(parsed.snapshot)).toEqual([]);
+  const detail = parsed.response;
+  expect(statusIntegrity({ ...detail, items: [detail.issue, ...detail.earlierSessions] })).toEqual(
+    [],
+  );
   return snapshot;
 }
 
@@ -88,15 +91,14 @@ describe("issue page", () => {
   });
 
   test("the item timeline lists every state change from the fake, the restart with its reason", () => {
-    const parsed = parseStatusItemDetail(
-      JSON.parse(JSON.stringify(itemDetail(fullStatusFixture(), "ENG-101"))),
+    const parsed = parseIssueDetailResponse(
+      JSON.parse(JSON.stringify(issueResource(fullStatusFixture(), "ENG-101"))),
     );
     if (!parsed.ok) throw new Error(parsed.error);
     const html = render({
       route: { view: "issues", id: "ENG-101" },
       phase: "ready",
-      snapshot: null,
-      issue: issueOf(parsed.detail),
+      issue: parsed.response,
       error: null,
       engineUrl: null,
       closeout: openedView({ "section\ndetails:ENG-101": true }),
@@ -192,15 +194,16 @@ describe("issue page", () => {
   });
 
   test("renders from the item detail alone, with no list snapshot", () => {
-    const parsed = parseStatusItemDetail(
-      JSON.parse(JSON.stringify({ ...itemDetail(redelegated(), "ENG-101"), blocks: ["ENG-105"] })),
+    const parsed = parseIssueDetailResponse(
+      JSON.parse(
+        JSON.stringify({ ...issueResource(redelegated(), "ENG-101"), blocks: ["ENG-105"] }),
+      ),
     );
     if (!parsed.ok) throw new Error(parsed.error);
     const html = render({
       route: { view: "issues", id: "ENG-101" },
       phase: "ready",
-      snapshot: null,
-      issue: issueOf(parsed.detail),
+      issue: parsed.response,
       error: null,
       engineUrl: null,
       closeout: openedView(),
@@ -215,8 +218,7 @@ describe("issue page", () => {
     const other = render({
       route: { view: "issues", id: "ENG-102" },
       phase: "ready",
-      snapshot: null,
-      issue: issueOf(parsed.detail),
+      issue: parsed.response,
       error: null,
       engineUrl: null,
     }).content;

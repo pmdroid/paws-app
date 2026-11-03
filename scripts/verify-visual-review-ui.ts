@@ -1,4 +1,4 @@
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 // The Visual review card on the issue page while its screenshots link ask is open, against the
 // real status handler: the changed screens, a mark drawn on one, and the three decisions.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-visual-review-ui.ts <screenshot dir>
@@ -43,7 +43,7 @@ for (const screen of SCREENS) {
   await page.close();
 }
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const item = snapshot.items.find((entry) => entry.id === "ENG-103")!;
 const run = snapshot.runs.find((entry) => entry.itemId === item.id)!;
@@ -138,7 +138,7 @@ const server = Bun.serve({
       return new Response(image, { headers: { "content-type": "image/png" } });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "ui-fixture",
       })) ?? new Response(null, { status: 404 })
     );

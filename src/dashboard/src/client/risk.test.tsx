@@ -1,8 +1,8 @@
-import { openedView, fullStatusFixture, itemDetail, issueOf } from "../../test/fixtures";
+import { openedView, fullStatusFixture, issueResource } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStatusItemDetail, type StatusItemRisk } from "../contract";
+import { parseIssueDetailResponse, type StatusItemRisk } from "../contract";
 import { render } from "./render";
 import { themedMarkup } from "./theme";
 
@@ -10,15 +10,14 @@ const HEAD = "7f65200aa1b2c3d4e5f60718293a4b5c6d7e8f90";
 
 /** The ENG-101 issue page from its item detail, with `risk` as the endpoint sends it. */
 function page(risk: StatusItemRisk | null): string {
-  const parsed = parseStatusItemDetail(
-    JSON.parse(JSON.stringify({ ...itemDetail(fullStatusFixture(), "ENG-101"), risk })),
+  const parsed = parseIssueDetailResponse(
+    JSON.parse(JSON.stringify({ ...issueResource(fullStatusFixture(), "ENG-101"), risk })),
   );
   if (!parsed.ok) throw new Error(parsed.error);
   return render({
     route: { view: "issues", id: "ENG-101" },
     phase: "ready",
-    snapshot: null,
-    issue: issueOf(parsed.detail),
+    issue: parsed.response,
     error: null,
     engineUrl: null,
     closeout: openedView(),

@@ -21,13 +21,6 @@ import {
   parseQuestionDetailResponse,
   parseQuestionListResponse,
   QUESTIONS_API_PATH,
-  parseStatusItemDetail,
-  parseStatusSlices,
-  parseStatusSnapshot,
-  selectStatusSlices,
-  statusCheckLogPath,
-  STATUS_API_PATH,
-  STATUS_ITEM_API_PATH,
   type EvidenceListResponse,
   type EvidenceMetadataResponse,
   type IssueCheckLogResponse,
@@ -37,16 +30,12 @@ import {
   type OverviewResponse,
   type QuestionDetailResponse,
   type QuestionListResponse,
-  type StatusCheckLog,
-  type StatusItemDetail,
-  type StatusSnapshot,
 } from "../contract";
 import {
   createLiveStatusProvider,
   emptyEvidenceList,
   emptyIssueList,
   emptyMergeQueue,
-  emptyLiveSnapshot,
   emptyQuestionList,
   type CheckLogRequest,
   type CheckOutput,
@@ -57,7 +46,7 @@ import { ALIAS_API_PATH, isAliasKind, type AliasKind, type AliasResponse } from 
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
 import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
 import { injectCsrf } from "./csrf";
-import { statusResponseSizes, type ResponseSizeJournal } from "./response-size";
+import { dashboardResponseSizes, type ResponseSizeJournal } from "./response-size";
 import { handleSessionStartRequest, type StartLinearSession } from "./session-start";
 import { handleAgentTranscriptRequest } from "./transcript";
 import {
@@ -68,9 +57,6 @@ import {
 } from "../../../dashboard-links";
 
 export interface StatusProvider {
-  snapshot(): StatusSnapshot | Promise<StatusSnapshot>;
-  /** One issue for its page. Null, or no reader, answers 404. */
-  item?(id: string): StatusItemDetail | null | Promise<StatusItemDetail | null>;
   /** One check's whole output. Null, or no reader, answers 404. */
   checkLog?(request: CheckLogRequest): CheckOutput | null | Promise<CheckOutput | null>;
   issues?(): IssueListResponse | Promise<IssueListResponse>;
@@ -90,9 +76,9 @@ export interface StatusServerOptions {
   sessionIds?: readonly string[];
   trustedOrigin?: string;
   /**
-   * Live reader for `/api/status`.
-   * Omit it and pass `db` to read the engine database. Omit both for an empty
-   * live snapshot (`source: "live"`, no items).
+   * Live reader for the dashboard resources.
+   * Omit it and pass `db` to read the engine database. Omit both for empty
+   * live resources (`source: "live"`, no items).
    */
   provider?: StatusProvider;
   /** Opened engine database. Ignored when `provider` is set. */
@@ -111,23 +97,17 @@ export interface StatusServerOptions {
   startLinearSession?: StartLinearSession;
   linearUsage?: LiveStatusOptions["linearUsage"];
   riskApproval?: LiveStatusOptions["riskApproval"];
-  /** Where status API response sizes go. Defaults to the process's per-minute journal line. */
+  /** Where resource response sizes go. Defaults to the process's per-minute journal line. */
   responseSizes?: ResponseSizeJournal;
   /**
-   * Reuses a built `/api/status` snapshot for a second; the engine passes `statusSnapshots`.
+   * Reuses each built resource body for a second; the engine passes `dashboardResources`.
    * Omit it to build the body on every request.
    */
-  snapshotCache?: StatusSnapshotCache;
+  resourceCache?: ResourceCache;
 }
 
 export function fakeStatusProvider(): StatusProvider {
   return {
-    snapshot() {
-      return emptyLiveSnapshot();
-    },
-    item() {
-      return null;
-    },
     checkLog() {
       return null;
     },
@@ -204,23 +184,19 @@ export async function handleStatusRequest(
   if (artifact !== null) return artifact;
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
-  const sizes = options.responseSizes ?? statusResponseSizes;
-  if (pathname === STATUS_API_PATH)
-    return apiResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
-  if (pathname.startsWith(`${STATUS_ITEM_API_PATH}/`))
-    return itemResponse(request, providerFor(options), pathname, sizes);
+  const sizes = options.responseSizes ?? dashboardResponseSizes;
   if (pathname === OVERVIEW_API_PATH)
-    return overviewResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
+    return overviewResponse(request, options, sizes, options.resourceCache ?? UNCACHED);
   if (pathname === ISSUES_API_PATH || pathname.startsWith(`${ISSUES_API_PATH}/`))
-    return issuesResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
+    return issuesResponse(request, options, sizes, options.resourceCache ?? UNCACHED);
   if (pathname === QUESTIONS_API_PATH || pathname.startsWith(`${QUESTIONS_API_PATH}/`))
-    return questionsResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
+    return questionsResponse(request, options, sizes, options.resourceCache ?? UNCACHED);
   if (pathname.startsWith(`${ALIAS_API_PATH}/`))
     return aliasResponse(request, providerFor(options), pathname);
   if (pathname === MERGE_QUEUE_API_PATH)
-    return mergeQueueResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
+    return mergeQueueResponse(request, options, sizes, options.resourceCache ?? UNCACHED);
   if (pathname === EVIDENCE_RESOURCE_PATH || pathname.startsWith(`${EVIDENCE_RESOURCE_PATH}/`))
-    return evidenceResponse(request, options, sizes, options.snapshotCache ?? UNCACHED);
+    return evidenceResponse(request, options, sizes, options.resourceCache ?? UNCACHED);
   if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (isDashboardPath(pathname)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
@@ -292,8 +268,6 @@ function liveProvider(options?: {
     });
   }
   return {
-    snapshot: () => emptyLiveSnapshot(),
-    item: () => null,
     checkLog: () => null,
     issues: () => emptyIssueList(),
     issue: () => null,
@@ -347,25 +321,25 @@ function artifactHome(options: StatusServerOptions): string | null {
   return null;
 }
 
-/** How long a built `/api/status` snapshot answers repeated polls before it is built again. */
-export const STATUS_SNAPSHOT_REUSE_MS = 1_000;
+/** How long a built resource answers repeated polls before it is built again. */
+export const RESOURCE_REUSE_MS = 1_000;
 
 type Built<T> = { value: T } | { error: string };
 
 /**
- * Built `/api/status` snapshots, per data source and reader, so a dashboard polling from several
- * tabs builds the snapshot at most once a second. A poll that arrives while one is being built
- * waits for it.
+ * Built resource bodies, per data source, resource, parameters and reader, so a dashboard polling
+ * from several tabs builds each body at most once a second. A poll that arrives while one is
+ * being built waits for it.
  */
-export interface StatusSnapshotCache {
+export interface ResourceCache {
   get<T>(source: object, key: string, build: () => Promise<Built<T>>): Promise<Built<T>>;
 }
 
-export function createStatusSnapshotCache(
+export function createResourceCache(
   options: { now?: () => number; reuseMs?: number } = {},
-): StatusSnapshotCache {
+): ResourceCache {
   const now = options.now ?? Date.now;
-  const reuseMs = options.reuseMs ?? STATUS_SNAPSHOT_REUSE_MS;
+  const reuseMs = options.reuseMs ?? RESOURCE_REUSE_MS;
   const sources = new WeakMap<
     object,
     Map<string, { at: number; built: Promise<Built<unknown>> }>
@@ -396,106 +370,12 @@ export function createStatusSnapshotCache(
 }
 
 /** The process's cache, shared by every status request the engine serves. */
-export const statusSnapshots = createStatusSnapshotCache();
+export const dashboardResources = createResourceCache();
 
-const UNCACHED: StatusSnapshotCache = { get: (_source, _key, build) => build() };
+const UNCACHED: ResourceCache = { get: (_source, _key, build) => build() };
 
 /** Status bodies built without a database or provider share this source. */
 const EMPTY_SOURCE = {};
-
-async function apiResponse(
-  request: Request,
-  options: StatusServerOptions,
-  sizes: ResponseSizeJournal,
-  cache: StatusSnapshotCache,
-): Promise<Response> {
-  if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: { ...CORS } });
-  }
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return json({ error: "Method not allowed" }, 405);
-  }
-  const slices = parseStatusSlices(new URL(request.url).searchParams.get("slices"));
-  if (!slices.ok) return json({ error: slices.error }, 400);
-  try {
-    const source = options.provider ?? options.db ?? EMPTY_SOURCE;
-    const built = await cache.get<StatusSnapshot>(
-      source,
-      cacheKey("status", "", options),
-      async () => {
-        const parsed = parseStatusSnapshot(await providerFor(options).snapshot());
-        return parsed.ok ? { value: parsed.snapshot } : { error: parsed.error };
-      },
-    );
-    if ("error" in built) return json({ error: built.error }, 500);
-    const body =
-      slices.slices === null ? built.value : selectStatusSlices(built.value, slices.slices);
-    return conditional(sizes, request, body);
-  } catch (caughtError1) {
-    journalCaught(caughtError1, "handler.apiResponse.snapshot", null);
-    return json({ error: "status unavailable" }, 500);
-  }
-}
-
-async function itemResponse(
-  request: Request,
-  provider: StatusProvider,
-  pathname: string,
-  sizes: ResponseSizeJournal,
-): Promise<Response> {
-  if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: { ...CORS } });
-  }
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return json({ error: "Method not allowed" }, 405);
-  }
-  const rest = pathname.slice(STATUS_ITEM_API_PATH.length + 1).split("/");
-  if (rest.length > 1) return checkLogResponse(request, provider, rest, sizes);
-  const id = itemId(rest[0]!);
-  if (id === null || provider.item === undefined) return json({ error: "Not found" }, 404);
-  try {
-    const detail = await provider.item(id);
-    // An item outside the reader's sessions answers like one that does not exist.
-    if (detail === null) return json({ error: "Not found" }, 404);
-    const parsed = parseStatusItemDetail(detail);
-    if (!parsed.ok) return json({ error: parsed.error }, 500);
-    return served(sizes, request, parsed.detail);
-  } catch (caughtError3) {
-    journalCaught(caughtError3, "handler.itemResponse.item", null);
-    return json({ error: "status unavailable" }, 500);
-  }
-}
-
-/**
- * `<id>/attempts/<n>/checks/<check id>/log`: the check's `stdout` and `stderr`, the last
- * `CHECK_LOG_TAIL_BYTES` of each unless the query has `full=1`. `run` picks a run's agent
- * Closeout. A check outside the reader's visible issue answers 404.
- */
-async function checkLogResponse(
-  request: Request,
-  provider: StatusProvider,
-  segments: readonly string[],
-  sizes: ResponseSizeJournal,
-): Promise<Response> {
-  try {
-    const read = await readCheckLog(request, provider, segments);
-    if (read === null) return json({ error: "Not found" }, 404);
-    const { id, attempt, checkId, run, output, full } = read;
-    const stdout = full ? output.stdout : tail(output.stdout);
-    const stderr = full ? output.stderr : tail(output.stderr);
-    const truncated = stdout !== output.stdout || stderr !== output.stderr;
-    const body: StatusCheckLog = {
-      stdout,
-      stderr,
-      truncated,
-      fullPath: truncated ? statusCheckLogPath(id, attempt, checkId, { run, full: true }) : null,
-    };
-    return served(sizes, request, body);
-  } catch (caughtError5) {
-    journalCaught(caughtError5, "handler.checkLogResponse.checkLog", null);
-    return json({ error: "status unavailable" }, 500);
-  }
-}
 
 function cacheKey(resource: string, parameters: string, options: StatusServerOptions): string {
   const reader = options.sessionIds === undefined ? null : [...options.sessionIds].sort();
@@ -506,7 +386,7 @@ async function issuesResponse(
   request: Request,
   options: StatusServerOptions,
   sizes: ResponseSizeJournal,
-  cache: StatusSnapshotCache,
+  cache: ResourceCache,
 ): Promise<Response> {
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers: { ...CORS } });
@@ -558,7 +438,7 @@ async function overviewResponse(
   request: Request,
   options: StatusServerOptions,
   sizes: ResponseSizeJournal,
-  cache: StatusSnapshotCache,
+  cache: ResourceCache,
 ): Promise<Response> {
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers: { ...CORS } });
@@ -588,7 +468,7 @@ async function mergeQueueResponse(
   request: Request,
   options: StatusServerOptions,
   sizes: ResponseSizeJournal,
-  cache: StatusSnapshotCache,
+  cache: ResourceCache,
 ): Promise<Response> {
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers: { ...CORS } });
@@ -618,7 +498,7 @@ async function questionsResponse(
   request: Request,
   options: StatusServerOptions,
   sizes: ResponseSizeJournal,
-  cache: StatusSnapshotCache,
+  cache: ResourceCache,
 ): Promise<Response> {
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers: { ...CORS } });
@@ -670,7 +550,7 @@ async function evidenceResponse(
   request: Request,
   options: StatusServerOptions,
   sizes: ResponseSizeJournal,
-  cache: StatusSnapshotCache,
+  cache: ResourceCache,
 ): Promise<Response> {
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers: { ...CORS } });

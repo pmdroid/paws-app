@@ -4,13 +4,13 @@ import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { handleStatusRequest } from "../src/dashboard";
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const item = snapshot.items.find((entry) => entry.runId !== null) ?? snapshot.items[0]!;
 const at = (minutes: number) =>
@@ -56,7 +56,7 @@ const server = Bun.serve({
       return Response.json({ setupRequired: false, workspaceReady: true, runners: [] });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "ui-fixture",
       })) ?? new Response(null, { status: 404 })
     );

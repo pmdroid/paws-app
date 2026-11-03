@@ -1,4 +1,4 @@
-import type { StatusDeadDelivery, StatusSnapshotBase } from "../contract";
+import type { StatusDeadDelivery } from "../contract";
 import { esc, utcClock } from "./format";
 
 const OBSOLETE = "From an earlier state of this issue. Paws will not retry it.";
@@ -14,10 +14,10 @@ const NAMES: Record<string, string> = {
  * every later update of its session, so the page names it instead of leaving the session quiet.
  */
 export function deadDeliveriesSection(
-  snapshot: Pick<StatusSnapshotBase, "dead">,
+  data: { dead?: readonly StatusDeadDelivery[] },
   itemId: string,
 ): string {
-  const dead = (snapshot.dead ?? []).filter((entry) => entry.itemId === itemId);
+  const dead = (data.dead ?? []).filter((entry) => entry.itemId === itemId);
   if (dead.length === 0) return "";
   return `<section class="closeout-result blocked dead-deliveries" id="dead-deliveries" aria-labelledby="dead-heading"><div class="min-w-0">
     <h2 id="dead-heading">Stopped after every attempt</h2>

@@ -159,6 +159,6 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
   const reads = seen.join("\n");
   for (const table of DETAIL_TABLES) expect(reads).not.toMatch(new RegExp(`\\b${table}\\b`));
   seen.length = 0;
-  provider.snapshot();
+  provider.issue("ENG-1");
   expect(seen.join("\n")).toMatch(/\bcloseout_step\b/);
 });

@@ -1,16 +1,10 @@
-import {
-  openedView,
-  fullStatusFixture,
-  itemDetail,
-  type FullStatus,
-  issueOf,
-} from "../../test/fixtures";
+import { openedView, fullStatusFixture, issueResource, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-  parseStatusItemDetail,
-  type StatusItemDetail,
+  parseIssueDetailResponse,
+  type IssueDetailResponse,
   type StatusReview,
   type StatusReviewFinding,
 } from "../contract";
@@ -74,7 +68,7 @@ const REVIEW: StatusReview = {
   ],
 };
 
-function withReviews(): StatusItemDetail {
+function withReviews(): IssueDetailResponse {
   const snapshot = fullStatusFixture();
   const verdict = snapshot.verdicts.find((entry) => entry.itemId === "ENG-100")!;
   verdict.reviews = [
@@ -96,19 +90,20 @@ function withReviews(): StatusItemDetail {
   return detailOf(snapshot);
 }
 
-/** The issue page's data as `GET /api/status/items/ENG-100` serves it. */
-function detailOf(full: FullStatus): StatusItemDetail {
-  const parsed = parseStatusItemDetail(JSON.parse(JSON.stringify(itemDetail(full, "ENG-100"))));
+/** The issue page's data as `GET /api/issues/ENG-100` serves it. */
+function detailOf(full: FullStatus): IssueDetailResponse {
+  const parsed = parseIssueDetailResponse(
+    JSON.parse(JSON.stringify(issueResource(full, "ENG-100"))),
+  );
   if (!parsed.ok) throw new Error(parsed.error);
-  return parsed.detail;
+  return parsed.response;
 }
 
-function page(detail: StatusItemDetail, closeout: CloseoutView = openedView()): string {
+function page(detail: IssueDetailResponse, closeout: CloseoutView = openedView()): string {
   return render({
     route: { view: "issues", id: "ENG-100" },
     phase: "ready",
-    snapshot: null,
-    issue: issueOf(detail),
+    issue: detail,
     error: null,
     engineUrl: null,
     closeout,
@@ -209,9 +204,9 @@ describe("review findings on the issue page", () => {
       filed: { identifier: "PAS-123", url: "https://linear.app/kyku/issue/PAS-123" },
     };
     // The filed issue comes with the issue page's data, as the server sends it.
-    const parsed = parseStatusItemDetail(JSON.parse(JSON.stringify(detail)));
+    const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     if (!parsed.ok) throw new Error(parsed.error);
-    const old = findingHtml(page(parsed.detail), "src/retention/legacy.ts:7");
+    const old = findingHtml(page(parsed.response), "src/retention/legacy.ts:7");
     expect(old).toContain(">PAS-123 filed</a>");
     expect(old).toContain('href="https://linear.app/kyku/issue/PAS-123"');
     expect(old).not.toContain("File an issue");

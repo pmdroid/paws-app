@@ -82,7 +82,7 @@ describe("process", () => {
       const base = `http://${paws.server.hostname}:${paws.server.port}`;
       const health = await fetch(`${base}/health`);
       expect(health.status).toBe(200);
-      const status = await fetch(`${base}/api/status`);
+      const status = await fetch(`${base}/api/issues`);
       expect(status.status).toBe(200);
       expect(await status.json()).toMatchObject({ source: "live" });
       const hidden = await fetch(`${base}/webhooks/linear`, { method: "POST" });

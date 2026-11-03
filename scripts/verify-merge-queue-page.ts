@@ -1,4 +1,4 @@
-import { mergeQueueOf, statusFixture } from "../src/dashboard/test/fixtures";
+import { fullStatusFixture, mergeQueueOf } from "../src/dashboard/test/fixtures";
 // The Merge queue page with two repositories and a task whose repository is not known, against
 // the real status handler.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-merge-queue-page.ts <screenshot dir>
@@ -11,7 +11,7 @@ const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
 
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const at = (minutes: number) =>
   new Date(Date.parse(snapshot.generatedAt) - minutes * 60_000).toISOString();
@@ -116,9 +116,6 @@ const server = Bun.serve({
     return (
       (await handleStatusRequest(request, {
         provider: {
-          snapshot: () => {
-            throw new Error("the Merge queue page must not read the status snapshot");
-          },
           mergeQueue: () => ({ ...mergeQueueOf(snapshot), source: "live" }),
         },
         csrfToken: "ui-fixture",

@@ -134,8 +134,8 @@ for (const scenario of scenarios) {
       off: "Manual approval required: automatic approval is off",
       unreadable: "Manual approval required",
     }[scenario];
-    const detail = provider.item(item.id)!;
-    expect(detail.id).toBe(item.id);
+    const detail = provider.issue(item.id)!;
+    expect(detail.issue.id).toBe(item.id);
     expect(detail.risk?.automaticApproval).toBe(expected);
   });
 }
@@ -145,7 +145,7 @@ test("an in-flight old settings snapshot cannot restore automatic approval after
   f.settings.autoApproveHighRisk = false;
   f.reader.refreshSettings();
   f.reader.remember(f.item.id, "head", f.context);
-  expect(f.provider.item(f.item.id)?.risk?.automaticApproval).toBe(
+  expect(f.provider.issue(f.item.id)?.risk?.automaticApproval).toBe(
     "Manual approval required: automatic approval is off",
   );
 });
@@ -156,7 +156,7 @@ test("unrelated settings writes retain the reason and status reads do not reload
   const reads = f.settingsReads();
   const changes = f.db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n;
   for (let i = 0; i < 3; i++) {
-    expect(f.provider.item(f.item.id)?.risk?.automaticApproval).toContain(
+    expect(f.provider.issue(f.item.id)?.risk?.automaticApproval).toContain(
       "security review has a P2 finding",
     );
     f.reader.remember(f.item.id, "head", f.context);
@@ -190,15 +190,15 @@ test("failed display persistence cannot reject the merge gate", async () => {
       samePatch: async () => false,
     }),
   ).toBe("approved");
-  expect(f.provider.item(f.item.id)?.id).toBe(f.item.id);
+  expect(f.provider.issue(f.item.id)?.issue.id).toBe(f.item.id);
 });
 
 test("a corrupt classified-risk row does not fail the item page", () => {
   const f = fixture();
   f.db.run("PRAGMA ignore_check_constraints=ON");
   f.db.run("UPDATE candidate_risk SET paths = '{' WHERE item_id = ?", [f.item.id]);
-  const detail = f.provider.item(f.item.id)!;
-  expect(detail.id).toBe(f.item.id);
+  const detail = f.provider.issue(f.item.id)!;
+  expect(detail.issue.id).toBe(f.item.id);
   expect(detail.risk?.automaticApproval).toBe("Manual approval required");
 });
 
@@ -206,7 +206,7 @@ test("display follows the lane's rebased head even while the checkpoint still na
   const f = fixture();
   saveCheckpoint(f.db, f.item.id, { phase: "merge_queue", wipCommit: "head", baseSha: "base" });
   f.reader.remember(f.item.id, "rebased-head", f.context);
-  const detail = f.provider.item(f.item.id)!;
+  const detail = f.provider.issue(f.item.id)!;
   expect(detail.risk?.head).toBe("rebased-head");
   expect(detail.risk?.automaticApproval).toBe("Manual approval required");
   expect(
@@ -216,7 +216,7 @@ test("display follows the lane's rebased head even while the checkpoint still na
 
 test("the disabled risk gate does not claim manual approval is required", async () => {
   const f = fixture("off", null);
-  expect(f.provider.item(f.item.id)?.risk?.automaticApproval).toBe(
+  expect(f.provider.issue(f.item.id)?.risk?.automaticApproval).toBe(
     "Risk gate is off: approval is not required",
   );
   expect(
@@ -256,7 +256,7 @@ function approve(f: ReturnType<typeof fixture>, head: string) {
 test("a human approval overrides the automatic-approval explanation", () => {
   const f = fixture("off");
   approve(f, "head");
-  expect(f.provider.item(f.item.id)?.risk?.automaticApproval).toBe(
+  expect(f.provider.issue(f.item.id)?.risk?.automaticApproval).toBe(
     "Approved: a person approved this commit",
   );
 });
@@ -278,13 +278,13 @@ test("a human approval carried over by the lane is displayed as approved", async
   });
   expect(result).toBe("approved");
   f.reader.remember(f.item.id, "head", { ...f.context, approvedHead, approvalKind });
-  expect(f.provider.item(f.item.id)?.risk?.automaticApproval).toBe(
+  expect(f.provider.issue(f.item.id)?.risk?.automaticApproval).toBe(
     "Approved: an earlier human approval carries over",
   );
   f.settings.autoApproveHighRisk = true;
   f.settings.repositories = { "acme/repo": { packages: [], highRiskPaths: ["different/**"] } };
   f.reader.refreshSettings();
-  expect(f.provider.item(f.item.id)?.risk?.automaticApproval).toBe(
+  expect(f.provider.issue(f.item.id)?.risk?.automaticApproval).toBe(
     "Approved: an earlier human approval carries over",
   );
 });

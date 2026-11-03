@@ -7,7 +7,7 @@ import {
   issueCheckLogPath,
   parseIssueCheckLogResponse,
   type IssueCheckLogResponse,
-  type StatusSnapshotBase,
+  type StatusItem,
 } from "../contract";
 import {
   attemptsOf,
@@ -31,12 +31,10 @@ import {
   matchRoute,
   parseRoute,
   routerBase,
-  routeCovered,
   routeResource,
   type Route,
 } from "./route";
-import { livePoll } from "./poll";
-import { STATUS_POLL_MS } from "./status-reader";
+import { livePoll, PAGE_POLL_MS } from "./poll";
 import { createPageLoader, errorText } from "./page-loader";
 import type { SettingsPage } from "./settings-pages";
 
@@ -59,6 +57,7 @@ import { clickVisualReviewAsk, submitVisualReviewAsk } from "./visual-review-ask
 import { createDeadDeliveryRetry } from "./dead-delivery-retry";
 import { createReviewDraw } from "./review-draw";
 import { createEvidenceMedia } from "./evidence-media";
+import type { RunEvidenceSource } from "./evidence";
 import {
   initializeWorkspaceAccess,
   showWorkspaceSettingsPage,
@@ -197,7 +196,7 @@ function routeChanged(): void {
                     : resource === "evidence"
                       ? page.evidence?.evidence.id === openEvidence(route) ||
                         page.missingEvidence === openEvidence(route)
-                      : routeCovered(route, page.snapshot);
+                      : true;
   phase = shown ? "ready" : "loading";
   error = null;
   paint();
@@ -262,12 +261,12 @@ function readerChanged(): void {
   void reload();
 }
 
-/** What the current page renders from: the issue's detail on its page, otherwise the list. */
-function pageData(): Pick<StatusSnapshotBase, "items" | "runs" | "evidence"> | null {
+/** The open issue's sessions, runs and evidence, which its media and review draw mount from. */
+function pageData(): (RunEvidenceSource & { items: StatusItem[] }) | null {
   const route = currentRoute();
   if (page.issue && openDetail({ route, issue: page.issue }))
     return { ...page.issue, items: [page.issue.issue, ...page.issue.earlierSessions] };
-  return routeResource(route) === "status" ? page.snapshot : null;
+  return null;
 }
 
 async function followAlias(route: Extract<Route, { view: "alias" }>): Promise<void> {
@@ -322,7 +321,7 @@ function schedule(): void {
   if (routeResource(route) === null) return;
   // Stored evidence does not change, and a repaint would interrupt the video.
   if (route.view === "evidence") return;
-  stopPolling = livePoll(() => void reload(), STATUS_POLL_MS);
+  stopPolling = livePoll(() => void reload(), PAGE_POLL_MS);
 }
 
 /**
@@ -378,7 +377,6 @@ function paint(): void {
   const model: RenderModel = {
     route: currentRoute(),
     phase,
-    snapshot: page.snapshot,
     issues: page.issues,
     issue: page.issue,
     overview: page.overview,

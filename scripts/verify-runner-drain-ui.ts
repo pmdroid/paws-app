@@ -4,12 +4,12 @@ import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { handleStatusRequest } from "../src/dashboard";
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 
 const directory = process.argv[2];
 if (!directory) throw new Error("Provide a directory for the screenshots");
 mkdirSync(directory, { recursive: true });
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const now = Date.now();
 type Move = { status: "moving" | "waiting" | "stayed"; reason: string | null } | null;
@@ -96,7 +96,7 @@ const server = Bun.serve({
     if (path === "/api/runners/usage") return Response.json({ usage: [] });
     return (
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "fixture",
       })) ?? new Response(null, { status: 404 })
     );

@@ -10,7 +10,7 @@ import {
   openDatabase,
   recordCiRerun,
 } from "../../../db";
-import { parseStatusSnapshot } from "../contract";
+import { parseIssueListResponse } from "../contract";
 import { handleStatusRequest } from "../engine";
 import { historyOf } from "./provider";
 
@@ -46,12 +46,12 @@ test("the timeline shows the agent's CI re-run with its reason and run id", asyn
     runIds: [41474224082],
   });
   applyWorkItemEvent(db, "item", "turn_ended");
-  const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+  const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
     db,
     env: {},
   });
-  const body = parseStatusSnapshot(await response!.json());
+  const body = parseIssueListResponse(await response!.json());
   if (!body.ok) throw new Error(body.error);
-  const item = body.snapshot.items.find((candidate) => candidate.id === "item");
+  const item = body.response.issues.find((candidate) => candidate.id === "item");
   expect(item?.timeline?.find((entry) => entry.kind === "ci_rerun")?.runIds).toEqual([41474224082]);
 });

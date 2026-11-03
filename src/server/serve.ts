@@ -24,7 +24,7 @@ import {
   FINDING_GROUPS_API_PATH,
   type FindingGroupServices,
   handleStatusRequest,
-  statusSnapshots,
+  dashboardResources,
   type ReadLinearArtifact,
   type StartLinearSession,
 } from "../dashboard";
@@ -132,7 +132,7 @@ export type ServerOptions = {
    * Off, every `/webhooks/*` path is 404.
    */
   webhooks?: boolean;
-  /** Engine database. `/api/status` reads it. Omit it for an empty live snapshot. */
+  /** Engine database. The dashboard resources read it. Omit it for empty live resources. */
   db?: Database;
   /** Clock for local health checks. */
   healthNow?: () => number;
@@ -643,7 +643,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   const status = await handleStatusRequest(request, {
     csrfToken,
-    snapshotCache: statusSnapshots,
+    resourceCache: dashboardResources,
     ...(sessionIds === undefined ? {} : { sessionIds }),
     ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     ...(secrets.readLinearArtifact

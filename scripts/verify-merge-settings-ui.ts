@@ -1,4 +1,4 @@
-import { statusFixture } from "../src/dashboard/test/fixtures";
+import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
 // Settings → Merging against the real settings handler and a temporary config.toml, and a run
 // page whose pull request waits in the GitHub merge queue.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-merge-settings-ui.ts <screenshot dir>
@@ -16,7 +16,7 @@ mkdirSync(directory, { recursive: true });
 const PAWS = "843abf82-7a05-4340-b47b-2c81fe6e6e16";
 const MONOREPO = "0b5c1d2e-3f40-4a51-8b62-7c83d94e05f6";
 const PAYMENTS = "4179d503-3ec3-4be7-a8ef-4415a2d9b5e9";
-const snapshot = statusFixture();
+const snapshot = fullStatusFixture();
 snapshot.source = "live";
 const queuedRun = snapshot.runs.find((run) => run.id === "r-102")!;
 const queuedItem = snapshot.items.find((item) => item.id === queuedRun.itemId)!;
@@ -54,7 +54,7 @@ const server = Bun.serve({
         githubQueues: async () => githubQueues,
       })) ??
       (await handleStatusRequest(request, {
-        provider: { snapshot: () => snapshot },
+        provider: fixtureProvider(snapshot),
         csrfToken: "ui-fixture",
       })) ??
       new Response(null, { status: 404 })

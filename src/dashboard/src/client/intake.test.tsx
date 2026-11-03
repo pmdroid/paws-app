@@ -1,7 +1,7 @@
-import { overviewOf, statusFixture } from "../../test/fixtures";
+import { overviewOf, fullStatusFixture, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStatusSnapshot, type StatusIntakeEntry, type StatusSnapshot } from "../contract";
+import type { StatusIntakeEntry } from "../contract";
 import { render } from "./render";
 import { themedMarkup } from "./theme";
 
@@ -28,8 +28,8 @@ function waiting(
   };
 }
 
-function burst(): StatusSnapshot {
-  const snapshot = statusFixture();
+function burst(): FullStatus {
+  const snapshot = fullStatusFixture();
   snapshot.generatedAt = NOW;
   snapshot.intake = [
     waiting("ENG-301", "Export audit log as CSV", 240, {
@@ -53,11 +53,10 @@ function burst(): StatusSnapshot {
   return snapshot;
 }
 
-function overview(snapshot: StatusSnapshot): string {
+function overview(snapshot: FullStatus): string {
   return render({
     route: { view: "overview" },
     phase: "ready",
-    snapshot,
     overview: overviewOf(snapshot),
     error: null,
     engineUrl: null,
@@ -104,7 +103,7 @@ describe("intake queue and Linear budget on the overview", () => {
   });
 
   test("an empty queue with a known budget still shows the budget", () => {
-    const snapshot = statusFixture();
+    const snapshot = fullStatusFixture();
     snapshot.items = [];
     snapshot.questions = [];
     snapshot.intake = [];
@@ -127,7 +126,7 @@ describe("intake queue and Linear budget on the overview", () => {
   });
 
   test("a snapshot without intake data renders the overview as before", () => {
-    expect(overview(statusFixture())).not.toContain("intake-heading");
+    expect(overview(fullStatusFixture())).not.toContain("intake-heading");
   });
 
   test("390 px: rows wrap and long errors break instead of widening the page", () => {
@@ -145,7 +144,7 @@ describe("intake queue and Linear budget on the overview", () => {
   });
 
   test("a webhook Linear may have disabled is a warning with the fix, on desktop and at 390 px", () => {
-    const snapshot = statusFixture();
+    const snapshot = fullStatusFixture();
     snapshot.generatedAt = NOW;
     snapshot.linearWebhook = {
       warning:
@@ -161,22 +160,19 @@ describe("intake queue and Linear budget on the overview", () => {
     const narrow = renderToStaticMarkup(<>{themedMarkup(html)}</>);
     const [warning] = classNames(narrow, "settings-message");
     expect(warning).toContain("break-words");
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
-    if (!parsed.ok) throw new Error(parsed.error);
-    expect(parsed.snapshot.linearWebhook).toEqual(snapshot.linearWebhook);
-    expect(overview(statusFixture())).not.toContain('role="alert"');
+    expect(overviewOf(snapshot).linearWebhook).toEqual(snapshot.linearWebhook!);
+    expect(overview(fullStatusFixture())).not.toContain('role="alert"');
   });
 
-  test("the status contract carries the queue and budget and rejects a bad timestamp", () => {
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(burst())));
-    if (!parsed.ok) throw new Error(parsed.error);
-    expect(parsed.snapshot.intake).toEqual(burst().intake!);
-    expect(parsed.snapshot.linearBudget).toEqual(burst().linearBudget!);
-    const broken = JSON.parse(JSON.stringify(burst()));
-    broken.intake[0].receivedAt = "soon";
-    expect(parseStatusSnapshot(broken).ok).toBe(false);
-    const budget = JSON.parse(JSON.stringify(burst()));
-    budget.linearBudget.holdUntil = "later";
-    expect(parseStatusSnapshot(budget).ok).toBe(false);
+  test("the overview contract carries the queue and budget and rejects a bad timestamp", () => {
+    const parsed = overviewOf(burst());
+    expect(parsed.intake).toEqual(burst().intake!);
+    expect(parsed.linearBudget).toEqual(burst().linearBudget!);
+    const broken = burst();
+    broken.intake![0]!.receivedAt = "soon";
+    expect(() => overviewOf(broken)).toThrow();
+    const budget = burst();
+    budget.linearBudget!.holdUntil = "later";
+    expect(() => overviewOf(budget)).toThrow();
   });
 });
