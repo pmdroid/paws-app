@@ -1,7 +1,14 @@
 import { journalCaught } from "../journal";
 import { routeHref } from "./route";
 import { renderMarkup } from "./theme";
-import type { AgentModelCatalog, AgentProfile, AgentRole, AgentSettings } from "../agent-settings";
+import type {
+  AccountLists,
+  AgentModelCatalog,
+  AgentProfile,
+  AgentRole,
+  AgentSettings,
+} from "../agent-settings";
+import type { AgentAccounts } from "./account-settings";
 import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
 
@@ -12,6 +19,84 @@ const QUEUE_START_TIMEOUT_DEFAULT = 24;
 const QUEUE_START_TIMEOUT_MAX = 720;
 const OWNER_CAP_MAX = 1000;
 const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok", opencode: "OpenCode" };
+const MAX_ACCOUNTS = 8;
+
+export type AccountChoice = Pick<
+  AgentAccounts["accounts"][number],
+  "id" | "agent" | "label" | "legacy" | "enabled"
+>;
+type AccountRole = keyof AccountLists;
+
+export function accountList(
+  settings: AgentSettings,
+  scope: string,
+  role: AccountRole,
+): string[] | undefined {
+  if (scope === "defaults") return settings.defaults.accounts?.[role];
+  if (role === "reviewerFallback") return undefined;
+  return settings.projects[Number(scope)]?.accounts?.[role];
+}
+
+export function setAccountList(
+  settings: AgentSettings,
+  scope: string,
+  role: AccountRole,
+  ids: string[],
+): void {
+  if (scope === "defaults") {
+    const lists = { ...settings.defaults.accounts, [role]: ids };
+    if (!ids.length) delete lists[role];
+    if (Object.keys(lists).length) settings.defaults.accounts = lists;
+    else delete settings.defaults.accounts;
+    return;
+  }
+  const project = settings.projects[Number(scope)];
+  if (!project || role === "reviewerFallback") return;
+  const lists = { ...project.accounts, [role]: ids };
+  if (!ids.length) delete lists[role];
+  if (Object.keys(lists).length) project.accounts = lists;
+  else delete project.accounts;
+}
+
+export function moveAccount(ids: readonly string[], index: number, by: -1 | 1): string[] {
+  const next = [...ids];
+  const target = index + by;
+  if (index < 0 || index >= next.length || target < 0 || target >= next.length) return next;
+  [next[index], next[target]] = [next[target]!, next[index]!];
+  return next;
+}
+
+export function accountOrderMarkup(
+  key: string,
+  scope: string,
+  role: AccountRole,
+  agent: AgentProfile["agent"],
+  ids: readonly string[],
+  accounts: readonly AccountChoice[] | undefined,
+  inherits: string,
+): string {
+  const label = (id: string) => {
+    const account = accounts?.find((entry) => entry.id === id);
+    if (!account) return `${esc(id)} <span class="tag bad">Unknown or removed</span>`;
+    return `${esc(account.label)}${account.agent !== agent ? ' <span class="tag bad">Another agent</span>' : ""}${account.enabled ? "" : ' <span class="tag warn">Disabled, skipped</span>'}`;
+  };
+  const button = (action: string, index: number, text: string, name: string, off: boolean) =>
+    `<button class="btn" type="button" data-settings="${action}" data-scope="${scope}" data-role="${role}" data-index="${index}" aria-label="${esc(name)}" ${off ? "disabled" : ""}>${text}</button>`;
+  const rows = ids
+    .map((id, index) => {
+      const name = accounts?.find((entry) => entry.id === id)?.label ?? id;
+      return `<li class="row"><span class="break-words">${index + 1}. ${label(id)}</span>${button("account-up", index, "Up", `Move ${name} up`, index === 0)}${button("account-down", index, "Down", `Move ${name} down`, index === ids.length - 1)}${button("account-remove", index, "Remove", `Remove ${name} from the order`, false)}</li>`;
+    })
+    .join("");
+  const choices = (accounts ?? []).filter(
+    (account) => account.agent === agent && !ids.includes(account.id),
+  );
+  const add =
+    accounts && ids.length < MAX_ACCOUNTS && choices.length
+      ? `<div class="row"><label class="sr-only" for="${key}-account-add">Add an account to the ${esc(role)} order</label><select id="${key}-account-add" name="${key}-account-add">${choices.map((account) => `<option value="${esc(account.id)}">${esc(account.label)}${account.enabled ? "" : " (disabled)"}</option>`).join("")}</select><button class="btn" type="button" data-settings="account-add" data-scope="${scope}" data-role="${role}">Add to order</button></div>`
+      : "";
+  return `<div class="settings-field" data-account-order="${key}"><span>Account order</span>${ids.length ? `<ol class="flex min-w-0 flex-col gap-2">${rows}</ol>` : `<p class="sub">${esc(inherits)}</p>`}${add}${ids.length ? '<p class="sub">New work tries these in order and falls back when one cannot run. Work already running keeps its account.</p>' : ""}</div>`;
+}
 
 export function settingsProblems(settings: AgentSettings): string[] {
   const profiles = [
@@ -85,6 +170,7 @@ type SettingsView = {
   catalogs?: AgentModelCatalog[];
   catalogError?: string | null;
   repoDraft?: string;
+  accounts?: AccountChoice[];
 };
 
 export function renderAgentSettings(view: SettingsView): string {
@@ -100,9 +186,43 @@ export function renderAgentSettings(view: SettingsView): string {
       : "";
   return `${intro}${view.catalogError ? `<p class="settings-message err" role="status">${esc(view.catalogError)} <button class="btn" type="button" data-settings="models">Reload choices</button></p>` : ""}<form id="agent-settings-form"><div id="settings-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
-      <section class="settings-section"><div class="settings-label"><h2>Global defaults</h2><p class="sub">Used by projects that inherit these roles. The reviewer must use a different agent or model.</p></div><div class="settings-roles">${ROLES.map((role) => profileFields("defaults", role, view.data!.defaults[role], null, view.catalogs)).join("")}</div></section>
+      <section class="settings-section"><div class="settings-label"><h2>Global defaults</h2><p class="sub">Used by projects that inherit these roles. The reviewer must use a different agent or model.</p></div><div class="settings-roles">${ROLES.map((role) => profileFields("defaults", role, view.data!.defaults[role], null, view.catalogs, accountOrderMarkup(`defaults-${role}`, "defaults", role, view.data!.defaults[role].agent, view.data!.defaults.accounts?.[role] ?? [], view.accounts, "No order: new work runs as the default sign-in on each runner."))).join("")}${view.data.defaults.reviewerFallback ? `<div class="settings-profile"><div class="settings-role"><h3>Reviewer fallback</h3></div>${accountOrderMarkup("defaults-reviewerFallback", "defaults", "reviewerFallback", view.data.defaults.reviewerFallback.agent, view.data.defaults.accounts?.reviewerFallback ?? [], view.accounts, "No order: the fallback reviewer runs as the default sign-in.")}</div>` : ""}</div></section>
       <section class="settings-section"><div class="settings-label"><h2>Project overrides</h2><p class="sub">Set a profile for an individual repository, or inherit its global default.</p></div><div class="col">
-      ${view.data.projects.length ? view.data.projects.map((project, index) => `<section class="settings-project"><h3>${esc(project.repo)}</h3><div class="settings-roles">${ROLES.map((role) => profileFields(String(index), role, project[role] ?? view.data!.defaults[role], project[role] === undefined, view.catalogs)).join("")}</div></section>`).join("") : '<p class="sub">No project overrides.</p>'}
+      ${
+        view.data.projects.length
+          ? view.data.projects
+              .map(
+                (project, index) =>
+                  `<section class="settings-project"><h3>${esc(project.repo)}</h3><div class="settings-roles">${ROLES.map(
+                    (role) => {
+                      const profile = project[role] ?? view.data!.defaults[role];
+                      const inheritsOrder =
+                        profile.agent === view.data!.defaults[role].agent &&
+                        view.data!.defaults.accounts?.[role]
+                          ? "Uses the global order."
+                          : "No order: new work runs as the default sign-in on each runner.";
+                      return profileFields(
+                        String(index),
+                        role,
+                        profile,
+                        project[role] === undefined,
+                        view.catalogs,
+                        accountOrderMarkup(
+                          `${index}-${role}`,
+                          String(index),
+                          role,
+                          profile.agent,
+                          project.accounts?.[role] ?? [],
+                          view.accounts,
+                          inheritsOrder,
+                        ),
+                      );
+                    },
+                  ).join("")}</div></section>`,
+              )
+              .join("")
+          : '<p class="sub">No project overrides.</p>'
+      }
       <div class="settings-add"><label for="settings-repo">Repository</label><div class="row"><input id="settings-repo" name="repo" value="${esc(view.repoDraft ?? "")}" placeholder="owner/repository" autocapitalize="none" spellcheck="false"><button class="btn" type="button" data-settings="add">Add project</button></div></div></div></section>
       ${checksSection(view.data.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT)}
       ${queueSection(
@@ -136,6 +256,7 @@ function profileFields(
   profile: AgentProfile,
   inherited: boolean | null,
   catalogs: AgentModelCatalog[] = [],
+  order = "",
 ): string {
   const key = `${scope}-${role}`;
   const disabled = inherited ? "disabled" : "";
@@ -170,11 +291,12 @@ function profileFields(
       )
       .join("")}</select></div>
     <div class="settings-field"><label for="${key}-model">Model</label>${choices("model", profile.model, catalog?.models)}${longContext ? `<small class="sub" id="${key}-model-hint">1M context uses more of your Claude usage.</small>` : ""}${catalog ? "" : '<small class="sub">Sign in on a runner to load model choices.</small>'}</div>
-    <div class="settings-field"><label for="${key}-effort">Effort</label>${choices("effort", profile.effort, efforts)}${catalog && efforts == null ? '<small class="sub" role="status">Loading effort choices…</small>' : ""}</div></div></div>`;
+    <div class="settings-field"><label for="${key}-effort">Effort</label>${choices("effort", profile.effort, efforts)}${catalog && efforts == null ? '<small class="sub" role="status">Loading effort choices…</small>' : ""}</div></div>${order}</div>`;
 }
 
 export function createAgentSettings(invalidate: () => void): {
   mount(root: HTMLElement, engine: string | null): void;
+  accountsChanged(): void;
 } {
   let root: HTMLElement | null = null;
   let engine: string | null = null;
@@ -282,6 +404,37 @@ export function createAgentSettings(invalidate: () => void): {
     clearTimeout(catalogTimer);
     catalogTimer = setTimeout(() => void loadCatalog(), 10_000);
   };
+  const loadAccounts = async () => {
+    if (!engine || !root?.isConnected) return;
+    const started = generation;
+    try {
+      const response = await fetch(new URL("/api/runners/accounts", engine), {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) throw new Error("Agent accounts could not be loaded.");
+      const data = (await response.json()) as AgentAccounts;
+      if (started !== generation) return;
+      view.accounts = data.accounts.map(({ id, agent, label, legacy, enabled }) => ({
+        id,
+        agent,
+        label,
+        legacy,
+        enabled,
+      }));
+    } catch (error) {
+      journalCaught(error, "agent-settings.createAgentSettings.accounts", null);
+      return;
+    }
+    if (!view.busy) {
+      const saved = view.saved,
+        error = view.error;
+      draft();
+      view.saved = saved;
+      view.error = error;
+      paint();
+    }
+  };
   const request = async (busy: string, operation: () => Promise<void>) => {
     const started = generation;
     view.busy = busy;
@@ -338,6 +491,33 @@ export function createAgentSettings(invalidate: () => void): {
       return;
     }
     draft();
+    if (action?.startsWith("account-") && view.data) {
+      const scope = button.dataset.scope ?? "";
+      const role = button.dataset.role as AccountRole;
+      const index = Number(button.dataset.index);
+      const ids = accountList(view.data, scope, role) ?? [];
+      const key = `${scope}-${role}`;
+      const next =
+        action === "account-up"
+          ? moveAccount(ids, index, -1)
+          : action === "account-down"
+            ? moveAccount(ids, index, 1)
+            : action === "account-remove"
+              ? ids.filter((_, position) => position !== index)
+              : [
+                  ...ids,
+                  root?.querySelector<HTMLSelectElement>(`[name="${key}-account-add"]`)?.value ??
+                    "",
+                ].filter(Boolean);
+      setAccountList(view.data, scope, role, next);
+      paint();
+      root
+        ?.querySelector<HTMLElement>(
+          `[data-account-order="${key}"] button, [data-account-order="${key}"] select`,
+        )
+        ?.focus();
+      return;
+    }
     if (action === "add" && view.data) {
       const input = root?.querySelector<HTMLInputElement>("#settings-repo");
       const repo = input?.value.trim().toLowerCase() ?? "";
@@ -403,6 +583,7 @@ export function createAgentSettings(invalidate: () => void): {
         delete profile.effort;
         if (name.endsWith("-agent")) profile.model = null;
       }
+      if (name.endsWith("-agent") && view.data) setAccountList(view.data, scope, role, []);
       const effort = root?.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`);
       if (effort) effort.value = "";
     }
@@ -417,7 +598,7 @@ export function createAgentSettings(invalidate: () => void): {
       if (save) save.disabled = problems.length > 0;
       return;
     }
-    if (name === "repo") return;
+    if (name === "repo" || name.endsWith("-account-add")) return;
     paint();
     requestAnimationFrame(() => {
       const field = root?.querySelector<HTMLElement>(`[name="${name}"]`);
@@ -425,6 +606,9 @@ export function createAgentSettings(invalidate: () => void): {
     });
   };
   return {
+    accountsChanged() {
+      void loadAccounts();
+    },
     mount(next, nextEngine) {
       if (root === next && engine === nextEngine) return;
       clearTimeout(catalogTimer);
@@ -456,6 +640,7 @@ export function createAgentSettings(invalidate: () => void): {
         if (!view.data && !view.busy && !view.denied) void load();
         else paint();
         void loadCatalog();
+        void loadAccounts();
       }
     },
   };

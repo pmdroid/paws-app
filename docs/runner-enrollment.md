@@ -200,6 +200,30 @@ A turn that continues on another account starts a fresh agent session. It keeps 
 
 `bindingReadiness` reports why a binding cannot run as one of `revoked`, `removed`, `disabled`, `offline`, `paused`, `auth-required`, `provider-restricted`, `unsupported-model`, `exhausted` or `busy`. `busy` covers a full runner and an account at its `concurrency` limit. A usage-limit wait resumes at the earliest reset or account recheck, and waiting spends no part of the run's usage-limit budget: only usage-limited attempts, and waits that end early or would not wait, count toward it.
 
+### Manage accounts in the dashboard
+
+**Settings › Agents › Agent accounts** reads `GET /api/runners/accounts` (`src/account-management`). It lists each account with its agent, label, enabled flag, `concurrency`, the slots it holds now, and each live binding with its runner and readiness: `eligible`, `waiting` (runner offline, paused or busy), `auth-required` (the binding needs a sign-in, or the runner has not reported it), `cooling-down` (a quota, provider or model block, with its next check, or "reset unknown" when the provider gave no reset) or `unavailable` (removed, disabled, revoked, runner too old, or the repository not allowed). An account linked to two or more runners says that they share one limit. An agent listed in `runnerAccountAgentUnsupported` is shown as unsupported and offered no named accounts. Any active member can read the list; it carries no credentials, paths or provider messages.
+
+Writes are `POST` with the CSRF token:
+
+| Path                                                     | Body                                          | Who                          |
+| -------------------------------------------------------- | --------------------------------------------- | ---------------------------- |
+| `/api/runners/accounts`                                  | `revision`, `agent`, `label`                  | Admin                        |
+| `/api/runners/accounts/<id>`                             | `revision`, `label`, `enabled`, `concurrency` | Admin                        |
+| `/api/runners/accounts/<id>/remove`                      | `revision`                                    | Admin                        |
+| `/api/runners/accounts/<id>/bindings`                    | `revision`, `runnerId`                        | Admin, or the runner's owner |
+| `/api/runners/accounts/<id>/bindings/<bindingId>/remove` | `revision`                                    | Admin, or the runner's owner |
+
+Each write names the `revision` of the list it was based on, a digest of the workspace's account and binding rows. A write whose revision is older answers HTTP 409 with the current `revision` and changes nothing, so a stale page, a repeated submit or a second admin cannot overwrite newer state; the page reloads the list and says why. Each change is recorded in the audit history as `agent_account.*` with the agent and ids, never the label. The default sign-in accounts are read-only here. Linking a runner adds a binding; signing in stays the runner owner's own step in the runner's **Sign in** dialog on Runners, which lists each named binding of that runner under its agent with its own **Sign in to this account**. Disabling, unlinking or removing an account changes what later admissions offer; work already running keeps the account and binding its command carries.
+
+`GET` answers carry a weak `ETag`; a matching `If-None-Match` answers 304. Paws checks the reader's workspace membership before it compares the tag, so a revoked member gets 403, not 304.
+
+`GET /api/runners/accounts/preview?role=implementer|reviewer|reviewerFallback&repository=owner/repo` previews what new work for that role would get: the profile's agent and model, the order and its policy `revision` and source (`project`, `defaults` or `default` for the default sign-in), each account's position, why admission skips it, and each binding's readiness, then the first eligible account and runner and why the accounts ahead of it were passed over, or why new work would wait. It reads SQLite and `config.toml` only: it queues no command, reserves no slot, records no health and asks no provider. Who may use each runner (owner, sharing, project leads) depends on who delegated the issue and is checked when work is placed.
+
+The order each role tries is edited in the agent profiles below the accounts: **Account order** under each role, for the global defaults, the reviewer fallback and each project, with **Up**, **Down**, **Remove** and **Add to order**. It saves with the profiles through `PUT /api/settings/agents` and its `revision`. Changing a role's agent clears that role's order, since an order may only name accounts of the profile's agent.
+
+Each assignment records why the accounts ahead of the chosen one were passed over in `runner_execution_usage.account_fallback`, such as `A: agent account quota cooldown`. A runner's **Execution history** shows the account, the first characters of the order revision and that reason.
+
 ## Add the host
 
 1. Open your Paws dashboard at `https://paws.example.com:8787/dashboard/runners` and sign in. Any workspace member can add a host and owns the runner it adds.

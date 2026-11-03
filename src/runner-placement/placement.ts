@@ -86,6 +86,7 @@ export function createRunnerPlacement(options: {
       scope: string;
       policy: string;
       reason: PlacementReason | null;
+      fallback: string | null;
       expiresAt: number;
     }
   >();
@@ -503,6 +504,7 @@ export function createRunnerPlacement(options: {
       const agent = input.profile.agent as RunnerCodingAgent;
       const order = accountOrder(current.workspace.id, agent, input.accounts);
       const named = order.some((option) => !option.legacy);
+      const refusals = new Map<number, Set<string>>();
       const rows = scopes
         .flatMap((owner) =>
           eligibleRunners(db, {
@@ -563,6 +565,9 @@ export function createRunnerPlacement(options: {
           return reject("excluded after failed attempt");
         const fits = order.flatMap((option) => {
           const refuse = (refusal: AccountRefusal) => {
+            const seen = refusals.get(option.index) ?? new Set<string>();
+            seen.add(refusal.reason);
+            refusals.set(option.index, seen);
             input.onRejected?.(
               runner.id,
               input.accounts ? `${option.label}: ${refusal.reason}` : refusal.reason,
@@ -675,13 +680,25 @@ export function createRunnerPlacement(options: {
       );
       for (const [key, admission] of admissions)
         if (admission.expiresAt <= at) admissions.delete(key);
-      for (const { runner, account } of ranked)
+      const fallback = (index: number) =>
+        input.accounts && index > 0
+          ? order
+              .filter((option) => option.index < index)
+              .map(
+                (option) =>
+                  `${option.label}: ${[...(refusals.get(option.index) ?? ["not placed on a free runner"])].join(", ")}`,
+              )
+              .join("; ")
+              .slice(0, 500)
+          : null;
+      for (const { runner, account, index } of ranked)
         admissions.set(admissionKey(runner.id, input, account.bindingId), {
           request: input,
           account,
           scope: binding,
           policy: policy(runner.id, input.profile?.agent),
           reason: restorers.has(`${runner.id}:${account.bindingId}`) ? "session_restore" : null,
+          fallback: fallback(index),
           expiresAt: at + 15_000,
         });
       return ranked.map(({ runner, account }) => ({
@@ -743,8 +760,8 @@ export function createRunnerPlacement(options: {
           );
         }
         db.run(
-          `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,role,purpose,started_at,placement_reason,account_policy_revision)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,role,purpose,started_at,placement_reason,account_policy_revision,account_fallback)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [
             input.commandId,
             input.runnerId,
@@ -758,6 +775,7 @@ export function createRunnerPlacement(options: {
             input.startedAt,
             admission.reason,
             input.accounts?.revision ?? null,
+            admission.fallback,
           ],
         );
         admissions.delete(key);

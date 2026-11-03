@@ -131,6 +131,10 @@ export type Usage = {
   outcome: string | null;
   startedAt: number;
   endedAt: number | null;
+  accountLabel?: string | null;
+  accountNamed?: boolean | null;
+  accountPolicyRevision?: string | null;
+  accountFallback?: string | null;
 };
 /** What Paws returns when a member asks to add a host. */
 export type HostEnrollment = {
@@ -685,14 +689,26 @@ const PURPOSES: Record<string, string> = {
   helper: "Helper",
 };
 
+export function accountUsageMarkup(entry: Usage): string {
+  if (!entry.accountLabel) return "";
+  const policy = entry.accountPolicyRevision
+    ? ` · order ${esc(entry.accountPolicyRevision.slice(0, 8))}`
+    : "";
+  const fallback = entry.accountFallback
+    ? `<p class="muted">Fell back because ${esc(entry.accountFallback)}</p>`
+    : "";
+  return `<p class="muted">Account: ${esc(entry.accountLabel)}${policy}</p>${fallback}`;
+}
+
 export function runnerHistoryMarkup(usage: Usage[]): string {
   if (!usage.length) return '<p class="muted">This runner has not executed any work yet.</p>';
   const rows = usage
     .map((entry) => {
       const purpose = esc(PURPOSES[entry.purpose] ?? entry.purpose);
+      const account = accountUsageMarkup(entry);
       const work = entry.identifier
-        ? `${issueLink(entry.identifier, entry.title ?? "")}<p class="muted">${purpose}</p>`
-        : purpose;
+        ? `${issueLink(entry.identifier, entry.title ?? "")}<p class="muted">${purpose}</p>${account}`
+        : `${purpose}${account}`;
       const agent = entry.agent ? (AGENT_LABELS[entry.agent] ?? entry.agent) : "None";
       const outcome =
         entry.outcome === null

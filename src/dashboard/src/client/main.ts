@@ -40,6 +40,7 @@ import { STATUS_POLL_MS } from "./status-reader";
 import { createPageLoader, errorText } from "./page-loader";
 import type { SettingsPage } from "./settings-pages";
 
+import { createAccountSettings } from "./account-settings";
 import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
 import { createMergeSettings } from "./merge-settings";
@@ -72,6 +73,7 @@ const shell = mountShell();
 const router = shell.router;
 
 const settings = createAgentSettings(() => paint());
+const accountSettings = createAccountSettings(() => settings.accountsChanged());
 const skillSettings = createSkillSettings();
 const mergeSettings = createMergeSettings(() => paint());
 const hookSettings = createHookSettings();
@@ -431,6 +433,8 @@ function paint(): void {
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
+  const accountRoot = document.querySelector<HTMLElement>("#account-settings");
+  if (accountRoot) accountSettings.mount(accountRoot, currentEngine());
   const checkoutRoot = document.querySelector<HTMLElement>("#checkout-settings");
   if (checkoutRoot) checkoutSettings.mount(checkoutRoot, currentEngine());
   const skillsRoot = document.querySelector<HTMLElement>("#skill-settings");

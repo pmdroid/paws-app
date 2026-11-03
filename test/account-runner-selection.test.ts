@@ -259,6 +259,41 @@ test("an exhausted account yields to the next account on the same runner, and re
   ]);
 });
 
+test("an assignment to a later account records why the accounts ahead of it were passed over", async () => {
+  const f = fixture();
+  recordAccountObservation(f.db, {
+    bindingId: f.bindings.a1,
+    source: "result",
+    sourceId: "limit",
+    observedAt: f.now(),
+    now: f.now(),
+    state: "exhausted",
+    resetsAt: null,
+  });
+  const order = [f.accounts.a, f.accounts.b];
+  const found = await f.choices(order);
+  const commandId = f.admit("R1", candidate(f, found, "R1", f.accounts.b), order);
+  const usage = () =>
+    f.db
+      .query<{ fallback: string | null; revision: string | null }, [string]>(
+        "SELECT account_fallback AS fallback,account_policy_revision AS revision FROM runner_execution_usage WHERE command_id=?",
+      )
+      .get(commandId)!;
+  expect(usage()).toEqual({
+    fallback: "A: agent account quota cooldown, Named agent accounts need runner 0.1.60 or later",
+    revision: "rev-1",
+  });
+  const again = await f.choices([f.accounts.b]);
+  const first = f.admit("R1", candidate(f, again, "R1", f.accounts.b), [f.accounts.b]);
+  expect(
+    f.db
+      .query<{ fallback: string | null }, [string]>(
+        "SELECT account_fallback AS fallback FROM runner_execution_usage WHERE command_id=?",
+      )
+      .get(first)!.fallback,
+  ).toBeNull();
+});
+
 test("only one admission owns a limited account slot, and a rejected admission leaks nothing", async () => {
   const f = fixture();
   setAgentAccountConcurrency(f.db, {
