@@ -523,6 +523,23 @@ export async function openRunnerRuntime(options: {
     }
     return entry.grant.token;
   }
+  async function withGrant<T>(entry: Active, request: (token: string) => Promise<T>): Promise<T> {
+    const first = await grant(entry);
+    try {
+      return await remote(() => request(first));
+    } catch (error) {
+      if (!(error instanceof RunnerRequestError) || error.status !== 403) throw error;
+      journalCaught(
+        error,
+        "runner-runtime.withGrant.refused",
+        entry.execution.command.itemId,
+        "the run grant was refused; renewing it once",
+      );
+      entry.grant = undefined;
+      const renewed = await grant(entry);
+      return await remote(() => request(renewed));
+    }
+  }
   async function interrupt(
     entry: Active,
     reason: string,
@@ -1352,7 +1369,6 @@ export async function openRunnerRuntime(options: {
   async function deliver(entry: Active) {
     await drainTranscript(entry, entry.execution.phase === "publishing");
     for (let delivery of journal.pending(entry.execution.id)) {
-      const token = await grant(entry);
       if (delivery.event.type === "artifact" && delivery.event.dropped === undefined) {
         const artifact = delivery.event.artifact;
         const bytes = readRunnerResultFile(
@@ -1380,7 +1396,7 @@ export async function openRunnerRuntime(options: {
                 )
                 .toString("base64"),
             };
-            await remote(() =>
+            await withGrant(entry, (token) =>
               options.daemon.uploadArtifact(entry.execution.command.runId, chunk, token),
             );
           }
@@ -1433,12 +1449,13 @@ export async function openRunnerRuntime(options: {
           };
         }
       }
-      await remote(() =>
+      const sending = delivery;
+      await withGrant(entry, (token) =>
         options.daemon.sendEvent(
           {
             runId: entry.execution.command.runId,
             generation: entry.execution.command.generation,
-            ...delivery,
+            ...sending,
           },
           token,
         ),
@@ -1446,8 +1463,7 @@ export async function openRunnerRuntime(options: {
       check(entry);
       journal.sent(entry.execution.id, delivery.sequence);
     }
-    const token = await grant(entry);
-    const answers = await remote(() =>
+    const answers = await withGrant(entry, (token) =>
       options.daemon.answers(
         entry.execution.command.runId,
         entry.execution.command.generation,
@@ -1463,7 +1479,7 @@ export async function openRunnerRuntime(options: {
       journal.answered(entry.execution.id, answer.sequence);
     }
     if (entry.execution.command.type !== "run" || !options.daemon.followUps) return;
-    const followUps = await remote(() =>
+    const followUps = await withGrant(entry, (token) =>
       options.daemon.followUps!(
         entry.execution.command.runId,
         entry.execution.command.generation,
@@ -1890,6 +1906,7 @@ export async function openRunnerRuntime(options: {
     } catch (error) {
       journalCaught(error, "runner-runtime.advance.deliver", entry.execution.command.itemId);
       if (error instanceof RemoteFailure) return report(error);
+      if (error instanceof RunnerRequestError) report(error);
       const refused = journal.publication(entry.execution.id) !== undefined && fencedRefusal(error);
       await interrupt(
         entry,
