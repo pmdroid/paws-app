@@ -21,7 +21,7 @@ import type { StoredReviewFinding } from "../closeout";
 import type { LeaveMergeQueueResult, ReviewThread } from "../github";
 import { ask, restart } from "./operations";
 import { commentDigest } from "./pull-comments";
-import { currentPullCi, pullCiAsked, pullCiHandoff, pullCiRestarted } from "./pull-ci";
+import { currentPullCi, pullCiAsked, pullCiHandoff, pullCiHead, pullCiRestarted } from "./pull-ci";
 import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
 import { recordReplyTargets, replyListSection, replyTargets } from "./review-replies";
 import { worktreeBranch } from "./sources";
@@ -128,6 +128,8 @@ export type PullReviewCapabilities = {
    * while Paws waits. Throws when GitHub cannot be read.
    */
   leaveMergeQueue(item: WorkItemRecord, pullNumber: number): Promise<LeaveMergeQueueResult>;
+  /** The pull request's current head commit. Null when GitHub cannot be read. */
+  pullHead(item: WorkItemRecord, pullNumber: number): Promise<string | null>;
   /** Unresolved review threads on the pull request. Throws when GitHub cannot be read. */
   threads(item: WorkItemRecord, pullNumber: number): Promise<ReviewThread[]>;
   fixRoundLimit(item: WorkItemRecord): number;
@@ -149,6 +151,7 @@ export async function handlePullReview(
   reviewId: number,
   caps: PullReviewCapabilities,
 ): Promise<PullReviewStep> {
+  const started = caps.now();
   const review = getPullReview(db, reviewId);
   if (review === null || review.handledAt !== null) return "done";
   const item = getWorkItem(db, review.itemId);
@@ -172,6 +175,8 @@ export async function handlePullReview(
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
   const threads = await caps.threads(item, review.pullNumber);
   const findings = await caps.closeoutFindings(item);
+  const head = await pullCiHead(db, item, review.pullNumber, caps.pullHead);
+  if (head === "unreadable") return "wait";
   const step = immediate(db, (): PullReviewStep => {
     const current = getWorkItem(db, item.id);
     if (current === null || current.version !== item.version || current.state !== "merge_queue")
@@ -185,7 +190,11 @@ export async function handlePullReview(
     const others = comments.filter(
       (comment) => !(comment.source === "inline" && comment.reviewId === review.reviewId),
     );
-    const failure = currentPullCi(db, current, caps.now(), review.pullNumber);
+    const failure = currentPullCi(db, current, caps.now(), {
+      pullNumber: review.pullNumber,
+      head,
+      observedBy: started,
+    });
     const digest = [
       reviewDigest(review, threads),
       others.length > 0 ? (commentDigest(others, threads) ?? "") : "",

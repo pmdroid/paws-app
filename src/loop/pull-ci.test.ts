@@ -91,6 +91,10 @@ function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
     readable: true,
     ciReads: [] as string[],
     limit: 3,
+    /** The pull request's head as the feedback jobs read it; null when GitHub cannot be read. */
+    pullHead: HEAD as string | null,
+    /** Runs while a feedback job awaits GitHub, before it reads the head. */
+    during: null as (() => Promise<void>) | null,
   };
   const client: GitHubClient = {
     async request(request): Promise<GitHubResponse> {
@@ -122,8 +126,14 @@ function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
       readReviewThreads({ client, owner: "acme", repo: "one", prNumber, tokenProvider }),
     leaveMergeQueue: (_, prNumber) =>
       leaveGitHubMergeQueue({ client, owner: "acme", repo: "one", prNumber, tokenProvider }),
+    pullHead: async () => state.pullHead,
     fixRoundLimit: () => state.limit,
-    closeoutFindings: async () => [],
+    closeoutFindings: async () => {
+      const during = state.during;
+      state.during = null;
+      await during?.();
+      return [];
+    },
     session: (item) => item.sessionKey,
     flush: async () => {},
   };
@@ -209,11 +219,14 @@ function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
     const steps: string[] = [];
     for (const job of feedbackJobs().filter((due) => due.runAt <= clock)) {
       const payload = job.payload as { reviewId?: number; pullCommentsFor?: string };
+      // Claimed like the scheduler does: a running job is no longer the pending one to gather into.
+      db.run("UPDATE job SET status = 'running' WHERE id = ?", [job.id]);
       const step =
         payload.reviewId !== undefined
           ? await handlePullReview(db, payload.reviewId, feedback)
           : await handlePullComments(db, payload.pullCommentsFor!, feedback);
-      if (step !== "wait") finished.add(job.id);
+      if (step === "wait") db.run("UPDATE job SET status = 'pending' WHERE id = ?", [job.id]);
+      else finished.add(job.id);
       steps.push(step);
     }
     return steps;
@@ -563,5 +576,80 @@ describe("failed CI while a pull request waits for review", () => {
     expect(getPullCiFailure(superseded.db, "eng-1", HEAD)?.outcome).toBe("dropped");
     expect(resumes(superseded.db)).toEqual([]);
     expect(fixRounds(superseded.db, "eng-1")).toBe(0);
+  });
+  test("a failure whose head moved before the batch ran is dropped without a restart or a round", async () => {
+    const h = setup();
+    await h.evaluate();
+    expect(pendingPullCiFailures(h.db, "eng-1")).toHaveLength(1);
+    h.state.pullHead = "d".repeat(40);
+    h.tick(60_000);
+    expect(await h.runDue()).toEqual(["done"]);
+    expect(getPullCiFailure(h.db, "eng-1", HEAD)?.outcome).toBe("dropped");
+    expect(resumes(h.db)).toEqual([]);
+    expect(fixRounds(h.db, "eng-1")).toBe(0);
+    expect(listCiRounds(h.db, "eng-1")).toEqual([]);
+  });
+
+  test("a head GitHub cannot return keeps the failure pending until the head is read", async () => {
+    const h = setup();
+    await h.evaluate();
+    h.state.pullHead = null;
+    h.tick(60_000);
+    expect(await h.runDue()).toEqual(["wait"]);
+    expect(getPullCiFailure(h.db, "eng-1", HEAD)?.handledAt).toBeNull();
+    expect(resumes(h.db)).toEqual([]);
+    expect(fixRounds(h.db, "eng-1")).toBe(0);
+
+    h.state.pullHead = HEAD;
+    expect(await h.runDue()).toEqual(["restarted"]);
+    expect(resumes(h.db).map((resume) => resume.reason)).toEqual(["ci"]);
+    expect(fixRounds(h.db, "eng-1")).toBe(1);
+  });
+
+  test("a failure recorded while a due comment batch reads GitHub waits for its own window", async () => {
+    const h = setup();
+    h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
+    h.conversation(1, "pascal", "Rename the helper.");
+    await h.evaluate();
+    expect(pendingPullCiFailures(h.db, "eng-1")).toEqual([]);
+    h.tick(60_000);
+    h.state.ci = failing;
+    let observed = 0;
+    h.state.during = async () => {
+      h.tick(5_000);
+      observed = h.now();
+      expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
+    };
+    expect(await h.runDue()).toEqual(["restarted"]);
+    const [resume] = resumes(h.db);
+    expect(resume?.reason).toBe("review");
+    expect(resume?.handoff).toContain("Rename the helper.");
+    expect(resume?.handoff).not.toContain(CI_REVIEW_WAIT_SOURCE);
+    expect(fixRounds(h.db, "eng-1")).toBe(1);
+    expect(listCiRounds(h.db, "eng-1")).toEqual([]);
+    expect(getPullCiFailure(h.db, "eng-1", HEAD)).toMatchObject({
+      observedAt: observed,
+      handledAt: null,
+    });
+    expect(h.feedbackJobs().map((job) => job.runAt)).toEqual([observed + 60_000]);
+  });
+
+  test("a failure recorded while a due changes-requested review reads GitHub is not charged with it", async () => {
+    const h = setup();
+    h.state.review = "CHANGES_REQUESTED";
+    h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
+    h.changesRequested(601, "Please fix the ordering.");
+    await h.evaluate();
+    h.tick(60_000);
+    h.state.ci = failing;
+    h.state.during = async () => {
+      h.tick(5_000);
+      await h.evaluate();
+    };
+    expect(await h.runDue()).toEqual(["restarted"]);
+    expect(resumes(h.db).map((resume) => resume.reason)).toEqual(["review"]);
+    expect(resumes(h.db)[0]?.handoff).not.toContain(CI_REVIEW_WAIT_SOURCE);
+    expect(listCiRounds(h.db, "eng-1")).toEqual([]);
+    expect(getPullCiFailure(h.db, "eng-1", HEAD)?.handledAt).toBeNull();
   });
 });

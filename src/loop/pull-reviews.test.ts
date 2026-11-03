@@ -83,6 +83,7 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
         prNumber: pullNumber,
         tokenProvider,
       }),
+    pullHead: async () => null,
     leaveMergeQueue: (_, pullNumber) =>
       leaveGitHubMergeQueue({
         client,

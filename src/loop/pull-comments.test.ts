@@ -121,6 +121,7 @@ function setup(threads = THREADS) {
         prNumber: pullNumber,
         tokenProvider,
       }),
+    pullHead: async () => null,
     leaveMergeQueue: (_, pullNumber) =>
       leaveGitHubMergeQueue({
         client,

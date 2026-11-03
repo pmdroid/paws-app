@@ -20,6 +20,7 @@ import type { ReviewThread } from "../github";
 import { ask, restart } from "./operations";
 import {
   currentPullCi,
+  pullCiHead,
   pullCiAsked,
   pullCiHandoff,
   pullCiQuestion,
@@ -224,6 +225,7 @@ export async function handlePullComments(
   itemId: string,
   caps: PullReviewCapabilities,
 ): Promise<PullReviewStep> {
+  const started = caps.now();
   const open = pendingPullComments(db, itemId);
   const failures = pendingPullCiFailures(db, itemId);
   if (open.length === 0 && failures.length === 0) return "done";
@@ -250,6 +252,8 @@ export async function handlePullComments(
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
   const threads = open.length > 0 ? await caps.threads(item, pullNumber) : [];
   const findings = await caps.closeoutFindings(item);
+  const head = await pullCiHead(db, item, pullNumber, caps.pullHead);
+  if (head === "unreadable") return "wait";
   const step = immediate(db, (): PullReviewStep => {
     const current = getWorkItem(db, item.id);
     if (current === null || current.version !== item.version || current.state !== "merge_queue")
@@ -257,7 +261,7 @@ export async function handlePullComments(
     const now = caps.now();
     settleCovered(db, pendingPullComments(db, itemId), now);
     const batch = pendingPullComments(db, itemId);
-    const failure = currentPullCi(db, current, now, pullNumber);
+    const failure = currentPullCi(db, current, now, { pullNumber, head, observedBy: started });
     if (batch.length === 0 && failure === null) return "done";
     const digest = batch.length === 0 ? null : commentDigest(batch, threads);
     if (digest === null && batch.length > 0) {

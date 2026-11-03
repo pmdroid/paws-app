@@ -1797,6 +1797,21 @@ export class Orchestrator {
           ...this.gitHubCredentials(github),
         });
       },
+      pullHead: async (item, pullNumber) => {
+        const repository = this.repositoryForItem(item);
+        const github = repository ? this.githubForRepository(repository) : null;
+        if (!repository || !github) return null;
+        const pull = await readPullMergeable({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pullNumber,
+          reads: 1,
+          ...this.gitHubCredentials(github),
+          signal: context.signal,
+        });
+        return pull?.head ?? null;
+      },
       leaveMergeQueue: async (item, pullNumber) => {
         const repository = this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;

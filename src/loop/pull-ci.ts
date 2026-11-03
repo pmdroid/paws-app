@@ -14,26 +14,61 @@ import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "../merge";
 export const CI_REVIEW_WAIT_SOURCE =
   "The pull request's own checks failed on its current head while it waited for review. Fixing them does not approve the pull request: it still needs its review before it merges.";
 
+/**
+ * What a feedback job may hand the agent. `head` is the pull request's head read after the job's
+ * last await: a failure on any other head is dropped, and null (no head read) hands over nothing
+ * and drops nothing. A failure observed after `observedBy`, the time the job started, arrived
+ * while it read GitHub and stays pending for its own collection window.
+ */
+export type PullCiScope = { pullNumber?: number; head?: string | null; observedBy?: number };
+
 export function currentPullCi(
   db: Database,
   item: WorkItemRecord,
   now: number,
-  pullNumber?: number,
+  scope: PullCiScope = {},
 ): PullCiFailureRecord | null {
   const pending = pendingPullCiFailures(db, item.id);
   const current = pending.filter(
     (failure) =>
       failure.itemVersion === item.version &&
-      (pullNumber === undefined || failure.pullNumber === pullNumber),
+      (scope.pullNumber === undefined || failure.pullNumber === scope.pullNumber),
   );
-  const latest = current.at(-1) ?? null;
+  const held = current.filter(
+    (failure) =>
+      scope.head === null ||
+      (scope.observedBy !== undefined && failure.observedAt > scope.observedBy),
+  );
+  const latest =
+    current
+      .filter(
+        (failure) =>
+          !held.includes(failure) && (scope.head === undefined || failure.head === scope.head),
+      )
+      .at(-1) ?? null;
   settlePullCiFailures(
     db,
-    pending.filter((failure) => failure !== latest),
+    pending.filter((failure) => failure !== latest && !held.includes(failure)),
     "dropped",
     now,
   );
   return latest;
+}
+
+/**
+ * The pull request's head when a CI failure waits to be handed over, read after every other
+ * await so the failure is bound to the head the agent will fix. Null when no failure waits, so
+ * one recorded during the job is left for the next; "unreadable" when GitHub cannot be read, and
+ * the job waits rather than act on an unconfirmed head.
+ */
+export async function pullCiHead(
+  db: Database,
+  item: WorkItemRecord,
+  pullNumber: number,
+  read: (item: WorkItemRecord, pullNumber: number) => Promise<string | null>,
+): Promise<string | null | "unreadable"> {
+  if (pendingPullCiFailures(db, item.id).length === 0) return null;
+  return (await read(item, pullNumber)) ?? "unreadable";
 }
 
 export function pullCiHandoff(failure: PullCiFailureRecord): string {
