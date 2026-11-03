@@ -1,8 +1,8 @@
-import { statusFixture } from "../../test/fixtures";
+import { fullStatusFixture, issueResource } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStatusSnapshot } from "../contract";
+import { parseIssueDetailResponse } from "../contract";
 import { drawStrokes, reviewDrawMarkup, reviewShots, type Stroke } from "./review-draw";
 import { themedMarkup } from "./theme";
 
@@ -51,7 +51,7 @@ describe("drawing on review screenshots", () => {
   });
 
   test("only the review's images can be drawn on, each with its own file", () => {
-    const snapshot = statusFixture();
+    const snapshot = fullStatusFixture();
     const item = snapshot.items[0]!;
     const shot = {
       itemId: item.id,
@@ -89,8 +89,10 @@ describe("drawing on review screenshots", () => {
     ]);
     expect(reviewShots(snapshot, "q-other", null)).toEqual([]);
     item.visualReviews[0]!.marks = [{ id: "mark-1", evidenceId: "one" }];
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
-    expect(parsed.ok && parsed.snapshot.items[0]!.visualReviews?.[0]?.marks).toEqual([
+    const parsed = parseIssueDetailResponse(
+      JSON.parse(JSON.stringify(issueResource(snapshot, item.id))),
+    );
+    expect(parsed.ok && parsed.response.issue.visualReviews?.[0]?.marks).toEqual([
       { id: "mark-1", evidenceId: "one" },
     ]);
   });

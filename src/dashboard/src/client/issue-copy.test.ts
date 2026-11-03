@@ -1,8 +1,7 @@
-import { listResponse, overviewOf, statusFixture } from "../../test/fixtures";
+import { issueList, overviewOf, fullStatusFixture, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { StatusSnapshot } from "../contract";
 import { NAVIGATION, PAGES } from "./navigation";
 import { render } from "./render";
 import { parseRoute, type Route } from "./route";
@@ -32,8 +31,8 @@ function taskHrefs(html: string): string[] {
     .filter((href) => /^\/(issues|runs|sessions|verdicts)\//.test(href));
 }
 
-function snapshotWithEvidence(): StatusSnapshot {
-  const snapshot = statusFixture();
+function snapshotWithEvidence(): FullStatus {
+  const snapshot = fullStatusFixture();
   const item = snapshot.items[0]!;
   const shot = {
     itemId: item.id,
@@ -53,13 +52,12 @@ function snapshotWithEvidence(): StatusSnapshot {
   return snapshot;
 }
 
-function page(route: Route, snapshot: StatusSnapshot = snapshotWithEvidence()): string {
+function page(route: Route, snapshot: FullStatus = snapshotWithEvidence()): string {
   return render({
     route,
     phase: "ready",
-    snapshot,
     overview: overviewOf(snapshot),
-    issues: listResponse(snapshot),
+    issues: issueList(snapshot),
     error: null,
     engineUrl: null,
   }).content;
@@ -85,7 +83,7 @@ describe("pages outside the issue page talk about issues", () => {
     });
 
   test("the old runs list opens the issues list and run links still open their issue", () => {
-    const snapshot = statusFixture();
+    const snapshot = fullStatusFixture();
     const run = snapshot.runs[0]!;
     expect(parseRoute("/runs")).toEqual({ view: "issues", id: null });
     expect(parseRoute(`/runs/${run.id}`)).toEqual({ view: "alias", kind: "runs", id: run.id });
@@ -93,7 +91,7 @@ describe("pages outside the issue page talk about issues", () => {
   });
 
   test("the issues list says why a queued issue waits, and wraps at 390 px", () => {
-    const snapshot = statusFixture();
+    const snapshot = fullStatusFixture();
     for (const item of snapshot.items) {
       if (item.id === "ENG-100") Object.assign(item, { state: "queued", blockers: ["ENG-102"] });
       if (item.id === "ENG-103")
@@ -124,7 +122,7 @@ describe("pages outside the issue page talk about issues", () => {
   });
 
   test("the overview calls a paused task a paused issue", () => {
-    const snapshot = statusFixture();
+    const snapshot = fullStatusFixture();
     const run = snapshot.runs[0]!;
     const item = snapshot.items.find((entry) => entry.id === run.itemId)!;
     item.state = "running";

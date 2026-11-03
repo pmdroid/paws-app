@@ -3,8 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { fakeStatusProvider, handleStatusRequest, startStatusServer, providerFor } from "../engine";
-import { parseStatusSnapshot, type StatusSnapshot } from "../contract";
-import { fullStatusFixture, statusList } from "../../test/fixtures";
+import type { IssueListResponse } from "../contract";
 
 const servers: Array<{ stop: (close?: boolean) => void }> = [];
 const dirs: string[] = [];
@@ -24,143 +23,19 @@ describe("status HTTP stub", () => {
     expect(response).toBeNull();
   });
 
-  test("GET /api/status returns the serving process snapshot", async () => {
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
-      provider: fakeStatusProvider(),
-    });
-    expect(response).not.toBeNull();
-    if (!response) return;
-    expect(response.status).toBe(200);
-    expect(response.headers.get("access-control-allow-origin")).toBe("*");
-    const body = (await response.json()) as { source: string; items: unknown[] };
-    expect(body.source).toBe("live");
-    expect(body.items).toEqual([]);
-  });
-
-  test("?slices= answers only the named slices, with an ETag that a 304 honours", async () => {
-    let generatedAt = "2026-10-27T10:00:00.000Z";
-    let full = fullStatusFixture();
-    const provider = {
-      ...fakeStatusProvider(),
-      snapshot: () => ({ ...statusList(full), generatedAt }),
-    };
-    const get = (path: string, etag?: string) =>
-      handleStatusRequest(
-        new Request(`http://127.0.0.1${path}`, etag ? { headers: { "If-None-Match": etag } } : {}),
-        { provider },
-      ) as Promise<Response>;
-
-    const sliced = await get("/api/status?slices=mergeQueue,items");
-    expect(sliced.status).toBe(200);
-    const body = (await sliced.json()) as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(
-      [
-        "version",
-        "source",
-        "generatedAt",
-        "project",
-        "slices",
-        "items",
-        "runs",
-        "verdicts",
-        "agentCloseout",
-        "mergeQueue",
-      ].sort(),
-    );
-    expect(body.slices).toEqual(["items", "mergeQueue"]);
-    expect((body.items as unknown[]).length).toBeGreaterThan(0);
-    const parsed = parseStatusSnapshot(body);
-    expect(parsed.ok && parsed.snapshot.questions).toEqual([]);
-
-    const evidence = (await (await get("/api/status?slices=evidence")).json()) as Record<
-      string,
-      unknown
-    >;
-    expect(Object.keys(evidence)).not.toContain("items");
-    expect(Object.keys(evidence)).not.toContain("questions");
-    expect(evidence.slices).toEqual(["evidence"]);
-
-    const etag = sliced.headers.get("etag")!;
-    expect(etag).toMatch(/^W\/".+"$/);
-    expect(sliced.headers.get("paws-generated-at")).toBe(generatedAt);
-
-    generatedAt = "2026-10-27T10:00:05.000Z";
-    const unchanged = await get("/api/status?slices=items,mergeQueue", etag);
-    expect(unchanged.status).toBe(304);
-    expect(await unchanged.text()).toBe("");
-    expect(unchanged.headers.get("etag")).toBe(etag);
-    expect(unchanged.headers.get("paws-generated-at")).toBe(generatedAt);
-
-    expect((await get("/api/status?slices=items", etag)).status).toBe(200);
-    full = { ...full, mergeQueue: [] };
-    const changed = await get("/api/status?slices=items,mergeQueue", etag);
-    expect(changed.status).toBe(200);
-    expect(changed.headers.get("etag")).not.toBe(etag);
-
-    const whole = (await (await get("/api/status")).json()) as Record<string, unknown>;
-    expect(whole.slices).toBeUndefined();
-    expect(whole.questions).toBeDefined();
-    expect((await get("/api/status?slices=items,everything")).status).toBe(400);
-  });
-
-  test("the merge queue slice carries push outages, which Overview and Merge queue show", async () => {
-    const outage = {
-      repository: "acme/app",
-      since: "2026-10-27T09:00:00.000Z",
-      lastError: "Resource not accessible by integration",
-      nextProbeAt: "2026-10-27T10:05:00.000Z",
-      installationUrl: null,
-    };
-    const provider = {
-      ...fakeStatusProvider(),
-      snapshot: () => ({ ...statusList(fullStatusFixture()), pushOutages: [outage] }),
-    };
-    const get = async (path: string) =>
-      (await (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
+  test("the retired status snapshot routes answer 404", async () => {
+    const provider = fakeStatusProvider();
+    for (const path of [
+      "/api/status",
+      "/api/status?slices=items",
+      "/api/status/items/PAS-1",
+      "/api/issues/PAS-1/attempts/1/checks/x/log",
+    ]) {
+      const response = await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
         provider,
-      }))!.json()) as Record<string, unknown>;
-    expect((await get("/api/status?slices=mergeQueue")).pushOutages).toEqual([outage]);
-    expect((await get("/api/status?slices=items")).pushOutages).toBeUndefined();
-  });
-
-  test("the merge queue slice carries policy runner warnings, which Overview and Merge queue show", async () => {
-    const warning = {
-      repository: "acme/app",
-      policyDigest: `sha256:${"a".repeat(64)}`,
-      runnerVersion: "0.1.48",
-      keys: [{ key: "items[].ci", needs: "0.1.49" }],
-      checkedAt: "2026-10-28T06:43:00.000Z",
-    };
-    const provider = {
-      ...fakeStatusProvider(),
-      snapshot: () => ({ ...statusList(fullStatusFixture()), policyRunnerWarnings: [warning] }),
-    };
-    const get = async (path: string) =>
-      (await (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
-        provider,
-      }))!.json()) as Record<string, unknown>;
-    expect((await get("/api/status?slices=mergeQueue")).policyRunnerWarnings).toEqual([warning]);
-    expect((await get("/api/status?slices=items")).policyRunnerWarnings).toBeUndefined();
-  });
-
-  test("the items slice carries the last 24 hours of merge times, which Overview shows", async () => {
-    const mergedTimes = {
-      since: "2026-10-26T10:00:00.000Z",
-      merged: 2,
-      medianMs: 3_600_000,
-      p90Ms: 7_200_000,
-      states: [{ state: "running", ms: 1_800_000 }],
-    };
-    const provider = {
-      ...fakeStatusProvider(),
-      snapshot: () => ({ ...statusList(fullStatusFixture()), mergedTimes }),
-    };
-    const get = async (path: string) =>
-      (await (await handleStatusRequest(new Request(`http://127.0.0.1${path}`), {
-        provider,
-      }))!.json()) as Record<string, unknown>;
-    expect((await get("/api/status?slices=items")).mergedTimes).toEqual(mergedTimes);
-    expect((await get("/api/status?slices=evidence")).mergedTimes).toBeUndefined();
+      });
+      expect(response?.status ?? 404).toBe(404);
+    }
   });
 
   test("a check log is the last 64 KB of each stream unless the full log is asked for", async () => {
@@ -185,35 +60,35 @@ describe("status HTTP stub", () => {
           stderr: string;
           truncated: boolean;
           fullPath: string | null;
+          generatedAt?: string;
         },
       };
     };
 
-    const tail = await get("/api/status/items/PAS-1/attempts/2/checks/unit%20tests/log");
+    const tail = await get("/api/issues/PAS-1/attempts/2/checks/unit%20tests/log");
     expect(tail.status).toBe(200);
     expect(tail.body.truncated).toBe(true);
     expect(Buffer.byteLength(tail.body.stdout)).toBe(64 * 1024);
     expect(stdout.endsWith(tail.body.stdout)).toBe(true);
     expect(tail.body.stdout).not.toContain("first line");
     expect(tail.body.stderr).toBe("short");
-    expect(tail.body.fullPath).toBe(
-      "/api/status/items/PAS-1/attempts/2/checks/unit%20tests/log?full=1",
-    );
+    expect(tail.body.fullPath).toBe("/api/issues/PAS-1/attempts/2/checks/unit%20tests/log?full=1");
 
     const full = await get(tail.body.fullPath!);
-    expect(full.body).toEqual({ stdout, stderr: "short", truncated: false, fullPath: null });
+    const { generatedAt: _generatedAt, ...fullBody } = full.body;
+    expect(fullBody).toEqual({ stdout, stderr: "short", truncated: false, fullPath: null });
 
-    await get("/api/status/items/PAS-1/attempts/1/checks/lint/log?run=run-7");
+    await get("/api/issues/PAS-1/attempts/1/checks/lint/log?run=run-7");
     expect(requests).toEqual([
       { itemId: "PAS-1", attempt: 2, checkId: "unit tests", run: null },
       { itemId: "PAS-1", attempt: 2, checkId: "unit tests", run: null },
       { itemId: "PAS-1", attempt: 1, checkId: "lint", run: "run-7" },
     ]);
     for (const path of [
-      "/api/status/items/PAS-1/attempts/0/checks/lint/log",
-      "/api/status/items/PAS-1/attempts/x/checks/lint/log",
-      "/api/status/items/PAS-1/attempts/1/checks/lint",
-      "/api/status/items/PAS-1/attempts/1/checks/lint/log/more",
+      "/api/issues/PAS-1/attempts/0/checks/lint/log",
+      "/api/issues/PAS-1/attempts/x/checks/lint/log",
+      "/api/issues/PAS-1/attempts/1/checks/lint",
+      "/api/issues/PAS-1/attempts/1/checks/lint/log/more",
     ])
       expect((await get(path)).status).toBe(404);
     expect(requests).toHaveLength(3);
@@ -221,7 +96,7 @@ describe("status HTTP stub", () => {
 
   test("a check the provider does not know answers 404", async () => {
     const response = await handleStatusRequest(
-      new Request("http://127.0.0.1/api/status/items/PAS-1/attempts/1/checks/lint/log"),
+      new Request("http://127.0.0.1/api/issues/PAS-1/attempts/1/checks/lint/log"),
       { provider: fakeStatusProvider() },
     );
     expect(response?.status).toBe(404);
@@ -230,7 +105,7 @@ describe("status HTTP stub", () => {
   test("provider selection has only the serving process source", async () => {
     const provider = fakeStatusProvider();
     expect(providerFor({ provider, env: { PAWS_STATUS_DEMO: "1" } })).toBe(provider);
-    expect((await providerFor({}).snapshot()).source).toBe("live");
+    expect((await providerFor({}).issues!()).source).toBe("live");
   });
 
   test("leaves engine routes it does not own", async () => {
@@ -243,17 +118,17 @@ describe("status HTTP stub", () => {
     expect(response).toBeNull();
   });
 
-  test("rejects writes and invalid snapshots", async () => {
+  test("rejects writes and invalid resource bodies", async () => {
     const method = await handleStatusRequest(
-      new Request("http://127.0.0.1/api/status", { method: "POST" }),
+      new Request("http://127.0.0.1/api/issues", { method: "POST" }),
       {
         provider: fakeStatusProvider(),
       },
     );
     expect(method?.status).toBe(405);
 
-    const broken = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
-      provider: { snapshot: () => ({}) as StatusSnapshot },
+    const broken = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
+      provider: { issues: () => ({}) as IssueListResponse },
     });
     expect(broken?.status).toBe(500);
   });
@@ -263,21 +138,21 @@ describe("status HTTP stub", () => {
     servers.push(server);
     const base = `http://127.0.0.1:${server.port}`;
 
-    const live = await fetch(`${base}/api/status`);
+    const live = await fetch(`${base}/api/issues`);
     expect(live.status).toBe(200);
     const body = (await live.json()) as {
       source: string;
-      items: unknown[];
+      issues: unknown[];
       project: { name: string };
     };
     expect(body.source).toBe("live");
-    expect(body.items).toEqual([]);
+    expect(body.issues).toEqual([]);
     expect(JSON.stringify(body)).not.toContain("Audit log export");
 
-    const demo = await fetch(`${base}/api/status?engine=demo`);
-    const sample = (await demo.json()) as { source: string; items: unknown[] };
+    const demo = await fetch(`${base}/api/issues?engine=demo`);
+    const sample = (await demo.json()) as { source: string; issues: unknown[] };
     expect(sample.source).toBe("live");
-    expect(sample.items).toEqual([]);
+    expect(sample.issues).toEqual([]);
 
     const flagged = startStatusServer({
       port: 0,
@@ -286,7 +161,7 @@ describe("status HTTP stub", () => {
       env: { PAWS_STATUS_DEMO: "1" },
     });
     servers.push(flagged);
-    const forced = await fetch(`http://127.0.0.1:${flagged.port}/api/status`);
+    const forced = await fetch(`http://127.0.0.1:${flagged.port}/api/issues`);
     const forcedBody = (await forced.json()) as { source: string };
     expect(forcedBody.source).toBe("live");
   });

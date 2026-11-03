@@ -8,7 +8,7 @@ import {
   type IssueDetailResponse,
 } from "../contract";
 import { emptyIssueList, type CheckLogRequest, type CheckOutput } from "../live/provider";
-import { createStatusSnapshotCache, handleStatusRequest, type StatusProvider } from "./handler";
+import { createResourceCache, handleStatusRequest, type StatusProvider } from "./handler";
 
 const NO_SIZES = { record() {}, flush() {} };
 
@@ -52,14 +52,6 @@ function recording(outputs: Record<string, CheckOutput> = {}) {
   const calls: string[] = [];
   const logs: CheckLogRequest[] = [];
   const provider: StatusProvider = {
-    snapshot() {
-      calls.push("snapshot");
-      throw new Error("the snapshot is not an issue resource");
-    },
-    item(id) {
-      calls.push(`item:${id}`);
-      return null;
-    },
     issues() {
       calls.push("issues");
       return emptyIssueList();
@@ -130,9 +122,6 @@ describe("issue resource routes", () => {
 
   test("an invalid detail body is a 500, not a partial page", async () => {
     const provider: StatusProvider = {
-      snapshot: () => {
-        throw new Error("unused");
-      },
       issue: () => ({ ...detailOf("PAS-1"), issue: undefined }) as unknown as IssueDetailResponse,
     };
     const response = (await handleStatusRequest(get("/api/issues/PAS-1"), { provider }))!;
@@ -200,11 +189,11 @@ describe("issue resource routes", () => {
   test("reuse is keyed by resource, parameters and reader", async () => {
     let now = 1_700_000_000_000;
     const { calls, provider } = recording();
-    const snapshotCache = createStatusSnapshotCache({ now: () => now });
+    const resourceCache = createResourceCache({ now: () => now });
     const read = (path: string, sessionIds?: string[]) =>
       handleStatusRequest(get(path), {
         provider,
-        snapshotCache,
+        resourceCache,
         responseSizes: NO_SIZES,
         ...(sessionIds === undefined ? {} : { sessionIds }),
       });

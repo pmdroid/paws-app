@@ -64,7 +64,6 @@ describe("Findings page", () => {
     const page = render({
       route: { view: "findings" },
       phase: "loading",
-      snapshot: null,
       error: null,
       engineUrl: "http://127.0.0.1:8787",
     });

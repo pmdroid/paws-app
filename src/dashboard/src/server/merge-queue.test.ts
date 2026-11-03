@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { GENERATED_AT_HEADER, parseMergeQueueResponse, type MergeQueueResponse } from "../contract";
 import { emptyMergeQueue } from "../live/provider";
-import { createStatusSnapshotCache, handleStatusRequest, type StatusProvider } from "./handler";
+import { createResourceCache, handleStatusRequest, type StatusProvider } from "./handler";
 
 const NO_SIZES = { record() {}, flush() {} };
 
@@ -28,14 +28,6 @@ function queueWith(itemId: string): MergeQueueResponse {
 function recording(read: () => MergeQueueResponse = () => queueWith("ENG-1")) {
   const calls: string[] = [];
   const provider: StatusProvider = {
-    snapshot() {
-      calls.push("snapshot");
-      throw new Error("the snapshot is not the merge queue");
-    },
-    item(id) {
-      calls.push(`item:${id}`);
-      return null;
-    },
     issues() {
       calls.push("issues");
       throw new Error("the issue list is not the merge queue");
@@ -79,9 +71,9 @@ describe("merge queue resource route", () => {
 
   test("a built queue is reused per reader session set, never across readers", async () => {
     const { calls, provider } = recording();
-    const snapshotCache = createStatusSnapshotCache({ now: () => 0 });
+    const resourceCache = createResourceCache({ now: () => 0 });
     const read = (sessionIds: readonly string[]) =>
-      handleStatusRequest(get(), { provider, sessionIds, snapshotCache, responseSizes: NO_SIZES });
+      handleStatusRequest(get(), { provider, sessionIds, resourceCache, responseSizes: NO_SIZES });
     await read(["a", "b"]);
     await read(["b", "a"]);
     expect(calls).toEqual(["mergeQueue"]);

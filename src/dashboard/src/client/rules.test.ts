@@ -2,12 +2,12 @@ import {
   openedView,
   FIXTURE_PROBE_SHA,
   fullStatusFixture,
-  itemDetail,
+  issueResource,
   pageData,
   withRuleResults,
 } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
-import { parseStatusItemDetail } from "../contract";
+import { parseIssueDetailResponse } from "../contract";
 import { type CloseoutView } from "./closeout";
 import { render } from "./render";
 import { ruleResult } from "./rules";
@@ -32,10 +32,10 @@ function row(html: string, id: string): string {
 
 describe("repository rules on the run page", () => {
   test("the item detail carries rule rows through the contract", () => {
-    const detail = itemDetail(withRuleResults(fullStatusFixture()), "ENG-100");
-    const parsed = parseStatusItemDetail(JSON.parse(JSON.stringify(detail)));
+    const detail = issueResource(withRuleResults(fullStatusFixture()), "ENG-100");
+    const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     if (!parsed.ok) throw new Error(parsed.error);
-    const attempt = parsed.detail.verdicts[0]!.attempts!.at(-1)!;
+    const attempt = parsed.response.verdicts[0]!.attempts!.at(-1)!;
     expect(attempt.checks.filter((check) => check.kind === "rule").map(ruleResult)).toEqual([
       { label: "Passed", tone: "passed" },
       { label: "Failed", tone: "failed" },

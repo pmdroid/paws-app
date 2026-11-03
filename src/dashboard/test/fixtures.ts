@@ -1,6 +1,5 @@
 // Test data for dashboard rendering. Never imported by production code.
 import {
-  STATUS_API_VERSION,
   agentCloseoutSummary,
   parseOverviewResponse,
   verdictSummary,
@@ -13,22 +12,60 @@ import {
   type MergeQueueResponse,
   type StatusAgentCloseout,
   type StatusCheck,
-  type StatusItemDetail,
+  type StatusCiRound,
+  type StatusDeadDelivery,
+  type StatusEvidence,
+  type StatusIntakeEntry,
+  type StatusItem,
   type StatusItemEvent,
-  type StatusSnapshot,
-  type StatusSnapshotBase,
+  type StatusItemRisk,
+  type StatusLinearBudget,
+  type StatusLinearWebhook,
+  type StatusMergedTimes,
+  type StatusMergeEntry,
+  type StatusMergeOutcome,
+  type StatusPolicyRunnerWarning,
+  type StatusProject,
+  type StatusPushOutage,
+  type StatusQuestion,
+  type StatusRun,
+  type StatusSource,
+  type StatusVerdict,
 } from "../src/contract";
 import type { CloseoutView } from "../src/client/closeout";
 import type { Route } from "../src/client/route";
 
-/** Every field of the fixture items, as the provider reads them before the list trims them. */
-export type FullStatus = Omit<StatusItemDetail, "id" | "blocks">;
+/**
+ * Every field of the fixture items, as the provider reads them before a resource picks its
+ * fields: `issueList`, `issueResource`, `overviewOf`, `mergeQueueOf` and `questionReaders`.
+ */
+export interface FullStatus {
+  source: StatusSource;
+  generatedAt: string;
+  project: StatusProject;
+  items: StatusItem[];
+  runs: StatusRun[];
+  questions: StatusQuestion[];
+  verdicts: StatusVerdict[];
+  agentCloseout?: StatusAgentCloseout[];
+  mergeQueue: StatusMergeEntry[];
+  mergeHistory?: StatusMergeOutcome[];
+  evidence?: StatusEvidence[];
+  ciRounds?: StatusCiRound[];
+  intake?: StatusIntakeEntry[];
+  dead?: StatusDeadDelivery[];
+  linearBudget?: StatusLinearBudget;
+  linearWebhook?: StatusLinearWebhook;
+  pushOutages?: StatusPushOutage[];
+  policyRunnerWarnings?: StatusPolicyRunnerWarning[];
+  mergedTimes?: StatusMergedTimes;
+  risk?: StatusItemRisk | null;
+}
 
 const AT = "2026-10-09T22:15:00.000Z";
 const AUDIT = { id: "linear-audit", name: "Audit log export" };
 
 const FIXTURE: FullStatus = {
-  version: STATUS_API_VERSION,
   source: "live",
   generatedAt: AT,
   project: {
@@ -483,39 +520,23 @@ function agentCloseout(): StatusAgentCloseout {
   };
 }
 
-/** The fixture as `GET /api/status` lists it. */
-export function statusFixture(): StatusSnapshot {
-  return statusList(fullStatusFixture());
-}
-
 /** The fixture with every Closeout attempt, check and finding, before the list trims them. */
 export function fullStatusFixture(): FullStatus {
   return structuredClone(FIXTURE);
 }
 
-/** What `GET /api/status` carries of `full`: one Closeout summary per item and run. */
-export function statusList(full: FullStatus): StatusSnapshot {
-  const { verdicts, agentCloseout: agents, ...rest } = full;
-  return {
-    ...rest,
-    verdicts: verdicts.map(verdictSummary),
-    ...(agents ? { agentCloseout: agents.map(agentCloseoutSummary) } : {}),
-  };
-}
-
-/** What `GET /api/status/items/<id>` carries of `full` for the issue `id`. */
-export function itemDetail(full: FullStatus, id: string): StatusItemDetail {
+/** What `GET /api/issues/<id>` carries of `full` for the issue `id`. */
+export function issueResource(full: FullStatus, id: string): IssueDetailResponse {
   const mine = <T extends { itemId: string }>(entries: readonly T[] | undefined): T[] =>
-    (entries ?? []).filter((entry) => entry.itemId === id);
-  const {
-    intake: _intake,
-    linearBudget: _budget,
-    linearWebhook: _webhook,
-    ...rest
-  } = structuredClone(full);
+    structuredClone(entries ?? []).filter((entry) => entry.itemId === id);
+  const sessions = structuredClone(full.items).filter((entry) => entry.id === id);
+  const issue = sessions.find((entry) => entry.endedAt === undefined) ?? sessions[0]!;
   return {
-    ...rest,
-    id,
+    source: full.source,
+    generatedAt: full.generatedAt,
+    project: structuredClone(full.project),
+    issue,
+    earlierSessions: sessions.filter((entry) => entry !== issue),
     blocks: [
       ...new Set(
         full.items
@@ -523,70 +544,37 @@ export function itemDetail(full: FullStatus, id: string): StatusItemDetail {
           .map((entry) => entry.id),
       ),
     ],
-    items: rest.items.filter((entry) => entry.id === id),
-    runs: mine(rest.runs),
-    questions: mine(rest.questions),
-    verdicts: mine(rest.verdicts),
-    mergeQueue: mine(rest.mergeQueue),
-    ...(rest.mergeHistory ? { mergeHistory: mine(rest.mergeHistory) } : {}),
-    ...(rest.evidence ? { evidence: mine(rest.evidence) } : {}),
-    ...(rest.agentCloseout ? { agentCloseout: mine(rest.agentCloseout) } : {}),
-    ...(rest.ciRounds ? { ciRounds: mine(rest.ciRounds) } : {}),
-    ...(rest.dead ? { dead: mine(rest.dead) } : {}),
+    risk: structuredClone(full.risk ?? null),
+    runs: mine(full.runs),
+    questions: mine(full.questions),
+    verdicts: mine(full.verdicts),
+    agentCloseout: mine(full.agentCloseout),
+    evidence: mine(full.evidence),
+    ciRounds: mine(full.ciRounds),
+    mergeQueue: mine(full.mergeQueue),
+    mergeHistory: mine(full.mergeHistory),
+    dead: mine(full.dead),
   };
 }
 
+/** What `GET /api/issues` carries of `full`: one Closeout summary per item and run. */
 export function issueList(full: FullStatus): IssueListResponse {
-  return listResponse(statusList(full));
-}
-
-export function listResponse(list: StatusSnapshot): IssueListResponse {
-  return {
-    source: list.source,
-    generatedAt: list.generatedAt,
-    project: list.project,
-    issues: list.items,
-    runs: list.runs,
-    verdicts: list.verdicts,
-    agentCloseout: list.agentCloseout ?? [],
-    mergedTimes: list.mergedTimes ?? null,
-  };
-}
-
-function detailResponse(detail: StatusItemDetail): IssueDetailResponse {
-  const issue = detail.items.find((entry) => entry.endedAt === undefined) ?? detail.items[0]!;
-  return {
-    source: detail.source,
-    generatedAt: detail.generatedAt,
-    project: detail.project,
-    issue,
-    earlierSessions: detail.items.filter((entry) => entry !== issue),
-    blocks: detail.blocks,
-    risk: detail.risk ?? null,
-    runs: detail.runs,
-    questions: detail.questions,
-    verdicts: detail.verdicts,
-    agentCloseout: detail.agentCloseout ?? [],
-    evidence: detail.evidence ?? [],
-    ciRounds: detail.ciRounds ?? [],
-    mergeQueue: detail.mergeQueue,
-    mergeHistory: detail.mergeHistory ?? [],
-    dead: detail.dead ?? [],
-  };
-}
-
-export function issueOf(detail: StatusItemDetail | null | undefined): IssueDetailResponse | null {
-  return detail ? detailResponse(detail) : null;
-}
-
-export function issueResource(full: FullStatus, id: string): IssueDetailResponse {
-  return detailResponse(itemDetail(full, id));
+  return structuredClone({
+    source: full.source,
+    generatedAt: full.generatedAt,
+    project: full.project,
+    issues: full.items,
+    runs: full.runs,
+    verdicts: full.verdicts.map(verdictSummary),
+    agentCloseout: (full.agentCloseout ?? []).map(agentCloseoutSummary),
+    mergedTimes: full.mergedTimes ?? null,
+  });
 }
 
 function item(input: {
   id: string;
   title: string;
-  state: StatusSnapshot["items"][number]["state"];
+  state: StatusItem["state"];
   agent: string;
   assignee: string;
   owner: string | null;
@@ -597,7 +585,7 @@ function item(input: {
   runId: string | null;
   pr: number | null;
   timeline?: StatusItemEvent[];
-}): StatusSnapshot["items"][number] {
+}): StatusItem {
   const pr =
     input.pr === null
       ? null
@@ -759,7 +747,6 @@ export function pageData(
   route: Route,
 ): {
   route: Route;
-  snapshot: StatusSnapshot;
   issues: IssueListResponse;
   issue: IssueDetailResponse | null;
   overview: OverviewResponse;
@@ -780,10 +767,9 @@ export function pageData(
   const known = issue !== undefined && full.items.some((entry) => entry.id === issue);
   return {
     route: shown,
-    snapshot: statusList(full),
     issues: issueList(full),
     issue: known ? issueResource(full, issue) : null,
-    overview: overviewOf(statusList(full)),
+    overview: overviewOf(full),
     questions: readers.questions(),
     question: asked === null ? null : readers.question(asked),
     missingQuestion: asked !== null && readers.question(asked) === null ? asked : null,
@@ -791,22 +777,22 @@ export function pageData(
   };
 }
 
-export function mergeQueueOf(snapshot: StatusSnapshotBase): MergeQueueResponse {
+export function mergeQueueOf(full: FullStatus): MergeQueueResponse {
   return {
-    source: snapshot.source,
-    generatedAt: snapshot.generatedAt,
-    project: snapshot.project,
-    entries: snapshot.mergeQueue,
-    history: snapshot.mergeHistory ?? [],
-    issues: snapshot.items.map(({ id, title, owner, project, pr }) => ({
+    source: full.source,
+    generatedAt: full.generatedAt,
+    project: full.project,
+    entries: full.mergeQueue,
+    history: full.mergeHistory ?? [],
+    issues: full.items.map(({ id, title, owner, project, pr }) => ({
       id,
       title,
       owner,
       project,
       pr,
     })),
-    pushOutages: snapshot.pushOutages ?? [],
-    policyRunnerWarnings: snapshot.policyRunnerWarnings ?? [],
+    pushOutages: full.pushOutages ?? [],
+    policyRunnerWarnings: full.policyRunnerWarnings ?? [],
   };
 }
 
@@ -860,34 +846,34 @@ export function questionReaders(
   };
 }
 
-/** What `GET /api/overview` carries of the list `snapshot`, through the response parser. */
-export function overviewOf(snapshot: StatusSnapshot): OverviewResponse {
-  const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
+/** What `GET /api/overview` carries of `full`, through the response parser. */
+export function overviewOf(full: FullStatus): OverviewResponse {
+  const runs = new Map(full.runs.map((run) => [run.id, run]));
   const parsed = parseOverviewResponse(
     JSON.parse(
       JSON.stringify({
-        source: snapshot.source,
-        generatedAt: snapshot.generatedAt,
-        issues: snapshot.items.map((issue) => {
+        source: full.source,
+        generatedAt: full.generatedAt,
+        issues: full.items.map((issue) => {
           const run = issue.runId ? runs.get(issue.runId) : undefined;
-          const verdict = snapshot.verdicts.find((entry) => entry.itemId === issue.id);
+          const verdict = full.verdicts.find((entry) => entry.itemId === issue.id);
           return {
             ...issue,
             run: run ? { state: run.state, usagePause: run.usagePause } : null,
             verdict: verdict ? { decision: verdict.decision } : null,
           };
         }),
-        questions: snapshot.questions.map((question) => ({
+        questions: full.questions.map((question) => ({
           ...question,
           linkAsk: question.linkAsk ?? null,
         })),
-        mergedTimes: snapshot.mergedTimes ?? null,
-        intake: snapshot.intake ?? [],
-        linearBudget: snapshot.linearBudget ?? null,
-        linearWebhook: snapshot.linearWebhook ?? null,
-        pushOutages: snapshot.pushOutages ?? [],
-        policyRunnerWarnings: snapshot.policyRunnerWarnings ?? [],
-        mergeQueueCount: snapshot.mergeQueue.length,
+        mergedTimes: full.mergedTimes ?? null,
+        intake: full.intake ?? [],
+        linearBudget: full.linearBudget ?? null,
+        linearWebhook: full.linearWebhook ?? null,
+        pushOutages: full.pushOutages ?? [],
+        policyRunnerWarnings: full.policyRunnerWarnings ?? [],
+        mergeQueueCount: full.mergeQueue.length,
       }),
     ),
   );
@@ -895,10 +881,17 @@ export function overviewOf(snapshot: StatusSnapshot): OverviewResponse {
   return parsed.response;
 }
 
-/** A status provider over `full`: the list, each issue's detail for its page, and check logs. */
+/**
+ * A dashboard provider over `full`: the issue list, each issue's page, Overview, Questions, the
+ * merge queue and check logs.
+ */
 export function fixtureProvider(full: FullStatus | (() => FullStatus)): {
-  snapshot(): StatusSnapshot;
-  item(id: string): StatusItemDetail | null;
+  issues(): IssueListResponse;
+  issue(id: string): IssueDetailResponse | null;
+  overview(): OverviewResponse;
+  mergeQueue(): MergeQueueResponse;
+  questions(): QuestionListResponse;
+  question(id: string): QuestionDetailResponse | null;
   checkLog(request: {
     itemId: string;
     attempt: number;
@@ -908,8 +901,13 @@ export function fixtureProvider(full: FullStatus | (() => FullStatus)): {
 } {
   const read = typeof full === "function" ? full : () => full;
   return {
-    snapshot: () => statusList(read()),
-    item: (id) => (read().items.some((entry) => entry.id === id) ? itemDetail(read(), id) : null),
+    issues: () => issueList(read()),
+    issue: (id) =>
+      read().items.some((entry) => entry.id === id) ? issueResource(read(), id) : null,
+    overview: () => overviewOf(read()),
+    mergeQueue: () => mergeQueueOf(read()),
+    questions: () => questionReaders(read()).questions(),
+    question: (id) => questionReaders(read()).question(id),
     checkLog: ({ itemId, attempt, checkId, run }) => {
       const status = read();
       // A verdict without recorded attempts is one attempt, as the issue page shows it.

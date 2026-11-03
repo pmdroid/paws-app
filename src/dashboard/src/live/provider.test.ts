@@ -36,10 +36,13 @@ import {
   saveRiskFix,
 } from "../../../db";
 import {
+  parseIssueDetailResponse,
+  parseIssueListResponse,
   parseMergeQueueResponse,
-  parseStatusItemDetail,
-  parseStatusSnapshot,
+  parseOverviewResponse,
+  parseQuestionListResponse,
   statusIntegrity,
+  type IssueListResponse,
 } from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
 import { createLiveStatusProvider, STATUS_RECENT_LIMIT, STATUS_RECENT_MS } from "./provider";
@@ -62,6 +65,11 @@ function database(): Database {
   return db;
 }
 
+/** The list's records for `statusIntegrity`: it carries no questions or merge queue. */
+function listRecords(list: IssueListResponse) {
+  return { ...list, items: list.issues, questions: [], mergeQueue: [] };
+}
+
 function seedQuestion(db: Database, itemId: string, sessionId: string): void {
   db.run(
     "INSERT INTO question (id, item_id, session_id, body, options, status, created_at) VALUES ('question', ?, ?, 'Which screenshot?', ?, 'open', 1)",
@@ -81,23 +89,28 @@ describe("live status provider", () => {
     beginImplementRun(db, "budget-question", 1);
     applyWorkItemEvent(db, "budget-question", "blocking_question");
     seedQuestion(db, "budget-question", "session");
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},
     });
     expect(response?.status).toBe(200);
-    const body = parseStatusSnapshot(await response!.json());
+    const body = parseIssueListResponse(await response!.json());
     expect(body.ok).toBe(true);
     if (!body.ok) return;
-    expect(body.snapshot.items.find((item) => item.id === "legacy-budget")?.state).toBe(
+    expect(body.response.issues.find((item) => item.id === "legacy-budget")?.state).toBe(
       "needs_human",
     );
-    expect(body.snapshot.items.find((item) => item.id === "budget-question")?.state).toBe(
+    expect(body.response.issues.find((item) => item.id === "budget-question")?.state).toBe(
       "awaiting_input",
     );
-    expect(body.snapshot.questions).toHaveLength(1);
+    const asked = await handleStatusRequest(new Request("http://127.0.0.1/api/questions"), {
+      db,
+      env: {},
+    });
+    const questions = parseQuestionListResponse(await asked!.json());
+    expect(questions.ok && questions.response.questions).toHaveLength(1);
     expect(
-      body.snapshot.items.every(
+      body.response.issues.every(
         (item) => !["exhausted", "awaiting_signoff", "signoff"].includes(item.state),
       ),
     ).toBe(true);
@@ -117,14 +130,14 @@ describe("live status provider", () => {
         [session, session, JSON.stringify({ agentSession: { url } })],
       );
     }
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/questions"), {
       db,
       env: {},
     });
-    const parsed = parseStatusSnapshot(await response!.json());
+    const parsed = parseQuestionListResponse(await response!.json());
     expect(parsed.ok).toBe(true);
     if (parsed.ok)
-      expect(parsed.snapshot.questions.find((entry) => entry.id === "question")?.links).toEqual([
+      expect(parsed.response.questions.find((entry) => entry.id === "question")?.links).toEqual([
         { label: "Answer in Linear", href: source },
       ]);
   });
@@ -141,7 +154,7 @@ describe("live status provider", () => {
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     seedQuestion(db, item.id, "session");
     db.run("UPDATE question SET kind = ? WHERE id = 'question'", [kind]);
-    expect(createLiveStatusProvider(db).snapshot().questions[0]?.answerable).toBe(answerable);
+    expect(createLiveStatusProvider(db).questions().questions[0]?.answerable).toBe(answerable);
   });
 
   test.each([
@@ -158,7 +171,7 @@ describe("live status provider", () => {
       "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at) VALUES ('event', 'webhook', 'created', 'session', 1, ?, 1)",
       [JSON.stringify({ agentSession: { url } })],
     );
-    expect(createLiveStatusProvider(db).snapshot().questions[0]?.links).toEqual([
+    expect(createLiveStatusProvider(db).questions().questions[0]?.links).toEqual([
       { label: "Answer in Linear", href: "https://linear.app/issue/ENG-1" },
     ]);
   });
@@ -171,7 +184,7 @@ describe("live status provider", () => {
       item.id,
     ]);
     seedQuestion(db, item.id, "session");
-    expect(createLiveStatusProvider(db).snapshot().questions[0]?.links).toEqual([
+    expect(createLiveStatusProvider(db).questions().questions[0]?.links).toEqual([
       { label: "Answer in Linear", href: "https://linear.app/issue/ENG-123" },
     ]);
   });
@@ -210,8 +223,8 @@ describe("live status provider", () => {
               ('q-3', ?, 'visual-proof', '["shot-2"]', 4000, 'review', NULL, NULL, NULL, NULL)`,
       [item.id, item.id, item.id],
     );
-    const snapshot = createLiveStatusProvider(db).snapshot();
-    expect(snapshot.items[0]?.visualReviews).toEqual([
+    const list = createLiveStatusProvider(db).issues();
+    expect(list.issues[0]?.visualReviews).toEqual([
       {
         questionId: "q-1",
         checkId: "visual-proof",
@@ -237,7 +250,7 @@ describe("live status provider", () => {
         feedback: null,
       },
     ]);
-    expect(parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot))).ok).toBe(true);
+    expect(parseIssueListResponse(JSON.parse(JSON.stringify(list))).ok).toBe(true);
   });
 
   test("a carried-over review names the approval and approver each screen came from", () => {
@@ -280,8 +293,8 @@ describe("live status provider", () => {
               ('carry_1', ?, 'visual-proof', '["shot-2"]', 5000, 'accepted', 'lin-ada', 5000, ?)`,
       [item.id, item.id, JSON.stringify(carried)],
     );
-    const snapshot = createLiveStatusProvider(db).snapshot();
-    const reviews = snapshot.items[0]?.visualReviews;
+    const list = createLiveStatusProvider(db).issues();
+    const reviews = list.issues[0]?.visualReviews;
     expect(reviews?.map((review) => [review.questionId, review.round, review.state])).toEqual([
       ["q-1", 1, "stale"],
       ["carry_1", 1, "accepted"],
@@ -289,7 +302,7 @@ describe("live status provider", () => {
     expect(reviews?.[1]?.carried).toEqual([
       { ...carried[0]!, approvedBy: "Ada Reviewer", approvedAt: new Date(3000).toISOString() },
     ]);
-    expect(parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot))).ok).toBe(true);
+    expect(parseIssueListResponse(JSON.parse(JSON.stringify(list))).ok).toBe(true);
   });
 
   test("HTTP status reads each run's pinned reviewer independently of current settings", async () => {
@@ -322,25 +335,25 @@ describe("live status provider", () => {
       env: { PAWS_HOME: join(home, "wrong") },
     });
     try {
-      const response = await fetch(`http://127.0.0.1:${server.port}/api/status`);
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/issues`);
       expect(response.status).toBe(200);
-      const parsed = parseStatusSnapshot(await response.json());
+      const parsed = parseIssueListResponse(await response.json());
       expect(parsed.ok).toBe(true);
       if (!parsed.ok) return;
-      expect(ids.map((id) => parsed.snapshot.runs.find((run) => run.id === id)?.reviewer)).toEqual([
+      expect(ids.map((id) => parsed.response.runs.find((run) => run.id === id)?.reviewer)).toEqual([
         "Grok",
         "Claude",
         "Codex",
       ]);
-      expect(parsed.snapshot.runs.every((run) => run.agent === "Codex")).toBe(true);
+      expect(parsed.response.runs.every((run) => run.agent === "Codex")).toBe(true);
       const responseFromEnv = await handleStatusRequest(
-        new Request("http://127.0.0.1/api/status"),
+        new Request("http://127.0.0.1/api/issues"),
         { db, env: { PAWS_HOME: home } },
       );
-      const fromEnv = parseStatusSnapshot(await responseFromEnv!.json());
+      const fromEnv = parseIssueListResponse(await responseFromEnv!.json());
       expect(fromEnv.ok).toBe(true);
       if (fromEnv.ok)
-        expect(fromEnv.snapshot.runs.find((run) => run.id === ids[0])?.reviewer).toBe("Grok");
+        expect(fromEnv.response.runs.find((run) => run.id === ids[0])?.reviewer).toBe("Grok");
     } finally {
       server.stop(true);
     }
@@ -362,37 +375,37 @@ describe("live status provider", () => {
       JSON.stringify({ profiles: { reviewer: { agent: "unexpected-secret" } } }),
     ]) {
       if (snapshot !== undefined) writeFileSync(join(dir, "agent-profile.json"), snapshot);
-      const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
         db,
         closeoutHome: home,
         env: {},
       });
       expect(response?.status).toBe(200);
-      const body = parseStatusSnapshot(await response!.json());
+      const body = parseIssueListResponse(await response!.json());
       expect(body.ok).toBe(true);
-      if (body.ok) expect(body.snapshot.runs[0]?.reviewer).toBe("Unknown");
+      if (body.ok) expect(body.response.runs[0]?.reviewer).toBe("Unknown");
       expect(JSON.stringify(body)).not.toContain("unexpected-secret");
     }
   });
 
-  test("an empty database is a live snapshot with no items", async () => {
+  test("an empty database is a live issue list with no items", async () => {
     const db = database();
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},
     });
     expect(response?.status).toBe(200);
     const body: unknown = await response?.json();
-    const parsed = parseStatusSnapshot(body);
+    const parsed = parseIssueListResponse(body);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.snapshot.source).toBe("live");
-    expect(parsed.snapshot.items).toEqual([]);
-    expect(parsed.snapshot.runs).toEqual([]);
-    expect(parsed.snapshot.questions).toEqual([]);
-    expect(parsed.snapshot.verdicts).toEqual([]);
-    expect(parsed.snapshot.mergeQueue).toEqual([]);
-    expect(statusIntegrity(parsed.snapshot)).toEqual([]);
+    expect(parsed.response.source).toBe("live");
+    expect(parsed.response.issues).toEqual([]);
+    expect(parsed.response.runs).toEqual([]);
+    expect(parsed.response.verdicts).toEqual([]);
+    expect(createLiveStatusProvider(db).questions().questions).toEqual([]);
+    expect(createLiveStatusProvider(db).mergeQueue().entries).toEqual([]);
+    expect(statusIntegrity(listRecords(parsed.response))).toEqual([]);
     expect(JSON.stringify(body)).not.toContain("Audit log export");
     expect(JSON.stringify(body)).not.toContain("acme");
   });
@@ -481,27 +494,27 @@ describe("live status provider", () => {
     });
 
     const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
-    const snapshot = provider.snapshot();
-    const parsed = parseStatusSnapshot(snapshot);
+    const list = provider.issues();
+    const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(list)));
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(statusIntegrity(parsed.snapshot)).toEqual([]);
-    expect(parsed.snapshot.source).toBe("live");
-    expect(parsed.snapshot.project.team).toBe("ENG");
-    expect(parsed.snapshot.items.map((item) => [item.id, item.state])).toEqual([
+    expect(statusIntegrity(listRecords(parsed.response))).toEqual([]);
+    expect(parsed.response.source).toBe("live");
+    expect(parsed.response.project.team).toBe("ENG");
+    expect(parsed.response.issues.map((item) => [item.id, item.state])).toEqual([
       ["ENG-3", "merge_queue"],
       ["ENG-2", "awaiting_input"],
     ]);
-    expect(parsed.snapshot.items.every((item) => item.blockers.length === 0)).toBe(true);
+    expect(parsed.response.issues.every((item) => item.blockers.length === 0)).toBe(true);
     expect(
-      parsed.snapshot.items.every((item) => item.owner === null && item.project === null),
+      parsed.response.issues.every((item) => item.owner === null && item.project === null),
     ).toBe(true);
-    expect(parsed.snapshot.runs.map((run) => run.itemId).sort()).toEqual(["ENG-2", "ENG-3"]);
-    const parked = parsed.snapshot.runs.find((run) => run.itemId === "ENG-2");
+    expect(parsed.response.runs.map((run) => run.itemId).sort()).toEqual(["ENG-2", "ENG-3"]);
+    const parked = parsed.response.runs.find((run) => run.itemId === "ENG-2");
     expect(parked?.state).toBe("awaiting_input");
     expect(parked?.agent).toBe("Cursor");
     expect(parked?.activity.some((line) => line.text === "Need a product decision.")).toBe(true);
-    expect(parsed.snapshot.questions).toEqual([
+    expect(provider.questions().questions).toEqual([
       expect.objectContaining({
         id: "q-archived",
         itemId: "ENG-2",
@@ -517,16 +530,16 @@ describe("live status provider", () => {
         ],
       }),
     ]);
-    const verdict = parsed.snapshot.verdicts.find((entry) => entry.itemId === "ENG-3");
+    const verdict = parsed.response.verdicts.find((entry) => entry.itemId === "ENG-3");
     expect(verdict?.decision).toBe("accepted");
     expect(verdict?.headSha).toBe(head);
-    expect(provider.item("ENG-3")?.verdicts[0]?.baseSha).toBe(base);
+    expect(provider.issue("ENG-3")?.verdicts[0]?.baseSha).toBe(base);
     expect(verdict?.checks.map((check) => [check.id, check.kind, check.state])).toEqual([
       ["typecheck", "command", "passed"],
       ["adversarial-review", "review", "passed"],
     ]);
     // The merge job has not run yet, so the task holds no place in its repository's queue.
-    expect(parsed.snapshot.mergeQueue).toEqual([
+    expect(provider.mergeQueue().entries).toEqual([
       expect.objectContaining({
         position: null,
         itemId: "ENG-3",
@@ -536,11 +549,11 @@ describe("live status provider", () => {
         settings: { order: "queue", mainMoved: "ci", rule: null },
       }),
     ]);
-    expect(parsed.snapshot.items.find((item) => item.id === "ENG-3")?.pr).toEqual({
+    expect(parsed.response.issues.find((item) => item.id === "ENG-3")?.pr).toEqual({
       number: 7,
       url: "https://github.com/pmdroid/paws-demo/pull/7",
     });
-    expect(JSON.stringify(snapshot)).not.toContain("Audit log export");
+    expect(JSON.stringify(list)).not.toContain("Audit log export");
   });
 
   test("a waiting task without a question row shows its question:<id> elicitation", () => {
@@ -557,7 +570,7 @@ describe("live status provider", () => {
       payload: { sessionId: "ses_1", body: "Closeout needs your help." },
       now,
     });
-    expect(createLiveStatusProvider(db).snapshot().questions).toEqual([
+    expect(createLiveStatusProvider(db).questions().questions).toEqual([
       expect.objectContaining({
         id: "q-help",
         itemId: "ENG-2",
@@ -602,7 +615,7 @@ describe("live status provider", () => {
     saveCloseoutBypassChecks(db, "q-bypass", [
       { id: "test", kind: "command", state: "exhausted", attempt: 3, message: "exited 1" },
     ]);
-    expect(createLiveStatusProvider(db).snapshot().questions[0]?.linkAsk?.bypass).toEqual({
+    expect(createLiveStatusProvider(db).issue("ENG-3")?.questions[0]?.linkAsk?.bypass).toEqual({
       policyDigest: "sha256:0eadf4c",
       passed: [],
       checks: [
@@ -641,15 +654,15 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts"],
       classifiedAt: now,
     });
-    const snapshot = createLiveStatusProvider(db).snapshot();
-    expect(snapshot.questions[0]?.linkAsk?.risk).toEqual({
+    const detail = createLiveStatusProvider(db).issue("ENG-6")!;
+    expect(detail.questions[0]?.linkAsk?.risk).toEqual({
       paths: ["src/auth/session.ts"],
       summary: "",
       findings: [],
     });
-    // The snapshot still passes the contract the client reads.
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
-    expect(parsed.ok && parsed.snapshot.questions[0]?.linkAsk?.risk).toEqual({
+    // The issue still passes the contract the client reads.
+    const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
+    expect(parsed.ok && parsed.response.questions[0]?.linkAsk?.risk).toEqual({
       paths: ["src/auth/session.ts"],
       summary: "",
       findings: [],
@@ -695,15 +708,15 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts"],
       recordedAt: now,
     });
-    const snapshot = createLiveStatusProvider(db).snapshot();
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
-    expect(parsed.ok && parsed.snapshot.questions[0]?.linkAsk?.risk).toEqual({
+    const detail = createLiveStatusProvider(db).issue("ENG-6")!;
+    const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
+    expect(parsed.ok && parsed.response.questions[0]?.linkAsk?.risk).toEqual({
       paths: ["src/auth/session.ts"],
       since: "4b317d5cc2",
       summary: "",
       findings: [],
     });
-    expect(snapshot.items[0]?.riskCarryOver).toBeUndefined();
+    expect(detail.issue.riskCarryOver).toBeUndefined();
   });
 
   test("an item whose latest head kept the approval carries it, with the approved head", () => {
@@ -736,13 +749,13 @@ describe("live status provider", () => {
       reason:
         "The approval of 4b317d5 carried over: none of the files the fix changed since then is a high-risk path (`test/x.test.ts`).",
     };
-    const parsed = parseStatusSnapshot(
-      JSON.parse(JSON.stringify(createLiveStatusProvider(db).snapshot())),
+    const parsed = parseIssueListResponse(
+      JSON.parse(JSON.stringify(createLiveStatusProvider(db).issues())),
     );
-    expect(parsed.ok && parsed.snapshot.items[0]?.riskCarryOver).toEqual(carried);
+    expect(parsed.ok && parsed.response.issues[0]?.riskCarryOver).toEqual(carried);
     // A newer head has not been compared yet, so the old carry-over no longer shows.
     risk("aaaa111122", now + 1);
-    expect(createLiveStatusProvider(db).snapshot().items[0]?.riskCarryOver).toBeUndefined();
+    expect(createLiveStatusProvider(db).issues().issues[0]?.riskCarryOver).toBeUndefined();
   });
 
   test("the merge queue lists each repository's tasks in order, with what each waits for", () => {
@@ -817,15 +830,18 @@ describe("live status provider", () => {
     });
 
     const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
-    const parsed = parseStatusSnapshot(provider.snapshot());
-    if (!parsed.ok) throw new Error(parsed.error);
-    expect(statusIntegrity(parsed.snapshot)).toEqual([]);
     const resource = parseMergeQueueResponse(provider.mergeQueue());
     if (!resource.ok) throw new Error(resource.error);
-    expect(resource.response.entries).toEqual(parsed.snapshot.mergeQueue);
-    expect(resource.response.history).toEqual(parsed.snapshot.mergeHistory ?? []);
+    const queue = resource.response;
     expect(
-      parsed.snapshot.mergeQueue.map((entry) => [
+      statusIntegrity({
+        ...listRecords(provider.issues()),
+        mergeQueue: queue.entries,
+        mergeHistory: queue.history,
+      }),
+    ).toEqual([]);
+    expect(
+      queue.entries.map((entry) => [
         entry.repository,
         entry.position,
         entry.itemId,
@@ -837,15 +853,13 @@ describe("live status provider", () => {
       ["acme/platform", 2, "ENG-12", "ahead", "Starts when #1 merges"],
       ["acme/web", null, "ENG-13", "review", "Waiting for an approving review."],
     ]);
-    expect(parsed.snapshot.mergeQueue[2]?.settings).toEqual({
+    expect(queue.entries[2]?.settings).toEqual({
       order: "ci-green",
       mainMoved: "closeout",
       rule: "Bug",
     });
     expect(first.id).toBe("ENG-11");
-    expect(
-      parsed.snapshot.mergeHistory?.map((entry) => [entry.itemId, entry.outcome, entry.reason]),
-    ).toEqual([
+    expect(queue.history.map((entry) => [entry.itemId, entry.outcome, entry.reason])).toEqual([
       ["ENG-14", "merged", null],
       ["ENG-15", "back_with_agent", "ci_failed"],
     ]);
@@ -862,10 +876,11 @@ describe("live status provider", () => {
     }
     applyWorkItemEvent(db, "ENG-21", "reverify_requested");
 
-    const parsed = parseStatusSnapshot(createLiveStatusProvider(db).snapshot());
+    const provider = createLiveStatusProvider(db);
+    const parsed = parseMergeQueueResponse(provider.mergeQueue());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(
-      parsed.snapshot.mergeQueue.map((entry) => [
+      parsed.response.entries.map((entry) => [
         entry.position,
         entry.itemId,
         entry.waitingFor,
@@ -876,7 +891,7 @@ describe("live status provider", () => {
       [2, "ENG-22", "ci", null],
       [3, "ENG-23", "ahead", "Starts when ENG-22 merges"],
     ]);
-    const items = new Map(parsed.snapshot.items.map((item) => [item.id, item.mergeQueue]));
+    const items = new Map(provider.issues().issues.map((item) => [item.id, item.mergeQueue]));
     expect(items.get("ENG-21")).toMatchObject({ position: 1, ahead: null, rechecking: true });
     expect(items.get("ENG-22")).toMatchObject({ position: 2, ahead: null });
     expect(items.get("ENG-23")).toMatchObject({ position: 3, ahead: "ENG-22" });
@@ -909,8 +924,6 @@ describe("live status provider", () => {
     });
 
     const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
-    const snapshot = parseStatusSnapshot(provider.snapshot());
-    if (!snapshot.ok) throw new Error(snapshot.error);
     const parsed = parseMergeQueueResponse(provider.mergeQueue());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(parsed.response.entries.map((entry) => [entry.itemId, entry.repository])).toEqual([
@@ -919,8 +932,6 @@ describe("live status provider", () => {
     expect(
       parsed.response.history.map((entry) => [entry.itemId, entry.repository, entry.outcome]),
     ).toEqual([["ENG-22", "pmdroid/paws-app", "back_with_agent"]]);
-    expect(parsed.response.entries).toEqual(snapshot.snapshot.mergeQueue);
-    expect(parsed.response.history).toEqual(snapshot.snapshot.mergeHistory ?? []);
     expect(parsed.response.issues.map((issue) => issue.id).sort()).toEqual(["ENG-21", "ENG-22"]);
     const html = renderMergeQueue(parsed.response);
     expect(html.match(/<h2 [^>]*>[^<]*<\/h2>/g)).toEqual([
@@ -975,8 +986,8 @@ describe("live status provider", () => {
     upsertCloseoutStep(db, item.id, identity, step("test", "passed", 0), now);
     upsertCloseoutStep(db, item.id, identity, step("typecheck", "skipped", 1), now);
     finishCloseoutProgress(db, item.id, identity, "accepted", now);
-    const snapshot = createLiveStatusProvider(db, { now: () => new Date(now) }).snapshot();
-    expect(snapshot.verdicts[0]?.checks.map((check) => [check.id, check.state])).toEqual([
+    const list = createLiveStatusProvider(db, { now: () => new Date(now) }).issues();
+    expect(list.verdicts[0]?.checks.map((check) => [check.id, check.state])).toEqual([
       ["test", "passed"],
     ]);
   });
@@ -993,18 +1004,19 @@ describe("live status provider", () => {
     finish("ENG-OLD", now - STATUS_RECENT_MS - 60_000);
     finish("ENG-RECENT", now - 60_000);
     const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
-    const ids = provider.snapshot().items.map((item) => item.id);
+    const ids = provider.issues().issues.map((item) => item.id);
     expect(ids).toContain("ENG-OPEN");
     expect(ids).toContain("ENG-RECENT");
     expect(ids).not.toContain("ENG-OLD");
     // An item that left the list still has its own page.
-    expect(provider.item("ENG-OLD")?.items.map((item) => [item.id, item.state])).toEqual([
-      ["ENG-OLD", "stopped"],
-    ]);
+    const old = provider.issue("ENG-OLD");
+    expect(old && [old.issue, ...old.earlierSessions].map((item) => [item.id, item.state])).toEqual(
+      [["ENG-OLD", "stopped"]],
+    );
 
     for (let index = 0; index < STATUS_RECENT_LIMIT + 5; index += 1)
       finish(`ENG-${100 + index}`, now - 120_000 - index * 1_000);
-    const capped = provider.snapshot().items;
+    const capped = provider.issues().issues;
     const finished = capped.filter((item) => item.state !== "queued").map((item) => item.id);
     expect(finished).toHaveLength(STATUS_RECENT_LIMIT);
     // The most recently finished stay; the oldest of the window fall off.
@@ -1012,9 +1024,9 @@ describe("live status provider", () => {
     expect(finished).toContain("ENG-100");
     expect(finished).not.toContain(`ENG-${100 + STATUS_RECENT_LIMIT + 4}`);
     expect(capped.map((item) => item.id)).toContain("ENG-OPEN");
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(provider.snapshot())));
+    const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(provider.issues())));
     if (!parsed.ok) throw new Error(parsed.error);
-    expect(statusIntegrity(parsed.snapshot)).toEqual([]);
+    expect(statusIntegrity(listRecords(parsed.response))).toEqual([]);
   });
 
   test("the item detail reads each review round's findings from the stored review evidence", () => {
@@ -1137,8 +1149,8 @@ describe("live status provider", () => {
     });
     const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000), pawsHome });
     // Findings are only in the item detail, never in the list.
-    expect(JSON.stringify(provider.snapshot())).not.toContain("token leaks");
-    const [review] = provider.item("ENG-11")!.verdicts[0]!.reviews!;
+    expect(JSON.stringify(provider.issues())).not.toContain("token leaks");
+    const [review] = provider.issue("ENG-11")!.verdicts[0]!.reviews!;
     expect(review!.id).toBe("independent-review");
     const mark = (finding: {
       location: string;
@@ -1223,18 +1235,18 @@ describe("live status provider", () => {
       sessionIds: ["ses_8"],
     });
     // The list carries one summary per item: no attempts, output or findings.
-    const list = JSON.stringify(provider.snapshot());
+    const list = JSON.stringify(provider.issues());
     expect(list).not.toContain("secret log");
     expect(list).not.toContain("test failed");
-    expect(Object.keys(provider.snapshot().verdicts[0]!)).toEqual([
+    expect(Object.keys(provider.issues().verdicts[0]!)).toEqual([
       "itemId",
       "runId",
       "decision",
       "headSha",
       "checks",
     ]);
-    const detail = provider.item("ENG-8")!;
-    expect(detail.items.map((entry) => entry.id)).toEqual(["ENG-8"]);
+    const detail = provider.issue("ENG-8")!;
+    expect([detail.issue, ...detail.earlierSessions].map((entry) => entry.id)).toEqual(["ENG-8"]);
     expect(detail.blocks).toEqual(["ENG-9"]);
     const attempts = detail.verdicts[0]!.attempts!;
     expect(attempts.map((attempt) => [attempt.decision, attempt.checks[0]?.findings])).toEqual([
@@ -1242,17 +1254,18 @@ describe("live status provider", () => {
       ["accepted", null],
     ]);
     expect(JSON.stringify(detail)).not.toContain("secret log");
-    expect(provider.item("ENG-10")).toBeNull();
-    expect(createLiveStatusProvider(db).item("ENG-10")?.id).toBe("ENG-10");
+    expect(provider.issue("ENG-10")).toBeNull();
+    expect(createLiveStatusProvider(db).issue("ENG-10")?.issue.id).toBe("ENG-10");
 
     const get = (id: string) =>
-      handleStatusRequest(new Request(`http://127.0.0.1/api/status/items/${id}`), {
+      handleStatusRequest(new Request(`http://127.0.0.1/api/issues/${id}`), {
         db,
         sessionIds: ["ses_8"],
       });
     const response = (await get("ENG-8"))!;
     expect(response.status).toBe(200);
-    expect(((await response.json()) as { id: string }).id).toBe("ENG-8");
+    const parsed = parseIssueDetailResponse(await response.json());
+    expect(parsed.ok && parsed.response.issue.id).toBe("ENG-8");
     expect((await get("ENG-10"))?.status).toBe(404);
     expect((await get("ENG-404"))?.status).toBe(404);
   });
@@ -1265,7 +1278,7 @@ describe("live status provider", () => {
     const item = insertQueuedItem(db, { id: "ENG-11", title: "Risk", sessionKey: "ses_11", now });
     const docs = insertQueuedItem(db, { id: "ENG-12", sessionKey: "ses_11", now });
     const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000) });
-    expect(provider.item("ENG-11")?.risk).toBeNull();
+    expect(provider.issue("ENG-11")?.risk).toBeNull();
     const identity = (taskId: string) => ({
       taskId,
       base,
@@ -1323,9 +1336,9 @@ describe("live status provider", () => {
       matches: [],
       classifiedAt: now,
     });
-    const high = parseStatusItemDetail(JSON.parse(JSON.stringify(provider.item("ENG-11"))));
+    const high = parseIssueDetailResponse(JSON.parse(JSON.stringify(provider.issue("ENG-11"))));
     if (!high.ok) throw new Error(high.error);
-    expect(high.detail.risk).toEqual({
+    expect(high.response.risk).toEqual({
       tier: "high",
       head,
       base,
@@ -1337,7 +1350,7 @@ describe("live status provider", () => {
       securityReview: { state: "passed", detail: null, head },
       automaticApproval: "Manual approval required",
     });
-    expect(provider.item("ENG-12")?.risk).toMatchObject({
+    expect(provider.issue("ENG-12")?.risk).toMatchObject({
       tier: "normal",
       paths: [],
       securityReview: { state: "skipped", detail: "no changed path matches", head },
@@ -1417,13 +1430,14 @@ describe("live status provider", () => {
     expect(provider.checkLog(request("ENG-13", "unit"))).toBeNull();
 
     const get = (path: string) =>
-      handleStatusRequest(new Request(`http://127.0.0.1/api/status/items/${path}/log`), {
+      handleStatusRequest(new Request(`http://127.0.0.1/api/issues/${path}/log`), {
         db,
         sessionIds: ["ses_11"],
       });
     const mine = (await get("ENG-11/attempts/1/checks/unit"))!;
     expect(mine.status).toBe(200);
     expect(await mine.json()).toEqual({
+      generatedAt: expect.any(String),
       stdout: "ENG-11 out",
       stderr: "unit failed",
       truncated: false,
@@ -1486,13 +1500,13 @@ describe("live status provider", () => {
     finishCloseoutProgress(db, item.id, identity, "accepted", now + 900_000);
     const check = createLiveStatusProvider(db, {
       now: () => new Date(now + 900_000),
-    }).item("ENG-7")?.verdicts[0]?.checks[0];
+    }).issue("ENG-7")?.verdicts[0]?.checks[0];
     expect(check?.elapsedMs).toBe(180_000);
     expect(check?.tokens).toBe(52_000);
     review("running", now + 950_000);
     const rerun = createLiveStatusProvider(db, {
       now: () => new Date(now + 960_000),
-    }).item("ENG-7")?.verdicts[0]?.checks[0];
+    }).issue("ENG-7")?.verdicts[0]?.checks[0];
     expect(rerun?.elapsedMs).toBe(10_000);
     expect(rerun?.tokens ?? null).toBeNull();
   });
@@ -1558,14 +1572,14 @@ describe("live status provider", () => {
       startedAt: now + 2,
     });
     attempt("c".repeat(40), now + 3, "passed");
-    const detail = createLiveStatusProvider(db, { now: () => new Date(now + 4) }).item("ENG-6");
+    const detail = createLiveStatusProvider(db, { now: () => new Date(now + 4) }).issue("ENG-6");
     const attempts = detail?.verdicts.find((verdict) => verdict.itemId === "ENG-6")?.attempts;
     expect(attempts?.map((entry) => [entry.number, entry.round, entry.headSha?.[0]])).toEqual([
       [1, 1, "a"],
       [2, 1, "b"],
       [3, 2, "c"],
     ]);
-    const parsed = parseStatusItemDetail(JSON.parse(JSON.stringify(detail)));
+    const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     expect(parsed.ok).toBe(true);
   });
 
@@ -1615,11 +1629,11 @@ describe("live status provider", () => {
       ],
       recordedAt: now + 2,
     });
-    const snapshot = createLiveStatusProvider(db, { now: () => new Date(now + 3) }).snapshot();
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    const detail = createLiveStatusProvider(db, { now: () => new Date(now + 3) }).issue("ENG-7");
+    const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    const rounds = parsed.snapshot.ciRounds ?? [];
+    const rounds = parsed.response.ciRounds;
     expect(
       rounds.map((round) => [round.itemId, round.round, round.head[0], round.next, round.fix]),
     ).toEqual([
@@ -1640,9 +1654,7 @@ describe("live status provider", () => {
       logTail: "1 fail\ntoken [redacted]",
     });
     expect(rounds[1]?.checks.map((entry) => entry.state)).toEqual(["passed", "failed", "skipped"]);
-    expect(
-      createLiveStatusProvider(db, { sessionIds: ["other"] }).snapshot().ciRounds ?? [],
-    ).toEqual([]);
+    expect(createLiveStatusProvider(db, { sessionIds: ["other"] }).issue("ENG-7")).toBeNull();
   });
 
   test.each([
@@ -1680,8 +1692,8 @@ describe("live status provider", () => {
           },
         ],
       );
-      const snapshot = createLiveStatusProvider(db).snapshot();
-      const item = snapshot.items.find((entry) => entry.id === "PAS-710")!;
+      const list = createLiveStatusProvider(db).issues();
+      const item = list.issues.find((entry) => entry.id === "PAS-710")!;
       expect(item.blockers).toEqual(named ? ["PAS-709"] : []);
       expect(waitReason(item)).toBe(named ? "Blocked by PAS-709" : "Waiting for a free runner");
     },
@@ -1714,32 +1726,32 @@ describe("live status provider", () => {
         },
       ],
     );
-    const snapshot = createLiveStatusProvider(db, { now: () => new Date(30) }).snapshot();
-    expect(snapshot.items.find((item) => item.id === "ENG-BLOCK")?.blockers).toEqual(["ENG-NEW"]);
-    expect(snapshot.items.some((item) => item.id === "ENG-OLD")).toBe(true);
-    expect(statusIntegrity(snapshot)).toEqual([]);
+    const list = createLiveStatusProvider(db, { now: () => new Date(30) }).issues();
+    expect(list.issues.find((item) => item.id === "ENG-BLOCK")?.blockers).toEqual(["ENG-NEW"]);
+    expect(list.issues.some((item) => item.id === "ENG-OLD")).toBe(true);
+    expect(statusIntegrity(listRecords(list))).toEqual([]);
   });
 
   test("the serving database is the single source despite retired overrides", async () => {
     const db = database();
     insertQueuedItem(db, { id: "ENG-9", title: "Hang", now: 1 });
-    const live = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const live = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: {},
     });
-    const liveBody = (await live?.json()) as { source: string; items: Array<{ id: string }> };
+    const liveBody = (await live?.json()) as { source: string; issues: Array<{ id: string }> };
     expect(liveBody.source).toBe("live");
-    expect(liveBody.items.map((item) => item.id)).toEqual(["ENG-9"]);
+    expect(liveBody.issues.map((item) => item.id)).toEqual(["ENG-9"]);
 
     const query = await handleStatusRequest(
-      new Request("http://127.0.0.1/api/status?engine=demo"),
+      new Request("http://127.0.0.1/api/issues?engine=demo"),
       { db, env: {} },
     );
-    const queryBody = (await query?.json()) as { source: string; items: Array<{ id: string }> };
+    const queryBody = (await query?.json()) as { source: string; issues: Array<{ id: string }> };
     expect(queryBody.source).toBe("live");
-    expect(queryBody.items.map((item) => item.id)).toEqual(["ENG-9"]);
+    expect(queryBody.issues.map((item) => item.id)).toEqual(["ENG-9"]);
 
-    const flagged = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const flagged = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
       env: { PAWS_STATUS_DEMO: "1" },
     });
@@ -1771,15 +1783,15 @@ describe("live status provider", () => {
       budget: { requestsRemaining: 0, requestsLimit: 1500, requestsResetMs: 3_600_000 },
       holdUntilMs: 300_000,
     });
-    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/overview"), {
       db,
       env: {},
       linearUsage: usage,
     });
-    const parsed = parseStatusSnapshot(await response!.json());
+    const parsed = parseOverviewResponse(await response!.json());
     if (!parsed.ok) throw new Error(parsed.error);
-    expect(parsed.snapshot.items).toEqual([]);
-    expect(parsed.snapshot.intake).toEqual([
+    expect(parsed.response.issues).toEqual([]);
+    expect(parsed.response.intake).toEqual([
       {
         issue: "ENG-1",
         title: "First",
@@ -1797,26 +1809,26 @@ describe("live status provider", () => {
         lastError: null,
       },
     ]);
-    expect(parsed.snapshot.linearBudget).toEqual({
+    expect(parsed.response.linearBudget).toEqual({
       requestsRemaining: 0,
       requestsLimit: 1500,
       resetAt: new Date(3_600_000).toISOString(),
       holdUntil: new Date(300_000).toISOString(),
     });
-    const scoped = createLiveStatusProvider(db, { sessionIds: ["s2"] }).snapshot();
-    expect(scoped.intake?.map((entry) => entry.issue)).toEqual(["issue-b"]);
-    expect(scoped.linearBudget).toBeUndefined();
+    const scoped = createLiveStatusProvider(db, { sessionIds: ["s2"] }).overview();
+    expect(scoped.intake.map((entry) => entry.issue)).toEqual(["issue-b"]);
+    expect(scoped.linearBudget).toBeNull();
   });
 
   test("the Intake section carries the warning when Linear may have disabled the webhook", () => {
     const db = database();
-    const snapshot = (atMs: number) =>
-      createLiveStatusProvider(db, { now: () => new Date(atMs) }).snapshot();
-    expect(snapshot(10_000).linearWebhook).toBeUndefined();
+    const overview = (atMs: number) =>
+      createLiveStatusProvider(db, { now: () => new Date(atMs) }).overview();
+    expect(overview(10_000).linearWebhook).toBeNull();
     db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook', 1000)");
-    expect(snapshot(10_000).linearWebhook).toBeUndefined();
+    expect(overview(10_000).linearWebhook).toBeNull();
     db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook-missed', 5000)");
-    expect(snapshot(10_000).linearWebhook).toEqual({
+    expect(overview(10_000).linearWebhook).toEqual({
       warning:
         "Linear may have disabled the Paws webhook: the catch-up poll found events no webhook delivered.",
       fix: LINEAR_WEBHOOK_FIX,

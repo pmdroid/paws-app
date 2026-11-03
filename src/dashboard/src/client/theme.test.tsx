@@ -2,9 +2,8 @@ import {
   openedView,
   fullStatusFixture,
   overviewOf,
-  listResponse,
+  issueList,
   pageData,
-  statusFixture,
 } from "../../test/fixtures";
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
@@ -59,8 +58,7 @@ test("every dashboard view renders without authored inline styles", () => {
     const rendered = render({
       route: { view, id: null },
       phase: "ready",
-      snapshot: statusFixture(),
-      overview: overviewOf(statusFixture()),
+      overview: overviewOf(fullStatusFixture()),
       error: null,
       engineUrl: null,
     });
@@ -159,12 +157,11 @@ test("light appearance does not let the system color scheme paint controls", () 
 });
 
 test("issues list shows blockers without positioned CSS", () => {
-  const snapshot = statusFixture();
+  const snapshot = fullStatusFixture();
   const rendered = render({
     route: { view: "issues", id: null },
     phase: "ready",
-    snapshot,
-    issues: listResponse(snapshot),
+    issues: issueList(snapshot),
     error: null,
     engineUrl: null,
   });

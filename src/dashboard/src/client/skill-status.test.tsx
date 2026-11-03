@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseStatusSnapshot, STATUS_API_VERSION } from "../contract";
+import { parseIssueListResponse } from "../contract";
 import { runSetupSection } from "./render";
 import { runnerDetailMarkup, runnerRowMarkup, runnerSkillsMarkup, type Runner } from "./runners";
 import { renderSkillSettings, skillRolloutMarkup, type SkillListing } from "./skills";
@@ -266,14 +266,12 @@ describe("run page skills and hooks", () => {
     expect(empty).toContain("No hooks.");
   });
 
-  test("the snapshot carries the setup to the run page", () => {
-    const parsed = parseStatusSnapshot({
-      version: STATUS_API_VERSION,
+  test("the issue list carries the setup to the run page", () => {
+    const parsed = parseIssueListResponse({
       source: "live",
       generatedAt: "2026-10-22T10:00:00.000Z",
       project: { name: "Paws", team: "PAS", repo: "pmdroid/paws-app", workspace: "kyku" },
-      epics: [],
-      items: [],
+      issues: [],
       runs: [
         {
           id: "run-1",
@@ -289,11 +287,11 @@ describe("run page skills and hooks", () => {
           setup,
         },
       ],
-      questions: [],
       verdicts: [],
-      mergeQueue: [],
+      agentCloseout: [],
+      mergedTimes: null,
     });
-    expect(parsed.ok && parsed.snapshot.runs[0]?.setup).toEqual(setup);
+    expect(parsed.ok && parsed.response.runs[0]?.setup).toEqual(setup);
   });
 
   test("fits a 390 px phone without horizontal scroll", () => {

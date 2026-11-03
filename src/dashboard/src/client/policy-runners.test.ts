@@ -1,12 +1,12 @@
 import {
   openedView,
   fullStatusFixture,
+  mergeQueueOf,
   pageData,
-  statusList,
   type FullStatus,
 } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
-import { parseStatusSnapshot, type StatusPolicyRunnerWarning } from "../contract";
+import { parseMergeQueueResponse, type StatusPolicyRunnerWarning } from "../contract";
 import type { Route } from "./route";
 import { render } from "./render";
 
@@ -49,18 +49,20 @@ describe("a runner too old for a Closeout policy key on the dashboard", () => {
     expect(page(fullStatusFixture(), { view: "overview" })).not.toContain("policy-runners");
   });
 
-  test("the status API carries the warning through the contract", () => {
-    const parsed = parseStatusSnapshot(
+  test("the merge queue API carries the warning through the contract", () => {
+    const parsed = parseMergeQueueResponse(
       JSON.parse(
-        JSON.stringify({ ...statusList(fullStatusFixture()), policyRunnerWarnings: [WARNING] }),
+        JSON.stringify(mergeQueueOf({ ...fullStatusFixture(), policyRunnerWarnings: [WARNING] })),
       ),
     );
     if (!parsed.ok) throw new Error(parsed.error);
-    expect(parsed.snapshot.policyRunnerWarnings).toEqual([WARNING]);
-    const broken = parseStatusSnapshot({
-      ...statusList(fullStatusFixture()),
-      policyRunnerWarnings: [{ ...WARNING, keys: [{ key: "items[].ci" }] }],
-    });
+    expect(parsed.response.policyRunnerWarnings).toEqual([WARNING]);
+    const broken = parseMergeQueueResponse(
+      mergeQueueOf({
+        ...fullStatusFixture(),
+        policyRunnerWarnings: [{ ...WARNING, keys: [{ key: "items[].ci" }] as never }],
+      }),
+    );
     expect(broken.ok).toBe(false);
   });
 });

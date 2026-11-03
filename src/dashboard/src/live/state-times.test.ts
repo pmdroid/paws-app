@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { applyWorkItemEvent, insertQueuedItem, migrate, openDatabase } from "../../../db";
 import type { WorkItemEvent } from "../../../core";
-import { parseStatusSnapshot, type StatusSnapshot } from "../contract";
+import { parseIssueListResponse, type IssueListResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
 import { stateTotals } from "./state-times";
 
@@ -22,11 +22,11 @@ function database(): Database {
   return db;
 }
 
-function snapshot(db: Database, now: number): StatusSnapshot {
+function issueList(db: Database, now: number): IssueListResponse {
   const provider = createLiveStatusProvider(db, { now: () => new Date(now), env: {} });
-  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(provider.snapshot())));
+  const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(provider.issues())));
   if (!parsed.ok) throw new Error(parsed.error);
-  return parsed.snapshot;
+  return parsed.response;
 }
 
 /** Applies each event `minutes` after `start`. */
@@ -65,7 +65,7 @@ describe("state times", () => {
       [125, "closeout_accepted"],
     ]);
 
-    const item = snapshot(db, T0 + 140 * MIN).items.find((entry) => entry.id === "PAS-1")!;
+    const item = issueList(db, T0 + 140 * MIN).issues.find((entry) => entry.id === "PAS-1")!;
     const times = item.stateTimes!;
     expect(times.since).toBe(new Date(T0).toISOString());
     expect(times.until).toBe(new Date(T0 + 140 * MIN).toISOString());
@@ -87,7 +87,7 @@ describe("state times", () => {
     insertQueuedItem(db, { id: "PAS-2", now: T0 });
     walk(db, "PAS-2", T0, [[5, "dispatched"]]);
     const at = (now: number) =>
-      snapshot(db, now).items.find((entry) => entry.id === "PAS-2")!.stateTimes!;
+      issueList(db, now).issues.find((entry) => entry.id === "PAS-2")!.stateTimes!;
     expect(minutesByState(at(T0 + 20 * MIN).states)).toEqual({ queued: 5, running: 15 });
     expect(minutesByState(at(T0 + 50 * MIN).states)).toEqual({ queued: 5, running: 45 });
 
@@ -140,7 +140,7 @@ describe("state times", () => {
     insertQueuedItem(db, { id: "PAS-91", now: T0 });
     walk(db, "PAS-91", T0, [[5, "dispatched"]]);
 
-    const times = snapshot(db, now).mergedTimes!;
+    const times = issueList(db, now).mergedTimes!;
     expect(times.since).toBe(new Date(T0).toISOString());
     expect(times.merged).toBe(10);
     // Sorted ages 10 … 100: the median is (50 + 60) / 2, the nearest-rank p90 the 9th.
@@ -158,6 +158,6 @@ describe("state times", () => {
   test("no merged times while nothing merged in the last 24 hours", () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-3", now: T0 });
-    expect(snapshot(db, T0 + HOUR).mergedTimes).toBeUndefined();
+    expect(issueList(db, T0 + HOUR).mergedTimes).toBeNull();
   });
 });

@@ -12,14 +12,15 @@ import {
   setCurrentRun,
 } from "../../../db";
 import {
-  parseStatusSnapshot,
+  parseIssueDetailResponse,
+  parseIssueListResponse,
   statusIntegrity,
-  parseStatusItemDetail,
+  type IssueDetailResponse,
   type StatusDeadDelivery,
-  type StatusItemDetail,
-  type StatusSnapshot,
+  type StatusItem,
+  type StatusRun,
 } from "../contract";
-import { openedView, issueOf } from "../../test/fixtures";
+import { openedView } from "../../test/fixtures";
 import { render } from "../client/render";
 import { issueListRedirect, parseRoute } from "../client/route";
 import { createLiveStatusProvider } from "./provider";
@@ -87,24 +88,43 @@ function threeRuns(db: Database): string[] {
   return [first.id, second.id, third.id];
 }
 
-/** The status list, with each listed issue's detail as its page loads it. */
-type Status = StatusSnapshot & { details: Map<string, StatusItemDetail> };
+/**
+ * The issue list's runs, with each listed issue's page as it loads it: `items` are every
+ * session of those issues and `dead` their stopped deliveries.
+ */
+type Status = {
+  items: StatusItem[];
+  runs: StatusRun[];
+  dead: StatusDeadDelivery[];
+  details: Map<string, IssueDetailResponse>;
+};
 
 function snapshotOf(db: Database): Status {
   const provider = createLiveStatusProvider(db, {
     now: () => new Date(T0 + 300_000),
     env: {},
   });
-  const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(provider.snapshot())));
+  const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(provider.issues())));
   if (!parsed.ok) throw new Error(parsed.error);
-  expect(statusIntegrity(parsed.snapshot)).toEqual([]);
-  const details = new Map<string, StatusItemDetail>();
-  for (const item of parsed.snapshot.items) {
-    const detail = parseStatusItemDetail(JSON.parse(JSON.stringify(provider.item(item.id))));
+  const list = parsed.response;
+  const details = new Map<string, IssueDetailResponse>();
+  for (const item of list.issues) {
+    const detail = parseIssueDetailResponse(JSON.parse(JSON.stringify(provider.issue(item.id))));
     if (!detail.ok) throw new Error(detail.error);
-    details.set(item.id, detail.detail);
+    details.set(item.id, detail.response);
   }
-  return { ...parsed.snapshot, details };
+  const pages = [...details.values()];
+  const items = pages.flatMap((page) => [page.issue, ...page.earlierSessions]);
+  expect(
+    statusIntegrity({
+      items,
+      runs: list.runs,
+      questions: [],
+      verdicts: list.verdicts,
+      mergeQueue: [],
+    }),
+  ).toEqual([]);
+  return { items, runs: list.runs, dead: pages.flatMap((page) => page.dead), details };
 }
 
 function issuePage(snapshot: Status, id = "PAS-367"): string {
@@ -112,10 +132,7 @@ function issuePage(snapshot: Status, id = "PAS-367"): string {
   return render({
     route,
     phase: "ready",
-    snapshot,
-    issue: issueOf(
-      route?.view === "issues" && route.id ? (snapshot.details.get(route.id) ?? null) : null,
-    ),
+    issue: route?.view === "issues" && route.id ? (snapshot.details.get(route.id) ?? null) : null,
     error: null,
     engineUrl: null,
     closeout: openedView(),
@@ -271,8 +288,7 @@ describe("one page per issue", () => {
     const html = render({
       route: { view: "issues", id: "PAS-367" },
       phase: "ready",
-      snapshot: snapshotOf(db),
-      issue: issueOf(snapshotOf(db).details.get("PAS-367") ?? null),
+      issue: snapshotOf(db).details.get("PAS-367") ?? null,
       error: null,
       engineUrl: null,
       closeout: openedView({ "section\ndetails:PAS-367": true }),
@@ -342,7 +358,9 @@ describe("one page per issue", () => {
         retryable: true,
       },
     ];
-    expect(snapshot.dead).toEqual(expected.sort((left, right) => left.at.localeCompare(right.at)));
+    const order = (left: StatusDeadDelivery, right: StatusDeadDelivery) =>
+      left.at.localeCompare(right.at) || left.target.localeCompare(right.target);
+    expect(snapshot.dead.sort(order)).toEqual(expected.sort(order));
 
     const html = issuePage(snapshot);
     expect(html).toContain('id="dead-deliveries"');

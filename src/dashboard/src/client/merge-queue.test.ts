@@ -1,14 +1,12 @@
-import { mergeQueueOf, statusFixture } from "../../test/fixtures";
+import { mergeQueueOf, fullStatusFixture, type FullStatus } from "../../test/fixtures";
 import { describe, expect, test } from "bun:test";
 import {
   parseMergeQueueResponse,
-  parseStatusSnapshot,
   statusIntegrity,
   type MergeQueueResponse,
   type StatusItem,
   type StatusMergeEntry,
   type StatusMergeSettings,
-  type StatusSnapshot,
 } from "../contract";
 import { render } from "./render";
 import { matchRoute, routePath } from "./route";
@@ -60,8 +58,8 @@ function entry(
 }
 
 /** acme/platform queues three issues; acme/web merges each when green. */
-function twoRepositories(): StatusSnapshot {
-  const snapshot = statusFixture();
+function twoRepositories(): FullStatus {
+  const snapshot = fullStatusFixture();
   snapshot.generatedAt = NOW;
   snapshot.items = [
     item("ENG-101", "Audit log model", "acme/platform", 412),
@@ -121,17 +119,16 @@ function twoRepositories(): StatusSnapshot {
   return snapshot;
 }
 
-function resource(snapshot: StatusSnapshot): MergeQueueResponse {
+function resource(snapshot: FullStatus): MergeQueueResponse {
   const parsed = parseMergeQueueResponse(JSON.parse(JSON.stringify(mergeQueueOf(snapshot))));
   if (!parsed.ok) throw new Error(parsed.error);
   return parsed.response;
 }
 
-function page(snapshot: StatusSnapshot): string {
+function page(snapshot: FullStatus): string {
   return render({
     route: { view: "mergeQueue" },
     phase: "ready",
-    snapshot: null,
     mergeQueue: resource(snapshot),
     error: null,
     engineUrl: null,
@@ -157,10 +154,8 @@ describe("merge queue page", () => {
 
   test("two repositories: three queued issues in order, and one repository without the queue", () => {
     const snapshot = twoRepositories();
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
-    if (!parsed.ok) throw new Error(parsed.error);
-    expect(statusIntegrity(parsed.snapshot)).toEqual([]);
-    const html = page(parsed.snapshot);
+    expect(statusIntegrity(snapshot)).toEqual([]);
+    const html = page(snapshot);
     expect(html).toContain('<h1 class="sr-only">Merge queue</h1>');
     const platform = html.indexOf(">acme/platform</h2>");
     const web = html.indexOf(">acme/web</h2>");
@@ -228,10 +223,8 @@ describe("merge queue page", () => {
     const snapshot = twoRepositories();
     snapshot.mergeQueue.push(entry("ENG-131", null, null, "ci", 1));
     snapshot.items.push(item("ENG-131", "Lost repository", "acme/platform", 421));
-    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
-    if (!parsed.ok) throw new Error(parsed.error);
-    expect(parsed.snapshot.mergeQueue.at(-1)?.repository).toBeNull();
-    const html = page(parsed.snapshot);
+    expect(resource(snapshot).entries.at(-1)?.repository).toBeNull();
+    const html = page(snapshot);
     const lost = html.slice(html.indexOf(">Repository not known</h2>"));
     expect(html.indexOf(">Repository not known</h2>")).toBeGreaterThan(
       html.indexOf(">acme/web</h2>"),
