@@ -1,6 +1,7 @@
 import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
-import { delegatedLinearUserId, workspaceMember } from "../db";
+import { delegatedLinearUserId, runnerAccountUnsupported, workspaceMember } from "../db";
+import type { RunnerCodingAgent } from "../runner-protocol";
 import type {
   EligibleRunner,
   EligibleRunnerReason,
@@ -108,6 +109,35 @@ export function runnerSetupNeed(
   return { reason: "no-runner" };
 }
 
+function withNamedAccounts(
+  db: Database,
+  runners: readonly EligibleRunner[],
+  agent: string,
+  ownerUserId: string,
+): EligibleRunner[] {
+  return runners.map((runner) => {
+    if (runner.reason !== "auth-expired" && runner.reason !== "agent-not-signed-in") return runner;
+    const named = db
+      .query<{ id: string }, [string, string]>(
+        `SELECT b.id FROM agent_account_binding b JOIN agent_account a ON a.id=b.account_id
+         WHERE b.runner_id=? AND b.agent=? AND b.legacy=0 AND b.removed_at IS NULL
+         AND a.removed_at IS NULL AND a.enabled=1`,
+      )
+      .all(runner.id, agent)
+      .some(
+        (binding) =>
+          runnerAccountUnsupported(db, runner.id, binding.id, agent as RunnerCodingAgent) === null,
+      );
+    return named
+      ? {
+          ...runner,
+          eligible: true,
+          reason: runner.ownerId === ownerUserId ? "own" : "lead-shared",
+        }
+      : runner;
+  });
+}
+
 /** The workspace, team, owner and project leads of a work item, or null when one is unknown. */
 function itemOwnerScope(db: Database, itemId: string) {
   const scope = db
@@ -161,12 +191,17 @@ export function itemOwnerHasEligibleRunner(
 ): boolean | null {
   const scope = itemOwnerScope(db, input.itemId);
   if (!scope) return null;
-  return eligibleRunners(db, {
-    ...scope,
-    agent: input.agent,
-    purpose: "work",
-    ...(input.now === undefined ? {} : { now: input.now }),
-  }).some((runner) => runner.eligible);
+  return withNamedAccounts(
+    db,
+    eligibleRunners(db, {
+      ...scope,
+      agent: input.agent,
+      purpose: "work",
+      ...(input.now === undefined ? {} : { now: input.now }),
+    }),
+    input.agent,
+    scope.ownerUserId,
+  ).some((runner) => runner.eligible);
 }
 
 /**
@@ -179,12 +214,17 @@ export function itemOwnerRunnerSetupNeed(
 ): RunnerSetupNeed | null {
   const scope = itemOwnerScope(db, input.itemId);
   if (!scope) return null;
-  const runners = eligibleRunners(db, {
-    ...scope,
-    agent: input.agent,
-    purpose: "work",
-    ...(input.now === undefined ? {} : { now: input.now }),
-  });
+  const runners = withNamedAccounts(
+    db,
+    eligibleRunners(db, {
+      ...scope,
+      agent: input.agent,
+      purpose: "work",
+      ...(input.now === undefined ? {} : { now: input.now }),
+    }),
+    input.agent,
+    scope.ownerUserId,
+  );
   return runnerSetupNeed(db, runners, scope, input.agent);
 }
 
@@ -199,12 +239,17 @@ export function itemOwnerEligibleRunner(
 ): { id: string; name: string } | null {
   const scope = itemOwnerScope(db, input.itemId);
   if (!scope) return null;
-  const eligible = eligibleRunners(db, {
-    ...scope,
-    agent: input.agent,
-    purpose: "work",
-    ...(input.now === undefined ? {} : { now: input.now }),
-  }).filter((runner) => runner.eligible);
+  const eligible = withNamedAccounts(
+    db,
+    eligibleRunners(db, {
+      ...scope,
+      agent: input.agent,
+      purpose: "work",
+      ...(input.now === undefined ? {} : { now: input.now }),
+    }),
+    input.agent,
+    scope.ownerUserId,
+  ).filter((runner) => runner.eligible);
   const named = eligible
     .map((runner) => ({
       id: runner.id,

@@ -22,6 +22,8 @@ import {
 } from "../src/db";
 import {
   createRunnerPlacement,
+  itemOwnerHasEligibleRunner,
+  itemOwnerRunnerSetupNeed,
   PlacementRaceError,
   type PlacementAccount,
   type PlacementRequest,
@@ -537,4 +539,21 @@ test("a cancelled execution keeps its account slot until the runner confirms tea
   const freed = await f.choices(order);
   f.admit("R2", candidate(f, freed, "R2", f.accounts.a), order);
   expect(accountSlotsInUse(f.db, f.accounts.a, f.now())).toBe(1);
+});
+
+test("scheduler readiness counts a runner whose usable named account outlives its default sign-in", () => {
+  const f = fixture();
+  f.db.run("UPDATE runner_agent_policy SET ready=0,auth_expired=1 WHERE agent='claude'");
+  const input = { itemId: f.item.id, agent: "claude", now: f.now() };
+  expect(itemOwnerHasEligibleRunner(f.db, input)).toBe(true);
+  expect(itemOwnerRunnerSetupNeed(f.db, input)).toBeNull();
+  for (const accountId of [f.accounts.a, f.accounts.b])
+    setAgentAccountEnabled(f.db, {
+      workspaceId: f.workspaceId,
+      accountId,
+      enabled: false,
+      now: f.now(),
+    });
+  expect(itemOwnerHasEligibleRunner(f.db, input)).toBe(false);
+  expect(itemOwnerRunnerSetupNeed(f.db, input)).toMatchObject({ reason: "agent-not-signed-in" });
 });
