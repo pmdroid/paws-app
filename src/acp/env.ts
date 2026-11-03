@@ -1,4 +1,5 @@
 import { journalCaught } from "../journal";
+import { join } from "node:path";
 /** Variables an agent and its hooks may inherit. Everything else stays with Paws. */
 export const ALLOWED_AGENT_ENV: readonly string[] = [
   "HOME",
@@ -122,4 +123,16 @@ function isBenignProxy(value: string): boolean {
     journalCaught(caughtError1, "env.isBenignProxy.includes", null);
     return false;
   }
+}
+
+export function accountAgentEnv(home: string): Record<string, string> {
+  return {
+    HOME: home,
+    CODEX_HOME: join(home, ".codex"),
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_DATA_HOME: join(home, ".local", "share"),
+    XDG_STATE_HOME: join(home, ".local", "state"),
+    XDG_CACHE_HOME: join(home, ".cache"),
+  };
 }

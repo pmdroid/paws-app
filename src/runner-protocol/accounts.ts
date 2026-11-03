@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { RUNNER_CODING_AGENTS } from "./agents";
+import { RUNNER_CODING_AGENTS, type RunnerCodingAgent } from "./agents";
+import type { RunnerCommand } from "./commands";
 
 export const RUNNER_ACCOUNT_PROTOCOL = 1;
 export const LEGACY_ACCOUNT_PREFIX = "legacy_";
@@ -18,6 +19,27 @@ export const RunnerAccountCapabilitySchema = z.strictObject({
       (bindings) => new Set(bindings.map((binding) => binding.bindingId)).size === bindings.length,
     ),
 });
+
+const ACCOUNT_SUPPORT: Record<RunnerCodingAgent, string | null> = {
+  claude: null,
+  codex: null,
+  grok: null,
+  opencode: null,
+};
+
+export function runnerAccountAgentUnsupported(agent: RunnerCodingAgent): string | null {
+  return Object.hasOwn(ACCOUNT_SUPPORT, agent)
+    ? ACCOUNT_SUPPORT[agent]
+    : "This agent has no isolated account support on runners";
+}
+
+export function runnerCommandAccount(
+  command: RunnerCommand,
+): { account: RunnerAccount; agent: RunnerCodingAgent } | null {
+  if (!("account" in command) || !command.account) return null;
+  if ("agent" in command) return { account: command.account, agent: command.agent };
+  return "profile" in command ? { account: command.account, agent: command.profile.agent } : null;
+}
 
 export type RunnerAccount = z.infer<typeof RunnerAccountSchema>;
 export type RunnerAccountCapability = z.infer<typeof RunnerAccountCapabilitySchema>;

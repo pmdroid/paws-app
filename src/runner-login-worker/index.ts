@@ -5,7 +5,12 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
-import { resolveAdapter, resolveOpencodeCommand, minimalAgentEnv } from "../acp";
+import {
+  accountAgentEnv,
+  resolveAdapter,
+  resolveOpencodeCommand,
+  minimalAgentEnv,
+} from "../acp";
 import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
 import { RunnerLoginInputSchema, type RunnerLoginUpdate } from "../runner-protocol";
 
@@ -17,18 +22,22 @@ export async function runProviderLogin(options: {
   answer(id: string, signal: AbortSignal): Promise<{ answer: string }>;
   command?: string[];
   loginCommand?: LoginCommandRunner;
+  account?: { publish(write: () => void): void };
 }) {
   options.signal.throwIfAborted();
   // Turns on this runner read the live home while the provider signs in to a staged one.
   let home: string | undefined;
   try {
-    if (options.agent === "opencode") {
+    if (options.agent === "opencode" && !options.account) {
       await signIn(options);
     } else {
-      home = stageLoginHome(options.home);
-      await signIn({ ...options, home });
+      const staged = stageLoginHome(options.home);
+      home = staged;
+      await signIn({ ...options, home: staged });
       options.signal.throwIfAborted();
-      publishCredentials(options.agent, home, options.home);
+      const write = () => publishCredentials(options.agent, staged, options.home);
+      if (options.account) options.account.publish(write);
+      else write();
     }
     options.signal.throwIfAborted();
     options.emit({ state: "connected", terminal: "", authorization: null, inputId: null });
@@ -62,6 +71,7 @@ async function signIn(options: Parameters<typeof runProviderLogin>[0]) {
     LANG: "C.UTF-8",
     CODEX_HOME: `${options.home}/.codex`,
     CLAUDE_CONFIG_DIR: `${options.home}/.claude`,
+    ...(options.account ? accountAgentEnv(options.home) : {}),
   });
   const state: RunnerLoginUpdate = {
     state: "starting",

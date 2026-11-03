@@ -6,7 +6,7 @@ import {
   type LivePreviewSystem,
 } from "../live-preview";
 import { runProviderLogin } from "../runner-login-worker";
-import type { RunnerLoginUpdate } from "../runner-protocol";
+import { runnerCommandAccount, type RunnerLoginUpdate } from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import {
   createReviewCommandRunner,
@@ -54,6 +54,7 @@ import {
   git,
   runAgent,
   runWithShellRecovery,
+  accountAgentEnv,
   minimalAgentEnv,
   reconstructAcpPrompt,
   currentRequest,
@@ -68,6 +69,9 @@ import {
   type PolicyFilesLoad,
 } from "../acp";
 import {
+  markRunnerAccountSignedIn,
+  openRunnerAccountHome,
+  publishRunnerAccountHome,
   readRunnerJob,
   readRunnerJobInputs,
   type RunnerJobInputs,
@@ -629,13 +633,22 @@ export async function executeRunnerCommand(
     (task && command.repository !== undefined) !== (options.repositorySnapshot !== undefined)
   )
     throw new Error("Invalid runner worker configuration");
+  const named = runnerCommandAccount(command);
+  const home = named
+    ? openRunnerAccountHome(options.home, named.account, named.agent, {
+        signIn: command.type === "login",
+      })
+    : options.home;
+  const homeEnv = named
+    ? accountAgentEnv(home)
+    : { HOME: home, CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude") };
   for (const provider of [".codex", ".claude", ".grok"]) {
-    mkdirSync(join(options.home, provider), { recursive: true, mode: 0o700 });
-    chmodSync(join(options.home, provider), 0o700);
+    mkdirSync(join(home, provider), { recursive: true, mode: 0o700 });
+    chmodSync(join(home, provider), 0o700);
   }
   // A run's Codex home links each entry of `.codex`; a missing `sessions` folder would leave
   // the rollout in that run's own folder, where the turn-end snapshot can't find it.
-  mkdirSync(join(options.home, ".codex", "sessions"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(home, ".codex", "sessions"), { recursive: true, mode: 0o700 });
   options.signal?.throwIfAborted();
   for (const [name, kind] of [
     ...(options.resume ? [] : [["events.jsonl", "journal"] as const]),
@@ -694,10 +707,21 @@ export async function executeRunnerCommand(
       if (!options.answer || !options.signal) throw new Error("Login lifecycle is unavailable");
       await runProviderLogin({
         agent: command.agent,
-        home: options.home,
+        home,
         signal: options.signal,
         answer: options.answer,
         emit: (update) => emit({ type: "login", update }),
+        ...(named
+          ? {
+              account: {
+                publish: (write: () => void) =>
+                  publishRunnerAccountHome(home, job.executionId, () => {
+                    write();
+                    markRunnerAccountSignedIn(home, named.account, named.agent);
+                  }),
+              },
+            }
+          : {}),
       });
       return {
         executionId: job.executionId,
@@ -755,7 +779,7 @@ export async function executeRunnerCommand(
     }
     const env = {
       PATH: "/usr/bin:/bin",
-      HOME: options.home,
+      HOME: home,
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_TERMINAL_PROMPT: "0",
@@ -887,9 +911,7 @@ export async function executeRunnerCommand(
     const agentEnv = minimalAgentEnv({
       PATH: "/usr/local/bin:/usr/bin:/bin",
       ...options.launch?.env,
-      HOME: options.home,
-      CODEX_HOME: join(options.home, ".codex"),
-      CLAUDE_CONFIG_DIR: join(options.home, ".claude"),
+      ...homeEnv,
       MISE_DATA_DIR: mise.dataDir,
       MISE_CACHE_DIR: mise.cacheDir,
     });
@@ -918,7 +940,7 @@ export async function executeRunnerCommand(
     ) => {
       if (restoreReported) return;
       restoreReported = true;
-      if (!outcome.restored && restored) removeRestoredSession(options.home, restored);
+      if (!outcome.restored && restored) removeRestoredSession(home, restored);
       emit({ type: "session_restore", ...outcome });
     };
     if (restoreRequest) {
@@ -927,7 +949,7 @@ export async function executeRunnerCommand(
         try {
           const source = {
             bundle: options.sessionBundle,
-            home: options.home,
+            home,
             sessionId: restoreRequest.sessionId,
             sizeBytes: restoreRequest.sizeBytes,
             sha256: restoreRequest.sha256,
@@ -1030,7 +1052,7 @@ export async function executeRunnerCommand(
       inputFiles: inputFiles.map((file) => ({ ...file, path: join(worktree, file.path) })),
       worktreePath: worktree,
       pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
-      home: options.home,
+      home,
       signal: options.signal,
       onEvent(event) {
         try {
@@ -1371,7 +1393,7 @@ export async function executeRunnerCommand(
         const sessionId = turn.sessionId;
         await bounded("snapshot", async () =>
           snapshotAgentSession(
-            options,
+            { ...options, home },
             job.executionId,
             sessionAgent,
             {
@@ -1779,7 +1801,7 @@ export async function executeRunnerCommand(
       !options.signal?.aborted
     )
       await snapshotAgentSession(
-        options,
+        { ...options, home },
         job.executionId,
         command.profile.agent,
         {

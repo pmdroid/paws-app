@@ -13,12 +13,19 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { runnerCommandAccount } from "../runner-protocol";
 import { ExecutionIdSchema } from "./jobs";
 import { executionScope, executionTag, startTime, stopExecutionProcesses } from "./processes";
 import { readRunnerJob, type RunnerSpool } from "./spool";
 import type { RunnerResults } from "./results";
 import type { RunnerBrokerClient } from "./broker";
 import type { RunnerSkillInstaller } from "./skills";
+import {
+  holdRunnerAccountHome,
+  openRunnerAccountHome,
+  releaseRunnerAccountHome,
+  runnerAccountHome,
+} from "./accounts";
 
 export const RUNNER_SKILLS_ENV = "PAWS_AGENT_SKILLS";
 
@@ -160,9 +167,11 @@ export function createDirectWorkerSupervisor(options: {
   const launch = options.launch ?? workerLaunch;
   const scope = executionScope(options.stateRoot);
   mkdirSync(options.stateRoot, { recursive: true, mode: 0o700 });
+  const held = new Map<string, string>();
   function homeFor(executionId: string): string {
     if (!options.spool || !options.results) return process.env.HOME ?? "/var/lib/paws-agent";
     const job = readRunnerJob(options.spool, executionId);
+    const named = runnerCommandAccount(job.command);
     ensureDirectory(
       join(options.results.root, executionId),
       options.results.agentUid,
@@ -172,7 +181,26 @@ export function createDirectWorkerSupervisor(options: {
     const gid = process.getgid?.() ?? options.results.agentUid;
     if (job.command.type === "task")
       ensureDirectory(join(taskRoot, executionId), options.results.agentUid, gid, 0o700);
-    return agentHome;
+    if (!named) return agentHome;
+    return openRunnerAccountHome(agentHome, named.account, named.agent, {
+      signIn: job.command.type === "login",
+    });
+  }
+  function recordedHome(executionId: string): string | undefined {
+    if (!options.spool) return;
+    try {
+      const named = runnerCommandAccount(readRunnerJob(options.spool, executionId).command);
+      return named ? runnerAccountHome(agentHome, named.account) : undefined;
+    } catch (caughtError3) {
+      journalCaught(caughtError3, "supervisor.recordedHome.readRunnerJob", null);
+      return;
+    }
+  }
+  function release(executionId: string) {
+    const home = held.get(executionId) ?? recordedHome(executionId);
+    if (home) releaseRunnerAccountHome(home, executionId);
+    held.delete(executionId);
+    options.skills?.release(executionId);
   }
   function receipt(executionId: string): string {
     ExecutionIdSchema.parse(executionId);
@@ -237,7 +265,7 @@ export function createDirectWorkerSupervisor(options: {
         }
       }
       await stopExecutionProcesses(scope, (id) => id === executionId);
-      options.skills?.release(executionId);
+      release(executionId);
     },
     /** Stops processes left by executions whose worker is gone, such as before a restart. */
     sweep: () => stopExecutionProcesses(scope, (id) => !alive(id)),
@@ -262,9 +290,20 @@ export function createDirectWorkerSupervisor(options: {
       0o600,
     );
     try {
+      if (home !== agentHome && options.spool && options.results) {
+        holdRunnerAccountHome(home, executionId, path);
+        held.set(executionId, home);
+      }
       options.skills?.prepareHome(home);
       const skills = options.skills?.hold(home, executionId);
-      child = launch(executionId, home, log, resume, executionTag(scope, executionId), skills);
+      child = launch(
+        executionId,
+        held.has(executionId) ? agentHome : home,
+        log,
+        resume,
+        executionTag(scope, executionId),
+        skills,
+      );
       child.on?.("exit", (code, signal) => {
         try {
           const exit = openSync(logPath(executionId), constants.O_WRONLY | constants.O_APPEND);
@@ -302,7 +341,7 @@ export function createDirectWorkerSupervisor(options: {
       }
       syncDirectory(options.stateRoot);
       if (child?.pid !== undefined) killRecorded(child.pid);
-      options.skills?.release(executionId);
+      release(executionId);
       throw error;
     } finally {
       closeSync(fd);

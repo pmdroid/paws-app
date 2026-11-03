@@ -1,4 +1,5 @@
 import { journalCaught } from "../journal";
+import { runnerAccountAgentUnsupported, runnerCommandAccount } from "./accounts";
 import { sign, verify, type KeyObject } from "node:crypto";
 import {
   RunnerCommandSchema,
@@ -102,8 +103,12 @@ export function verifyRunnerCommand(
     )
   )
     return { ok: false, reason: "repository_denied", repository };
-  const account = "account" in command ? command.account : undefined;
-  if (account && !context.accountBindings?.has(account.bindingId))
+  const named = runnerCommandAccount(command);
+  if (
+    named &&
+    (runnerAccountAgentUnsupported(named.agent) ||
+      (command.type !== "login" && !context.accountBindings?.has(named.account.bindingId)))
+  )
     return { ok: false, reason: "account_unavailable" };
   try {
     if (!context.claimCommand(command.id, command.expiresAt)) {
