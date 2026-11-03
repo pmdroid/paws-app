@@ -303,6 +303,7 @@ import {
   readPullMergeable,
   readReviewThreads,
   readPullCi,
+  readCiLog,
   commentOnPullRequest,
   replyToReviewComment,
   resolveReviewThread,
@@ -8045,14 +8046,29 @@ export class Orchestrator {
   private trustedRunInputs(
     item: WorkItemRecord,
     input: RunAgentOptions,
-  ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes"> {
+  ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes" | "ciLog"> {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
     const runtimes = { runtimes: () => this.runtimeList(item, input.worktreePath) };
     if (input.role !== "implementer") return runtimes;
     const { home, policyRoot } = this.closeoutHome(item);
+    const pull = getItemPullRequest(this.db, item.id);
+    const github = pull ? this.githubForRepository(repository) : null;
     return {
       ...runtimes,
+      ...(pull && github && !input.readOnly
+        ? {
+            ciLog: (job?: string) =>
+              readCiLog({
+                client: github.client,
+                owner: repository.owner,
+                repo: repository.repo,
+                prNumber: pull.pullNumber,
+                job,
+                ...this.gitHubCredentials(github),
+              }),
+          }
+        : {}),
       closeoutPolicy: async () => {
         const load = trustedPolicyFiles(input.worktreePath, home, policyRoot);
         // The runner parses the policy with its own release: say which keys it would leave out.
