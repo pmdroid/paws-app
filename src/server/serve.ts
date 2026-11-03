@@ -96,6 +96,11 @@ export type ServerOptions = {
     principal: WorkspacePrincipal | undefined,
     sessionIds: readonly string[] | undefined,
   ) => Promise<Response | null>;
+  questionAnswers?: (
+    request: Request,
+    principal: WorkspacePrincipal | undefined,
+    sessionIds: readonly string[] | undefined,
+  ) => Promise<Response | null>;
   /**
    * `POST /api/review-findings/issues`: file a pre-existing review finding in Linear. The
    * server checked the origin and the CSRF token; the handler checks them again with `access`.
@@ -226,6 +231,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
           ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
+          ...(options.questionAnswers ? { questionAnswers: options.questionAnswers } : {}),
           ...(options.findingIssues ? { findingIssues: options.findingIssues } : {}),
           ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
           ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
@@ -267,6 +273,7 @@ type Secrets = {
   runnerControl?: ServerOptions["runnerControl"];
   executionControls?: ServerOptions["executionControls"];
   linkAsks?: ServerOptions["linkAsks"];
+  questionAnswers?: ServerOptions["questionAnswers"];
   findingIssues?: ServerOptions["findingIssues"];
   slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
@@ -444,6 +451,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   if (path === "/api/link-asks" && secrets.linkAsks !== undefined) {
     const response = await secrets.linkAsks(request, principal, sessionIds);
+    if (response !== null) return response;
+  }
+  if (path === "/api/questions/answer" && secrets.questionAnswers !== undefined) {
+    const response = await secrets.questionAnswers(request, principal, sessionIds);
     if (response !== null) return response;
   }
   if (path === VISUAL_REVIEW_CHANGES_PATH) {

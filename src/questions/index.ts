@@ -26,6 +26,13 @@ export {
   shortCommit,
 } from "./link-ask";
 export {
+  handleQuestionAnswer,
+  isPawsAnswerKind,
+  pawsAnswerNote,
+  QUESTION_ANSWER_PATH,
+  type QuestionAnswer,
+} from "./answer-route";
+export {
   handleLinkAskAnswer,
   LINK_ASK_ANSWER_PATH,
   type LinkAskAnswer,

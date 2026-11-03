@@ -6,7 +6,7 @@ import type { Database } from "bun:sqlite";
  * the risk approval. A response keeps the session complete, so neither reopens it.
  */
 export const AFTER_PULL_REQUEST_RESPONSE =
-  /^(merged:|closed:|command:stop:|pull-review:|risk-approval:)/;
+  /^(merged:|closed:|command:stop:|pull-review:|risk-approval:|paws-answer:)/;
 
 /**
  * Thoughts that may follow the PR response: a change request on the risk approval, from the
