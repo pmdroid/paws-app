@@ -40,6 +40,8 @@ export const ALLOWED_AGENT_ENV: readonly string[] = [
   // The runner's shared mise installs, which Paws sets in the runner worker's agent env.
   "MISE_DATA_DIR",
   "MISE_CACHE_DIR",
+  // A local Docker socket only, such as the runner's rootless daemon; see `isLocalDockerHost`.
+  "DOCKER_HOST",
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
   "HTTP_PROXY",
@@ -102,9 +104,15 @@ export function minimalAgentEnv(
     }
     if (isBlockedEnv(key)) continue;
     if (PROXY_ENV.has(key) && !isBenignProxy(value)) continue;
+    if (key === "DOCKER_HOST" && !isLocalDockerHost(value)) continue;
     env[key] = value;
   }
   return env;
+}
+
+/** A `unix://` socket path. A tcp or ssh endpoint would hand the agent another host's Docker. */
+function isLocalDockerHost(value: string): boolean {
+  return /^unix:\/\/\/[A-Za-z0-9._/-]+$/.test(value) && !value.split("/").includes("..");
 }
 
 function isBenignProxy(value: string): boolean {

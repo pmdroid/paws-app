@@ -948,6 +948,8 @@ export async function executeRunnerCommand(
     // those by absolute path; a repo that needs Bun declares it in mise.toml.
     const agentEnv = minimalAgentEnv({
       PATH: "/usr/local/bin:/usr/bin:/bin",
+      // The rootless Docker daemon's socket, which the supervisor passes when it is set up.
+      ...(process.env.DOCKER_HOST ? { DOCKER_HOST: process.env.DOCKER_HOST } : {}),
       ...options.launch?.env,
       ...homeEnv,
       MISE_DATA_DIR: mise.dataDir,

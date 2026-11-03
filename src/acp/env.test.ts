@@ -120,6 +120,7 @@ const benign = {
   NODE_EXTRA_CA_CERTS: "/tmp/synthetic-ca.pem",
   MISE_DATA_DIR: "/tmp/synthetic-mise-data",
   MISE_CACHE_DIR: "/tmp/synthetic-mise-cache",
+  DOCKER_HOST: "unix:///run/paws-docker/docker.sock",
   SystemRoot: "C:\\Windows",
   ComSpec: "C:\\Windows\\System32\\cmd.exe",
   PATHEXT: ".COM;.EXE;.BAT;.CMD",
@@ -172,6 +173,22 @@ test("proxy settings cannot forward embedded credentials or token parameters", (
     ]) {
       expect(minimalAgentEnv({ [key]: value })).toEqual({});
     }
+  }
+});
+
+test("DOCKER_HOST reaches an agent only as a local unix socket", () => {
+  expect(minimalAgentEnv({ DOCKER_HOST: "unix:///run/paws-docker/docker.sock" })).toEqual({
+    DOCKER_HOST: "unix:///run/paws-docker/docker.sock",
+  });
+  for (const value of [
+    "tcp://docker.example.test:2376",
+    "ssh://builder@docker.example.test",
+    "unix://relative.sock",
+    "unix:///run/../var/run/docker.sock",
+    "unix:///run/docker.sock?token=synthetic-token",
+    "",
+  ]) {
+    expect(minimalAgentEnv({ DOCKER_HOST: value })).toEqual({});
   }
 });
 
