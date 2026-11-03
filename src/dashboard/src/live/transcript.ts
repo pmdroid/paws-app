@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
-import type { StatusActivity } from "../contract";
+import type { StatusActivity, TranscriptEntry } from "../contract";
 import { redactCloseoutText } from "../server/artifact";
 
 export function* fullAgentTranscript(
@@ -9,18 +9,22 @@ export function* fullAgentTranscript(
   runId: string,
   fallbackAt: string,
   env: NodeJS.ProcessEnv,
-): Generator<StatusActivity> {
+): Generator<TranscriptEntry> {
   if (!home || !/^[A-Za-z0-9_-]+$/.test(runId)) return;
-  yield* readFile(home, `${runId}-classify`, fallbackAt, env);
-  yield* readFile(home, runId, fallbackAt, env);
+  const sessions = { started: 0 };
+  yield* readFile(home, `${runId}-classify`, fallbackAt, env, sessions);
+  yield* readFile(home, runId, fallbackAt, env, sessions);
 }
+
+const SESSION_STARTS = ["Starting on ", "Starting a new session", "Continuing the agent's session"];
 
 function* readFile(
   home: string,
   runId: string,
   fallbackAt: string,
   env: NodeJS.ProcessEnv,
-): Generator<StatusActivity> {
+  sessions: { started: number },
+): Generator<TranscriptEntry> {
   let fd: number | undefined;
   try {
     const root = realpathSync(join(home, "runs"));
@@ -35,12 +39,16 @@ function* readFile(
     const bytes = Buffer.alloc(info.size);
     const size = readSync(fd, bytes, 0, bytes.length, 0);
     const lines = bytes.subarray(0, size).toString("utf8").split("\n");
-    let pending: StatusActivity | undefined;
+    let pending: TranscriptEntry | undefined;
     let message = false;
-    const terminal = new Map<string, { at: string; title: string; text: string }>();
+    const terminal = new Map<
+      string,
+      { at: string; title: string; text: string; session: number }
+    >();
     const tools = new Map<string, { title?: string; kind?: string }>();
     // A line without a time belongs to the session around it, not to the run's start.
     let lastAt = fallbackAt;
+    const session = () => Math.max(1, sessions.started);
     if (lines.at(-1) === "") lines.pop();
     for (const [index, line] of lines.entries()) {
       try {
@@ -63,6 +71,10 @@ function* readFile(
           text = event.text;
           if (typeof text === "string" && text.startsWith("Tool: ")) kind = "tool";
           else chunk = true;
+          if (typeof text === "string" && SESSION_STARTS.some((start) => text.startsWith(start))) {
+            sessions.started += 1;
+            message = false;
+          }
         } else if (event?.type === "session_update") {
           const update = event.update;
           if (update?.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") {
@@ -95,6 +107,7 @@ function* readFile(
               if (typeof update["_meta"]?.[key]?.data === "string")
                 terminal.set(update.toolCallId, {
                   at,
+                  session: terminal.get(update.toolCallId)?.session ?? session(),
                   title: tool.title ?? "Tool output",
                   text: (terminal.get(update.toolCallId)?.text ?? "") + update["_meta"][key].data,
                 });
@@ -123,7 +136,7 @@ function* readFile(
         if (chunk && message && pending) pending.text += entryText;
         else {
           if (pending) yield { ...pending, text: redactTranscriptText(pending.text, env) };
-          pending = { at, kind, text: entryText };
+          pending = { at, kind, text: entryText, session: session() };
         }
         message = chunk;
       } catch (caughtError1) {
@@ -135,6 +148,7 @@ function* readFile(
       yield {
         at: output.at,
         kind: "tool",
+        session: output.session,
         text: redactTranscriptText(`${output.title}\n${output.text}`, env),
       };
   } catch (caughtError2) {

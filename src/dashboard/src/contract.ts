@@ -299,6 +299,10 @@ export interface StatusActivity {
   text: string;
 }
 
+export interface TranscriptEntry extends StatusActivity {
+  session: number;
+}
+
 export interface StatusRun {
   runner?: string | null;
   id: string;

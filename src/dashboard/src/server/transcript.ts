@@ -54,9 +54,9 @@ export function handleAgentTranscriptRequest(
           if (asJson) controller.enqueue(encoder.encode(first ? "[]" : "]"));
           controller.close();
         } else if (asJson) {
-          const { at, kind, text } = entry.value;
+          const { at, kind, text, session } = entry.value;
           controller.enqueue(
-            encoder.encode(`${first ? "[" : ","}${JSON.stringify({ at, kind, text })}`),
+            encoder.encode(`${first ? "[" : ","}${JSON.stringify({ at, kind, text, session })}`),
           );
         } else
           controller.enqueue(
