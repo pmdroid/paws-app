@@ -229,12 +229,12 @@ export function createLinearIntake(options: {
     const work = forIssue(() =>
       linearCaller("events", async () => {
         signal.throwIfAborted();
+        if (mode.phase !== "arrive" && linearCommentOf(event) !== null)
+          return followUp?.(event, tracker);
         if (!checked && beforeEvent !== undefined && !(await beforeEvent(event, request)))
           return false;
         signal.throwIfAborted();
         request?.signal?.throwIfAborted();
-        if (mode.phase !== "arrive" && linearCommentOf(event) !== null)
-          return followUp?.(event, tracker);
         if (tracker === null) {
           if (mode.phase === "arrive") return true;
           if (event.signal === "stop") {

@@ -19,10 +19,15 @@ import {
   recordPullComment,
   type LinearCommentRecord,
 } from "../db";
-import { linearCommentOf, parseAgentEvent, type AcceptedLinearEvent } from "../linear";
+import {
+  createInboxStore,
+  createLinearIntake,
+  linearCommentOf,
+  parseAgentEvent,
+  type AcceptedLinearEvent,
+} from "../linear";
 import { findOpenQuestion, getQuestion, type QuestionKind } from "../questions";
 import {
-  ANSWERABLE_QUESTION_KINDS,
   LINEAR_COMMENT_INSTRUCTION,
   deliverLinearComments,
   takeLinearCommentBrief,
@@ -146,6 +151,7 @@ function setup(options: { members?: string[]; agents?: string[] } = {}) {
   migrate(db);
   const clock = new FakeClock(T0);
   const members = new Set(options.members ?? [PASCAL]);
+  let checkerReady = true;
   const authorized: string[] = [];
   const policy: LinearCommentPolicy = {
     appUserId: APP_USER,
@@ -154,7 +160,7 @@ function setup(options: { members?: string[]; agents?: string[] } = {}) {
       authorized.push(actor.id);
       return members.has(actor.id) && actor.teamId === TEAM;
     },
-    recheck: (actor) => members.has(actor.id),
+    recheck: (actor) => (checkerReady ? members.has(actor.id) : null),
     wait: () => ({ quietMs: 60_000, maxMs: 300_000 }),
   };
   insertQueuedItem(db, { id: "eng-1", now: T0, sessionKey: SESSION });
@@ -175,22 +181,10 @@ function setup(options: { members?: string[]; agents?: string[] } = {}) {
     linearComments: policy,
   });
   let busy = false;
-  const forwarded: string[] = [];
-  let forwards = true;
-  const answered: string[] = [];
   const caps: LinearCommentCapabilities = {
     now: () => clock.now(),
     policy,
     busy: () => busy,
-    forward: async (_item, body) => {
-      if (!forwards) return false;
-      forwarded.push(body);
-      return true;
-    },
-    answer: async (_item, comment, question) => {
-      answered.push(`${question.kind}:${comment.commentId}`);
-      return true;
-    },
     flush: async () => {},
   };
   return {
@@ -200,8 +194,6 @@ function setup(options: { members?: string[]; agents?: string[] } = {}) {
     members,
     authorized,
     caps,
-    forwarded,
-    answered,
     receive: (event: AcceptedLinearEvent) => orchestrator.onLinearEvent(event),
     deliverWithLoop: () =>
       deliverLinearComments(db, "eng-1", orchestrator["linearCommentCapabilities"](policy)),
@@ -216,8 +208,8 @@ function setup(options: { members?: string[]; agents?: string[] } = {}) {
     setBusy: (value: boolean) => {
       busy = value;
     },
-    setForwards: (value: boolean) => {
-      forwards = value;
+    setCheckerReady: (value: boolean) => {
+      checkerReady = value;
     },
     close: async () => {
       await orchestrator.shutdown();
@@ -354,22 +346,24 @@ describe("receiving ordinary Linear comments", () => {
     }
   });
 
-  test("a running agent gets the comment at its next turn without a second run", async () => {
+  test("a running agent is not interrupted; the comment waits for the turn to end", async () => {
     const f = setup();
     try {
       beginImplementRun(f.db, "eng-1", T0);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Skip the migration." })));
-      f.setForwards(false);
+      expect(f.thoughts()).toEqual([
+        "Received a comment on eng-1. Paws hands it to the agent once its current turn ends.",
+      ]);
       expect(await f.deliver()).toBe("wait");
       expect(f.comment("c-1").state).toBe("queued");
-      f.setForwards(true);
-      expect(await f.deliver()).toBe("delivered");
-      expect(f.forwarded).toHaveLength(1);
-      expect(f.forwarded[0]).toContain("Skip the migration.");
-      expect(f.comment("c-1")).toMatchObject({ state: "delivered", via: "follow_up" });
       expect(getWorkItem(f.db, "eng-1")!.state).toBe("running");
       expect(f.resumeJobs()).toHaveLength(0);
-      expect(f.thoughts().at(-1)).toBe("Sent the comment on eng-1 to the running agent.");
+      enterMergeQueue(f.db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+      expect(await f.deliver()).toBe("restarted");
+      expect(f.resumeJobs()).toHaveLength(1);
+      expect((f.resumeJobs()[0]!.payload as { handoff: string }).handoff).toContain(
+        "Skip the migration.",
+      );
     } finally {
       await f.close();
     }
@@ -715,31 +709,10 @@ describe("holds, questions and gates", () => {
     }
   });
 
-  test("the one reply to the agent's own open question answers it", async () => {
-    for (const kind of ANSWERABLE_QUESTION_KINDS) {
-      const f = setup();
-      try {
-        const { run } = beginImplementRun(f.db, "eng-1", T0);
-        const item = getWorkItem(f.db, "eng-1")!;
-        ask(
-          f.db,
-          { itemId: item.id, runId: run.id, sessionId: SESSION, version: item.version },
-          kind,
-          "Which endpoint?",
-          { now: T0 },
-        );
-        await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "The v2 one." })));
-        expect(await f.deliver()).toBe("answered");
-        expect(f.answered).toEqual([`${kind}:c-1`]);
-        expect(f.comment("c-1")).toMatchObject({ state: "answered", via: "answer" });
-      } finally {
-        await f.close();
-      }
-    }
-  });
-
-  test("approval gates and other human-only questions are never answered by a comment", async () => {
+  test("no open question, from the agent or a human-only gate, is answered by an issue comment", async () => {
     const gates: QuestionKind[] = [
+      "agent",
+      "clarification",
       "repository",
       "runner-wait",
       "closeout-help",
@@ -765,7 +738,6 @@ describe("holds, questions and gates", () => {
         );
         await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Approved, ship it." })));
         expect(await f.deliver()).toBe("done");
-        expect(f.answered).toEqual([]);
         expect(getQuestion(f.db, asked.question.id)!.status).toBe("open");
         expect(findOpenQuestion(f.db, SESSION)?.id).toBe(asked.question.id);
         expect(getWorkItem(f.db, "eng-1")!.state).toBe("awaiting_input");
@@ -796,7 +768,6 @@ describe("holds, questions and gates", () => {
         fromWebhook(webhookComment({ id: "c-2", body: "Another note.", createdAt: T0 + 2_000 })),
       );
       expect(await f.deliver()).toBe("done");
-      expect(f.answered).toEqual([]);
       expect(f.comment("c-1").state).toBe("queued");
     } finally {
       await f.close();
@@ -860,6 +831,112 @@ describe("batching with pull request feedback", () => {
       expect(await f.deliver()).toBe("done");
       const brief = takeLinearCommentBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
       expect(brief).toContain("And rename it.");
+      expect(f.resumeJobs()).toHaveLength(1);
+    } finally {
+      await f.close();
+    }
+  });
+});
+
+describe("review findings", () => {
+  test("production intake hands a comment to the loop even when the session access gate refuses it", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const delivered: string[] = [];
+    const abort = new AbortController();
+    const { onEvent } = createLinearIntake({
+      store: createInboxStore(db),
+      tracker: null,
+      beforeEvent: async () => false,
+      followUp: async (event) => {
+        delivered.push(event.dedupeKey);
+        return true;
+      },
+      signal: abort.signal,
+    });
+    const event = fromWebhook(webhookComment({ id: "c-1", body: "Use v2." }));
+    expect(await onEvent(event)).toBe(true);
+    expect(delivered).toEqual([event.dedupeKey]);
+    await onEvent.close();
+    db.close();
+  });
+
+  test("a batch takes only the comments that fit; the rest wait for the next handoff", async () => {
+    const f = setup();
+    try {
+      toMergeQueue(f.db);
+      for (let index = 0; index < 4; index++)
+        await f.receive(
+          fromWebhook(
+            webhookComment({
+              id: `big-${index}`,
+              body: `${index}`.repeat(3_900),
+              createdAt: T0 + 1_000 + index,
+            }),
+          ),
+        );
+      expect(await f.deliver()).toBe("restarted");
+      const handoff = (f.resumeJobs()[0]!.payload as { handoff: string }).handoff;
+      expect(handoff.length).toBeLessThanOrEqual(12_000);
+      expect(handoff).toContain(LINEAR_COMMENT_INSTRUCTION);
+      expect(f.comment("big-0").state).toBe("delivered");
+      expect(f.comment("big-1").state).toBe("delivered");
+      expect(handoff).not.toContain("3".repeat(3_900));
+      expect(f.comment("big-3").state).toBe("queued");
+      const brief = takeLinearCommentBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
+      expect(brief).toContain("3".repeat(3_900));
+      expect(f.comment("big-3")).toMatchObject({ state: "delivered", via: "brief" });
+    } finally {
+      await f.close();
+    }
+  });
+
+  test("while the member checker is unavailable recovered comments wait instead of passing", async () => {
+    const f = setup();
+    try {
+      toMergeQueue(f.db);
+      await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "After restart." })));
+      f.setCheckerReady(false);
+      expect(await f.deliver()).toBe("wait");
+      expect(f.resumeJobs()).toHaveLength(0);
+      expect(takeLinearCommentBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps)).toBeNull();
+      expect(f.comment("c-1").state).toBe("queued");
+      f.members.delete(PASCAL);
+      f.setCheckerReady(true);
+      expect(await f.deliver()).toBe("done");
+      expect(f.comment("c-1")).toMatchObject({ state: "rejected", reason: "not_member" });
+    } finally {
+      await f.close();
+    }
+  });
+
+  test("a session reply whose source comment was already handed off is not delivered again", async () => {
+    const f = setup();
+    try {
+      toMergeQueue(f.db);
+      await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use tabs." })));
+      expect(await f.deliver()).toBe("restarted");
+      const prompted: AcceptedLinearEvent = {
+        dedupeKey: "activity:act-1",
+        deliveryId: "d-session",
+        source: "webhook",
+        action: "prompted",
+        sessionId: SESSION,
+        issueId: ISSUE,
+        activityId: "act-1",
+        actorId: PASCAL,
+        body: "Use tabs.",
+        signal: null,
+        updatedAtMs: T0 + 90_000,
+        payload: JSON.stringify({
+          type: "AgentSessionEvent",
+          action: "prompted",
+          agentSession: { id: SESSION, issueId: ISSUE },
+          agentActivity: { id: "act-1", body: "Use tabs.", sourceCommentId: "c-1" },
+        }),
+      };
+      await f.receive(prompted);
+      expect(f.db.query("SELECT count(*) AS n FROM linear_turn").get()).toEqual({ n: 0 });
       expect(f.resumeJobs()).toHaveLength(1);
     } finally {
       await f.close();

@@ -187,3 +187,22 @@ function readTime(node: Record<string, unknown>, key: string): number | null {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
+
+export function linearSourceCommentId(event: AcceptedLinearEvent): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(event.payload);
+  } catch (error) {
+    journalCaught(error, "comments.linearSourceCommentId.parse", null);
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+  const activity = isRecord(parsed["agentActivity"]) ? parsed["agentActivity"] : null;
+  const source =
+    activity !== null && isRecord(activity["sourceComment"]) ? activity["sourceComment"] : null;
+  return (
+    (activity === null ? null : readString(activity, "sourceCommentId")) ??
+    (source === null ? null : readString(source, "id")) ??
+    readString(parsed, "sourceCommentId")
+  );
+}

@@ -25,7 +25,7 @@ import {
   type WorkItemRecord,
 } from "../db";
 import { isPawsStop } from "../linear";
-import { findOpenQuestion, type StoredQuestion } from "../questions";
+import { findOpenQuestion } from "../questions";
 import { restart } from "./operations";
 
 export type LinearCommentActor = { id: string; teamId: string | null };
@@ -34,7 +34,7 @@ export type LinearCommentPolicy = {
   appUserId: string | null;
   agents: readonly string[];
   authorize?(actor: LinearCommentActor): Promise<boolean>;
-  recheck?(actor: LinearCommentActor): boolean;
+  recheck?(actor: LinearCommentActor): boolean | null;
   wait?(): PullFeedbackWait;
 };
 
@@ -55,25 +55,14 @@ export type LinearCommentRoute =
       actors: string[];
     };
 
-export type LinearCommentStep = "done" | "wait" | "delivered" | "restarted" | "answered";
+export type LinearCommentStep = "done" | "wait" | "restarted";
 
 export type LinearCommentCapabilities = {
   now(): number;
   policy: LinearCommentPolicy;
   busy(item: WorkItemRecord): boolean;
-  forward(item: WorkItemRecord, body: string): Promise<boolean>;
-  answer(
-    item: WorkItemRecord,
-    comment: LinearCommentRecord,
-    question: StoredQuestion,
-  ): Promise<boolean>;
   flush(): Promise<void>;
 };
-
-export const ANSWERABLE_QUESTION_KINDS: readonly StoredQuestion["kind"][] = [
-  "agent",
-  "clarification",
-];
 
 const HELD_STATES = new Set(["paused", "manual", "failed"]);
 const ACTIVE_STATES = new Set(["running", "verifying", "recovering"]);
@@ -260,7 +249,9 @@ export function receivedNote(item: WorkItemRecord): string {
   if (item.state === "failed")
     return `Received a comment on ${issue}. The task has stopped, so the comment waits with it. Reply in this session to run the task again.`;
   if (item.state === "awaiting_input")
-    return `Received a comment on ${issue}. The task waits for an answer in this session. Paws passes the comment on as that answer only when it is the one reply to the agent's own question; otherwise it reaches the agent when the task runs again.`;
+    return `Received a comment on ${issue}. It is not taken as the answer to the question here; it reaches the agent when the task runs again.`;
+  if (item.state === "running")
+    return `Received a comment on ${issue}. Paws hands it to the agent once its current turn ends.`;
   return `Received a comment on ${issue}. Paws hands it to the agent at its next turn.`;
 }
 
@@ -280,33 +271,16 @@ export async function deliverLinearComments(
     );
     return "done";
   }
-  const pending = current(db, item, all, caps);
-  if (pending.length === 0) return "done";
+  const { kept, unknown } = current(db, item, all, caps);
+  if (kept.length === 0) return unknown ? "wait" : "done";
   if (item.state === "awaiting_input") {
     const question = findOpenQuestion(db, item.sessionKey!);
-    if (
-      question !== null &&
-      question.itemId === item.id &&
-      ANSWERABLE_QUESTION_KINDS.includes(question.kind) &&
-      pending.length === 1 &&
-      pending[0]!.authority === "person"
-    ) {
-      const comment = pending[0]!;
-      if (await caps.answer(item, comment, question)) {
-        markLinearCommentsDelivered(db, [comment.commentId], {
-          via: "answer",
-          itemVersion: item.version,
-          now: caps.now(),
-        });
-        return "answered";
-      }
-    }
     if (question !== null) {
       enqueueOutboxOnce(db, {
         target: "linear",
         op: "activity",
         orderingKey: item.sessionKey!,
-        idempotencyKey: `linear-comment:question:${question.id}:${pending.at(-1)!.commentId}`,
+        idempotencyKey: `linear-comment:question:${question.id}:${kept.at(-1)!.commentId}`,
         payload: {
           sessionId: item.sessionKey!,
           kind: "thought",
@@ -320,34 +294,6 @@ export async function deliverLinearComments(
     return "done";
   }
   if (HELD_STATES.has(item.state) || item.state === "queued") return "done";
-  if (item.state === "running") {
-    const body = linearCommentSection(pending, item.linearIdentifier);
-    if (body !== null && (await caps.forward(item, body))) {
-      immediate(db, () => {
-        markLinearCommentsDelivered(
-          db,
-          pending.map((comment) => comment.commentId),
-          { via: "follow_up", itemVersion: item.version, now: caps.now() },
-        );
-        enqueueOutboxOnce(db, {
-          target: "linear",
-          op: "activity",
-          orderingKey: item.sessionKey!,
-          idempotencyKey: `linear-comment:forwarded:${pending[0]!.commentId}`,
-          payload: {
-            sessionId: item.sessionKey!,
-            kind: "thought",
-            body: `Sent ${count(pending)} on ${item.linearIdentifier} to the running agent.`,
-            id: crypto.randomUUID(),
-          },
-          now: caps.now(),
-        });
-      });
-      await caps.flush();
-      return "delivered";
-    }
-    return "wait";
-  }
   if (ACTIVE_STATES.has(item.state)) return "wait";
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
   if (
@@ -360,9 +306,10 @@ export async function deliverLinearComments(
     const latest = getWorkItem(db, item.id);
     if (latest === null || latest.version !== item.version || latest.state !== "merge_queue")
       return "wait";
-    const batch = current(db, latest, pendingLinearComments(db, item.id), caps);
+    const ready = current(db, latest, pendingLinearComments(db, item.id), caps);
+    const batch = fitLinearComments(ready.kept);
     const body = linearCommentSection(batch, latest.linearIdentifier);
-    if (body === null) return "done";
+    if (body === null) return ready.unknown ? "wait" : "done";
     const jobKey = `linear-comment:${latest.id}:${batch[0]!.commentId}`;
     const jobId = restart(db, latest, { reason: "follow_up", body, jobKey, now: caps.now() });
     if (jobId === null) return "wait";
@@ -396,17 +343,38 @@ export function takeLinearCommentBrief(
   item: WorkItemRecord,
   caps: Pick<LinearCommentCapabilities, "now" | "policy">,
 ): string | null {
-  const pending = current(db, item, pendingLinearComments(db, item.id), caps);
-  if (pending.length > 0)
-    markLinearCommentsDelivered(
-      db,
-      pending.map((comment) => comment.commentId),
-      { via: "brief", itemVersion: item.version, now: caps.now() },
+  return immediate(db, () => {
+    const already = linearCommentsInBrief(db, item.id, item.version);
+    const room = fitLinearComments(
+      [...already, ...current(db, item, pendingLinearComments(db, item.id), caps).kept],
+      already.length,
     );
-  return linearCommentSection(
-    linearCommentsInBrief(db, item.id, item.version),
-    item.linearIdentifier,
-  );
+    const taken = room.slice(already.length);
+    if (taken.length > 0)
+      markLinearCommentsDelivered(
+        db,
+        taken.map((comment) => comment.commentId),
+        { via: "brief", itemVersion: item.version, now: caps.now() },
+      );
+    return linearCommentSection(
+      linearCommentsInBrief(db, item.id, item.version),
+      item.linearIdentifier,
+    );
+  });
+}
+
+export function fitLinearComments(
+  comments: readonly LinearCommentRecord[],
+  required = 1,
+): LinearCommentRecord[] {
+  const fitted: LinearCommentRecord[] = [];
+  for (const comment of comments) {
+    const next = [...fitted, comment];
+    const rendered = linearCommentSection(next, "");
+    if (fitted.length >= required && rendered !== null && rendered.length > SECTION_CHARS) break;
+    fitted.push(comment);
+  }
+  return fitted;
 }
 
 export function linearCommentSection(
@@ -421,7 +389,7 @@ export function linearCommentSection(
     lines.push(indent(clip(comment.body.trim(), COMMENT_CHARS)), "");
   });
   lines.push(LINEAR_COMMENT_INSTRUCTION);
-  return clip(lines.join("\n"), SECTION_CHARS);
+  return lines.join("\n");
 }
 
 function current(
@@ -429,11 +397,13 @@ function current(
   item: WorkItemRecord,
   comments: readonly LinearCommentRecord[],
   caps: Pick<LinearCommentCapabilities, "now" | "policy">,
-): LinearCommentRecord[] {
+): { kept: LinearCommentRecord[]; unknown: boolean } {
   const kept: LinearCommentRecord[] = [];
+  let unknown = false;
   for (const comment of comments) {
     const reason = staleReason(db, item, comment, caps.policy);
     if (reason === null) kept.push(comment);
+    else if (reason === "unknown") unknown = true;
     else
       settleLinearComments(db, [comment.commentId], {
         state: reason === "not_member" ? "rejected" : "ignored",
@@ -441,7 +411,7 @@ function current(
         now: caps.now(),
       });
   }
-  return kept;
+  return { kept, unknown };
 }
 
 function staleReason(
@@ -470,7 +440,9 @@ function staleReason(
         : [comment.authorId];
     if (comment.authority === "agent" && !policy.agents.includes(comment.authorId))
       return "not_member";
-    if (actors.some((id) => !policy.recheck!({ id, teamId }))) return "not_member";
+    const verdicts = actors.map((id) => policy.recheck!({ id, teamId }));
+    if (verdicts.includes(false)) return "not_member";
+    if (verdicts.includes(null)) return "unknown";
   }
   return null;
 }

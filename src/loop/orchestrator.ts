@@ -296,6 +296,7 @@ import {
   rebaseReturnedFor,
   getLinearComment,
   receivedLinearComments,
+  settleLinearComments,
   recordLinearComment,
 } from "../db";
 import {
@@ -366,6 +367,7 @@ import {
   linearItem,
   isMergeConflictRequest,
   linearCommentOf,
+  linearSourceCommentId,
   parseLinearSessionContext,
   renderLinearSessionContext,
 } from "../linear";
@@ -829,6 +831,7 @@ export class Orchestrator {
       return;
     }
     if (event.action === "prompted" && !event.body?.trim()) return;
+    if (event.action === "prompted" && this.commentAlreadyHandedOff(event)) return;
     await this.taskAccess()?.assertOpenIssue(event);
     let turnEventKey = event.dedupeKey;
     if (
@@ -915,6 +918,24 @@ export class Orchestrator {
     return stored !== null && stored.state !== "rejected" && stored.state !== "ignored";
   }
 
+  private commentAlreadyHandedOff(event: AcceptedLinearEvent): boolean {
+    const source = linearSourceCommentId(event);
+    if (source === null) return false;
+    return immediate(this.db, () => {
+      const comment = getLinearComment(this.db, source);
+      if (comment === null) return false;
+      if (comment.state === "received" || comment.state === "queued") {
+        settleLinearComments(this.db, [source], {
+          state: "ignored",
+          reason: "agent_session",
+          now: this.now(),
+        });
+        return false;
+      }
+      return comment.state === "delivered";
+    });
+  }
+
   private linearCommentCapabilities(policy: LinearCommentPolicy): LinearCommentCapabilities {
     return {
       now: () => this.now(),
@@ -926,30 +947,6 @@ export class Orchestrator {
             "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
           )
           .get(this.now(), item.id) !== null,
-      forward: async (item, body) =>
-        this.options.remoteFollowUp !== undefined &&
-        this.isLive(item.id) &&
-        (await this.options.remoteFollowUp(item.id, body)),
-      answer: async (item, comment, question) => {
-        const eventKey = `comment:${comment.commentId}:answer`;
-        await this.onLinearEvent({
-          dedupeKey: eventKey,
-          deliveryId: null,
-          source: "poll",
-          action: "prompted",
-          sessionId: item.sessionKey,
-          issueId: comment.issueId,
-          activityId: null,
-          actorId: comment.authorId,
-          activityCreatedAtMs: comment.createdAtMs,
-          body: comment.body,
-          signal: null,
-          updatedAtMs: comment.updatedAtMs,
-          payload: JSON.stringify({ kind: "comment", commentId: comment.commentId }),
-        });
-        const after = getQuestion(this.db, question.id);
-        return after?.status === "answered" && after.answerEventKey === eventKey;
-      },
       flush: () => this.flush(),
     };
   }

@@ -96,20 +96,24 @@ Each comment is one `linear_comment` row keyed by its id, so a webhook redeliver
 | By a person who fails the workspace member check, or an agent acting for one           | refused                                                         |
 | Otherwise                                                                              | queued on the item, with one "Received a comment" thought       |
 
-An agent in `comment_agents` is trusted as itself. When Linear's signed `actor` is a person other than the comment's author, that person is recorded as `on_behalf_of` and must pass the member check too. An agent's comment never answers a question.
+An agent in `comment_agents` is trusted as itself. When Linear's signed `actor` is a person other than the comment's author, that person is recorded as `on_behalf_of` and must pass the member check too.
 
 One `linear.comments` job per item gathers queued comments with the pull request feedback wait (`[merge] comment_quiet_seconds` after the latest, `comment_max_wait_seconds` at most), then:
 
-- **Running:** the batch goes to the running agent as one follow-up; the run is not stopped.
+- **Running:** it waits. A runner follow-up interrupts the agent's prompt, so comments are not pushed into a turn; they go out with the next handoff once the turn has ended.
 - **Verifying or recovering, or a job still running for the item:** it waits.
 - **Resting in the merge queue:** one `restart(follow_up)` with the comments in the handoff. Pending pull request comments, CI failures or change requests keep their own wait; the Linear comments then ride along in that restart's brief. The restart's job key starts `linear-comment:`, so it does not reset the fix-round window a Linear session reply opens.
 - **Queued (capacity, quota or dependency waits):** nothing is dispatched; the next attempt's brief takes the comments.
 - **Paused, manual or failed:** the comments wait with the item; a comment never resumes it, clears a hold or resets a budget.
-- **Awaiting input:** a lone comment from a person answers the open question only when that question is the agent's own (`agent` or `clarification`); it goes through the same reply path and answer authorization as a session reply. Approval, repository, Closeout, CI, time-limit, visual-review, GitHub, link, runner and push-outage questions are never answered by a comment. The comment stays as context and the session says the question still needs an answer.
+- **Awaiting input:** an issue comment never answers a question, the agent's own included. Questions are asked in the session thread, and a reply there takes the session reply path, so an issue comment has no unambiguous target. The comment stays as context and the session says the question still needs an answer.
 
 These thoughts follow the post-PR rule above; the comment's state in `linear_comment` (`received`, `queued`, `delivered`, `answered`, `ignored`, `rejected`, `removed`, with a reason) is the record either way.
 
-Before delivery each comment is checked again: a stop since it was routed, a new session for the item, or a member who lost access drops it.
+A handoff holds at most 12,000 characters (each comment is cut at 4,000). Comments that do not fit stay queued for the next handoff; only the ones handed over are marked delivered.
+
+Before delivery each comment is checked again: a stop since it was routed, a new session for the item, or a member who lost access drops it. While the member check is not available yet, for example right after a restart, the comment waits rather than passing.
+
+A session reply that Linear also records as an issue comment is delivered once. If the comment is still queued when the session reply arrives, the comment is dropped and the reply path delivers it. If the comment was already handed over, the session reply is not delivered again.
 
 For example, Pascal comments "Use the v2 endpoint." on ENG-1 while its pull request rests in the merge queue. Paws records the comment, posts "Received a comment on ENG-1. Paws hands it to the agent at its next turn.", and a minute later restarts the item once with a handoff that starts "New comments on the Linear issue ENG-1." and posts "Handed the comment on ENG-1 to the agent. It works on it now."
 
