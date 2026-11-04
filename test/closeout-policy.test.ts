@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -7,7 +7,6 @@ import {
   anyPathMatches,
   canonicalJson,
   createFakeGitReader,
-  GLOBAL_POLICY_CODE,
   loadPolicy,
   NO_CLOSEOUT_POLICY,
   pathsMatch,
@@ -819,9 +818,16 @@ describe("origin/main source", () => {
     const home = tempDir();
     writeRepoFile(home, PUBLIC_POLICY_PATH, commandPolicy("home-check"));
     const absent = {
-      ok: true,
+      ok: true as const,
       warnings: [],
-      policy: { source: "none", digest: null, entryPath: null, setup: [], items: [], files: [] },
+      policy: {
+        source: "none" as const,
+        digest: null,
+        entryPath: null,
+        setup: [],
+        items: [],
+        files: [],
+      },
     };
     expect(loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} })).toEqual(
       absent,

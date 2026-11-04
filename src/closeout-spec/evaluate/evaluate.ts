@@ -161,7 +161,6 @@ export function evaluate(
   if (request.evidenceError !== undefined) return blocked(request.evidenceError);
   const taskError = retryTaskError(policy, taskOf(request));
   if (taskError !== undefined) return blocked(taskError);
-  if (policy.source === "none") return blocked("no closeout policy");
 
   const items: DecisionItem[] = [];
   let setupFailed = false;
@@ -191,7 +190,7 @@ export function evaluate(
     }
     items.push(result);
   }
-  if (request.gate === "beforePR") {
+  if (request.gate === "beforePR" && policy.source !== "none") {
     for (const rule of policy.rules ?? []) {
       const result = judgeItem(ruleRequirement(rule), policy, records, request, trust);
       if (result.message === "changed paths are unavailable") pathsUnreadable = true;
@@ -759,11 +758,11 @@ function warningsFor(policy: ResolvedPolicy): DecisionWarning[] {
     return [
       { code: "local-policy", message: `Using configured local policy ${policy.entryPath}.` },
     ];
-  if (policy.source !== "global") return [];
+  if (policy.source !== "none") return [];
   return [
     {
-      code: "global-policy",
-      message: `Using ${policy.entryPath} because origin/main has no closeout policy.`,
+      code: "no-policy",
+      message: "origin/main has no .agents/closeout.yaml, so Closeout ran no checks.",
     },
   ];
 }

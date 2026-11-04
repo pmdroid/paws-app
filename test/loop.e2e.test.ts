@@ -2970,7 +2970,7 @@ test("a task from start to merge reads its Linear issue context once", async () 
   expect(result.linearCalls.length, result.linearCalls.join(", ")).toBeLessThanOrEqual(15);
 }, 120_000);
 
-test("a missing Closeout policy asks once and resumes after a policy lands on main", async () => {
+test("a repository without a Closeout policy merges without Closeout checks or a question", async () => {
   const layout = await repoLayout("paws-no-policy-");
   const seed = path.join(layout.root, "seed");
   await exec("git", ["-C", seed, "rm", ".agents/closeout.yaml"]);
@@ -3028,29 +3028,6 @@ test("a missing Closeout policy asks once and resumes after a policy lands on ma
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "no-policy"));
     await tickWithRestarts(jobs, orchestrator, db);
-    expect(stateOf(db, "ENG-975"), debug(layout, db)).toBe("awaiting_input");
-    const item = listWorkItems(db)[0]!;
-    expect(findOpenQuestion(db, item.sessionKey!)?.kind).toBe("closeout-help");
-    while (outbox.tick().length > 0) await outbox.idle();
-    expect(tracker.questions).toHaveLength(1);
-    expect(tracker.questions[0]?.body).toContain(
-      "Add `.agents/closeout.yaml` to the repository's main branch",
-    );
-    const heldJobs = listJobs(db);
-    for (let i = 0; i < 3; i++) await tickWithRestarts(jobs, orchestrator, db);
-    expect(listJobs(db)).toEqual(heldJobs);
-    expect(
-      heldJobs.filter((job) => job.queue === JOB_KIND.merge || job.queue === JOB_KIND.reverify),
-    ).toEqual([]);
-    expect(listCloseoutRecoveries(db, item.id)).toHaveLength(1);
-    expect(github.merged).toHaveLength(0);
-
-    await withGitIdentity(() =>
-      commitOnMain(layout.bare, CLOSEOUT_POLICY, ".agents/closeout.yaml"),
-    );
-    await orchestrator.onLinearEvent(
-      linearEvent("prompted", "Policy is on main, retry", null, "no-policy"),
-    );
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline && stateOf(db, "ENG-975") !== "merged") {
       await tickWithRestarts(jobs, orchestrator, db);
@@ -3059,8 +3036,9 @@ test("a missing Closeout policy asks once and resumes after a policy lands on ma
     }
     expect(stateOf(db, "ENG-975"), debug(layout, db)).toBe("merged");
     expect(github.merged).toHaveLength(1);
-    expect(tracker.questions).toHaveLength(1);
-    expect(listCloseoutRecoveries(db, item.id)).toHaveLength(1);
+    while (outbox.tick().length > 0) await outbox.idle();
+    expect(tracker.questions).toHaveLength(0);
+    expect(listCloseoutRecoveries(db, listWorkItems(db)[0]!.id)).toHaveLength(0);
   } finally {
     await orchestrator.shutdown();
     db.close();

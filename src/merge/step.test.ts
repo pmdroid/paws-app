@@ -97,6 +97,25 @@ function stepFor(turn: LaneTurn, rest: Partial<SerialMergeFacts> = {}) {
 }
 
 describe("mergeable(S)", () => {
+  test("a repository without a Closeout policy merges an accepted head with no recorded run", () => {
+    const noPolicy = { policyDigest: "", recheckDigest: "" };
+    expect(
+      mergeable(
+        facts({ ...noPolicy, accept: { head: S, policyDigest: null, recheckDigest: null } }),
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      mergeable(facts({ ...noPolicy, accept: { head: "b".repeat(40), policyDigest: null } })),
+    ).toEqual({ ok: false, block: "not_accepted" });
+    expect(mergeable(facts({ ...noPolicy, accept: null }))).toEqual({
+      ok: false,
+      block: "not_accepted",
+    });
+    expect(
+      mergeable(facts({ policyDigest: null, accept: { head: S, policyDigest: null } })),
+    ).toEqual({ ok: false, block: "not_accepted" });
+  });
+
   test("accept row for S under the current digest, green CI, S on main, no threads, protection", () => {
     expect(mergeable(facts())).toEqual({ ok: true });
   });

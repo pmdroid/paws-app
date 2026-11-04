@@ -23,8 +23,6 @@ import {
 /** Decision message when both the remote entry and the global file are absent. */
 export const NO_CLOSEOUT_POLICY = "no closeout policy";
 
-export const GLOBAL_POLICY_CODE = "global-policy";
-
 export type PolicyLoadOutcome =
   | { ok: true; policy: ResolvedPolicy; warnings: DecisionWarning[] }
   | Extract<PolicyLoadResult, { ok: false }>;
@@ -47,12 +45,6 @@ export type LoadPolicyInput = {
  * Load the acceptance policy for `repo`.
  *
  * The entry is `.agents/closeout.yaml` on `refs/heads/main` of `origin`.
- * The fetch and `git ls-remote` answers must name the same commit. The work
- * tree and local refs are not read. An unreadable remote is blocked and does
- * not fall back to the home file. A missing remote entry reads
- * `~/.agents/closeout.yaml`, with imports and skills resolved from that home.
- * When both are absent the result is `source: "none"`, which accepts with
- * {@link NO_CLOSEOUT_POLICY}. A file that exists and fails to load is blocked.
  */
 export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
   if (input.policyRoot !== undefined) {
@@ -79,7 +71,7 @@ export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
   if (!staged.ok) return blocked("repo", staged.message);
   const loaded = loadMemoryPolicy(staged.files);
   if (!loaded.ok) return blocked("repo", loaded.message);
-  if (loaded.absent) return loadGlobal(input);
+  if (loaded.absent) return { ok: true, policy: ABSENT_POLICY, warnings: [] };
   return { ok: true, policy: present("repo", loaded.policy), warnings: keyWarnings(loaded.policy) };
 }
 
@@ -109,12 +101,8 @@ export function loadPolicyFiles(input: LoadPolicyInput): PolicyFilesLoad {
   if (!staged.ok) return staged;
   const loaded = loadMemoryPolicy(staged.files);
   if (!loaded.ok) return loaded;
-  if (!loaded.absent)
-    return { ok: true, absent: false, digest: loaded.policy.digest, files: staged.files };
-  const home = resolveHome(input);
-  if (home === undefined) return { ok: false, message: "HOME is unset" };
-  if (!isDirectory(home)) return { ok: false, message: "policy root is not a directory" };
-  return treeFiles(home);
+  if (loaded.absent) return { ok: true, absent: true };
+  return { ok: true, absent: false, digest: loaded.policy.digest, files: staged.files };
 }
 
 export function treeFiles(root: string): PolicyFilesLoad {
@@ -222,39 +210,14 @@ export function confirmedOriginMain(
   return { ok: true, commit };
 }
 
-function loadGlobal(input: LoadPolicyInput): PolicyLoadOutcome {
-  const home = resolveHome(input);
-  if (home === undefined) return blocked("global", "HOME is unset");
-  if (!isDirectory(home)) return blocked("global", "policy root is not a directory");
-  const loaded = loadHomePolicy(home);
-  if (!loaded.ok) return blocked("global", loaded.message);
-  if (loaded.absent) {
-    return {
-      ok: true,
-      warnings: [],
-      policy: {
-        source: "none",
-        digest: null,
-        entryPath: null,
-        setup: [],
-        items: [],
-        files: [],
-      },
-    };
-  }
-  const shown = `~/${loaded.policy.entryPath}`;
-  return {
-    ok: true,
-    warnings: [
-      {
-        code: GLOBAL_POLICY_CODE,
-        message: `Using ${shown} because origin/main has no closeout policy.`,
-      },
-      ...keyWarnings(loaded.policy),
-    ],
-    policy: present("global", loaded.policy, shown),
-  };
-}
+const ABSENT_POLICY: ResolvedPolicy = {
+  source: "none",
+  digest: null,
+  entryPath: null,
+  setup: [],
+  items: [],
+  files: [],
+};
 
 function present(
   source: "repo" | "global" | "local",
@@ -279,13 +242,6 @@ function present(
 function keyWarnings(policy: TreePolicy): DecisionWarning[] {
   const warning = unknownKeysWarning(policy);
   return warning === undefined ? [] : [warning];
-}
-
-function resolveHome(input: LoadPolicyInput): string | undefined {
-  if (input.home !== undefined) return input.home.length > 0 ? input.home : undefined;
-  const home = (input.env ?? process.env).HOME;
-  if (home === undefined || home.length === 0) return undefined;
-  return home;
 }
 
 function isDirectory(path: string): boolean {
