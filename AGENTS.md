@@ -122,7 +122,7 @@ Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not
 - Fakes live next to the interface they implement and are exported from that module. They record calls in memory.
 - Identifiers are ULIDs (`src/intake/ulid.ts`).
 - Secrets stay in `~/.paws/secrets` (directory mode `0700`). Never log them, never put them in the agent environment, and never commit them.
-- The dashboard is static files under `src/dashboard` so it can ship on its own. The process serves them on localhost at `/dashboard`, and each page reads its own resource (`/api/overview`, `/api/issues`, `/api/questions`, `/api/merge-queue`, `/api/evidence`); old `/status` page links redirect to `/dashboard`.
+- The dashboard is static files under `src/dashboard` so it can ship on its own. The process serves them on localhost at `/dashboard`, and each page reads its own resource (`/api/overview`, `/api/issues`, `/api/questions`, `/api/merge-queue`, `/api/evidence`); old `/status` page links redirect to `/dashboard`. [docs/dashboard-api.md](docs/dashboard-api.md) is the route and resource reference. A new HTTP route, dashboard page or HTML entrypoint adds its entry to `test/dashboard-routes.ts` in the same change; `test/dashboard-route-coverage.test.ts` fails on an unmapped route or a stale entry. `bun run verify:ui <dir>` is the dashboard's browser proof.
 - Documentation describes the code as it is now. Delete a page that no longer matches instead of keeping it for history; `bun run links` fails on an orphaned doc, a broken local link or an inline `src/...` path that no longer exists. `bun run knip` fails on an unused file, dependency or duplicate export.
 
 ## Parallel work

@@ -19,6 +19,10 @@ const LIST_BUDGET_BYTES = 200 * 1024;
 const DETAIL_BUDGET_BYTES = 1024 * 1024;
 const OVERVIEW_BUDGET_BYTES = 50 * 1024;
 const MERGE_QUEUE_BUDGET_BYTES = 64 * 1024;
+const QUESTIONS_BUDGET_BYTES = 64 * 1024;
+const QUESTION_BUDGET_BYTES = 8 * 1024;
+const CHECK_LOG_BUDGET_BYTES = 160 * 1024;
+const EVIDENCE_METADATA_BUDGET_BYTES = 16 * 1024;
 /** What `src/db` keeps of one check stream. */
 const OUTPUT_CAP_BYTES = 64 * 1024;
 
@@ -95,6 +99,16 @@ describe("status payload budget", () => {
       beginImplementRun(db, id, now + index);
       enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: "c".repeat(40) });
       closeout(db, id, 3, CHECKS.length, now + index);
+      db.run(
+        "INSERT INTO question (id, item_id, session_id, body, status, created_at) VALUES (?, ?, ?, ?, 'open', ?)",
+        [
+          `q-${id}`,
+          id,
+          `session-${id}`,
+          `Which retention window should exports use?\n\n${"Context. ".repeat(220)}`,
+          now,
+        ],
+      );
     }
 
     const get = async (path: string) => {
@@ -115,6 +129,11 @@ describe("status payload budget", () => {
     expect(overviewBytes).toBeLessThanOrEqual(OVERVIEW_BUDGET_BYTES);
     expect(overviewBytes * 10).toBeLessThan(await get("/api/issues"));
     expect(await get("/api/merge-queue")).toBeLessThanOrEqual(MERGE_QUEUE_BUDGET_BYTES);
+    expect(await get("/api/questions")).toBeLessThanOrEqual(QUESTIONS_BUDGET_BYTES);
+    expect(await get("/api/questions/q-PAS-2000")).toBeLessThanOrEqual(QUESTION_BUDGET_BYTES);
+    expect(await get("/api/issues/PAS-2000/attempts/3/checks/test/log")).toBeLessThanOrEqual(
+      CHECK_LOG_BUDGET_BYTES,
+    );
 
     const live = createLiveStatusProvider(db, { env: {} });
     const calls: string[] = [];
@@ -180,5 +199,13 @@ describe("evidence gallery budget", () => {
     expect(response!.status).toBe(200);
     expect((JSON.parse(body) as { evidence: unknown[] }).evidence).toHaveLength(480);
     expect(new TextEncoder().encode(body).byteLength).toBeLessThan(LIST_BUDGET_BYTES);
+    const metadata = await handleStatusRequest(
+      new Request(`http://paws.test/api/evidence/${"01J0000".padEnd(26, "Z")}/metadata`),
+      { provider: createLiveStatusProvider(db) },
+    );
+    expect(metadata!.status).toBe(200);
+    expect(Buffer.byteLength(await metadata!.text())).toBeLessThanOrEqual(
+      EVIDENCE_METADATA_BUDGET_BYTES,
+    );
   });
 });
