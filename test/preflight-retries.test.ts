@@ -26,6 +26,16 @@ test("a policy read that times out in git retries with backoff and asks no quest
   expect(result.questions, result.detail).toEqual([]);
 }, 90_000);
 
+test("a mirror refresh that GitHub answers with a 503 before Closeout retries and asks no question", async () => {
+  const result = await runPreflight({ mirror: 503, times: 1 });
+  expect(result.state, result.detail).toBe("running");
+  expect(result.implemented, result.detail).toBe(true);
+  expect(result.retries, result.detail).toEqual([1]);
+  expect(result.questions, result.detail).toEqual([]);
+  expect(result.detail).toContain("fetch --prune");
+  expect(result.detail).toContain("returned error: 503");
+}, 90_000);
+
 test("a remote preparation that times out retries with backoff and asks no question", async () => {
   const result = await runPreflight({ preparation: true, times: 2 });
   expect(result.state, result.detail).toBe("running");
@@ -95,6 +105,11 @@ test("reviewer preparation receives the configured fallback without adding one t
 async function runPreflight(fault: {
   /** The policy read fails with this message. */
   policy?: string;
+  /**
+   * The mirror is served over HTTPS and its first fetches answer with this status. The run stops
+   * at the implementer turn, as remote preparation does.
+   */
+  mirror?: number;
   /** Remote agent preparation times out. */
   preparation?: boolean;
   times: number;
@@ -138,6 +153,8 @@ async function runPreflight(fault: {
       },
       projects: [],
     });
+  const mirror =
+    fault.mirror === undefined ? null : await serveMirror(layout, fault.mirror, fault.times);
   const preparations: Array<Pick<RunAgentOptions, "role" | "fallbackProfile">> = [];
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
@@ -165,7 +182,8 @@ async function runPreflight(fault: {
     tracker,
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    repositories: [{ owner: "acme", repo: "widgets", remoteUrl: mirror?.remoteUrl ?? layout.bare }],
+    ...(mirror ? { repositoryToken: async () => "acme-token" } : {}),
     retryBaseMs: 10,
     reviewRequirements(...args) {
       if (fault.policy !== undefined && remaining > 0) {
@@ -174,7 +192,7 @@ async function runPreflight(fault: {
       }
       return reviewRequirements(...args);
     },
-    ...(fault.preparation
+    ...(fault.preparation || mirror
       ? {
           remoteExecution: {
             agentForSession() {
@@ -182,7 +200,7 @@ async function runPreflight(fault: {
             },
             agentForItem() {
               return async (options: RunAgentOptions) => {
-                if (options.prepareOnly && remaining > 0) {
+                if (fault.preparation && options.prepareOnly && remaining > 0) {
                   remaining -= 1;
                   throw new RemotePreparationTimeout();
                 }
@@ -294,8 +312,76 @@ async function runPreflight(fault: {
     await orchestrator.shutdown().catch(() => undefined);
     await ticking?.catch(() => undefined);
     db.close();
+    mirror?.close();
     await layout.cleanup();
   }
+}
+
+/**
+ * Serves the bare origin over HTTPS, as GitHub serves the mirror, and answers its first
+ * `times` fetches with `status`.
+ */
+async function serveMirror(
+  layout: { root: string; bare: string; pawsRoot: string },
+  status: number,
+  times: number,
+): Promise<{ remoteUrl: string; close: () => void }> {
+  execFileSync("git", ["--git-dir", layout.bare, "update-server-info"]);
+  // An existing mirror, so the first request is its refresh.
+  execFileSync("git", [
+    ...["clone", "--bare", layout.bare],
+    path.join(layout.pawsRoot, "repos", "acme", "widgets.git"),
+  ]);
+  const cert = path.join(layout.root, "cert.pem");
+  const key = path.join(layout.root, "key.pem");
+  execFileSync(
+    "openssl",
+    [
+      ...["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1"],
+      ...["-keyout", key, "-out", cert, "-subj", "/CN=127.0.0.1"],
+      ...["-addext", "subjectAltName=IP:127.0.0.1"],
+    ],
+    { stdio: "pipe" },
+  );
+  // The server runs in its own process: the policy read fetches origin/main synchronously.
+  const server = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `let remaining = ${times};
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        tls: { cert: Bun.file(${JSON.stringify(cert)}), key: Bun.file(${JSON.stringify(key)}) },
+        async fetch(request) {
+          const pathname = new URL(request.url).pathname;
+          if (pathname.endsWith("/info/refs") && remaining > 0) {
+            remaining -= 1;
+            return new Response("Unavailable", { status: ${status} });
+          }
+          const file = Bun.file(${JSON.stringify(layout.bare)} + pathname.replace(/^\\/widgets\\.git/, ""));
+          return pathname.includes("..") || !(await file.exists())
+            ? new Response(null, { status: 404 })
+            : new Response(file);
+        },
+      });
+      console.log(server.port);`,
+    ],
+    { stdout: "pipe", stderr: "inherit" },
+  );
+  const reader = server.stdout.getReader();
+  const port = new TextDecoder().decode((await reader.read()).value).trim();
+  reader.releaseLock();
+  const priorCa = process.env.GIT_SSL_CAINFO;
+  process.env.GIT_SSL_CAINFO = cert;
+  return {
+    remoteUrl: `https://127.0.0.1:${port}/widgets.git`,
+    close: () => {
+      if (priorCa === undefined) delete process.env.GIT_SSL_CAINFO;
+      else process.env.GIT_SSL_CAINFO = priorCa;
+      server.kill();
+    },
+  };
 }
 
 function createdEvent(): AcceptedLinearEvent {
