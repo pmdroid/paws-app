@@ -60,6 +60,10 @@ import {
 import { workspaceSecret, workspaceTokenHash } from "../workspace";
 import { findOpenQuestion } from "../questions";
 import {
+  deliverRepositoryCommands,
+  repositoryCommandDeliveredTo,
+} from "../runner-repository-commands";
+import {
   openRunnerEvent,
   payloadSha256,
   RUNNER_EVENT_COLUMNS,
@@ -537,6 +541,8 @@ export function createRunnerWork(options: {
       if (command.type === "run" || command.type === "review" || command.type === "task")
         throw new Error("Use work assignment for run commands.");
       if (command.type === "helper") throw new Error("Use session assignment for helper commands.");
+      if (command.type === "rebase")
+        throw new Error("Use enqueueRepositoryCommand for repository commands.");
       return immediate(db, () => {
         const identity = runner(command.runnerId);
         if (
@@ -613,6 +619,10 @@ export function createRunnerWork(options: {
         }
         if (rows.length < 64) break;
       }
+      for (const command of deliverRepositoryCommands(db, runnerId, now(), 16 - result.length))
+        result.push(
+          signRunnerCommand({ keyId: options.keyId, privateKey: options.privateKey, command }),
+        );
       return result;
     },
     acknowledge(runnerId: string, commandId: string) {
@@ -621,7 +631,8 @@ export function createRunnerWork(options: {
         db.run(
           "UPDATE runner_command SET acknowledged_at=COALESCE(acknowledged_at,?) WHERE id=? AND runner_id=?",
           [now(), commandId, runnerId],
-        ).changes !== 1
+        ).changes !== 1 &&
+        !repositoryCommandDeliveredTo(db, runnerId, commandId)
       )
         throw new Error("Runner command is unknown.");
     },
