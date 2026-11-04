@@ -367,6 +367,23 @@ describe("status views", () => {
     expect(issue()).not.toContain("Waiting:");
   });
 
+  test("a blocked item shows when its blockers were last checked and a check button", () => {
+    const snapshot = fullStatusFixture();
+    const item = snapshot.items[0]!;
+    item.state = "queued";
+    delete item.queue;
+    const issue = () => render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
+    item.held = { reason: "blocked", blockers: ["ACME-12"] };
+    expect(issue()).toContain("Blockers not checked yet; checked every minute while blocked");
+    item.held.checkedAt = new Date(Date.parse(snapshot.generatedAt) - 2 * 60_000).toISOString();
+    expect(issue()).toContain("Blockers last checked 2m ago; checked every minute while blocked");
+    expect(issue()).toContain(
+      `data-check-blockers="${item.id}" hidden>Check blockers now</button>`,
+    );
+    item.held = { reason: "slot", blockers: [] };
+    expect(issue()).not.toContain("Check blockers now");
+  });
+
   test("the issue page shows how many Linear requests the item made", () => {
     const snapshot = fullStatusFixture();
     const run = snapshot.runs.find((entry) => entry.id === "r-102");

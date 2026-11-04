@@ -89,7 +89,10 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
     tick(25);
     tick(30);
     expect(activities(db, session).filter((row) => row.ephemeral)).toEqual([
-      expect.objectContaining({ body: "Still waiting for PAS-618.", status: "pending" }),
+      expect.objectContaining({
+        body: "Still waiting for PAS-618. Paws checks blockers in Linear every minute while it waits.",
+        status: "pending",
+      }),
     ]);
 
     // Delivery is down: the next mark replaces the pending one instead of queueing a second.

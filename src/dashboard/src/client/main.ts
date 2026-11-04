@@ -55,6 +55,7 @@ import { rememberLinkAskDraft, stopFromLinkAsk, submitLinkAsk } from "./link-ask
 import { rememberQuestionAnswerDraft, submitQuestionAnswer } from "./question-answer-submit";
 import { clickVisualReviewAsk, submitVisualReviewAsk } from "./visual-review-ask";
 import { createDeadDeliveryRetry } from "./dead-delivery-retry";
+import { createBlockerCheck } from "./blocker-check";
 import { createReviewDraw } from "./review-draw";
 import { createEvidenceMedia } from "./evidence-media";
 import type { RunEvidenceSource } from "./evidence";
@@ -84,6 +85,7 @@ const runners = createRunners();
 const findings = createFindings();
 const executionControls = createExecutionControls(reload);
 const deadDeliveryRetry = createDeadDeliveryRetry(reload);
+const blockerCheck = createBlockerCheck(reload);
 const reviewDraw = createReviewDraw(reload);
 const evidence = createEvidenceMedia(() => paint());
 
@@ -457,6 +459,8 @@ function paint(): void {
   if (executionRoot) executionControls.mount(executionRoot, currentEngine(), source());
   const deadRoot = document.querySelector<HTMLElement>("#dead-deliveries");
   if (deadRoot) deadDeliveryRetry.mount(deadRoot, currentEngine(), source());
+  const blockerRoot = document.querySelector<HTMLElement>("#blocker-check");
+  if (blockerRoot) blockerCheck.mount(blockerRoot, currentEngine(), source());
   const drawRoot = document.querySelector<HTMLElement>("#review-draw");
   if (drawRoot) reviewDraw.mount(drawRoot, data, currentEngine(), source());
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");

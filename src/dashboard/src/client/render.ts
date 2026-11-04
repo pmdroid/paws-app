@@ -522,7 +522,7 @@ function issuePage(
         ? { queue: item.mergeQueue.position }
         : {}),
     })}
-    ${queueNotice(item)}
+    ${queueNotice(item, snapshot.generatedAt)}
     ${deadDeliveriesSection(snapshot, item.id)}
     ${run ? (run.usagePause ? usagePauseSection(item, run, run.usagePause) : executionControls(item, run)) : ""}
     ${snapshot.questions
@@ -919,14 +919,23 @@ function usagePauseSection(item: StatusItem, run: StatusRun, pause: StatusUsageP
 }
 
 /** Where a queued item stands while every runner slot is busy. */
-function queueNotice(item: StatusItem): string {
+function queueNotice(item: StatusItem, generatedAt: string): string {
   if (item.state !== "queued") return "";
   const held = heldLine(item);
+  const check = blockerCheck(item, generatedAt);
   if (!item.queue)
     return held
-      ? `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">II</span><div><h3 id="queue-${esc(item.id)}">${esc(held)}</h3><p>It holds no runner slot while it waits.</p></div></section>`
+      ? `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">II</span><div><h3 id="queue-${esc(item.id)}">${esc(held)}</h3><p>It holds no runner slot while it waits.</p>${check}</div></section>`
       : "";
-  return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>${esc(item.queue.ownerCap ? `Waiting: ${capLine(item, item.queue.ownerCap)}. Paws starts ${item.id} when one of them finishes.` : `${held ? `${held}. ` : ""}Paws starts ${item.id} when a slot frees.`)} It holds no runner slot while it waits.</p></div></section>`;
+  return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>${esc(item.queue.ownerCap ? `Waiting: ${capLine(item, item.queue.ownerCap)}. Paws starts ${item.id} when one of them finishes.` : `${held ? `${held}. ` : ""}Paws starts ${item.id} when a slot frees.`)} It holds no runner slot while it waits.</p>${check}</div></section>`;
+}
+
+function blockerCheck(item: StatusItem, generatedAt: string): string {
+  if (item.held?.reason !== "blocked") return "";
+  const checked = item.held.checkedAt
+    ? `Blockers last checked ${ago(item.held.checkedAt, generatedAt)}`
+    : "Blockers not checked yet";
+  return `<div id="blocker-check" class="row wrap"><span class="muted" data-blocker-checked>${esc(`${checked}; checked every minute while blocked, every 5 minutes while Linear's request budget is low.`)}</span><button class="btn sm" type="button" data-check-blockers="${esc(item.id)}" hidden>Check blockers now</button><span class="muted" role="status" data-blocker-message></span></div>`;
 }
 
 /** Where an item stands in its repository's merge queue. Only the first ready one moves. */
