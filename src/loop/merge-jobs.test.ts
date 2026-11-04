@@ -137,6 +137,9 @@ describe("merge CI wait", () => {
       repo: "one",
       remoteUrl: "https://github.com/acme/one.git",
     });
+    beginImplementRun(db, "eng-2", clock.now());
+    enterMergeQueue(db, "eng-2", { phase: "merge_queue", wipCommit: "h" });
+    joinMergeQueue(db, { itemId: "eng-2", repository: "acme/one", now: clock.now() });
     enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
