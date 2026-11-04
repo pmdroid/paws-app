@@ -8,6 +8,7 @@ export type PawsPaths = {
   configFile: string;
   secretsDir: string;
   reposDir: string;
+  publicationDir: string;
   worktreesDir: string;
   runsDir: string;
   logsDir: string;
@@ -23,6 +24,7 @@ export function pawsPaths(home: string): PawsPaths {
     configFile: join(home, "config.toml"),
     secretsDir: join(home, "secrets"),
     reposDir: join(home, "repos"),
+    publicationDir: join(home, "publication"),
     worktreesDir: join(home, "worktrees"),
     runsDir: join(home, "runs"),
     logsDir: join(home, "logs"),
@@ -37,6 +39,7 @@ export function ensureLayout(paths: PawsPaths): void {
     paths.home,
     paths.secretsDir,
     paths.reposDir,
+    paths.publicationDir,
     paths.worktreesDir,
     paths.runsDir,
     paths.logsDir,
