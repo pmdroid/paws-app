@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { JOB_KIND, type RepositoryBinding } from "../core";
 import {
   applyWorkItemEvent,
+  beginImplementRun,
   bindWorkItemRepository,
   insertQueuedItem,
   listJobs,
@@ -96,4 +97,41 @@ test("a ref that is already gone is fine", async () => {
   expect(await deleteEndedCheckpointRef({ db, itemId: item.id, remove: async () => false })).toBe(
     "absent",
   );
+});
+
+test("a continuation two steps on that still runs keeps the shared checkpoint", async () => {
+  const { db, item, removed, remove, ended } = setup();
+  const second = insertQueuedItem(db, { id: "second", branchName: "paws/item", now: 2 });
+  const third = insertQueuedItem(db, { id: "third", branchName: "paws/item", now: 3 });
+  for (const [next, previous] of [
+    [second.id, item.id],
+    [third.id, second.id],
+  ] as const)
+    db.run(
+      "INSERT INTO item_continuation(item_id,previous_item_id,branch) VALUES(?,?,'paws/item')",
+      [next, previous],
+    );
+  for (const id of [item.id, second.id])
+    db.run("UPDATE work_item SET state='cancelled', version=version+1 WHERE id=?", [id]);
+  await sweepCheckpointRefs({ db, remove });
+  expect(removed).toEqual([]);
+  expect(ended()).toEqual([]);
+});
+
+test("a stop whose runner is still publishing its checkpoint waits for the next sweep", async () => {
+  const { db, item, removed, remove, ended } = setup();
+  const { run } = beginImplementRun(db, item.id, 2);
+  db.run("PRAGMA foreign_keys=OFF");
+  db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
+    [run.id, "runner", "workspace", 1, 0, "command", 10],
+  );
+  db.run("UPDATE work_item SET state='cancelled', version=version+1 WHERE id=?", [item.id]);
+  await sweepCheckpointRefs({ db, remove });
+  expect(removed).toEqual([]);
+  expect(ended()).toEqual([item.id]);
+  db.run("UPDATE runner_work SET ended_at=20 WHERE run_id=?", [run.id]);
+  await sweepCheckpointRefs({ db, remove });
+  expect(removed).toHaveLength(1);
+  expect(ended()).toEqual([]);
 });
