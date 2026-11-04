@@ -40,6 +40,7 @@ export function createRunnerRepositories(options: {
   home: string;
   credential(command: WorkCommand, access: "read" | "write"): Promise<string>;
   networkGit?: (input: NetworkOperation) => Promise<void>;
+  snapshotFilter?: string;
 }) {
   if (![options.root, options.home].every(isAbsolute))
     throw new Error("Runner repository paths must be absolute");
@@ -198,11 +199,77 @@ export function createRunnerRepositories(options: {
     }
     return current;
   }
+  async function filteredSnapshot(
+    mirror: string,
+    bundle: string,
+    blobs: string,
+    refs: string[],
+    tips: string[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await invoke(
+      [
+        "--git-dir",
+        mirror,
+        "bundle",
+        "create",
+        bundle,
+        `--filter=${options.snapshotFilter ?? "blob:none"}`,
+        ...refs,
+      ],
+      signal,
+    );
+    chmodSync(bundle, 0o600);
+    if (statSync(bundle).size > 536_870_912) throw new Error("Runner snapshot exceeds size limit");
+    const objects = new Set<string>();
+    for (const tip of tips)
+      for (const object of (
+        await invoke(
+          [
+            "--git-dir",
+            mirror,
+            "rev-list",
+            "--objects",
+            "--no-object-names",
+            `--max-count=${SNAPSHOT_BLOB_COMMITS}`,
+            tip,
+          ],
+          signal,
+        )
+      ).split("\n"))
+        if (object) objects.add(object);
+    const typed = await spawnGit(
+      ["--git-dir", mirror, "cat-file", "--batch-check=%(objecttype) %(objectname)"],
+      { stdin: `${[...objects].join("\n")}\n`, signal },
+    );
+    if (typed.code !== 0) throw new Error(`Runner snapshot blob list failed: ${typed.stderr}`);
+    const list = typed.stdout
+      .split("\n")
+      .filter((line) => line.startsWith("blob "))
+      .map((line) => line.slice(5));
+    const prefix = join(options.root, `blobs-${randomUUID()}`);
+    const packed = await spawnGit(["--git-dir", mirror, "pack-objects", "-q", prefix], {
+      stdin: list.length ? `${list.join("\n")}\n` : "",
+      signal,
+    });
+    const hash = packed.stdout.trim();
+    try {
+      if (packed.code !== 0 || !/^[a-f0-9]{40,64}$/.test(hash))
+        throw new Error(`Runner snapshot blob pack failed: ${packed.stderr.trim()}`);
+      renameSync(`${prefix}-${hash}.pack`, blobs);
+    } finally {
+      for (const suffix of [".pack", ".idx", ".rev"])
+        rmSync(`${prefix}-${hash}${suffix}`, { force: true });
+    }
+    chmodSync(blobs, 0o600);
+    if (statSync(blobs).size > 536_870_912)
+      throw new Error("Runner snapshot blobs exceed size limit");
+  }
   return {
     async prepare(
       input: WorkCommand,
       signal?: AbortSignal,
-    ): Promise<{ mirror: string; bundle: string }> {
+    ): Promise<{ mirror: string; bundle: string; blobs?: string }> {
       const command = parse(input);
       return serialize(command, async (mirror) => {
         signal?.throwIfAborted();
@@ -292,29 +359,48 @@ export function createRunnerRepositories(options: {
           options.root,
           `snapshot-${createHash("sha256").update(command.id).digest("hex")}.bundle`,
         );
+        const blobs = snapshot.replace(/\.bundle$/, ".pack");
         const ref = `refs/heads/paws-snapshot-${createHash("sha256").update(command.id).digest("hex")}`;
+        const tips = main ? [base, main] : [base];
         try {
           const mainRef = `${ref}-main`;
+          const refs = main ? [ref, mainRef] : [ref];
           await invoke(["--git-dir", mirror, "update-ref", ref, base]);
           try {
             if (main) await invoke(["--git-dir", mirror, "update-ref", mainRef, main]);
             signal?.throwIfAborted();
-            await invoke(
-              ["--git-dir", mirror, "bundle", "create", snapshot, ref, ...(main ? [mainRef] : [])],
-              signal,
-            );
-            chmodSync(snapshot, 0o600);
-            if (statSync(snapshot).size > 536_870_912)
-              throw new Error("Runner snapshot exceeds size limit");
+            let filtered = false;
+            try {
+              await filteredSnapshot(mirror, snapshot, blobs, refs, tips, signal);
+              filtered = true;
+            } catch (error) {
+              signal?.throwIfAborted();
+              rmSync(snapshot, { force: true });
+              rmSync(blobs, { force: true });
+              journalCaught(error, "runner-repositories.prepare.filteredSnapshot", null);
+              console.warn(
+                JSON.stringify({
+                  event: "runner_snapshot_filter_failed",
+                  commandId: command.id,
+                  error: error instanceof Error ? error.message : String(error),
+                }),
+              );
+            }
+            if (!filtered) {
+              await invoke(["--git-dir", mirror, "bundle", "create", snapshot, ...refs], signal);
+              chmodSync(snapshot, 0o600);
+              if (statSync(snapshot).size > 536_870_912)
+                throw new Error("Runner snapshot exceeds size limit");
+            }
             signal?.throwIfAborted();
+            return { mirror, bundle: snapshot, ...(filtered ? { blobs } : {}) };
           } finally {
             await invoke(["--git-dir", mirror, "update-ref", "-d", ref]);
             if (main) await invoke(["--git-dir", mirror, "update-ref", "-d", mainRef]);
           }
-          signal?.throwIfAborted();
-          return { mirror, bundle: snapshot };
         } catch (error) {
           rmSync(snapshot, { force: true });
+          rmSync(blobs, { force: true });
           throw error;
         }
       });
@@ -556,6 +642,8 @@ export function createRunnerRepositories(options: {
   };
 }
 export type RunnerRepositories = ReturnType<typeof createRunnerRepositories>;
+
+const SNAPSHOT_BLOB_COMMITS = 200;
 
 /** How often a candidate push refused because the branch moved is rebased and tried again. */
 const CANDIDATE_REBASE_TRIES = 3;

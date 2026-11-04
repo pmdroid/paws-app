@@ -1178,6 +1178,7 @@ export async function openRunnerRuntime(options: {
   }
   async function launch(entry: Active) {
     let bundle: string | undefined;
+    let blobs: string | undefined;
     let sessionBundle: string | undefined;
     let snapshotWorkspace: string | undefined;
     try {
@@ -1232,6 +1233,7 @@ export async function openRunnerRuntime(options: {
       } else {
         const prepared = await repositories.prepare(command, entry.abort.signal);
         bundle = prepared.bundle;
+        blobs = prepared.blobs;
       }
       check(entry);
       if (entry.execution.command.expiresAt <= now())
@@ -1251,7 +1253,13 @@ export async function openRunnerRuntime(options: {
       publishRunnerJob(
         options.spool,
         { executionId: entry.execution.id, command: entry.execution.command },
-        { repositoryBundle: bundle, repositorySnapshot, sessionBundle, ...inputs },
+        {
+          repositoryBundle: bundle,
+          ...(blobs ? { repositoryBlobs: blobs } : {}),
+          repositorySnapshot,
+          sessionBundle,
+          ...inputs,
+        },
       );
       check(entry);
       if (entry.execution.command.expiresAt <= now())
@@ -1286,6 +1294,7 @@ export async function openRunnerRuntime(options: {
       report(error);
     } finally {
       if (bundle) rmSync(bundle, { force: true });
+      if (blobs) rmSync(blobs, { force: true });
       if (sessionBundle) rmSync(sessionBundle, { force: true });
       if (snapshotWorkspace) {
         rmSync(snapshotWorkspace, { recursive: true, force: true });

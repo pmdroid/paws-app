@@ -115,6 +115,7 @@ function bundleHash(file: number): string {
 /** The largest gzipped agent session bundle a job carries, as Paws caps a snapshot. */
 const SESSION_BUNDLE_MAX_BYTES = 1_073_741_824;
 const SESSION_BUNDLE_FILE = "session.ndjson.gz";
+const REPOSITORY_BLOBS_FILE = "repository-blobs.pack";
 
 function openBundleSource(path: string, spool: RunnerSpool, limit = 536_870_912): number {
   if (!isAbsolute(path) || path.endsWith("/")) throw new Error("Invalid repository bundle path");
@@ -367,6 +368,13 @@ function readJob(fd: number, spool: RunnerSpool, executionId: string): RunnerJob
       } finally {
         closeSync(bundle);
       }
+      const blobs = openOptional(`/proc/self/fd/${fd}/${REPOSITORY_BLOBS_FILE}`);
+      if (blobs !== undefined)
+        try {
+          validateBundle(blobs, spool);
+        } finally {
+          closeSync(blobs);
+        }
     }
     if (job.command.type === "task" && job.command.repository) taskRepository(fd, spool);
     readInputContents(fd, spool, job);
@@ -425,6 +433,31 @@ export function runnerRepositoryBundlePath(spool: RunnerSpool, executionId: stri
   return join(spool.root, executionId, "repository.bundle");
 }
 
+export function runnerRepositoryBlobsPath(
+  spool: RunnerSpool,
+  executionId: string,
+): string | undefined {
+  runnerRepositoryBundlePath(spool, executionId);
+  const path = join(spool.root, executionId, REPOSITORY_BLOBS_FILE);
+  const fd = openOptional(path);
+  if (fd === undefined) return undefined;
+  try {
+    validateBundle(fd, spool);
+  } finally {
+    closeSync(fd);
+  }
+  return path;
+}
+
+function openOptional(path: string): number | undefined {
+  try {
+    return openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 export function runnerTaskRepositoryPath(spool: RunnerSpool, executionId: string): string {
   const job = readRunnerJob(spool, executionId);
   if (job.command.type !== "task" || !job.command.repository)
@@ -477,6 +510,7 @@ export function publishRunnerJob(
   input: RunnerJob,
   options: {
     repositoryBundle?: string;
+    repositoryBlobs?: string;
     repositorySnapshot?: string;
     inputFiles?: readonly Uint8Array[];
     promptContext?: Uint8Array;
@@ -510,6 +544,8 @@ export function publishRunnerJob(
   const needsBundle = job.command.type === "run" || job.command.type === "review";
   if (needsBundle !== (options.repositoryBundle !== undefined))
     throw new Error("Repository bundle must match job type");
+  if (options.repositoryBlobs !== undefined && options.repositoryBundle === undefined)
+    throw new Error("Repository blobs need a repository bundle");
   const needsSnapshot = job.command.type === "task" && job.command.repository !== undefined;
   if (needsSnapshot !== (options.repositorySnapshot !== undefined))
     throw new Error("Repository snapshot must match task context");
@@ -553,6 +589,19 @@ export function publishRunnerJob(
             validateBundle(stored, spool);
             if (bundleHash(source) !== bundleHash(stored))
               throw new Error("Runner repository bundle already exists with different content");
+          } finally {
+            closeSync(source);
+            if (stored !== undefined) closeSync(stored);
+          }
+        }
+        if (options.repositoryBlobs !== undefined) {
+          const source = openBundleSource(options.repositoryBlobs, spool);
+          const stored = openOptional(
+            `/proc/self/fd/${existingDirectory}/${REPOSITORY_BLOBS_FILE}`,
+          );
+          try {
+            if (stored === undefined || bundleHash(source) !== bundleHash(stored))
+              throw new Error("Runner repository blobs already exist with different content");
           } finally {
             closeSync(source);
             if (stored !== undefined) closeSync(stored);
@@ -610,6 +659,10 @@ export function publishRunnerJob(
     };
     if (options.repositoryBundle !== undefined)
       copy(options.repositoryBundle, "repository.bundle", 536_870_912, (fd) =>
+        validateBundle(fd, spool),
+      );
+    if (options.repositoryBlobs !== undefined)
+      copy(options.repositoryBlobs, REPOSITORY_BLOBS_FILE, 536_870_912, (fd) =>
         validateBundle(fd, spool),
       );
     if (options.sessionBundle !== undefined)
