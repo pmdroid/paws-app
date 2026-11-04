@@ -4,6 +4,7 @@ import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { loadSecretKey } from "../credentials";
 import { immediate } from "../db";
 import { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
+import { incrementalVacuum } from "./prune";
 
 export const RUNNER_EVENT_KEY_FILE = "runner-event.key";
 const KEY_CONTEXT = "paws-runner-event-key\0";
@@ -133,7 +134,7 @@ export async function encryptRunnerEvents(options: {
     sealed += rows.length;
     await yieldToLoop();
   }
-  db.run("VACUUM");
+  incrementalVacuum(db);
   const [checkpoint] = db.query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").all();
   if (checkpoint?.busy) throw new Error("Runner event WAL checkpoint is busy.");
   return { sealed };

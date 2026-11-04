@@ -44,7 +44,12 @@ export async function pruneRunnerEvents(options: {
     deleted += changes;
     await yieldToLoop();
   }
-  const mode = db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get();
-  if (deleted && mode?.auto_vacuum === 2) db.run("PRAGMA incremental_vacuum");
+  if (deleted) incrementalVacuum(db);
   return { deleted };
+}
+
+/** Returns free pages to the file system when the database uses incremental auto-vacuum. */
+export function incrementalVacuum(db: Database) {
+  const mode = db.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get();
+  if (mode?.auto_vacuum === 2) db.run("PRAGMA incremental_vacuum");
 }
