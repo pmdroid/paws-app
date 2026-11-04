@@ -2,6 +2,12 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-04: No control-plane worktrees for runner-backed items
+
+### Changed
+
+- With runner execution, Paws keeps only the bare mirror of each repository. A runner's candidate is imported under `refs/paws/candidates/<item>` in the mirror, with the same checks as before, and Closeout, the merge lane and publication read that ref. `~/.paws/worktrees/` stays empty for runner-backed items, and the worktree sweep removes the ones an earlier release left once no work for the item runs in this process.
+
 ## 2026-11-04: The merge lane rebases on a runner
 
 ### Changed
