@@ -110,6 +110,17 @@ export function cloneRunner(
   return async (options: RunAgentOptions): Promise<RunAgentResult> => {
     const mirror = mirrorPath(options.pawsRoot, repository.owner, repository.repo);
     const ref = candidateRef(options.itemId);
+    // Work with no candidate ref, such as an answer task, keeps the workspace it was given.
+    const held = Bun.spawnSync([
+      "/usr/bin/git",
+      "--git-dir",
+      mirror,
+      "rev-parse",
+      "--verify",
+      "-q",
+      ref,
+    ]);
+    if (held.exitCode !== 0) return agent(options);
     const tree = runnerCheckout(options.pawsRoot, options.itemId);
     if (!existsSync(tree)) git(["clone", "-q", "--no-checkout", mirror, tree]);
     git([
