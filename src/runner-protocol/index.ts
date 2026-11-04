@@ -30,6 +30,10 @@ export {
   RunnerInstalledRuntimeSchema,
   RunnerInstalledRuntimesSchema,
   SignedRunnerCommandSchema,
+  RunnerRepositoryBranchSchema,
+  RunnerRepositoryCommandResultSchema,
+  type RunnerRepositoryCommand,
+  type RunnerRepositoryCommandResult,
   type RunnerCommand,
   type RunnerHook,
   type RunnerRuntime,
@@ -164,6 +168,7 @@ export {
   CI_LOG_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   RETRO_RUNNER_VERSION,
+  REPOSITORY_COMMAND_RUNNER_VERSION,
 } from "./versions";
 export {
   POLICY_KEY_RUNNER_VERSIONS,

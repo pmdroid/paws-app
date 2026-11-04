@@ -73,6 +73,31 @@ export const RunnerRepositorySchema = z
       repository.remoteUrl === `https://github.com/${repository.owner}/${repository.repo}.git`,
   );
 
+const sha = z.string().regex(/^[a-f0-9]{40}$/);
+
+export const RunnerRepositoryBranchSchema = z
+  .string()
+  .max(256)
+  .regex(/^paws\/[A-Za-z0-9][A-Za-z0-9._/-]*$/)
+  .refine(
+    (branch) =>
+      !branch.includes("..") &&
+      !branch.includes("//") &&
+      !branch.includes("/.") &&
+      !branch.endsWith("/") &&
+      !branch.endsWith(".") &&
+      !branch.endsWith(".lock"),
+  );
+
+export const RunnerRepositoryCommandResultSchema = z.discriminatedUnion("outcome", [
+  z.strictObject({ outcome: z.literal("rebased"), head: sha }),
+  z.strictObject({
+    outcome: z.literal("conflict"),
+    files: z.array(z.string().min(1).max(1024)).max(1000),
+  }),
+  z.strictObject({ outcome: z.literal("failed"), reason: z.string().min(1).max(4096) }),
+]);
+
 export const RunnerCheckpointBotSchema = z.strictObject({
   appId: z.string().regex(/^[1-9][0-9]*$/),
   login: z
@@ -285,6 +310,22 @@ export const RunnerCommandSchema = z
     z.strictObject({ ...common, type: z.literal("checkpoint"), runId: id, generation }),
     z.strictObject({
       ...common,
+      type: z.literal("rebase"),
+      itemId: id,
+      repository: z
+        .strictObject({ owner, repo, remoteUrl: z.string().max(512) })
+        .refine(
+          (repository) =>
+            repository.remoteUrl ===
+            `https://github.com/${repository.owner}/${repository.repo}.git`,
+        ),
+      branch: RunnerRepositoryBranchSchema,
+      head: sha,
+      main: sha,
+      bot: RunnerCheckpointBotSchema,
+    }),
+    z.strictObject({
+      ...common,
       type: z.literal("upgrade"),
       version: z
         .string()
@@ -355,3 +396,5 @@ export type RunnerHook = z.infer<typeof RunnerHookSchema>;
 export type RunnerRuntime = z.infer<typeof RunnerRuntimeSchema>;
 export type RunnerInstalledRuntime = z.infer<typeof RunnerInstalledRuntimeSchema>;
 export type SignedRunnerCommand = z.infer<typeof SignedRunnerCommandSchema>;
+export type RunnerRepositoryCommand = Extract<RunnerCommand, { type: "rebase" }>;
+export type RunnerRepositoryCommandResult = z.infer<typeof RunnerRepositoryCommandResultSchema>;
