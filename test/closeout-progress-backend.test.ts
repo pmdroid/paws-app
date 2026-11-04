@@ -417,6 +417,38 @@ describe("closeout progress backend", () => {
     }
   });
 
+  test("a policy fetch that fails on the network after the reviews is retried, not blocked", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 3),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    const db = openDatabase(":memory:");
+    migrate(db);
+    try {
+      const thrown = await evaluateCandidate({
+        ...evalInput(repo, createDbCloseoutProgress(db, "item-1")),
+        reviewer: {
+          async review() {
+            await exec("git", [
+              "-C",
+              repo.dir,
+              "remote",
+              "set-url",
+              "origin",
+              "http://127.0.0.1:1/x.git",
+            ]);
+            return { session: "review-session", model: "gpt-5", provider: "openai", findings: [] };
+          },
+        },
+      }).catch((error: unknown) => error);
+      expect(isTransient(thrown)).toBe(true);
+      expect(String(thrown)).toContain("origin/main is unavailable");
+    } finally {
+      db.close();
+      await repo.cleanup();
+    }
+  });
+
   test("a temporary error puts its running step back as retrying, not blocked, and the retry starts clean", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 3),

@@ -256,14 +256,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   }
   const filledEarly = await early?.done;
   if (filledEarly) return filledEarly;
-  const unreadable = ran.message;
-  if (
-    ran.decision === "blocked" &&
-    ran.items.length === 0 &&
-    unreadable?.startsWith("origin/main is unavailable") &&
-    isTransientGitError(unreadable)
-  )
-    throw new PolicyFetchError(unreadable);
+  throwIfPolicyFetchFailed(ran);
   const moved = await headUnmoved(input.worktree, input.head);
   if (moved) return failure("blocked", exitOf(ran.decision), moved, input.head);
   if (ran.gate !== CLOSEOUT_GATE) {
@@ -312,6 +305,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...publishedOf(input),
     });
   } catch (error) {
+    if (isTransient(error)) throw error;
     journalCaught(error, "run.evaluateUnsealed.decide", input.taskId);
     const message = error instanceof Error ? error.message : String(error);
     const detail = scrub(message);
@@ -331,6 +325,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
     }
     return failure("blocked", null, detail, input.head);
   }
+  throwIfPolicyFetchFailed(judged);
   const movedAfter = await headUnmoved(input.worktree, input.head);
   if (movedAfter) return failure("blocked", exitOf(judged.decision), movedAfter, input.head);
   if (judged.gate !== CLOSEOUT_GATE) {
@@ -818,6 +813,17 @@ function withoutReviewPlan(
 }
 
 /** origin/main could not be read for the policy because of a temporary git failure. */
+function throwIfPolicyFetchFailed(decision: SpecDecision): void {
+  const unreadable = decision.message;
+  if (
+    decision.decision === "blocked" &&
+    decision.items.length === 0 &&
+    unreadable?.startsWith("origin/main is unavailable") &&
+    isTransientGitError(unreadable)
+  )
+    throw new PolicyFetchError(unreadable);
+}
+
 export class PolicyFetchError extends Error {
   override name = "PolicyFetchError";
 }
