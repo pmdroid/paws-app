@@ -2,7 +2,7 @@ import type { CloseoutCommandPort } from "../closeout-spec";
 import type { FixRunner } from "./fixer";
 import { decideCloseoutGate, runCloseoutGate, type GateInput } from "./run";
 import type { CodexReviewer } from "./reviewer";
-import type { CandidateIdentity, GateResult } from "./types";
+import type { CandidateIdentity, CloseoutMirror, GateResult } from "./types";
 
 export type CloseoutDecision = "accepted" | "rejected" | "blocked" | "invalid";
 
@@ -11,6 +11,7 @@ export type CloseoutRunInput = {
   /** The Linear identifier the summary names, such as `PAS-367`. */
   taskLabel?: string;
   worktree: string;
+  mirror?: CloseoutMirror;
   baseSha: string;
   headSha: string;
   attempt: number;
@@ -78,6 +79,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
       const result = await gate({
         checkoutExclusions: options.checkoutExclusions,
         worktree: input.worktree,
+        ...(input.mirror ? { mirror: input.mirror } : {}),
         taskId: input.taskId,
         ...(input.taskLabel ? { taskLabel: input.taskLabel } : {}),
         base: input.baseSha,

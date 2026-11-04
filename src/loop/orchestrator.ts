@@ -50,6 +50,8 @@ import {
   resolveAdapter,
   providerFor,
   worktreePath,
+  mirrorPath,
+  branchName,
   runDir,
   runAgent,
   createWorktree,
@@ -3604,10 +3606,18 @@ export class Orchestrator {
     decide = false,
     fromCi: readonly CiResult[] = [],
   ): Promise<CloseoutVerdict> {
+    const repository = this.repositoryForItem(item);
+    const mirror =
+      this.options.remoteExecution && repository
+        ? {
+            path: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
+            branch: branchName(itemPathId(item)),
+          }
+        : undefined;
     const policy = await this.commitPolicy(item);
     if (policy)
       await validateCandidateAttribution(
-        worktree,
+        mirror?.path ?? worktree,
         base,
         head,
         policy,
@@ -3616,7 +3626,6 @@ export class Orchestrator {
       );
     const sessionProgress = this.sessionProgress(item);
     sessionProgress?.phase("verifying");
-    const repository = this.repositoryForItem(item);
     const checkoutExclusions = this.runCheckout(item).checks;
     const deps = this.agentDeps(item);
     const networkGit =
@@ -3765,6 +3774,7 @@ export class Orchestrator {
       taskId: itemPathId(item),
       taskLabel: item.linearIdentifier,
       worktree,
+      ...(mirror ? { mirror } : {}),
       baseSha: base,
       headSha: head,
       attempt: 1,

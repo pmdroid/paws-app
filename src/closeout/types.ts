@@ -63,6 +63,8 @@ export type CandidateIdentity = {
   provider: string;
 };
 
+export type CloseoutMirror = { path: string; branch: string };
+
 export type CloseoutItem = {
   id: string;
   kind: string;
