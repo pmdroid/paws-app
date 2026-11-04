@@ -27,8 +27,9 @@ export async function pushBranch(
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
   const gitExec = input.gitExec ?? defaultGitExec();
   const token = await acquireOperationToken(input, "push");
+  const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
   try {
-    await pushWithLease({ worktree: input.worktree, url, branch, token, gitExec });
+    await pushWithLease({ worktree: input.worktree, url, branch, token, gitExec, head });
   } catch (error) {
     const denial =
       error instanceof GitCommandError
@@ -40,7 +41,6 @@ export async function pushBranch(
         : null;
     throw new Error(`push failed: ${denial ?? gitFailureReason(token, error)}`, { cause: error });
   }
-  const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
   return { branch, head };
 }
 
