@@ -1032,8 +1032,9 @@ export async function openRunnerRuntime(options: {
         .rebase(
           command,
           async () => {
-            const grant = await remote(() => repositoryCommandGrant(command.id));
-            return (await remote(() => repositoryCommandCredential(command.id, grant.token))).token;
+            const issued = await remote(() => repositoryCommandGrant(command.id));
+            return (await remote(() => repositoryCommandCredential(command.id, issued.token)))
+              .token;
           },
           closing.signal,
         )
