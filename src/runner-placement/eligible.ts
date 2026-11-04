@@ -3,7 +3,9 @@ import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   delegatedLinearUserId,
+  getWorkItemRepository,
   runnerAccountUnsupported,
+  runnerRepositoryRefusal,
   workspaceMember,
 } from "../db";
 import {
@@ -15,6 +17,7 @@ import type {
   EligibleRunner,
   EligibleRunnerReason,
   EligibleRunnersInput,
+  RepositoryRefusal,
   RunnerSetupNeed,
 } from "./index";
 
@@ -305,4 +308,44 @@ export function itemRepositoryRunner(
     eligible.find((candidate) => candidate.ownerId === scope.ownerUserId) ??
     eligible[0];
   return runner ? { id: runner.id, workspaceId: runner.workspaceId } : null;
+}
+
+const OUT_OF_SCOPE = new Set<EligibleRunnerReason>([
+  "not-yours",
+  "not-shared",
+  "no-project-lead",
+  "revoked",
+  "owner-inactive",
+  "owner-not-in-team",
+]);
+
+export function itemRepositoryRefusals(
+  db: Database,
+  input: { itemId: string; now?: number },
+): { repository: string; refusals: RepositoryRefusal[] } | null {
+  const scope = itemOwnerScope(db, input.itemId);
+  const binding = getWorkItemRepository(db, input.itemId);
+  if (!scope || !binding) return null;
+  const repository = `${binding.owner}/${binding.repo}`;
+  const runners = eligibleRunners(db, {
+    ...scope,
+    agent: "",
+    purpose: "prepare",
+    ...(input.now === undefined ? {} : { now: input.now }),
+  }).filter((runner) => !OUT_OF_SCOPE.has(runner.reason));
+  if (runners.length === 0) return null;
+  const refusals: RepositoryRefusal[] = [];
+  for (const runner of runners) {
+    const refusal = runnerRepositoryRefusal(db, runner.id, repository);
+    if (refusal === null) return null;
+    refusals.push({
+      runnerId: runner.id,
+      runnerName:
+        db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(runner.id)
+          ?.name ?? runner.id,
+      code: refusal.list === "admin" ? "repository_admin" : "repository_host",
+      allowed: refusal.allowed,
+    });
+  }
+  return { repository, refusals };
 }

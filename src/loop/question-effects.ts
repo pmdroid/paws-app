@@ -43,6 +43,7 @@ import {
   planOptions,
 } from "./plan-proposal";
 import { worktreeBranch } from "./sources";
+import { answerRunnerRepository } from "./runner-repository";
 import { recordVisualReviewOutcome, visualReviewHandoff } from "./visual-review";
 
 export function questionEffects(
@@ -78,7 +79,7 @@ export function questionEffects(
       >(
         `SELECT id,body,options,answer FROM question WHERE item_id=? AND session_id=?
        AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL
-       AND kind NOT IN ('visual-review','runner-wait','github-auth','link','push-outage') ORDER BY answered_at,rowid`,
+       AND kind NOT IN ('visual-review','runner-wait','runner-repository','github-auth','link','push-outage') ORDER BY answered_at,rowid`,
       )
       .all(item.id, question.sessionId);
     const handoffs = pending.map((entry) =>
@@ -293,6 +294,7 @@ export function questionEffects(
         });
     },
     "time-limit": timeLimit,
+    "runner-repository": (question) => answerRunnerRepository(db, question, input.now, consumeTurn),
     agent: resume,
     clarification: resume,
     repository: resume,

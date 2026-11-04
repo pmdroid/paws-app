@@ -9,6 +9,12 @@ import {
 import { reaskDeadQuestion } from "./dead-question";
 import { createHash, randomUUID } from "node:crypto";
 import { ask, restart, awaitQuestion } from "./operations";
+import {
+  RUNNER_REPOSITORY_REASON,
+  RUNNER_REPOSITORY_RETRY,
+  RUNNER_REPOSITORY_STOP,
+  runnerRepositoryQuestion,
+} from "./runner-repository";
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
 import { restartForPushConflict } from "./push-conflict";
 import {
@@ -159,6 +165,8 @@ import {
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
   RunnerSetupRequired,
+  RunnerRepositoryRefused,
+  type RunnerRepositoryRefusal,
   type RunnerSetupNeed,
   placementWaitMs,
   resumeRetrySpreadMs,
@@ -679,6 +687,10 @@ export type OrchestratorOptions = {
    * and its thought. Null when a runner is usable or only offline. SQLite only.
    */
   runnerSetupNeed?: (itemId: string, agent: string, now: number) => RunnerSetupNeed | null;
+  repositoryRefusals?: (
+    itemId: string,
+    now: number,
+  ) => { repository: string; refusals: readonly RunnerRepositoryRefusal[] } | null;
   /**
    * A runner the item's owner may use for this agent now, for the line that resumes a
    * runner-setup hold. Null when none is eligible. SQLite only.
@@ -1753,6 +1765,10 @@ export class Orchestrator {
       const owner = readString(job.payload, "ownerUserId");
       if (owner !== null) this.checkRunnerSetup(owner);
     });
+    jobs.register(JOB_KIND.runnerRepositoryCheck, async (job) => {
+      this.checkRunnerRepositories(readString(job.payload, "answeredBy") ?? "paws");
+      await this.flush();
+    });
     jobs.register(JOB_KIND.start, async (job, context) => {
       if (this.waitingForRunnerSlot(job)) return;
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
@@ -2241,6 +2257,17 @@ export class Orchestrator {
         );
         return;
       }
+      const refused = repositoryRefusedIn(error);
+      if (refused && this.askRunnerRepository(item, refused)) {
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.executeQueued",
+          item.id,
+          "asked which runner may take the repository",
+          this.options.journal,
+        );
+        return;
+      }
       const resetAt = usageResetAt(error);
       if (resetAt !== null) {
         const delayMs = Math.max(0, resetAt - this.now());
@@ -2488,6 +2515,81 @@ export class Orchestrator {
     if (resumed) this.dispatch();
   }
 
+  private askRunnerRepository(item: WorkItemRecord, refused: RunnerRepositoryRefused): boolean {
+    const now = this.now();
+    const runnersUrl = this.options.runnersUrl ?? dashboardUrl("http://127.0.0.1:8787", "/runners");
+    this.settleItemAwake(item.id);
+    const asked = immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (
+        !current ||
+        current.cancelRequested ||
+        !["running", "verifying", "recovering"].includes(current.state)
+      )
+        return false;
+      const sessionId = this.activitySession(current);
+      if (sessionId === null) return false;
+      if (current.currentRunId !== null) {
+        const run = getRun(this.db, current.currentRunId);
+        if (run && (run.status === "active" || run.status === "provisioning"))
+          markRun(this.db, run.id, "lost", now);
+      }
+      ask(
+        this.db,
+        { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
+        "runner-repository",
+        runnerRepositoryQuestion(refused.repository, refused.refusals, runnersUrl),
+        {
+          reason: RUNNER_REPOSITORY_REASON,
+          options: [RUNNER_REPOSITORY_RETRY, RUNNER_REPOSITORY_STOP],
+          now,
+        },
+      );
+      return true;
+    });
+    if (!asked) return false;
+    this.options.journal?.(`item ${item.linearIdentifier} asked: ${refused.message}`);
+    void this.flush().catch((caught) => {
+      journalCaught(
+        caught,
+        "orchestrator.askRunnerRepository.flush",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+    });
+    return true;
+  }
+
+  private checkRunnerRepositories(answeredBy: string): void {
+    const refusals = this.options.repositoryRefusals;
+    if (!refusals) return;
+    const now = this.now();
+    const waiting = this.db
+      .query<{ id: string; itemId: string; sessionId: string }, []>(
+        `SELECT id,item_id AS itemId,session_id AS sessionId FROM question
+         WHERE kind='runner-repository' AND status='open' AND cancelled_at IS NULL`,
+      )
+      .all();
+    let answered = false;
+    for (const question of waiting) {
+      if (refusals(question.itemId, now) !== null) continue;
+      const outcome = answerAsked(
+        this.db,
+        {
+          sessionId: question.sessionId,
+          deliveryId: `runner-repository-allowed:${question.id}`,
+          body: RUNNER_REPOSITORY_RETRY,
+          answeredBy,
+          now,
+        },
+        questionEffects(this.db, { now, maxAwakeMs: this.options.caps?.maxAwakeMs }),
+      );
+      answered = outcome.status === "answered" || answered;
+    }
+    if (answered) this.dispatch();
+  }
+
   private runnerSetupLine(need: RunnerSetupNeed): string {
     const url = this.options.runnersUrl ?? dashboardUrl("http://127.0.0.1:8787", "/runners");
     return need.reason === "no-runner"
@@ -2654,6 +2756,8 @@ export class Orchestrator {
         }
       }
       if (!(await this.selectRepository(item))) return;
+      const refused = this.options.repositoryRefusals?.(item.id, this.now());
+      if (refused) throw new RunnerRepositoryRefused(refused.repository, refused.refusals);
       // A rule matches the issue's labels as they are when the task starts.
       await this.mergeSettingsFor(item, this.signalForItem(item.id)).catch((caughtError3) => {
         journalCaught(
@@ -5911,7 +6015,7 @@ export class Orchestrator {
     // The installation check answers its own waiting question when the App returns.
     if (open.kind === "github-auth") return "rejected";
     if (!canAnswer({ kind: open.kind }, user)) return "rejected";
-    if (open.kind === "push-outage") {
+    if (open.kind === "push-outage" || open.kind === "runner-repository") {
       const outcome = answerAsked(
         this.db,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
@@ -9216,6 +9320,14 @@ function listsChecks(report: string): boolean {
 /** The issue labels kept with the task's merge settings when it started. */
 function issueLabels(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((label) => typeof label === "string") : [];
+}
+
+function repositoryRefusedIn(error: unknown): RunnerRepositoryRefused | null {
+  for (let current = error, depth = 0; current instanceof Error && depth < 5; depth++) {
+    if (current instanceof RunnerRepositoryRefused) return current;
+    current = current.cause;
+  }
+  return null;
 }
 
 function capacityWaitIn(error: unknown): RunnerCapacityWait | null {

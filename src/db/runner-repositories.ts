@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { JOB_KIND } from "../core";
+import { enqueueJob } from "./jobs";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 
@@ -10,11 +12,19 @@ export function recordRunnerRepositories(
   repositories: readonly string[] | null,
   at: number,
 ): void {
+  const reported = repositories === null ? null : JSON.stringify(repositories);
+  const before = db
+    .query<{ host: string | null }, [string]>(
+      "SELECT repositories AS host FROM runner_repositories WHERE runner_id=?",
+    )
+    .get(runnerId);
   db.run(
     `INSERT INTO runner_repositories(runner_id,repositories,reported_at) VALUES(?,?,?)
      ON CONFLICT(runner_id) DO UPDATE SET repositories=excluded.repositories,reported_at=excluded.reported_at`,
-    [runnerId, repositories === null ? null : JSON.stringify(repositories), at],
+    [runnerId, reported, at],
   );
+  if (before === null || before.host !== reported)
+    enqueueRepositoryCheck(db, `runner:${runnerId}`, at);
 }
 
 export function setRunnerAdminRepositories(
@@ -48,6 +58,7 @@ export function setRunnerAdminRepositories(
       subject: input.runnerId,
       now: input.now,
     });
+    enqueueRepositoryCheck(db, input.userId, input.now);
   });
 }
 
@@ -63,14 +74,45 @@ export function runnerRepositoryLists(db: Database, runnerId: string): RunnerRep
   };
 }
 
+export type RunnerRepositoryRefusal = { list: "admin" | "host"; allowed: string[] };
+
+export function runnerRepositoryRefusal(
+  db: Database,
+  runnerId: string,
+  repository: string,
+): RunnerRepositoryRefusal | null {
+  const wanted = repository.toLowerCase();
+  const allows = (list: string[] | null) =>
+    list === null || list.some((name) => name.toLowerCase() === wanted);
+  const { admin, host } = runnerRepositoryLists(db, runnerId);
+  if (!allows(admin)) return { list: "admin", allowed: admin! };
+  if (!allows(host)) return { list: "host", allowed: host! };
+  return null;
+}
+
 export function runnerAllowsRepository(
   db: Database,
   runnerId: string,
   repository: string,
 ): boolean {
-  const wanted = repository.toLowerCase();
-  const allows = (list: string[] | null) =>
-    list === null || list.some((name) => name.toLowerCase() === wanted);
-  const { admin, host } = runnerRepositoryLists(db, runnerId);
-  return allows(admin) && allows(host);
+  return runnerRepositoryRefusal(db, runnerId, repository) === null;
+}
+
+function enqueueRepositoryCheck(db: Database, answeredBy: string, at: number): void {
+  const waiting = db
+    .query(
+      `SELECT 1 FROM question WHERE kind='runner-repository' AND status='open'
+       AND cancelled_at IS NULL LIMIT 1`,
+    )
+    .get();
+  const pending = db
+    .query("SELECT 1 FROM job WHERE queue=? AND status='pending' LIMIT 1")
+    .get(JOB_KIND.runnerRepositoryCheck);
+  if (!waiting || pending) return;
+  enqueueJob(db, {
+    queue: JOB_KIND.runnerRepositoryCheck,
+    payload: { answeredBy },
+    maxAttempts: 3,
+    now: at,
+  });
 }

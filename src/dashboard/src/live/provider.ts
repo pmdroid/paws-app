@@ -1849,6 +1849,7 @@ const PAWS_ANSWER_KINDS: ReadonlySet<string> = new Set([
   "clarification",
   "repository",
   "runner-wait",
+  "runner-repository",
   "time-limit",
   "closeout-help",
   "ci-help",

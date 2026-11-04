@@ -225,6 +225,7 @@ import {
   itemOwnerEligibleRunner,
   itemOwnerHasEligibleRunner,
   itemOwnerRunnerSetupNeed,
+  itemRepositoryRefusals,
   itemRepositoryRunner,
 } from "./runner-placement";
 import { startServer } from "./server";
@@ -1281,6 +1282,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
               eligibleRunner: (itemId: string, agent: string, now: number) =>
                 itemOwnerEligibleRunner(db, { itemId, agent, now }),
+              repositoryRefusals: (itemId: string, now: number) =>
+                itemRepositoryRefusals(db, { itemId, now }),
               runnerRebase: async (
                 item: WorkItemRecord,
                 heads: { head: string; main: string },

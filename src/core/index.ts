@@ -130,6 +130,8 @@ export {
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
   RunnerSetupRequired,
+  RunnerRepositoryRefused,
+  type RunnerRepositoryRefusal,
   type RunnerSetupNeed,
   TRANSIENT_RETRY_BASE_MS,
   AgentServiceError,

@@ -7,6 +7,7 @@ export type QuestionKind =
   | "clarification"
   | "repository"
   | "runner-wait"
+  | "runner-repository"
   | "closeout-help"
   | "ci-help"
   | "time-limit"

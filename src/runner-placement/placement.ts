@@ -1,4 +1,4 @@
-import { runnerAllowsRepository, teamRepositoryAllowedSql } from "../db";
+import { runnerRepositoryRefusal, teamRepositoryAllowedSql } from "../db";
 import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
@@ -39,7 +39,12 @@ import type {
   PlacementRequest,
   RunnerPlacement,
 } from "./index";
-import { eligibleRunners, runnerSetupNeed, RUNNER_ONLINE_MS } from "./eligible";
+import {
+  eligibleRunners,
+  itemRepositoryRefusals,
+  runnerSetupNeed,
+  RUNNER_ONLINE_MS,
+} from "./eligible";
 import { accountHealthBlock, BINDING_REASON_TEXT, classifyAgentFailure } from "./account-health";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
@@ -551,15 +556,19 @@ export function createRunnerPlacement(options: {
         if (helper && !helper.available)
           return reject("helper already running or no free capacity");
         if (runner.id === input.handedOverFrom) return reject("handed the session over");
-        if (
-          current.repository &&
-          !runnerAllowsRepository(
-            db,
-            runner.id,
-            `${current.repository.owner}/${current.repository.repo}`,
-          )
-        )
-          return reject("repository not allowed on this runner");
+        const refusal = current.repository
+          ? runnerRepositoryRefusal(
+              db,
+              runner.id,
+              `${current.repository.owner}/${current.repository.repo}`,
+            )
+          : null;
+        if (refusal)
+          return reject(
+            refusal.list === "admin"
+              ? "repository not allowed on the runner's page"
+              : "repository not allowed in the runner's host config",
+          );
         // Retry exclusions avoid failed hosts for unpinned work. A live run retries a fresh
         // session on its pinned host instead of moving its checkout and held slot.
         if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline)
@@ -719,6 +728,9 @@ export function createRunnerPlacement(options: {
         now: now(),
       });
       return runnerSetupNeed(db, runners, owner, input.profile.agent);
+    },
+    repositoryRefusals(input) {
+      return input.itemId ? itemRepositoryRefusals(db, { itemId: input.itemId, now: now() }) : null;
     },
     started(input) {
       immediate(db, () => {

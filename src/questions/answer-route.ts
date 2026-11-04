@@ -12,6 +12,7 @@ const PAWS_ANSWER_KINDS = [
   "clarification",
   "repository",
   "runner-wait",
+  "runner-repository",
   "time-limit",
   "closeout-help",
   "ci-help",

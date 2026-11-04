@@ -56,8 +56,15 @@ export type EligibleRunner = {
   eligible: boolean;
   reason: EligibleRunnerReason;
 };
+export type RepositoryRefusal = {
+  runnerId: string;
+  runnerName: string;
+  code: "repository_admin" | "repository_host";
+  allowed: string[];
+};
 export {
   eligibleRunners,
+  itemRepositoryRefusals,
   itemOwnerEligibleRunner,
   itemOwnerHasEligibleRunner,
   itemOwnerRunnerSetupNeed,
@@ -113,6 +120,9 @@ export type RunnerPlacement = {
    * (busy or not) or one of theirs is only offline or paused. Reads SQLite only.
    */
   setupNeed?(input: PlacementRequest): RunnerSetupNeed | null;
+  repositoryRefusals?(
+    input: PlacementRequest,
+  ): { repository: string; refusals: RepositoryRefusal[] } | null;
   started(input: {
     commandId: string;
     runnerId: string;
