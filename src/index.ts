@@ -52,6 +52,7 @@ import {
   DEFAULT_IGNORED_COMMENT_BOTS,
   ensureLayout,
   ignoredCommentBots,
+  ignoredCommentMarkers,
   LINEAR_WORKSPACE_REQUIRED,
   loadRuntime,
   resolveAccountPolicy,
@@ -1890,6 +1891,14 @@ function pullCommentFilter(
         return ignoredCommentBots(readMergeSettings(loadConfigFile(configFile)), repository);
       } catch {
         return DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase());
+      }
+    },
+    ignoredMarkers(repository) {
+      try {
+        return ignoredCommentMarkers(readMergeSettings(loadConfigFile(configFile)), repository);
+      } catch (error) {
+        journalCaught(error, "index.commentFilter.ignoredMarkers", null);
+        return [];
       }
     },
     // Read on every delivery, so a change under Settings › Merging applies to the next comment.

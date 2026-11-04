@@ -41,6 +41,7 @@ const FILTER: PullCommentFilter = {
   appId: () => "42",
   appLogin: () => "paws-test[bot]",
   ignoredBots: () => DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase()),
+  ignoredMarkers: () => [],
 };
 
 const FINDINGS = "Closeout found: `src/rank.ts:30` sorts the wrong way round.";
