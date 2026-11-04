@@ -125,7 +125,11 @@ const SAME_ITEM = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id 
 const CLAIMABLE =
   "(candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ?)))";
 const HELD_SAME_MERGE_LANE = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
-    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")} AND NOT (EXISTS (SELECT 1 FROM work_item_repository mine
+    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")}
+    AND EXISTS (SELECT 1 FROM merge_queue_entry place JOIN work_item placed ON placed.id = place.item_id
+      WHERE place.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
+        AND placed.state = 'merge_queue' AND placed.cancel_requested = 0)
+    AND NOT (EXISTS (SELECT 1 FROM work_item_repository mine
     JOIN work_item_repository other ON other.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
     WHERE mine.item_id = ${ITEM_ID}
       AND (lower(mine.owner) != lower(other.owner) OR lower(mine.repo) != lower(other.repo)))))`;
