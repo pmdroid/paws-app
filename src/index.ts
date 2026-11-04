@@ -66,6 +66,7 @@ import {
   type PawsEnv,
   type PawsPaths,
   type RuntimeConfig,
+  sweepTmpDir,
 } from "./config";
 import {
   delegationHasOpenWork,
@@ -139,6 +140,7 @@ import {
   listAppRepositories,
   createGitHubApp,
   githubHttpsUrl,
+  useGitTempDirectory,
   usePublicationRepositories,
   type GitHubBinding,
   type GitHubTokenProvider,
@@ -359,6 +361,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
   ensureLayout(paths);
+  sweepTmpDir(paths);
+  useGitTempDirectory(paths.tmpDir);
   usePublicationRepositories(paths.publicationDir);
   const db = openDatabase(paths.db);
   migrate(db);

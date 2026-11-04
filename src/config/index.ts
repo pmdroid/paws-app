@@ -25,7 +25,7 @@ export type {
 } from "./file";
 export { checkMemberVmValue, isMemberVmPool, renderMemberVmSettings } from "./member-vm";
 export type { MemberVmKey, MemberVmSize } from "./member-vm";
-export { ensureLayout, pawsPaths } from "./paths";
+export { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";
 export type { PawsPaths } from "./paths";
 export { LINEAR_WORKSPACE_REQUIRED, loadRuntime } from "./runtime";
 export type { RuntimeConfig } from "./runtime";

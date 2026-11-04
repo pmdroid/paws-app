@@ -1,7 +1,7 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { journalCaught } from "../journal";
+import { gitTempDirectory } from "./temp";
 import { GitCommandError, type GitExec } from "./types";
 
 /** A branch literally named `HEAD`, which some repositories carry by accident. */
@@ -322,7 +322,7 @@ async function publish(
   persistent?: { repository: string; stale: boolean },
 ): Promise<{ stdout: string; stderr: string }> {
   const { gitExec, credential, args, options, command, remote, operation } = call;
-  const dir = await mkdtemp(path.join(tmpdir(), "paws-publication-"));
+  const dir = await gitTempDirectory("paws-publication-");
   const repository = persistent?.repository ?? path.join(dir, "repo.git");
   const bundle = path.join(dir, "candidate.bundle");
   const commandArgs =

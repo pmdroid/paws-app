@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { controlledGit } from "./controlled-git";
 import { publicationExec } from "./publication";
+import { gitTempDirectory } from "./temp";
 import { retryGitTransport } from "./transport";
 import { GitCommandError, type GitExec } from "./types";
 
@@ -62,7 +62,7 @@ export async function withCredential<T>(
 ): Promise<T> {
   const tokenInFile = options.tokenInFile === true;
   if (/\s/.test(token)) throw new Error("refusing to pass a token that contains whitespace");
-  const dir = await mkdtemp(path.join(tmpdir(), "paws-git-"));
+  const dir = await gitTempDirectory("paws-git-");
   const helperPath = path.join(dir, "cred.sh");
   const tokenPath = path.join(dir, "token");
   const script = tokenInFile

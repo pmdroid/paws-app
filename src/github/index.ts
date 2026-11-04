@@ -119,6 +119,7 @@ export {
   pushOutageProbeDelayMs,
 } from "./transport";
 export { PUBLICATION_STAGING_FAILURE, usePublicationRepositories } from "./publication";
+export { useGitTempDirectory } from "./temp";
 
 export { closeStoppedPull } from "./stopped";
 export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";
