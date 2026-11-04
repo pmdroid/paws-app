@@ -33,6 +33,15 @@ export function branchName(itemId: string): string {
   return `paws/${itemId.toLowerCase()}`;
 }
 
+/**
+ * `refs/paws/candidates/<item>`: the head of a runner-backed item in the bare mirror, which keeps
+ * no worktree for it.
+ */
+export function candidateRef(itemId: string): string {
+  assertSafeSegment(itemId, "item id");
+  return `refs/paws/candidates/${itemId}`;
+}
+
 export function runDir(root: string, runId: string): string {
   assertSafeSegment(runId, "run id");
   return join(root, "runs", runId);

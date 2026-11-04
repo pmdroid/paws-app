@@ -103,6 +103,7 @@ export { prepareRepositorySnapshot } from "./repository-snapshot";
 export {
   assertSafeSegment,
   branchName,
+  candidateRef,
   mirrorPath,
   pawsRootFrom,
   runDir,
@@ -144,10 +145,13 @@ export {
 export {
   createWorktree,
   ensureBareMirror,
+  ensureCandidateRef,
   mirrorFiles,
+  removeCandidateRef,
   removeWorktree,
   resolveStartRef,
   worktreeMergedInto,
+  type CandidateHead,
   type Mirror,
   type Worktree,
 } from "./worktree";

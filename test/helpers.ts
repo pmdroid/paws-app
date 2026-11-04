@@ -1,6 +1,7 @@
-import { copyFileSync, mkdtempSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { candidateRef, mirrorPath } from "../src/acp";
 import { migrate, openDatabase } from "../src/db";
 import type { Database } from "bun:sqlite";
 
@@ -56,4 +57,33 @@ export async function tickWithRestarts(
     if (first?.queue === "github.merge") await jobs.tick(["github.merge"]);
   }
   return first;
+}
+
+/**
+ * A runner-backed item's head on the control plane: the bare mirror under `pawsRoot` for the
+ * repository, holding `source`'s history, with the item's candidate ref at `source`'s HEAD.
+ * `head()` reads the ref, and `adopt()` points it at `source`'s HEAD again.
+ */
+export function seedCandidate(
+  pawsRoot: string,
+  itemId: string,
+  source: string,
+  repository: { owner: string; repo: string } = { owner: "fixture", repo: "repository" },
+) {
+  const mirror = mirrorPath(pawsRoot, repository.owner, repository.repo);
+  const ref = candidateRef(itemId);
+  const git = (args: string[]) => {
+    const child = Bun.spawnSync(["/usr/bin/git", ...args], {
+      env: { PATH: "/usr/bin:/bin", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+    });
+    if (child.exitCode !== 0) throw new Error(child.stderr.toString());
+    return child.stdout.toString().trim();
+  };
+  if (!existsSync(mirror)) {
+    mkdirSync(dirname(mirror), { recursive: true });
+    git(["init", "-q", "--bare", mirror]);
+  }
+  const adopt = () => git(["--git-dir", mirror, "fetch", "-q", source, `+HEAD:${ref}`]);
+  adopt();
+  return { mirror, ref, adopt, head: () => git(["--git-dir", mirror, "rev-parse", ref]) };
 }

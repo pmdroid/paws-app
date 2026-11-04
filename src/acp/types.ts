@@ -210,11 +210,17 @@ export interface ExecuteItemOptions extends Omit<RunAgentOptions, "worktreePath"
   remoteUrl: string;
   role?: AgentRole;
   startRef?: string;
+  /**
+   * A runner-backed item: no worktree is created. Its head is its candidate ref in the bare
+   * mirror, and this directory only holds the files staged for the agent.
+   */
+  workspace?: string;
   promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
 }
 
 export interface ExecuteItemResult {
   mirrorPath: string;
+  /** The item worktree, or the staging `workspace` of a runner-backed item. */
   worktreePath: string;
   branch: string;
   run: RunAgentResult;

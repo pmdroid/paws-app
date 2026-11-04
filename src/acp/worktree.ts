@@ -4,7 +4,7 @@ import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { git } from "./git";
-import { branchName, mirrorPath, worktreePath } from "./paths";
+import { branchName, candidateRef, mirrorPath, worktreePath } from "./paths";
 
 const TRACKING_REF = "+refs/heads/*:refs/remotes/origin/*";
 const START_REFS = ["origin/main", "main", "origin/master", "HEAD"] as const;
@@ -230,6 +230,59 @@ async function addWorktree(
     throw error;
   }
   return { path, branch, mirrorPath: gitDir, itemId: options.itemId, startRef };
+}
+
+export interface CandidateHead {
+  mirrorPath: string;
+  /** `refs/paws/candidates/<item>` in the mirror. */
+  ref: string;
+  head: string;
+}
+
+/**
+ * The head of a runner-backed item, which has no worktree: its candidate ref in the bare mirror.
+ * A new ref starts where {@link createWorktree} would start the worktree: the item's branch an
+ * earlier worktree left, else `startRef`, else main. An existing ref is kept.
+ */
+export async function ensureCandidateRef(options: {
+  owner: string;
+  repo: string;
+  itemId: string;
+  pawsRoot: string;
+  /** Where a new ref starts. Missing means main; a given ref that does not exist throws. */
+  startRef?: string;
+}): Promise<CandidateHead> {
+  const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
+  const ref = candidateRef(options.itemId);
+  return onMirror(gitDir, async () => {
+    if (!(await exists(gitDir)))
+      throw new Error(`bare mirror is missing at ${gitDir}; call ensureBareMirror first`);
+    const current = await revParse(gitDir, `${ref}^{commit}`);
+    if (current) return { mirrorPath: gitDir, ref, head: current };
+    const branch = `refs/heads/${branchName(options.itemId)}`;
+    if (options.startRef && !(await revParse(gitDir, options.startRef)))
+      throw new Error(`mirror ${gitDir} has no ${options.startRef} to start the candidate from`);
+    const start = (await revParse(gitDir, branch))
+      ? branch
+      : await resolveStartRef(gitDir, options.startRef);
+    const head = start && (await revParse(gitDir, `${start}^{commit}`));
+    if (!head) throw new Error(`mirror ${gitDir} has no origin/main, main, or HEAD to start from`);
+    // An empty old value creates the ref only if it is still absent.
+    await git(["--git-dir", gitDir, "update-ref", ref, head, ""]);
+    return { mirrorPath: gitDir, ref, head };
+  });
+}
+
+/** Deletes a runner-backed item's candidate ref. */
+export async function removeCandidateRef(options: {
+  owner: string;
+  repo: string;
+  itemId: string;
+  pawsRoot: string;
+}): Promise<void> {
+  const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
+  if (!(await exists(gitDir))) return;
+  await git(["--git-dir", gitDir, "update-ref", "-d", candidateRef(options.itemId)]);
 }
 
 export async function removeWorktree(options: {

@@ -6,7 +6,7 @@ export type StartCommit =
   | { status: "remote"; head: string }
   /** Paws pushed the head to the item branch. */
   | { status: "pushed"; head: string }
-  /** The push failed, so the worktree went back to the last commit GitHub holds. */
+  /** The push failed, so the candidate ref went back to the last commit GitHub holds. */
   | { status: "fallback"; head: string; start: string; lost: string[]; error: string };
 
 /**
@@ -22,35 +22,35 @@ export class RemoteStartUnverified extends Error {
 
 /**
  * A runner's mirror fetches its start commit from GitHub, so a head that only Paws holds fails
- * every run there. Paws pushes it first; when that fails too, the worktree goes back to the PR
+ * every run there. Paws pushes it first; when that fails too, the item's candidate ref in the bare
+ * mirror goes back to the PR
  * branch head, else `wipCommit`, else the base, and the caller tells the agent what was lost.
  * A start Paws cannot establish on GitHub throws {@link RemoteStartUnverified}.
  */
 export async function ensureStartOnRemote(input: {
-  worktree: string;
+  mirror: string;
+  /** The item's candidate ref in `mirror`, `refs/paws/candidates/<item>`. */
+  ref: string;
   branch: string;
   remoteUrl: string;
   networkGit: (args: string[]) => Promise<string>;
   wipCommit?: string;
   baseSha?: string;
   /**
-   * Saves the fallback before the worktree moves, so a stop between the reset and the dispatch
+   * Saves the fallback before the candidate ref moves, so a stop between the reset and the dispatch
    * still finds the handoff for the lost commits.
    */
   persistFallback: (fallback: { head: string; start: string; lost: string[] }) => void;
   signal: AbortSignal;
 }): Promise<StartCommit> {
   const run = (args: string[]) =>
-    git(["-C", input.worktree, ...args], { signal: input.signal }).then((out) => out.trim());
+    git(["--git-dir", input.mirror, ...args], { signal: input.signal }).then((out) => out.trim());
   await run(["check-ref-format", `refs/heads/${input.branch}`]);
   if (!input.remoteUrl) throw new Error("Runner start requires a repository URL.");
-  const head = await run(["rev-parse", "HEAD"]);
+  const head = await run(["rev-parse", "--verify", `${input.ref}^{commit}`]);
   const unchanged = async () => {
-    if (
-      (await run(["rev-parse", "HEAD"])) !== head ||
-      (await run(["status", "--porcelain", "--untracked-files=no"]))
-    )
-      throw new RemoteStartUnverified(head, "the worktree changed during remote verification");
+    if ((await run(["rev-parse", "--verify", `${input.ref}^{commit}`])) !== head)
+      throw new RemoteStartUnverified(head, "the candidate changed during remote verification");
   };
   const prefix = `refs/paws/remote-start/${randomUUID()}`;
   const fetched = new Map<"branch" | "default", string>();
@@ -64,7 +64,7 @@ export async function ensureStartOnRemote(input: {
       try {
         await input.networkGit([
           "-C",
-          input.worktree,
+          input.mirror,
           "fetch",
           "--no-tags",
           "--no-write-fetch-head",
@@ -97,7 +97,7 @@ export async function ensureStartOnRemote(input: {
       try {
         await input.networkGit([
           "-C",
-          input.worktree,
+          input.mirror,
           "push",
           "--",
           input.remoteUrl,
@@ -135,16 +135,16 @@ export async function ensureStartOnRemote(input: {
       .split("\n")
       .filter(Boolean);
     await unchanged();
-    // Retain the original commits even after HEAD moves to the remote fallback.
+    // Retain the original commits even after the candidate moves to the remote fallback.
     await run(["update-ref", `refs/paws/unpublished/${head}`, head]);
     input.persistFallback({ head, start, lost });
     await unchanged();
-    // --keep refuses to overwrite tracked edits introduced after the last check.
-    await run(["reset", "--keep", start]);
+    // The old value refuses a candidate that moved after the last check.
+    await run(["update-ref", input.ref, start, head]);
     return { status: "fallback", head, start, lost, error: pushError };
   } finally {
     for (const name of ["branch", "default"])
-      await git(["-C", input.worktree, "update-ref", "-d", `${prefix}/${name}`], {
+      await git(["--git-dir", input.mirror, "update-ref", "-d", `${prefix}/${name}`], {
         signal: AbortSignal.timeout(5_000),
       }).catch(() => undefined); // an absent ref has nothing to delete
   }
