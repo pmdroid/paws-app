@@ -69,7 +69,20 @@ async function fixture() {
       env: gitEnv(token),
     });
   const persistent = path.join(store, "acme", "widgets.git");
-  return { root, store, worktree, remotes, git, commit, calls, fake, push, fetchMain, persistent };
+  return {
+    root,
+    store,
+    worktree,
+    remotes,
+    git,
+    commit,
+    calls,
+    fake,
+    publication,
+    push,
+    fetchMain,
+    persistent,
+  };
 }
 
 function bundleCreates(calls: { args: string[] }[]) {
@@ -259,4 +272,25 @@ test("a remote that is not an HTTPS GitHub repository keeps the empty temporary 
   expect(f.calls.find((call) => call.args[0] === "init")!.args.at(-1)).toContain(
     "paws-publication-",
   );
+});
+
+test("a partial-clone candidate and a fetch by object id keep the temporary repository", async () => {
+  const f = await fixture();
+  const head = await f.commit("first");
+  await f.git("config", "extensions.partialclone", "origin");
+  await f.push("paws/acme-1");
+  expect(
+    (
+      await exec("git", ["--git-dir", f.remotes[WIDGETS]!, "rev-parse", "refs/heads/paws/acme-1"])
+    ).stdout.trim(),
+  ).toBe(head);
+  expect(f.calls.find((call) => call.credentialed)!.args).toContain("--no-thin");
+  await f.git("config", "--unset", "extensions.partialclone");
+  await f.publication([...PREFIX, "fetch", WIDGETS, head], {
+    cwd: f.worktree,
+    env: gitEnv(token),
+  });
+  expect(await Bun.file(path.join(f.persistent, "HEAD")).exists()).toBe(false);
+  for (const call of f.calls.filter((entry) => entry.credentialed))
+    expect(call.args[1]).toContain("paws-publication-");
 });
