@@ -1,7 +1,6 @@
 export {
   checkRetroProfile,
   freezeRetroRun,
-  nextRetroOccurrence,
   parseRetroSettingsDraft,
   proposedRetroSettings,
   readRetroSettings,
@@ -114,3 +113,21 @@ export {
   type RetroGenerationState,
   type RetroGenerationView,
 } from "./dispatch";
+export {
+  createRetroScheduler,
+  dueRetroOccurrence,
+  nextRetroOccurrence,
+  nextRetroOccurrenceDetail,
+  resolveRetroLocalTime,
+  RETRO_SCHEDULE_JOB,
+  RETRO_SCHEDULE_STATES,
+  RETRO_SCHEDULE_TICK_MS,
+  type RetroCatalogSource,
+  type RetroLocalAdjustment,
+  type RetroOccurrence,
+  type RetroRequest,
+  type RetroScheduler,
+  type RetroScheduleState,
+  type RetroScheduleStatus,
+} from "./schedule";
+export { createRetroScheduleHttp, RETRO_RUNS_PATH, RETRO_SCHEDULE_PATH } from "./schedule-http";
