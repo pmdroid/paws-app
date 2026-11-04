@@ -88,6 +88,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/runner-repositories`                                | Repository checkout and preparation on the runner                     |
 | `src/runner-repository-access`                           | Runner repository credential access                                   |
 | `src/runner-results`                                     | Runner command results and lifecycle                                  |
+| `src/runner-retro-runtime`                               | Retro commands on the runner: admit, run, report or tear down         |
 | `src/runner-runtime`                                     | Runner agent and runtime installation                                 |
 | `src/runner-transcript-config`                           | Runner transcript configuration                                       |
 | `src/runner-transcripts`                                 | Transcript persistence, object storage and HTTP access                |

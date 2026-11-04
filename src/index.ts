@@ -219,7 +219,13 @@ import {
 } from "./runner-placement";
 import { startServer } from "./server";
 import { activeRunnerReadiness } from "./settings";
-import { createRetroSettingsHttp } from "./retros";
+import {
+  createRetroDispatcher,
+  createRetroSettingsHttp,
+  RETRO_DISPATCH_JOB,
+  RETRO_DISPATCH_TIMING,
+  type RetroDispatcher,
+} from "./retros";
 import { itemReviews } from "./dashboard";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
@@ -712,6 +718,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   };
   let runner: RunnerCoordinator | undefined;
   let runnerStopping = false;
+  let retroDispatcher: RetroDispatcher | undefined;
   const runnerReady =
     runnerConfig === null
       ? Promise.resolve(undefined)
@@ -740,12 +747,18 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           repositories: () =>
             listRepositoryCatalog(db).map((entry) => `${entry.owner}/${entry.repo}`),
           onError: () => console.error("Paws runner connection failed."),
+          retros: () => retroDispatcher?.fetch,
         }).then(async (value) => {
           if (runnerStopping) {
             await value.stop();
             throw new Error("Runner control is stopping.");
           }
           runner = value;
+          retroDispatcher = createRetroDispatcher({
+            db,
+            artifactRoot: join(paths.home, "retros"),
+            sign: value.signRetroCommand,
+          });
           return value;
         });
   if (runnerConfig !== null)
@@ -1614,6 +1627,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           ),
         ),
       );
+      created.jobs.register(RETRO_DISPATCH_JOB, async () => {
+        await runnerReady;
+        retroDispatcher?.tick();
+      });
+      enqueueJobOnce(db, {
+        queue: RETRO_DISPATCH_JOB,
+        jobKey: RETRO_DISPATCH_JOB,
+        recurringEveryMs: RETRO_DISPATCH_TIMING.tickMs,
+        now: Date.now(),
+      });
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
       enqueueJobOnce(db, {
         queue: "github.auth.recover",

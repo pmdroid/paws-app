@@ -101,3 +101,16 @@ export {
   type RetroPromptPreviewSource,
   type RetroRenderedPromptRead,
 } from "./prompt";
+export {
+  createRetroDispatcher,
+  RETRO_DISPATCH_JOB,
+  RETRO_DISPATCH_TIMING,
+  RETRO_GENERATION_STATES,
+  retroGenerationView,
+  retroRetryDelayMs,
+  retroRunnerCandidates,
+  type RetroCommandSigner,
+  type RetroDispatcher,
+  type RetroGenerationState,
+  type RetroGenerationView,
+} from "./dispatch";

@@ -232,11 +232,16 @@ export function accountAttemptsInFlight(
 ): number {
   return db
     .query<{ count: number }, [string, number]>(
-      `SELECT COUNT(*) AS count FROM runner_execution_usage u
-       JOIN runner_command_account c ON c.command_id=u.command_id
+      `SELECT COUNT(*) AS count FROM (
+         SELECT u.command_id FROM runner_execution_usage u
+         WHERE u.ended_at IS NULL AND u.started_at>=?2
+         UNION ALL
+         SELECT d.command_id FROM retro_dispatch d
+         WHERE d.released_at IS NULL AND d.created_at>=?2
+       ) a
+       JOIN runner_command_account c ON c.command_id=a.command_id
        JOIN agent_account_binding b ON b.id=?1
-       WHERE u.ended_at IS NULL AND u.started_at>=?2
-       AND ${scope === "account" ? "c.account_id=b.account_id" : "c.binding_id=b.id"}`,
+       WHERE ${scope === "account" ? "c.account_id=b.account_id" : "c.binding_id=b.id"}`,
     )
     .get(bindingId, since)!.count;
 }

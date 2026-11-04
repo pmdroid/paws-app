@@ -31,7 +31,7 @@ export function runnerHasCapacity(
   return row.occupied + additionalReservations < row.capacity;
 }
 
-/** The slots Paws may fill on a runner and the slots leased work and helpers fill now. */
+/** The slots Paws may fill on a runner and the slots leased work, helpers and retros fill now. */
 export function runnerOccupancy(
   db: Database,
   runnerId: string,
@@ -41,14 +41,15 @@ export function runnerOccupancy(
   return db
     .query<
       { capacity: number; occupied: number },
-      [string, string, number, string, string, number]
+      [string, string, number, string, string, number, string]
     >(
       `SELECT COALESCE((SELECT MIN(capacity,COALESCE(desired,16)) FROM runner_capacity WHERE runner_id=?),1) AS capacity,
      (SELECT count(*) FROM runner_work w WHERE w.runner_id=? AND ((w.ended_at IS NULL AND w.lease_until>? AND w.run_id<>?)
        OR ${TEARDOWN_UNRESOLVED})) +
-     (SELECT count(*) FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?) AS occupied`,
+     (SELECT count(*) FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?) +
+     (SELECT count(*) FROM retro_dispatch WHERE runner_id=? AND released_at IS NULL) AS occupied`,
     )
-    .get(runnerId, runnerId, runnerLeaseCutoff(now), excludeRunId, runnerId, now)!;
+    .get(runnerId, runnerId, runnerLeaseCutoff(now), excludeRunId, runnerId, now, runnerId)!;
 }
 
 export function runnerSlotsHeldBetweenCommands(

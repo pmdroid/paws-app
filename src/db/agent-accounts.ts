@@ -9,6 +9,7 @@ import {
   type RunnerAccountCapability,
   type RunnerCodingAgent,
   type RunnerCommand,
+  type RunnerRetroCommand,
 } from "../runner-protocol";
 import { TEARDOWN_UNRESOLVED } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
@@ -419,7 +420,7 @@ export function runnerAccountUnsupported(
   return null;
 }
 
-function commandAgent(command: RunnerCommand): RunnerCodingAgent | null {
+function commandAgent(command: RunnerCommand | RunnerRetroCommand): RunnerCodingAgent | null {
   if ("profile" in command) return command.profile.agent;
   if ("agent" in command) return command.agent;
   return null;
@@ -427,7 +428,7 @@ function commandAgent(command: RunnerCommand): RunnerCodingAgent | null {
 
 export function recordCommandAccount(
   db: Database,
-  command: RunnerCommand,
+  command: RunnerCommand | RunnerRetroCommand,
   at: number,
 ): CommandAccount | null {
   const agent = commandAgent(command);
@@ -626,7 +627,10 @@ export function accountSlotsInUse(
 ): number {
   return db
     .query<{ count: number }, [string, number, string | null, number]>(
-      `SELECT COUNT(*) AS count FROM runner_execution_usage u
+      `SELECT (SELECT COUNT(*) FROM retro_dispatch d
+         JOIN runner_command_account r ON r.command_id=d.command_id
+         WHERE r.account_id=?1 AND d.command_id IS NOT ?3 AND d.released_at IS NULL) +
+       (SELECT COUNT(*) FROM runner_execution_usage u
        JOIN runner_command_account a ON a.command_id=u.command_id
        LEFT JOIN runner_helper h ON h.id=u.command_id
        LEFT JOIN runner_command c ON c.id=u.command_id
@@ -637,7 +641,7 @@ export function accountSlotsInUse(
          OR (w.run_id IS NOT NULL AND ((w.ended_at IS NULL AND w.lease_until>?4)
            OR ${TEARDOWN_UNRESOLVED}))
          OR (h.id IS NULL AND c.id IS NOT NULL AND c.run_id IS NULL
-           AND u.ended_at IS NULL AND c.expires_at>?2))`,
+           AND u.ended_at IS NULL AND c.expires_at>?2))) AS count`,
     )
     .get(accountId, at, exceptCommandId, runnerLeaseCutoff(at))!.count;
 }

@@ -16,14 +16,22 @@ import {
   RunnerArtifactChunkSchema,
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
+  RunnerRetroCommandSchema,
+  RunnerRetroInputRequestSchema,
+  RunnerRetroResultSchema,
   SignedRunnerCommandSchema,
   verifyRunnerCommand,
+  verifyRunnerRetroCommand,
   type RunnerCommand,
   type RunnerArtifactChunk,
   type RunnerCommandRejection,
   type RunnerHealthResult,
   type RunnerHelperResult,
   type RunnerHostStatus,
+  type RunnerRetroCommand,
+  type RunnerRetroCommandRejection,
+  type RunnerRetroInputRequest,
+  type RunnerRetroResult,
   type RunnerInstalledAgent,
   type RunnerInstalledRuntime,
   type RunnerInstalledSkill,
@@ -159,6 +167,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   db.run(
     "CREATE TABLE IF NOT EXISTS pending_command (id TEXT PRIMARY KEY REFERENCES command_receipt(id), payload TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged IN (0,1,2))) STRICT",
   );
+  db.run(
+    "CREATE TABLE IF NOT EXISTS pending_retro_command (id TEXT PRIMARY KEY REFERENCES command_receipt(id), payload TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1))) STRICT",
+  );
+  db.run(
+    "CREATE TABLE IF NOT EXISTS retro_attempt (retro_id TEXT PRIMARY KEY, attempt INTEGER NOT NULL) STRICT",
+  );
 
   let prunedAt = Number.NEGATIVE_INFINITY;
   function pruneRetired() {
@@ -168,12 +182,17 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     prunedAt = at;
     const cutoff = at - RETIRED_RECEIPT_RETENTION_MS;
     return immediate(db, () => {
-      const commands = db.run(
-        "DELETE FROM pending_command WHERE acknowledged=2 AND id IN (SELECT id FROM command_receipt WHERE expires_at<?)",
-        [cutoff],
-      ).changes;
+      const commands =
+        db.run(
+          "DELETE FROM pending_command WHERE acknowledged=2 AND id IN (SELECT id FROM command_receipt WHERE expires_at<?)",
+          [cutoff],
+        ).changes +
+        db.run(
+          "DELETE FROM pending_retro_command WHERE delivered=1 AND id IN (SELECT id FROM command_receipt WHERE expires_at<?)",
+          [cutoff],
+        ).changes;
       const receipts = db.run(
-        "DELETE FROM command_receipt WHERE expires_at<? AND id NOT IN (SELECT id FROM pending_command)",
+        "DELETE FROM command_receipt WHERE expires_at<? AND id NOT IN (SELECT id FROM pending_command) AND id NOT IN (SELECT id FROM pending_retro_command)",
         [cutoff],
       ).changes;
       return commands + receipts;
@@ -332,6 +351,86 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     }
     return { commands: pendingCommands(), rejected, deniedRepositories: [...deniedRepositories] };
   }
+  function pendingRetroCommands(): RunnerRetroCommand[] {
+    paired();
+    return db
+      .query<{ payload: string }, [number]>(
+        "SELECT p.payload FROM pending_retro_command p JOIN command_receipt r ON r.id=p.id WHERE r.expires_at>? ORDER BY p.rowid",
+      )
+      .all(now())
+      .map((row) => RunnerRetroCommandSchema.parse(JSON.parse(row.payload)));
+  }
+  function retroCommand(id: string): RunnerRetroCommand {
+    paired();
+    identifier.parse(id);
+    const row = db
+      .query<{ payload: string }, [string]>("SELECT payload FROM pending_retro_command WHERE id=?")
+      .get(id);
+    if (!row) throw new Error("Runner retro command is unknown.");
+    return RunnerRetroCommandSchema.parse(JSON.parse(row.payload));
+  }
+  async function retroTerminal(id: string, action: "result" | "released", body: unknown) {
+    try {
+      const response = await authenticated(retroPath(id, action), "POST", body);
+      db.run("UPDATE pending_retro_command SET delivered=1 WHERE id=?", [id]);
+      return response;
+    } catch (error) {
+      if (error instanceof RunnerRequestError && error.status >= 400 && error.status < 500)
+        db.run("UPDATE pending_retro_command SET delivered=1 WHERE id=?", [id]);
+      throw error;
+    }
+  }
+  async function pollRetroCommands() {
+    const identity = paired();
+    trustedSigningKeys(identity, pins);
+    pruneRetired();
+    const response = z
+      .strictObject({ commands: z.array(z.unknown()).max(16) })
+      .parse(await authenticated("/v1/retro-commands", "GET"));
+    ensureOpen();
+    unchangedIdentity(identity);
+    const trustedKeys = trustedSigningKeys(paired(), pins);
+    const accountBindings = new Set(heldBindings().map((binding) => binding.bindingId));
+    const rejected: RunnerRetroCommandRejection[] = [];
+    for (const envelope of response.commands) {
+      const result = immediate(db, () => {
+        const verified = verifyRunnerRetroCommand(envelope, {
+          trustedKeys,
+          runnerId: identity.runnerId,
+          workspaceId: identity.workspaceId,
+          now: now(),
+          accountBindings,
+          latestAttempt: (retroId) =>
+            db
+              .query<{ attempt: number }, [string]>(
+                "SELECT attempt FROM retro_attempt WHERE retro_id=?",
+              )
+              .get(retroId)?.attempt,
+          claimCommand: (id, expiresAt) =>
+            db.run("INSERT INTO command_receipt VALUES (?,?) ON CONFLICT DO NOTHING", [
+              id,
+              expiresAt,
+            ]).changes === 1,
+        });
+        if (verified.ok) {
+          db.run("INSERT INTO pending_retro_command (id,payload) VALUES (?,?)", [
+            verified.command.id,
+            JSON.stringify(verified.command),
+          ]);
+          db.run(
+            "INSERT INTO retro_attempt VALUES (?,?) ON CONFLICT(retro_id) DO UPDATE SET attempt=MAX(attempt,excluded.attempt)",
+            [verified.command.retroId, verified.command.attempt],
+          );
+        }
+        return verified;
+      });
+      if (!result.ok && result.reason !== "replayed" && result.reason !== "stale_attempt")
+        rejected.push(result.reason);
+    }
+    return { commands: pendingRetroCommands(), rejected };
+  }
+  const retroPath = (id: string, action: string) =>
+    `/v1/retro-commands/${encodeURIComponent(id)}/${action}`;
   return {
     status,
     capacity: () => applied,
@@ -373,6 +472,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       if (previous)
         immediate(db, () => {
           db.run("DELETE FROM pending_command");
+          db.run("DELETE FROM pending_retro_command");
+          db.run("DELETE FROM retro_attempt");
           db.run("DELETE FROM command_receipt");
         });
       observedAt = 0;
@@ -780,6 +881,35 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     },
     pollCommands: () => pollCommands("/v1/commands"),
     pollHelperCommands: () => pollCommands("/v1/helper-commands"),
+    pollRetroCommands,
+    pendingRetroCommands,
+    async acknowledgeRetroCommand(id: string) {
+      const command = retroCommand(id);
+      const receipt = z
+        .strictObject({ expiresAt: z.number().int().nonnegative() })
+        .parse(await authenticated(retroPath(command.id, "ack"), "POST", {}));
+      if (receipt.expiresAt !== command.expiresAt)
+        throw new Error("Runner retro acknowledgement differs from the admitted command.");
+      return receipt;
+    },
+    async retroInput(request: RunnerRetroInputRequest): Promise<unknown> {
+      const body = RunnerRetroInputRequestSchema.parse(request);
+      retroCommand(body.commandId);
+      return authenticated(retroPath(body.commandId, "input"), "POST", body);
+    },
+    async postRetroResult(result: RunnerRetroResult) {
+      const body = RunnerRetroResultSchema.parse(result);
+      retroCommand(body.commandId);
+      return z
+        .strictObject({ duplicate: z.boolean() })
+        .parse(await retroTerminal(body.commandId, "result", body));
+    },
+    async releaseRetroCommand(id: string) {
+      const command = retroCommand(id);
+      return z
+        .strictObject({ ok: z.literal(true) })
+        .parse(await retroTerminal(command.id, "released", { reason: "teardown" }));
+    },
     async helperLease(id: string) {
       const command = helperCommand(id);
       const result = z
