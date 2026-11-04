@@ -13,6 +13,7 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
+import { workspacePolicyFiles } from "../closeout-spec";
 import { startAskTeamBridge } from "./ask-team";
 import {
   CLOSEOUT_FINISH_UNAVAILABLE,
@@ -128,19 +129,7 @@ test("the stop hook allows an empty policy and refuses a pending check", async (
   const pendingRoot = temp();
   const repo = join(pendingRoot, "repo");
   initRepo(repo);
-  writeFileSync(
-    join(repo, ".agents", "closeout.yaml"),
-    [
-      'specVersion: "0.1"',
-      "items:",
-      "  - id: test",
-      "    kind: command",
-      "    gate: beforePR",
-      '    exec: ["true"]',
-      "    timeoutSeconds: 30",
-      "",
-    ].join("\n"),
-  );
+  writeTestPolicy(repo);
   writeFileSync(join(repo, "src.txt"), "change\n");
   const pending = await hookAgainst(pendingRoot, "pending", repo);
   expect(pending.status).toBe(0);
@@ -148,6 +137,87 @@ test("the stop hook allows an empty policy and refuses a pending check", async (
     decision: "block",
     reason: "Cannot finish yet. Check test is not finished. Call get_closeout.",
   });
+});
+
+test("finish answers from recorded results while a new report would take a minute", async () => {
+  const root = temp();
+  const repo = join(root, "repo");
+  initRepo(repo);
+  writeTestPolicy(repo);
+  writeFileSync(join(repo, "src.txt"), "change\n");
+  const runDirectory = join(root, "run");
+  const socketPath = join(runDirectory, "ask-team.sock");
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  let slow = false;
+  const controller = new AbortController();
+  const bridge = await startAskTeamBridge({
+    socketPath,
+    context: { itemId: "ENG-1", runId: "slow", role: "implementer", worktreePath: repo },
+    closeoutPolicy: async () => {
+      if (slow) await new Promise((resolve) => timers.push(setTimeout(resolve, 60_000)));
+      return workspacePolicyFiles(repo);
+    },
+    commandGuard: {
+      hostAccess: true,
+      worktree: repo,
+      home: join(root, "home"),
+      pawsRoot: join(root, "paws"),
+    },
+    signal: controller.signal,
+  });
+  const notFinished = {
+    decision: "block",
+    reason: "Cannot finish yet. Check test is not finished. Call get_closeout.",
+  };
+  try {
+    await callTool(socketPath, "get_closeout", {});
+    const installed = await installCloseoutStopHook({
+      agent: "claude",
+      runDirectory,
+      socketPath,
+      sourceEnv: {},
+    });
+    const finish = async () => {
+      slow = true;
+      const started = Date.now();
+      const ran = await runScript(installed?.scriptPath ?? "");
+      expect(Date.now() - started).toBeLessThan(10_000);
+      slow = false;
+      return JSON.parse(ran.stdout) as unknown;
+    };
+    const slowPath = async () =>
+      JSON.parse(closeoutFinishLine((await bridge.closeoutReport()) ?? "")) as unknown;
+
+    expect(await finish()).toEqual(notFinished);
+    expect(await slowPath()).toEqual(notFinished);
+
+    expect(JSON.parse(await callTool(socketPath, "run_closeout", { id: "test" })).error).toBe(
+      undefined,
+    );
+    expect(await finish()).toEqual({});
+    expect(await slowPath()).toEqual({});
+
+    spawnSync("git", ["add", "src.txt"], { cwd: repo });
+    spawnSync("git", ["commit", "-m", "change"], { cwd: repo });
+    expect(await finish()).toEqual(notFinished);
+    expect(await slowPath()).toEqual(notFinished);
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+    await bridge.close();
+  }
+});
+
+test("the stop hook waits 25 seconds for Paws, inside the hook's own limit", async () => {
+  const root = temp();
+  const installed = await installCloseoutStopHook({
+    agent: "claude",
+    runDirectory: join(root, "run"),
+    socketPath: join(root, "run", "ask-team.sock"),
+    sourceEnv: {},
+  });
+  const script = readFileSync(installed?.scriptPath ?? "", "utf8");
+  expect(script).toContain("client.settimeout(25)");
+  expect(CLOSEOUT_STOP_TIMEOUT_SECONDS).toBe(30);
 });
 
 test("a dead closeout socket still refuses finish", async () => {
@@ -248,6 +318,22 @@ async function hookAgainst(
   } finally {
     await bridge.close();
   }
+}
+
+function writeTestPolicy(repo: string): void {
+  writeFileSync(
+    join(repo, ".agents", "closeout.yaml"),
+    [
+      'specVersion: "0.1"',
+      "items:",
+      "  - id: test",
+      "    kind: command",
+      "    gate: beforePR",
+      '    exec: ["true"]',
+      "    timeoutSeconds: 30",
+      "",
+    ].join("\n"),
+  );
 }
 
 function initRepo(root: string): void {

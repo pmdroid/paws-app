@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { createServer, type Server, type Socket } from "node:net";
 import { chmod, mkdir, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -371,7 +371,7 @@ async function handleConnection(
       try {
         let answer =
           options.closeout && options.allowCloseoutRun !== false
-            ? closeoutFinishLine(await options.closeout.report())
+            ? closeoutFinishLine(await finishReport(options.closeout, options.context.itemId))
             : CLOSEOUT_FINISH_UNAVAILABLE;
         if (answer === "{}" && options.pullRequest && !finish.pullRequestOpened && !finish.nudged) {
           finish.nudged = true;
@@ -553,6 +553,33 @@ async function handleConnection(
     journalCaught(error, "ask-team.handleConnection.readLine", null);
     const message = error instanceof Error ? error.message : String(error);
     if (!socket.destroyed) socket.end(`${JSON.stringify({ id, error: message })}\n`);
+  }
+}
+
+/** The stop hook waits 25 seconds; Paws answers well inside that. */
+const FINISH_ANSWER_MS = 10_000;
+
+/**
+ * The report behind `closeout_finish`, from the results this session already recorded. A new
+ * report loads the policy again, a runner round trip that took about 44 seconds under load, so it
+ * runs only when nothing is recorded yet.
+ */
+async function finishReport(closeout: CloseoutSession, itemId: string): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), FINISH_ANSWER_MS);
+  });
+  try {
+    const recorded = await Promise.race([closeout.recorded(), late]);
+    if (recorded !== "late") return recorded ?? (await closeout.report());
+    const last = closeout.lastRecorded();
+    if (last === undefined) return await closeout.report();
+    journal(
+      `item ${itemId} closeout_finish took over ${FINISH_ANSWER_MS / 1000} seconds: answered from the last recorded Closeout report`,
+    );
+    return last;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

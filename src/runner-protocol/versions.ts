@@ -85,3 +85,8 @@ export const BLOBLESS_SNAPSHOT_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
 /** First runner release whose mirrors are blobless partial clones that prefetch snapshot blobs. */
 export const BLOBLESS_MIRROR_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
 export const REPOSITORY_COMMAND_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
+/**
+ * First runner release whose `closeout_finish` answers from the Closeout results it recorded, and
+ * whose stop hook waits 25 seconds for that answer.
+ */
+export const CLOSEOUT_FINISH_RECORDED_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
