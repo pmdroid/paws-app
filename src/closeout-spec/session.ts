@@ -196,6 +196,15 @@ export function createCloseoutSession(
   let chain: Promise<unknown> = Promise.resolve();
   let listed: Prepared | undefined;
   let last: { report: string; head: string | undefined } | undefined;
+  const running = new Map<string, Promise<{ ok: boolean; text: string }>>();
+  const once: Once = (id, work) => {
+    let run = running.get(id);
+    if (!run) {
+      run = work().finally(() => running.delete(id));
+      running.set(id, run);
+    }
+    return run;
+  };
 
   const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
     const run = chain.then(work, work);
@@ -291,17 +300,18 @@ export function createCloseoutSession(
         last = { report: boundedReport(report), head: checkedHead };
         return last.report;
       }),
-    run: (id) =>
-      exclusive(async () => {
+    run: async (id) => {
+      const ready = await exclusive(async () => {
         const prepared = await prepare();
         listed = prepared;
         if (prepared.kind === "blocked") return prepared.message;
         if (prepared.kind === "empty") return `No closeout check ${id}. Call get_closeout.`;
         if (options.rulesFirst) await judgeRules(prepared);
-        const broken = ruleBreak(prepared);
-        if (broken) return broken;
-        return runId(workspace, prepared, memory, id, options);
-      }),
+        return ruleBreak(prepared) ?? prepared;
+      });
+      if (typeof ready === "string") return ready;
+      return runId(workspace, ready, memory, id, options, once);
+    },
     recorded: async () => {
       let prepared = listed;
       // A blocked listing may be a policy load that failed; only a new report can clear it.
@@ -607,12 +617,18 @@ function runnable(state: ItemMemory | undefined, max: number | null): boolean {
   return status !== "passed" && status !== "exhausted";
 }
 
+type Once = (
+  id: string,
+  work: () => Promise<{ ok: boolean; text: string }>,
+) => Promise<{ ok: boolean; text: string }>;
+
 async function runId(
   workspace: string,
   prepared: Extract<Prepared, { kind: "ready" }>,
   memory: Map<string, ItemMemory>,
   id: string,
   options: CloseoutSessionOptions,
+  once: Once,
 ): Promise<string> {
   const { policy, required } = prepared;
   if (policy.rules.some((rule) => rule.id === id)) {
@@ -645,11 +661,13 @@ async function runId(
       if (statusOf(memory.get(step.id), 2) === "exhausted") {
         return `Check ${step.id} is exhausted. Stop retrying and report the blocker.`;
       }
-      const setup = await execute(workspace, step, memory, options, 2);
+      const setup = await once(step.id, () => execute(workspace, step, memory, options, 2));
       if (!setup.ok) return setup.text;
     }
   }
-  const result = await execute(workspace, item, memory, options, item.kind === "setup" ? 2 : max);
+  const result = await once(item.id, () =>
+    execute(workspace, item, memory, options, item.kind === "setup" ? 2 : max),
+  );
   return result.text;
 }
 
