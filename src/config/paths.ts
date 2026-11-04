@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 /** Directories under `~/.paws`. The developer's own checkout is never one of these. */
@@ -15,6 +15,8 @@ export type PawsPaths = {
   evidenceDir: string;
   /** Registered agent skill bundles, `skills/<name>/<version>/`. */
   skillsDir: string;
+  /** Temporary directories for credentialed Git, on the same disk as the rest of Paws's data. */
+  tmpDir: string;
 };
 
 export function pawsPaths(home: string): PawsPaths {
@@ -30,6 +32,7 @@ export function pawsPaths(home: string): PawsPaths {
     logsDir: join(home, "logs"),
     evidenceDir: join(home, "evidence"),
     skillsDir: join(home, "skills"),
+    tmpDir: join(home, "tmp"),
   };
 }
 
@@ -45,9 +48,21 @@ export function ensureLayout(paths: PawsPaths): void {
     paths.logsDir,
     paths.evidenceDir,
     paths.skillsDir,
+    paths.tmpDir,
   ];
   for (const dir of dirs) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     chmodSync(dir, 0o700);
+  }
+}
+
+const TMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Remove entries under `tmpDir` older than 24 hours, left behind by a process that did not finish. */
+export function sweepTmpDir(paths: PawsPaths, now = Date.now()): void {
+  for (const name of readdirSync(paths.tmpDir)) {
+    const entry = join(paths.tmpDir, name);
+    if (now - lstatSync(entry).mtimeMs > TMP_MAX_AGE_MS)
+      rmSync(entry, { recursive: true, force: true });
   }
 }
