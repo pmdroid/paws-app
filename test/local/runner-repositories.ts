@@ -35,6 +35,18 @@ export async function probeRunnerRepositories(
     GIT_COMMITTER_EMAIL: "fixture@example.invalid",
   };
   const invoke = (args: string[]) => git(args, { env });
+  async function cloneSnapshot(snapshot: { bundle: string; blobs?: string }, tree: string) {
+    assert(snapshot.blobs, "the snapshot carries its blobs beside a filtered bundle");
+    await invoke(["init", "-q", tree]);
+    await invoke(["-C", tree, "config", "extensions.partialClone", "origin"]);
+    await invoke(["-C", tree, "config", "remote.origin.url", "/nonexistent/snapshot"]);
+    await invoke(["-C", tree, "config", "remote.origin.promisor", "true"]);
+    const pack = join(tree, ".git", "objects", "pack", "snapshot.pack");
+    writeFileSync(pack, readFileSync(snapshot.blobs));
+    await invoke(["-C", tree, "index-pack", pack]);
+    writeFileSync(join(tree, ".git", "objects", "pack", "snapshot.promisor"), "");
+    await invoke(["-C", tree, "fetch", "-q", snapshot.bundle, "+refs/heads/*:refs/snapshot/*"]);
+  }
   const source = join(root, "source");
   const origin = join(root, "origin.git");
   await invoke(["init", "-b", "main", source]);
@@ -191,7 +203,7 @@ export async function probeRunnerRepositories(
   assert.equal(statSync(prepared.bundle).mode & 0o777, 0o600);
   assert.equal(calls[0]?.token, "fixture-read");
   const tree = join(root, "worker-checkout");
-  await invoke(["clone", "--no-checkout", prepared.bundle, tree]);
+  await cloneSnapshot(prepared, tree);
   await invoke(["-C", tree, "checkout", "-b", "candidate", baseSha]);
   assert.equal(readFileSync(join(tree, "base.txt"), "utf8"), "base\n");
   observe(
@@ -366,7 +378,7 @@ export async function probeRunnerRepositories(
   };
   const rebaseSnapshot = await repositories.prepare(rebase);
   const rebaseTree = join(root, "rebase-checkout");
-  await invoke(["clone", "--no-checkout", rebaseSnapshot.bundle, rebaseTree]);
+  await cloneSnapshot(rebaseSnapshot, rebaseTree);
   await invoke(["-C", rebaseTree, "checkout", "-b", "candidate", sha]);
   await invoke(["-C", rebaseTree, "rebase", updatedSha]);
   const rebasedSha = (await invoke(["-C", rebaseTree, "rev-parse", "HEAD"])).trim();

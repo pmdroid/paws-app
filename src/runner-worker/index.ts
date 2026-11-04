@@ -17,6 +17,7 @@ import {
 import {
   closeSync,
   chmodSync,
+  copyFileSync,
   cpSync,
   existsSync,
   readdirSync,
@@ -75,6 +76,7 @@ import {
   readRunnerJob,
   readRunnerJobInputs,
   type RunnerJobInputs,
+  runnerRepositoryBlobsPath,
   runnerRepositoryBundlePath,
   runnerSessionBundlePath,
   runnerTaskRepositoryPath,
@@ -160,6 +162,7 @@ export {
 export interface RunnerWorkerOptions {
   job: RunnerJob;
   repositoryBundle?: string;
+  repositoryBlobs?: string;
   repositorySnapshot?: string;
   /** The session snapshot a moved run restores, when the runner could download it. */
   sessionBundle?: string;
@@ -654,6 +657,43 @@ async function reviewCommandTurn(input: {
   return { ...ended, stopReason: "end_turn" };
 }
 
+const SNAPSHOT_REFS = "refs/paws/snapshot";
+
+async function partialSnapshotClone(
+  bundle: string,
+  blobs: string,
+  worktree: string,
+  invokeGit: (args: string[]) => Promise<string>,
+): Promise<void> {
+  await invokeGit(["-c", "core.hooksPath=/dev/null", "init", "-q", "--", worktree]);
+  for (const [key, value] of [
+    ["core.repositoryformatversion", "1"],
+    ["extensions.partialClone", "origin"],
+    ["remote.origin.url", "/nonexistent/paws-snapshot-has-no-remote"],
+    ["remote.origin.promisor", "true"],
+    ["remote.origin.partialclonefilter", "blob:none"],
+  ] as const)
+    await invokeGit(["-C", worktree, "config", key, value]);
+  const pack = join(worktree, ".git", "objects", "pack", "snapshot.pack");
+  copyFileSync(blobs, pack, constants.COPYFILE_EXCL);
+  chmodSync(pack, 0o400);
+  await invokeGit(["-C", worktree, "index-pack", pack]);
+  writeFileSync(join(worktree, ".git", "objects", "pack", "snapshot.promisor"), "", {
+    flag: "wx",
+    mode: 0o400,
+  });
+  await invokeGit([
+    "-C",
+    worktree,
+    "fetch",
+    "-q",
+    "--no-tags",
+    "--",
+    bundle,
+    `+refs/heads/*:${SNAPSHOT_REFS}/*`,
+  ]);
+}
+
 export async function executeRunnerCommand(
   options: RunnerWorkerOptions,
 ): Promise<RunnerWorkerResult> {
@@ -668,6 +708,7 @@ export async function executeRunnerCommand(
     !Number.isSafeInteger(options.resultsGid) ||
     options.resultsGid < 0 ||
     repository !== (options.repositoryBundle !== undefined) ||
+    (options.repositoryBlobs !== undefined && !repository) ||
     (task && command.repository !== undefined) !== (options.repositorySnapshot !== undefined)
   )
     throw new Error("Invalid runner worker configuration");
@@ -826,26 +867,37 @@ export async function executeRunnerCommand(
     if (resumed) {
       if (!lstatSync(worktree).isDirectory()) throw new Error("Runner workspace is missing");
     } else if (repository) {
-      const bundle = openSync(
-        options.repositoryBundle!,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
-      try {
-        const info = fstatSync(bundle);
-        if (!info.isFile() || info.size === 0 || info.size > 536_870_912)
-          throw new Error("Invalid runner repository bundle");
-      } finally {
-        closeSync(bundle);
+      for (const path of [options.repositoryBundle!, options.repositoryBlobs]) {
+        if (path === undefined) continue;
+        const bundle = openSync(
+          path,
+          constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        );
+        try {
+          const info = fstatSync(bundle);
+          if (!info.isFile() || info.size === 0 || info.size > 536_870_912)
+            throw new Error("Invalid runner repository bundle");
+        } finally {
+          closeSync(bundle);
+        }
       }
-      await invokeGit([
-        "-c",
-        "core.hooksPath=/dev/null",
-        "clone",
-        "--no-checkout",
-        "--",
-        options.repositoryBundle!,
-        worktree,
-      ]);
+      if (options.repositoryBlobs)
+        await partialSnapshotClone(
+          options.repositoryBundle!,
+          options.repositoryBlobs,
+          worktree,
+          invokeGit,
+        );
+      else
+        await invokeGit([
+          "-c",
+          "core.hooksPath=/dev/null",
+          "clone",
+          "--no-checkout",
+          "--",
+          options.repositoryBundle!,
+          worktree,
+        ]);
       const base = (
         await invokeGit([
           "-C",
@@ -872,7 +924,7 @@ export async function executeRunnerCommand(
         env,
       );
       options.signal?.throwIfAborted();
-      await invokeGit(["-C", worktree, "remote", "remove", "origin"]);
+      if (!options.repositoryBlobs) await invokeGit(["-C", worktree, "remote", "remove", "origin"]);
       const main = command.repository.mainSha ?? base;
       if (
         (await invokeGit(["-C", worktree, "rev-parse", "--verify", `${main}^{commit}`])).trim() !==
@@ -880,6 +932,13 @@ export async function executeRunnerCommand(
       )
         throw new Error("Runner repository main mismatch");
       await invokeGit(["-C", worktree, "update-ref", "refs/remotes/origin/main", main]);
+      if (options.repositoryBlobs)
+        for (const ref of (
+          await invokeGit(["-C", worktree, "for-each-ref", "--format=%(refname)", SNAPSHOT_REFS])
+        )
+          .split("\n")
+          .filter(Boolean))
+          await invokeGit(["-C", worktree, "update-ref", "-d", ref]);
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }
@@ -2012,6 +2071,7 @@ export async function runRunnerWorker(options: {
     ...(job.command.type === "run" || job.command.type === "review"
       ? {
           repositoryBundle: runnerRepositoryBundlePath(spool, options.executionId),
+          repositoryBlobs: runnerRepositoryBlobsPath(spool, options.executionId),
           sessionBundle: runnerSessionBundlePath(spool, options.executionId),
         }
       : job.command.type === "task" && job.command.repository

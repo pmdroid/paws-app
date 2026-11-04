@@ -157,6 +157,7 @@ export async function probeRunnerRebaseReturn(
     const result = await execute({
       job: current,
       repositoryBundle: snapshot.bundle,
+      ...(snapshot.blobs ? { repositoryBlobs: snapshot.blobs } : {}),
       outputDirectory,
       workRoot: join(root, "work"),
       home,

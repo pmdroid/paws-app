@@ -4,6 +4,7 @@ export {
   readRunnerJob,
   readRunnerJobInputs,
   type RunnerJobInputs,
+  runnerRepositoryBlobsPath,
   runnerRepositoryBundlePath,
   runnerSessionBundlePath,
   runnerTaskRepositoryPath,
