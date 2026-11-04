@@ -20,6 +20,8 @@ import {
   extendJobLease,
   getJob,
   insertQueuedItem,
+  joinMergeQueue,
+  leaveMergeQueue,
   listJobs,
   migrate,
   openDatabase,
@@ -57,6 +59,13 @@ function claim(
   leaseMs = 5_000,
 ) {
   return claimNextJob(db, { workerId, leaseMs, now: clock.now(), queues });
+}
+
+function holdMergeQueuePlace(db: ReturnType<typeof openDatabase>, clock: FakeClock, id: string) {
+  beginImplementRun(db, id, clock.now());
+  applyWorkItemEvent(db, id, "turn_ended");
+  applyWorkItemEvent(db, id, "closeout_accepted");
+  joinMergeQueue(db, { itemId: id, repository: "acme/one", now: clock.now() });
 }
 
 describe("job queue", () => {
@@ -353,10 +362,25 @@ describe("job queue", () => {
     insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     bindRepo(db, "eng-1", "acme", "one");
     bindRepo(db, "eng-2", "Acme", "ONE");
+    holdMergeQueuePlace(db, clock, "eng-1");
     enqueueMerge(db, clock, "eng-1");
     enqueueMerge(db, clock, "eng-2");
     expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
     expect(claim(db, clock, [JOB_KIND.merge])).toBeNull();
+  });
+
+  test("a merge job whose item waits outside the merge queue does not hold the lane", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    bindRepo(db, "eng-1", "acme", "one");
+    bindRepo(db, "eng-2", "acme", "one");
+    holdMergeQueuePlace(db, clock, "eng-1");
+    leaveMergeQueue(db, "eng-1");
+    enqueueMerge(db, clock, "eng-1");
+    enqueueMerge(db, clock, "eng-2");
+    expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
+    expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-2" });
   });
 
   test("a start job is claimed while a merge job is running", () => {
