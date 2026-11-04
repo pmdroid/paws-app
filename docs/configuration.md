@@ -37,7 +37,7 @@ A public dashboard also needs `PAWS_TLS_KEY_PATH` and `PAWS_TLS_CERT_PATH`. When
 
 The awake-time cap counts active agent turns and Closeout checks. Waiting does not spend it: queued items, runner capacity waits, questions, pauses, usage limits, retry backoff, Closeout waiting on CI or a runner, and the merge queue all count zero. Time-limit messages report active agent and Closeout time separately from waiting.
 
-Each request from a person gets the full cap: a reply in the Linear session, and a time-limit answer that comes with new instructions, reset the clock to zero and the cap to `max_awake_ms`, and Paws says so in the session. Paws' own restarts (CI repair, review comments, conflicts, Closeout findings, recovery) share the budget of the request they serve. A plain Continue at the time limit adds one hour instead.
+Each request from a person gets the full cap: a reply in the Linear session, and a Continue or typed answer to the time-limit question, reset the clock to zero and the cap to `max_awake_ms`, and Paws says so in the session. Paws' own restarts (CI repair, review comments, conflicts, Closeout findings, recovery) share the budget of the request they serve.
 
 ### `[merge]`
 

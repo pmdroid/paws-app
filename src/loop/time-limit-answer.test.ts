@@ -73,19 +73,28 @@ function reply(
   );
 }
 
-test("Continue at the time limit gives the agent another hour and resumes it", () => {
+test("Continue at the time limit starts a fresh budget and resumes it", () => {
   const { clock, db, item } = askedAtTimeLimit();
   expect(reply(db, "Continue", clock.now()).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "queued",
-    maxAwakeMs: 31 * MINUTE + 60 * MINUTE,
+    awakeMs: 0,
+    maxAwakeMs: 3 * 60 * MINUTE,
   });
+  const fresh = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("fresh-budget:"));
+  expect(fresh.map((row) => row.payload)).toEqual([
+    {
+      sessionId: "ses",
+      kind: "thought",
+      body: "Starting on your request with a fresh 3-hour time limit.",
+    },
+  ]);
   expect(listJobs(db).find((job) => job.queue === "run.resume")?.payload).toMatchObject({
     itemId: item.id,
     reason: "answer",
   });
   accrueAwake(db, item.id, clock.mono(), clock.now());
-  clock.advance(30 * MINUTE);
+  clock.advance(170 * MINUTE);
   expect(accrueAwake(db, item.id, clock.mono(), clock.now())).toMatchObject({
     capped: false,
     item: { state: "queued" },
@@ -125,7 +134,8 @@ test("Continue while the stopped run is still finishing queues one fenced restar
   expect(reply(db, "Continue", clock.now(), (id) => id === runId).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "queued",
-    maxAwakeMs: 31 * MINUTE + 60 * MINUTE,
+    awakeMs: 0,
+    maxAwakeMs: 3 * 60 * MINUTE,
   });
   expect(listJobs(db).some((job) => job.queue === "run.resume")).toBe(true);
 });
@@ -140,6 +150,7 @@ test("the time-limit question for accepted work offers Merge, Continue and Stop"
   expect(JSON.parse(question.options)).toEqual(["Merge the accepted work", "Continue", "Stop"]);
   expect(question.body).toContain("Stop ends the task without merging");
   expect(question.body).toContain("its pull request is not closed");
+  expect(question.body).toContain("Continue starts the agent on a fresh time limit");
 });
 
 test("Merge the accepted work at the time limit goes to the merge queue without a turn", () => {
@@ -160,7 +171,7 @@ test("Merge the accepted work at the time limit goes to the merge queue without 
   ).toEqual([{ itemId: item.id, summary: "Closeout accepted.", head: "accepted" }]);
 });
 
-test("Continue with new instructions at the time limit starts a fresh budget instead of adding an hour", () => {
+test("Continue with new instructions at the time limit starts a fresh budget", () => {
   const { clock, db, item } = askedAtTimeLimit();
   expect(reply(db, "Continue, but fix the acme lint first", clock.now()).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({ awakeMs: 0, maxAwakeMs: 3 * 60 * MINUTE });

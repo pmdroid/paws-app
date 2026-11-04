@@ -549,8 +549,8 @@ export function markCloseoutAccepted(db: Database, id: string, head: string): vo
   db.run("UPDATE work_item SET accepted_head = ? WHERE id = ?", [head, id]);
 }
 
-/** A Continue answer to the time-limit question gives the agent more awake time. */
-export function extendAwakeCap(db: Database, id: string, extraMs = TIME_LIMIT_EXTENSION_MS): void {
+/** Resuming accepted work paused at the time limit gives the agent more awake time. */
+function extendAwakeCap(db: Database, id: string, extraMs = TIME_LIMIT_EXTENSION_MS): void {
   db.run("UPDATE work_item SET max_awake_ms = MAX(max_awake_ms, awake_ms) + ? WHERE id = ?", [
     extraMs,
     id,
