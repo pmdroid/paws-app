@@ -71,3 +71,9 @@ export {
   type MergeWait,
   type MergeWaitReason,
 } from "./wait";
+export {
+  RUNNER_REBASE_PLACEMENT_MS,
+  type RunnerRebase,
+  type RunnerRebaseOutcome,
+  type RunnerRebaseRequest,
+} from "./runner-rebase";

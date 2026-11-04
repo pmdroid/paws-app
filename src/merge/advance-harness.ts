@@ -37,6 +37,7 @@ import {
 } from "../github";
 import { advanceMerge, type MergeCapabilities } from "./advance";
 import type { RiskApproval } from "./mergeable";
+import type { RunnerRebase } from "./runner-rebase";
 import { returnQueuedConflicts } from "./queue-conflicts";
 import type { MergeStep } from "./step";
 
@@ -172,6 +173,8 @@ export async function mergeHarness(
     /** Held open while a squash is in flight; the squash goes on when it settles. */
     squashGate: null as Promise<void> | null,
     squashing: false,
+    runnerRebase: undefined as RunnerRebase | undefined,
+    commitEnv: undefined as Record<string, string> | undefined,
   };
   /** Tasks the lane published, in order: every lane attempt past the dependency check. */
   const publishedIds: string[] = [];
@@ -452,7 +455,10 @@ export async function mergeHarness(
           worktree: item.worktree,
           branchKey: id,
           summary: "Closeout accepted.",
-          commit: { title: `${id} change` },
+          commit: {
+            title: `${id} change`,
+            ...(state.commitEnv ? { env: state.commitEnv } : {}),
+          },
         };
       },
       settings: async () => ({
@@ -485,6 +491,7 @@ export async function mergeHarness(
         };
       },
       completed: () => completed.push(id),
+      ...(state.runnerRebase ? { runnerRebase: state.runnerRebase } : {}),
     };
   }
 

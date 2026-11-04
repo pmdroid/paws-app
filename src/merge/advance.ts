@@ -24,7 +24,6 @@ import {
 } from "../db";
 import {
   readPullFacts,
-  rebaseOntoMain,
   squashPull,
   type GitExec,
   type GitHubBinding,
@@ -52,6 +51,7 @@ import {
 import type { RebaseConflict } from "./budget";
 import { mainMoved as checkQueueBehind } from "./queue-conflicts";
 import { ciFixes, rebaseBudgetFor } from "./returns";
+import { rebaseOnRunner, type RunnerRebase } from "./runner-rebase";
 import {
   laneTurn,
   serialMergeStep,
@@ -96,6 +96,7 @@ export type MergeCapabilities = OrderCapabilities & {
     item: WorkItemRecord,
   ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null | "unknown">;
   completed(): void;
+  runnerRebase?: RunnerRebase;
 };
 
 /**
@@ -200,8 +201,13 @@ export async function advanceMerge(
         }
       : {}),
   };
+  let read: PullFacts | null = null;
   const turn = await laneTurn({
-    read: () => readPullFacts(lane),
+    read: async () => {
+      const facts = await readPullFacts(lane);
+      read = facts.kind === "facts" ? facts : null;
+      return facts;
+    },
     facts: (facts) =>
       mergeFacts(
         db,
@@ -211,7 +217,7 @@ export async function advanceMerge(
         mergeSettings.mainMoved,
         { head: published.head, approval: riskApproval },
       ),
-    rebase: () => rebaseOntoMain(lane),
+    rebase: () => rebaseOnRunner(lane, { itemId: item.id, facts: read, runner: caps.runnerRebase }),
     squash: async (head, facts) => {
       const squashed = await squashPull(
         {

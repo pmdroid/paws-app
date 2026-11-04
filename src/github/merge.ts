@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { acquireOperationToken } from "./auth/provider";
@@ -7,6 +7,7 @@ import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, gitFailureReason, redact, withCredential } from "./git";
 import { mainOverlap, readUpToDateRule } from "./overlap";
+import { patchIds } from "./patch-id";
 import { pushDenial, pushWithLease } from "./push";
 import { pushOutageCause } from "./transport";
 import { waitForMergeReadiness, type Readiness } from "./readiness";
@@ -170,6 +171,60 @@ export async function rebaseOntoMain(input: SerialMergeInput): Promise<RebaseRes
   return { rebased: true, branch, base: pushed.base, head: pushed.head };
 }
 
+export async function adoptRunnerRebase(
+  input: SerialMergeInput,
+  rebased: { main: string; head: string; newHead: string },
+): Promise<RebaseResult> {
+  const branch = laneBranch(input);
+  if (typeof branch !== "string") return { rebased: false, result: branch };
+  if (input.isCancelled?.()) return { rebased: false, result: cancelled(branch) };
+  const gitExec = input.gitExec ?? defaultGitExec();
+  const token = await operationToken(input, "push");
+  input.onCredential?.("push", token);
+  const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
+  await fetchRef(
+    input.worktree,
+    url,
+    token,
+    gitExec,
+    `+refs/heads/${branch}:${RUNNER_REBASE_REF}`,
+    input.sleep,
+  );
+  const refuse = (message: string): RebaseResult => {
+    journal(`item ${input.issue} refuses the runner's rebase ${rebased.newHead}: ${message}`);
+    return {
+      rebased: false,
+      result: {
+        merged: false,
+        outcome: "rebase_failed",
+        branch,
+        base: rebased.main,
+        message: `runner rebase refused: ${message}`,
+      },
+    };
+  };
+  const fetched = await git(input.worktree, ["rev-parse", RUNNER_REBASE_REF], gitExec);
+  if (fetched !== rebased.newHead) return refuse(`${branch} is at ${fetched}`);
+  const descends = await git(
+    input.worktree,
+    ["merge-base", "--is-ancestor", rebased.main, rebased.newHead],
+    gitExec,
+  ).then(
+    () => true,
+    () => false,
+  );
+  if (!descends) return refuse(`it does not descend from main ${rebased.main}`);
+  const oldBase = await git(input.worktree, ["merge-base", rebased.head, rebased.main], gitExec);
+  const [before, after] = await Promise.all([
+    patchIds(input.worktree, `${oldBase}..${rebased.head}`),
+    patchIds(input.worktree, `${rebased.main}..${rebased.newHead}`),
+  ]);
+  if (before.length === 0 || before.join("\n") !== after.join("\n"))
+    return refuse("its patch-ids differ from the accepted head's");
+  await git(input.worktree, ["reset", "-q", "--hard", rebased.newHead], gitExec);
+  return { rebased: true, branch, base: rebased.main, head: rebased.newHead };
+}
+
 /**
  * Squash-merge the pull request only if main is still the `base` the facts were read against, CI and
  * review threads for `head` are still ready, and GitHub still carries `head`. GitHub's expected-head guard covers the pull request head only, so
@@ -262,6 +317,8 @@ export async function squashPull(
     summary,
   };
 }
+
+const RUNNER_REBASE_REF = "refs/paws/runner-rebase";
 
 function laneBranch(input: SerialMergeInput): string | SerialMergeResult {
   if (!Number.isInteger(input.prNumber) || input.prNumber < 1)
@@ -364,11 +421,22 @@ export async function fetchUpstreamMain(input: FetchUpstreamMainInput): Promise<
   return git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
 }
 
-async function fetchMain(
+function fetchMain(
   worktree: string,
   url: string,
   token: string,
   gitExec: GitExec,
+  sleep?: (ms: number) => Promise<void>,
+): Promise<void> {
+  return fetchRef(worktree, url, token, gitExec, `+refs/heads/main:${UPSTREAM_MAIN_REF}`, sleep);
+}
+
+async function fetchRef(
+  worktree: string,
+  url: string,
+  token: string,
+  gitExec: GitExec,
+  refspec: string,
   sleep?: (ms: number) => Promise<void>,
 ): Promise<void> {
   await withCredential(
@@ -376,10 +444,10 @@ async function fetchMain(
     gitExec,
     async (helper) => {
       try {
-        await helper.exec(
-          [...helper.argsPrefix, "fetch", url, `+refs/heads/main:${UPSTREAM_MAIN_REF}`],
-          { cwd: worktree, env: helper.env },
-        );
+        await helper.exec([...helper.argsPrefix, "fetch", url, refspec], {
+          cwd: worktree,
+          env: helper.env,
+        });
       } catch (error) {
         throw new Error(`fetch failed: ${gitFailureReason(token, error)}`, { cause: error });
       }
