@@ -176,7 +176,16 @@ async function fixture() {
     for (let index = 0; index < 1000 && !ready(); index++) await delay(10);
     expect(ready()).toBe(true);
   };
-  return { baseSha, remote, command, remoteRef, execute, until };
+  const commitOn = async (from: string, ref: string, file: string) => {
+    await git(["-C", source, "checkout", "-q", "--detach", from]);
+    writeFileSync(join(source, file), file);
+    await git(["-C", source, "add", file]);
+    await git(["-C", source, "commit", "-qm", `Add ${file}`], { env });
+    const sha = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+    await git(["-C", source, "push", "-q", "--force", remote, `${sha}:${ref}`]);
+    return sha;
+  };
+  return { baseSha, remote, command, remoteRef, execute, until, commitOn };
 }
 
 const working: FakeScript["steps"][number] = {
@@ -267,5 +276,60 @@ test.skipIf(!linux)(
       .split("\n");
     expect(subjects).toEqual(["Add the findings contract", "initial"]);
     expect(subjects).not.toContain(CHECKPOINT_COMMIT_MESSAGE);
+  },
+);
+
+test.skipIf(!linux)(
+  "a checkpoint the agent rebased onto main restores on its own commits instead of being dropped",
+  async () => {
+    const f = await fixture();
+    const branchHead = await f.commitOn(f.baseSha, `refs/heads/${BRANCH}`, "branch.txt");
+    const main = await f.commitOn(f.baseSha, "refs/heads/main", "main.txt");
+    const repository = {
+      owner: "acme",
+      repo: "repo",
+      remoteUrl: "https://github.com/acme/repo.git",
+      baseSha: branchHead,
+      mainSha: main,
+    };
+    let ask!: () => void;
+    const asked = new Promise<void>((resolve) => (ask = resolve));
+    const first = await f.execute(f.command({ repository }), [working, { type: "hang" }], {
+      checkpointIntervalMs: 3_600_000,
+      async checkpoint(sequence, signal) {
+        if (sequence > 1)
+          await new Promise((_, reject) => signal.addEventListener("abort", reject));
+        await asked;
+      },
+    });
+    await f.until(() => first.events().includes(WORKING));
+    await git(["-C", first.checkout, "reset", "-q", "--hard", main], { env });
+    writeFileSync(join(first.checkout, "branch.txt"), "branch.txt");
+    await git(["-C", first.checkout, "add", "branch.txt"], { env });
+    await git(["-C", first.checkout, "commit", "-qm", "Rebase the branch work onto main"], {
+      env,
+    });
+    const rebased = (await git(["-C", first.checkout, "rev-parse", "HEAD"])).trim();
+    writeFileSync(join(first.checkout, "ui.tsx"), "<Findings />\n");
+    ask();
+    await first.running;
+    const saved = first.checkpoints().find((event) => event.reason === "stop")!.sha!;
+    await first.pushCheckpoint(saved);
+    expect(
+      git(["--git-dir", f.remote, "merge-base", "--is-ancestor", branchHead, saved]),
+    ).rejects.toThrow();
+
+    const stop = new AbortController();
+    const second = await f.execute(
+      f.command({ repository, restoreCheckpoint: { sha: saved, branch: BRANCH } }),
+      [working, { type: "hang" }],
+      { checkpointIntervalMs: 3_600_000, signal: stop.signal },
+    );
+    await f.until(() => second.events().includes(WORKING));
+    expect((await git(["-C", second.checkout, "rev-parse", "HEAD"])).trim()).toBe(rebased);
+    expect((await git(["-C", second.checkout, "status", "--porcelain"])).trim()).toBe("?? ui.tsx");
+    expect(await f.remoteRef(`refs/heads/${BRANCH}`)).toBe(branchHead);
+    stop.abort();
+    await second.running.catch(() => undefined);
   },
 );

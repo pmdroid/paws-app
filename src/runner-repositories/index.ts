@@ -4,6 +4,7 @@ import {
   assertDescendsFromAny,
   candidateBases,
   checkpointRef,
+  checkpointStart,
   commitCoauthorTrailers,
   commitIdentityEnv,
   validateCommitAttribution,
@@ -422,7 +423,11 @@ export function createRunnerRepositories(options: {
             )
           ).trim();
           if (saved !== restore.sha) throw new Error("Assigned checkpoint is unavailable");
-          await invoke(["--git-dir", mirror, "merge-base", "--is-ancestor", base, saved], signal);
+          await checkpointStart(
+            (args) => invoke(["--git-dir", mirror, ...args], signal),
+            saved,
+            main ? [base, main] : [base],
+          );
         }
         const snapshot = join(
           options.root,

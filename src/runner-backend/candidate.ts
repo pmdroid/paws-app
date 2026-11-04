@@ -16,7 +16,6 @@ export async function fetchRunnerCandidate(input: {
   mainSha?: string;
   candidateSha: string;
   branch: string;
-  ref?: string;
   remoteUrl: string;
   networkGit: (args: string[]) => Promise<string>;
   signal: AbortSignal;
@@ -49,7 +48,7 @@ export async function fetchRunnerCandidate(input: {
       "--no-write-fetch-head",
       "--",
       input.remoteUrl,
-      `${input.ref ?? `refs/heads/${input.branch}`}:${scratch}`,
+      `refs/heads/${input.branch}:${scratch}`,
     ]);
     input.signal.throwIfAborted();
     if ((await run(["rev-parse", "--verify", `${scratch}^{commit}`])).trim() !== input.candidateSha)

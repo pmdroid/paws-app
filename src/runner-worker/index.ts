@@ -46,6 +46,7 @@ import {
   validateCandidateAttribution,
   assertDescendsFromAny,
   candidateBases,
+  checkpointStart,
   CHECKPOINT_COMMIT_MESSAGE,
   ArtifactRejectedError,
   commitCheckpoint,
@@ -985,9 +986,13 @@ export async function executeRunnerCommand(
           ).trim() !== restore.sha
         )
           throw new Error("Runner checkpoint is missing");
-        await invokeGit(["-C", worktree, "merge-base", "--is-ancestor", base, restore.sha]);
+        const start = await checkpointStart(
+          (args) => invokeGit(["-C", worktree, ...args]),
+          restore.sha,
+          command.repository.mainSha ? [base, command.repository.mainSha] : [base],
+        );
         await invokeGit(["-C", worktree, "read-tree", "-u", "--reset", restore.sha]);
-        await invokeGit(["-C", worktree, "reset", "-q", base]);
+        await invokeGit(["-C", worktree, "reset", "-q", start]);
         restoredCheckpoint = true;
       }
       if (options.repositoryBlobs)
