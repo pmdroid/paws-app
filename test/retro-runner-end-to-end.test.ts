@@ -107,7 +107,10 @@ function runnerDaemon(control: { dispatcher: Dispatcher }, clock: { now: number 
   return { daemon, calls };
 }
 
-function runnerHost(root: string, options: { crash?: boolean } = {}) {
+function runnerHost(
+  root: string,
+  options: { crash?: boolean; failStart?: boolean; stopFailures?: number } = {},
+) {
   const spool = {
     root: join(root, "spool"),
     runnerUid: process.getuid!(),
@@ -143,10 +146,13 @@ function runnerHost(root: string, options: { crash?: boolean } = {}) {
     }),
   );
   const starts: string[] = [];
+  const stops: string[] = [];
+  let stopFailures = options.stopFailures ?? 0;
   const finished = new Set<string>();
   const broker = {
     async start(id: string) {
       starts.push(id);
+      if (options.failStart) throw new Error("worker start failed");
       const outputDirectory = join(results.root, id);
       mkdirSync(outputDirectory, { mode: 0o750 });
       chmodSync(outputDirectory, 0o750);
@@ -197,10 +203,13 @@ function runnerHost(root: string, options: { crash?: boolean } = {}) {
       finished.add(id);
       return { alreadyAdmitted: false };
     },
-    async stop() {},
+    async stop(id: string) {
+      stops.push(id);
+      if (stopFailures-- > 0) throw new Error("termination timed out");
+    },
     alive: (id: string) => !finished.has(id),
   };
-  return { spool, results, broker, starts };
+  return { spool, results, broker, starts, stops };
 }
 
 test.skipIf(!nonRootLinux)(
@@ -295,6 +304,45 @@ test.skipIf(!nonRootLinux)(
       diagnostic: "failed",
       retry: null,
     });
+    await runtime.tick();
+    expect(host.starts).toHaveLength(1);
+    await runtime.stop();
+  },
+);
+
+test.skipIf(!nonRootLinux)(
+  "a failed admission whose termination fails retries teardown before releasing the slot",
+  async () => {
+    const w = world({ retries: 0 });
+    const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
+    roots.push(root);
+    addRunner(w.db, { id: "R1" });
+    w.db.run("UPDATE runner SET last_seen_at=? WHERE id='R1'", [w.clock.now]);
+    const control = { dispatcher: w.open(w.db) };
+    control.dispatcher.tick();
+    const host = runnerHost(root, { failStart: true, stopFailures: 1 });
+    const { daemon, calls } = runnerDaemon(control, w.clock);
+    const errors: string[] = [];
+    const runtime = await openRunnerRetroRuntime({
+      root: join(root, "retro"),
+      daemon,
+      spool: host.spool,
+      results: host.results,
+      broker: host.broker,
+      now: () => w.clock.now,
+      onError: (error) => errors.push(error.message),
+    });
+    await runtime.tick();
+    expect(errors).toEqual(["worker start failed", "termination timed out"]);
+    expect(runtime.status().active).toMatchObject([{ phase: "preparing" }]);
+    expect(calls).toEqual(["ack", "input:digest", "input:prompt"]);
+    expect(control.dispatcher.generation("r1")).toMatchObject({ state: "generating" });
+
+    await runtime.tick();
+    expect(host.stops).toHaveLength(2);
+    expect(calls).toEqual(["ack", "input:digest", "input:prompt", "released"]);
+    expect(runtime.status().active).toEqual([]);
+    expect(control.dispatcher.generation("r1")).toMatchObject({ state: "failed", retry: null });
     await runtime.tick();
     expect(host.starts).toHaveLength(1);
     await runtime.stop();

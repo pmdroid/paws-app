@@ -161,7 +161,10 @@ export async function openRunnerRetroRuntime(options: {
 
   async function advance(row: Row) {
     const command = commandOf(row);
-    if (row.phase === "running") {
+    if (row.phase === "preparing") {
+      await settleTurn(row, command);
+      row = reread(row.id);
+    } else if (row.phase === "running") {
       const deadline =
         (row.started_at ?? now()) +
         command.executionLimit.activeMinutes * 60_000 +
@@ -209,9 +212,14 @@ export async function openRunnerRetroRuntime(options: {
       db.run("UPDATE retro_execution SET phase='running', started_at=? WHERE id=?", [now(), id]);
     } catch (error) {
       journalCaught(error, "runner-retro-runtime.admit.start", null);
-      await broker.stop(id);
-      phase(id, "releasing");
       report(error);
+      try {
+        await broker.stop(id);
+        phase(id, "releasing");
+      } catch (stopError) {
+        journalCaught(stopError, "runner-retro-runtime.admit.stop", null);
+        report(stopError);
+      }
     }
   }
 
