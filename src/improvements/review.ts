@@ -280,16 +280,22 @@ export function improvementDetail(
     entry.improvements.push(other.improvement.id);
     known.set(key, entry);
   }
+  const evidence = evidenceOf(db, reviewer, item);
+  const visibleRefs = new Set(
+    item.sourceKind === "daily_finding"
+      ? item.members.map((member) => `review_finding:${member.key}`)
+      : evidence.map((entry) => entry.ref),
+  );
   return {
     item: improvementView(db, item),
-    proposals: listImprovementProposals(db, improvementId).map(
-      ({ improvementId: _id, contentSha256: _sha, ...proposal }) => proposal,
-    ),
+    proposals: listImprovementProposals(db, improvementId)
+      .filter((proposal) => proposal.evidence.every((ref) => visibleRefs.has(ref)))
+      .map(({ improvementId: _id, contentSha256: _sha, ...proposal }) => proposal),
     decisions: listImprovementDecisions(db, improvementId).map(
       ({ improvementId: _id, ...decision }) => decision,
     ),
     criteria: listImprovementCriteria(db, improvementId),
-    evidence: evidenceOf(db, reviewer, item),
+    evidence,
     destinations: improvementDestinations(db, reviewer, item.improvement.repository),
     candidates: [...known.values()].slice(0, IMPROVEMENT_REVIEW_LIMITS.candidates),
   };
@@ -416,7 +422,11 @@ export async function decideInboxItem(
           message: "Linear is unavailable. Your decision was not saved; try again.",
         };
       }
-      if (linked === null)
+      const readableTeams =
+        reviewer.role === "admin"
+          ? listWorkspaceRepositories(db, reviewer.workspaceId).map((entry) => entry.teamId)
+          : reviewer.teamIds;
+      if (linked === null || !readableTeams.includes(linked.teamId))
         return {
           status: "invalid",
           reason: "issue_not_found",
@@ -429,8 +439,7 @@ export async function decideInboxItem(
           message:
             "That issue belongs to a team outside this repository's mapping. Choose another issue or create one.",
           item: improvementView(db, first),
-          issue: linked,
-        } as ImprovementDecisionOutcome;
+        };
       if (linked.state === "closed" && intent.allowClosed !== true)
         return {
           status: "conflict",

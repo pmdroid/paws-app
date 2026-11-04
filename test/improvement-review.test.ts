@@ -465,7 +465,16 @@ describe("improvement decisions", () => {
     expect(listImprovementDeliveries(w.db, id)).toEqual([]);
     w.lookup.setUnavailable(false);
     expect((await decide({ kind: "link", issue: "PAS-404" })).body.reason).toBe("issue_not_found");
-    expect((await decide({ kind: "link", issue: "OPS-7" })).body.reason).toBe("team_mismatch");
+    const hidden = await decide({ kind: "link", issue: "OPS-7" });
+    expect(hidden.body).toMatchObject({ reason: "issue_not_found" });
+    expect(JSON.stringify(hidden.body)).not.toContain("team-b");
+    const mismatch = await w.api(
+      "admin",
+      `/api/improvements/${id}/decision`,
+      accept(1, { kind: "link", issue: "OPS-7" }),
+    );
+    expect(mismatch.body.reason).toBe("team_mismatch");
+    expect(mismatch.body.issue).toBeUndefined();
     const closed = await decide({ kind: "link", issue: "PAS-61" });
     expect([closed.status, closed.body.reason]).toEqual([409, "issue_closed"]);
     const linked = await decide({ kind: "link", issue: "PAS-60" });

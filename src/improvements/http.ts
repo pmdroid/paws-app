@@ -90,6 +90,8 @@ export function createImprovementsHttp(options: {
     });
 
   async function readBody(request: Request): Promise<unknown> {
+    if (Number(request.headers.get("content-length") ?? 0) > BODY_LIMIT)
+      throw new RangeError("too large");
     const body = await request.text();
     if (body.length > BODY_LIMIT) throw new RangeError("too large");
     return JSON.parse(body);

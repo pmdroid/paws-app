@@ -143,16 +143,18 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
         lastSeenAt: f.last.at,
       }));
     } else {
-      const visible = proposal.evidence.every((ref) => {
-        const [, retroId, evidenceId] = ref.split(":");
-        const repository = retroEvidence(retroId ?? "").get(evidenceId ?? "");
-        return (
-          repository !== undefined &&
-          allowedRepository(access, repository) &&
-          (access.retroEvidence === undefined ||
-            access.retroEvidence(retroId!)?.has(evidenceId!) === true)
-        );
-      });
+      const visible =
+        proposal.evidence.length > 0 &&
+        proposal.evidence.every((ref) => {
+          const [, retroId, evidenceId] = ref.split(":");
+          const repository = retroEvidence(retroId ?? "").get(evidenceId ?? "");
+          return (
+            repository !== undefined &&
+            allowedRepository(access, repository) &&
+            (access.retroEvidence === undefined ||
+              access.retroEvidence(retroId!)?.has(evidenceId!) === true)
+          );
+        });
       if (!visible) return [];
     }
     return [
