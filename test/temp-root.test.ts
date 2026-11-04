@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sweepStaleRoots } from "./temp-root.ts";
+import { sweepStaleRoots } from "./temp-root";
 
 test("tests commit with the same git identity on every machine", () => {
   const repo = mkdtempSync(join(tmpdir(), "git-identity-"));
