@@ -1,4 +1,4 @@
-import { journal, journalCaught } from "../journal";
+import { journal, journalCaught, startPhaseClock } from "../journal";
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -783,6 +783,7 @@ export function createRemoteAgentRunner(options: {
         limit: UsageLimit | undefined,
         move: HandoverMove,
       ): Promise<RunAgentResult> => {
+        const clock = startPhaseClock({ ids: { item: itemId, run: input.runId }, now });
         input.signal?.throwIfAborted();
         if (!input.profile) throw new Error("Remote agent profile is required");
         // A handover outlives this call: after a restart the run still avoids the runner it left.
@@ -914,6 +915,8 @@ export function createRemoteAgentRunner(options: {
               )
             : await select(itemId, placementRequest, limit);
         const selected = attached?.selected ?? chosen!;
+        const phase = attached || input.prepareOnly ? () => {} : clock;
+        phase("placement");
         const sessionBusy =
           session !== undefined &&
           chosen?.offered.includes(session.runnerId) === true &&
@@ -936,6 +939,8 @@ export function createRemoteAgentRunner(options: {
           transcriptBytes += Buffer.byteLength(line);
           if (transcriptBytes > 16_777_216) throw new Error("Remote transcript exceeds limit");
           appendFileSync(transcript, line, { mode: 0o600 });
+          if (event.type === "session_update" && event.update.sessionUpdate === "tool_call")
+            phase("first_tool_call");
           await input.onEvent?.(event, origin);
         };
         try {
@@ -1155,6 +1160,7 @@ export function createRemoteAgentRunner(options: {
                 !taskScope && input.role === "implementer" && input.networkGit
                   ? await remoteStart(scoped, input.networkGit)
                   : undefined;
+              phase("start_commit");
               // A runner command does not carry the caller's session, so a resume replays.
               const replayed = input.resume?.replayPrompt ?? input.prompt;
               const prompt = lostNote ? `${lostNote}\n\n${replayed}` : replayed;
@@ -1203,6 +1209,7 @@ export function createRemoteAgentRunner(options: {
                 prepared.prompt.length > 65_536
                   ? options.inputs!.stagePrompt(commandId, prepared.prompt)
                   : undefined;
+              phase("prompt");
               // A run that leaves its pinned runner may continue its saved agent session there.
               let restorePlan: SessionRestorePlan | undefined =
                 !taskScope &&
@@ -1569,6 +1576,7 @@ export function createRemoteAgentRunner(options: {
                   throw new RunnerCapacityWait(error.runnerIds);
                 throw error;
               }
+              phase("issue");
               for (const notice of runtimeNotices)
                 await emit({ type: "progress", text: `${notice}\n` });
               const name = (id: string) =>

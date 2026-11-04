@@ -156,6 +156,7 @@ export {
 } from "./hooks";
 
 export { journal, journalCaught, journalItemId, journalRejection, setJournalSink } from "./journal";
+export { startPhaseClock } from "./start-phases";
 export {
   HIGH_RISK_GLOBS_MAX,
   HIGH_RISK_PATHS_FILE,
