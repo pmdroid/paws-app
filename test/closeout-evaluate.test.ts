@@ -631,36 +631,18 @@ describe("closeout evaluate", () => {
     expectSchema(decision);
   });
 
-  test("an absent policy blocks without requirements or a digest", () => {
+  test("an absent policy accepts without checks and says so", () => {
     const decision = run(absentPolicy(), [commandRecord("check", ["true"], { exitCode: 1 })]);
-    expect(decision.decision).toBe("blocked");
-    expect(decision.message).toBe("no closeout policy");
+    expect(decision.decision).toBe("accepted");
     expect(decision.policy).toEqual({ path: null, digest: null, absent: true });
     expect(decision.items).toEqual([]);
-    expect(decisionExit(decision.decision)).toBe(3);
-    expectSchema(decision);
-  });
-
-  test("a global policy warns and still judges", () => {
-    const decision = run(
-      repo({
-        source: "global",
-        items: [command("check", ["true"])],
-      }),
-      [],
-    );
-    expect(decision.decision).toBe("blocked");
-    expect(decision.policy).toEqual({
-      path: "~/.agents/closeout.yaml",
-      digest: DIGEST,
-      absent: false,
-    });
     expect(decision.warnings).toEqual([
       {
-        code: "global-policy",
-        message: "Using ~/.agents/closeout.yaml because origin/main has no closeout policy.",
+        code: "no-policy",
+        message: "origin/main has no .agents/closeout.yaml, so Closeout ran no checks.",
       },
     ]);
+    expect(decisionExit(decision.decision)).toBe(0);
     expectSchema(decision);
   });
 

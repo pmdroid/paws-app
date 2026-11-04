@@ -1,6 +1,6 @@
 # How Closeout runs
 
-Closeout checks a candidate before Paws opens or merges its pull request. The checks and their retry limits come from the repository's `.agents/closeout.yaml`, or from a [local Closeout policy](local-closeout.md).
+Closeout checks a candidate before Paws opens or merges its pull request. The checks and their retry limits come from the repository's `.agents/closeout.yaml`, or from a [local Closeout policy](local-closeout.md). A repository with neither has no Closeout checks: Closeout accepts the candidate and says so, and the merge lane still waits for CI, reviews and branch protection.
 
 Each candidate goes through Closeout twice:
 

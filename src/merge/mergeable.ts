@@ -85,6 +85,7 @@ export function closeoutAccepted({
   recheckDigest,
 }: MergeFacts): boolean {
   if (accept === null || accept.head !== head) return false;
+  if (policyDigest === "") return true;
   if (accept.policyDigest === null || policyDigest === null) return false;
   if (accept.policyDigest === policyDigest) return true;
   return (

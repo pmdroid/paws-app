@@ -15,7 +15,6 @@ export {
   type GitReader,
 } from "./git";
 export {
-  GLOBAL_POLICY_CODE,
   loadCommitPolicy,
   loadOriginMainRootFiles,
   loadPolicy,
