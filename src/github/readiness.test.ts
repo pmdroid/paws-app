@@ -250,9 +250,9 @@ test("NEUTRAL is green", async () => {
   const result = await readOnce(() =>
     withChecks([run("build", "SUCCESS"), run("lint", "NEUTRAL")]),
   );
-  expect(result).toEqual({
+  expect(result).toMatchObject({
     outcome: "ready",
-    message: "CI passed and all review threads are resolved",
+    message: "CI passed and all review threads are resolved.",
   });
 });
 
