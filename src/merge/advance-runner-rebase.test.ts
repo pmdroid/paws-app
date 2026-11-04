@@ -134,4 +134,18 @@ describe("advanceMerge rebases on a runner", () => {
     expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
     expect(fallbacks()).toEqual([]);
   });
+
+  test("stopping the item while the runner head is checked stops the lane without the fallback", async () => {
+    const h = await start({ settings: { mainMoved: "ci" } });
+    const item = await h.addItem("ENG-1");
+    await h.moveMain("side.txt", "side\n");
+    h.state.runnerRebase = async (id, heads) => {
+      const pushed = await runnerRebase(h, id, heads);
+      h.state.publication.abort(new Error("item stopped"));
+      return { outcome: "rebased", head: pushed };
+    };
+    await expect(h.pass("ENG-1")).rejects.toThrow("item stopped");
+    expect(await h.git(item.worktree, "rev-parse", "HEAD")).toBe(item.accepted);
+    expect(fallbacks()).toEqual([]);
+  });
 });

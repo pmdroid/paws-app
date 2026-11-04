@@ -415,13 +415,18 @@ async function rebaseOnRunner(
     };
   let reason = asked.outcome === "failed" ? asked.reason : "";
   if (asked.outcome === "rebased") {
-    const adopted = await adoptRunnerRebase(lane, {
-      head: pull.head,
-      base: pull.base,
-      rebased: asked.head,
-    }).catch((error: unknown) => ({
-      refused: error instanceof Error ? error.message : String(error),
-    }));
+    const adopted = await adoptRunnerRebase(
+      lane,
+      {
+        head: pull.head,
+        base: pull.base,
+        rebased: asked.head,
+      },
+      signal,
+    ).catch((error: unknown) => {
+      if (signal.aborted) throw error;
+      return { refused: error instanceof Error ? error.message : String(error) };
+    });
     if (!("refused" in adopted)) return adopted;
     reason = `refused ${asked.head.slice(0, 7)}: ${adopted.refused}`;
   }

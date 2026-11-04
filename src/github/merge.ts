@@ -176,11 +176,14 @@ const RUNNER_REBASED_REF = "refs/paws/runner-rebased";
 export async function adoptRunnerRebase(
   input: SerialMergeInput,
   heads: { head: string; base: string; rebased: string },
+  signal: AbortSignal,
 ): Promise<RebaseResult | { refused: string }> {
   const branch = laneBranch(input);
   if (typeof branch !== "string") return { rebased: false, result: branch };
   if (input.isCancelled?.()) return { rebased: false, result: cancelled(branch) };
   const gitExec = input.gitExec ?? defaultGitExec();
+  const run = async (args: string[]) =>
+    (await gitExec(args, { cwd: input.worktree, env: gitEnv(), signal })).stdout.trim();
   const token = await operationToken(input, "merge");
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
   await withCredential(
@@ -189,45 +192,50 @@ export async function adoptRunnerRebase(
     (helper) =>
       helper.exec(
         [...helper.argsPrefix, "fetch", url, `+refs/heads/${branch}:${RUNNER_REBASED_REF}`],
-        { cwd: input.worktree, env: helper.env },
+        { cwd: input.worktree, env: helper.env, signal },
       ),
     { sleep: input.sleep },
   ).catch((error: unknown) => {
+    signal.throwIfAborted();
     throw new Error(`fetch failed: ${gitFailureReason(token, error)}`, { cause: error });
   });
-  const fetched = await git(input.worktree, ["rev-parse", RUNNER_REBASED_REF], gitExec);
+  const fetched = await run(["rev-parse", RUNNER_REBASED_REF]);
   if (fetched !== heads.rebased) return { refused: `the branch is at ${fetched.slice(0, 7)}` };
-  const descends = await git(
-    input.worktree,
-    ["merge-base", "--is-ancestor", heads.base, heads.rebased],
-    gitExec,
-  ).then(
+  const descends = await run(["merge-base", "--is-ancestor", heads.base, heads.rebased]).then(
     () => true,
     () => false,
   );
+  signal.throwIfAborted();
   if (!descends) return { refused: `it does not descend from main ${heads.base.slice(0, 7)}` };
-  const oldBase = await git(input.worktree, ["merge-base", heads.base, heads.head], gitExec);
+  const oldBase = await run(["merge-base", heads.base, heads.head]);
   const [before, after] = await Promise.all([
-    patchId(input.worktree, oldBase, heads.head),
-    patchId(input.worktree, heads.base, heads.rebased),
+    patchId(input.worktree, oldBase, heads.head, signal),
+    patchId(input.worktree, heads.base, heads.rebased, signal),
   ]);
   if (before !== after) return { refused: "its patch-id differs from the accepted head's" };
-  await git(input.worktree, ["reset", "--hard", heads.rebased], gitExec);
+  await run(["reset", "--hard", heads.rebased]);
   return { rebased: true, branch, base: heads.base, head: heads.rebased };
 }
 
-async function patchId(worktree: string, from: string, to: string): Promise<string> {
+async function patchId(
+  worktree: string,
+  from: string,
+  to: string,
+  signal: AbortSignal,
+): Promise<string> {
   const env = gitEnv();
   const diff = spawn(
     "git",
     ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", from, to],
-    { cwd: worktree, env, stdio: ["ignore", "pipe", "pipe"] },
+    { cwd: worktree, env, signal, stdio: ["ignore", "pipe", "pipe"] },
   );
   const id = spawn("git", ["patch-id", "--stable"], {
     cwd: worktree,
     env,
+    signal,
     stdio: ["pipe", "pipe", "pipe"],
   });
+  id.stdin.on("error", () => diff.kill());
   diff.stdout.pipe(id.stdin);
   let stdout = "";
   id.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
@@ -237,6 +245,7 @@ async function patchId(worktree: string, from: string, to: string): Promise<stri
       child.once("close", resolve);
     });
   const [diffCode, idCode] = await Promise.all([exited(diff), exited(id)]);
+  signal.throwIfAborted();
   if (diffCode !== 0 || idCode !== 0)
     throw new GitCommandError(["patch-id", from, to], `git exited ${diffCode ?? idCode}`);
   return stdout.trim().split(" ")[0] ?? "";
