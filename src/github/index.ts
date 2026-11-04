@@ -48,7 +48,13 @@ export { checkRepositoryWriteAccess, checkRepositoryReadAccess } from "./reposit
 export type { FetchLike } from "./client";
 export { branchForIssue, fixesLine, githubHttpsUrl, pullRequestBody } from "./branch";
 export { openPullRequest, publishAccepted, pushBranch } from "./pulls";
-export { fetchUpstreamMain, readPullFacts, rebaseOntoMain, squashPull } from "./merge";
+export {
+  adoptRunnerRebase,
+  fetchUpstreamMain,
+  readPullFacts,
+  rebaseOntoMain,
+  squashPull,
+} from "./merge";
 export { repositoriesRequiringUpToDate } from "./overlap";
 export {
   PULL_MERGEABLE_READS,

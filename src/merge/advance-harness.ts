@@ -35,7 +35,7 @@ import {
   type GitHubClient,
   type GitHubResponse,
 } from "../github";
-import { advanceMerge, type MergeCapabilities } from "./advance";
+import { advanceMerge, type MergeCapabilities, type RunnerRebase } from "./advance";
 import type { RiskApproval } from "./mergeable";
 import { returnQueuedConflicts } from "./queue-conflicts";
 import type { MergeStep } from "./step";
@@ -172,6 +172,9 @@ export async function mergeHarness(
     /** Held open while a squash is in flight; the squash goes on when it settles. */
     squashGate: null as Promise<void> | null,
     squashing: false,
+    runnerRebase: null as
+      | ((id: string, heads: { head: string; main: string }) => Promise<RunnerRebase>)
+      | null,
   };
   /** Tasks the lane published, in order: every lane attempt past the dependency check. */
   const publishedIds: string[] = [];
@@ -485,6 +488,7 @@ export async function mergeHarness(
         };
       },
       completed: () => completed.push(id),
+      ...(state.runnerRebase ? { runnerRebase: (_, heads) => state.runnerRebase!(id, heads) } : {}),
     };
   }
 
@@ -541,6 +545,7 @@ export async function mergeHarness(
     db,
     clock,
     github,
+    root,
     bare,
     state,
     settings,

@@ -8,7 +8,7 @@ import type { MergeWait } from "./wait";
 export type LaneActions = {
   read(): Promise<PullFactsRead>;
   facts(pull: PullFacts): MergeFacts;
-  rebase(): Promise<RebaseResult>;
+  rebase(pull: PullFacts): Promise<RebaseResult>;
   squash(expectedHead: string, pull: PullFacts): Promise<SerialMergeResult>;
 };
 
@@ -71,7 +71,7 @@ export async function laneTurn(actions: LaneActions): Promise<LaneTurn> {
     return { kind: "stopped", result };
   }
   if (verdict.block !== "behind_main") return { kind: "blocked", block: verdict.block, pull };
-  const rebased = await actions.rebase();
+  const rebased = await actions.rebase(pull);
   if (!rebased.rebased) return { kind: "stopped", result: rebased.result };
   return {
     kind: "rebased",

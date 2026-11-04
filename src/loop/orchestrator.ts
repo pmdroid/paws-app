@@ -461,6 +461,7 @@ import {
   type MergeWait,
   type OrderCapabilities,
   type RebaseConflict,
+  type RunnerRebase,
 } from "../merge";
 import {
   createAcpActivityReporter,
@@ -650,6 +651,10 @@ export type OrchestratorOptions = {
     agent: string,
     now: number,
   ) => { id: string; name: string } | null;
+  runnerRebase?: (
+    item: WorkItemRecord,
+    heads: { head: string; main: string },
+  ) => Promise<RunnerRebase>;
   clock?: Clock;
   caps?: { maxAwakeMs: number };
   retryBaseMs?: number;
@@ -4556,6 +4561,7 @@ export class Orchestrator {
       {
         ...this.orderCapabilities(itemId),
         publish: (item) => this.publishForMerge(item, run),
+        ...(this.options.runnerRebase ? { runnerRebase: this.options.runnerRebase } : {}),
         settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
         policyDigests,
         packages: (repository) => this.repositoryPackages(repository),
