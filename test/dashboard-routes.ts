@@ -228,6 +228,28 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     sample: "/api/retros/schedule",
   }),
   api("POST", "/api/retros/runs", "delegated", "src/retros", { sample: "/api/retros/runs" }),
+  api("GET", "/api/retros/history", "delegated", "src/retros", { sample: "/api/retros/history" }),
+  api("GET", "/api/retros/reports/:id", "delegated", "src/retros", {
+    sample: "/api/retros/reports/{run}",
+  }),
+  ...["digest", "report", "prompt", "items/:item/evidence"].map((file) =>
+    api("GET", `/api/retros/reports/:id/${file}`, "delegated", "src/retros", {
+      via: "/api/retros/reports/:id",
+    }),
+  ),
+  api("GET", "/api/improvements", "delegated", "src/improvements", {
+    sample: "/api/improvements",
+  }),
+  api("*", "/api/improvements/*", "delegated", "src/improvements", {
+    via: "/api/improvements/",
+  }),
+  api("GET", "/api/improvements/:id", "delegated", "src/improvements", {
+    sample: "/api/improvements/{run}",
+  }),
+  api("POST", "/api/improvements/:id/decision", "delegated", "src/improvements", {
+    sample: "/api/improvements/{run}/decision",
+  }),
+  api("POST", "/api/improvements/:id/deliveries/:delivery/retry", "delegated", "src/improvements"),
   api("GET", "/api/runners", "delegated", "src/runner-control", { sample: "/api/runners" }),
   ...[
     ["POST", "/api/runners/enrollments"],

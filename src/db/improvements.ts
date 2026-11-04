@@ -76,6 +76,8 @@ export type ImprovementDelivery = {
   improvementId: string;
   operation: ImprovementDeliveryOperation;
   targetIssueId: string | null;
+  targetTeamId: string | null;
+  content: Record<string, unknown> | null;
   state: ImprovementDeliveryState;
   claimOwner: string | null;
   claimExpiresAt: number | null;
@@ -103,7 +105,7 @@ export type ImprovementOutcomeRecord = ImprovementOutcome & {
 };
 
 export type ImprovementIntent =
-  | { kind: "create" }
+  | { kind: "create"; teamId?: string }
   | { kind: "link"; issueId: string; addEvidenceComment?: boolean };
 
 export type ImprovementReview =
@@ -389,6 +391,8 @@ export function decideImprovement(
     review: ImprovementReview;
     actor: string;
     now: number;
+    content?: Record<string, unknown>;
+    criterion?: string;
   },
 ): ImprovementDecisionResult {
   return immediate(db, () => {
@@ -461,9 +465,33 @@ export function decideImprovement(
     );
     if (review.kind === "accept") {
       const operation = review.intent.kind === "create" ? "create_issue" : "link_issue";
-      insertDelivery(db, input.improvementId, operation, intentIssue, input.now);
+      const team = review.intent.kind === "create" ? (review.intent.teamId ?? null) : null;
+      const content = input.content === undefined ? null : JSON.stringify(input.content);
+      insertDelivery(db, input.improvementId, operation, intentIssue, team, content, input.now);
       if (comment === 1)
-        insertDelivery(db, input.improvementId, "evidence_comment", intentIssue, input.now);
+        insertDelivery(
+          db,
+          input.improvementId,
+          "evidence_comment",
+          intentIssue,
+          null,
+          content,
+          input.now,
+        );
+      if (input.criterion !== undefined)
+        db.run(
+          `INSERT INTO improvement_criterion (improvement_id, revision, proposal_version, criterion,
+             actor, at) VALUES (?, (SELECT coalesce(max(revision), 0) + 1 FROM improvement_criterion
+             WHERE improvement_id = ?), ?, ?, ?, ?)`,
+          [
+            input.improvementId,
+            input.improvementId,
+            review.proposalVersion,
+            input.criterion,
+            input.actor,
+            input.now,
+          ],
+        );
     }
     return { ok: true, improvement: getImprovement(db, input.improvementId)! };
   });
@@ -474,20 +502,78 @@ function insertDelivery(
   improvementId: string,
   operation: ImprovementDeliveryOperation,
   targetIssueId: string | null,
+  targetTeamId: string | null,
+  content: string | null,
   now: number,
 ): void {
   db.run(
-    `INSERT INTO improvement_delivery (id, improvement_id, operation, target_issue_id, state,
-       created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+    `INSERT INTO improvement_delivery (id, improvement_id, operation, target_issue_id,
+       target_team_id, content, state, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
     [
       improvementDeliveryId(improvementId, operation),
       improvementId,
       operation,
       targetIssueId,
+      targetTeamId,
+      content,
       now,
       now,
     ],
   );
+}
+
+export type ImprovementCriterion = {
+  revision: number;
+  proposalVersion: number;
+  criterion: string;
+  actor: string;
+  at: number;
+};
+
+export function listImprovementCriteria(
+  db: Database,
+  improvementId: string,
+): ImprovementCriterion[] {
+  return db
+    .query<ImprovementCriterion, [string]>(
+      `SELECT revision, proposal_version AS proposalVersion, criterion, actor, at
+       FROM improvement_criterion WHERE improvement_id = ? ORDER BY revision`,
+    )
+    .all(improvementId);
+}
+
+export function requeueImprovementDelivery(
+  db: Database,
+  input: { deliveryId: string; now: number },
+): ImprovementDelivery | null {
+  const row = db
+    .query<DeliveryRow, [number, string]>(
+      `UPDATE improvement_delivery SET state = 'pending', updated_at = ?
+       WHERE id = ? AND state = 'failed' RETURNING *`,
+    )
+    .get(input.now, input.deliveryId);
+  return row === null ? null : deliveryFromRow(row);
+}
+
+export function acceptedImprovementsForFindings(
+  db: Database,
+  workspaceId: string,
+  findingIds: readonly number[],
+): Improvement[] {
+  if (findingIds.length === 0) return [];
+  return db
+    .query<ImprovementRow, [string, string]>(
+      `SELECT DISTINCT improvement.* FROM improvement_source AS source
+       JOIN improvement ON improvement.id = source.improvement_id
+       WHERE source.workspace_id = ? AND source.source_kind = 'daily_finding'
+         AND improvement.review_state = 'accepted'
+         AND EXISTS (SELECT 1 FROM json_each(?) AS finding
+           WHERE instr(source.source_key, '#' || finding.value || ':') > 0)
+       ORDER BY improvement.id`,
+    )
+    .all(workspaceId, JSON.stringify(findingIds))
+    .map(improvementFromRow);
 }
 
 export function listImprovementDecisions(
@@ -530,6 +616,8 @@ type DeliveryRow = {
   improvement_id: string;
   operation: ImprovementDeliveryOperation;
   target_issue_id: string | null;
+  target_team_id: string | null;
+  content: string | null;
   state: ImprovementDeliveryState;
   claim_owner: string | null;
   claim_expires_at: number | null;
@@ -548,6 +636,8 @@ function deliveryFromRow(row: DeliveryRow): ImprovementDelivery {
     improvementId: row.improvement_id,
     operation: row.operation,
     targetIssueId: row.target_issue_id,
+    targetTeamId: row.target_team_id,
+    content: row.content === null ? null : (JSON.parse(row.content) as Record<string, unknown>),
     state: row.state,
     claimOwner: row.claim_owner,
     claimExpiresAt: row.claim_expires_at,

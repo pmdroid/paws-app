@@ -85,7 +85,16 @@ export type ServerOptions = {
   /** `POST /api/runner-enrollments`, where a host enrolls itself with a member's token. */
   runnerHostEnrollment?: (request: Request) => Promise<Response>;
   runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
-  retros?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
+  retros?: (
+    request: Request,
+    principal: WorkspacePrincipal,
+    sessionIds: readonly string[],
+  ) => Promise<Response | null>;
+  improvements?: (
+    request: Request,
+    principal: WorkspacePrincipal,
+    sessionIds: readonly string[],
+  ) => Promise<Response | null>;
   executionControls?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -235,6 +244,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             : {}),
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.retros ? { retros: options.retros } : {}),
+          ...(options.improvements ? { improvements: options.improvements } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.blockerChecks ? { blockerChecks: options.blockerChecks } : {}),
           ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
@@ -280,6 +290,7 @@ type Secrets = {
   runnerHostEnrollment?: ServerOptions["runnerHostEnrollment"];
   runnerControl?: ServerOptions["runnerControl"];
   retros?: ServerOptions["retros"];
+  improvements?: ServerOptions["improvements"];
   executionControls?: ServerOptions["executionControls"];
   blockerChecks?: ServerOptions["blockerChecks"];
   linkAsks?: ServerOptions["linkAsks"];
@@ -453,7 +464,14 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         if (response !== null) return response;
       }
       if (path.startsWith("/api/retros/") && secrets.retros !== undefined) {
-        const response = await secrets.retros(request, access.principal);
+        const response = await secrets.retros(request, access.principal, sessionIds);
+        if (response !== null) return response;
+      }
+      if (
+        (path === "/api/improvements" || path.startsWith("/api/improvements/")) &&
+        secrets.improvements !== undefined
+      ) {
+        const response = await secrets.improvements(request, access.principal, sessionIds);
         if (response !== null) return response;
       }
       if (path === FINDING_ISSUE_PATH && secrets.findingIssues !== undefined) {

@@ -998,6 +998,7 @@ export {
   type RetroGenerationRow,
 } from "./retro-dispatch";
 export {
+  acceptedImprovementsForFindings,
   claimableImprovementDeliveries,
   claimImprovementDelivery,
   decideImprovement,
@@ -1005,6 +1006,7 @@ export {
   improvementBySource,
   improvementDeliveryId,
   improvementsForIssue,
+  listImprovementCriteria,
   listImprovementDecisions,
   listImprovementDeliveries,
   listImprovementDeliveryAttempts,
@@ -1013,9 +1015,11 @@ export {
   listImprovements,
   recordImprovementOutcome,
   recordImprovementProposal,
+  requeueImprovementDelivery,
   settleImprovementDelivery,
   type Improvement,
   type ImprovementActionStep,
+  type ImprovementCriterion,
   type ImprovementDecision,
   type ImprovementDecisionResult,
   type ImprovementDelivery,

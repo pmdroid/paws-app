@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
+  acceptedImprovementsForFindings,
   auditWorkspaceAccess,
   enqueueJobOnce,
   findingGroupingEnabled,
@@ -202,6 +203,18 @@ export async function handleFindingGroupsRequest(
     return Response.json({ error: "No existing issue was suggested." }, { status: 400 });
   if (action.action !== "dismiss" && !options.services)
     return Response.json({ error: "Linear is unavailable." }, { status: 503 });
+  if (
+    action.action !== "dismiss" &&
+    acceptedImprovementsForFindings(
+      db,
+      principal.workspaceId,
+      rows.map((f) => f.id),
+    ).length
+  )
+    return Response.json(
+      { error: "The improvement inbox already accepted these findings. Open the improvement." },
+      { status: 409 },
+    );
   if (activeActions.has(group.id))
     return Response.json({ error: "This group action is still running." }, { status: 409 });
   // Store the chosen action before the network write. Stable Linear ids make retries safe.

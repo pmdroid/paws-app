@@ -23,6 +23,7 @@ export type ImprovementAccess = {
   workspaceId: string;
   repositories?: readonly string[];
   sessionIds?: readonly string[];
+  retroEvidence?: (retroId: string) => ReadonlySet<string> | null;
 };
 
 export type InboxLifecycle = "needs_review" | "pending" | "linked" | "rejected";
@@ -145,7 +146,12 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
       const visible = proposal.evidence.every((ref) => {
         const [, retroId, evidenceId] = ref.split(":");
         const repository = retroEvidence(retroId ?? "").get(evidenceId ?? "");
-        return repository !== undefined && allowedRepository(access, repository);
+        return (
+          repository !== undefined &&
+          allowedRepository(access, repository) &&
+          (access.retroEvidence === undefined ||
+            access.retroEvidence(retroId!)?.has(evidenceId!) === true)
+        );
       });
       if (!visible) return [];
     }
