@@ -1354,7 +1354,7 @@ export function createRemoteAgentRunner(options: {
                   ? undefined
                   : upstreamMain;
               const mainCandidate = input.mainSha ?? fetchedMain ?? checkpointBase;
-              const mainSha =
+              let mainSha =
                 !taskScope &&
                 baseSha &&
                 mainCandidate &&
@@ -1386,16 +1386,27 @@ export function createRemoteAgentRunner(options: {
               }
               if (restoreCheckpoint && head) {
                 const saved = restoreCheckpoint.sha;
-                await checkpointStart(
-                  (args) => git(["-C", input.worktreePath, ...args]),
-                  saved,
-                  mainSha ? [head, mainSha] : [head],
-                ).catch((error: unknown) => {
-                  throw new Error(
-                    `Paws could not restore the saved work at ${saved.slice(0, 7)}: it is on neither ${restoreCheckpoint!.branch} at ${head.slice(0, 7)} nor main`,
-                    { cause: error },
+                const savedOn = getWorkItem(db, itemId)?.checkpoint?.checkpointMain;
+                const savedMain = savedOn?.sha === saved ? savedOn.main : undefined;
+                const startsOn = (bases: string[]) =>
+                  checkpointStart(
+                    (args) => git(["-C", input.worktreePath, ...args]),
+                    saved,
+                    bases,
+                  ).then(
+                    () => true,
+                    (error: unknown) => {
+                      journalCaught(error, "runner-backend.forItem.checkpointStart", itemId);
+                      return false;
+                    },
                   );
-                });
+                if (!(await startsOn(mainSha ? [head, mainSha] : [head]))) {
+                  if (!savedMain || savedMain === mainSha || !(await startsOn([savedMain])))
+                    throw new Error(
+                      `Paws could not restore the saved work at ${saved.slice(0, 7)}: it is on neither ${restoreCheckpoint.branch} at ${head.slice(0, 7)} nor main`,
+                    );
+                  mainSha = savedMain;
+                }
               }
               const generation =
                 (db
@@ -1926,6 +1937,7 @@ export function createRemoteAgentRunner(options: {
                   itemId,
                   runId: assigned.runId,
                   baseSha: baseSha!,
+                  ...(assigned.repository.mainSha ? { mainSha: assigned.repository.mainSha } : {}),
                   event,
                   now: now(),
                 });
@@ -2536,6 +2548,7 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
+export { recordRunnerCheckpoint } from "./checkpoint";
 export { ensureStartOnRemote, RemoteStartUnverified } from "./start-commit";
 
 export { remoteCommandsGone } from "./released";

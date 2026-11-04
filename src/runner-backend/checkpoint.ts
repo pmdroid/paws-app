@@ -36,6 +36,7 @@ export function recordRunnerCheckpoint(
     itemId: string;
     runId: string;
     baseSha: string;
+    mainSha?: string;
     event: Extract<RunnerEvent, { type: "checkpoint" }>;
     now: number;
   },
@@ -46,9 +47,14 @@ export function recordRunnerCheckpoint(
   immediate(db, () => {
     const item = getWorkItem(db, input.itemId);
     if (!item || item.currentRunId !== input.runId) return;
+    const { checkpointMain: _, ...checkpoint } = item.checkpoint ?? {
+      phase: "running" as const,
+      baseSha: input.baseSha,
+    };
     saveCheckpoint(db, item.id, {
-      ...(item.checkpoint ?? { phase: "running", baseSha: input.baseSha }),
+      ...checkpoint,
       wipCommit: sha,
+      ...(input.mainSha ? { checkpointMain: { sha, main: input.mainSha } } : {}),
     });
     if (event.reason !== "stop" || !STOPPED.has(item.state)) return;
     const sessionId = item.sessionKey ?? item.id;
@@ -173,6 +179,7 @@ export function createRemoteCheckpoint(options: {
           itemId: command.itemId,
           runId,
           baseSha: command.repository.baseSha,
+          ...(command.repository.mainSha ? { mainSha: command.repository.mainSha } : {}),
           event,
           now: now(),
         });

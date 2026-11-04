@@ -269,6 +269,21 @@ test("a hidden-ref checkpoint goes to a current runner to restore, leaving the P
   expect(result.pushes).toBe(0);
 });
 
+test("a checkpoint rebased onto an earlier main restores against that main after main moved", async () => {
+  const result = await startScenario({
+    local: [],
+    push: "fails",
+    hiddenCheckpoint: { runnerVersion: "0.1.63", rebasedOnEarlierMain: true },
+  });
+  expect(result.error, result.detail).toBeUndefined();
+  expect(result.restoreCheckpoint).toEqual({ sha: result.hiddenWip!, branch: "paws/item" });
+  expect(result.mainSha).toBe(result.earlierMain!);
+  expect(result.mainSha).not.toBe(result.movedMain!);
+  expect(result.baseSha).toBe(result.prHead);
+  expect(result.remoteBranch).toBe(result.prHead);
+  expect(result.pushes).toBe(0);
+});
+
 test("a runner too old to restore a hidden-ref checkpoint is refused before Paws checks it out", async () => {
   const result = await startScenario({
     local: [],
@@ -297,7 +312,7 @@ async function startScenario(input: {
   failFirstDispatch?: true;
   /** Paws saved the fallback and stopped before it moved the candidate ref. */
   stoppedBeforeReset?: true;
-  hiddenCheckpoint?: { runnerVersion: string };
+  hiddenCheckpoint?: { runnerVersion: string; rebasedOnEarlierMain?: true };
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-start-commit-"));
   const source = join(root, "source");
@@ -354,13 +369,29 @@ async function startScenario(input: {
   const adopt = () => git(["--git-dir", mirror, "fetch", worktree, `+HEAD:${REF}`]);
   await adopt();
   let hiddenWip: string | undefined;
+  let earlierMain: string | undefined;
+  let movedMain: string | undefined;
   if (input.hiddenCheckpoint) {
     const other = join(root, "other");
     await git(["clone", origin, other]);
-    await git(["-C", other, "checkout", "--detach", prHead]);
+    if (input.hiddenCheckpoint.rebasedOnEarlierMain) {
+      await git(["-C", other, "checkout", "--detach", base]);
+      await commit(other, "Earlier main");
+      earlierMain = await git(["-C", other, "rev-parse", "HEAD"]);
+      await git(["-C", other, "push", origin, "HEAD:refs/heads/main"]);
+      await commit(other, "Rebased branch work");
+    } else await git(["-C", other, "checkout", "--detach", prHead]);
     await commit(other, "Save work in progress so far");
     hiddenWip = await git(["-C", other, "rev-parse", "HEAD"]);
     await git(["-C", other, "push", origin, `HEAD:refs/paws/checkpoints/${BRANCH}`]);
+    if (earlierMain) {
+      await git(["-C", other, "checkout", "--detach", earlierMain]);
+      await commit(other, "Moved main");
+      movedMain = await git(["-C", other, "rev-parse", "HEAD"]);
+      await git(["-C", other, "push", origin, "HEAD:refs/heads/main"]);
+      await git(["-C", worktree, "fetch", origin, "main"]);
+      await git(["-C", worktree, "update-ref", "refs/paws/upstream-main", movedMain]);
+    }
   }
 
   // GitHub, served from the bare repository; a refused push fails like the 403s did.
@@ -440,6 +471,7 @@ async function startScenario(input: {
     baseSha: base,
     wipCommit:
       hiddenWip ?? (input.stoppedBeforeReset ? prHead : input.earlierWip ? earlierWip : localHead),
+    ...(hiddenWip && earlierMain ? { checkpointMain: { sha: hiddenWip, main: earlierMain } } : {}),
     ...(input.stoppedBeforeReset
       ? {
           lostCommits: `Your commits after ${prHead.slice(0, 8)} didn't reach GitHub: ${[...input.local].reverse().join("; ")}. Redo them.`,
@@ -579,7 +611,10 @@ async function startScenario(input: {
       thoughts,
       baseSha: assigned?.repository.baseSha,
       restoreCheckpoint: assigned?.restoreCheckpoint,
+      mainSha: assigned?.repository.mainSha,
       hiddenWip,
+      earlierMain,
+      movedMain,
       prompt: assigned?.prompt,
       remoteBranch: await git(["--git-dir", origin, "rev-parse", `refs/heads/${BRANCH}`]).catch(
         () => undefined,
