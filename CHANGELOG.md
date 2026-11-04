@@ -9,6 +9,12 @@ Changes that need action on upgrade come first in each entry. Terms are in [GLOS
 - A runner-backed run reads `mise.toml`, `.mise.toml` and `.tool-versions` from the `origin/main` its bare mirror last fetched. Since runner-backed items stopped keeping a worktree, every item read `origin/main` through the mirror's shared `FETCH_HEAD`, and items read at the same time could see each other's half-written fetch and dispatch with no runtimes, so Closeout could not find Bun.
 - When Paws cannot read the runtime files, it retries the read twice, then posts one line naming the cause in Linear and journals one line for the run. The runner journals the runtimes each run asked for. See [runtimes](docs/runtimes.md).
 
+## 2026-11-04: The Closeout stop hook runs with Bun
+
+### Changed
+
+- The Closeout stop hook is a TypeScript file run by the Bun that runs Paws or the runner (`/opt/paws-runner/bin/bun` on a runner, with runner 0.1.67), so a host no longer needs `python3` for it. Workspace hooks still need `python3`.
+
 ## 2026-11-04: No control-plane worktrees for runner-backed items
 
 ### Changed

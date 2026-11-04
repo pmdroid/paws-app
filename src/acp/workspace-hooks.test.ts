@@ -5,6 +5,7 @@ import { afterEach, expect, test } from "bun:test";
 import type { WorkspaceHook } from "../core";
 import {
   CLOSEOUT_STOP_TIMEOUT_SECONDS,
+  closeoutStopCommand,
   codexHookHash,
   codexStopHookTrustHash,
   installCloseoutStopHook,
@@ -119,7 +120,7 @@ test("the Codex overlay carries the workspace hook and the Closeout hook, both t
   const hooks = (JSON.parse(readFileSync(hooksPath, "utf8")) as { hooks: Hooks }).hooks;
   expect(hooks.Stop?.[0]?.hooks[0]).toEqual({
     type: "command",
-    command: installed.scriptPath,
+    command: closeoutStopCommand(process.execPath, installed.scriptPath),
     timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS,
   });
   const edit = join(runDirectory, "workspace-hook-0");
@@ -131,7 +132,10 @@ test("the Codex overlay carries the workspace hook and the Closeout hook, both t
   expect(hooks.Stop?.[1]?.hooks[0]?.command).toBe(join(runDirectory, "workspace-hook-2"));
 
   const config = readFileSync(join(overlay, "config.toml"), "utf8");
-  const closeoutHash = codexStopHookTrustHash(installed.scriptPath, CLOSEOUT_STOP_TIMEOUT_SECONDS);
+  const closeoutHash = codexStopHookTrustHash(
+    closeoutStopCommand(process.execPath, installed.scriptPath),
+    CLOSEOUT_STOP_TIMEOUT_SECONDS,
+  );
   expect(config).toContain(
     `[hooks.state."${hooksPath}:stop:0:0"]\ntrusted_hash = "${closeoutHash}"`,
   );
@@ -151,7 +155,7 @@ test("a workspace hook cannot replace or remove the Closeout hook", async () => 
   for (const agent of ["claude", "codex"] as const) {
     const root = temp();
     const runDirectory = join(root, "run");
-    const closeoutPath = join(runDirectory, "closeout-stop");
+    const closeoutPath = join(runDirectory, "closeout-stop.ts");
     const installed = await installCloseoutStopHook({
       agent,
       runDirectory,
@@ -176,7 +180,9 @@ test("a workspace hook cannot replace or remove the Closeout hook", async () => 
           ).hooks;
     expect(hooks.Stop).toHaveLength(2);
     const first = hooks.Stop?.[0]?.hooks[0];
-    expect(agent === "claude" ? first?.args : [first?.command]).toEqual([closeoutPath]);
+    expect(agent === "claude" ? first?.args : [first?.command]).toEqual([
+      agent === "claude" ? closeoutPath : closeoutStopCommand(process.execPath, closeoutPath),
+    ]);
     const second = hooks.Stop?.[1]?.hooks[0];
     expect(agent === "claude" ? second?.args : [second?.command]).toEqual([
       join(runDirectory, "workspace-hook-0"),

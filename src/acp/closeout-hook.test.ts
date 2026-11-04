@@ -9,16 +9,17 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { connect } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { createCloseoutSession, workspacePolicyFiles } from "../closeout-spec";
 import { startAskTeamBridge } from "./ask-team";
 import {
   CLOSEOUT_FINISH_UNAVAILABLE,
   CLOSEOUT_STOP_TIMEOUT_SECONDS,
   closeoutFinishLine,
+  closeoutStopCommand,
   codexConfigWithStopHook,
   codexStopHookTrustHash,
   installCloseoutStopHook,
@@ -276,7 +277,7 @@ test("the stop hook waits 25 seconds for Paws, inside the hook's own limit", asy
     sourceEnv: {},
   });
   const script = readFileSync(installed?.scriptPath ?? "", "utf8");
-  expect(script).toContain("client.settimeout(25)");
+  expect(script).toContain("const WAIT_MS = 25000;");
   expect(CLOSEOUT_STOP_TIMEOUT_SECONDS).toBe(30);
 });
 
@@ -317,8 +318,9 @@ test("codex home overlay keeps login links and does not edit the source home", a
   const config = readFileSync(join(overlay, "config.toml"), "utf8");
   expect(config).toContain("hooks = true");
   expect(config).toContain('model_provider = "openai"');
-  const scriptPath = installed?.scriptPath ?? "";
-  const hash = codexStopHookTrustHash(scriptPath, CLOSEOUT_STOP_TIMEOUT_SECONDS);
+  const command = closeoutStopCommand(process.execPath, installed?.scriptPath ?? "");
+  expect(command).toBe(`'${process.execPath}' '${join(runDirectory, "closeout-stop.ts")}'`);
+  const hash = codexStopHookTrustHash(command, CLOSEOUT_STOP_TIMEOUT_SECONDS);
   expect(config).toContain(`trusted_hash = "${hash}"`);
   expect(config).toContain(`[hooks.state."${join(overlay, "hooks.json")}:stop:0:0"]`);
   const hooks = JSON.parse(readFileSync(join(overlay, "hooks.json"), "utf8")) as {
@@ -326,11 +328,142 @@ test("codex home overlay keeps login links and does not edit the source home", a
   };
   expect(hooks.hooks.Stop[0]?.hooks[0]).toEqual({
     type: "command",
-    command: scriptPath,
+    command,
     timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS,
   });
   expect(readFileSync(join(source, "auth.json"), "utf8")).toBe('{"token":"keep"}\n');
 });
+
+test("the Claude stop hook runs the script with this process's Bun", async () => {
+  const root = temp();
+  const installed = await installCloseoutStopHook({
+    agent: "claude",
+    runDirectory: join(root, "run"),
+    socketPath: join(root, "run", "ask-team.sock"),
+    sourceEnv: {},
+  });
+  const meta = installed?.sessionMeta as {
+    claudeCode: { options: { settings: { hooks: { Stop: { hooks: unknown[] }[] } } } };
+  };
+  expect(meta.claudeCode.options.settings.hooks.Stop[0]?.hooks[0]).toEqual({
+    type: "command",
+    command: process.execPath,
+    args: [join(root, "run", "closeout-stop.ts")],
+    timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS,
+  });
+});
+
+test("installing the stop hook needs no python3 on PATH", async () => {
+  const root = temp();
+  // Nothing is on PATH: a lookup for python3, or anything else, finds nothing.
+  const which = spyOn(Bun, "which").mockReturnValue(null);
+  try {
+    for (const agent of ["claude", "codex"] as const)
+      expect(
+        await installCloseoutStopHook({
+          agent,
+          runDirectory: join(root, agent),
+          socketPath: join(root, agent, "ask-team.sock"),
+          sourceEnv: { HOME: join(root, "home") },
+        }),
+      ).toBeDefined();
+    expect(which).not.toHaveBeenCalledWith("python3");
+  } finally {
+    which.mockRestore();
+  }
+});
+
+test("the stop hook file imports only Bun and Node built-ins", async () => {
+  const root = temp();
+  const installed = await installCloseoutStopHook({
+    agent: "claude",
+    runDirectory: join(root, "run"),
+    socketPath: join(root, "run", "ask-team.sock"),
+    sourceEnv: {},
+  });
+  const source = readFileSync(installed?.scriptPath ?? "", "utf8");
+  expect(source.startsWith(`#!${process.execPath}\n`)).toBe(true);
+  const imports = [...source.matchAll(/\bfrom\s+["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']/g)];
+  expect(imports.length).toBeGreaterThan(0);
+  for (const match of imports) expect(match[1] ?? match[2]).toMatch(/^(node:|bun(:|$))/);
+  expect(source).not.toContain("require(");
+});
+
+test("the stop hook prints the answer it gets on the socket", async () => {
+  expect(await hookWithAnswer(JSON.stringify({ id: 1, answer: "{}" }))).toEqual({
+    status: 0,
+    stdout: "{}\n",
+  });
+  const blocked = JSON.stringify({ decision: "block", reason: "Check test is not finished." });
+  expect(await hookWithAnswer(JSON.stringify({ id: 1, answer: blocked }))).toEqual({
+    status: 0,
+    stdout: `${blocked}\n`,
+  });
+});
+
+test("a malformed answer prints the unavailable block", async () => {
+  for (const answer of [
+    "not json",
+    JSON.stringify({ id: 1 }),
+    JSON.stringify({ id: 1, answer: "[]" }),
+    JSON.stringify({ id: 1, answer: '{"decision":"allow"}' }),
+    JSON.stringify({ id: 1, answer: '{"decision":"block","reason":"x","continue":false}' }),
+  ])
+    expect(await hookWithAnswer(answer)).toEqual({
+      status: 0,
+      stdout: `${CLOSEOUT_FINISH_UNAVAILABLE}\n`,
+    });
+});
+
+test(
+  "a socket that never answers prints the unavailable block and the hook exits by itself",
+  async () => {
+    const started = Date.now();
+    const ran = await hookWithAnswer(null);
+    expect(ran).toEqual({ status: 0, stdout: `${CLOSEOUT_FINISH_UNAVAILABLE}\n` });
+    expect(Date.now() - started).toBeLessThan(CLOSEOUT_STOP_TIMEOUT_SECONDS * 1000);
+  },
+  (CLOSEOUT_STOP_TIMEOUT_SECONDS + 5) * 1000,
+);
+
+/** Run the generated hook against a fake socket that answers `answer`, or never when null. */
+async function hookWithAnswer(answer: string | null): Promise<{ status: number; stdout: string }> {
+  const root = temp();
+  const runDirectory = join(root, "run");
+  const socketPath = join(runDirectory, "ask-team.sock");
+  const installed = await installCloseoutStopHook({
+    agent: "claude",
+    runDirectory,
+    socketPath,
+    sourceEnv: {},
+  });
+  const requests: string[] = [];
+  const sockets: Socket[] = [];
+  const server = createServer((socket) => {
+    sockets.push(socket);
+    socket.setEncoding("utf8");
+    socket.on("error", () => {});
+    socket.on("data", (chunk: string) => {
+      requests.push(chunk);
+      if (answer !== null) socket.write(`${answer}\n`);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  try {
+    const child = Bun.spawn([process.execPath, installed?.scriptPath ?? ""], {
+      stdin: Buffer.from('{"hook_event_name":"Stop"}'),
+      stdout: "pipe",
+      timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS * 1000,
+      killSignal: "SIGKILL",
+    });
+    const [status, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+    expect(requests.join("")).toBe('{"id":1,"tool":"closeout_finish","arguments":{}}\n');
+    return { status, stdout };
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
 
 function runScript(scriptPath: string): Promise<{ status: number | null; stdout: string }> {
   const child = spawn(scriptPath) as ChildProcessWithoutNullStreams;

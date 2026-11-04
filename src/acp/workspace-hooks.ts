@@ -55,6 +55,8 @@ export type InstalledWorkspaceHook = {
   event: AgentEvent;
   /** Wrapper that runs the hook with the stripped environment. */
   scriptPath: string;
+  /** The `python3` that runs the wrapper. */
+  interpreter: string;
   /** What the agent waits for, in seconds. */
   timeout: number;
 };
@@ -72,18 +74,21 @@ export async function installWorkspaceHooks(input: {
   agent: HookAgent;
   hooks: readonly WorkspaceHook[];
   runDirectory: string;
-  pythonPath: string;
   skillRoot?: string;
 }): Promise<InstalledWorkspaceHook[]> {
   const installed: InstalledWorkspaceHook[] = [];
-  for (const [index, hook] of hooksForAgent(input.hooks, input.agent).entries()) {
+  const hooks = hooksForAgent(input.hooks, input.agent);
+  if (hooks.length === 0) return installed;
+  const pythonPath = Bun.which("python3");
+  if (!pythonPath) throw new Error("python3 is required for workspace hooks");
+  for (const [index, hook] of hooks.entries()) {
     const scriptPath = join(input.runDirectory, `workspace-hook-${index}`);
     await writeFile(
       scriptPath,
       workspaceHookScript({
         agent: input.agent,
         hook,
-        pythonPath: input.pythonPath,
+        pythonPath,
         failuresPath: join(input.runDirectory, HOOK_FAILURES_FILE),
         skillRoot: input.skillRoot,
       }),
@@ -94,6 +99,7 @@ export async function installWorkspaceHooks(input: {
       hook,
       event: agentHookEvent(input.agent, hook.event, hook.matcher),
       scriptPath,
+      interpreter: pythonPath,
       timeout: hook.timeoutSeconds + AGENT_TIMEOUT_GRACE_SECONDS,
     });
   }
