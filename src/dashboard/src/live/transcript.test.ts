@@ -149,6 +149,7 @@ test("the transcript route answers JSON entries when the page asks for them", as
       at: "2026-10-19T10:00:00.000Z",
       kind: "system",
       text: "First line\n\nwith a blank line continues",
+      session: 1,
     },
   ]);
   const plain = (await handleStatusRequest(new Request(url), options))!;
@@ -188,6 +189,7 @@ test("a failing workspace hook shows on the run page as an error", () => {
       at: "2026-10-22T10:00:00.000Z",
       kind: "err",
       text: "Workspace hook failed (after a file edit): bun run fmt · exited with 1: fmt failed",
+      session: 1,
     },
   ]);
 });
@@ -225,4 +227,55 @@ test("untimed lines take the previous line's time, and a partly written last lin
     restore();
   }
   expect(lines.filter((line) => line.includes("transcript.readFile.parse"))).toEqual([]);
+});
+
+test("each start line the runner backend writes begins the next session", () => {
+  const home = tempHome();
+  mkdirSync(join(home, "runs", "sessions-run"), { recursive: true });
+  mkdirSync(join(home, "runs", "sessions-run-classify"), { recursive: true });
+  const progress = (text: string) => ({ event: { type: "progress", text } });
+  writeFileSync(
+    join(home, "runs", "sessions-run-classify", "acp.jsonl"),
+    JSON.stringify(message("Classifying")) + "\n",
+  );
+  writeFileSync(
+    join(home, "runs", "sessions-run", "acp.jsonl"),
+    [
+      message("Before any start"),
+      progress("Starting on runner-a.\n"),
+      message("First work"),
+      progress("Continuing the agent's session on runner-a.\n"),
+      message("Follow-up"),
+      progress("Starting a new session on runner-b; runner-a is unavailable.\n"),
+      message("Fresh start"),
+    ]
+      .map((x) => JSON.stringify(x) + "\n")
+      .join(""),
+  );
+  expect(
+    [...fullAgentTranscript(home, "sessions-run", new Date(0).toISOString(), {})].map((x) => [
+      x.session,
+      x.text,
+    ]),
+  ).toEqual([
+    [1, "Classifying"],
+    [1, "Before any start"],
+    [1, "Starting on runner-a.\nFirst work"],
+    [2, "Continuing the agent's session on runner-a.\nFollow-up"],
+    [3, "Starting a new session on runner-b; runner-a is unavailable.\nFresh start"],
+  ]);
+});
+
+test("a transcript without start lines is one session", () => {
+  const home = tempHome();
+  mkdirSync(join(home, "runs", "old-run"), { recursive: true });
+  writeFileSync(
+    join(home, "runs", "old-run", "acp.jsonl"),
+    [message("One"), { event: { type: "progress", text: "Tool: ls" } }, message("Two")]
+      .map((x) => JSON.stringify(x) + "\n")
+      .join(""),
+  );
+  expect(
+    [...fullAgentTranscript(home, "old-run", new Date(0).toISOString(), {})].map((x) => x.session),
+  ).toEqual([1, 1, 1]);
 });

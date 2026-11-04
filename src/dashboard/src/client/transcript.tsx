@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { ArrowDown } from "lucide-react";
-import { ACTIVITY_KINDS, type StatusActivity } from "../contract";
+import { ACTIVITY_KINDS, type StatusActivity, type TranscriptEntry } from "../contract";
 import { initializeAppearance } from "./appearance";
 import { ansiToHtml } from "./ansi";
 import { Button } from "./ui/button";
@@ -14,8 +14,8 @@ const BOTTOM_SLACK = 48;
 
 type Load =
   | { state: "loading" }
-  | { state: "ready"; entries: StatusActivity[] }
-  | { state: "failed"; message: string; entries: StatusActivity[] | null };
+  | { state: "ready"; entries: TranscriptEntry[] }
+  | { state: "failed"; message: string; entries: TranscriptEntry[] | null };
 
 const KIND_LABEL: Partial<Record<StatusActivity["kind"], string>> = {
   system: "agent",
@@ -29,28 +29,47 @@ const time = new Intl.DateTimeFormat(undefined, {
   second: "2-digit",
 });
 
+const startTime = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+
 export function transcriptRunId(pathname: string): string | null {
   const match = /\/runs\/([A-Za-z0-9_-]{1,128})\/transcript\/?$/.exec(pathname);
   return match?.[1] ?? null;
 }
 
-export function parseTranscript(body: unknown): StatusActivity[] | null {
+export function parseTranscript(body: unknown): TranscriptEntry[] | null {
   if (!Array.isArray(body)) return null;
-  const entries: StatusActivity[] = [];
+  const entries: TranscriptEntry[] = [];
   for (const entry of body) {
     if (
       !entry ||
       typeof entry.at !== "string" ||
       !ACTIVITY_KINDS.includes(entry.kind) ||
-      typeof entry.text !== "string"
+      typeof entry.text !== "string" ||
+      !Number.isInteger(entry.session) ||
+      entry.session < 1
     )
       return null;
-    entries.push({ at: entry.at, kind: entry.kind, text: entry.text });
+    entries.push({ at: entry.at, kind: entry.kind, text: entry.text, session: entry.session });
   }
   return entries;
 }
 
-async function fetchTranscript(runId: string): Promise<StatusActivity[]> {
+interface TranscriptSession {
+  session: number;
+  entries: TranscriptEntry[];
+}
+
+function transcriptSessions(entries: TranscriptEntry[]): TranscriptSession[] {
+  const sessions: TranscriptSession[] = [];
+  for (const entry of entries) {
+    const last = sessions.at(-1);
+    if (last?.session === entry.session) last.entries.push(entry);
+    else sessions.push({ session: entry.session, entries: [entry] });
+  }
+  return sessions;
+}
+
+async function fetchTranscript(runId: string): Promise<TranscriptEntry[]> {
   const response = await fetch(`/api/runs/transcript?run=${encodeURIComponent(runId)}`, {
     headers: { Accept: "application/json" },
     cache: "no-store",
@@ -117,6 +136,55 @@ function Entry({ entry }: { entry: StatusActivity }) {
         )}
       </div>
     </li>
+  );
+}
+
+function Session({ session, latest }: { session: TranscriptSession; latest: boolean }) {
+  const at = session.entries[0]!.at;
+  return (
+    <section aria-label={`Session ${session.session}`} className="flex flex-col gap-2">
+      <h2 className="text-sm font-heading">
+        Session {session.session}
+        {Number.isNaN(Date.parse(at)) ? "" : `, started ${startTime.format(new Date(at))}`}
+      </h2>
+      <ol
+        role={latest ? "log" : undefined}
+        aria-label={latest ? "Agent transcript" : `Session ${session.session} transcript`}
+        className="m-0 list-none divide-y divide-foreground/15 rounded-base border-2 border-border bg-secondary-background p-0 shadow-shadow"
+      >
+        {session.entries.map((entry, index) => (
+          <Entry key={index} entry={entry} />
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+export function TranscriptSessions({ entries }: { entries: TranscriptEntry[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const sessions = transcriptSessions(entries);
+  const latest = sessions.at(-1);
+  if (!latest) return null;
+  const earlier = sessions.slice(0, -1);
+  return (
+    <>
+      {earlier.length > 0 && (
+        <Button
+          type="button"
+          variant="neutral"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((open) => !open)}
+          className="self-start"
+        >
+          Earlier sessions ({earlier.length})
+        </Button>
+      )}
+      {expanded &&
+        earlier.map((session) => (
+          <Session key={session.session} session={session} latest={false} />
+        ))}
+      <Session key={latest.session} session={latest} latest />
+    </>
   );
 }
 
@@ -263,17 +331,7 @@ function TranscriptPage({ runId }: { runId: string | null }) {
           </Notice>
         )}
         {entries && entries.length === 0 && <Notice>Waiting for agent output.</Notice>}
-        {entries && entries.length > 0 && (
-          <ol
-            role="log"
-            aria-label="Agent transcript"
-            className="m-0 list-none divide-y divide-foreground/15 rounded-base border-2 border-border bg-secondary-background p-0 shadow-shadow"
-          >
-            {entries.map((entry, index) => (
-              <Entry key={index} entry={entry} />
-            ))}
-          </ol>
-        )}
+        {entries && entries.length > 0 && <TranscriptSessions entries={entries} />}
       </main>
       {away && entries && entries.length > 0 && (
         <div className="pointer-events-none fixed inset-x-0 bottom-[max(1.5rem,env(safe-area-inset-bottom))] z-30 flex justify-center px-4">
