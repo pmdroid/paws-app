@@ -222,13 +222,15 @@ export function commentingApps(db: Database, owner: string, repo: string): strin
 
 export function pullReviewCheckWait(db: Database, itemId: string): ReviewCheckWait | null {
   const row = db
-    .query<{ wait: string | null }, [string, string]>(
+    .query<{ wait: string | null }, [string, string, string, string]>(
       `SELECT json_extract(payload, '$.reviewChecks') AS wait FROM job
-       WHERE queue = ? AND status IN ('pending', 'running')
-         AND json_extract(payload, '$.pullCommentsFor') = ?
+       WHERE status IN ('pending', 'running') AND json_extract(payload, '$.reviewChecks') IS NOT NULL
+         AND ((queue = ? AND json_extract(payload, '$.pullCommentsFor') = ?)
+           OR (queue = ? AND job_key IN (SELECT 'pull-review:' || review_id FROM pull_review
+                                         WHERE item_id = ? AND handled_at IS NULL)))
        ORDER BY id DESC LIMIT 1`,
     )
-    .get(JOB_KIND.pullComments, itemId);
+    .get(JOB_KIND.pullComments, itemId, JOB_KIND.pullReview, itemId);
   if (!row?.wait) return null;
   const wait = JSON.parse(row.wait) as Partial<ReviewCheckWait>;
   return typeof wait.head === "string" && Array.isArray(wait.names)

@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { commentingApps } from "../db";
-import type { HeadCheckRun } from "../github";
+import { commentingApps, type ReviewCheckWait, type WorkItemRecord } from "../db";
+import type { HeadChecks } from "../github";
+import type { PullReviewCapabilities } from "./pull-reviews";
 
-export type ReviewChecks = { head: string; pending: string[]; until: number };
+export type ReviewChecks = { head: string | null; pending: string[] | null; until: number };
 
 export async function readReviewChecks(
   db: Database,
@@ -13,24 +14,47 @@ export async function readReviewChecks(
     configured: readonly string[];
     maxMs: number;
     since: number;
-    checkRuns(head: string): Promise<HeadCheckRun[] | null>;
+    checkRuns(head: string): Promise<HeadChecks | null>;
   },
-): Promise<ReviewChecks | null> {
+): Promise<ReviewChecks> {
   const apps = new Set([
     ...commentingApps(db, input.owner, input.repo),
     ...input.configured.map((slug) => slug.toLowerCase()),
   ]);
-  if (apps.size === 0) return { head: input.head, pending: [], until: input.since };
-  const runs = await input.checkRuns(input.head);
-  if (runs === null) return null;
-  const starts = runs
-    .map((run) => (run.startedAt === null ? Number.NaN : Date.parse(run.startedAt)))
-    .filter((start) => Number.isFinite(start));
-  const pushed = starts.length > 0 ? Math.min(...starts) : input.since;
-  const pending = runs
+  const fallback = input.since + input.maxMs;
+  if (apps.size === 0) return { head: input.head, pending: [], until: fallback };
+  const checks = await input.checkRuns(input.head);
+  if (checks === null) return { head: input.head, pending: null, until: fallback };
+  const pending = checks.runs
     .filter(
       (run) => run.status !== "completed" && run.app !== null && apps.has(run.app.toLowerCase()),
     )
     .map((run) => run.name);
-  return { head: input.head, pending: [...new Set(pending)].sort(), until: pushed + input.maxMs };
+  const until = checks.pushedAt === null ? fallback : checks.pushedAt + input.maxMs;
+  return { head: input.head, pending: [...new Set(pending)].sort(), until };
+}
+
+export async function holdForReviewChecks(
+  item: WorkItemRecord,
+  pullNumber: number,
+  since: number,
+  caps: PullReviewCapabilities,
+): Promise<boolean> {
+  if (!caps.reviewChecks) return false;
+  const checks = await caps.reviewChecks(item, pullNumber, since);
+  if (checks === null) return false;
+  const open = caps.now() < checks.until;
+  if (checks.pending === null) return open;
+  const waiting = open && checks.pending.length > 0 && checks.head !== null;
+  caps.noteReviewWait?.(waiting ? { head: checks.head!, names: checks.pending } : null);
+  return waiting;
+}
+
+export function withReviewWait<T extends { payload: unknown }>(
+  job: T,
+  wait: ReviewCheckWait | null | undefined,
+): T {
+  if (wait === undefined) return job;
+  const { reviewChecks: _old, ...payload } = (job.payload ?? {}) as Record<string, unknown>;
+  return { ...job, payload: wait === null ? payload : { ...payload, reviewChecks: wait } };
 }

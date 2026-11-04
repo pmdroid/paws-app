@@ -143,14 +143,14 @@ function setup(threads = THREADS) {
     closeoutFindings: async () => findings,
     session: (item) => item.sessionKey,
     flush: async () => {},
-    reviewChecks: () =>
+    reviewChecks: (_item, _pull, since) =>
       readReviewChecks(db, {
         owner: "acme",
         repo: "one",
         head: "h",
         configured: reviewApps,
         maxMs: 900_000,
-        since: pendingPullComments(db, "eng-1")[0]?.receivedAt ?? clock,
+        since,
         checkRuns: (head) =>
           readHeadCheckRuns({ client, owner: "acme", repo: "one", head, tokenProvider }),
       }),
@@ -538,12 +538,10 @@ describe("timing", () => {
 });
 
 describe("review apps still checking the head", () => {
-  const started = new Date(1_000).toISOString();
   const run = (name: string, app: string, status: FakeCheckRun["status"]): FakeCheckRun => ({
     name,
     app,
     status,
-    startedAt: started,
   });
 
   test("comments wait for every review app's check, then restart once with all of them", async () => {
@@ -590,6 +588,63 @@ describe("review apps still checking the head", () => {
     f.tick(900_000);
     expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
     expect(handoff(f.db)!.handoff).toContain("Rename it.");
+  });
+
+  test("a changes-requested review waits for another review app's check too", async () => {
+    const f = setup();
+    f.setReviewApps(["acme-lint"]);
+    f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
+    f.send("pull_request_review", {
+      action: "submitted",
+      review: {
+        id: 602,
+        state: "changes_requested",
+        body: "Fix the key.",
+        user: { login: "acme-review[bot]" },
+      },
+      pull_request: f.pull(),
+    });
+    expect(await handlePullReview(f.db, 602, f.caps)).toBe("wait");
+    expect(resumeJobs(f.db)).toHaveLength(0);
+    expect(f.reviewWaits.at(-1)).toEqual({ head: "h", names: ["Acme Lint"] });
+
+    f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "completed")];
+    f.conversation({ id: 3, author: "acme-lint[bot]", body: "Nit: rename the helper." });
+    f.tick(PULL_COMMENT_SETTLE_MS);
+    expect(await handlePullReview(f.db, 602, f.caps)).toBe("restarted");
+    expect(resumeJobs(f.db)).toHaveLength(1);
+    const text = handoff(f.db)!.handoff;
+    expect(text).toContain("Fix the key.");
+    expect(text).toContain("Nit: rename the helper.");
+  });
+
+  test("a check read that fails keeps the wait until the longest wait", async () => {
+    const f = setup();
+    f.setReviewApps(["acme-lint"]);
+    f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
+    f.conversation({ id: 1, author: "pascal", body: "Rename it." });
+    f.tick(PULL_COMMENT_SETTLE_MS);
+    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
+    f.checkRuns.failing = true;
+    f.tick(60_000);
+    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
+    expect(resumeJobs(f.db)).toHaveLength(0);
+    f.tick(900_000);
+    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
+  });
+
+  test("the longest wait counts from the head's push, not from when its checks start", async () => {
+    const f = setup();
+    f.setReviewApps(["acme-lint"]);
+    f.checkRuns.pushedAt.h = f.caps.now();
+    f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "queued")];
+    f.tick(600_000);
+    f.conversation({ id: 1, author: "pascal", body: "Rename it." });
+    f.tick(PULL_COMMENT_SETTLE_MS);
+    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
+    f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
+    f.tick(300_000);
+    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
   });
 
   test("with no review check pending, the quiet window alone decides", async () => {

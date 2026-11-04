@@ -274,7 +274,6 @@ import {
   type WorkItemRecord,
   type RunnerCapacityWaitState,
   PULL_REVIEW_CHECK_MAX_WAIT_MS,
-  pendingPullComments,
   type CloseoutFaults,
   deferWorkItem,
   releaseReviewerFaultHolds,
@@ -434,7 +433,7 @@ import {
   waitForRunnerSlot,
 } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
-import { readReviewChecks } from "./review-checks";
+import { readReviewChecks, withReviewWait } from "./review-checks";
 import {
   authorizeLinearComment,
   commitLinearCommentRoute,
@@ -1900,13 +1899,15 @@ export class Orchestrator {
     jobs.register(JOB_KIND.pullReview, async (job, context) => {
       const reviewId = (job.payload as { reviewId?: unknown }).reviewId;
       if (typeof reviewId !== "number" || !context.isCurrent()) return;
-      const step = await handlePullReview(
-        this.db,
-        reviewId,
-        this.pullFeedbackCapabilities(context),
-      );
+      let reviewWait: ReviewCheckWait | null | undefined;
+      const step = await handlePullReview(this.db, reviewId, {
+        ...this.pullFeedbackCapabilities(context),
+        noteReviewWait: (wait) => {
+          reviewWait = wait;
+        },
+      });
       if (step === "wait" && context.isCurrent())
-        waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+        waitForMergeTurn(this.db, withReviewWait(job, reviewWait), this.now(), PULL_REVIEW_POLL_MS);
     });
     jobs.register(JOB_KIND.linearComments, async (job, context) => {
       const itemId = (job.payload as { linearCommentsFor?: unknown }).linearCommentsFor;
@@ -1923,22 +1924,15 @@ export class Orchestrator {
     jobs.register(JOB_KIND.pullComments, async (job, context) => {
       const itemId = (job.payload as { pullCommentsFor?: unknown }).pullCommentsFor;
       if (typeof itemId !== "string" || !context.isCurrent()) return;
-      let reviewWait: ReviewCheckWait | null = null;
+      let reviewWait: ReviewCheckWait | null | undefined;
       const step = await handlePullComments(this.db, itemId, {
         ...this.pullFeedbackCapabilities(context),
         noteReviewWait: (wait) => {
           reviewWait = wait;
         },
       });
-      if (step === "wait" && context.isCurrent()) {
-        const { reviewChecks: _old, ...payload } = job.payload as Record<string, unknown>;
-        waitForMergeTurn(
-          this.db,
-          { ...job, payload: reviewWait ? { ...payload, reviewChecks: reviewWait } : payload },
-          this.now(),
-          PULL_REVIEW_POLL_MS,
-        );
-      }
+      if (step === "wait" && context.isCurrent())
+        waitForMergeTurn(this.db, withReviewWait(job, reviewWait), this.now(), PULL_REVIEW_POLL_MS);
     });
     this.options.outbox.setHandler((message, context) =>
       linearCaller(
@@ -2027,7 +2021,7 @@ export class Orchestrator {
       },
       session: (item) => this.activitySession(item),
       flush: () => this.flush(),
-      reviewChecks: async (item, pullNumber) => {
+      reviewChecks: async (item, pullNumber, since) => {
         const repository = this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
         if (!repository || !github) return null;
@@ -2040,7 +2034,8 @@ export class Orchestrator {
           ...this.gitHubCredentials(github),
           signal: context.signal,
         });
-        if (!pull) return null;
+        const maxMs = this.feedbackWait().reviewMaxMs ?? PULL_REVIEW_CHECK_MAX_WAIT_MS;
+        if (!pull) return { head: null, pending: null, until: since + maxMs };
         let configured: string[] = [];
         try {
           configured = reviewApps(this.readMergePolicy(), `${repository.owner}/${repository.repo}`);
@@ -2058,8 +2053,8 @@ export class Orchestrator {
           repo: repository.repo,
           head: pull.head,
           configured,
-          maxMs: this.feedbackWait().reviewMaxMs ?? PULL_REVIEW_CHECK_MAX_WAIT_MS,
-          since: pendingPullComments(this.db, item.id)[0]?.receivedAt ?? this.now(),
+          maxMs,
+          since,
           checkRuns: (head) =>
             readHeadCheckRuns({
               client: github.client,
