@@ -220,6 +220,10 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("GET PUT", "/api/retros/settings", "delegated", "src/retros", {
     sample: "/api/retros/settings",
   }),
+  api("GET PUT", "/api/retros/schedule", "delegated", "src/retros", {
+    sample: "/api/retros/schedule",
+  }),
+  api("POST", "/api/retros/runs", "delegated", "src/retros", { sample: "/api/retros/runs" }),
   api("GET", "/api/runners", "delegated", "src/runner-control", { sample: "/api/runners" }),
   ...[
     ["POST", "/api/runners/enrollments"],

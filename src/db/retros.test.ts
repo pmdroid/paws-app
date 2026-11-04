@@ -496,6 +496,8 @@ describe("restart persistence", () => {
       lastOccurrenceAt: DAY,
       lastRetroId: "r1",
       nextDueAt: 8 * DAY,
+      blockedReason: null,
+      blockedSince: null,
       updatedAt: 20,
     });
     db.close();

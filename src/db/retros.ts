@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { recordImprovementProposal, type ImprovementActionStep } from "./improvements";
 import { immediate } from "./tx";
+import { ulid } from "./ulid";
 
 export type RetroState =
   | "collecting"
@@ -131,8 +132,12 @@ export type RetroScheduleRuntime = {
   lastOccurrenceAt: number | null;
   lastRetroId: string | null;
   nextDueAt: number | null;
+  blockedReason: string | null;
+  blockedSince: number | null;
   updatedAt: number;
 };
+
+export const newRetroId = (now: number): string => ulid(now);
 
 const parse = (text: string) => JSON.parse(text) as Record<string, unknown>;
 const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
@@ -836,8 +841,40 @@ export function retroScheduleRuntime(
   return db
     .query<RetroScheduleRuntime, [string]>(
       `SELECT workspace_id AS workspaceId, last_occurrence_at AS lastOccurrenceAt,
-         last_retro_id AS lastRetroId, next_due_at AS nextDueAt, updated_at AS updatedAt
+         last_retro_id AS lastRetroId, next_due_at AS nextDueAt, blocked_reason AS blockedReason,
+         blocked_since AS blockedSince, updated_at AS updatedAt
        FROM retro_schedule_runtime WHERE workspace_id = ?`,
     )
     .get(workspaceId);
+}
+
+export function recordRetroScheduleState(
+  db: Database,
+  input: {
+    workspaceId: string;
+    nextDueAt: number | null;
+    blockedReason: string | null;
+    now: number;
+  },
+): void {
+  db.run(
+    `INSERT INTO retro_schedule_runtime (workspace_id, next_due_at, blocked_reason, blocked_since,
+       updated_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT (workspace_id) DO UPDATE SET next_due_at = excluded.next_due_at,
+       blocked_reason = excluded.blocked_reason,
+       blocked_since = CASE WHEN excluded.blocked_reason IS NULL THEN NULL
+         WHEN retro_schedule_runtime.blocked_reason IS excluded.blocked_reason
+           THEN retro_schedule_runtime.blocked_since
+         ELSE excluded.blocked_since END,
+       updated_at = excluded.updated_at
+     WHERE retro_schedule_runtime.next_due_at IS NOT excluded.next_due_at
+       OR retro_schedule_runtime.blocked_reason IS NOT excluded.blocked_reason`,
+    [
+      input.workspaceId,
+      input.nextDueAt,
+      input.blockedReason,
+      input.blockedReason === null ? null : input.now,
+      input.now,
+    ],
+  );
 }

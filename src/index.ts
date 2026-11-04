@@ -221,9 +221,13 @@ import { startServer } from "./server";
 import { activeRunnerReadiness } from "./settings";
 import {
   createRetroDispatcher,
+  createRetroScheduleHttp,
+  createRetroScheduler,
   createRetroSettingsHttp,
   RETRO_DISPATCH_JOB,
   RETRO_DISPATCH_TIMING,
+  RETRO_SCHEDULE_JOB,
+  RETRO_SCHEDULE_TICK_MS,
   type RetroDispatcher,
 } from "./retros";
 import { itemReviews } from "./dashboard";
@@ -719,6 +723,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let runner: RunnerCoordinator | undefined;
   let runnerStopping = false;
   let retroDispatcher: RetroDispatcher | undefined;
+  const retroCatalog = (principal: { workspaceId: string; userId: string }) =>
+    runner?.models.read(principal) ?? null;
+  const retroScheduler = createRetroScheduler({
+    db,
+    artifactRoot: join(paths.home, "retros"),
+    catalogs: retroCatalog,
+  });
   const runnerReady =
     runnerConfig === null
       ? Promise.resolve(undefined)
@@ -978,10 +989,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           : null,
       ...(linear?.findingIssues ? { findingGroups: { issues: linear.findingIssues } } : {}),
       hostname: env.host,
-      retros: createRetroSettingsHttp({
-        db,
-        catalog: (principal) => runner?.models.read(principal) ?? null,
-      }),
+      retros: (() => {
+        const settings = createRetroSettingsHttp({ db, catalog: retroCatalog });
+        const schedule = createRetroScheduleHttp({
+          db,
+          scheduler: retroScheduler,
+          catalog: retroCatalog,
+        });
+        return async (request: Request, principal: WorkspacePrincipal) =>
+          (await settings(request, principal)) ?? schedule(request, principal);
+      })(),
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??
         Response.json({ error: "Execution controls are starting." }, { status: 503 }),
@@ -1627,6 +1644,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           ),
         ),
       );
+      created.jobs.register(RETRO_SCHEDULE_JOB, async () => {
+        retroScheduler.tick();
+      });
+      enqueueJobOnce(db, {
+        queue: RETRO_SCHEDULE_JOB,
+        jobKey: RETRO_SCHEDULE_JOB,
+        recurringEveryMs: RETRO_SCHEDULE_TICK_MS,
+        now: Date.now(),
+      });
       created.jobs.register(RETRO_DISPATCH_JOB, async () => {
         await runnerReady;
         retroDispatcher?.tick();
