@@ -370,10 +370,64 @@ const CONFLICT_MESSAGE = {
   known_issue: "This improvement already has an issue. Link it instead of creating a duplicate.",
 } as const;
 
+function destinationRefusal(
+  db: Database,
+  reviewer: ImprovementReviewer,
+  item: InboxItem,
+  teamId: string,
+): ImprovementDecisionOutcome | null {
+  if (improvementDestinations(db, reviewer, item.improvement.repository).includes(teamId))
+    return null;
+  return {
+    status: "forbidden",
+    reason: "destination",
+    message: "Choose a Linear team mapped to this repository that you belong to.",
+    item: improvementView(db, item),
+  };
+}
+
+function linkRefusal(
+  db: Database,
+  reviewer: ImprovementReviewer,
+  item: InboxItem,
+  linked: LinkableIssue | null,
+  allowClosed: boolean,
+): ImprovementDecisionOutcome | null {
+  const readableTeams =
+    reviewer.role === "admin"
+      ? listWorkspaceRepositories(db, reviewer.workspaceId).map((entry) => entry.teamId)
+      : reviewer.teamIds;
+  if (linked === null || !readableTeams.includes(linked.teamId))
+    return {
+      status: "invalid",
+      reason: "issue_not_found",
+      message: "That Linear issue does not exist or Paws cannot read it.",
+    };
+  if (!improvementDestinations(db, reviewer, item.improvement.repository).includes(linked.teamId))
+    return {
+      status: "conflict",
+      reason: "team_mismatch",
+      message:
+        "That issue belongs to a team outside this repository's mapping. Choose another issue or create one.",
+      item: improvementView(db, item),
+    };
+  if (linked.state === "closed" && !allowClosed)
+    return {
+      status: "conflict",
+      reason: "issue_closed",
+      message:
+        "That issue is closed. Linking does not reopen it. Confirm the link to a closed issue, or create a new one.",
+      item: improvementView(db, item),
+      issue: linked,
+    } as ImprovementDecisionOutcome;
+  return null;
+}
+
 export async function decideInboxItem(
   db: Database,
   input: {
     reviewer: ImprovementReviewer;
+    reauthorize?: () => ImprovementReviewer | null;
     improvementId: string;
     expectedVersion: number;
     request: ImprovementDecisionRequest;
@@ -415,16 +469,10 @@ export async function decideInboxItem(
         item: improvementView(db, first),
       };
     const intent = request.intent;
-    const destinations = improvementDestinations(db, reviewer, first.improvement.repository);
     if (intent.kind === "create") {
       if (first.issue) return conflict(first, "known_issue");
-      if (!destinations.includes(intent.teamId))
-        return {
-          status: "forbidden",
-          reason: "destination",
-          message: "Choose a Linear team mapped to this repository that you belong to.",
-          item: improvementView(db, first),
-        };
+      const refused = destinationRefusal(db, reviewer, first, intent.teamId);
+      if (refused) return refused;
     } else {
       if (!input.lookup)
         return {
@@ -441,42 +489,26 @@ export async function decideInboxItem(
           message: "Linear is unavailable. Your decision was not saved; try again.",
         };
       }
-      const readableTeams =
-        reviewer.role === "admin"
-          ? listWorkspaceRepositories(db, reviewer.workspaceId).map((entry) => entry.teamId)
-          : reviewer.teamIds;
-      if (linked === null || !readableTeams.includes(linked.teamId))
-        return {
-          status: "invalid",
-          reason: "issue_not_found",
-          message: "That Linear issue does not exist or Paws cannot read it.",
-        };
-      if (!destinations.includes(linked.teamId))
-        return {
-          status: "conflict",
-          reason: "team_mismatch",
-          message:
-            "That issue belongs to a team outside this repository's mapping. Choose another issue or create one.",
-          item: improvementView(db, first),
-        };
-      if (linked.state === "closed" && intent.allowClosed !== true)
-        return {
-          status: "conflict",
-          reason: "issue_closed",
-          message:
-            "That issue is closed. Linking does not reopen it. Confirm the link to a closed issue, or create a new one.",
-          item: improvementView(db, first),
-          issue: linked,
-        } as ImprovementDecisionOutcome;
+      const refused = linkRefusal(db, reviewer, first, linked, intent.allowClosed === true);
+      if (refused) return refused;
     }
   }
 
   return immediate(db, (): ImprovementDecisionOutcome => {
-    const item = findInboxItem(db, reviewer, input.improvementId);
+    const current = input.reauthorize ? input.reauthorize() : reviewer;
+    if (!current) return notFound;
+    const item = findInboxItem(db, current, input.improvementId);
     if (!item) return notFound;
     if (sameDecision(db, item, request))
       return { status: "unchanged", item: improvementView(db, item) };
     if (item.improvement.version !== input.expectedVersion) return conflict(item, "stale");
+    if (request.kind === "accept") {
+      const refused =
+        request.intent.kind === "create"
+          ? destinationRefusal(db, current, item, request.intent.teamId)
+          : linkRefusal(db, current, item, linked, request.intent.allowClosed === true);
+      if (refused) return refused;
+    }
     if (item.legacy.some((action) => action.kind !== "dismissed")) return conflict(item, "legacy");
     if (request.kind === "accept" && item.proposal.version !== request.proposalVersion)
       return conflict(item, "proposal_changed");
@@ -530,7 +562,7 @@ export async function decideInboxItem(
     if (result.ok)
       return {
         status: "decided",
-        item: improvementView(db, findInboxItem(db, reviewer, item.improvement.id) ?? item),
+        item: improvementView(db, findInboxItem(db, current, item.improvement.id) ?? item),
       };
     if (result.reason === "unchanged")
       return { status: "unchanged", item: improvementView(db, item) };

@@ -27,6 +27,7 @@ import {
   writeRetroArtifact,
 } from "../src/db";
 import { handleFindingGroupsRequest } from "../src/dashboard/src/server/finding-groups";
+import { handleFindingsRequest } from "../src/dashboard/src/server/findings";
 import {
   createFakeIssueLookup,
   createImprovementsHttp,
@@ -581,6 +582,47 @@ describe("improvement decisions", () => {
     );
   });
 
+  test("access revoked during the Linear lookup refuses the link", async () => {
+    const w = world();
+    const id = w.retro.a;
+    const decideWhile = async (revoke: () => void) => {
+      const http = createImprovementsHttp({
+        db: w.db,
+        lookup: async (issue) => (revoke(), w.lookup.lookup(issue)),
+        now: w.now,
+      });
+      const response = await http(
+        new Request(`http://paws.test/api/improvements/${id}/decision`, {
+          method: "POST",
+          body: JSON.stringify(accept(1, { kind: "link", issue: "PAS-60" })),
+        }),
+        w.people["ada"]!,
+        ONLY_A,
+      );
+      return { status: response!.status, body: (await response!.json()) as Json };
+    };
+    let at = 2;
+    const member = (active: boolean, teamIds: string[]) =>
+      syncWorkspaceMember(w.db, {
+        workspaceId: "ws",
+        userId: "user-ada",
+        role: "member",
+        active,
+        teamIds,
+        now: at++,
+      });
+    const lostTeam = await decideWhile(() => member(true, []));
+    expect([lostTeam.status, lostTeam.body.reason]).toEqual([404, "not_found"]);
+    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    member(true, ["team-a"]);
+    const revoked = await decideWhile(() => member(false, ["team-a"]));
+    expect([revoked.status, revoked.body.reason]).toEqual([404, "not_found"]);
+    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    member(true, ["team-a"]);
+    const kept = await decideWhile(() => {});
+    expect(kept.body.status).toBe("decided");
+  });
+
   test("revoked membership loses reads and decisions; another workspace sees nothing", async () => {
     const w = world();
     const id = w.retro.a;
@@ -697,6 +739,40 @@ describe("daily findings share legacy claims", () => {
   });
 });
 
+describe("legacy dismissal after an inbox accept", () => {
+  test("neither a group nor a single finding can be dismissed once the inbox accepted it", async () => {
+    const w = world();
+    const { groupId, findings } = seedDaily(w.db);
+    const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
+    const done = await w.api(
+      "ada",
+      `/api/improvements/${daily.id}/decision`,
+      accept(1, undefined, {
+        verificationCriterion: "Gone.",
+        proposalVersion: daily.proposal.version,
+      }),
+    );
+    expect(done.body.status).toBe("decided");
+    const group = await handleFindingGroupsRequest(
+      new Request("http://paws.test/api/finding-groups", {
+        method: "POST",
+        body: JSON.stringify({ action: "dismiss", id: groupId, reason: "Noise" }),
+      }),
+      { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
+    );
+    expect(group!.status).toBe(409);
+    const single = await handleFindingsRequest(
+      new Request("http://paws.test/api/findings", {
+        method: "POST",
+        body: JSON.stringify({ action: "dismiss", id: findings[0]!.id, reason: "Noise" }),
+      }),
+      { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
+    );
+    expect(single!.status).toBe(409);
+    expect(listReviewFindings(w.db).every((f) => f.status === "open")).toBe(true);
+  });
+});
+
 describe("individual finding issues share the inbox claim", () => {
   const ORIGIN = "https://paws.example";
   function route(w: ReturnType<typeof world>, file: () => Promise<void> = async () => {}) {
@@ -806,6 +882,25 @@ describe("individual finding issues share the inbox claim", () => {
       issue: { identifier: "PAS-77", origin: "legacy" },
       legacy: [{ kind: "filed", issue: "PAS-77" }],
     });
+    expect(listImprovementDeliveries(w.db, after.body.item.id)).toEqual([]);
+  });
+
+  test("an individual filing after a dismissed group still blocks the inbox Create", async () => {
+    const w = world();
+    const { groupId } = seedDaily(w.db);
+    const dismissed = await handleFindingGroupsRequest(
+      new Request("http://paws.test/api/finding-groups", {
+        method: "POST",
+        body: JSON.stringify({ action: "dismiss", id: groupId, reason: "Noise" }),
+      }),
+      { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
+    );
+    expect(dismissed!.status).toBe(200);
+    const { post } = route(w);
+    expect((await post())!.status).toBe(200);
+    const after = await acceptDaily(w);
+    expect([after.status, after.body.reason]).toEqual([409, "known_issue"]);
+    expect(after.body.item.issue).toMatchObject({ identifier: "PAS-77", origin: "legacy" });
     expect(listImprovementDeliveries(w.db, after.body.item.id)).toEqual([]);
   });
 });

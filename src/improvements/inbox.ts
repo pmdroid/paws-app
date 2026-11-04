@@ -132,7 +132,11 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
       );
       if (!visible) return [];
       legacy = legacyActions(findings, groups);
-      const covered = new Set(legacy.flatMap((action) => action.findingIds));
+      const covered = new Set(
+        legacy
+          .filter((action) => action.kind !== "dismissed")
+          .flatMap((action) => action.findingIds),
+      );
       const claims = reviewFindingIssueClaims(db, findings);
       for (const f of findings) {
         const claim = claims.get(f.key);

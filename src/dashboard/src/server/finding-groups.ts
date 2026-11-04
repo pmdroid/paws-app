@@ -204,7 +204,6 @@ export async function handleFindingGroupsRequest(
   if (action.action !== "dismiss" && !options.services)
     return Response.json({ error: "Linear is unavailable." }, { status: 503 });
   if (
-    action.action !== "dismiss" &&
     acceptedImprovementsForFindings(
       db,
       principal.workspaceId,
@@ -212,7 +211,9 @@ export async function handleFindingGroupsRequest(
     ).length
   )
     return Response.json(
-      { error: "The improvement inbox already accepted these findings and files their issue." },
+      {
+        error: "The improvement inbox already accepted these findings. Its issue delivery stands.",
+      },
       { status: 409 },
     );
   if (activeActions.has(group.id))

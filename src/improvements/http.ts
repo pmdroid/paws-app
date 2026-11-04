@@ -106,29 +106,33 @@ export function createImprovementsHttp(options: {
     const url = new URL(request.url);
     const path = url.pathname;
     if (path !== IMPROVEMENTS_PATH && !path.startsWith(`${IMPROVEMENTS_PATH}/`)) return null;
-    const member = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (!member?.active) {
+    const reviewerFor = (): ImprovementReviewer | null => {
+      const member = workspaceMember(db, principal.workspaceId, principal.userId);
+      if (!member?.active) return null;
+      const evidence = new Map<string, ReadonlySet<string> | null>();
+      return {
+        workspaceId: principal.workspaceId,
+        repositories: memberRepositories(db, principal.workspaceId, principal.userId),
+        sessionIds,
+        userId: principal.userId,
+        role: member.role,
+        teamIds: member.teamIds,
+        ...(options.retroEvidence
+          ? {
+              retroEvidence: (retroId: string) => {
+                if (!evidence.has(retroId))
+                  evidence.set(retroId, options.retroEvidence!(principal, sessionIds, retroId));
+                return evidence.get(retroId)!;
+              },
+            }
+          : {}),
+      };
+    };
+    const reviewer = reviewerFor();
+    if (!reviewer) {
       audit(principal, "access.denied", path);
       return json({ error: "Workspace access is unavailable." }, 403);
     }
-    const evidence = new Map<string, ReadonlySet<string> | null>();
-    const reviewer: ImprovementReviewer = {
-      workspaceId: principal.workspaceId,
-      repositories: memberRepositories(db, principal.workspaceId, principal.userId),
-      sessionIds,
-      userId: principal.userId,
-      role: member.role,
-      teamIds: member.teamIds,
-      ...(options.retroEvidence
-        ? {
-            retroEvidence: (retroId: string) => {
-              if (!evidence.has(retroId))
-                evidence.set(retroId, options.retroEvidence!(principal, sessionIds, retroId));
-              return evidence.get(retroId)!;
-            },
-          }
-        : {}),
-    };
 
     if (path === IMPROVEMENTS_PATH) {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
@@ -177,6 +181,7 @@ export function createImprovementsHttp(options: {
       );
     const outcome = await decideInboxItem(db, {
       reviewer,
+      reauthorize: reviewerFor,
       improvementId: decision![1]!,
       expectedVersion: parsed.data.expectedVersion,
       request: parsed.data.decision,
