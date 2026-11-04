@@ -12,6 +12,7 @@ import {
   highRiskPaths,
   repositoryPackages,
   resolveMergeSettings,
+  reviewApps,
   storedMerge,
   writeMergePolicy,
   type MergePolicy,
@@ -114,7 +115,7 @@ packages = ["apps/*", "packages/*"]
       repositories: { "acme/platform": { packages: ["apps/*", "packages/*"] } },
       autoApproveHighRisk: false,
       ciFixAttempts: 2,
-      commentWait: { quietSeconds: 60, maxWaitSeconds: 300 },
+      commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
     });
     expect(repositoryPackages(readMergeSettings(config), "Acme/Platform")).toEqual([
       "apps/*",
@@ -137,6 +138,27 @@ packages = ["apps/*", "packages/*"]
     expect(() =>
       parseConfigToml(`[merge.repositories."acme/platform"]\nignore_comment_bots = ["a b"]\n`),
     ).toThrow("must be a GitHub login");
+  });
+
+  test("a repository's review apps read, render and write back", () => {
+    const text = `[merge]\nreview_wait_max_seconds = 600\n\n[merge.repositories."acme/platform"]\npackages = []\nreview_apps = ["Acme-Review", "acme-lint"]\n`;
+    const settings = readMergeSettings(parseConfigToml(text));
+    expect(reviewApps(settings, "ACME/platform")).toEqual(["acme-review", "acme-lint"]);
+    expect(reviewApps(settings, "acme/web")).toEqual([]);
+    expect(settings.commentWait.reviewWaitMaxSeconds).toBe(600);
+    const home = tempHome();
+    const path = join(home, "config.toml");
+    writeMergePolicy(
+      path,
+      { default: { order: "queue", mainMoved: "ci" }, projects: {}, rules: [] },
+      storedMerge(parseConfigToml(text)),
+    );
+    const saved = readMergeSettings(loadConfigFile(path));
+    expect(reviewApps(saved, "acme/platform")).toEqual(["acme-review", "acme-lint"]);
+    expect(saved.commentWait.reviewWaitMaxSeconds).toBe(600);
+    expect(() =>
+      parseConfigToml(`[merge.repositories."acme/platform"]\nreview_apps = ["acme review"]\n`),
+    ).toThrow("must be a GitHub App slug");
   });
 
   test("each main_moved value round-trips through config.toml, and a missing key means ci", () => {
@@ -193,22 +215,33 @@ packages = ["apps/*", "packages/*"]
     expect(readMergeSettings(parseConfigToml("")).commentWait).toEqual({
       quietSeconds: 60,
       maxWaitSeconds: 300,
+      reviewWaitMaxSeconds: 900,
     });
     expect(
       readMergeSettings(
         parseConfigToml("[merge]\ncomment_quiet_seconds = 120\ncomment_max_wait_seconds = 600\n"),
       ).commentWait,
-    ).toEqual({ quietSeconds: 120, maxWaitSeconds: 600 });
+    ).toEqual({ quietSeconds: 120, maxWaitSeconds: 600, reviewWaitMaxSeconds: 900 });
     // A longest wait below the quiet time waits the quiet time; values cap at an hour.
     expect(
       readMergeSettings(
         parseConfigToml("[merge]\ncomment_quiet_seconds = 9000\ncomment_max_wait_seconds = 30\n"),
       ).commentWait,
-    ).toEqual({ quietSeconds: 3600, maxWaitSeconds: 3600 });
+    ).toEqual({ quietSeconds: 3600, maxWaitSeconds: 3600, reviewWaitMaxSeconds: 900 });
     expect(parseCommentWait({ quietSeconds: 0, maxWaitSeconds: 0 })).toEqual({
       quietSeconds: 0,
       maxWaitSeconds: 0,
     });
+    expect(
+      readMergeSettings(parseConfigToml("[merge]\nreview_wait_max_seconds = 1200\n")).commentWait
+        .reviewWaitMaxSeconds,
+    ).toBe(1200);
+    expect(
+      parseCommentWait({ quietSeconds: 0, maxWaitSeconds: 0, reviewWaitMaxSeconds: 600 }),
+    ).toEqual({ quietSeconds: 0, maxWaitSeconds: 0, reviewWaitMaxSeconds: 600 });
+    expect(() =>
+      parseCommentWait({ quietSeconds: 0, maxWaitSeconds: 0, reviewWaitMaxSeconds: 4000 }),
+    ).toThrow("reviewWaitMaxSeconds");
     expect(() => parseCommentWait({ quietSeconds: 90, maxWaitSeconds: 60 })).toThrow(
       "at least the quiet time",
     );
@@ -262,7 +295,7 @@ describe("Merging settings API", () => {
     expect(response?.status).toBe(200);
     expect(await response!.json()).toEqual({
       autoApproveHighRisk: false,
-      commentWait: { quietSeconds: 60, maxWaitSeconds: 300 },
+      commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
       default: { order: "queue", mainMoved: "ci" },
       projects: [],
       rules: [],
@@ -345,7 +378,7 @@ describe("Merging settings API", () => {
     expect(await saved!.json()).toEqual({
       autoApproveHighRisk: false,
       ...body,
-      commentWait: { quietSeconds: 60, maxWaitSeconds: 300 },
+      commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
       highRiskPaths: [],
       highRiskRepositories: [],
     });
@@ -362,7 +395,7 @@ describe("Merging settings API", () => {
       repositories: { "acme/platform": { packages: ["apps/*"] } },
       autoApproveHighRisk: false,
       ciFixAttempts: 5,
-      commentWait: { quietSeconds: 60, maxWaitSeconds: 300 },
+      commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
     });
     expect(
       ((await (await handleMergeSettingsRequest(request(), options))!.json()) as { rules: unknown })
@@ -533,7 +566,11 @@ describe("Merging settings API", () => {
           commentWait: unknown;
         }
       ).commentWait;
-    expect(await read()).toEqual({ quietSeconds: 60, maxWaitSeconds: 300 });
+    expect(await read()).toEqual({
+      quietSeconds: 60,
+      maxWaitSeconds: 300,
+      reviewWaitMaxSeconds: 900,
+    });
 
     const saved = await handleMergeSettingsRequest(
       request("PUT", { ...valid, commentWait: { quietSeconds: 120, maxWaitSeconds: 900 } }),
@@ -543,6 +580,7 @@ describe("Merging settings API", () => {
     expect(((await saved!.json()) as { commentWait: unknown }).commentWait).toEqual({
       quietSeconds: 120,
       maxWaitSeconds: 900,
+      reviewWaitMaxSeconds: 900,
     });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
@@ -553,7 +591,29 @@ describe("Merging settings API", () => {
     ]);
 
     expect((await handleMergeSettingsRequest(request("PUT", valid), options))?.status).toBe(200);
-    expect(await read()).toEqual({ quietSeconds: 120, maxWaitSeconds: 900 });
+    expect(await read()).toEqual({
+      quietSeconds: 120,
+      maxWaitSeconds: 900,
+      reviewWaitMaxSeconds: 900,
+    });
+
+    const review = { quietSeconds: 120, maxWaitSeconds: 900, reviewWaitMaxSeconds: 1200 };
+    await handleMergeSettingsRequest(request("PUT", { ...valid, commentWait: review }), options);
+    expect(await read()).toEqual(review);
+    expect(readFileSync(options.configPath, "utf8")).toContain("review_wait_max_seconds = 1200");
+    expect(audits).toContainEqual([
+      "settings.merging",
+      "Review check wait: 900s at most → 1200s at most",
+    ]);
+    await handleMergeSettingsRequest(
+      request("PUT", { ...valid, commentWait: { quietSeconds: 60, maxWaitSeconds: 300 } }),
+      options,
+    );
+    expect(await read()).toEqual({
+      quietSeconds: 60,
+      maxWaitSeconds: 300,
+      reviewWaitMaxSeconds: 1200,
+    });
 
     const invalid = await handleMergeSettingsRequest(
       request("PUT", { ...valid, commentWait: { quietSeconds: 600, maxWaitSeconds: 60 } }),

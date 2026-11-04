@@ -9,6 +9,7 @@ import {
   storedMerge,
   writeMergePolicy,
   type CommentWait,
+  type CommentWaitInput,
   type MergeChoice,
   type MergeOverride,
   type MergePolicy,
@@ -149,7 +150,7 @@ export async function handleMergeSettingsRequest(
   let policy: MergePolicy;
   // Optional, so a page that does not show High-risk paths or the comment wait keeps them.
   let highRiskPaths: Record<string, string[]> | undefined;
-  let commentWait: CommentWait | undefined;
+  let commentWait: CommentWaitInput | undefined;
   let autoApproveHighRisk: boolean | undefined;
   try {
     if (isRecord(body) && "highRiskPaths" in body) {
@@ -237,7 +238,7 @@ export async function handleMergeSettingsRequest(
       `Automatic high-risk approval: ${autoApproveHighRisk ? "on" : "off"}`,
     );
   const waitBefore = before?.commentWait ?? DEFAULT_COMMENT_WAIT;
-  const waitAfter = commentWait ?? waitBefore;
+  const waitAfter: CommentWait = { ...waitBefore, ...commentWait };
   if (
     waitAfter.quietSeconds !== waitBefore.quietSeconds ||
     waitAfter.maxWaitSeconds !== waitBefore.maxWaitSeconds
@@ -245,6 +246,11 @@ export async function handleMergeSettingsRequest(
     options.audit?.(
       "settings.merging",
       `Pull request comment wait: ${waitBefore.quietSeconds}s quiet, ${waitBefore.maxWaitSeconds}s at most → ${waitAfter.quietSeconds}s quiet, ${waitAfter.maxWaitSeconds}s at most`,
+    );
+  if (waitAfter.reviewWaitMaxSeconds !== waitBefore.reviewWaitMaxSeconds)
+    options.audit?.(
+      "settings.merging",
+      `Review check wait: ${waitBefore.reviewWaitMaxSeconds}s at most → ${waitAfter.reviewWaitMaxSeconds}s at most`,
     );
   const saved =
     highRiskPaths ??

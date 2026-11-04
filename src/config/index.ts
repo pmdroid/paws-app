@@ -56,6 +56,7 @@ export {
   DEFAULT_IGNORED_COMMENT_BOTS,
   DEFAULT_MERGE_CHOICE,
   ignoredCommentBots,
+  reviewApps,
   MAIN_MOVED,
   MAX_CI_FIX_ATTEMPTS,
   MERGE_ORDERS,
@@ -72,6 +73,7 @@ export {
 } from "./merge";
 export type {
   CommentWait,
+  CommentWaitInput,
   MainMoved,
   MergeChoice,
   MergeLevel,
