@@ -1,5 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { auditWorkspaceAccess, listWorkspaceRepositoryNames, workspaceMember } from "../db";
+import {
+  workspaceMemberUsable,
+  auditWorkspaceAccess,
+  listWorkspaceRepositoryNames,
+  workspaceMember,
+} from "../db";
 import { journalCaught } from "../journal";
 import type { AgentModelCatalog } from "../runner-models";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
@@ -39,7 +44,7 @@ export function createRetroSettingsHttp(options: {
     });
   return async (request: Request, principal: WorkspacePrincipal): Promise<Response | null> => {
     if (new URL(request.url).pathname !== RETRO_SETTINGS_PATH) return null;
-    if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
+    if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
       return json({ error: "Workspace access is unavailable." }, 403);
     const accessibleRepositories = listWorkspaceRepositoryNames(db, principal.workspaceId);
     const view = () =>

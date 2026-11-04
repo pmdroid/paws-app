@@ -1,11 +1,12 @@
-import { isWorkspaceAdmin } from "../workspace";
-import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   listWorkspaceMembers,
   listWorkspaceRepositories,
   teamRepositoryAllowedSql,
   type WorkItemRecord,
 } from "../db";
+import { isWorkspaceAdmin } from "../workspace";
+import type { Database } from "bun:sqlite";
 import {
   noRepositoryDenial,
   notTeamMemberDenial,
@@ -57,7 +58,7 @@ export function teamMemberDenial(db: Database, item: WorkItemRecord): GitHubDeni
 /** Names of the workspace's active admins, from the database. */
 export function workspaceAdministratorNames(db: Database, workspaceId: string): string[] {
   return listWorkspaceMembers(db, workspaceId)
-    .filter((member) => member.active && isWorkspaceAdmin(member.role))
+    .filter((member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role))
     .map((member) => member.name);
 }
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   auditWorkspaceAccess,
   enqueueJobOnce,
   findingGroupingEnabled,
@@ -86,10 +87,10 @@ export async function handleFindingGroupsRequest(
     const data: FindingGroupsResponse = {
       groups: [],
       lastRun: null,
-      canRun: enabled && !!member?.active && ["admin", "owner"].includes(member.role),
+      canRun: enabled && workspaceMemberUsable(member) && ["admin", "owner"].includes(member.role),
       enabled,
     };
-    if (workspaceId && (!principal || member?.active)) {
+    if (workspaceId && (!principal || workspaceMemberUsable(member))) {
       const groups = listFindingGroups(db, workspaceId, 200);
       const snapshot = {
         rows: new Map(
@@ -136,7 +137,7 @@ export async function handleFindingGroupsRequest(
   if (request.method !== "POST")
     return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
   if (!principal) return Response.json({ error: "Sign in to Paws." }, { status: 401 });
-  if (!member?.active || !["admin", "member"].includes(member.role))
+  if (!workspaceMemberUsable(member) || !["admin", "member"].includes(member.role))
     return Response.json({ error: "You cannot change finding groups." }, { status: 403 });
   let body: unknown;
   try {

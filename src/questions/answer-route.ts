@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { auditWorkspaceAccess, getWorkItem, workspaceMember } from "../db";
+import { workspaceMemberUsable, auditWorkspaceAccess, getWorkItem, workspaceMember } from "../db";
 import { canAnswer } from "./answerers";
 import { getQuestion, type QuestionKind } from "./store";
 
@@ -80,7 +80,7 @@ export async function handleQuestionAnswer(
     return Response.json({ error: "Answer this on the issue page" }, { status: 400 });
   const member = workspaceMember(db, principal.workspaceId, principal.userId);
   if (
-    !member?.active ||
+    !workspaceMemberUsable(member) ||
     !member.linearUserId ||
     !canAnswer({ kind }, { id: member.linearUserId })
   ) {

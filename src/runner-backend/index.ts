@@ -18,6 +18,7 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsableSql,
   getTaskMode,
   closeFallbackAttempts,
   dispatchAccount,
@@ -622,7 +623,7 @@ export function createRemoteAgentRunner(options: {
             .query<{ id: string; workspaceId: string }, []>(
               `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
-       WHERE r.status='active' AND r.revoked_at IS NULL AND m.active=1
+       WHERE r.status='active' AND r.revoked_at IS NULL AND ${workspaceMemberUsableSql("m")}
        AND r.last_seen_at>${now() - 60_000}
        ORDER BY r.last_seen_at DESC,r.id`,
             )

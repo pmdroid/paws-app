@@ -1,5 +1,5 @@
-import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   auditWorkspaceAccess,
   getLinkAsk,
   getWorkItem,
@@ -8,6 +8,7 @@ import {
   workspaceMember,
   type LinkAskDecision,
 } from "../db";
+import type { Database } from "bun:sqlite";
 
 /**
  * `POST /api/link-asks` with `{ questionId, decision, note }`: a decision made on the item page.
@@ -114,7 +115,7 @@ export async function handleLinkAskAnswer(
     });
     return Response.json({ error: LINK_ASK_ANSWERERS }, { status: 403 });
   };
-  if (!member?.active || !member.linearUserId) return refuse();
+  if (!workspaceMemberUsable(member) || !member.linearUserId) return refuse();
   const result = await options.submit({
     questionId: ask.questionId,
     decision,
