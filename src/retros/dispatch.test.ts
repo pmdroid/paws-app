@@ -9,12 +9,14 @@ import {
   createRetro,
   ensureLegacyAgentBinding,
   getRetro,
+  getRetroDispatch,
   legacyAgentAccountId,
   listRetroAttempts,
   listRetroDispatches,
   listRetroItems,
   migrate,
   openDatabase,
+  retroSlotsHeld,
   retroWatermarks,
   runnerOccupancy,
   saveRetroSettingsRevision,
@@ -513,6 +515,11 @@ describe("recovery", () => {
     dispatcher.tick();
     expect(listRetroDispatches(db, "r1")[0]).toMatchObject({ releaseReason: "not_started" });
     dispatcher.tick();
+    expect(listRetroDispatches(db, "r1")).toHaveLength(1);
+    expect(dispatcher.generation("r1")).toMatchObject({ diagnostic: "retry_backoff" });
+    clock.now += retroRetryDelayMs(1);
+    runner.seen(db);
+    dispatcher.tick();
     const dispatches = listRetroDispatches(db, "r1");
     expect(dispatches).toHaveLength(2);
     expect(dispatcher.generation("r1")).toMatchObject({
@@ -520,6 +527,43 @@ describe("recovery", () => {
       attempt: 2,
       attemptsUsed: 1,
       maxAttempts: 1,
+    });
+  });
+
+  test("an online runner that never fetches does not hold its slot after the command expires", () => {
+    const { db, clock, open } = world({ retries: 0 });
+    addRunner(db, { id: "R1" });
+    const runner = fakeRunner("R1", clock);
+    runner.seen(db);
+    const dispatcher = open(db);
+    dispatcher.tick();
+    const [dispatch] = listRetroDispatches(db, "r1");
+    clock.now = dispatch!.expiresAt;
+    runner.seen(db);
+    dispatcher.tick();
+    expect(getRetroDispatch(db, dispatch!.commandId)).toMatchObject({
+      releaseReason: "not_started",
+    });
+    expect(retroSlotsHeld(db, "R1")).toBe(0);
+    expect(dispatcher.commands("R1")).toEqual([]);
+    for (let round = 1; round <= 3; round += 1) {
+      clock.now += retroRetryDelayMs(round) - 1;
+      runner.seen(db);
+      dispatcher.tick();
+      expect(listRetroDispatches(db, "r1")).toHaveLength(round);
+      clock.now += 1;
+      runner.seen(db);
+      dispatcher.tick();
+      const latest = listRetroDispatches(db, "r1").at(-1)!;
+      expect(latest.attempt).toBe(round + 1);
+      clock.now = latest.expiresAt;
+      runner.seen(db);
+      dispatcher.tick();
+    }
+    expect(dispatcher.generation("r1")).toMatchObject({
+      state: "failed",
+      diagnostic: "retry_backoff",
+      attemptsUsed: 0,
     });
   });
 

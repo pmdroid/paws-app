@@ -71,7 +71,6 @@ export const RETRO_DISPATCH_TIMING = {
   resignBeforeMs: 30_000,
   outcomeGraceMs: 300_000,
   notStartedGraceMs: 60_000,
-  runnerOnlineMs: 60_000,
   retryBaseMs: 60_000,
   retryCapMs: 1_800_000,
   tickMs: 15_000,
@@ -141,7 +140,7 @@ function retryAt(db: Database, retro: Retro): number | null {
       )
       .get(retro.id, retro.attempt)?.reason === "not_started";
   const finished = last?.finishedAt ?? retro.updatedAt;
-  return notStarted ? finished : finished + retroRetryDelayMs(used);
+  return finished + retroRetryDelayMs(notStarted ? retroDispatchesNotStarted(db, retro.id) : used);
 }
 
 export function retroGenerationView(db: Database, retroId: string): RetroGenerationView | null {
@@ -402,12 +401,11 @@ export function createRetroDispatcher(options: {
     if (dispatch.acknowledgedAt === null) {
       const seenAfterExpiry =
         (identity.lastSeenAt ?? 0) > dispatch.expiresAt + RETRO_DISPATCH_TIMING.notStartedGraceMs;
-      const online = (identity.lastSeenAt ?? 0) > at - RETRO_DISPATCH_TIMING.runnerOnlineMs;
       if (dispatch.cancelRequestedAt !== null && dispatch.fetchedAt === null) {
         releaseRetroDispatch(db, { commandId: dispatch.commandId, reason: "not_started", now: at });
         return settle(getRetroDispatch(db, dispatch.commandId)!);
       }
-      if (dispatch.fetchedAt === null && dispatch.expiresAt <= at && !online) {
+      if (dispatch.fetchedAt === null && dispatch.expiresAt <= at) {
         releaseRetroDispatch(db, { commandId: dispatch.commandId, reason: "not_started", now: at });
         return settle(getRetroDispatch(db, dispatch.commandId)!);
       }
@@ -758,6 +756,7 @@ export function createRetroDispatcher(options: {
           const envelope = immediate(db, () => {
             const dispatch = authorize(runnerId, listed.commandId);
             const at = now();
+            if (dispatch.releasedAt !== null || dispatch.cancelRequestedAt !== null) return null;
             if (
               dispatch.fetchedAt === null &&
               dispatch.expiresAt - at < RETRO_DISPATCH_TIMING.resignBeforeMs
@@ -768,12 +767,13 @@ export function createRetroDispatcher(options: {
                 expiresAt: at + RETRO_DISPATCH_TIMING.commandTtlMs,
               };
               const fresh = signed(command);
-              resignRetroDispatch(db, {
+              const resigned = resignRetroDispatch(db, {
                 commandId: dispatch.commandId,
                 envelope: fresh,
                 issuedAt: command.issuedAt,
                 expiresAt: command.expiresAt,
               });
+              if (!resigned) return null;
               markRetroDispatchFetched(db, dispatch.commandId, at);
               return fresh;
             }
