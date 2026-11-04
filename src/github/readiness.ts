@@ -131,6 +131,7 @@ export type PassedCheck = { name: string; conclusion: string; url: string | null
 
 /** Conclusions and states that fail the pull request. Anything else that is not green waits. */
 const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"]);
+const GREEN = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 
 type Check = {
   name: string;
@@ -301,7 +302,11 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
           unresolvedThreads: unresolved,
           passed,
         }
-      : { outcome: "ready", message: "CI passed and all review threads are resolved", passed };
+      : {
+          outcome: "ready",
+          message: `CI passed and all review threads are resolved.${skippedNote(checks)}`,
+          passed,
+        };
   } catch (error) {
     journalCaught(error, "readiness.readMergeReadiness.token", null);
     if (error instanceof Error && LINEAR_WAIT.test(error.message))
@@ -367,27 +372,25 @@ function judgeChecks(checks: Check[], baseChecks: Check[], required: Set<string>
       })),
     };
   }
-  const skippedOnBase = new Set(
-    baseChecks.filter((check) => check.result === "SKIPPED").map((check) => check.name),
-  );
-  const expected = new Set([...required, ...baseChecks.map((check) => check.name)]);
-  if (checks.length === 0 && expected.size === 0) {
+  if (checks.length === 0 && required.size === 0) {
     return { outcome: "pending", message: "Waiting for CI on the candidate commit." };
   }
   const reported = new Set(checks.map((check) => check.name));
-  const waiting = new Set([...expected].filter((name) => !reported.has(name)));
-  for (const check of checks) {
-    const green =
-      check.result === "SUCCESS" || (check.result === "SKIPPED" && skippedOnBase.has(check.name));
-    if (!green) waiting.add(check.name);
-  }
+  const waiting = new Set([...required].filter((name) => !reported.has(name)));
+  for (const check of checks) if (!GREEN.has(check.result ?? "")) waiting.add(check.name);
   if (waiting.size > 0) {
     return {
       outcome: "pending",
-      message: `Waiting for checks: ${[...waiting].sort().join(", ")}.`,
+      message: `Waiting for checks: ${[...waiting].sort().join(", ")}.${skippedNote(checks)}`,
     };
   }
-  return { outcome: "ready", message: "CI passed" };
+  return { outcome: "ready", message: `CI passed.${skippedNote(checks)}` };
+}
+
+function skippedNote(checks: Check[]): string {
+  const skipped = checks.filter((check) => check.result === "SKIPPED").length;
+  if (skipped === 0) return "";
+  return ` ${skipped} skipped ${skipped === 1 ? "check counts" : "checks count"} as passed.`;
 }
 
 function ciState(result: string | null): CiCheckState {
