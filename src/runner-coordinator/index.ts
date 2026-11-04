@@ -15,6 +15,7 @@ import {
 } from "../runner-identity";
 import { createRunnerResults } from "../runner-results";
 import { createRunnerHelpers } from "../runner-helpers";
+import { signRunnerRetroCommand, type RunnerRetroCommand } from "../runner-protocol";
 import { createRunnerLogin } from "../runner-login";
 import { createRunnerHealth } from "../runner-health";
 import type { WorkspacePrincipal } from "../workspace";
@@ -82,6 +83,7 @@ export async function openRunnerCoordinator(options: {
   publicUrl?: string | null;
   /** The repositories a new host may run, written into its config on Add a host. */
   repositories?: () => readonly string[];
+  retros?: () => ((request: Request, runnerId: string) => Promise<Response | null>) | undefined;
 }) {
   if (!isAbsolute(options.root)) throw new Error("Runner identity path must be absolute.");
   const authority = openRunnerAuthority(options.root);
@@ -180,6 +182,7 @@ export async function openRunnerCoordinator(options: {
         (await inputs.fetch(request, runnerId)) ??
         (await transcriptsHttp?.(request, runnerId)) ??
         (await agentSessionsHttp?.(request, runnerId)) ??
+        (await options.retros?.()?.(request, runnerId)) ??
         new Response(null, { status: 404 })
       );
     },
@@ -244,6 +247,12 @@ export async function openRunnerCoordinator(options: {
     inputs,
     transcripts,
     agentSessions,
+    signRetroCommand: (command: RunnerRetroCommand) =>
+      signRunnerRetroCommand({
+        keyId: signing.signingKeys[0].keyId,
+        privateKey: signing.privateKey,
+        command,
+      }),
     async browser(request: Request, principal: WorkspacePrincipal) {
       return (
         (await models.browser(request, principal)) ??
