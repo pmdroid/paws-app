@@ -139,6 +139,7 @@ import {
   listAppRepositories,
   createGitHubApp,
   githubHttpsUrl,
+  usePublicationRepositories,
   type GitHubBinding,
   type GitHubTokenProvider,
 } from "./github";
@@ -358,6 +359,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
   ensureLayout(paths);
+  usePublicationRepositories(paths.publicationDir);
   const db = openDatabase(paths.db);
   migrate(db);
   clearUsagePauses(db);
