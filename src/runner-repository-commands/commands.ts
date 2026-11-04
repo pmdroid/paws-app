@@ -295,6 +295,15 @@ export function repositoryCommandState(db: Database, id: string, at = Date.now()
   );
 }
 
+function cancelRepositoryCommand(db: Database, id: string) {
+  const cancelled = db
+    .query(
+      "UPDATE runner_repository_command SET state='expired',grant_hash=NULL WHERE id=? AND state IN ('pending','delivered') RETURNING id",
+    )
+    .get(id);
+  if (cancelled) settle(id, { outcome: "expired" });
+}
+
 const REPOSITORY_REBASE_TIMEOUT_MS = 10 * 60_000;
 
 export async function rebaseOnRunner(
@@ -303,11 +312,15 @@ export async function rebaseOnRunner(
   signal?: AbortSignal,
 ): Promise<RunnerRepositoryCommandResult> {
   try {
+    signal?.throwIfAborted();
     const id = enqueueRepositoryCommand(db, {
       ...input,
       expiresAt: input.now + REPOSITORY_REBASE_TIMEOUT_MS,
     });
-    const outcome = await waitForRepositoryCommand(id, signal);
+    const outcome = await waitForRepositoryCommand(id, signal).catch((error: unknown) => {
+      cancelRepositoryCommand(db, id);
+      throw error;
+    });
     return outcome.outcome === "expired"
       ? { outcome: "failed", reason: "timed out after 10 minutes" }
       : outcome;

@@ -298,6 +298,18 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
   const stopped = rebase("runner-a", stop.signal);
   stop.abort(new Error("item stopped"));
   await expect(stopped).rejects.toThrow("item stopped");
+  expect(await f.poll("runner-a")).toEqual([]);
+
+  const granted = new AbortController();
+  const late = rebase("runner-a", granted.signal);
+  const [delivered] = await f.poll("runner-a");
+  const issued = await f.grant(delivered!.id);
+  expect(issued.status).toBe(200);
+  granted.abort(new Error("item stopped"));
+  await expect(late).rejects.toThrow("item stopped");
+  expect(repositoryCommandState(f.db, delivered!.id, f.now())).toBe("expired");
+  expect((await f.credential(delivered!.id, issued.body.token))!.status).toBe(403);
+  expect((await f.grant(delivered!.id)).status).toBe(403);
 
   expect(await rebase("runner-missing")).toEqual({
     outcome: "failed",
