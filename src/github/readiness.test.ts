@@ -395,6 +395,57 @@ for (const scenario of [
   });
 }
 
+test("a check whose app another organization's IP allow list hides is still read", async () => {
+  const f = fixture(() => {
+    const body = fakeMergeReadiness(head);
+    return {
+      status: 200,
+      body: {
+        ...body,
+        errors: [
+          {
+            type: "FORBIDDEN",
+            path: [
+              "repository",
+              "object",
+              "statusCheckRollup",
+              "contexts",
+              "nodes",
+              0,
+              "checkSuite",
+              "app",
+            ],
+            extensions: { saml_failure: false, ip_allow_list_failure: true },
+            message: "the `acme-tools` organization has an IP allow list enabled",
+          },
+        ],
+      },
+    };
+  });
+  expect((await waitForMergeReadiness(f.input)).outcome).toBe("ready");
+});
+
+test("a check refused as a whole still blocks the merge", async () => {
+  const f = fixture(() => {
+    const body = fakeMergeReadiness(head);
+    return {
+      status: 200,
+      body: {
+        ...body,
+        errors: [
+          {
+            type: "FORBIDDEN",
+            path: ["repository", "object", "statusCheckRollup", "contexts", "nodes", 0],
+            extensions: { saml_failure: false, ip_allow_list_failure: false },
+            message: "Resource not accessible by integration",
+          },
+        ],
+      },
+    };
+  });
+  expect((await waitForMergeReadiness(f.input)).outcome).toBe("blocked");
+});
+
 test("a failed read right after the pull request opens is retried", async () => {
   const f = fixture((_, poll) => {
     if (poll === 1) throw new Error("GitHub GraphQL unavailable");
