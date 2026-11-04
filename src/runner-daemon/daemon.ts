@@ -16,6 +16,7 @@ import {
   RunnerArtifactChunkSchema,
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
+  RunnerRepositoryCommandResultSchema,
   RunnerRetroCommandSchema,
   RunnerRetroInputRequestSchema,
   RunnerRetroResultSchema,
@@ -28,6 +29,8 @@ import {
   type RunnerHealthResult,
   type RunnerHelperResult,
   type RunnerHostStatus,
+  type RunnerRepositoryCommand,
+  type RunnerRepositoryCommandResult,
   type RunnerRetroCommand,
   type RunnerRetroCommandRejection,
   type RunnerRetroInputRequest,
@@ -89,6 +92,7 @@ import {
   RunnerGrantTokenSchema,
   RunnerHeartbeatSchema,
   RunnerRepositoryAccessSchema,
+  RunnerRepositoryCommandCredentialSchema,
   RunnerRepositoryCredentialSchema,
   RunnerResultDeliverySchema,
   type RunnerEventDelivery,
@@ -292,6 +296,19 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       throw new Error("Runner helper command is unavailable or expired.");
     return command;
   }
+  function repositoryCommand(id: string): RunnerRepositoryCommand {
+    paired();
+    identifier.parse(id);
+    const row = db
+      .query<{ payload: string }, [string]>("SELECT payload FROM pending_command WHERE id=?")
+      .get(id);
+    const command = row ? RunnerCommandSchema.parse(JSON.parse(row.payload)) : null;
+    if (command?.type !== "rebase" || command.expiresAt <= now())
+      throw new Error("Runner repository command is unavailable or expired.");
+    return command;
+  }
+  const repositoryCommandPath = (id: string, action: string) =>
+    `/v1/repository-commands/${encodeURIComponent(id)}/${action}`;
   function heldBindings(): RunnerAccountCapability["bindings"] {
     try {
       return options.accountBindings?.() ?? [];
@@ -878,6 +895,42 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       )
         throw new Error("Runner repository credential does not match the admitted work.");
       return credential;
+    },
+    async repositoryCommandGrant(id: string) {
+      const command = repositoryCommand(id);
+      const grant = RunnerGrantSchema.parse(
+        await authenticated(repositoryCommandPath(command.id, "grant"), "POST", {}),
+      );
+      if (grant.expiresAt <= now()) throw new Error("Runner repository command grant is expired.");
+      return grant;
+    },
+    async repositoryCommandCredential(id: string, grantToken: string) {
+      const command = repositoryCommand(id);
+      RunnerGrantTokenSchema.parse(grantToken);
+      const credential = RunnerRepositoryCommandCredentialSchema.parse(
+        await authenticated(
+          repositoryCommandPath(command.id, "repository-credential"),
+          "POST",
+          {},
+          grantToken,
+        ),
+      );
+      const current = now();
+      if (
+        credential.expiresAt <= current ||
+        credential.expiresAt > current + 60 * 60_000 ||
+        credential.remoteUrl !== command.repository.remoteUrl ||
+        credential.branch !== command.branch
+      )
+        throw new Error("Runner repository credential does not match the repository command.");
+      return credential;
+    },
+    async postRepositoryCommandResult(id: string, result: RunnerRepositoryCommandResult) {
+      const command = repositoryCommand(id);
+      const body = RunnerRepositoryCommandResultSchema.parse(result);
+      return RunnerEventReceiptSchema.parse(
+        await authenticated(repositoryCommandPath(command.id, "result"), "POST", body),
+      );
     },
     pollCommands: () => pollCommands("/v1/commands"),
     pollHelperCommands: () => pollCommands("/v1/helper-commands"),
