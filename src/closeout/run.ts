@@ -14,6 +14,7 @@ import {
   MAX_FIX_ATTEMPTS,
   type CandidateIdentity,
   type CloseoutItem,
+  type CloseoutMirror,
   type DecisionDocument,
   type Finding,
   type GateOutcome,
@@ -22,7 +23,7 @@ import {
   type RuleApproval,
   type StoredReviewFinding,
 } from "./types";
-import { isSha, readHead } from "./worktree";
+import { isSha, readBranch, readHead } from "./worktree";
 import {
   addReview,
   credentialSecrets,
@@ -53,6 +54,7 @@ import {
 export type EvaluateInput = {
   checkoutExclusions?: readonly string[];
   worktree: string;
+  mirror?: CloseoutMirror;
   taskId: string;
   base: string;
   head: string;
@@ -90,6 +92,7 @@ export type Evaluation = {
 export type GateInput = {
   checkoutExclusions?: readonly string[];
   worktree: string;
+  mirror?: CloseoutMirror;
   taskId: string;
   /** The Linear identifier the summary names, such as `PAS-367`. Defaults to `taskId`. */
   taskLabel?: string;
@@ -228,7 +231,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   try {
     ran = await run({
       checkoutExclusions: input.checkoutExclusions,
-      repo: input.worktree,
+      repo: decisionRepo(input),
       base: input.base,
       head: input.head,
       gate: CLOSEOUT_GATE,
@@ -257,7 +260,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   const filledEarly = await early?.done;
   if (filledEarly) return filledEarly;
   throwIfPolicyFetchFailed(ran);
-  const moved = await headUnmoved(input.worktree, input.head);
+  const moved = await headUnmoved(input);
   if (moved) return failure("blocked", exitOf(ran.decision), moved, input.head);
   if (ran.gate !== CLOSEOUT_GATE) {
     return failure("invalid", exitOf(ran.decision), "decision gate is not beforePR", input.head);
@@ -292,7 +295,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   try {
     judged = await decide({
       checkoutExclusions: input.checkoutExclusions,
-      repo: input.worktree,
+      repo: decisionRepo(input),
       base: input.base,
       head: input.head,
       gate: CLOSEOUT_GATE,
@@ -326,7 +329,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
     return failure("blocked", null, detail, input.head);
   }
   throwIfPolicyFetchFailed(judged);
-  const movedAfter = await headUnmoved(input.worktree, input.head);
+  const movedAfter = await headUnmoved(input);
   if (movedAfter) return failure("blocked", exitOf(judged.decision), movedAfter, input.head);
   if (judged.gate !== CLOSEOUT_GATE) {
     return failure("invalid", exitOf(judged.decision), "decision gate is not beforePR", input.head);
@@ -359,7 +362,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
   let head = input.head;
   if (!head) {
     try {
-      head = await readHead(input.worktree);
+      head = await currentHead(input);
     } catch (error) {
       journalCaught(error, "run.runCloseoutGate.readHead", input.taskId);
       const message = error instanceof Error ? error.message : String(error);
@@ -398,7 +401,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
     }
 
     maxFixAttempts ??=
-      policyFixBudget(input.worktree, input.home, input.policyRoot) ?? MAX_FIX_ATTEMPTS;
+      policyFixBudget(decisionRepo(input), input.home, input.policyRoot) ?? MAX_FIX_ATTEMPTS;
     if (fixAttempts >= maxFixAttempts) {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
@@ -471,7 +474,7 @@ export async function decideCloseoutGate(input: GateInput): Promise<GateResult> 
   let head = input.head;
   if (!head) {
     try {
-      head = await readHead(input.worktree);
+      head = await currentHead(input);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return finalResult(input, "invalid", 0, 0, "", null, message);
@@ -500,7 +503,7 @@ async function decideRecorded(input: EvaluateInput): Promise<Evaluation> {
   try {
     judged = await decide({
       checkoutExclusions: input.checkoutExclusions,
-      repo: input.worktree,
+      repo: decisionRepo(input),
       base: input.base,
       head: input.head,
       gate: CLOSEOUT_GATE,
@@ -517,7 +520,7 @@ async function decideRecorded(input: EvaluateInput): Promise<Evaluation> {
     const message = error instanceof Error ? error.message : String(error);
     return failure("blocked", null, scrub(message), input.head);
   }
-  const moved = await headUnmoved(input.worktree, input.head);
+  const moved = await headUnmoved(input);
   if (moved) return failure("blocked", exitOf(judged.decision), moved, input.head);
   if (judged.gate !== CLOSEOUT_GATE) {
     return failure("invalid", exitOf(judged.decision), "decision gate is not beforePR", input.head);
@@ -664,7 +667,7 @@ function heldRules(input: GateInput, evaluation: Evaluation): Map<string, string
   if (failed.length === 0) return new Map();
   let rules;
   try {
-    rules = approvalRules(input.worktree, input.home, input.policyRoot);
+    rules = approvalRules(decisionRepo(input), input.home, input.policyRoot);
   } catch (error) {
     journalCaught(error, "run.heldRules.approvalRules", input.taskId);
     return new Map();
@@ -752,7 +755,7 @@ async function startParallelReviews(
   reviewAttempts: Map<string, number>,
   metrics: ReviewMetrics,
 ): Promise<{ gaps: CloseoutItem[]; done: Promise<Evaluation | null> } | undefined> {
-  const required = reviewRequirements(input.worktree, input.home, input.policyRoot);
+  const required = reviewRequirements(decisionRepo(input), input.home, input.policyRoot);
   if (!required.ok) return undefined;
   const parallel = new Set(required.items.filter((item) => item.parallel).map((item) => item.id));
   if (parallel.size === 0) return undefined;
@@ -761,7 +764,7 @@ async function startParallelReviews(
     before = toGateDecision(
       await decide({
         checkoutExclusions: input.checkoutExclusions,
-        repo: input.worktree,
+        repo: decisionRepo(input),
         base: input.base,
         head: input.head,
         gate: CLOSEOUT_GATE,
@@ -928,7 +931,7 @@ async function addReviewEvidence(
       const refreshed = toGateDecision(
         await decide({
           checkoutExclusions: input.checkoutExclusions,
-          repo: input.worktree,
+          repo: decisionRepo(input),
           base: input.base,
           head: input.head,
           gate: CLOSEOUT_GATE,
@@ -959,7 +962,12 @@ async function addReviewEvidence(
       return failure("blocked", null, detail, input.head);
     }
     const findings = added.record.findings;
-    const preExisting = await preExistingFindings(input.worktree, input.base, input.head, findings);
+    const preExisting = await preExistingFindings(
+      decisionRepo(input),
+      input.base,
+      input.head,
+      findings,
+    );
     reviewFindings.push({
       itemId: item.id,
       findings,
@@ -1027,7 +1035,7 @@ function publishReviews(
   metrics: ReviewMetrics,
 ): void {
   const identity = progressIdentity(input.taskId, decision);
-  const required = reviewRequirements(input.worktree, input.home, input.policyRoot);
+  const required = reviewRequirements(decisionRepo(input), input.home, input.policyRoot);
   const failOn = new Map(required.ok ? required.items.map((item) => [item.id, item.failOn]) : []);
   for (const item of decision.items) {
     if (item.kind !== "review") continue;
@@ -1198,7 +1206,7 @@ async function fixesLeft(
     return await readFixesLeft(
       {
         checkoutExclusions: input.checkoutExclusions,
-        repo: input.worktree,
+        repo: decisionRepo(input),
         base: input.base,
         head,
         gate: CLOSEOUT_GATE,
@@ -1236,10 +1244,25 @@ function assertTaskId(taskId: string): string | null {
   return null;
 }
 
-async function headUnmoved(worktree: string, head: string): Promise<string | null> {
+type DecisionSource = { worktree: string; mirror?: CloseoutMirror };
+
+function decisionRepo(input: DecisionSource): string {
+  return input.mirror?.path ?? input.worktree;
+}
+
+function currentHead(input: DecisionSource): Promise<string> {
+  return input.mirror
+    ? readBranch(input.mirror.path, input.mirror.branch)
+    : readHead(input.worktree);
+}
+
+async function headUnmoved(input: DecisionSource & { head: string }): Promise<string | null> {
   try {
-    const actual = await readHead(worktree);
-    if (actual !== head) return "worktree HEAD changed while closeout ran";
+    const actual = await currentHead(input);
+    if (actual !== input.head)
+      return input.mirror
+        ? `branch ${input.mirror.branch} moved while closeout ran`
+        : "worktree HEAD changed while closeout ran";
     return null;
   } catch (error) {
     journalCaught(error, "run.headUnmoved.readHead", null);

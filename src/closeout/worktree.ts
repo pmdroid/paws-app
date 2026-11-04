@@ -17,3 +17,21 @@ export async function readHead(worktree: string): Promise<string> {
   if (!isSha(sha)) throw new Error("worktree HEAD is not a commit id");
   return sha;
 }
+
+export async function readBranch(mirror: string, branch: string): Promise<string> {
+  const { stdout } = await exec(
+    "git",
+    [
+      "--git-dir",
+      mirror,
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      `refs/heads/${branch}^{commit}`,
+    ],
+    { encoding: "utf8" },
+  );
+  const sha = stdout.trim();
+  if (!isSha(sha)) throw new Error(`branch ${branch} is not a commit id`);
+  return sha;
+}
