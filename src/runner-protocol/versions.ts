@@ -80,3 +80,4 @@ export const AGENT_ACCOUNTS_RUNNER_VERSION: RunnerVersion = [0, 1, 61];
 export const CI_LOG_RUNNER_VERSION: RunnerVersion = [0, 1, 61];
 export const CI_RERUN_RUNNER_VERSION: RunnerVersion = [0, 1, 62];
 export const TRANSCRIPT_TIME_RUNNER_VERSION: RunnerVersion = [0, 1, 62];
+export const RETRO_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
