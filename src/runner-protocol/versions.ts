@@ -90,3 +90,4 @@ export const REPOSITORY_COMMAND_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
  * whose stop hook waits 25 seconds for that answer.
  */
 export const CLOSEOUT_FINISH_RECORDED_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
+export const SUGGESTED_FINDINGS_RUNNER_VERSION: RunnerVersion = [0, 1, 64];

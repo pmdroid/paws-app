@@ -71,6 +71,7 @@ import {
   CLOSEOUT_RULES_FIRST_RUNNER_VERSION,
   CI_LOG_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
+  SUGGESTED_FINDINGS_RUNNER_VERSION,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
@@ -1539,6 +1540,11 @@ export function createRemoteAgentRunner(options: {
                       input.closeoutRulesFirst &&
                       versionAtLeast(runnerVersion, CLOSEOUT_RULES_FIRST_RUNNER_VERSION)
                         ? { closeoutRulesFirst: true as const }
+                        : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.suggestedFindings?.length &&
+                      versionAtLeast(runnerVersion, SUGGESTED_FINDINGS_RUNNER_VERSION)
+                        ? { suggestedFindings: input.suggestedFindings.slice(0, 50) }
                         : {}),
                       ...(input.role !== "reviewer" &&
                       input.ciLog &&

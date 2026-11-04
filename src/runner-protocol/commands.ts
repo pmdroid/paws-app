@@ -224,6 +224,18 @@ export const RunnerCommandSchema = z
       commitPolicy: RunnerCommitPolicySchema.optional(),
       checkpoint: z.literal(false).optional(),
       closeoutRulesFirst: z.literal(true).optional(),
+      suggestedFindings: z
+        .array(
+          z.strictObject({
+            id: z.string().regex(/^F[0-9a-f]{6}$/),
+            severity: z.string().min(1).max(8),
+            location: z.string().max(1000),
+            explanation: z.string().max(4000),
+            reviewId: z.string().min(1).max(200),
+          }),
+        )
+        .max(50)
+        .optional(),
       ciLog: z.literal(true).optional(),
       ciRerun: z.literal(true).optional(),
       resumeSessionId: id.optional(),

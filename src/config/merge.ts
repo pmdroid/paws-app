@@ -35,6 +35,8 @@ export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
  * request's files or packages. `closeout`: rebase and run Closeout again on the new head.
  */
 export const MAIN_MOVED = ["overlap", "green", "ci", "closeout"] as const;
+export const SUGGESTED_FINDINGS = ["off", "next_turn", "own_turn"] as const;
+export type SuggestedFindingsMode = (typeof SUGGESTED_FINDINGS)[number];
 
 /**
  * Which merge-queue lane an item joins in its repository. `project` (default): one lane per Linear
@@ -68,6 +70,7 @@ export type MergeRepositories = Record<
     ignoreCommentBots?: string[];
     reviewApps?: string[];
     highRiskPaths?: string[];
+    suggestedFindings?: SuggestedFindingsMode;
   }
 >;
 export type MergeSettings = MergePolicy & {
@@ -197,6 +200,7 @@ const tomlSchema = z.object({
               .max(100)
               .optional(),
             high_risk_paths: highRiskGlobs.optional(),
+            suggested_findings: z.enum(SUGGESTED_FINDINGS).optional(),
           }),
         )
         .optional(),
@@ -388,6 +392,17 @@ export function highRiskPaths(settings: MergeSettings, repository: string): stri
   );
 }
 
+export function suggestedFindingsMode(
+  settings: MergeSettings,
+  repository: string,
+): SuggestedFindingsMode {
+  const wanted = repository.toLowerCase();
+  return (
+    Object.entries(settings.repositories).find(([name]) => name.toLowerCase() === wanted)?.[1]
+      .suggestedFindings ?? "next_turn"
+  );
+}
+
 /**
  * The Settings › Merging › High-risk paths body: `[{ repository, paths }]`. It replaces every
  * repository's list; a repository left out has none.
@@ -480,6 +495,9 @@ export function parseMergeTables(
                 ...(value.high_risk_paths === undefined
                   ? {}
                   : { highRiskPaths: value.high_risk_paths }),
+                ...(value.suggested_findings === undefined
+                  ? {}
+                  : { suggestedFindings: value.suggested_findings }),
               },
             ]),
           ),
@@ -607,6 +625,10 @@ export function renderMergeSettings(settings: StoredMerge): string {
           value.highRiskPaths === undefined
             ? ""
             : `high_risk_paths = [${value.highRiskPaths.map((glob) => JSON.stringify(glob)).join(", ")}]\n`
+        }${
+          value.suggestedFindings === undefined
+            ? ""
+            : `suggested_findings = ${JSON.stringify(value.suggestedFindings)}\n`
         }`,
     ),
   ].join("");

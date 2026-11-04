@@ -15,6 +15,7 @@ import {
   resolveMergeSettings,
   reviewApps,
   storedMerge,
+  suggestedFindingsMode,
   writeMergePolicy,
   type MergePolicy,
 } from "../src/config";
@@ -243,6 +244,22 @@ packages = ["apps/*", "packages/*"]
           `[merge.repositories."acme/platform"]\nhigh_risk_paths = [${JSON.stringify(glob)}]\n`,
         ),
       ).toThrow("high_risk_paths");
+  });
+
+  test("a repository's suggested-findings mode round-trips, and a missing key means next_turn", () => {
+    const config = parseConfigToml(
+      `[merge.repositories."acme/platform"]\nsuggested_findings = "own_turn"\n\n[merge.repositories."acme/web"]\nsuggested_findings = "off"\n`,
+    );
+    const settings = readMergeSettings(config);
+    expect(suggestedFindingsMode(settings, "Acme/Platform")).toBe("own_turn");
+    expect(suggestedFindingsMode(settings, "acme/web")).toBe("off");
+    expect(suggestedFindingsMode(settings, "acme/api")).toBe("next_turn");
+    const path = join(tempHome(), "config.toml");
+    writeMergePolicy(path, settings, storedMerge(config));
+    expect(readMergeSettings(loadConfigFile(path)).repositories).toEqual(settings.repositories);
+    expect(() =>
+      parseConfigToml(`[merge.repositories."acme/platform"]\nsuggested_findings = "always"\n`),
+    ).toThrow("suggested_findings");
   });
 
   test("the pull request comment wait reads, defaults and stays within bounds", () => {

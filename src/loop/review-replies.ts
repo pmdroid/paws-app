@@ -147,6 +147,28 @@ export function parseReviewReplies(
   return reports;
 }
 
+const DECISION_LINE =
+  /^[\s>*_-]*\**(F[0-9a-f]{6})\**[.:)]?\s*\**(fixed|declined|not[\s_-]?changed|won't fix|wont fix)\**\s*[:.–—-]\s*(.+)$/i;
+
+export function parseFindingDecisions(
+  text: string,
+  ids: ReadonlySet<string>,
+): Map<string, { decision: "fixed" | "declined"; reason: string }> {
+  const decisions = new Map<string, { decision: "fixed" | "declined"; reason: string }>();
+  for (const line of text.split("\n")) {
+    const match = DECISION_LINE.exec(line.trim());
+    if (!match) continue;
+    const id = `F${match[1]!.slice(1).toLowerCase()}`;
+    const reason = match[3]!.trim();
+    if (!ids.has(id) || reason === "") continue;
+    decisions.set(id, {
+      decision: match[2]!.toLowerCase() === "fixed" ? "fixed" : "declined",
+      reason,
+    });
+  }
+  return decisions;
+}
+
 /**
  * Store the fix turn's replies for the item's handed-off comments. Does nothing when no comments
  * wait for a report. The number stored.

@@ -404,6 +404,9 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           : {}),
         allowCloseoutRun: options.readOnly !== true,
         ...(options.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
+        ...(options.suggestedFindings?.length
+          ? { suggestedFindings: options.suggestedFindings }
+          : {}),
         signal: runAbort.signal,
         onAsk: (question) => emit({ type: "ask_team", question, phase: "asked" }),
         onAnswer: (question, answer) =>

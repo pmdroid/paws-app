@@ -108,6 +108,8 @@ export {
   type OpenFinding,
   type OpenItems,
 } from "./open-findings";
+export { parseFindingDecisions } from "./review-replies";
+export { startSuggestionTurn } from "./suggested-findings";
 export {
   backfillReviewFindings,
   recordAcceptedFindings,

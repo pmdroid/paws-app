@@ -1,7 +1,7 @@
 import { tickWithRestarts } from "./helpers";
 import { generateKeyPairSync } from "node:crypto";
 import { execFile } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -3320,6 +3320,12 @@ async function runCiFix(options: {
   /** What the reviewer reports in its `round`th review, from 1. Empty by default. */
   findings?: (round: number) => Finding[];
   publicUrl?: string;
+  config?: string;
+  implement?: (
+    run: number,
+    worktree: string,
+    seen: { merged: number; reviews: number; prompt: string },
+  ) => FakeScript["steps"];
 }): Promise<{
   state: string | null;
   linearCalls: string[];
@@ -3332,9 +3338,12 @@ async function runCiFix(options: {
   prompts: string[];
   /** Each pull request body Paws published, in order. */
   pullBodies: string[];
+  closeouts: string[][];
+  merged: number;
   detail: string;
 }> {
   const layout = await repoLayout("paws-e2e-");
+  if (options.config) await writeFile(path.join(layout.pawsRoot, "config.toml"), options.config);
   if (options.withoutReview || options.attempts !== undefined) {
     const policy = options.withoutReview ? CLOSEOUT_POLICY_WITHOUT_REVIEW : CLOSEOUT_POLICY;
     const configured =
@@ -3416,6 +3425,7 @@ async function runCiFix(options: {
   const client = githubClient(layout.bare, github);
   const heads: string[] = [];
   const prompts: string[] = [];
+  const implementResults: string[] = [];
   let sequence = 0;
   let implementRuns = 0;
   let launches = 0;
@@ -3478,10 +3488,15 @@ async function runCiFix(options: {
       if (input.purpose === "implement") {
         implementRuns += 1;
         prompts.push(input.prompt);
+        implementResults.push(resultPath);
       }
       const steps: FakeScript["steps"] =
         input.purpose === "implement"
-          ? [writeOk(input.worktree, `ok-${implementRuns}\n`), { type: "end" }]
+          ? (options.implement?.(implementRuns, input.worktree, {
+              merged: github.merged.length,
+              reviews: reviewerLaunches,
+              prompt: input.prompt,
+            }) ?? [writeOk(input.worktree, `ok-${implementRuns}\n`), { type: "end" }])
           : input.purpose === "classify"
             ? [
                 {
@@ -3541,6 +3556,16 @@ async function runCiFix(options: {
       questions: tracker.questions.map((question) => question.body),
       prompts,
       pullBodies: github.opened.map((pull) => pull.body),
+      closeouts: implementResults.map((file) => {
+        try {
+          return (
+            (JSON.parse(readFileSync(file, "utf8")) as { closeouts?: string[] }).closeouts ?? []
+          );
+        } catch {
+          return [];
+        }
+      }),
+      merged: github.merged.length,
       detail: debug(layout, db),
     };
   } finally {
@@ -4983,4 +5008,162 @@ test("a PR session stays quiet through a CI fix and rebase re-verification until
     result.activities.slice(result.activities.indexOf(responses[0]!) + 1),
     result.detail,
   ).toEqual([responses[1]!]);
+}, 120_000);
+
+const SUGGESTED_P2: Finding = {
+  severity: "P2",
+  location: "ok.txt:1",
+  explanation: "The token refresh swaps the resource stored on an existing grant.",
+  evidence: "ok.txt line 1",
+};
+
+const SECOND_P2: Finding = {
+  severity: "P2",
+  location: "ok.txt:2",
+  explanation: "The path rewrite can replace a valid metadata location.",
+  evidence: "ok.txt line 2",
+};
+
+const OWN_TURN = '[merge.repositories."pmdroid/paws-demo"]\nsuggested_findings = "own_turn"\n';
+
+function finalMessage(text: string): FakeScript["steps"][number] {
+  return {
+    type: "update",
+    update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+  };
+}
+
+function idOf(prompt: string, location: string): string {
+  const match = new RegExp(`(F[0-9a-f]{6})\\. P2 ${location.replace(".", "\\.")} `).exec(prompt);
+  if (!match) throw new Error(`no suggestion for ${location} in:\n${prompt}`);
+  return match[1]!;
+}
+
+test("a CI restart hands the below-failOn finding as a suggestion, and get_closeout lists it apart from pending", async () => {
+  const result = await runCiFix({
+    failRounds: 1,
+    findings: (round) => (round === 1 ? [PRE_EXISTING_P1, SUGGESTED_P2] : [PRE_EXISTING_P1]),
+    implement: (run, worktree) => [
+      writeOk(worktree, `ok-${run}\n`),
+      ...(run === 2 ? [{ type: "get_closeout" } as const] : []),
+      { type: "end" },
+    ],
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(2);
+  const prompt = result.prompts[1]!;
+  expect(prompt).toContain("Suggested review findings:");
+  expect(prompt).toContain(
+    "These review findings didn't block. For each one, decide whether to fix it in this pull request. Fix it if it's a real bug in code you changed and the fix is small and safe. Otherwise leave it and say why in one sentence.",
+  );
+  const id = idOf(prompt, "ok.txt:1");
+  expect(prompt.indexOf(id)).toBeLessThan(prompt.indexOf("These review findings didn't block"));
+  expect(prompt).not.toContain("README.md:1");
+  expect(result.prompts[0]).not.toContain("Suggested review findings");
+  const report = JSON.parse(result.closeouts[1]![0]!) as {
+    pending: string[];
+    suggested: { id: string; location: string }[];
+  };
+  expect(report.suggested).toEqual([expect.objectContaining({ id, location: "ok.txt:1" })]);
+  expect(report.pending).not.toContain(id);
+}, 120_000);
+
+test("with off, a CI restart hands no suggestions", async () => {
+  const result = await runCiFix({
+    failRounds: 1,
+    config: '[merge.repositories."pmdroid/paws-demo"]\nsuggested_findings = "off"\n',
+    findings: (round) => (round === 1 ? [PRE_EXISTING_P1, SUGGESTED_P2] : [PRE_EXISTING_P1]),
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(2);
+  expect(result.prompts[1]).not.toContain("Suggested review findings");
+  expect(result.pullBodies[0]).toContain("(adversarial-review, below failOn)");
+}, 120_000);
+
+test("with own_turn, a suggestion turn that changes nothing keeps the accepted head and records the declines", async () => {
+  const during = { merged: -1, reviews: -1 };
+  const result = await runCiFix({
+    failRounds: 0,
+    config: OWN_TURN,
+    findings: () => [SUGGESTED_P2, SECOND_P2],
+    implement: (run, worktree, seen) => {
+      if (run === 1) return [writeOk(worktree, "grant\nmetadata\n"), { type: "end" }];
+      during.merged = seen.merged;
+      during.reviews = seen.reviews;
+      return [
+        finalMessage(
+          `Finding decisions\n${idOf(seen.prompt, "ok.txt:1")} declined: needs a schema change\n${idOf(seen.prompt, "ok.txt:2")} declined: the path is never rewritten here`,
+        ),
+        { type: "end" },
+      ];
+    },
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(2);
+  expect(result.prompts[1]).toContain("Closeout accepted this head.");
+  expect(result.prompts[1]).toContain("Suggested review findings:");
+  expect(during.merged).toBe(0);
+  expect(result.reviewerLaunches, result.detail).toBe(during.reviews);
+  expect(result.merged).toBe(1);
+  const body = result.pullBodies.at(-1)!;
+  expect(body).toContain("(adversarial-review, below failOn; declined: needs a schema change)");
+  expect(body).toContain(
+    "(adversarial-review, below failOn; declined: the path is never rewritten here)",
+  );
+  const responses = result.activities.filter((activity) => activity.kind === "response");
+  expect(responses, result.detail).toHaveLength(2);
+  expect(
+    result.activities.slice(result.activities.indexOf(responses[0]!) + 1),
+    result.detail,
+  ).toEqual([responses[1]!]);
+}, 120_000);
+
+test("with own_turn, a suggestion turn that commits gets a full Closeout; a confirmed fix is dropped and a decline keeps its reason", async () => {
+  const during = { reviews: -1 };
+  const result = await runCiFix({
+    failRounds: 0,
+    config: OWN_TURN,
+    findings: (round) =>
+      round === 1 ? [PRE_EXISTING_P1, SUGGESTED_P2, SECOND_P2] : [PRE_EXISTING_P1, SECOND_P2],
+    implement: (run, worktree, seen) => {
+      if (run === 1) return [writeOk(worktree, "grant\nmetadata\n"), { type: "end" }];
+      during.reviews = seen.reviews;
+      return [
+        writeOk(worktree, "fixed grant\nmetadata\n"),
+        finalMessage(
+          `Finding decisions\n${idOf(seen.prompt, "ok.txt:1")} fixed: keep the grant's resource\n${idOf(seen.prompt, "ok.txt:2")} declined: needs a schema change`,
+        ),
+        { type: "end" },
+      ];
+    },
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(2);
+  expect(result.prompts[1]).not.toContain("README.md:1");
+  expect(result.reviewerLaunches, result.detail).toBeGreaterThan(during.reviews);
+  const body = result.pullBodies.at(-1)!;
+  expect(body).not.toContain("ok.txt:1");
+  expect(body).toContain("(adversarial-review, below failOn; declined: needs a schema change)");
+  expect(body).toContain("(adversarial-review, pre-existing)");
+}, 120_000);
+
+test("a fixed claim the next review still reports stays listed, marked still open", async () => {
+  const result = await runCiFix({
+    failRounds: 0,
+    config: OWN_TURN,
+    findings: () => [SUGGESTED_P2],
+    implement: (run, worktree, seen) => {
+      if (run === 1) return [writeOk(worktree, "grant\nmetadata\n"), { type: "end" }];
+      return [
+        writeOk(worktree, "fixed grant\nmetadata\n"),
+        finalMessage(`${idOf(seen.prompt, "ok.txt:1")} fixed: keep the grant's resource`),
+        { type: "end" },
+      ];
+    },
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns, result.detail).toBe(2);
+  expect(result.pullBodies.at(-1)!).toMatch(
+    /`ok\.txt:1` .* \(adversarial-review, below failOn; fixed in [0-9a-f]{7}, still open\)/,
+  );
 }, 120_000);

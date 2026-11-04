@@ -70,6 +70,7 @@ export {
   repositoryPackages,
   resolveMergeSettings,
   storedMerge,
+  suggestedFindingsMode,
   writeMergePolicy,
 } from "./merge";
 export type {
@@ -87,6 +88,7 @@ export type {
   MergeSettings,
   ResolvedMergeSettings,
   StoredMerge,
+  SuggestedFindingsMode,
 } from "./merge";
 
 export {

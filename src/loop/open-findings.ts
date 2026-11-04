@@ -20,6 +20,7 @@ export type OpenFinding = {
   explanation: string;
   /** In code the change did not touch, or reported only because it is below the review's `failOn`. */
   why: "pre-existing" | "below failOn";
+  decision?: { decision: "fixed" | "declined"; reason: string; head: string | null };
 };
 
 /** What is still open at an accepted head, and where a person checks it. */
@@ -138,7 +139,14 @@ export function openFindingsSection(open: OpenItems): string {
 /** "- P1 `src/a.ts:12` Text cut to one line (independent-review, pre-existing)" */
 function findingLine(finding: OpenFinding): string {
   const text = oneLine(finding.explanation);
-  return `- ${finding.severity} ${codeSpan(oneLine(finding.location))}${text ? ` ${inertMarkdown(text)}` : ""} (${inertMarkdown(finding.reviewId)}, ${finding.why})`;
+  return `- ${finding.severity} ${codeSpan(oneLine(finding.location))}${text ? ` ${inertMarkdown(text)}` : ""} (${inertMarkdown(finding.reviewId)}, ${finding.why}${decisionNote(finding.decision)})`;
+}
+
+function decisionNote(decision: OpenFinding["decision"]): string {
+  if (!decision) return "";
+  if (decision.decision === "declined")
+    return `; declined: ${inertMarkdown(oneLine(decision.reason))}`;
+  return `; fixed${decision.head ? ` in ${decision.head.slice(0, 7)}` : ""}, still open`;
 }
 
 /**

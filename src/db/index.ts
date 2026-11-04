@@ -92,6 +92,16 @@ export {
   type ReviewReplyTarget,
 } from "./review-replies";
 export {
+  decideSuggestedFindings,
+  getSuggestionTurn,
+  recordSuggestedFindings,
+  recordSuggestionTurn,
+  suggestedFindings,
+  type FindingDecision,
+  type SuggestedFindingRecord,
+  type SuggestionTurnRecord,
+} from "./suggested-findings";
+export {
   runnerCancelPending,
   runTeardownOwner,
   recordRunnerCapacity,
