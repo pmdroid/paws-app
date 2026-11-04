@@ -1,7 +1,13 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
-import { removeWorktree, worktreeMergedInto, worktreePath } from "../acp";
+import {
+  adoptLegacyCandidate,
+  git,
+  removeWorktree,
+  worktreeMergedInto,
+  worktreePath,
+} from "../acp";
 import type { RepositoryBinding, WorkItemState } from "../core";
 import { listWorkItems, type WorkItemRecord } from "../db";
 import { itemPathId } from "./sources";
@@ -62,6 +68,7 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
           (item) => items.find((before) => before.id === item.id)?.state === item.state,
         );
       if (!unchanged || (!expired && !(await worktreeMergedInto(path, heads)))) return;
+      if (leftover && !(await keepLeftoverHead(sweep, repository, pathId, path))) return;
       await removeWorktree({ ...repository, itemId: pathId, pawsRoot: sweep.pawsRoot }).catch(
         (caughtError1) => {
           journalCaught(
@@ -73,6 +80,27 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
         },
       );
     });
+  }
+}
+
+async function keepLeftoverHead(
+  sweep: WorktreeSweep,
+  repository: RepositoryBinding,
+  pathId: string,
+  path: string,
+): Promise<boolean> {
+  try {
+    const worktreeHead = (await git(["-C", path, "rev-parse", "--verify", "HEAD"])).trim();
+    await adoptLegacyCandidate({
+      ...repository,
+      itemId: pathId,
+      pawsRoot: sweep.pawsRoot,
+      worktreeHead,
+    });
+    return true;
+  } catch (caughtError4) {
+    journalCaught(caughtError4, "worktree-sweep.keepLeftoverHead", pathId);
+    return false;
   }
 }
 

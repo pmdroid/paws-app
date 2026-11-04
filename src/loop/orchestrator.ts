@@ -57,6 +57,7 @@ import {
   createWorktree,
   ensureBareMirror,
   ensureCandidateRef,
+  adoptLegacyCandidate,
   removeCandidateRef,
   FOLLOW_UP_INTERRUPTION,
   type RunAgentOptions,
@@ -4531,7 +4532,7 @@ export class Orchestrator {
       this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
-    const { repo: worktree, ref } = this.itemHead(item);
+    const { repo: worktree, ref } = await this.legacyItemHead(item);
     let head = "";
     let base = item.checkpoint?.baseSha ?? "";
     try {
@@ -4802,7 +4803,7 @@ export class Orchestrator {
     });
     const candidate = await this.candidateForItem(item);
     if (!candidate) return { kind: "obsolete" };
-    const { repo: worktree, ref } = this.itemHead(item);
+    const { repo: worktree, ref } = await this.legacyItemHead(item);
     const summary = readString(run.payload, "summary") ?? "Closeout accepted.";
     const policy = await this.commitPolicy(item);
     if (this.stopped(item.id)) return { kind: "obsolete" };
@@ -5525,7 +5526,7 @@ export class Orchestrator {
         ? current.state
         : null;
     if (phase === null) return;
-    const { repo: worktree, ref } = this.itemHead(current);
+    const { repo: worktree, ref } = await this.legacyItemHead(current);
     let head = "";
     let base = current.checkpoint?.baseSha ?? "";
     try {
@@ -8437,6 +8438,17 @@ export class Orchestrator {
           ref: candidateRef(itemPathId(item)),
         }
       : { repo: worktreePath(this.options.pawsRoot, itemPathId(item)), ref: "HEAD" };
+  }
+
+  private async legacyItemHead(item: WorkItemRecord): Promise<{ repo: string; ref: string }> {
+    const repository = this.repositoryForItem(item);
+    if (this.options.remoteExecution && repository)
+      await adoptLegacyCandidate({
+        ...repository,
+        itemId: itemPathId(item),
+        pawsRoot: this.options.pawsRoot,
+      });
+    return this.itemHead(item);
   }
 
   /** Where a runner-backed run stages the agent's input files; it is no checkout. */

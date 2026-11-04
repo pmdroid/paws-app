@@ -143,6 +143,7 @@ export {
   type RunOutcome,
 } from "./types";
 export {
+  adoptLegacyCandidate,
   createWorktree,
   ensureBareMirror,
   ensureCandidateRef,

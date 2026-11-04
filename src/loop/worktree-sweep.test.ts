@@ -3,7 +3,14 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
-import { createWorktree, ensureBareMirror, git, worktreePath } from "../acp";
+import {
+  adoptLegacyCandidate,
+  candidateRef,
+  createWorktree,
+  ensureBareMirror,
+  git,
+  worktreePath,
+} from "../acp";
 import { insertQueuedItem, insertRun, migrate, openDatabase, type WorkItemRecord } from "../db";
 import { RETIRED_WORKTREE_MS, sweepWorktrees, type WorktreeSweep } from "./worktree-sweep";
 
@@ -161,6 +168,42 @@ test("removes leftover worktrees of runner-backed items unless their work runs h
   ).not.toBe("");
 }, 30_000);
 
+test("a removed leftover worktree leaves its head as the item's candidate ref", async () => {
+  const fixture = await setup();
+  await fixture.item("ENG-1", "verifying", now - 60_000);
+  await fixture.item("ENG-2", "merge_queue", now - 60_000);
+  const verifying = await fixture.commit("ENG-1", "feature.txt");
+  await fixture.commit("ENG-2", "feature.txt");
+  const kept = (await git(["--git-dir", fixture.mirror, "rev-parse", "main"])).trim();
+  await git(["--git-dir", fixture.mirror, "update-ref", candidateRef("ENG-2"), kept]);
+
+  await sweepWorktrees(fixture.sweep({ runnerBacked: true }));
+
+  expect(fixture.present()).toEqual({ "ENG-1": false, "ENG-2": false });
+  expect(await fixture.candidate("ENG-1")).toBe(verifying);
+  expect(await fixture.candidate("ENG-2")).toBe(kept);
+}, 30_000);
+
+test("a legacy item's candidate ref comes from its branch, and nothing starts from main", async () => {
+  const fixture = await setup();
+  await fixture.item("ENG-1", "verifying", now - 60_000);
+  const head = await fixture.commit("ENG-1", "feature.txt");
+  await git([
+    "--git-dir",
+    fixture.mirror,
+    "worktree",
+    "remove",
+    "--force",
+    worktreePath(fixture.pawsRoot, "ENG-1"),
+  ]);
+  const placement = { ...repository, pawsRoot: fixture.pawsRoot };
+
+  expect(await adoptLegacyCandidate({ ...placement, itemId: "ENG-1" })).toBe(head);
+  expect(await fixture.candidate("ENG-1")).toBe(head);
+  expect(await adoptLegacyCandidate({ ...placement, itemId: "ENG-9" })).toBeNull();
+  expect(await fixture.candidate("ENG-9")).toBe("");
+}, 30_000);
+
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), "paws-sweep-"));
   roots.push(root);
@@ -194,6 +237,18 @@ async function setup() {
       await git(["-C", tree, "add", file]);
       await commitIn(tree, file);
       return (await git(["-C", tree, "rev-parse", "HEAD"])).trim();
+    },
+    async candidate(id: string) {
+      return (
+        await git([
+          "--git-dir",
+          mirror,
+          "rev-parse",
+          "--verify",
+          "--quiet",
+          candidateRef(id),
+        ]).catch(() => "")
+      ).trim();
     },
     present() {
       return Object.fromEntries(ids.map((id) => [id, existsSync(worktreePath(pawsRoot, id))]));

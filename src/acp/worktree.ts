@@ -273,6 +273,28 @@ export async function ensureCandidateRef(options: {
   });
 }
 
+export async function adoptLegacyCandidate(options: {
+  owner: string;
+  repo: string;
+  itemId: string;
+  pawsRoot: string;
+  worktreeHead?: string;
+}): Promise<string | null> {
+  const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
+  const ref = candidateRef(options.itemId);
+  if (!(await exists(gitDir))) return null;
+  return onMirror(gitDir, async () => {
+    const current = await revParse(gitDir, `${ref}^{commit}`);
+    if (current) return current;
+    const head =
+      (options.worktreeHead && (await revParse(gitDir, `${options.worktreeHead}^{commit}`))) ||
+      (await revParse(gitDir, `refs/heads/${branchName(options.itemId)}^{commit}`));
+    if (!head) return null;
+    await git(["--git-dir", gitDir, "update-ref", ref, head, ""]);
+    return head;
+  });
+}
+
 /** Deletes a runner-backed item's candidate ref. */
 export async function removeCandidateRef(options: {
   owner: string;
