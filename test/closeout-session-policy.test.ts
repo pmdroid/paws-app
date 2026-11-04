@@ -179,6 +179,46 @@ test("a remote session asks Paws for the policy through the runner channel", asy
   });
 });
 
+test("a remote policy is fetched once for repeated and concurrent calls, and again after five minutes", async () => {
+  const loaded = trusted("lint");
+  let transfers = 0;
+  let clock = 0;
+  const load = remoteCloseoutPolicy(
+    () => {
+      transfers++;
+    },
+    async () => ({ answer: encodePolicyFiles(loaded) }),
+    new AbortController().signal,
+    () => clock,
+  );
+  const [first, second] = await Promise.all([load(), load()]);
+  expect(first).toEqual(loaded);
+  expect(second).toEqual(loaded);
+  clock = 4 * 60_000;
+  expect(await load()).toEqual(loaded);
+  expect(transfers).toBe(1);
+  clock = 5 * 60_000 + 1;
+  expect(await load()).toEqual(loaded);
+  expect(transfers).toBe(2);
+});
+
+test("a failed remote policy fetch is not reused", async () => {
+  let attempts = 0;
+  const load = remoteCloseoutPolicy(
+    () => {},
+    async () => {
+      attempts++;
+      if (attempts === 1) throw new Error("channel closed");
+      return { answer: encodePolicyFiles(trusted("lint")) };
+    },
+    new AbortController().signal,
+    () => 0,
+  );
+  expect(await load()).toMatchObject({ ok: false });
+  expect(await load()).toEqual(trusted("lint"));
+  expect(attempts).toBe(2);
+});
+
 test("large policies are transferred in bounded chunks and policy changes fail closed", async () => {
   const loaded = trusted("lint");
   if (!loaded.ok || loaded.absent) throw new Error("expected policy");
