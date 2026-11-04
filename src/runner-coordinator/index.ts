@@ -21,7 +21,11 @@ import { createRunnerHealth } from "../runner-health";
 import type { WorkspacePrincipal } from "../workspace";
 import { createRunnerWork, createRunnerWorkHttp } from "../runner-work";
 import type { GitHubApp } from "../github";
-import { createRunnerRepositoryAccess } from "../runner-repository-access";
+import {
+  createRepositoryCommandAccess,
+  createRunnerRepositoryAccess,
+} from "../runner-repository-access";
+import { createRepositoryCommandsHttp } from "../runner-repository-commands";
 import { createRunnerArtifactStore } from "../runner-artifacts";
 import {
   createRunnerTranscripts,
@@ -144,6 +148,14 @@ export async function openRunnerCoordinator(options: {
   const repository = options.repositoryAccess
     ? createRunnerRepositoryAccess({ ...options.repositoryAccess, work, now: options.now })
     : undefined;
+  const repositoryCommands = createRepositoryCommandsHttp({ db: options.db, now: options.now });
+  const repositoryCommandAccess = options.repositoryAccess
+    ? createRepositoryCommandAccess({
+        ...options.repositoryAccess,
+        db: options.db,
+        now: options.now,
+      })
+    : undefined;
   const transcripts = options.transcripts
     ? createRunnerTranscripts({ db: options.db, work, ...options.transcripts })
     : undefined;
@@ -178,6 +190,8 @@ export async function openRunnerCoordinator(options: {
         (await health.fetch(request, runnerId)) ??
         (await login.fetch(request, runnerId)) ??
         (await repository?.(request, runnerId)) ??
+        (await repositoryCommands(request, runnerId)) ??
+        (await repositoryCommandAccess?.(request, runnerId)) ??
         (await artifacts.fetch(request, runnerId)) ??
         (await inputs.fetch(request, runnerId)) ??
         (await transcriptsHttp?.(request, runnerId)) ??
