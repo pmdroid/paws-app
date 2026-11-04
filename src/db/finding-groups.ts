@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { workspaceMemberUsableSql } from "./workspace";
 
 export type FindingGroup = {
   id: string;
@@ -97,7 +98,7 @@ export function findingGroupSources(
 export function findingGroupingAdmins(db: Database, workspaceId: string): { userId: string }[] {
   return db
     .query<{ userId: string }, [string]>(
-      "SELECT user_id AS userId FROM workspace_member WHERE workspace_id=? AND active=1 AND role IN ('owner','admin') ORDER BY user_id",
+      `SELECT user_id AS userId FROM workspace_member m WHERE workspace_id=? AND ${workspaceMemberUsableSql("m")} AND role IN ('owner','admin') ORDER BY user_id`,
     )
     .all(workspaceId);
 }
