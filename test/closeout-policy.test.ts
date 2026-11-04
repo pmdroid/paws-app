@@ -815,126 +815,23 @@ describe("origin/main source", () => {
     expectBlocked(result, "repo", ".agents/closeout.yaml: duplicated mapping key");
   });
 
-  test("global fallback names the home file and resolves imports from home", () => {
+  test("a home policy file is ignored when origin/main has no policy", () => {
     const home = tempDir();
-    const repo = tempDir();
-    writeRepoFile(
-      home,
-      PUBLIC_POLICY_PATH,
-      `specVersion: "0.1"
-imports:
-  - path: .agents/closeout/quality.yaml
-    as: quality
-items:
-${commandItem("local-draft")}
-`,
-    );
-    writeRepoFile(home, ".agents/closeout/quality.yaml", commandPolicy("global-check"));
-    writeRepoFile(home, ".agents/skills/look/SKILL.md", "home skill\n");
-    writeRepoFile(repo, ".agents/closeout/quality.yaml", commandPolicy("repo-check"));
-    writeRepoFile(repo, ".agents/skills/look/SKILL.md", "repo skill\n");
-
-    const git = createFakeGitReader();
-    const result = loadPolicy({ repo, git, home, env: {} });
-    const policy = present(result);
-    expect(policy.source).toBe("global");
-    expect(policy.entryPath).toBe("~/.agents/closeout.yaml");
-    expect(policy.items.map((item) => item.id)).toEqual(["quality/global-check", "local-draft"]);
-    expect(policy.files.map((file) => file.path)).toEqual([
-      ".agents/closeout.yaml",
-      ".agents/closeout/quality.yaml",
-    ]);
-    expect(result.ok && result.warnings).toEqual([
-      {
-        code: GLOBAL_POLICY_CODE,
-        message: "Using ~/.agents/closeout.yaml because origin/main has no closeout policy.",
-      },
-    ]);
-    expect(git.calls[0]).toBe(`fetch ${repo}`);
-    expect(git.calls[1]).toBe(`ls-remote ${repo}`);
-  });
-
-  test("a global skill directory is hashed from home", () => {
-    const home = tempDir();
-    writeRepoFile(home, PUBLIC_POLICY_PATH, reviewPolicy(".agents/skills/look/SKILL.md"));
-    writeRepoFile(home, ".agents/skills/look/SKILL.md", "home skill\n");
-    writeRepoFile(home, ".agents/skills/look/references/rubric.md", "home rubric\n");
-    const policy = present(
-      loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} }),
-    );
-    expect(policy.source).toBe("global");
-    expect(policy.files.map((file) => file.path)).toEqual([
-      ".agents/closeout.yaml",
-      ".agents/skills/look/SKILL.md",
-      ".agents/skills/look/references/rubric.md",
-    ]);
-    expect(policy.files[2]?.sha256).toBe(sha256("home rubric\n"));
-  });
-
-  test("a global skill symlink is an error", () => {
-    const home = tempDir();
-    writeRepoFile(home, PUBLIC_POLICY_PATH, reviewPolicy(".agents/skills/look/SKILL.md"));
-    writeRepoFile(home, ".agents/skills/look/SKILL.md", "look\n");
-    const link = join(home, ".agents/skills/look/references/extra.md");
-    mkdirSync(dirname(link), { recursive: true });
-    symlinkSync("target", link);
-    expectBlocked(
-      loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} }),
-      "global",
-      `skill file is a symlink: ${link}`,
-    );
-  });
-
-  test("an invalid global file is blocked", () => {
-    const home = tempDir();
-    writeRepoFile(home, PUBLIC_POLICY_PATH, 'specVersion: "0.9"\n');
-    const result = loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} });
-    expectBlocked(
-      result,
-      "global",
-      ".agents/closeout.yaml: /specVersion must be equal to constant",
-    );
-    if (!result.ok) expect(result.message.includes(NO_CLOSEOUT_POLICY)).toBe(false);
-  });
-
-  test("no closeout policy when the remote entry and the home file are absent", () => {
-    const result = loadPolicy({
-      repo: tempDir(),
-      git: createFakeGitReader(),
-      home: tempDir(),
-      env: {},
-    });
-    expect(result).toEqual({
+    writeRepoFile(home, PUBLIC_POLICY_PATH, commandPolicy("home-check"));
+    const absent = {
       ok: true,
       warnings: [],
-      policy: {
-        source: "none",
-        digest: null,
-        entryPath: null,
-        setup: [],
-        items: [],
-        files: [],
-      },
-    });
+      policy: { source: "none", digest: null, entryPath: null, setup: [], items: [], files: [] },
+    };
+    expect(loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} })).toEqual(
+      absent,
+    );
+    writeRepoFile(home, PUBLIC_POLICY_PATH, 'specVersion: "0.9"\n');
+    expect(loadPolicy({ repo: tempDir(), git: createFakeGitReader(), home, env: {} })).toEqual(
+      absent,
+    );
+    expect(loadPolicy({ repo: tempDir(), git: createFakeGitReader(), env: {} })).toEqual(absent);
     expect(NO_CLOSEOUT_POLICY).toBe("no closeout policy");
-  });
-
-  test("HOME unset and a missing home directory are blocked", () => {
-    expectBlocked(
-      loadPolicy({ repo: tempDir(), git: createFakeGitReader(), env: {} }),
-      "global",
-      "HOME is unset",
-    );
-    expectBlocked(
-      loadPolicy({
-        repo: tempDir(),
-        git: createFakeGitReader(),
-        home: join(tempDir(), "missing"),
-        env: {},
-      }),
-      "global",
-      "policy root is not a directory",
-    );
   });
 });
 
