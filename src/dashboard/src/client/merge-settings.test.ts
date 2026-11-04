@@ -3,6 +3,7 @@ import type { MergeSettingsView } from "../merge-settings";
 import {
   mergeSettingsBody,
   mergeSettingsRequest,
+  fieldProblem,
   renderMergeSettings,
   riskGlobs,
 } from "./merge-settings";
@@ -206,6 +207,68 @@ describe("Settings → Merging", () => {
     const without = renderMergeSettings({ data: data(), busy: null, error: null, saved: false });
     expect(without).not.toContain("Pull request comments");
     expect(mergeSettingsBody(data())).not.toHaveProperty("commentWait");
+  });
+
+  test("Ignored PR comments: both lists per repository, saved as sent, errors at the field", async () => {
+    const view: MergeSettingsView = {
+      ...data(),
+      ignoredComments: [
+        {
+          repository: "acme/monorepo",
+          ignoreCommentBots: ["codecov[bot]"],
+          ignoreCommentMarkers: ["<!-- deploy-security-proof -->"],
+        },
+      ],
+    };
+    const html = renderMergeSettings({ data: view, busy: null, error: null, saved: false });
+    expect(html).toContain("<h2>Ignored PR comments</h2>");
+    expect(html).toMatch(/<textarea id="ignore-bots-0" name="ignore-bots-0"[^>]*>codecov\[bot\]</);
+    expect(html).toContain(">&lt;!-- deploy-security-proof --&gt;</textarea>");
+    expect(html).toContain(
+      "Ignore every comment from this account. Use markers instead when the account also posts real failures.",
+    );
+    expect(html).toContain(
+      "A comment that contains this text is ignored, for example <code>&lt;!-- deploy-security-proof --&gt;</code>.",
+    );
+    expect(mergeSettingsBody(view).ignoredComments).toEqual(view.ignoredComments);
+    expect(mergeSettingsBody(data())).not.toHaveProperty("ignoredComments");
+    expect(
+      renderMergeSettings({ data: data(), busy: null, error: null, saved: false }),
+    ).not.toContain("Ignored PR comments");
+
+    const fake = (async () =>
+      Response.json(
+        {
+          error: "ignoredComments.0.ignoreCommentMarkers.0 must not be empty",
+          field: "ignoredComments.0.ignoreCommentMarkers",
+        },
+        { status: 400 },
+      )) as unknown as typeof fetch;
+    const failure = (await mergeSettingsRequest(
+      "http://127.0.0.1:8787",
+      "PUT",
+      mergeSettingsBody(view),
+      "csrf",
+      fake,
+    ).catch((error: unknown) => error)) as Error & { field?: string };
+    expect(failure.field).toBe("ignoredComments.0.ignoreCommentMarkers");
+    const failed = renderMergeSettings({
+      data: view,
+      busy: null,
+      error: failure.message,
+      field: failure.field!,
+      saved: false,
+    });
+    expect(failed).toContain(
+      'aria-describedby="ignore-markers-0-help ignore-markers-0-error" aria-invalid="true"',
+    );
+    expect(failed).toContain(
+      '<small class="err" id="ignore-markers-0-error" role="alert">Line 1 must not be empty</small>',
+    );
+    expect(failed).not.toContain('id="ignore-bots-0-error"');
+    expect(fieldProblem("ignoredComments.1.ignoreCommentBots lists more than 100 accounts")).toBe(
+      "Lists more than 100 accounts",
+    );
   });
 
   test("High-risk paths: an engine that does not list them leaves the section and body out", () => {

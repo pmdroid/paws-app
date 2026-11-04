@@ -43,6 +43,7 @@ const server = Bun.serve({
         csrfToken: "ui-fixture",
         audit: (_action, subject) => audits.push(subject),
         upToDateRules: async () => ["acme/platform"],
+        repos: ["acme/platform"],
         choices: async () => ({
           projects: [
             { id: MONOREPO, name: "Monorepo" },
@@ -117,6 +118,30 @@ try {
       "acme/platform": { packages: ["apps/*", "packages/*"] },
     });
     await expect(page.locator("#default-main-help")).toContainText("acme/platform");
+
+    await expect(page.getByRole("heading", { name: "Ignored PR comments" })).toBeVisible();
+    await expect(page.locator("#ignore-bots-0")).toHaveValue(/codecov\[bot\]/);
+    await page.locator("#ignore-bots-0").fill("codecov[bot]\nnot a login");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.locator("#ignore-bots-0-error")).toContainText("must be a GitHub login");
+    await expect(page.locator("#ignore-bots-0")).toHaveAttribute("aria-invalid", "true");
+    await page.locator("#ignore-bots-0").fill("codecov[bot]\ndeploy-bot");
+    await page
+      .locator("#ignore-markers-0")
+      .fill("<!-- add-pr-comment:todo-count -->\n<!-- deploy-security-proof -->");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText("Merging settings saved.")).toBeVisible();
+    expect(readMergeSettings(loadConfigFile(configPath)).repositories["acme/platform"]).toEqual({
+      packages: ["apps/*", "packages/*"],
+      ignoreCommentBots: ["codecov[bot]", "deploy-bot"],
+      ignoreCommentMarkers: [
+        "<!-- add-pr-comment:todo-count -->",
+        "<!-- deploy-security-proof -->",
+      ],
+    });
+    await page.locator("#merge-ignored-comments").screenshot({
+      path: join(directory, `merging-ignored-comments-${width}.png`),
+    });
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
       .toBe(true);

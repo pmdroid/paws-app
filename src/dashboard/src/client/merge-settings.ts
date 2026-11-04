@@ -4,6 +4,7 @@ import type {
   CommentWait,
   HighRiskRepository,
   HotFile,
+  IgnoredComments,
   MainMoved,
   MergeChoice,
   MergeOrder,
@@ -41,6 +42,7 @@ type View = {
   data: MergeSettingsView | null;
   busy: string | null;
   error: string | null;
+  field?: string;
   saved: boolean;
   denied?: boolean;
   projectDraft?: string;
@@ -144,6 +146,49 @@ function riskSection(repositories: readonly HighRiskRepository[]): string {
   return `<section class="settings-section"><div class="settings-label"><h2>High-risk paths</h2><p class="sub">A changed path is high-risk when a glob here or in the repository's <span class="mono">.paws/high-risk-paths</span> matches it. The file can only add paths. The Risk card on each issue names the list that matched.</p></div><div class="col">${body}</div></section>`;
 }
 
+const IGNORED_LISTS = [
+  {
+    key: "ignoreCommentBots",
+    name: "ignore-bots",
+    title: "Bot accounts",
+    placeholder: "codecov[bot]",
+    help: "Ignore every comment from this account. Use markers instead when the account also posts real failures.",
+  },
+  {
+    key: "ignoreCommentMarkers",
+    name: "ignore-markers",
+    title: "Comment markers",
+    placeholder: "<!-- deploy-security-proof -->",
+    help: "A comment that contains this text is ignored, for example <code>&lt;!-- deploy-security-proof --&gt;</code>.",
+  },
+] as const;
+
+export function fieldProblem(message: string): string {
+  const text = message.replace(/^ignoredComments\.\d+\.\w+(?:\.(\d+))?\s*/, (_, line) =>
+    line === undefined ? "" : `Line ${Number(line) + 1} `,
+  );
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function ignoredSection(repositories: readonly IgnoredComments[], view: View): string {
+  const body = repositories.length
+    ? repositories
+        .map((entry, index) => {
+          const fields = IGNORED_LISTS.map((list) => {
+            const id = `${list.name}-${index}`;
+            const problem =
+              view.error && view.field === `ignoredComments.${index}.${list.key}`
+                ? fieldProblem(view.error)
+                : null;
+            return `<div class="settings-field"><label for="${id}">${list.title}</label><textarea id="${id}" name="${id}" rows="4" spellcheck="false" autocapitalize="none" placeholder="${esc(list.placeholder)}" aria-describedby="${id}-help${problem ? ` ${id}-error` : ""}"${problem ? ' aria-invalid="true"' : ""}>${esc(entry[list.key].join("\n"))}</textarea><small class="sub" id="${id}-help">${list.help}</small>${problem ? `<small class="err" id="${id}-error" role="alert">${esc(problem)}</small>` : ""}</div>`;
+          }).join("");
+          return `<section class="settings-project"><h3>${esc(entry.repository)}</h3><div class="risk-lists">${fields}</div></section>`;
+        })
+        .join("")
+    : '<p class="sub">No repositories yet. Connect one under Integrations.</p>';
+  return `<section class="settings-section" id="merge-ignored-comments"><div class="settings-label"><h2>Ignored PR comments</h2><p class="sub">Comments that only report status, so they never send the pull request back to the agent. One entry per line. Applies to the next comment.</p></div><div class="col">${body}</div></section>`;
+}
+
 export function renderMergeSettings(view: View): string {
   if (view.denied) return '<p class="sub">Only workspace admins can change merging settings.</p>';
   const intro = '<p class="sub">An item keeps the settings it had when it started.</p>';
@@ -152,7 +197,7 @@ export function renderMergeSettings(view: View): string {
   const data = view.data;
   const repos = { queues: data.githubQueue?.repositories ?? [], upToDate: data.upToDateRule ?? [] };
   const feedback = view.error
-    ? `<p class="settings-message err" role="alert">${esc(view.error)}</p>`
+    ? `<p class="settings-message err" role="alert">${esc(view.field?.startsWith("ignoredComments.") ? "Merging settings were not saved. Fix the field marked under Ignored PR comments." : view.error)}</p>`
     : view.saved
       ? '<p class="settings-message" role="status">Merging settings saved. Items that start from now on use them.</p>'
       : "";
@@ -198,6 +243,7 @@ export function renderMergeSettings(view: View): string {
       ${riskGateSection(data.riskGate)}
       ${data.autoApproveHighRisk === undefined ? "" : `<section class="settings-section"><div class="settings-label"><h2>High-risk approval</h2><p class="sub" id="auto-approve-high-risk-help">Off by default. When on, a high-risk change can merge without a person only when Closeout accepted the exact commit, neither security nor independent review has a P2-or-worse finding, including in pre-existing code, and no rule probe failed. A new commit needs its own reviews. Changes to the risk rules or agent instructions still need a person.${data.riskGate?.on === true ? "" : " Turn on the risk gate before changing this setting."}</p></div><div class="col"><label><input type="checkbox" name="auto-approve-high-risk" aria-describedby="auto-approve-high-risk-help"${data.autoApproveHighRisk ? " checked" : ""}${data.riskGate?.on === true ? "" : " disabled"}> Let high-risk changes through when both reviews are clean</label></div></section>`}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
+      ${data.ignoredComments ? ignoredSection(data.ignoredComments, view) : ""}
       ${data.hotFiles ? hotFileSection(data.hotFiles) : ""}
       <div class="settings-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-merge="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
@@ -264,6 +310,7 @@ export function mergeSettingsBody(data: MergeSettingsView): MergeSettings {
           })),
         }
       : {}),
+    ...(data.ignoredComments ? { ignoredComments: data.ignoredComments } : {}),
   };
 }
 
@@ -285,9 +332,12 @@ export async function mergeSettingsRequest(
   });
   const data = await response.json();
   if (!response.ok)
-    throw new Error(
-      typeof data.error === "string" ? data.error : `Request failed (${response.status}).`,
-      { cause: response.status },
+    throw Object.assign(
+      new Error(
+        typeof data.error === "string" ? data.error : `Request failed (${response.status}).`,
+        { cause: response.status },
+      ),
+      typeof data.field === "string" ? { field: data.field } : {},
     );
   return data as MergeSettingsView;
 }
@@ -357,23 +407,38 @@ export function createMergeSettings(invalidate: () => void): {
       const text = form.querySelector<HTMLTextAreaElement>(`[name="risk-${index}"]`)?.value;
       return text === undefined ? entry : { ...entry, paths: riskGlobs(text) };
     });
+    data.ignoredComments = data.ignoredComments?.map((entry, index) => {
+      const next = { ...entry };
+      for (const list of IGNORED_LISTS) {
+        const text = form.querySelector<HTMLTextAreaElement>(
+          `[name="${list.name}-${index}"]`,
+        )?.value;
+        if (text !== undefined) next[list.key] = riskGlobs(text);
+      }
+      return next;
+    });
     view.projectDraft = value("new-project")?.trim() ?? "";
     view.ruleProjectDraft = value("rule-project") ?? "";
     view.ruleLabelDraft = value("rule-label")?.trim() ?? "";
     view.saved = false;
     view.error = null;
+    delete view.field;
   };
   const request = async (busy: string, operation: () => Promise<void>) => {
     const started = generation;
     view.busy = busy;
     view.error = null;
+    delete view.field;
     try {
       paint();
       await operation();
     } catch (error) {
       journalCaught(error, "merge-settings.createMergeSettings.paint", null);
-      if (started === generation)
+      if (started === generation) {
         view.error = error instanceof Error ? error.message : "Could not update merging settings.";
+        const field = (error as { field?: unknown }).field;
+        if (typeof field === "string") view.field = field;
+      }
     } finally {
       if (started === generation) {
         view.busy = null;
@@ -476,7 +541,7 @@ export function createMergeSettings(invalidate: () => void): {
     // A High-risk paths box changes on blur; repainting then would swallow the click that blurred
     // it, such as Save. Submit and the other buttons read it.
     if (["new-project", "rule-project", "rule-label"].includes(target.name)) return;
-    if (target.name.startsWith("risk-")) return;
+    if (/^(risk|ignore-bots|ignore-markers)-/.test(target.name)) return;
     draft();
     paint();
   };
