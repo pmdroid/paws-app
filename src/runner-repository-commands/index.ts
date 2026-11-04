@@ -3,6 +3,7 @@ export {
   deliverRepositoryCommands,
   enqueueRepositoryCommand,
   issueRepositoryCommandGrant,
+  rebaseOnRunner,
   recordRepositoryCommandResult,
   REPOSITORY_COMMAND_GRANT_MS,
   RepositoryCommandDeniedError,

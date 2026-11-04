@@ -261,3 +261,28 @@ export function itemOwnerEligibleRunner(
     .sort((a, b) => Number(b.own) - Number(a.own) || a.name.localeCompare(b.name));
   return named[0] ? { id: named[0].id, name: named[0].name } : null;
 }
+
+export function itemRepositoryRunner(
+  db: Database,
+  input: { itemId: string; now?: number },
+): { id: string; workspaceId: string } | null {
+  const scope = itemOwnerScope(db, input.itemId);
+  if (!scope) return null;
+  const last = db
+    .query<{ runnerId: string | null; agent: string }, [string]>(
+      `SELECT w.runner_id AS runnerId,r.agent FROM run r LEFT JOIN runner_work w ON w.run_id=r.id
+       WHERE r.item_id=? ORDER BY w.runner_id IS NULL,r.created_at DESC,r.rowid DESC LIMIT 1`,
+    )
+    .get(input.itemId);
+  const eligible = eligibleRunners(db, {
+    ...scope,
+    agent: last?.agent ?? "",
+    purpose: "prepare",
+    ...(input.now === undefined ? {} : { now: input.now }),
+  }).filter((runner) => runner.eligible);
+  const runner =
+    eligible.find((candidate) => candidate.id === last?.runnerId) ??
+    eligible.find((candidate) => candidate.ownerId === scope.ownerUserId) ??
+    eligible[0];
+  return runner ? { id: runner.id, workspaceId: runner.workspaceId } : null;
+}

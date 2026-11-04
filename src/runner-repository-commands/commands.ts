@@ -294,3 +294,25 @@ export function repositoryCommandState(db: Database, id: string, at = Date.now()
       .get(id)?.state ?? null
   );
 }
+
+const REPOSITORY_REBASE_TIMEOUT_MS = 10 * 60_000;
+
+export async function rebaseOnRunner(
+  db: Database,
+  input: Omit<RepositoryCommandInput, "expiresAt" | "now"> & { now: number },
+  signal?: AbortSignal,
+): Promise<RunnerRepositoryCommandResult> {
+  try {
+    const id = enqueueRepositoryCommand(db, {
+      ...input,
+      expiresAt: input.now + REPOSITORY_REBASE_TIMEOUT_MS,
+    });
+    const outcome = await waitForRepositoryCommand(id, signal);
+    return outcome.outcome === "expired"
+      ? { outcome: "failed", reason: "timed out after 10 minutes" }
+      : outcome;
+  } catch (error) {
+    if (!(error instanceof RepositoryCommandDeniedError)) throw error;
+    return { outcome: "failed", reason: error.message };
+  }
+}
