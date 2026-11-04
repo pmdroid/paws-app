@@ -629,6 +629,58 @@ describe("agent account admission", () => {
     expect(listRetroDispatches(db, "r1")).toHaveLength(1);
   });
 
+  test("an open retro reservation fences quota revalidation for further attempts", () => {
+    const { db, clock, open } = world();
+    addRunner(db, { id: "R1", capacity: 4 });
+    db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
+    const accountId = legacyAgentAccountId("ws", "codex");
+    const binding = ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
+    recordAccountObservation(db, {
+      bindingId: binding.id,
+      source: "result",
+      sourceId: "quota-hold",
+      observedAt: clock.now,
+      now: clock.now,
+      state: "exhausted",
+      resetsAt: clock.now,
+    });
+    db.run("UPDATE agent_account_health SET next_check_at=? WHERE kind='quota'", [clock.now]);
+    createRetro(db, {
+      id: "r0",
+      workspaceId: "ws",
+      windowStart: FIXTURE_START - 7 * 86_400_000,
+      windowEnd: FIXTURE_START,
+      origin: "manual",
+      settingsRevision: getRetro(db, "r1")!.settingsRevision,
+      now: clock.now,
+    });
+    db.run(
+      `INSERT INTO retro_dispatch (command_id, retro_id, attempt, workspace_id, runner_id,
+         runner_fence, command, envelope, created_at, issued_at, expires_at)
+       VALUES ('probe', 'r0', 1, 'ws', 'R1', 0, '{}', '{}', ?, ?, ?)`,
+      [clock.now, clock.now, clock.now + 1],
+    );
+    db.run(
+      `INSERT INTO runner_command_account (command_id, workspace_id, runner_id, agent, account_id,
+         binding_id, named, recorded_at) VALUES ('probe', 'ws', 'R1', 'codex', ?, ?, 0, ?)`,
+      [accountId, binding.id, clock.now],
+    );
+    const dispatcher = open(db);
+    dispatcher.tick();
+    expect(dispatcher.generation("r1")).toMatchObject({
+      state: "waiting_for_runner",
+      diagnostic: "quota_cooldown",
+      attempt: 0,
+    });
+
+    db.run(
+      "UPDATE retro_dispatch SET released_at=?, release_reason='teardown' WHERE command_id='probe'",
+      [clock.now],
+    );
+    dispatcher.tick();
+    expect(dispatcher.generation("r1")).toMatchObject({ state: "generating", attempt: 1 });
+  });
+
   test("the account concurrency limit counts retro turns and holds further work", () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1", capacity: 4 });
