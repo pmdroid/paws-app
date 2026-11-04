@@ -3,7 +3,11 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { journalCaught } from "../journal";
 import {
+  accountSlotsInUse,
   acknowledgeRetroDispatch,
+  admitAgentAccounts,
+  AgentAccountError,
+  agentAccountConcurrency,
   closeRetro,
   deliverableRetroDispatches,
   failRetroAttempt,
@@ -17,6 +21,7 @@ import {
   openRetroDispatch,
   pinnedSlotsReserved,
   readRetroArtifact,
+  recordCommandAccount,
   recordRetroDispatch,
   recordRetroDispatchResult,
   recordRetroGeneration,
@@ -47,6 +52,7 @@ import {
   RunnerRetroCommandSchema,
   runnerAcceptsRetro,
   runnerRetroInputGrant,
+  type RunnerCodingAgent,
   type RunnerRetroCommand,
   type RunnerRetroResult,
   type SignedRunnerCommand,
@@ -303,7 +309,15 @@ export function createRetroDispatcher(options: {
       });
   }
 
-  function settle(dispatch: RetroDispatch) {
+  function settle(released: RetroDispatch) {
+    immediate(db, () => {
+      const dispatch = getRetroDispatch(db, released.commandId);
+      if (dispatch === null || dispatch.releasedAt === null || dispatch.settledAt !== null) return;
+      settleOnce(dispatch);
+    });
+  }
+
+  function settleOnce(dispatch: RetroDispatch) {
     const at = now();
     const fail = (error: string) =>
       failRetroAttempt(db, {
@@ -315,14 +329,19 @@ export function createRetroDispatcher(options: {
       });
     const result = dispatch.result as RunnerRetroResult | null;
     if (dispatch.releaseReason === "result" && result !== null) {
-      recordRetroGeneration(db, {
-        retroId: dispatch.retroId,
-        diagnostic: "active",
-        detail: `The runner reported ${result.outcome}.`,
-        now: at,
-        activeMs: result.activeMs,
-      });
-      if (result.outcome === "completed") {
+      const retro = getRetro(db, dispatch.retroId);
+      if (retro?.state === "generating" && retro.attempt === dispatch.attempt)
+        recordRetroGeneration(db, {
+          retroId: dispatch.retroId,
+          diagnostic: "active",
+          detail: `The runner reported ${result.outcome}.`,
+          now: at,
+          activeMs: result.activeMs,
+        });
+      const identity = runnerIdentity(db, dispatch.runnerId);
+      if (identity === null || !runnerHasWorkspaceAuthority(db, identity))
+        fail("The runner's owner lost workspace authority before the result arrived.");
+      else if (result.outcome === "completed") {
         const settled = settleRetroAttempt(db, root, {
           retroId: dispatch.retroId,
           attempt: dispatch.attempt,
@@ -355,8 +374,6 @@ export function createRetroDispatcher(options: {
       fail("The runner did not start the retro command.");
     else if (dispatch.releaseReason === "teardown")
       fail("The runner ended the retro turn without a result.");
-    else if (dispatch.releaseReason === "revoked")
-      fail("The runner lost its authority before it reported. The outcome is unknown.");
     settleRetroDispatch(db, dispatch.commandId, at);
     afterFailure(dispatch.retroId);
   }
@@ -365,15 +382,22 @@ export function createRetroDispatcher(options: {
     const at = now();
     if (dispatch.releasedAt !== null) return settle(dispatch);
     const identity = runnerIdentity(db, dispatch.runnerId);
-    if (
+    const fenced =
       identity === null ||
       identity.revokedAt !== null ||
       identity.status === "revoked" ||
-      identity.fence !== dispatch.runnerFence
-    ) {
-      releaseRetroDispatch(db, { commandId: dispatch.commandId, reason: "revoked", now: at });
+      identity.fence !== dispatch.runnerFence;
+    const authorized = !fenced && runnerHasWorkspaceAuthority(db, identity);
+    if (!authorized && dispatch.fetchedAt === null && dispatch.acknowledgedAt === null) {
+      releaseRetroDispatch(db, { commandId: dispatch.commandId, reason: "not_started", now: at });
       return settle(getRetroDispatch(db, dispatch.commandId)!);
     }
+    if (fenced || identity === null)
+      return note(
+        dispatch.retroId,
+        "unknown_outcome",
+        "The runner lost its identity after receiving the command. Its slot and attempt stay fenced until it reports a result or confirms teardown.",
+      );
     const command = dispatch.command as RunnerRetroCommand;
     if (dispatch.acknowledgedAt === null) {
       const seenAfterExpiry =
@@ -500,6 +524,28 @@ export function createRetroDispatcher(options: {
       );
       return;
     }
+    const agent = profile.agent as RunnerCodingAgent;
+    const accountId = admitAgentAccounts(db, retro.workspaceId, agent).eligible[0];
+    if (accountId === undefined) {
+      note(
+        retro.id,
+        "no_runner",
+        `The workspace's default ${profile.agent} account is not enabled.`,
+      );
+      return;
+    }
+    const accountFull = () => {
+      const limit = agentAccountConcurrency(db, accountId);
+      return limit !== null && accountSlotsInUse(db, accountId, now()) >= limit;
+    };
+    if (accountFull()) {
+      note(
+        retro.id,
+        "capacity_wait",
+        `The ${profile.agent} account is at its concurrency limit. Waiting for a free slot.`,
+      );
+      return;
+    }
     const prompt = freezeRenderedRetroPrompt(db, root, { retroId: retro.id, now: at });
     if (!prompt.ok) {
       closeRetro(db, { retroId: retro.id, state: "abandoned", error: prompt.reason, now: at });
@@ -521,9 +567,19 @@ export function createRetroDispatcher(options: {
     const commandId = newRetroCommandId(at);
     const leaseMs =
       RETRO_DISPATCH_TIMING.commandTtlMs + activeExecutionMs + RETRO_DISPATCH_TIMING.outcomeGraceMs;
-    immediate(db, () => {
+    try {
+      immediate(db, () => dispatchTo(runner.id));
+    } catch (error) {
+      if (!(error instanceof AgentAccountError)) throw error;
+      note(
+        retro.id,
+        "no_runner",
+        `The ${profile.agent} account cannot run here: ${error.message}.`,
+      );
+    }
+    function dispatchTo(runnerId: string) {
       const current = getRetro(db, retro.id);
-      const identity = runnerIdentity(db, runner.id);
+      const identity = runnerIdentity(db, runnerId);
       if (
         current === null ||
         current.attempt !== retro.attempt ||
@@ -532,13 +588,14 @@ export function createRetroDispatcher(options: {
         identity === null ||
         identity.workspaceId !== retro.workspaceId ||
         !runnerHasWorkspaceAuthority(db, identity) ||
+        accountFull() ||
         !runnerHasCapacity(
           db,
-          runner.id,
+          runnerId,
           at,
           "",
-          runnerSlotsHeldBetweenCommands(db, runner.id, at) +
-            pinnedSlotsReserved(db, runner.id, "", at),
+          runnerSlotsHeldBetweenCommands(db, runnerId, at) +
+            pinnedSlotsReserved(db, runnerId, "", at),
         )
       )
         return;
@@ -552,7 +609,7 @@ export function createRetroDispatcher(options: {
       if (attempt === null) return;
       const command: RunnerRetroCommand = {
         id: commandId,
-        runnerId: runner.id,
+        runnerId,
         workspaceId: retro.workspaceId,
         issuedAt: at,
         expiresAt: at + RETRO_DISPATCH_TIMING.commandTtlMs,
@@ -587,12 +644,15 @@ export function createRetroDispatcher(options: {
           sizeBytes: promptRecord.sizeBytes,
         },
       };
+      const account = recordCommandAccount(db, command, at);
+      if (account?.accountId !== accountId)
+        throw new AgentAccountError("binding_mismatch", "The command ran under another account");
       recordRetroDispatch(db, {
         commandId,
         retroId: retro.id,
         attempt,
         workspaceId: retro.workspaceId,
-        runnerId: runner.id,
+        runnerId,
         runnerFence: identity.fence,
         command,
         envelope: signed(command),
@@ -606,7 +666,7 @@ export function createRetroDispatcher(options: {
         detail: "Sent to a paired runner. Waiting for it to fetch the command.",
         now: at,
       });
-    });
+    }
   }
 
   function startRetroAttemptFor(
@@ -644,7 +704,7 @@ export function createRetroDispatcher(options: {
     }
   }
 
-  function authorize(runnerId: string, commandId: string) {
+  function authorize(runnerId: string, commandId: string, terminal = false) {
     const dispatch = getRetroDispatch(db, commandId);
     if (dispatch === null || dispatch.runnerId !== runnerId)
       throw new RetroFencedError("Retro command is not assigned to this runner");
@@ -655,7 +715,7 @@ export function createRetroDispatcher(options: {
       identity.status === "revoked" ||
       identity.fence !== dispatch.runnerFence ||
       identity.workspaceId !== dispatch.workspaceId ||
-      !runnerHasWorkspaceAuthority(db, identity)
+      (!terminal && !runnerHasWorkspaceAuthority(db, identity))
     )
       throw new RetroFencedError("Runner retro authority changed");
     return dispatch;
@@ -784,7 +844,7 @@ export function createRetroDispatcher(options: {
       };
     },
     submit(runnerId: string, commandId: string, body: unknown) {
-      const dispatch = authorize(runnerId, commandId);
+      const dispatch = authorize(runnerId, commandId, true);
       const retro = getRetro(db, dispatch.retroId);
       const accepted = acceptRetroResult(dispatch.command as RunnerRetroCommand, {
         body,
@@ -809,7 +869,7 @@ export function createRetroDispatcher(options: {
     },
     released(runnerId: string, commandId: string) {
       immediate(db, () => {
-        const dispatch = authorize(runnerId, commandId);
+        const dispatch = authorize(runnerId, commandId, true);
         if (dispatch.releasedAt !== null) return;
         releaseRetroDispatch(db, {
           commandId,

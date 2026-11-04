@@ -5,8 +5,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  accountSlotsInUse,
   createRetro,
+  ensureLegacyAgentBinding,
   getRetro,
+  legacyAgentAccountId,
   listRetroAttempts,
   listRetroDispatches,
   listRetroItems,
@@ -520,7 +523,49 @@ describe("recovery", () => {
     });
   });
 
-  test("a revoked runner fences the attempt; its late result is refused", async () => {
+  test("revoking a runner mid-turn keeps the slot and attempt fenced; no retry starts", async () => {
+    const { db, clock, open } = world();
+    addRunner(db, { id: "R1" });
+    addRunner(db, { id: "R2" });
+    const runner = fakeRunner("R1", clock);
+    db.run("UPDATE runner SET last_seen_at=? WHERE id='R2'", [clock.now - 1]);
+    runner.seen(db);
+    const dispatcher = open(db);
+    dispatcher.tick();
+    const [command] = await runner.poll(dispatcher);
+    await runner.start(dispatcher, command!);
+    db.run("UPDATE runner SET status='revoked', revoked_at=? WHERE id='R1'", [clock.now]);
+    for (let tick = 0; tick < 3; tick += 1) {
+      clock.now += retroRetryDelayMs(3);
+      db.run("UPDATE runner SET last_seen_at=? WHERE id='R2'", [clock.now]);
+      dispatcher.tick();
+    }
+    expect(listRetroDispatches(db, "r1")).toHaveLength(1);
+    expect(listRetroDispatches(db, "r1")[0]!.releasedAt).toBeNull();
+    expect(dispatcher.generation("r1")).toMatchObject({
+      state: "generating",
+      diagnostic: "unknown_outcome",
+      attempt: 1,
+    });
+    expect(
+      (await runner.submit(dispatcher, command!, runner.result(command!, VALID_OUTPUT))).status,
+    ).toBe(409);
+    expect(await fakeRunner("R2", clock).poll(dispatcher)).toEqual([]);
+  });
+
+  test("an unfetched command on a revoked runner was never started and is released", () => {
+    const { db, clock, open } = world();
+    addRunner(db, { id: "R1" });
+    db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
+    const dispatcher = open(db);
+    dispatcher.tick();
+    db.run("UPDATE runner SET status='revoked', revoked_at=? WHERE id='R1'", [clock.now]);
+    dispatcher.tick();
+    expect(listRetroDispatches(db, "r1")[0]).toMatchObject({ releaseReason: "not_started" });
+    expect(dispatcher.generation("r1")).toMatchObject({ attemptsUsed: 0 });
+  });
+
+  test("losing workspace authority stops delivery but lets the runner report teardown", async () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
@@ -529,12 +574,122 @@ describe("recovery", () => {
     dispatcher.tick();
     const [command] = await runner.poll(dispatcher);
     await runner.start(dispatcher, command!);
-    db.run("UPDATE runner SET status='revoked', revoked_at=? WHERE id='R1'", [clock.now]);
+    db.run("UPDATE workspace_member SET role='member' WHERE user_id='admin'");
+    const input = await call(dispatcher, "R1", `/v1/retro-commands/${command!.id}/input`, {
+      commandId: command!.id,
+      workspaceId: "ws",
+      retroId: "r1",
+      attempt: 1,
+      kind: "digest",
+      sha256: command!.digest.sha256,
+      offset: 0,
+      length: 1,
+    });
+    expect(input.status).toBe(409);
     dispatcher.tick();
-    expect(getRetro(db, "r1")!.error).toContain("outcome is unknown");
+    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(1);
     expect(
       (await runner.submit(dispatcher, command!, runner.result(command!, VALID_OUTPUT))).status,
-    ).toBe(409);
-    expect(getRetro(db, "r1")!.state).toBe("failed");
+    ).toBe(200);
+    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
+    expect(getRetro(db, "r1")).toMatchObject({ state: "failed" });
+    expect(getRetro(db, "r1")!.error).toContain("lost workspace authority");
+    expect(listRetroItems(db, "r1")).toEqual([]);
+  });
+
+  test("an unfetched command is released when the owner loses workspace authority", () => {
+    const { db, clock, open } = world();
+    addRunner(db, { id: "R1" });
+    db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
+    const dispatcher = open(db);
+    dispatcher.tick();
+    db.run("UPDATE workspace_member SET role='member' WHERE user_id='admin'");
+    dispatcher.tick();
+    expect(listRetroDispatches(db, "r1")[0]).toMatchObject({ releaseReason: "not_started" });
+    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
+  });
+
+  test("replaying settlement after publication keeps the ready report and its accounting", async () => {
+    const { db, clock, open } = world();
+    addRunner(db, { id: "R1" });
+    const runner = fakeRunner("R1", clock);
+    runner.seen(db);
+    const dispatcher = open(db);
+    dispatcher.tick();
+    const [command] = await runner.poll(dispatcher);
+    await runner.start(dispatcher, command!);
+    await runner.submit(dispatcher, command!, runner.result(command!, VALID_OUTPUT));
+    db.run("UPDATE retro_dispatch SET settled_at = NULL");
+    dispatcher.tick();
+    expect(dispatcher.generation("r1")).toMatchObject({
+      state: "ready",
+      diagnostic: "ready",
+      activeMs: 42_000,
+    });
+    expect(listRetroItems(db, "r1")).toHaveLength(1);
+  });
+});
+
+describe("agent account admission", () => {
+  test("a disabled default account dispatches nothing", () => {
+    const { db, clock, open } = world();
+    addRunner(db, { id: "R1" });
+    db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
+    const accountId = legacyAgentAccountId("ws", "codex");
+    ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
+    db.run("UPDATE agent_account SET enabled=0 WHERE id=?", [accountId]);
+    const dispatcher = open(db);
+    dispatcher.tick();
+    expect(listRetroDispatches(db, "r1")).toEqual([]);
+    expect(dispatcher.generation("r1")).toMatchObject({
+      state: "waiting_for_runner",
+      diagnostic: "no_runner",
+      attempt: 0,
+    });
+  });
+
+  test("the account concurrency limit counts retro turns and holds further work", () => {
+    const { db, clock, open } = world();
+    addRunner(db, { id: "R1", capacity: 4 });
+    db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
+    const accountId = legacyAgentAccountId("ws", "codex");
+    const binding = ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
+    db.run("UPDATE agent_account SET concurrency=1 WHERE id=?", [accountId]);
+    createRetro(db, {
+      id: "r0",
+      workspaceId: "ws",
+      windowStart: FIXTURE_START - 7 * 86_400_000,
+      windowEnd: FIXTURE_START,
+      origin: "manual",
+      settingsRevision: getRetro(db, "r1")!.settingsRevision,
+      now: clock.now,
+    });
+    db.run(
+      `INSERT INTO retro_dispatch (command_id, retro_id, attempt, workspace_id, runner_id,
+         runner_fence, command, envelope, created_at, issued_at, expires_at)
+       VALUES ('other', 'r0', 1, 'ws', 'R1', 0, '{}', '{}', ?, ?, ?)`,
+      [clock.now, clock.now, clock.now + 1],
+    );
+    db.run(
+      `INSERT INTO runner_command_account (command_id, workspace_id, runner_id, agent, account_id,
+         binding_id, named, recorded_at) VALUES ('other', 'ws', 'R1', 'codex', ?, ?, 0, ?)`,
+      [accountId, binding.id, clock.now],
+    );
+    expect(accountSlotsInUse(db, accountId, clock.now)).toBe(1);
+    const dispatcher = open(db);
+    dispatcher.tick();
+    expect(dispatcher.generation("r1")).toMatchObject({
+      state: "waiting_for_runner",
+      diagnostic: "capacity_wait",
+      attempt: 0,
+    });
+
+    db.run(
+      "UPDATE retro_dispatch SET released_at=?, release_reason='teardown' WHERE command_id='other'",
+      [clock.now],
+    );
+    dispatcher.tick();
+    expect(dispatcher.generation("r1")).toMatchObject({ state: "generating", attempt: 1 });
+    expect(accountSlotsInUse(db, accountId, clock.now)).toBe(1);
   });
 });
