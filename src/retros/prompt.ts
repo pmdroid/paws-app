@@ -393,12 +393,40 @@ export function sampleRetroDigest(): RetroDigest {
   };
 }
 
-function readableRetro(db: Database, principal: WorkspacePrincipal, retro: Retro | null) {
+function readableEvidence(
+  db: Database,
+  root: string,
+  principal: WorkspacePrincipal,
+  sessionIds: readonly string[],
+  retro: Retro | null,
+) {
   if (retro === null || retro.workspaceId !== principal.workspaceId) return null;
   const accessible = new Set(
     listWorkspaceRepositoryNames(db, principal.workspaceId).map((name) => name.toLowerCase()),
   );
-  return retro.repositories.every((name) => accessible.has(name.toLowerCase())) ? retro : null;
+  if (!retro.repositories.every((name) => accessible.has(name.toLowerCase()))) return null;
+  const source = frozenInput(db, root, retro);
+  if (!source.ok) return null;
+  const itemIds = [
+    ...new Set([
+      ...source.digest.sessions.map((session) => session.itemId),
+      ...source.digest.records.map((record) => record.itemId),
+    ]),
+  ];
+  const sessions = new Map(
+    db
+      .query<{ id: string; sessionKey: string | null }, [string]>(
+        "SELECT id, session_key AS sessionKey FROM work_item WHERE id IN (SELECT value FROM json_each(?))",
+      )
+      .all(JSON.stringify(itemIds))
+      .map((row) => [row.id, row.sessionKey]),
+  );
+  const readable = new Set(sessionIds);
+  const authorized = itemIds.every((id) => {
+    const sessionKey = sessions.get(id);
+    return typeof sessionKey === "string" && readable.has(sessionKey);
+  });
+  return authorized ? { retro, source } : null;
 }
 
 export type RetroPromptPreviewSource =
@@ -420,6 +448,7 @@ export function previewRetroPrompt(
   root: string,
   input: {
     principal: WorkspacePrincipal;
+    sessionIds: readonly string[];
     prompt: string;
     outputLimits: Record<string, unknown>;
     retroId?: string;
@@ -441,10 +470,11 @@ export function previewRetroPrompt(
       ? listRetros(db, principal.workspaceId)
       : [getRetro(db, input.retroId)].filter((retro): retro is Retro => retro !== null);
   for (const candidate of candidates) {
-    const retro = readableRetro(db, principal, candidate);
-    if (retro === null || retro.digestSha256 === null) continue;
-    const source = frozenInput(db, root, retro);
-    if (!source.ok) continue;
+    const readable = readableEvidence(db, root, principal, input.sessionIds, candidate);
+    if (readable === null) continue;
+    const { retro, source } = readable;
+    const digestSha256 = retro.digestSha256;
+    if (digestSha256 === null) continue;
     const rendered = renderForRetro(source, retro, input.prompt, input.outputLimits);
     if (!rendered.ok) return { ok: false, reason: "invalid", message: rendered.problem };
     return {
@@ -455,7 +485,7 @@ export function previewRetroPrompt(
         kind: "saved",
         retroId: retro.id,
         settingsRevision: retro.settingsRevision,
-        digestSha256: retro.digestSha256,
+        digestSha256,
       },
       label: `Saved digest from the retro for ${retroPeriod(retro.windowStart, retro.windowEnd)}. Preview only: no agent runs and nothing is filed.`,
     };
@@ -485,13 +515,20 @@ export type RetroRenderedPromptRead =
 export function readRetroRenderedPrompt(
   db: Database,
   root: string,
-  input: { principal: WorkspacePrincipal; retroId: string },
+  input: { principal: WorkspacePrincipal; sessionIds: readonly string[]; retroId: string },
 ): RetroRenderedPromptRead {
   const { principal } = input;
   if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
     return { ok: false, reason: "forbidden" };
-  const retro = readableRetro(db, principal, getRetro(db, input.retroId));
-  if (retro === null) return { ok: false, reason: "not_found" };
+  const readable = readableEvidence(
+    db,
+    root,
+    principal,
+    input.sessionIds,
+    getRetro(db, input.retroId),
+  );
+  if (readable === null) return { ok: false, reason: "not_found" };
+  const { retro } = readable;
   const stored = readRetroArtifact(db, root, retro.id, "prompt");
   if (!stored.ok) return { ok: false, reason: "not_found" };
   return {

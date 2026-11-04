@@ -39,6 +39,7 @@ const LANDING = "pmdroid/landing";
 const DAY = 86_400_000;
 const START = Date.UTC(2026, 9, 23);
 const END = START + 5 * DAY;
+const SESSIONS = ["session-PAS-1", "session-PAS-2"];
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -83,6 +84,27 @@ function harness() {
   db.run("INSERT INTO workspace VALUES ('other', 'org-2', 'Other', 0)");
   for (const repository of [APP, LANDING])
     db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-1')", [repository]);
+  for (const identifier of ["PAS-1", "PAS-2"]) {
+    db.run(
+      `INSERT INTO linear_session (session_id, issue_id, organization_id, team_id, created_at)
+       VALUES (?, ?, 'org', 'team-1', 0)`,
+      [`session-${identifier}`, `issue-${identifier}`],
+    );
+    db.run(
+      `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state,
+         branch_name, position, created_at, session_key)
+       VALUES (?, ?, ?, ?, ?, 'merged', ?, 0, 0, ?)`,
+      [
+        identifier,
+        `delegation-${identifier}`,
+        `issue-${identifier}`,
+        identifier,
+        `Work on ${identifier}`,
+        `paws/${identifier}`,
+        `session-${identifier}`,
+      ],
+    );
+  }
   const dir = mkdtempSync(join(tmpdir(), "paws-retro-prompt-"));
   roots.push(dir);
   return { db, root: join(dir, "artifacts") };
@@ -326,6 +348,7 @@ describe("frozen run prompts", () => {
     const admin = member(db, "admin", "admin");
     const preview = previewRetroPrompt(db, root, {
       principal: admin,
+      sessionIds: SESSIONS,
       prompt: retro.prompt,
       outputLimits: retro.outputLimits,
       retroId: "r1",
@@ -357,7 +380,11 @@ describe("frozen run prompts", () => {
 });
 
 describe("authorized preview", () => {
-  const draft = { prompt: DEFAULT_RETRO_PROMPT, outputLimits: { maxItems: 2, workedWell: 1 } };
+  const draft = {
+    prompt: DEFAULT_RETRO_PROMPT,
+    outputLimits: { maxItems: 2, workedWell: 1 },
+    sessionIds: SESSIONS,
+  };
 
   test("only an active admin previews, and an invalid draft is explained", () => {
     const { db, root } = harness();
@@ -372,6 +399,7 @@ describe("authorized preview", () => {
     expect(
       previewRetroPrompt(db, root, {
         principal: member(db, "admin", "admin"),
+        sessionIds: SESSIONS,
         prompt: "{{digest}} {{owner}}",
         outputLimits: {},
       }),
@@ -399,7 +427,12 @@ describe("authorized preview", () => {
     db.run("DELETE FROM workspace_repository WHERE repository = ?", [LANDING]);
     const admin = member(db, "admin", "admin");
     const latest = previewRetroPrompt(db, root, { principal: admin, ...draft });
-    const named = previewRetroPrompt(db, root, { principal: admin, ...draft, retroId: "r1" });
+    const named = previewRetroPrompt(db, root, {
+      principal: admin,
+      ...draft,
+      sessionIds: SESSIONS,
+      retroId: "r1",
+    });
     const missing = previewRetroPrompt(db, root, { principal: admin, ...draft, retroId: "nope" });
     expect(named).toEqual(latest);
     expect(missing).toEqual(latest);
@@ -409,7 +442,9 @@ describe("authorized preview", () => {
       expect(latest.text).not.toContain(hidden);
       expect(latest.label).not.toContain(hidden);
     }
-    expect(readRetroRenderedPrompt(db, root, { principal: admin, retroId: "r1" })).toEqual({
+    expect(
+      readRetroRenderedPrompt(db, root, { principal: admin, sessionIds: SESSIONS, retroId: "r1" }),
+    ).toEqual({
       ok: false,
       reason: "not_found",
     });
@@ -421,17 +456,54 @@ describe("authorized preview", () => {
     queuedRetro(db, root, { id: "r1" });
     expect(freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 }).ok).toBe(true);
     const outsider = member(db, "outsider", "admin", { workspaceId: "other" });
-    expect(readRetroRenderedPrompt(db, root, { principal: outsider, retroId: "r1" })).toEqual({
+    expect(
+      readRetroRenderedPrompt(db, root, {
+        principal: outsider,
+        sessionIds: SESSIONS,
+        retroId: "r1",
+      }),
+    ).toEqual({
       ok: false,
       reason: "not_found",
     });
-    const preview = previewRetroPrompt(db, root, { principal: outsider, ...draft, retroId: "r1" });
+    const preview = previewRetroPrompt(db, root, {
+      principal: outsider,
+      ...draft,
+      sessionIds: SESSIONS,
+      retroId: "r1",
+    });
     expect(preview.ok && preview.source).toEqual({ kind: "sample" });
     const reader = member(db, "reader", "member");
-    expect(readRetroRenderedPrompt(db, root, { principal: reader, retroId: "r1" })).toMatchObject({
+    expect(
+      readRetroRenderedPrompt(db, root, { principal: reader, sessionIds: SESSIONS, retroId: "r1" }),
+    ).toMatchObject({
       ok: true,
       settingsRevision: 1,
     });
+  });
+
+  test("evidence from a session the caller cannot read hides the saved digest and prompt", () => {
+    const { db, root } = harness();
+    saveSettings(db);
+    queuedRetro(db, root, { id: "r1" });
+    expect(freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 }).ok).toBe(true);
+    const reader = member(db, "reader", "admin");
+    for (const sessionIds of [["session-PAS-1"], []]) {
+      expect(
+        readRetroRenderedPrompt(db, root, { principal: reader, sessionIds, retroId: "r1" }),
+      ).toEqual({
+        ok: false,
+        reason: "not_found",
+      });
+      const preview = previewRetroPrompt(db, root, { principal: reader, ...draft, sessionIds });
+      if (!preview.ok) throw new Error(preview.message);
+      expect(preview.source).toEqual({ kind: "sample" });
+      expect(preview.text).not.toContain("PAS-2");
+    }
+    db.run("UPDATE work_item SET session_key = NULL WHERE id = 'PAS-2'");
+    expect(
+      readRetroRenderedPrompt(db, root, { principal: reader, sessionIds: SESSIONS, retroId: "r1" }),
+    ).toEqual({ ok: false, reason: "not_found" });
   });
 
   test("preview runs nothing: no artifact, state or watermark changes", () => {
