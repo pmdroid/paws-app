@@ -10,7 +10,7 @@ afterEach(async () => {
   harness = undefined;
 });
 
-async function start(settings: Parameters<typeof mergeHarness>[0]["settings"] = {}) {
+async function start(settings: NonNullable<Parameters<typeof mergeHarness>[0]>["settings"] = {}) {
   harness = await mergeHarness({ settings, mirror: true });
   return harness;
 }
