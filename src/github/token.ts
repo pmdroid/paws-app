@@ -19,8 +19,15 @@ const ALLOWED_PERMISSIONS = new Set([
   "issues",
   "metadata",
   "workflows",
+  "statuses",
 ]);
-const withoutWorkflows = new Set<string>();
+const OPTIONAL_PERMISSIONS: Record<string, string>[] = [
+  { workflows: "write", statuses: "read" },
+  { workflows: "write" },
+  { statuses: "read" },
+  {},
+];
+const grantedOptional = new Map<string, Record<string, string>>();
 
 export type TokenAccess = "read" | "write" | "actions" | "actions_write";
 
@@ -57,18 +64,18 @@ export async function mintInstallationToken(input: {
       token: jwt,
       body: { repositories: [input.repo], permissions },
     });
-  let response: GitHubResponse;
+  let response!: GitHubResponse;
   if (input.access === "read") response = await request({ contents: "read", metadata: "read" });
   else if (input.access === "actions") response = await request(ACTIONS_LOG_PERMISSIONS);
   else if (input.access === "actions_write") response = await request(ACTIONS_RERUN_PERMISSIONS);
-  else if (withoutWorkflows.has(input.installationId))
-    response = await request(INSTALLATION_PERMISSIONS);
   else {
-    response = await request({ ...INSTALLATION_PERMISSIONS, workflows: "write" });
-    if (response.status === 422 || response.status === 403) {
-      withoutWorkflows.add(input.installationId);
-      response = await request(INSTALLATION_PERMISSIONS);
+    const known = grantedOptional.get(input.installationId);
+    for (const optional of known ? [known] : OPTIONAL_PERMISSIONS) {
+      response = await request({ ...INSTALLATION_PERMISSIONS, ...optional });
+      if (response.status === 201) grantedOptional.set(input.installationId, optional);
+      if (response.status !== 422 && response.status !== 403) break;
     }
+    if (known && response.status !== 201) grantedOptional.delete(input.installationId);
   }
   if (response.status !== 201) throw mintFailure(response);
   return assertScopedToken(response.body, input.owner, input.repo, now, input.access);
@@ -138,6 +145,9 @@ export function assertScopedToken(
     }
     if (key === "metadata" && value !== "read") {
       throw new GitHubTokenError("metadata permission must be read");
+    }
+    if (key === "statuses" && value !== "read") {
+      throw new GitHubTokenError("statuses permission must be read");
     }
   }
   if (access === "read") {
