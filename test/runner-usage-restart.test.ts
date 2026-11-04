@@ -145,7 +145,7 @@ async function usageLimitScenario(
   const candidateSha = await git(["-C", source, "rev-parse", "HEAD"]);
   await git(["-C", source, "push", origin, "HEAD:refs/heads/candidate"]);
   await git(["clone", origin, worktree]);
-  const candidate = seedCandidate(root, "item", worktree, { owner: "acme", repo: "fixture" });
+  const seeded = seedCandidate(root, "item", worktree, { owner: "acme", repo: "fixture" });
   Object.assign(process.env, {
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: `url.${origin}.insteadOf`,
@@ -476,7 +476,7 @@ async function usageLimitScenario(
       paused: sim.pause,
       cancelAcknowledged: cancel?.acknowledged !== null && cancel?.acknowledged !== undefined,
       finished,
-      head: candidate.head(),
+      head: seeded.head(),
       detail: JSON.stringify({
         receipts: db
           .query("SELECT command_id,outcome,ended_at,resets_at FROM runner_execution_usage")

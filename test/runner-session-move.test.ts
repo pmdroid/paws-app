@@ -649,7 +649,7 @@ test("another Grok version still restores, and a failed load names both versions
  * item is first in its merge queue and re-verifies.
  */
 async function mergeQueueItemOnFullRunner() {
-  const { db, runners, backend, source, root } = context;
+  const { db, runners, backend, root } = context;
   context.reset();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   const record = context.item();

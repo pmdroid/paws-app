@@ -353,9 +353,9 @@ async function publish(
       : args;
   let publicationArgs = command === "clone" ? args : ["--git-dir", repository, ...commandArgs];
   // The pushed refspec names the candidate in the caller's repository; staged, it is HEAD here.
-  const refspec = command === "push" ? args.at(-1)?.split(":") : undefined;
-  const source = refspec?.length === 2 && refspec[0]?.startsWith("refs/") ? refspec[0] : "HEAD";
-  if (source !== "HEAD") publicationArgs = [...publicationArgs.slice(0, -1), `HEAD:${refspec![1]}`];
+  const pushed = command === "push" ? args.at(-1)?.split(":") : undefined;
+  const source = pushed?.length === 2 && pushed[0]?.startsWith("refs/") ? pushed[0] : "HEAD";
+  if (source !== "HEAD") publicationArgs = [...publicationArgs.slice(0, -1), `HEAD:${pushed![1]}`];
   const env = publicationEnv(options.env);
   env.HOME = dir;
   const run: Run = (argv, cwd = dir) => gitExec(argv, { cwd, env, signal: options.signal });
