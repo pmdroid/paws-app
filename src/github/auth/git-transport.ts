@@ -53,7 +53,7 @@ export async function runGitHubGit(input: {
                 return object;
               }),
             ]
-          : ["fetch", input.remoteUrl, "+refs/heads/*:refs/heads/*"];
+          : ["fetch", input.remoteUrl, input.refspec ?? "+refs/heads/*:refs/heads/*"];
       } else {
         if (!input.refspec) throw new Error("push needs a refspec");
         args = input.lease

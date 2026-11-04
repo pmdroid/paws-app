@@ -112,6 +112,7 @@ export {
 export {
   candidateBases,
   CHECKPOINT_COMMIT_MESSAGE,
+  checkpointRef,
   commitCoauthorTrailers,
   commitPolicyMessage,
   policyCoauthors,

@@ -35,7 +35,11 @@ import {
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
 } from "../runner-answers";
-import { CandidateRebaseConflict, createRunnerRepositories } from "../runner-repositories";
+import {
+  CandidateRebaseConflict,
+  checkpointRef,
+  createRunnerRepositories,
+} from "../runner-repositories";
 import {
   creditedLeaseUntil,
   executionAuthorityUntil,
@@ -155,10 +159,6 @@ type Active = {
   handover?: { pending?: number; sent: number };
   /** Checkpoints Paws asked for before a stop, and how many the worker was sent. */
   checkpoints?: { asked: number; sent: number };
-  /**
-   * The last WIP commit this execution published to the item's branch. Later pushes replace it,
-   * since a checkpoint with uncommitted changes is not an ancestor of the agent's next commits.
-   */
   checkpointSha?: string;
   /** How many checkpoints this execution pushed, each acknowledged to the worker. */
   checkpointsPublished?: number;
@@ -1559,7 +1559,6 @@ export async function openRunnerRuntime(options: {
       entry.followUps = followUp.sequence;
     }
   }
-  /** Pushes a WIP commit the worker bundled to the item's branch, replacing the one before. */
   async function publishCheckpoint(entry: Active, sha: string) {
     const command = entry.execution.command;
     if (command.type !== "run") throw new Error("Only a run can publish a checkpoint");
@@ -1580,13 +1579,13 @@ export async function openRunnerRuntime(options: {
         ),
         sha,
         branch: credential.branch,
+        ref: checkpointRef(credential.branch),
       },
       entry.abort.signal,
       entry.checkpointSha,
     );
     check(entry);
     entry.checkpointSha = sha;
-    // The worker skips an unchanged worktree only once its checkpoint reached the branch.
     entry.checkpointsPublished = (entry.checkpointsPublished ?? 0) + 1;
     publishRunnerAnswer(options.spool, entry.execution.id, {
       requestId: runnerCheckpointPublishedId(entry.checkpointsPublished),
@@ -1671,11 +1670,7 @@ export async function openRunnerRuntime(options: {
     await deliver(entry);
     const publication =
       journal.publication(entry.execution.id) ??
-      journal.beginPublication(
-        entry.execution.id,
-        workerOutcome(entry.execution),
-        entry.checkpointSha,
-      );
+      journal.beginPublication(entry.execution.id, workerOutcome(entry.execution));
     entry.execution.phase = "publishing";
     const result: RunnerResult = { ...publication.result };
     try {

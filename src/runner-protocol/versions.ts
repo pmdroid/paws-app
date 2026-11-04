@@ -95,3 +95,4 @@ export const AGENT_WAIT_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
 export const CLOSEOUT_TURN_KEY_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
 /** First runner release whose Closeout stop hook is TypeScript run by its own Bun, not `python3`. */
 export const BUN_STOP_HOOK_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
+export const HIDDEN_CHECKPOINT_RUNNER_VERSION: RunnerVersion = [0, 1, 67];

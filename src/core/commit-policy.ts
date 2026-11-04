@@ -101,6 +101,10 @@ export async function assertDescendsFromAny(
 
 export const CHECKPOINT_COMMIT_MESSAGE = "Save work in progress so far";
 
+export function checkpointRef(branch: string): string {
+  return `refs/paws/checkpoints/${branch}`;
+}
+
 export async function candidateBases(
   invoke: (args: string[]) => Promise<string>,
   base: string,
