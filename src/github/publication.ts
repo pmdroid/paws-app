@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { GitCommandError, type GitExec } from "./types";
@@ -16,6 +16,7 @@ export function publicationEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Pr
     GIT_ALLOW_PROTOCOL: "https:file",
     GIT_NO_REPLACE_OBJECTS: "1",
     GIT_TEMPLATE_DIR: "/dev/null",
+    GIT_NO_LAZY_FETCH: "1",
   };
   for (const key of [
     "HOME",
@@ -67,10 +68,23 @@ async function stageCandidate(
   candidate: string,
   repository: string,
   bundle: string,
-): Promise<void> {
+): Promise<boolean> {
   const head = (
     await run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], candidate)
   ).stdout.trim();
+  if (
+    /^(extensions\.partialclone=.|remote\..*\.promisor=true$)/im.test(
+      (await run(["config", "--list"], candidate)).stdout,
+    )
+  ) {
+    const objects = (
+      await run(["rev-parse", "--path-format=absolute", "--git-path", "objects"], candidate)
+    ).stdout.trim();
+    await mkdir(path.join(repository, "objects", "info"), { recursive: true });
+    await writeFile(path.join(repository, "objects", "info", "alternates"), `${objects}\n`);
+    await run(["--git-dir", repository, "update-ref", "--no-deref", "HEAD", head]);
+    return true;
+  }
   await run(
     ["bundle", "create", bundle, `--exclude=${HEAD_BRANCH}`, "--branches", "--tags", head],
     candidate,
@@ -86,6 +100,7 @@ async function stageCandidate(
   ]);
   await run(["--git-dir", repository, "bundle", "unbundle", bundle]);
   await run(["--git-dir", repository, "update-ref", "--no-deref", "HEAD", head]);
+  return false;
 }
 
 export function publicationExec(
@@ -104,7 +119,7 @@ export function publicationExec(
     const dir = await mkdtemp(path.join(tmpdir(), "paws-publication-"));
     const repository = path.join(dir, "repo.git");
     const bundle = path.join(dir, "candidate.bundle");
-    const publicationArgs = command === "clone" ? args : ["--git-dir", repository, ...args];
+    let publicationArgs = command === "clone" ? args : ["--git-dir", repository, ...args];
     const env = publicationEnv(options.env);
     env.HOME = dir;
     const run = (argv: string[], cwd = dir) => gitExec(argv, { cwd, env, signal: options.signal });
@@ -112,7 +127,8 @@ export function publicationExec(
       if (command !== "clone") await run(["init", "--bare", "--template=", repository]);
       if (command === "push") {
         try {
-          await stageCandidate(run, options.cwd, repository, bundle);
+          const partial = await stageCandidate(run, options.cwd, repository, bundle);
+          if (partial) publicationArgs = publicationArgs.toSpliced(operation + 3, 0, "--no-thin");
         } catch (error) {
           throw new PublicationStagingError(
             error instanceof GitCommandError ? error.args : [],
@@ -131,7 +147,24 @@ export function publicationExec(
         },
       });
       if (credential) await rm(credential.path, { force: true });
-      if (command === "fetch") {
+      const objects = args.slice(args.indexOf(remote, operation) + 1);
+      if (
+        command === "fetch" &&
+        objects.length > 0 &&
+        objects.every((arg) => /^[a-f0-9]{40,64}$/.test(arg))
+      ) {
+        await run(["--git-dir", repository, "config", "uploadpack.allowAnySHA1InWant", "true"]);
+        await run(
+          [
+            "fetch",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--recurse-submodules=no",
+            repository,
+          ].concat(objects),
+          options.cwd,
+        );
+      } else if (command === "fetch") {
         const refspec = args.at(-1);
         const ref = refspec?.split(":")[1];
         if (!ref) throw new Error("publication fetch needs an explicit destination ref");

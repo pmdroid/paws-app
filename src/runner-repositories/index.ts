@@ -29,6 +29,8 @@ type NetworkOperation = {
   dest?: string;
   refspec?: string;
   lease?: string;
+  filter?: string;
+  objects?: string[];
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 };
@@ -55,6 +57,7 @@ export function createRunnerRepositories(options: {
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TERMINAL_PROMPT: "0",
   };
+  const localEnv = { ...env, GIT_NO_LAZY_FETCH: "1" };
   const repositoryRoot = realpathSync(options.root);
   function serialize<T>(
     command: WorkCommand,
@@ -97,7 +100,7 @@ export function createRunnerRepositories(options: {
         ["-c", "core.hooksPath=/dev/null", "-c", "transfer.fsckObjects=true", ...args],
         {
           cwd: options.root,
-          env,
+          env: localEnv,
           signal,
         },
       )
@@ -109,7 +112,7 @@ export function createRunnerRepositories(options: {
   ) {
     const child = Bun.spawn(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", ...args], {
       cwd: options.root,
-      env: { ...env, ...input.env },
+      env: { ...localEnv, ...input.env },
       stdin: input.stdin === undefined ? "ignore" : new TextEncoder().encode(input.stdin),
       stdout: "pipe",
       stderr: "pipe",
@@ -198,6 +201,38 @@ export function createRunnerRepositories(options: {
         throw new Error(`Runner candidate rebase failed: ${created.stderr.trim()}`);
     }
     return current;
+  }
+  async function prefetch(
+    mirror: string,
+    tips: string[],
+    fetch: (objects: string[]) => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const missing = new Set<string>();
+    for (const tip of tips) {
+      const listed = await spawnGit(
+        [
+          "--git-dir",
+          mirror,
+          "rev-list",
+          "--objects",
+          "--no-object-names",
+          "--missing=print",
+          `--max-count=${SNAPSHOT_BLOB_COMMITS}`,
+          tip,
+        ],
+        { signal },
+      );
+      if (listed.code !== 0)
+        throw new Error(`Runner prefetch list failed: ${listed.stderr.trim()}`);
+      for (const line of listed.stdout.split("\n"))
+        if (line.startsWith("?")) missing.add(line.slice(1));
+    }
+    const objects = [...missing];
+    for (let start = 0; start < objects.length; start += PREFETCH_BATCH) {
+      await fetch(objects.slice(start, start + PREFETCH_BATCH));
+      signal?.throwIfAborted();
+    }
   }
   async function filteredSnapshot(
     mirror: string,
@@ -311,6 +346,7 @@ export function createRunnerRepositories(options: {
             token,
             cwd: options.root,
             dest: destination,
+            ...(exists ? {} : { filter: "blob:none" }),
             env,
             signal,
           });
@@ -362,6 +398,23 @@ export function createRunnerRepositories(options: {
         const blobs = snapshot.replace(/\.bundle$/, ".pack");
         const ref = `refs/heads/paws-snapshot-${createHash("sha256").update(command.id).digest("hex")}`;
         const tips = main ? [base, main] : [base];
+        await prefetch(
+          mirror,
+          tips,
+          (objects) =>
+            network({
+              operation: "fetch",
+              remoteUrl: command.repository.remoteUrl,
+              token,
+              cwd: options.root,
+              dest: mirror,
+              objects,
+              env,
+              signal,
+            }),
+          signal,
+        );
+        signal?.throwIfAborted();
         try {
           const mainRef = `${ref}-main`;
           const refs = main ? [ref, mainRef] : [ref];
@@ -644,6 +697,7 @@ export function createRunnerRepositories(options: {
 export type RunnerRepositories = ReturnType<typeof createRunnerRepositories>;
 
 const SNAPSHOT_BLOB_COMMITS = 200;
+const PREFETCH_BATCH = 1_000;
 
 /** How often a candidate push refused because the branch moved is rebased and tried again. */
 const CANDIDATE_REBASE_TRIES = 3;
