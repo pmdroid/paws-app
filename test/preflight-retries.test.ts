@@ -334,15 +334,15 @@ async function serveMirror(
   ]);
   const cert = path.join(layout.root, "cert.pem");
   const key = path.join(layout.root, "key.pem");
-  execFileSync(
-    "openssl",
+  const certificate = Bun.spawnSync(
     [
-      ...["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1"],
+      ...["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1"],
       ...["-keyout", key, "-out", cert, "-subj", "/CN=127.0.0.1"],
       ...["-addext", "subjectAltName=IP:127.0.0.1"],
     ],
-    { stdio: "pipe" },
+    { stdout: "pipe", stderr: "pipe" },
   );
+  expect(certificate.exitCode).toBe(0);
   // The server runs in its own process: the policy read fetches origin/main synchronously.
   const server = Bun.spawn(
     [
