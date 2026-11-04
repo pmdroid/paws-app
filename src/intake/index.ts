@@ -27,8 +27,6 @@ export {
   SWEEP_FULL_REFRESH_MS,
 } from "./reconciliation";
 export {
-  BLOCKER_CHECK_COOLDOWN_MS,
-  BLOCKER_CHECK_PATH,
   createBlockerCheckRoute,
   createRelationsPolls,
   relationsPollIntervalMs,

@@ -1,7 +1,6 @@
 import { createHealthReport } from "./health";
 import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
-import { BLOCKER_CHECK_PATH } from "../intake";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { handleSlackWebhook } from "../slack";
@@ -445,7 +444,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         const response = await secrets.executionControls(request, access.principal, sessionIds);
         if (response !== null) return response;
       }
-      if (path === BLOCKER_CHECK_PATH && secrets.blockerChecks !== undefined) {
+      if (path === "/api/blocker-checks" && secrets.blockerChecks !== undefined) {
         const response = await secrets.blockerChecks(request, access.principal, sessionIds);
         if (response !== null) return response;
       }

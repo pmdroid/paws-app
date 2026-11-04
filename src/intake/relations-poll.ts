@@ -7,8 +7,8 @@ import {
   type RelationsScope,
 } from "./reconciliation";
 
-export const BLOCKER_CHECK_PATH = "/api/blocker-checks";
-export const BLOCKER_CHECK_COOLDOWN_MS = 15_000;
+const BLOCKER_CHECK_PATH = "/api/blocker-checks";
+const BLOCKER_CHECK_COOLDOWN_MS = 15_000;
 
 type Reconciler = Pick<ReturnType<typeof createItemReconciler>, "pollRelations" | "blockedItemIds">;
 
