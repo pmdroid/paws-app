@@ -70,3 +70,36 @@ test("routine pruning drops only expired, acknowledged commands and their receip
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("pruning drops expired retro commands with their receipts and keeps live ones", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-daemon-retention-"));
+  let now = 10 * DAY;
+  const daemon = openRunnerDaemon({
+    root,
+    controlPlaneUrl: "https://paws.invalid",
+    runnerApiUrl: "https://runner.paws.invalid",
+    now: () => now,
+  });
+  const db = openDatabase(join(root, "commands.db"));
+  try {
+    for (const [id, expiresAt] of [
+      ["retro-expired", now - 2 * DAY],
+      ["retro-live", now + DAY],
+    ] as const) {
+      db.run("INSERT INTO command_receipt VALUES (?,?)", [id, expiresAt]);
+      db.run("INSERT INTO pending_retro_command (id,payload) VALUES (?,'{}')", [id]);
+    }
+    expect(daemon.pruneRetired()).toBe(2);
+    const ids = (table: string) =>
+      db
+        .query<{ id: string }, []>(`SELECT id FROM ${table} ORDER BY id`)
+        .all()
+        .map(({ id }) => id);
+    expect(ids("pending_retro_command")).toEqual(["retro-live"]);
+    expect(ids("command_receipt")).toEqual(["retro-live"]);
+  } finally {
+    db.close();
+    daemon.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

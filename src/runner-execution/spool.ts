@@ -526,7 +526,6 @@ export function publishRunnerJob(
     promptContext?: Uint8Array;
     /** A downloaded session snapshot for a run command that carries `restoreSession`. */
     sessionBundle?: string;
-    /** The frozen digest and prompt a retro command names. */
     retroInputs?: { digest: Uint8Array; prompt: Uint8Array };
   } = {},
 ): RunnerJob {
