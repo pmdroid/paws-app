@@ -62,6 +62,8 @@ order = "ci-green"
 
   A changed Closeout policy sends a carried head back through Closeout under every value.
 
+  Under every value the rebase runs on an online runner the item's owner may use, the item's last runner first, and the lane uses the pushed head only when it descends from `main` and `git patch-id --stable` matches the head it was rebased from. A refused head, a runner failure, no runner or no answer within 10 minutes makes the lane rebase on the Paws host once, and the journal says why.
+
 - **`auto_approve_high_risk`**: off by default. Settings › Merging offers "Let high-risk changes through when both reviews are clean". When on, a high-risk head needs no manual approval only if Closeout accepted that exact head under the current policy, both `security-review` and `independent-review` passed without P2-or-worse findings, including findings in pre-existing code, and no rule probe failed. Missing or unreadable evidence asks a person. Changes to `.paws/high-risk-paths`, any loaded Closeout policy input, `AGENTS.md`, `CLAUDE.md`, `.agents/**` or `.claude/**` always need a person. Review severities are stored with their exact Closeout attempt; the shared findings list cannot turn a P2 review into a clean review. Automatic approval is never stored and does not carry to a new or rebased head; both named reviews must run on that head. Manual approvals keep their existing carry-over behavior.
 
 - **`comment_quiet_seconds`**: how long Paws waits after the latest pull request comment or changes-requested review before it sends what it collected to the agent in one fix round. Default 60, from 0 to 3600. Settings › Merging › Pull request comments sets it as "Quiet time". A change applies to the next comment, without a restart.

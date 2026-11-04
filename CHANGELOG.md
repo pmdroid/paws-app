@@ -2,6 +2,13 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-04: The merge lane rebases on a runner
+
+### Changed
+
+- **Upgrade runners to 0.1.63** to move merge-lane rebases off the Paws host. With an older runner, or none online, the lane rebases on the Paws host as before.
+- When `main` moved, the merge lane asks a runner to rebase the branch and push it, then checks the pushed head before it uses it: it must descend from `main` and carry the same patch (`git patch-id --stable`). A refused head, a failure or no answer within 10 minutes falls back to the rebase on the Paws host once, with a journal line. A conflict on the runner goes back to the agent as before.
+
 ## 2026-11-03: The status snapshot API is removed
 
 ### Removed
