@@ -94,7 +94,12 @@ import { agentName, usageLimitWait } from "./usage-limit-wait";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
-import { ensureStartOnRemote, lostCommitsNote, RemoteStartUnverified } from "./start-commit";
+import {
+  CheckpointLookupFailed,
+  ensureStartOnRemote,
+  lostCommitsNote,
+  RemoteStartUnverified,
+} from "./start-commit";
 import {
   planSessionRestore,
   runnerGoneReason,
@@ -1628,7 +1633,10 @@ export function createRemoteAgentRunner(options: {
                         ? { ciRerun: true as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
-                      ...(restoreCheckpoint ? { restoreCheckpoint } : {}),
+                      ...(restoreCheckpoint &&
+                      versionAtLeast(runnerVersion, HIDDEN_CHECKPOINT_RUNNER_VERSION)
+                        ? { restoreCheckpoint }
+                        : {}),
                       ...(restorePlan?.eligible
                         ? { restoreSession: restorePlan.restoreSession }
                         : {}),
@@ -2667,7 +2675,10 @@ async function hiddenCheckpoint(
     ]);
     return (await git(["-C", worktree, "rev-parse", "--verify", `${ref}^{commit}`])).trim();
   } catch (error) {
-    journalCaught(error, "runner-backend.hiddenCheckpoint", null, "optional ref may be absent");
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/couldn't find remote ref/i.test(message))
+      throw new CheckpointLookupFailed(branch, { cause: error });
+    journalCaught(error, "runner-backend.hiddenCheckpoint", null, "the branch saved no checkpoint");
     return null;
   } finally {
     await git(["-C", worktree, "update-ref", "-d", ref]).catch(() => undefined);

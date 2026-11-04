@@ -284,6 +284,26 @@ test("a checkpoint rebased onto an earlier main restores against that main after
   expect(result.pushes).toBe(0);
 });
 
+test("a runner older than the hidden checkpoint release gets a run command without restoreCheckpoint", async () => {
+  const result = await startScenario({ local: [], push: "works", runnerVersion: "0.1.62" });
+  expect(result.error, result.detail).toBeUndefined();
+  expect(result.offersRestore).toBe(false);
+  expect(result.baseSha).toBe(result.prHead);
+});
+
+test("a hidden checkpoint lookup that fails retries instead of starting without the saved work", async () => {
+  const result = await startScenario({
+    local: [],
+    push: "works",
+    hiddenCheckpoint: { runnerVersion: "0.1.63", lookup: "fails" },
+  });
+  expect((result.error as Error | undefined)?.name, result.detail).toBe("CheckpointLookupFailed");
+  expect(isTransient(result.error)).toBe(true);
+  expect(result.baseSha).toBeUndefined();
+  expect(result.head).toBe(result.prHead);
+  expect(result.pushes).toBe(0);
+});
+
 test("a runner too old to restore a hidden-ref checkpoint is refused before Paws checks it out", async () => {
   const result = await startScenario({
     local: [],
@@ -312,7 +332,8 @@ async function startScenario(input: {
   failFirstDispatch?: true;
   /** Paws saved the fallback and stopped before it moved the candidate ref. */
   stoppedBeforeReset?: true;
-  hiddenCheckpoint?: { runnerVersion: string; rebasedOnEarlierMain?: true };
+  hiddenCheckpoint?: { runnerVersion: string; rebasedOnEarlierMain?: true; lookup?: "fails" };
+  runnerVersion?: string;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-start-commit-"));
   const source = join(root, "source");
@@ -397,6 +418,11 @@ async function startScenario(input: {
   // GitHub, served from the bare repository; a refused push fails like the 403s did.
   let pushes = 0;
   const networkGit = async (args: string[]) => {
+    if (
+      input.hiddenCheckpoint?.lookup === "fails" &&
+      args.some((arg) => arg.includes("refs/paws/checkpoints/"))
+    )
+      throw new Error("fatal: unable to access GitHub: The requested URL returned error: 502");
     if (input.fetch === "fails" && args.includes("fetch"))
       throw new Error("fatal: unable to access GitHub: The requested URL returned error: 502");
     if (args.includes("push")) {
@@ -445,10 +471,10 @@ async function startScenario(input: {
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
-  if (input.hiddenCheckpoint)
+  if (input.hiddenCheckpoint || input.runnerVersion)
     db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
       runnerId,
-      input.hiddenCheckpoint.runnerVersion,
+      input.hiddenCheckpoint?.runnerVersion ?? input.runnerVersion!,
       now,
     ]);
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
@@ -611,6 +637,7 @@ async function startScenario(input: {
       thoughts,
       baseSha: assigned?.repository.baseSha,
       restoreCheckpoint: assigned?.restoreCheckpoint,
+      offersRestore: assigned ? "restoreCheckpoint" in assigned : undefined,
       mainSha: assigned?.repository.mainSha,
       hiddenWip,
       earlierMain,

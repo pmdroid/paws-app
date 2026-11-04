@@ -20,6 +20,13 @@ export class RemoteStartUnverified extends Error {
   }
 }
 
+export class CheckpointLookupFailed extends Error {
+  override readonly name = "CheckpointLookupFailed";
+  constructor(branch: string, options: { cause: unknown }) {
+    super(`Paws could not read the saved work for ${branch} from GitHub`, options);
+  }
+}
+
 /**
  * A runner's mirror fetches its start commit from GitHub, so a head that only Paws holds fails
  * every run there. Paws pushes it first; when that fails too, the item's candidate ref in the bare
