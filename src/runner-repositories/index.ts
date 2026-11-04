@@ -7,6 +7,7 @@ import {
 } from "../core";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  existsSync,
   chmodSync,
   mkdirSync,
   rmSync,
@@ -18,7 +19,13 @@ import {
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { defaultGitExec, runGitHubGit } from "../github";
-import { RunnerCommandSchema, type RunnerCommand } from "../runner-protocol";
+import {
+  RunnerCommandSchema,
+  RunnerRebaseCommandSchema,
+  type RunnerCommand,
+  type RunnerRebaseCommand,
+  type RunnerRebaseResult,
+} from "../runner-protocol";
 
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
 type NetworkOperation = {
@@ -56,10 +63,10 @@ export function createRunnerRepositories(options: {
   };
   const repositoryRoot = realpathSync(options.root);
   function serialize<T>(
-    command: WorkCommand,
+    target: { owner: string; repo: string },
     operation: (mirror: string) => Promise<T>,
   ): Promise<T> {
-    const repository = `${command.repository.owner}/${command.repository.repo}`;
+    const repository = `${target.owner}/${target.repo}`;
     const key = join(
       repositoryRoot,
       `${createHash("sha256").update(repository.toLowerCase()).digest("hex")}.git`,
@@ -121,6 +128,69 @@ export function createRunnerRepositories(options: {
     ]);
     input.signal?.throwIfAborted();
     return { code, stdout, stderr };
+  }
+  async function refresh(
+    mirror: string,
+    remoteUrl: string,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let exists = false;
+    try {
+      const directory = lstatSync(mirror);
+      if (
+        !directory.isDirectory() ||
+        directory.uid !== process.getuid?.() ||
+        (directory.mode & 0o7777) !== 0o700
+      )
+        throw new Error("Unsafe runner mirror");
+      try {
+        exists =
+          (
+            await invoke(["--git-dir", mirror, "rev-parse", "--is-bare-repository"], signal)
+          ).trim() === "true";
+      } catch (caughtError3) {
+        signal?.throwIfAborted();
+        journalCaught(caughtError3, "runner-repositories.prepare.trim", null);
+      }
+      if (!exists) rmSync(mirror, { recursive: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      journalCaught(
+        error,
+        "runner-repositories.prepare.lstatSync",
+        null,
+        "optional file may be absent",
+      );
+    }
+    const destination = exists ? mirror : join(options.root, `clone-${randomUUID()}.git`);
+    try {
+      await network({
+        operation: exists ? "fetch" : "clone",
+        remoteUrl,
+        token,
+        cwd: options.root,
+        dest: destination,
+        env,
+        signal,
+      });
+      signal?.throwIfAborted();
+      if (!exists) {
+        if (
+          (
+            await invoke(["--git-dir", destination, "rev-parse", "--is-bare-repository"], signal)
+          ).trim() !== "true"
+        )
+          throw new Error("Runner clone is not a bare repository");
+        chmodSync(destination, 0o700);
+        signal?.throwIfAborted();
+        renameSync(destination, mirror);
+      }
+    } finally {
+      if (!exists) rmSync(destination, { recursive: true, force: true });
+    }
+    signal?.throwIfAborted();
+    chmodSync(mirror, 0o700);
   }
   /**
    * Replays the first-parent commits of `head` not reachable from `excluded` onto `onto`, keeping
@@ -204,69 +274,11 @@ export function createRunnerRepositories(options: {
       signal?: AbortSignal,
     ): Promise<{ mirror: string; bundle: string }> {
       const command = parse(input);
-      return serialize(command, async (mirror) => {
+      return serialize(command.repository, async (mirror) => {
         signal?.throwIfAborted();
         const token = await options.credential(command, "read");
         signal?.throwIfAborted();
-        let exists = false;
-        try {
-          const directory = lstatSync(mirror);
-          if (
-            !directory.isDirectory() ||
-            directory.uid !== process.getuid?.() ||
-            (directory.mode & 0o7777) !== 0o700
-          )
-            throw new Error("Unsafe runner mirror");
-          try {
-            exists =
-              (
-                await invoke(["--git-dir", mirror, "rev-parse", "--is-bare-repository"], signal)
-              ).trim() === "true";
-          } catch (caughtError3) {
-            signal?.throwIfAborted();
-            journalCaught(caughtError3, "runner-repositories.prepare.trim", null);
-          }
-          if (!exists) rmSync(mirror, { recursive: true });
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          journalCaught(
-            error,
-            "runner-repositories.prepare.lstatSync",
-            null,
-            "optional file may be absent",
-          );
-        }
-        const destination = exists ? mirror : join(options.root, `clone-${randomUUID()}.git`);
-        try {
-          await network({
-            operation: exists ? "fetch" : "clone",
-            remoteUrl: command.repository.remoteUrl,
-            token,
-            cwd: options.root,
-            dest: destination,
-            env,
-            signal,
-          });
-          signal?.throwIfAborted();
-          if (!exists) {
-            if (
-              (
-                await invoke(
-                  ["--git-dir", destination, "rev-parse", "--is-bare-repository"],
-                  signal,
-                )
-              ).trim() !== "true"
-            )
-              throw new Error("Runner clone is not a bare repository");
-            chmodSync(destination, 0o700);
-            signal?.throwIfAborted();
-            renameSync(destination, mirror);
-          }
-        } finally {
-          if (!exists) rmSync(destination, { recursive: true, force: true });
-        }
-        signal?.throwIfAborted();
-        chmodSync(mirror, 0o700);
+        await refresh(mirror, command.repository.remoteUrl, token, signal);
         const base = (
           await invoke(
             [
@@ -319,6 +331,81 @@ export function createRunnerRepositories(options: {
         }
       });
     },
+    async rebase(
+      input: RunnerRebaseCommand,
+      credential: (access: "read" | "write") => Promise<string>,
+      signal?: AbortSignal,
+    ): Promise<RunnerRebaseResult> {
+      const command = RunnerRebaseCommandSchema.parse(input);
+      const [, owner, repo] = /^https:\/\/github\.com\/([^/]+)\/(.+)\.git$/.exec(
+        command.repository,
+      )!;
+      await invoke(["check-ref-format", `refs/heads/${command.branch}`], signal);
+      return serialize({ owner: owner!, repo: repo! }, async (mirror) => {
+        const worktree = join(options.root, `rebase-${randomUUID()}`);
+        const ref = `refs/heads/paws-rebase-${randomUUID()}`;
+        try {
+          await refresh(mirror, command.repository, await credential("read"), signal);
+          for (const commit of [command.head, command.main]) {
+            const found = await invoke(
+              ["--git-dir", mirror, "rev-parse", "--verify", "--quiet", `${commit}^{commit}`],
+              signal,
+            ).catch(() => "");
+            if (found.trim() !== commit)
+              return { outcome: "failed", reason: `${commit} is not in the runner mirror` };
+          }
+          await invoke(
+            ["--git-dir", mirror, "worktree", "add", "--detach", worktree, command.head],
+            signal,
+          );
+          const inWorktree = (args: string[], extra?: Record<string, string>) =>
+            spawnGit(["-C", worktree, ...args], { env: extra, signal });
+          const rebased = await inWorktree(["rebase", command.main], {
+            GIT_COMMITTER_NAME: command.committer.name,
+            GIT_COMMITTER_EMAIL: command.committer.email,
+          });
+          if (rebased.code !== 0) {
+            const state = await inWorktree(["rev-parse", "--git-path", "rebase-merge"]);
+            const stopped = state.stdout.trim();
+            const conflicted =
+              stopped !== "" && existsSync(isAbsolute(stopped) ? stopped : join(worktree, stopped));
+            if (!conflicted)
+              return { outcome: "failed", reason: rebased.stderr.trim() || "rebase failed" };
+            const unmerged = await inWorktree(["diff", "--name-only", "--diff-filter=U"]);
+            await inWorktree(["rebase", "--abort"]);
+            return {
+              outcome: "conflict",
+              files: unmerged.stdout.split("\n").filter(Boolean).slice(0, 100),
+            };
+          }
+          const head = (await inWorktree(["rev-parse", "HEAD"])).stdout.trim();
+          await invoke(["--git-dir", mirror, "update-ref", ref, head]);
+          await network({
+            operation: "push",
+            remoteUrl: command.repository,
+            token: await credential("write"),
+            cwd: mirror,
+            refspec: `${head}:refs/heads/${command.branch}`,
+            lease: command.head,
+            env,
+            signal,
+          });
+          return { outcome: "rebased", head };
+        } catch (error) {
+          signal?.throwIfAborted();
+          journalCaught(error, "runner-repositories.rebase", command.itemId);
+          const reason = error instanceof Error ? error.message : String(error);
+          return { outcome: "failed", reason: reason.slice(0, 4096) || "rebase failed" };
+        } finally {
+          await invoke(["--git-dir", mirror, "worktree", "remove", "--force", worktree]).catch(
+            () => "",
+          );
+          rmSync(worktree, { recursive: true, force: true });
+          await invoke(["--git-dir", mirror, "worktree", "prune"]).catch(() => "");
+          await invoke(["--git-dir", mirror, "update-ref", "-d", ref]).catch(() => "");
+        }
+      });
+    },
     /**
      * Pushes a candidate to its branch and returns the commit the branch now has. With `rebase`, a
      * push refused because the branch moved replays the candidate's own commits onto the new tip
@@ -343,7 +430,7 @@ export function createRunnerRepositories(options: {
         throw new Error("Invalid runner candidate lease");
       if (command.type !== "run") throw new Error("Only a run can publish a candidate");
       await invoke(["check-ref-format", `refs/heads/${candidate.branch}`], signal);
-      return serialize(command, async (mirror) => {
+      return serialize(command.repository, async (mirror) => {
         signal?.throwIfAborted();
         const path = join(options.root, `candidate-${randomUUID()}.bundle`);
         writeFileSync(path, candidate.bundle, { mode: 0o600, flag: "wx" });

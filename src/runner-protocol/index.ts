@@ -164,6 +164,7 @@ export {
   CI_LOG_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   RETRO_RUNNER_VERSION,
+  REMOTE_REBASE_RUNNER_VERSION,
 } from "./versions";
 export {
   POLICY_KEY_RUNNER_VERSIONS,
@@ -226,3 +227,12 @@ export {
   type RunnerRetroSlot,
   type RunnerRetroSlotRelease,
 } from "./retro";
+
+export {
+  RUNNER_REBASE_LIFETIME_MS,
+  RunnerRebaseCommandSchema,
+  RunnerRebaseResultSchema,
+  runnerAcceptsRebase,
+  type RunnerRebaseCommand,
+  type RunnerRebaseResult,
+} from "./rebase";
