@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { journalCaught } from "../journal";
 import {
+  workspaceMemberUsable,
   AgentAccountError,
   auditWorkspaceAccess,
   bindAgentAccount,
@@ -73,7 +74,7 @@ export function createAccountManagement(options: AccountManagementOptions) {
   const now = options.now ?? Date.now;
   function member(principal: WorkspacePrincipal) {
     const current = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (!current?.active) throw new Refused("Workspace access is unavailable.", 403);
+    if (!workspaceMemberUsable(current)) throw new Refused("Workspace access is unavailable.", 403);
     return current;
   }
   function list(principal: WorkspacePrincipal, admin: boolean) {

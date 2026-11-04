@@ -1,8 +1,7 @@
-import { isWorkspaceAdmin } from "../workspace";
+import { workspaceMemberUsable, enqueueJob, immediate } from "../db";
+import { isWorkspaceAdmin, workspaceId as mintId } from "../workspace";
 import type { Database } from "bun:sqlite";
-import { enqueueJob, immediate } from "../db";
 import { isExeDevVmName } from "../provisioning";
-import { workspaceId as mintId } from "../workspace";
 
 export const MEMBER_VM_QUEUE = "member_vm.provision";
 export const MEMBER_VM_DELETE_QUEUE = "member_vm.delete";
@@ -164,12 +163,8 @@ export class MemberVmMissing extends Error {
 
 export function mayDeleteMemberVm(db: Database, row: MemberVm, requester: MemberRef): boolean {
   if (row.workspaceId !== requester.workspaceId) return false;
-  const member = db
-    .query<{ role: string; active: number }, [string, string]>(
-      "SELECT role,active FROM workspace_member WHERE workspace_id=? AND user_id=?",
-    )
-    .get(requester.workspaceId, requester.userId);
-  if (!member?.active) return false;
+  const member = memberAccess(db, requester);
+  if (!workspaceMemberUsable(member)) return false;
   return row.userId === requester.userId || isWorkspaceAdmin(member.role);
 }
 
@@ -248,13 +243,17 @@ function ensureJob(db: Database, id: string, now: number): void {
   enqueueJob(db, { queue: MEMBER_VM_QUEUE, payload: { memberVmId: id }, now });
 }
 
-function requireOwner(db: Database, member: MemberRef): void {
-  const row = db
-    .query<{ role: string; active: number }, [string, string]>(
-      "SELECT role,active FROM workspace_member WHERE workspace_id=? AND user_id=?",
+function memberAccess(db: Database, member: MemberRef) {
+  return db
+    .query<{ role: string; active: number; revokedAt: number | null }, [string, string]>(
+      "SELECT role,active,revoked_at AS revokedAt FROM workspace_member WHERE workspace_id=? AND user_id=?",
     )
     .get(member.workspaceId, member.userId);
-  if (!row?.active) throw new Error("Active workspace membership is required to own a runner.");
+}
+
+function requireOwner(db: Database, member: MemberRef): void {
+  if (!workspaceMemberUsable(memberAccess(db, member)))
+    throw new Error("Active workspace membership is required to own a runner.");
 }
 
 /** The first name Paws has not used, after `after` when exe.dev refused that one. */

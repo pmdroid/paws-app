@@ -1,6 +1,11 @@
 import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
-import { delegatedLinearUserId, runnerAccountUnsupported, workspaceMember } from "../db";
+import {
+  workspaceMemberUsable,
+  delegatedLinearUserId,
+  runnerAccountUnsupported,
+  workspaceMember,
+} from "../db";
 import {
   REPOSITORY_COMMAND_RUNNER_VERSION,
   runnerReleaseAtLeast,
@@ -66,7 +71,7 @@ export function eligibleRunners(db: Database, input: EligibleRunnersInput): Elig
         else return "not-yours";
       }
       const member = workspaceMember(db, input.workspaceId, runner.ownerId);
-      if (!member?.active) return "owner-inactive";
+      if (!workspaceMemberUsable(member)) return "owner-inactive";
       if (!isWorkspaceAdmin(member.role) && !member.teamIds.includes(input.teamId))
         return "owner-not-in-team";
       if ((lastSeenAt ?? 0) <= at - RUNNER_ONLINE_MS) return "offline";

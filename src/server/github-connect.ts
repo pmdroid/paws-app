@@ -1,4 +1,13 @@
-import { isWorkspaceAdmin } from "../workspace";
+import {
+  workspaceMemberUsable,
+  auditWorkspaceAccess,
+  enqueueJob,
+  immediate,
+  latestGitHubDelivery,
+  listWorkspaceRepositories,
+  workspaceMember,
+} from "../db";
+import { isWorkspaceAdmin, requestWorkspaceSession, validWorkspaceCsrf } from "../workspace";
 import { journalCaught } from "../journal";
 import { discoverGitHubInstallation } from "./github-connect-status";
 import type { Database } from "bun:sqlite";
@@ -12,15 +21,6 @@ import {
   verifyHostedGitHubApp,
   type ActiveGitHubApp,
 } from "../auth";
-import {
-  auditWorkspaceAccess,
-  enqueueJob,
-  immediate,
-  latestGitHubDelivery,
-  listWorkspaceRepositories,
-  workspaceMember,
-} from "../db";
-import { requestWorkspaceSession, validWorkspaceCsrf } from "../workspace";
 import { dashboardUrl } from "../dashboard-links";
 
 const START = "/api/workspaces/github-connect";
@@ -71,7 +71,7 @@ export function createHostedGitHubConnect(options: {
       return (
         access &&
         current?.session.tokenHash === access.session.tokenHash &&
-        member?.active &&
+        workspaceMemberUsable(member) &&
         isWorkspaceAdmin(member.role)
       );
     };
@@ -87,7 +87,7 @@ export function createHostedGitHubConnect(options: {
       const member = access
         ? workspaceMember(db, access.principal.workspaceId, access.principal.userId)
         : null;
-      return Boolean(member?.active && isWorkspaceAdmin(member.role));
+      return Boolean(workspaceMemberUsable(member) && isWorkspaceAdmin(member.role));
     };
     const signedIn = () => {
       const current = requestWorkspaceSession(db, request, now());

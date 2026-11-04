@@ -1,8 +1,6 @@
-import { journalCaught } from "../journal";
-import { randomUUID, type KeyObject } from "node:crypto";
-import type { Database } from "bun:sqlite";
-import { z } from "zod";
 import {
+  workspaceMemberUsable,
+  workspaceMemberUsableSql,
   getLinearSession,
   immediate,
   recordCommandAccount,
@@ -11,6 +9,10 @@ import {
   workspaceSessionIds,
   workspaceMember,
 } from "../db";
+import { journalCaught } from "../journal";
+import { randomUUID, type KeyObject } from "node:crypto";
+import type { Database } from "bun:sqlite";
+import { z } from "zod";
 import {
   RunnerCommandSchema,
   RunnerHelperResultSchema,
@@ -47,7 +49,7 @@ export function createRunnerHelpers(options: {
   function identity(runnerId: string) {
     const row = db
       .query<{ workspaceId: string; userId: string; fence: number; status: string }, [string]>(
-        "SELECT r.workspace_id AS workspaceId,r.owner_user_id AS userId,r.fence,r.status FROM runner r JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id WHERE r.id=? AND r.revoked_at IS NULL AND r.status<>'revoked' AND m.active=1",
+        `SELECT r.workspace_id AS workspaceId,r.owner_user_id AS userId,r.fence,r.status FROM runner r JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id WHERE r.id=? AND r.revoked_at IS NULL AND r.status<>'revoked' AND ${workspaceMemberUsableSql("m")}`,
       )
       .get(runnerId);
     if (!row) throw new HelperFencedError("Runner helper identity is unavailable");
@@ -69,7 +71,7 @@ export function createRunnerHelpers(options: {
     const grouping = purpose === "finding_groups";
     const member = grouping ? workspaceMember(db, runner.workspaceId, runner.userId) : null;
     if (
-      (grouping && (!member?.active || !["admin", "owner"].includes(member.role))) ||
+      (grouping && (!workspaceMemberUsable(member) || !["admin", "owner"].includes(member.role))) ||
       !session ||
       (!grouping && session.stoppedAt !== null) ||
       session.generation !== generation ||

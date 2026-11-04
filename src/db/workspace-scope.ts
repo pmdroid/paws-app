@@ -1,6 +1,6 @@
+import { workspaceMemberUsable, workspaceMember } from "./workspace";
 import { teamRepositoryAllowedSql } from "./repository-catalog";
 import type { Database } from "bun:sqlite";
-import { workspaceMember } from "./workspace";
 import { getLinearSessionAccess } from "./linear-access";
 
 export function workspaceSessionIds(
@@ -10,7 +10,7 @@ export function workspaceSessionIds(
   clientId: string,
 ): string[] {
   const member = workspaceMember(db, workspaceId, userId);
-  if (!member?.active) return [];
+  if (!workspaceMemberUsable(member)) return [];
   return db
     .query<{ session_id: string }, [string, string, number, string]>(
       `SELECT s.session_id FROM linear_session s JOIN workspace w ON w.linear_organization_id=s.organization_id

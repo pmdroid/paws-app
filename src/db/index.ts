@@ -616,6 +616,10 @@ export {
   applyLinearUserChange,
   MEMBERSHIP_BACKSTOP_MS,
   membershipFresh,
+  workspaceMemberUsable,
+  workspaceMemberUsableSql,
+  WORKSPACE_REVOKED_SIGN_IN,
+  WORKSPACE_REVOKED_RESPONSE,
   workspaceForOrganization,
   workspaceMember,
   workspaceLinearMember,
@@ -813,6 +817,7 @@ export { jobVersionCurrent } from "./jobs";
 
 export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
 
+export { changeWorkspaceRevocation } from "./workspace-revocation";
 export { listFindingGroups, lastFindingGroupRun, findingGroupSources } from "./finding-groups";
 export type { FindingGroup, FindingGroupRun } from "./finding-groups";
 

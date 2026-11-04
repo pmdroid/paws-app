@@ -1,5 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { auditWorkspaceAccess, listWorkspaceRepositoryNames, workspaceMember } from "../db";
+import {
+  workspaceMemberUsable,
+  auditWorkspaceAccess,
+  listWorkspaceRepositoryNames,
+  workspaceMember,
+} from "../db";
 import { journalCaught } from "../journal";
 import type { AgentModelCatalog } from "../runner-models";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
@@ -142,7 +147,7 @@ export function createRetroScheduleHttp(options: {
   return async (request: Request, principal: WorkspacePrincipal): Promise<Response | null> => {
     const path = new URL(request.url).pathname;
     if (path !== RETRO_SCHEDULE_PATH && path !== RETRO_RUNS_PATH) return null;
-    if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
+    if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
       return json({ error: "Workspace access is unavailable." }, 403);
     if (path === RETRO_RUNS_PATH) {
       if (request.method !== "POST") return json({ error: "Use POST." }, 405);

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   getRetro,
   listRetros,
   listWorkspaceRepositoryNames,
@@ -455,7 +456,7 @@ export function previewRetroPrompt(
   },
 ): RetroPromptPreview {
   const { principal } = input;
-  if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
+  if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
     return { ok: false, reason: "forbidden", message: "Workspace access is unavailable." };
   if (!isWorkspaceAdmin(principal.role))
     return {
@@ -518,7 +519,7 @@ export function readRetroRenderedPrompt(
   input: { principal: WorkspacePrincipal; sessionIds: readonly string[]; retroId: string },
 ): RetroRenderedPromptRead {
   const { principal } = input;
-  if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
+  if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
     return { ok: false, reason: "forbidden" };
   const readable = readableEvidence(
     db,

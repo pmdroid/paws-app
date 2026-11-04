@@ -1,6 +1,6 @@
+import { workspaceMemberUsable, workspaceMember } from "../db";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { workspaceMember } from "../db";
 import {
   isExeDevPoolName,
   isProvisioningError,
@@ -225,7 +225,7 @@ export function createMemberVmHttp(options: {
     const pools = options.exeDev;
     if (pools === undefined && path.startsWith("/api/runners/vm/pool")) return null;
     const current = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (!current?.active)
+    if (!workspaceMemberUsable(current))
       return json(
         {
           error:

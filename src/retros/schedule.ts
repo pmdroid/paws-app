@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   closeRetro,
   getRetro,
   immediate,
@@ -349,7 +350,7 @@ export function createRetroScheduler(options: {
     author: string,
   ): readonly AgentModelCatalog[] | null {
     const admins = listWorkspaceMembers(db, workspaceId)
-      .filter((member) => member.active === 1 && isWorkspaceAdmin(member.role))
+      .filter((member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role))
       .map((member) => member.id);
     let fallback: readonly AgentModelCatalog[] | null = null;
     for (const userId of new Set([author, ...admins])) {

@@ -1,7 +1,5 @@
-import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
-import { isBlockerSatisfied, type TaskMode, type WorkItemState } from "../core";
 import {
+  workspaceMemberUsable,
   applyWorkItemEvent,
   auditWorkspaceAccess,
   deliveredLinearIssueState,
@@ -16,6 +14,9 @@ import {
   workspaceMember,
   type JobLoop,
 } from "../db";
+import { journalCaught } from "../journal";
+import type { Database } from "bun:sqlite";
+import { isBlockerSatisfied, type TaskMode, type WorkItemState } from "../core";
 import type {
   AcceptedLinearEvent,
   DependencyEdge,
@@ -130,7 +131,7 @@ export function createParentDelegations(input: {
   }
   function ownerCanAct(parent: Parent): boolean {
     const owner = workspaceMember(db, parent.workspaceId, parent.ownerUserId);
-    return !!owner?.active;
+    return !!workspaceMemberUsable(owner);
   }
   function refuse(parent: Parent, event: AcceptedLinearEvent, reason = PARENT_REFUSAL.reason) {
     auditWorkspaceAccess(db, {
@@ -354,7 +355,7 @@ export function createParentDelegations(input: {
       )
         return true;
       const owner = workspaceLinearMember(db, workspace.id, session.creatorId);
-      if (!owner?.active) return false;
+      if (!workspaceMemberUsable(owner)) return false;
       const issueIds = snapshot.subIssues.map((issue) => issue.linearIssueId);
       if (
         issueIds.some(

@@ -3,6 +3,7 @@ export {
   cookieValue,
   issueWorkspaceBootstrap,
   issueWorkspaceSession,
+  WorkspaceAccessRevoked,
   requestWorkspaceSession,
   validWorkspaceCsrf,
   workspaceId,

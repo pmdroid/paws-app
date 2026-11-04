@@ -1,4 +1,9 @@
 import { expect, test } from "bun:test";
+import {
+  workspaceMemberUsable,
+  WORKSPACE_REVOKED_RESPONSE,
+  WORKSPACE_REVOKED_SIGN_IN,
+} from "../src/db";
 import { canAnswer } from "../src/questions";
 import { canAct, isWorkspaceAdmin, type ActionActor } from "../src/workspace";
 
@@ -14,7 +19,7 @@ const actor = (role: "admin" | "member", active = true): ActionActor => ({
   id: "human",
   identity,
   teamId: "team",
-  member: { active, role, teamIds: ["team"] },
+  member: { revokedAt: null, active, role, teamIds: ["team"] },
 });
 
 for (const role of ["admin", "member"] as const) {
@@ -45,8 +50,16 @@ for (const [kind, change, allowed] of [
   ["inactive Linear member", { identity: { ...identity, active: false } }, false],
   ["Linear guest", { identity: { ...identity, guest: true } }, false],
   ["other team's member", { identity: { ...identity, teamIds: ["other"] } }, false],
-  ["inactive Paws member", { member: { active: false, role: "member", teamIds: ["team"] } }, false],
-  ["Paws member outside team", { member: { active: true, role: "member", teamIds: [] } }, false],
+  [
+    "inactive Paws member",
+    { member: { revokedAt: null, active: false, role: "member", teamIds: ["team"] } },
+    false,
+  ],
+  [
+    "Paws member outside team",
+    { member: { revokedAt: null, active: true, role: "member", teamIds: [] } },
+    false,
+  ],
   ["different identity", { identity: { ...identity, userId: "other" } }, false],
   ["unknown actor", { id: "unknown" }, false],
   ["system actor", { id: "linear" }, false],
@@ -79,4 +92,24 @@ test("restricted answers also honor actor eligibility", () => {
   expect(canAnswer(question, actor("member", false))).toBe(false);
   expect(canAnswer({ ...question, delegatorId: "other" }, actor("member"))).toBe(false);
   expect(canAnswer({ kind: "github-auth", actorId: "human" }, actor("member", false))).toBe(false);
+});
+
+test("revoked delegators get the final delegation response; other actions address the actor", () => {
+  const revoked = { ...actor("member"), member: { ...actor("member").member!, revokedAt: 0 } };
+  expect(canAct(revoked, "delegate")).toEqual({
+    allowed: false,
+    reason: WORKSPACE_REVOKED_RESPONSE,
+    response: true,
+  });
+  for (const action of ["prompt", "github", { kind: "answer" }] as const)
+    expect(canAct(revoked, action)).toEqual({ allowed: false, reason: WORKSPACE_REVOKED_SIGN_IN });
+  expect(canAnswer({ kind: "agent" }, revoked)).toBe(false);
+});
+
+test("membership access fails closed if revocation was not selected", () => {
+  // @ts-expect-error Membership readers must select revokedAt.
+  expect(workspaceMemberUsable({ active: true })).toBe(false);
+  // @ts-expect-error Undefined is not a verified absence of revocation.
+  expect(workspaceMemberUsable({ active: true, revokedAt: undefined })).toBe(false);
+  expect(workspaceMemberUsable({ active: true, revokedAt: null })).toBe(true);
 });

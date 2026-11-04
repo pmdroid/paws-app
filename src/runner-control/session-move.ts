@@ -1,6 +1,5 @@
-import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
+  workspaceMemberUsable,
   auditWorkspaceAccess,
   clearRunnerSessionMove,
   immediate,
@@ -9,6 +8,8 @@ import {
   runnerSessionMove,
   workspaceMember,
 } from "../db";
+import { journalCaught } from "../journal";
+import type { Database } from "bun:sqlite";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
 
 /** What the runner backend's `handOverItem` answers, as far as the runner card tells it. */
@@ -100,7 +101,7 @@ export function createRunnerSessionMoves(options: {
   /** The admin check every move route shares; a refusal is audited. */
   function admin(principal: WorkspacePrincipal, subject: string, at: number): boolean {
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
-    if (member?.active && isWorkspaceAdmin(member.role)) return true;
+    if (workspaceMemberUsable(member) && isWorkspaceAdmin(member.role)) return true;
     auditWorkspaceAccess(db, {
       workspaceId: principal.workspaceId,
       userId: principal.userId,

@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { journalCaught } from "../journal";
 import {
+  workspaceMemberUsable,
   accountSlotsInUse,
   acknowledgeRetroDispatch,
   admitAgentAccounts,
@@ -221,7 +222,7 @@ function runnerIdentity(db: Database, runnerId: string): RunnerIdentity | null {
 
 function runnerHasWorkspaceAuthority(db: Database, identity: RunnerIdentity): boolean {
   const member = workspaceMember(db, identity.workspaceId, identity.ownerId);
-  return member !== null && member.active && isWorkspaceAdmin(member.role);
+  return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);
 }
 
 export function retroRunnerCandidates(
@@ -229,7 +230,7 @@ export function retroRunnerCandidates(
   input: { workspaceId: string; agent: string; now: number },
 ): { candidates: Candidate[]; incompatible: number } {
   const admins = listWorkspaceMembers(db, input.workspaceId).filter(
-    (member) => member.active === 1 && isWorkspaceAdmin(member.role),
+    (member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role),
   );
   const seen = new Set<string>();
   let incompatible = 0;

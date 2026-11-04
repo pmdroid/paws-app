@@ -4,6 +4,7 @@ import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccess,
   changeWorkspaceRole,
+  changeWorkspaceRevocation,
   getWorkspace,
   listWorkspaceMembers,
   listWorkspaceAudit,
@@ -25,6 +26,8 @@ export async function handleWorkspaceAdministration(
     origin: string;
     now: number;
     memberships: LinearMembershipReads;
+    interruptItem?: (itemId: string) => Promise<void>;
+    onMemberRevoked?: () => Promise<void>;
     verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   },
 ): Promise<Response | null> {
@@ -97,13 +100,38 @@ export async function handleWorkspaceAdministration(
       if (
         Object.keys(body).length !== 2 ||
         typeof body["userId"] !== "string" ||
-        typeof body["role"] !== "string" ||
-        !["admin", "member"].includes(body["role"])
+        !(
+          typeof body["revoked"] === "boolean" ||
+          (typeof body["role"] === "string" && ["admin", "member"].includes(body["role"]))
+        )
       )
-        throw new Error("Choose a workspace member and role.");
+        throw new Error(
+          "revoked" in body
+            ? "Choose a workspace member and set revoked to true or false."
+            : "Choose a workspace member and role.",
+        );
       const member = workspaceMember(options.db, principal.workspaceId, body["userId"]);
       const workspace = getWorkspace(options.db, principal.workspaceId);
       if (member === null || workspace === null) throw new Error("Choose a workspace member.");
+      if (typeof body["revoked"] === "boolean") {
+        const stopped = changeWorkspaceRevocation(options.db, {
+          workspaceId: principal.workspaceId,
+          actorId: principal.userId,
+          userId: member.userId,
+          revoked: body["revoked"],
+          now: options.now,
+        });
+        if (body["revoked"])
+          void Promise.resolve()
+            .then(() => options.onMemberRevoked?.())
+            .catch((error) => journalCaught(error, "administration.revoke.disconnect", null));
+        // The durable stop is already committed. Interrupt the attached execution as well.
+        for (const itemId of stopped)
+          void Promise.resolve()
+            .then(() => options.interruptItem?.(itemId))
+            .catch((error) => journalCaught(error, "administration.revoke.interruptItem", itemId));
+        return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
+      }
       const verified = await options.memberships.member(
         workspace.organizationId,
         member.linearUserId,

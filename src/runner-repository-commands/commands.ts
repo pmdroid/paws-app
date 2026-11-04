@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getWorkItem, getWorkItemRepository, immediate } from "../db";
+import { getWorkItem, getWorkItemRepository, immediate, workspaceMemberUsableSql } from "../db";
 import { journalCaught } from "../journal";
 import {
   REPOSITORY_COMMAND_RUNNER_VERSION,
@@ -82,7 +82,7 @@ function activeRunner(db: Database, runnerId: string, workspace: string) {
       .query(
         `SELECT 1 FROM runner r
         JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
-        WHERE r.id=? AND r.workspace_id=? AND r.revoked_at IS NULL AND r.status='active' AND m.active=1`,
+        WHERE r.id=? AND r.workspace_id=? AND r.revoked_at IS NULL AND r.status='active' AND ${workspaceMemberUsableSql("m")}`,
       )
       .get(runnerId, workspace) !== null
   );
