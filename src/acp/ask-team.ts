@@ -371,7 +371,7 @@ async function handleConnection(
       try {
         let answer =
           options.closeout && options.allowCloseoutRun !== false
-            ? closeoutFinishLine(await finishReport(options.closeout, options.context.itemId))
+            ? finishAnswer(await finishReport(options.closeout, options.context.itemId))
             : CLOSEOUT_FINISH_UNAVAILABLE;
         if (answer === "{}" && options.pullRequest && !finish.pullRequestOpened && !finish.nudged) {
           finish.nudged = true;
@@ -556,28 +556,46 @@ async function handleConnection(
   }
 }
 
-/** The stop hook waits 25 seconds; Paws answers well inside that. */
-const FINISH_ANSWER_MS = 10_000;
+/** The stop hook waits 25 seconds; Paws answers within 10. */
+const FINISH_ANSWER_MS = 8_000;
+const FINISH_FALLBACK_MS = 2_000;
 
 /**
  * The report behind `closeout_finish`, from the results this session already recorded. A new
  * report loads the policy again, a runner round trip that took about 44 seconds under load, so it
- * runs only when nothing is recorded yet.
+ * runs only when nothing is recorded yet. Undefined when no answer for the current head is ready
+ * in time; the finish is then refused as unavailable.
  */
-async function finishReport(closeout: CloseoutSession, itemId: string): Promise<string> {
+async function finishReport(
+  closeout: CloseoutSession,
+  itemId: string,
+): Promise<string | undefined> {
+  const answer = await within(
+    FINISH_ANSWER_MS,
+    closeout.recorded().then(async (recorded) => recorded ?? (await closeout.report())),
+  );
+  if (answer !== undefined) return answer;
+  const last = await within(FINISH_FALLBACK_MS, closeout.lastRecorded());
+  journal(
+    last === undefined
+      ? `item ${itemId} closeout_finish took over ${FINISH_ANSWER_MS / 1000} seconds and nothing is recorded for this head: answered unavailable`
+      : `item ${itemId} closeout_finish took over ${FINISH_ANSWER_MS / 1000} seconds: answered from the last recorded Closeout report for this head`,
+  );
+  return last;
+}
+
+function finishAnswer(report: string | undefined): string {
+  return report === undefined ? CLOSEOUT_FINISH_UNAVAILABLE : closeoutFinishLine(report);
+}
+
+/** The value of `work`, or undefined when it takes longer than `ms`. */
+async function within<T>(ms: number, work: Promise<T | undefined>): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<"late">((resolve) => {
-    timer = setTimeout(() => resolve("late"), FINISH_ANSWER_MS);
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms);
   });
   try {
-    const recorded = await Promise.race([closeout.recorded(), late]);
-    if (recorded !== "late") return recorded ?? (await closeout.report());
-    const last = closeout.lastRecorded();
-    if (last === undefined) return await closeout.report();
-    journal(
-      `item ${itemId} closeout_finish took over ${FINISH_ANSWER_MS / 1000} seconds: answered from the last recorded Closeout report`,
-    );
-    return last;
+    return await Promise.race([work, late]);
   } finally {
     clearTimeout(timer);
   }

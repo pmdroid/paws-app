@@ -13,7 +13,7 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
-import { workspacePolicyFiles } from "../closeout-spec";
+import { createCloseoutSession, workspacePolicyFiles } from "../closeout-spec";
 import { startAskTeamBridge } from "./ask-team";
 import {
   CLOSEOUT_FINISH_UNAVAILABLE,
@@ -144,7 +144,6 @@ test("finish answers from recorded results while a new report would take a minut
   const repo = join(root, "repo");
   initRepo(repo);
   writeTestPolicy(repo);
-  writeFileSync(join(repo, "src.txt"), "change\n");
   const runDirectory = join(root, "run");
   const socketPath = join(runDirectory, "ask-team.sock");
   const timers: ReturnType<typeof setTimeout>[] = [];
@@ -170,7 +169,16 @@ test("finish answers from recorded results while a new report would take a minut
     reason: "Cannot finish yet. Check test is not finished. Call get_closeout.",
   };
   try {
-    await callTool(socketPath, "get_closeout", {});
+    // Listed before any change, so nothing is required yet; the change below makes test apply.
+    spawnSync("git", ["add", "."], { cwd: repo });
+    spawnSync("git", ["commit", "-m", "policy"], { cwd: repo });
+    spawnSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: repo });
+    expect(
+      JSON.parse(JSON.parse(await callTool(socketPath, "get_closeout", {})).answer),
+    ).toMatchObject({
+      required: [],
+    });
+    writeFileSync(join(repo, "src.txt"), "change\n");
     const installed = await installCloseoutStopHook({
       agent: "claude",
       runDirectory,
@@ -205,6 +213,58 @@ test("finish answers from recorded results while a new report would take a minut
     for (const timer of timers) clearTimeout(timer);
     await bridge.close();
   }
+});
+
+test("finish with nothing recorded and a slow policy is refused as unavailable in time", async () => {
+  const root = temp();
+  const repo = join(root, "repo");
+  initRepo(repo);
+  writeTestPolicy(repo);
+  writeFileSync(join(repo, "src.txt"), "change\n");
+  const runDirectory = join(root, "run");
+  const socketPath = join(runDirectory, "ask-team.sock");
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const controller = new AbortController();
+  const bridge = await startAskTeamBridge({
+    socketPath,
+    context: { itemId: "ENG-1", runId: "unlisted", role: "implementer", worktreePath: repo },
+    closeoutPolicy: async () => {
+      await new Promise((resolve) => timers.push(setTimeout(resolve, 60_000)));
+      return workspacePolicyFiles(repo);
+    },
+    commandGuard: {
+      hostAccess: true,
+      worktree: repo,
+      home: join(root, "home"),
+      pawsRoot: join(root, "paws"),
+    },
+    signal: controller.signal,
+  });
+  try {
+    const started = Date.now();
+    const ran = JSON.parse(await callTool(socketPath, "closeout_finish", {})) as { answer: string };
+    expect(ran.answer).toBe(CLOSEOUT_FINISH_UNAVAILABLE);
+    expect(Date.now() - started).toBeLessThan(11_000);
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+    await bridge.close();
+  }
+}, 20_000);
+
+test("the last recorded report answers only for the head it was recorded at", async () => {
+  const root = temp();
+  const repo = join(root, "repo");
+  initRepo(repo);
+  writeTestPolicy(repo);
+  writeFileSync(join(repo, "src.txt"), "change\n");
+  const session = createCloseoutSession(repo, { policy: async () => workspacePolicyFiles(repo) });
+  const report = await session.report();
+  expect(await session.lastRecorded()).toBe(report);
+  spawnSync("git", ["add", "src.txt"], { cwd: repo });
+  spawnSync("git", ["commit", "-m", "change"], { cwd: repo });
+  expect(await session.lastRecorded()).toBeUndefined();
+  expect(await session.recorded()).toBeDefined();
+  expect(await session.lastRecorded()).toBeDefined();
 });
 
 test("the stop hook waits 25 seconds for Paws, inside the hook's own limit", async () => {

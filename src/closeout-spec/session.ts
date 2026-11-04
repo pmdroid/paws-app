@@ -74,8 +74,11 @@ export type CloseoutSession = {
    * are pending, as a new report would list them. Undefined until a report or run listed a policy.
    */
   recorded(): Promise<string | undefined>;
-  /** The last report `report` or `recorded` returned, without reading the workspace. */
-  lastRecorded(): string | undefined;
+  /**
+   * The last report `report` or `recorded` returned, when the workspace head is still the head it
+   * was recorded at. Reads only `HEAD`, not the changed files.
+   */
+  lastRecorded(): Promise<string | undefined>;
 };
 
 export type CloseoutSessionOptions = {
@@ -192,7 +195,7 @@ export function createCloseoutSession(
   let probedFingerprint: string | undefined;
   let chain: Promise<unknown> = Promise.resolve();
   let listed: Prepared | undefined;
-  let lastReport: string | undefined;
+  let last: { report: string; head: string | undefined } | undefined;
 
   const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
     const run = chain.then(work, work);
@@ -285,8 +288,8 @@ export function createCloseoutSession(
         };
         if (request?.progress && checkedHead !== undefined)
           notifyReport(options, checkedHead, prepared, report);
-        lastReport = boundedReport(report);
-        return lastReport;
+        last = { report: boundedReport(report), head: checkedHead };
+        return last.report;
       }),
     run: (id) =>
       exclusive(async () => {
@@ -304,10 +307,13 @@ export function createCloseoutSession(
       // A blocked listing may be a policy load that failed; only a new report can clear it.
       if (prepared === undefined || prepared.kind === "blocked") return undefined;
       let view = memory;
+      let recordedHead = checkedHead;
       if (prepared.kind === "ready") {
         const current = await candidateOf(workspace, prepared.policy);
-        if (!current.ok || current.fingerprint !== fingerprint) {
-          const head = current.ok ? current.head : undefined;
+        if (!current.ok) {
+          prepared = { kind: "blocked", message: current.message };
+        } else if (current.fingerprint !== fingerprint) {
+          const head = current.head;
           view = new Map(
             [...memory].map(([id, state]) => [
               id,
@@ -316,21 +322,33 @@ export function createCloseoutSession(
                 : state,
             ]),
           );
+          // Select again for the files as they are now; published evidence and rule results
+          // belong to the old candidate.
           prepared = {
             ...prepared,
+            required: select(prepared.policy, current.paths),
+            rules: selectRules(prepared.policy.rules, current.paths),
             published: [],
-            rules: prepared.rules.map(({ result: _result, ...rule }) => rule),
           };
         }
+        recordedHead = current.ok ? current.head : undefined;
       }
       const broken = ruleBreak(prepared);
-      lastReport = boundedReport({
-        ...reportOf(prepared, view),
-        ...(broken ? { pending: [], blocked: broken } : {}),
-      });
-      return lastReport;
+      last = {
+        report: boundedReport({
+          ...reportOf(prepared, view),
+          ...(broken ? { pending: [], blocked: broken } : {}),
+        }),
+        head: recordedHead,
+      };
+      return last.report;
     },
-    lastRecorded: () => lastReport,
+    lastRecorded: async () => {
+      if (last === undefined || last.head === undefined) return undefined;
+      const current = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
+      if (!current.ok || current.stdout.toString("utf8").trim() !== last.head) return undefined;
+      return last.report;
+    },
   };
 }
 
