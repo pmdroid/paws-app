@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -1077,6 +1078,17 @@ WantedBy=multi-user.target
         return {str(path.relative_to(self.root)): (path.read_bytes() if path.is_file() else None, stat.S_IMODE(path.lstat().st_mode)) for path in sorted(self.root.rglob("*")) if path != self.log}
 
 
+def fake_install(order=None):
+    """install() without the release: runs `prepare`, then starts the stop-to-start phase it would stop the runner in."""
+    def install(manifest, artifact, fingerprint, reinstall=False, prepare=lambda: None, journal=None):
+        prepared = prepare()
+        journal.start("stop-to-start")
+        if order is not None:
+            order.append(("install",))
+        return {"installed": True}, prepared
+    return install
+
+
 class DockerAccess(unittest.TestCase):
     def setUp(self):
         self.installer = load("install")
@@ -1153,10 +1165,10 @@ class DockerAccess(unittest.TestCase):
             mock.patch.object(deb, "enabled_services", lambda: []),
             mock.patch.object(installer.release, "verify_release", lambda arguments, root: ({"version": "1.0.0"}, None, "key")),
             mock.patch.object(installer.release, "command", command),
-            mock.patch.object(installer, "prerequisites", lambda: None),
             mock.patch.object(installer, "prepare_agents", lambda artifact: None),
-            mock.patch.object(installer, "install", lambda *arguments, **options: {"installed": True}),
+            mock.patch.object(installer, "install", fake_install()),
             mock.patch.object(installer, "finish_agents", lambda agents: {}),
+            mock.patch.object(installer, "prune", lambda: {"removed": []}),
             mock.patch.dict(os.environ, {"PAWS_RUNNER_DOCKER_ACCESS": "grant"}),
         ]
         output = io.StringIO()
@@ -1349,10 +1361,10 @@ class DockerAccess(unittest.TestCase):
             mock.patch.object(installer, "write_atomic", lambda path, content, mode: path.write_bytes(content)),
             mock.patch.object(installer.release, "verify_release", lambda arguments, root: ({"version": "1.0.0"}, None, "key")),
             mock.patch.object(installer.release, "command", command),
-            mock.patch.object(installer, "prerequisites", lambda: order.append(("prerequisites",))),
             mock.patch.object(installer, "prepare_agents", lambda artifact: order.append(("prepare_agents",))),
-            mock.patch.object(installer, "install", lambda *arguments, **options: order.append(("install",)) or {"installed": True}),
+            mock.patch.object(installer, "install", fake_install(order)),
             mock.patch.object(installer, "finish_agents", lambda agents: order.append(("finish_agents",)) or {}),
+            mock.patch.object(installer, "prune", lambda: {"removed": []}),
             mock.patch.object(installer, "configure_docker_access", configure_docker_access),
             mock.patch.dict(os.environ, {"PAWS_RUNNER_DOCKER_ACCESS": "grant"}),
         ]
@@ -1360,11 +1372,233 @@ class DockerAccess(unittest.TestCase):
             for patch in patches:
                 stack.enter_context(patch)
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
             deb.configure()
-        self.assertEqual(order[:6], [("prerequisites",), ("prepare_agents",), ("install",), ("finish_agents",), ("docker", "grant"), ("systemctl", "start", "--", "paws-runner.service")])
-        with mock.patch.dict(os.environ, {"PAWS_RUNNER_DOCKER_ACCESS": "maybe"}), mock.patch.object(installer, "prerequisites", lambda: self.fail("configured with an invalid choice")):
+        self.assertEqual(order[:5], [("prepare_agents",), ("install",), ("finish_agents",), ("docker", "grant"), ("systemctl", "start", "--", "paws-runner.service")])
+        with mock.patch.dict(os.environ, {"PAWS_RUNNER_DOCKER_ACCESS": "maybe"}), mock.patch.object(installer.release, "verify_release", lambda arguments, root: self.fail("configured with an invalid choice")):
             with self.assertRaisesRegex(ValueError, "grant or deny"):
                 deb.configure()
+
+class FakeSystemctl:
+    """systemctl and the release's Bun for install(): records every call; `active` lists running executions."""
+
+    def __init__(self):
+        self.calls = []
+        self.active = b""
+        self.broken = False
+
+    def __call__(self, arguments):
+        if arguments[0] != "/usr/bin/systemctl":
+            return release.BUN_VERSION.encode() if arguments[1:] == ["--version"] else b""
+        self.calls.append(tuple(arguments[1:]))
+        if self.broken:
+            raise ValueError("Required command failed: /usr/bin/systemctl")
+        if arguments[1] == "list-units":
+            return self.active
+        if arguments[1] == "list-unit-files":
+            return b"paws-runner.service enabled\n"
+        return b""
+
+    def verbs(self):
+        return [call[0] for call in self.calls]
+
+
+class RunnerUpgrade(unittest.TestCase):
+    """deb-control.py configure against a temp root and a fake systemctl."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="paws-runner-upgrade-")
+        self.root = pathlib.Path(self.temporary.name)
+        self.deb = load("deb-control")
+        self.installer = self.deb.installer
+        self.base = self.root / "opt/paws-runner"
+        self.state = self.root / "state"
+        self.state.mkdir()
+        (self.base / "releases/1.2.2").mkdir(parents=True)
+        (self.base / "current").symlink_to(self.base / "releases/1.2.2")
+        self.artifact = self.root / "artifact.tar"
+        with tarfile.open(self.artifact, "w") as archive:
+            for name in sorted(release.REQUIRED):
+                member = tarfile.TarInfo(name)
+                content = release.RUNNER_LAUNCHER if name == "bin/paws-runner" else b"synthetic reviewed release file"
+                member.size = len(content)
+                member.mode = 0o755 if name in release.BINARIES else 0o644
+                archive.addfile(member, io.BytesIO(content))
+        self.systemctl = FakeSystemctl()
+        self.order = []
+        self.syncs = []
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def record(self, step, result=None):
+        def call(*arguments, **options):
+            self.order.append(step)
+            return result
+        return call
+
+    def switch(self, unpacked, destination, pointers):
+        self.order.append("switch")
+        pending = self.base / ".current-pending"
+        pending.symlink_to(destination)
+        os.replace(pending, self.base / "current")
+
+    def patches(self, prepare_agents):
+        installer = self.installer
+        stop = installer.stop_for_install
+        return [
+            mock.patch.object(installer, "BASE", self.base),
+            mock.patch.object(installer, "STATE", self.state),
+            mock.patch.object(self.deb, "RESTART", self.state / "debian-services.json"),
+            mock.patch.object(self.deb, "active_services", lambda: ["paws-runner.service"]),
+            mock.patch.object(self.deb, "enabled_services", lambda: ["paws-runner.service"]),
+            mock.patch.object(installer, "root_directory", lambda path, mode=0o755: path.mkdir(parents=True, exist_ok=True)),
+            mock.patch.object(installer, "lock_install", lambda: os.open(self.state / "install.lock", os.O_RDWR | os.O_CREAT, 0o600)),
+            mock.patch.object(installer, "lock_agents", lambda: os.open(self.state / "agents.lock", os.O_RDWR | os.O_CREAT, 0o600)),
+            mock.patch.object(installer, "prerequisites", lambda: None),
+            mock.patch.object(installer.release, "verify_release", lambda arguments, root: ({"version": "1.2.3", "platform": "linux-x64", "artifactSha256": "0" * 64}, self.artifact, "key")),
+            mock.patch.object(installer.release, "verify_mise", lambda content, platform: None),
+            mock.patch.object(installer.release, "command", self.systemctl),
+            mock.patch.object(installer, "sync_filesystem", lambda path: self.syncs.append(path) or self.order.append("sync")),
+            mock.patch.object(installer, "prepare_agents", prepare_agents),
+            mock.patch.object(installer, "stop_for_install", lambda: self.order.append("stop") or stop()),
+            mock.patch.object(installer, "switch_release", self.switch),
+            mock.patch.object(installer, "finish_agents", self.record("finish_agents", {})),
+            mock.patch.object(installer, "configure_docker_access", self.record("docker", {"status": "absent"})),
+            mock.patch.object(installer.shutil, "rmtree", self.contained(installer.shutil.rmtree)),
+        ]
+
+    def contained(self, rmtree):
+        """rmtree that refuses anything outside the temp root, so a missed patch can't reach the host's runner."""
+        def remove(path, *arguments, **options):
+            if not pathlib.Path(path).is_relative_to(self.root):
+                raise AssertionError(f"removing {path} outside the test root")
+            return rmtree(path, *arguments, **options)
+        return remove
+
+    def configure(self, prepare_agents):
+        errors = io.StringIO()
+        output = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for patch in self.patches(prepare_agents):
+                stack.enter_context(patch)
+            stack.enter_context(contextlib.redirect_stderr(errors))
+            stack.enter_context(contextlib.redirect_stdout(output))
+            try:
+                self.deb.configure()
+            finally:
+                self.journal = [json.loads(line) for line in errors.getvalue().splitlines() if line.startswith('{"event": "runner_upgrade_phase"')]
+        return json.loads(output.getvalue().strip().splitlines()[-1])
+
+    def test_the_runner_stops_only_after_the_release_is_extracted_and_the_agents_are_prepared(self):
+        def prepare_agents(artifact):
+            # The new release is complete beside the running one, which still runs from current.
+            self.assertTrue((self.base / "releases/1.2.3/src/runner-cli/main.ts").is_file())
+            self.assertEqual((self.base / "releases/1.2.3/bin/paws-runner").read_bytes(), release.RUNNER_LAUNCHER)
+            self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.2"))
+            self.assertNotIn("stop", self.systemctl.verbs())
+            self.order.append("prepare_agents")
+            return {"agents": {}}
+        installed = self.configure(prepare_agents)
+        self.assertEqual(self.order, ["sync", "prepare_agents", "stop", "switch", "finish_agents", "docker"])
+        self.assertEqual(self.syncs, [self.base / "releases/1.2.3"])
+        self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.3"))
+        verbs = self.systemctl.verbs()
+        self.assertLess(verbs.index("stop"), verbs.index("start"))
+        self.assertEqual(self.systemctl.calls[verbs.index("start")], ("start", "--", "paws-runner.service"))
+        self.assertEqual(installed["pruned"], {"removed": []})
+        self.assertEqual([line["phase"] for line in self.journal], ["verify", "extract", "agents", "stop-to-start", "prune"])
+        self.assertTrue(all(isinstance(line["seconds"], float) for line in self.journal))
+        self.assertFalse((self.state / "debian-services.json").exists())
+
+    def test_a_failing_agent_preparation_leaves_the_runner_running_on_its_release(self):
+        def prepare_agents(artifact):
+            raise self.installer.AgentInstallError("codex", "2.5.0", "bun install exited 1")
+        with self.assertRaisesRegex(ValueError, "codex 2.5.0 was not installed"):
+            self.configure(prepare_agents)
+        self.assertNotIn("stop", self.systemctl.verbs())
+        self.assertNotIn("start", self.systemctl.verbs())
+        self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.2"))
+        self.assertFalse((self.state / "release.json").exists())
+        self.assertEqual([line["phase"] for line in self.journal], ["verify", "extract"])
+
+    def test_the_package_upgrade_step_checks_but_leaves_the_runner_running(self):
+        manifest = self.root / "manifest.json"
+        manifest.write_text(json.dumps({"format": 1, "version": "1.2.2", "platform": "linux-x64", "bunVersion": release.BUN_VERSION, "artifactSha256": "0" * 64}))
+        with mock.patch.object(self.deb, "ROOT", self.root), mock.patch.object(self.deb.installer.release, "parse_manifest", lambda content: json.loads(content)), mock.patch.object(self.deb, "RESTART", self.state / "debian-services.json"), mock.patch.object(self.deb, "active_services", lambda: ["paws-runner.service"]), mock.patch.object(self.installer, "write_atomic", lambda path, content, mode: path.write_bytes(content)), mock.patch.object(self.installer.release, "command", self.systemctl):
+            self.deb.stop("1.2.3")
+            self.assertEqual(self.systemctl.verbs(), ["list-units"])
+            with self.assertRaisesRegex(ValueError, "downgrades"):
+                self.deb.stop("1.2.1")
+            self.systemctl.active = b"paws-agent@01K00000000000000000000000.service loaded active running\n"
+            with self.assertRaisesRegex(ValueError, "Active agent executions"):
+                self.deb.stop("1.2.3")
+            # Removing the package still stops the runner first.
+            self.systemctl.active = b""
+            self.systemctl.calls.clear()
+            self.deb.stop(None)
+            self.assertIn(("stop", "--", "paws-runner.service"), self.systemctl.calls)
+
+    def test_extraction_syncs_no_file_and_sync_filesystem_flushes_once(self):
+        destination = self.root / "extracted"
+        destination.mkdir()
+        with mock.patch.object(os, "fsync", side_effect=AssertionError("fsync during extraction")) as fsync:
+            self.installer.extract_verified(self.artifact, destination)
+        self.assertEqual(fsync.call_count, 0)
+        self.assertEqual((destination / "bin/paws-runner").read_bytes(), release.RUNNER_LAUNCHER)
+        # The real syncfs(2), on the temp root's filesystem.
+        self.installer.sync_filesystem(destination)
+
+    def tree(self, folder, versions, current):
+        for version in versions:
+            (folder / version / "bin").mkdir(parents=True)
+            (folder / version / "bin/run").write_text(version)
+        if current is not None:
+            (folder / "current").symlink_to(current)
+
+    def prune(self):
+        with mock.patch.object(self.installer.shutil, "rmtree", self.contained(self.installer.shutil.rmtree)), mock.patch.object(self.installer.release, "command", self.systemctl), mock.patch.object(self.installer, "lock_agents", lambda: os.open(self.state / "agents.lock", os.O_RDWR | os.O_CREAT, 0o600)):
+            return self.installer.prune(self.base)
+
+    def test_pruning_keeps_the_current_and_previous_versions_and_skips_one_in_use(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("not Paws")
+        releases = self.base / "releases"
+        # setUp made 1.2.2, the release before 1.2.3.
+        self.tree(releases, ["1.0.0", "1.1.0", "1.2.3"], None)
+        (releases / "1.0.0/link").symlink_to(outside)
+        (releases / "0.9.0").symlink_to(outside)
+        (self.base / "current").unlink()
+        (self.base / "current").symlink_to(releases / "1.2.3")
+        claude = self.base / "agents/claude"
+        self.tree(claude, ["0.88.0", "0.90.0", "0.95.0", "0.99.1", "1.0.0"], "0.99.1")
+        codex = self.base / "agents/codex"
+        self.tree(codex, ["2.1.1", "2.5.0"], "2.5.0")
+        (self.base / "agents/grok").symlink_to(outside)
+        # A launcher's shared lock marks 0.88.0 in use.
+        holder = os.open(claude / "0.88.0", os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, holder)
+        fcntl.flock(holder, fcntl.LOCK_SH)
+        result = self.prune()
+        self.assertEqual(sorted(result["removed"]), sorted(str(path) for path in (releases / "1.0.0", releases / "1.1.0", claude / "0.90.0")))
+        self.assertEqual(sorted(path.name for path in releases.iterdir()), ["0.9.0", "1.2.2", "1.2.3"])
+        self.assertEqual(sorted(path.name for path in claude.iterdir()), ["0.88.0", "0.95.0", "0.99.1", "1.0.0", "current"])
+        self.assertEqual(sorted(path.name for path in codex.iterdir()), ["2.1.1", "2.5.0", "current"])
+        self.assertEqual((outside / "keep").read_text(), "not Paws")
+        self.assertEqual(self.systemctl.verbs(), ["list-units"])
+
+    def test_pruning_removes_nothing_while_an_execution_runs_or_when_its_state_is_unreadable(self):
+        claude = self.base / "agents/claude"
+        self.tree(claude, ["0.88.0", "0.90.0", "0.99.1"], "0.99.1")
+        self.systemctl.active = b"paws-check@01K00000000000000000000000.service loaded active running\n"
+        self.assertEqual(self.prune(), {"skipped": "an execution is running"})
+        self.systemctl.active = b""
+        self.systemctl.broken = True
+        self.assertEqual(self.prune(), {"skipped": "the execution state is unreadable"})
+        self.assertEqual(sorted(path.name for path in claude.iterdir()), ["0.88.0", "0.90.0", "0.99.1", "current"])
+        self.assertEqual(sorted(path.name for path in (self.base / "releases").iterdir()), ["1.2.2"])
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], *sys.argv[2:]], verbosity=2)

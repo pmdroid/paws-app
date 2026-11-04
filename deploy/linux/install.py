@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import ctypes
 import fcntl
 import importlib.util
 import json
@@ -38,6 +40,38 @@ def sync_directory(path):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def sync_filesystem(path):
+    """syncfs(2) on the filesystem holding path: one flush for a whole extracted release."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if ctypes.CDLL(None, use_errno=True).syncfs(descriptor) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), str(path))
+    finally:
+        os.close(descriptor)
+
+
+class Journal:
+    """One stderr line per upgrade phase with its duration, so the runner's downtime shows in the install log."""
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.started = {}
+
+    def start(self, phase):
+        self.started[phase] = self.clock()
+
+    def end(self, phase):
+        seconds = self.clock() - self.started.pop(phase)
+        print(json.dumps({"event": "runner_upgrade_phase", "phase": phase, "seconds": round(seconds, 3)}), file=sys.stderr)
+
+    @contextlib.contextmanager
+    def phase(self, name):
+        self.start(name)
+        yield
+        self.end(name)
 
 
 def adopt_tree(path, uid, gid, mode):
@@ -464,9 +498,13 @@ def admitted_release(manifest, fingerprint, reinstall=False):
     return accepted
 
 
+def active_executions():
+    """The agent and check units still running, as systemctl lists them; raises when systemctl cannot say."""
+    return release.command(["/usr/bin/systemctl", "list-units", "--all", "--state=active,activating,deactivating", "--no-legend", "--no-pager", "--plain", "paws-agent@*.service", "paws-check@*.service", "paws-check-witness@*.service"]).strip()
+
+
 def refuse_active_executions():
-    active = release.command(["/usr/bin/systemctl", "list-units", "--all", "--state=active,activating,deactivating", "--no-legend", "--no-pager", "--plain", "paws-agent@*.service", "paws-check@*.service", "paws-check-witness@*.service"])
-    if active.strip():
+    if active_executions():
         raise ValueError("Active agent executions must stop before installation")
 
 
@@ -501,10 +539,9 @@ def extract_verified(artifact, destination):
                 elif member.name.startswith("deploy/linux/"):
                     mode = 0o644
                 os.fchmod(outgoing.fileno(), mode)
-                os.fsync(outgoing.fileno())
+    # No per-file fsync: install() calls sync_filesystem once after the release is extracted and checked.
     for current, _, _ in os.walk(destination, topdown=False):
         os.chmod(current, 0o755)
-        sync_directory(current)
 
 
 def verify_selected_release(destination, unpacked):
@@ -536,15 +573,103 @@ def verify_selected_release(destination, unpacked):
         raise ValueError("Selected pending release is incomplete")
 
 
-def install(manifest, artifact, fingerprint, reinstall=False):
-    prerequisites()
+def write_staged(root, name, content, mode):
+    """Write one file into the unpacked release. Its sync is the single sync_filesystem after extraction."""
+    path = root / name
+    for parent in reversed(pathlib.Path(name).parents[:-1]):
+        (root / parent).mkdir(mode=0o755, exist_ok=True)
+        (root / parent).chmod(0o755)
+    path.unlink(missing_ok=True)
+    with path.open("xb") as stream:
+        stream.write(content)
+        os.fchmod(stream.fileno(), mode)
+
+
+def switch_release(unpacked, destination, pointers):
+    """With the runner stopped: put the units, accounts and runtime pointers in place, then point `current` at destination."""
+    root_directory(BASE / "bin")
+    for name, target in pointers.items():
+        pointer = BASE / "bin" / name
+        if not pointer.is_symlink():
+            pointer.symlink_to(target)
+            sync_directory(pointer.parent)
+    assets = unpacked / "deploy/linux"
+    deployed_assets = destination / "deploy/linux"
+    root_directory(deployed_assets)
+    for name in sorted(release.ASSETS):
+        target = pathlib.Path("/etc/systemd/system") / name if name.endswith((".service", ".socket", ".path")) else pathlib.Path("/etc/sysusers.d/paws-runner.conf") if name.endswith(".sysusers") else pathlib.Path("/etc/tmpfiles.d/paws-runner.conf") if name.endswith(".tmpfiles") else None
+        if target is not None:
+            write_atomic(target, (assets / name).read_bytes(), 0o644)
+    release.command(["/usr/bin/systemd-sysusers", "/etc/sysusers.d/paws-runner.conf"])
+    release.command(["/usr/bin/systemd-tmpfiles", "--create", "/etc/tmpfiles.d/paws-runner.conf"])
+    runner = pwd.getpwnam("paws-runner")
+    results_group = grp.getgrnam("paws-results")
+    adopt_tree(pathlib.Path("/var/lib/paws-agent"), runner.pw_uid, runner.pw_gid, 0o700)
+    adopt_tree(pathlib.Path("/var/lib/paws-agent-tasks"), runner.pw_uid, runner.pw_gid, 0o711)
+    adopt_tree(pathlib.Path("/var/lib/paws-agent-results"), runner.pw_uid, results_group.gr_gid, 0o750)
+    shutil.rmtree("/var/lib/paws-runner-members", ignore_errors=True)
+    validate_identity_separation()
+    runner = pwd.getpwnam("paws-runner")
+    agent = pwd.getpwnam("paws-agent")
+    runner_group = grp.getgrnam("paws-runner")
+    agent_group = grp.getgrnam("paws-agent")
+    results_group = grp.getgrnam("paws-results")
+    if runner.pw_uid <= 0 or agent.pw_uid <= 0 or runner.pw_uid == agent.pw_uid or runner.pw_gid != runner_group.gr_gid or agent.pw_gid != agent_group.gr_gid or runner.pw_gid == agent.pw_gid or runner.pw_shell != "/usr/sbin/nologin" or agent.pw_shell != "/usr/sbin/nologin" or runner.pw_dir != "/var/lib/paws-runner" or agent.pw_dir != "/var/lib/paws-agent" or "paws-agent" in runner_group.gr_mem:
+        raise ValueError("Unsafe runner service identities")
+    for path, uid, gid, mode in (("/var/lib/paws-runner", runner.pw_uid, runner_group.gr_gid, 0o700), ("/var/lib/paws-agent", runner.pw_uid, runner.pw_gid, 0o700), ("/var/lib/paws-runner-spool", runner.pw_uid, agent_group.gr_gid, 0o2750), ("/var/lib/paws-agent-tasks", runner.pw_uid, runner.pw_gid, 0o711), ("/var/lib/paws-agent-results", runner.pw_uid, results_group.gr_gid, 0o750)):
+        info = pathlib.Path(path).lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o7777 != mode:
+            raise ValueError(f"Unsafe runner installation state directory: {path}")
+    if "paws-runner" not in agent_group.gr_mem or not {"paws-runner", "paws-agent"} <= set(results_group.gr_mem):
+        raise ValueError("Unsafe runner service identities")
+    root_directory(pathlib.Path("/etc/paws-runner"))
+    current = BASE / "current"
+    if current.exists() and not current.is_symlink():
+        raise ValueError("Unsafe current release pointer")
+    temporary_pointer = BASE / ".current-pending"
+    temporary_pointer.unlink(missing_ok=True)
+    temporary_pointer.symlink_to(destination)
+    os.replace(temporary_pointer, current)
+    sync_directory(BASE)
+    release.command(["/usr/bin/systemctl", "daemon-reload"])
+    retired = ("paws-runner-broker.socket", "paws-runner-broker.service", "paws-check@.service", "paws-check-witness@.service")
+    present = [name for name in retired if pathlib.Path("/etc/systemd/system", name).exists()]
+    if present:
+        if "paws-runner-broker.socket" in present:
+            release.command(["/usr/bin/systemctl", "disable", "--now", "--", "paws-runner-broker.socket"])
+        stop = [name for name in present if "@" not in name and name != "paws-runner-broker.socket"]
+        if stop:
+            release.command(["/usr/bin/systemctl", "stop", "--", *stop])
+        for name in present:
+            pathlib.Path("/etc/systemd/system", name).unlink()
+        release.command(["/usr/bin/systemctl", "daemon-reload"])
+
+
+def lock_install():
     root_directory(STATE, 0o700)
     lock = os.open(STATE / "install.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(lock)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or info.st_mode & 0o7777 != 0o600:
+        os.close(lock)
+        raise ValueError("Unsafe installation lock")
     try:
-        info = os.fstat(lock)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or info.st_mode & 0o7777 != 0o600:
-            raise ValueError("Unsafe installation lock")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(lock)
+        raise
+    return lock
+
+
+def install(manifest, artifact, fingerprint, reinstall=False, prepare=lambda: None, journal=None):
+    """Put the release in place beside the running one and run `prepare`, then stop the runner and switch `current`.
+
+    Anything that fails before the stop leaves the runner running on the release it had. Returns what
+    was installed and what `prepare` returned; the caller starts the runner again.
+    """
+    journal = journal or Journal()
+    prerequisites()
+    lock = lock_install()
+    try:
         accepted = admitted_release(manifest, fingerprint, reinstall)
         # The provider launchers (claude, codex, ...) are written by activate_agents, not linked to the release.
         pointers = {"bun": "../current/bin/bun", "mise": "../current/bin/mise", "paws-runner": "../current/bin/paws-runner"}
@@ -558,6 +683,8 @@ def install(manifest, artifact, fingerprint, reinstall=False):
         root_directory(BASE)
         root_directory(BASE / "releases")
         with tempfile.TemporaryDirectory(prefix=".install-", dir=BASE / "releases") as temporary:
+            # The running runner executes from BASE/current, so the new release goes in place beside it.
+            journal.start("extract")
             unpacked = pathlib.Path(temporary)
             extract_verified(artifact, unpacked)
             bun = unpacked / "bin/bun"
@@ -566,8 +693,6 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             if release.command([str(bun), "--version"]).decode().strip() != release.BUN_VERSION:
                 raise ValueError("Packaged Bun does not match the pinned runtime")
             release.verify_mise(release.read_regular(unpacked / "bin/mise", release.MISE_LIMIT), manifest["platform"])
-            stop_for_install()
-            write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "pending"}).encode(), 0o600)
             destination = BASE / "releases" / manifest["version"]
             current = BASE / "current"
             if current.exists() and not current.is_symlink():
@@ -583,71 +708,25 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             if not selected:
                 staged = unpacked / "app"
                 for name in release.BINARIES:
-                    write_atomic(staged / name, (unpacked / name).read_bytes(), 0o755)
+                    write_staged(staged, name, (unpacked / name).read_bytes(), 0o755)
                 for name in sorted(release.ASSETS):
-                    write_atomic(staged / "deploy/linux" / name, (unpacked / "deploy/linux" / name).read_bytes(), 0o644)
+                    write_staged(staged, "deploy/linux/" + name, (unpacked / "deploy/linux" / name).read_bytes(), 0o644)
                 os.rename(staged, destination)
-            sync_directory(destination.parent)
-            root_directory(BASE / "bin")
-            for name, target in pointers.items():
-                pointer = BASE / "bin" / name
-                if not pointer.is_symlink():
-                    pointer.symlink_to(target)
-                    sync_directory(pointer.parent)
-            assets = unpacked / "deploy/linux"
-            deployed_assets = destination / "deploy/linux"
-            root_directory(deployed_assets)
-            for name in sorted(release.ASSETS):
-                target = pathlib.Path("/etc/systemd/system") / name if name.endswith((".service", ".socket", ".path")) else pathlib.Path("/etc/sysusers.d/paws-runner.conf") if name.endswith(".sysusers") else pathlib.Path("/etc/tmpfiles.d/paws-runner.conf") if name.endswith(".tmpfiles") else None
-                if target is not None:
-                    write_atomic(target, (assets / name).read_bytes(), 0o644)
-            release.command(["/usr/bin/systemd-sysusers", "/etc/sysusers.d/paws-runner.conf"])
-            release.command(["/usr/bin/systemd-tmpfiles", "--create", "/etc/tmpfiles.d/paws-runner.conf"])
-            runner = pwd.getpwnam("paws-runner")
-            results_group = grp.getgrnam("paws-results")
-            adopt_tree(pathlib.Path("/var/lib/paws-agent"), runner.pw_uid, runner.pw_gid, 0o700)
-            adopt_tree(pathlib.Path("/var/lib/paws-agent-tasks"), runner.pw_uid, runner.pw_gid, 0o711)
-            adopt_tree(pathlib.Path("/var/lib/paws-agent-results"), runner.pw_uid, results_group.gr_gid, 0o750)
-            shutil.rmtree("/var/lib/paws-runner-members", ignore_errors=True)
-            validate_identity_separation()
-            runner = pwd.getpwnam("paws-runner")
-            agent = pwd.getpwnam("paws-agent")
-            runner_group = grp.getgrnam("paws-runner")
-            agent_group = grp.getgrnam("paws-agent")
-            results_group = grp.getgrnam("paws-results")
-            if runner.pw_uid <= 0 or agent.pw_uid <= 0 or runner.pw_uid == agent.pw_uid or runner.pw_gid != runner_group.gr_gid or agent.pw_gid != agent_group.gr_gid or runner.pw_gid == agent.pw_gid or runner.pw_shell != "/usr/sbin/nologin" or agent.pw_shell != "/usr/sbin/nologin" or runner.pw_dir != "/var/lib/paws-runner" or agent.pw_dir != "/var/lib/paws-agent" or "paws-agent" in runner_group.gr_mem:
-                raise ValueError("Unsafe runner service identities")
-            for path, uid, gid, mode in (("/var/lib/paws-runner", runner.pw_uid, runner_group.gr_gid, 0o700), ("/var/lib/paws-agent", runner.pw_uid, runner.pw_gid, 0o700), ("/var/lib/paws-runner-spool", runner.pw_uid, agent_group.gr_gid, 0o2750), ("/var/lib/paws-agent-tasks", runner.pw_uid, runner.pw_gid, 0o711), ("/var/lib/paws-agent-results", runner.pw_uid, results_group.gr_gid, 0o750)):
-                info = pathlib.Path(path).lstat()
-                if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o7777 != mode:
-                    raise ValueError(f"Unsafe runner installation state directory: {path}")
-            if "paws-runner" not in agent_group.gr_mem or not {"paws-runner", "paws-agent"} <= set(results_group.gr_mem):
-                raise ValueError("Unsafe runner service identities")
-            root_directory(pathlib.Path("/etc/paws-runner"))
-            current = BASE / "current"
-            if current.exists() and not current.is_symlink():
-                raise ValueError("Unsafe current release pointer")
-            temporary_pointer = BASE / ".current-pending"
-            temporary_pointer.unlink(missing_ok=True)
-            temporary_pointer.symlink_to(destination)
-            os.replace(temporary_pointer, current)
-            sync_directory(BASE)
-            release.command(["/usr/bin/systemctl", "daemon-reload"])
-            retired = ("paws-runner-broker.socket", "paws-runner-broker.service", "paws-check@.service", "paws-check-witness@.service")
-            present = [name for name in retired if pathlib.Path("/etc/systemd/system", name).exists()]
-            if present:
-                if "paws-runner-broker.socket" in present:
-                    release.command(["/usr/bin/systemctl", "disable", "--now", "--", "paws-runner-broker.socket"])
-                stop = [name for name in present if "@" not in name and name != "paws-runner-broker.socket"]
-                if stop:
-                    release.command(["/usr/bin/systemctl", "stop", "--", *stop])
-                for name in present:
-                    pathlib.Path("/etc/systemd/system", name).unlink()
-                release.command(["/usr/bin/systemctl", "daemon-reload"])
+            # One flush for the whole release, before `current` can name it.
+            sync_filesystem(destination)
+            journal.end("extract")
+            journal.start("agents")
+            prepared = prepare()
+            journal.end("agents")
+            # deb-control.py ends this phase once the runner has started again.
+            journal.start("stop-to-start")
+            stop_for_install()
+            write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "pending"}).encode(), 0o600)
+            switch_release(unpacked, destination, pointers)
             write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "installed"}).encode(), 0o600)
         login_prefix = "/usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C "
         login_commands = {"claude": login_prefix + "/opt/paws-runner/bin/claude auth login", "codex": login_prefix + "/opt/paws-runner/bin/codex login --device-auth"}
-        return {"installed": True, "version": manifest["version"], "releaseKeyFingerprint": fingerprint, "providerLoginCommands": login_commands}
+        return {"installed": True, "version": manifest["version"], "releaseKeyFingerprint": fingerprint, "providerLoginCommands": login_commands}, prepared
     finally:
         os.close(lock)
 
@@ -886,13 +965,70 @@ def activate_agents(manifest, base=BASE):
     return statuses
 
 
+def version_key(value):
+    match = release.EXACT_VERSION.fullmatch(value)
+    core = tuple(int(part) for part in match.groups())
+    return core + ((0,) if "-" in value else (1,))
+
+
 def newer(version, than):
     """Whether one exact version sorts after another; a pre-release sorts before its release."""
-    def key(value):
-        match = release.EXACT_VERSION.fullmatch(value)
-        core = tuple(int(part) for part in match.groups())
-        return core + ((0,) if "-" in value else (1,))
-    return key(version) > key(than)
+    return version_key(version) > version_key(than)
+
+
+def real_directory(path):
+    try:
+        return stat.S_ISDIR(path.lstat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def prune_versions(folder, current):
+    """Remove the version folders older than the newest one before `current`, skipping any a launcher holds."""
+    if not real_directory(folder) or not real_directory(folder / current):
+        return []
+    older = sorted((path.name for path in folder.iterdir() if release.EXACT_VERSION.fullmatch(path.name) and real_directory(path) and newer(current, path.name)), key=version_key)
+    removed = []
+    for name in older[:-1]:
+        if held(folder / name):
+            continue
+        # rmtree removes links, never what they point at.
+        shutil.rmtree(folder / name)
+        removed.append(str(folder / name))
+    if removed:
+        sync_directory(folder)
+    return removed
+
+
+def prune(base=None):
+    """Keep the current and previous release and agent version; remove older ones.
+
+    Nothing is removed while an agent or check execution runs, or when systemctl cannot say whether one does.
+    """
+    base = BASE if base is None else base
+    try:
+        if active_executions():
+            return {"skipped": "an execution is running"}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {"skipped": "the execution state is unreadable"}
+    removed = []
+    releases = base / "releases"
+    try:
+        target = pathlib.Path(os.readlink(base / "current"))
+    except OSError:
+        target = None
+    if target is not None and target.parent == releases and release.SEMVER.fullmatch(target.name):
+        removed += prune_versions(releases, target.name)
+    lock = lock_agents()
+    try:
+        agents = base / "agents"
+        for folder in sorted(agents.iterdir()) if real_directory(agents) else ():
+            active = current_agent_version(folder) if real_directory(folder) else None
+            if active is not None:
+                removed += prune_versions(folder, active)
+    finally:
+        os.close(lock)
+    return {"removed": removed}
 
 
 def prepare_agents(artifact, base=BASE, registry=DEFAULT_REGISTRY):
@@ -1154,8 +1290,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="paws-release-") as temporary:
         manifest, artifact, fingerprint = release.verify_release(arguments, pathlib.Path(temporary))
         prerequisites()
-        agents = prepare_agents(artifact)
-        installed = install(manifest, artifact, fingerprint)
+        installed, agents = install(manifest, artifact, fingerprint, prepare=lambda: prepare_agents(artifact))
         installed["agents"] = finish_agents(agents)
         # The installer leaves the runner service stopped, so it starts without a removed docker group.
         installed["docker"] = configure_docker_access(docker)

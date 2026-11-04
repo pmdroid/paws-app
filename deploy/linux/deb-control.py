@@ -46,27 +46,38 @@ def stop(next_version):
     active = active_services()
     if not RESTART.exists():
         installer.write_atomic(RESTART, json.dumps(active).encode(), 0o600)
-    installer.stop_for_install()
+    # An upgrade keeps the runner running from /opt/paws-runner/current, which the unpack leaves alone;
+    # configure stops it only to switch to the prepared release. A removal stops it here.
+    if next_version is None:
+        installer.stop_for_install()
 
 
 def configure():
     docker = installer.docker_access_choice()
+    journal = installer.Journal()
     arguments = SimpleNamespace(**{name: str(ROOT / filename) for name, filename in (("manifest", "manifest.json"), ("signature", "manifest.sig"), ("artifact", "artifact.tar"), ("release_key", "release.pub"))})
     with tempfile.TemporaryDirectory(prefix="paws-debian-") as temporary:
-        manifest, artifact, fingerprint = installer.release.verify_release(arguments, pathlib.Path(temporary))
+        with journal.phase("verify"):
+            manifest, artifact, fingerprint = installer.release.verify_release(arguments, pathlib.Path(temporary))
         if not RESTART.exists():
             installer.write_atomic(RESTART, json.dumps(active_services()).encode(), 0o600)
-        # The agents install beside the current ones first; a failure stops here, naming the agent,
-        # with the installed release and agents unchanged.
-        installer.prerequisites()
-        agents = installer.prepare_agents(artifact)
-        installed = installer.install(manifest, artifact, fingerprint, reinstall=True)
+        # The release goes in place and the agents install beside the current ones while the runner keeps
+        # running; a failure stops here, naming the agent, with the runner, its release and agents unchanged.
+        # install() stops the runner only to switch `current`.
+        installed, agents = installer.install(manifest, artifact, fingerprint, reinstall=True, prepare=lambda: installer.prepare_agents(artifact), journal=journal)
         installed["agents"] = installer.finish_agents(agents)
         # Before the runner starts again, so it comes back without a docker group membership Paws removed.
         installed["docker"] = installer.configure_docker_access(docker)
     restore()
+    journal.end("stop-to-start")
     # Agent versions sent from the Runners page install through this path unit (install.py agent-requests).
     installer.release.command(["/usr/bin/systemctl", "enable", "--now", "--", "paws-runner-agents.path"])
+    try:
+        with journal.phase("prune"):
+            installed["pruned"] = installer.prune()
+    except (OSError, ValueError) as error:
+        # The runner is already running the new release; old versions stay until the next upgrade.
+        installed["pruned"] = {"skipped": " ".join(str(error).split())[:300]}
     print(json.dumps(installed))
 
 
