@@ -82,3 +82,5 @@ export const CI_RERUN_RUNNER_VERSION: RunnerVersion = [0, 1, 62];
 export const TRANSCRIPT_TIME_RUNNER_VERSION: RunnerVersion = [0, 1, 62];
 export const RETRO_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
 export const BLOBLESS_SNAPSHOT_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
+/** First runner release whose mirrors are blobless partial clones that prefetch snapshot blobs. */
+export const BLOBLESS_MIRROR_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
