@@ -181,10 +181,14 @@ test("calls for one repository run one after the other, other repositories in pa
 test("a call aborted while it waits for the repository stops without running", async () => {
   const f = await fixture();
   let open: () => void = () => undefined;
+  let started: () => void = () => undefined;
+  const holding = new Promise<void>((resolve) => (started = resolve));
   let network = 0;
   const gated: GitExec = async (args, options) => {
-    if (options.env.PAWS_GITHUB_TOKEN !== undefined && network++ === 0)
+    if (options.env.PAWS_GITHUB_TOKEN !== undefined && network++ === 0) {
+      started();
       await new Promise<void>((resolve) => (open = resolve));
+    }
     return f.fake(args, options);
   };
   const run = publicationExec(gated, undefined, f.store);
@@ -195,7 +199,7 @@ test("a call aborted while it waits for the repository stops without running", a
       signal,
     });
   const first = fetch();
-  for (let i = 0; i < 200 && network === 0; i++) await Bun.sleep(10);
+  await holding;
   const controller = new AbortController();
   const waiting = fetch(controller.signal);
   const third = fetch();
