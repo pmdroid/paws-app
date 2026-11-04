@@ -51,6 +51,11 @@ export async function probePublicationStop(
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
+      if (
+        request.method === "DELETE" &&
+        url.pathname.startsWith("/repos/owner/repo/git/refs/paws/")
+      )
+        return new Response(null, { status: 204 });
       calls.push({
         method: request.method,
         path: url.pathname + url.search,

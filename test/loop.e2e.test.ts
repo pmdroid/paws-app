@@ -824,7 +824,7 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     );
     expect(artifactIndex).toBeGreaterThanOrEqual(0);
     expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
-    expect(selectedRepositories).toHaveLength(4);
+    expect(selectedRepositories).toHaveLength(6);
     for (const item of listWorkItems(db)) {
       expect(getWorkItemRepository(db, item.id)).toEqual(repository);
     }
