@@ -9,13 +9,20 @@ export type {
   PullRequests,
 } from "./app";
 export {
+  createFakeCheckRuns,
   createFakeGitHub,
   createFakeMergeQueue,
   createFakeReviewThreads,
   fakeMergeReadiness,
   fakeRequiredChecks,
 } from "./fake";
-export type { FakeCheckContext, FakeGitHub, FakeMergeQueue, FakeReviewThread } from "./fake";
+export type {
+  FakeCheckContext,
+  FakeCheckRun,
+  FakeGitHub,
+  FakeMergeQueue,
+  FakeReviewThread,
+} from "./fake";
 export {
   classifyRemoval,
   enqueuePullRequest,
@@ -82,11 +89,11 @@ export type {
   RebaseResult,
   SerialMergeInput,
 } from "./merge";
-export { readPullCi } from "./readiness";
+export { readHeadCheckRuns, readPullCi } from "./readiness";
 export { readCiLog } from "./ci-log";
 export { rerunFailedCi, CI_ALREADY_RERUN, CI_RERUN_PERMISSION_MISSING } from "./ci-rerun";
 export type { CiRerunInput } from "./ci-rerun";
-export type { FailedCheck, PassedCheck, PullCi, Readiness } from "./readiness";
+export type { FailedCheck, HeadCheckRun, PassedCheck, PullCi, Readiness } from "./readiness";
 export { createAppTokenProvider, parseGitHubRemote, runGitHubGit } from "./auth";
 export type {
   AppTokenProviderOptions,

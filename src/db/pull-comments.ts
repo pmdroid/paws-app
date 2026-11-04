@@ -49,11 +49,18 @@ export const PULL_COMMENT_SETTLE_MS = 60_000;
 export const PULL_COMMENT_MAX_SETTLE_MS = 5 * 60_000;
 
 /** How long comments and reviews are collected: `quietMs` after the latest, `maxMs` at most. */
-export type PullFeedbackWait = { quietMs: number; maxMs: number };
+export type PullFeedbackWait = {
+  quietMs: number;
+  maxMs: number;
+  reviewMaxMs?: number;
+};
 export const DEFAULT_PULL_FEEDBACK_WAIT: PullFeedbackWait = {
   quietMs: PULL_COMMENT_SETTLE_MS,
   maxMs: PULL_COMMENT_MAX_SETTLE_MS,
 };
+export const PULL_REVIEW_CHECK_MAX_WAIT_MS = 15 * 60_000;
+
+export type ReviewCheckWait = { head: string; names: string[] };
 
 /**
  * Move the item's pending comment job and changes-requested review jobs to a quiet minute after
@@ -199,4 +206,32 @@ function mapRow(row: Row): PullCommentRecord {
     handledAt: row.handled_at,
     outcome: row.outcome,
   };
+}
+
+export function commentingApps(db: Database, owner: string, repo: string): string[] {
+  return db
+    .query<{ login: string }, [string, string]>(
+      `SELECT DISTINCT lower(c.author) AS login FROM pull_comment c
+       JOIN work_item_repository r ON r.item_id = c.item_id
+       WHERE lower(r.owner) = lower(?) AND lower(r.repo) = lower(?)
+         AND lower(c.author) LIKE '%[bot]'`,
+    )
+    .all(owner, repo)
+    .map((row) => row.login.slice(0, -"[bot]".length));
+}
+
+export function pullReviewCheckWait(db: Database, itemId: string): ReviewCheckWait | null {
+  const row = db
+    .query<{ wait: string | null }, [string, string]>(
+      `SELECT json_extract(payload, '$.reviewChecks') AS wait FROM job
+       WHERE queue = ? AND status IN ('pending', 'running')
+         AND json_extract(payload, '$.pullCommentsFor') = ?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(JOB_KIND.pullComments, itemId);
+  if (!row?.wait) return null;
+  const wait = JSON.parse(row.wait) as Partial<ReviewCheckWait>;
+  return typeof wait.head === "string" && Array.isArray(wait.names)
+    ? { head: wait.head, names: wait.names.filter((name) => typeof name === "string") }
+    : null;
 }

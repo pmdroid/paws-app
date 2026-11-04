@@ -250,6 +250,12 @@ export async function handlePullComments(
     }
   }
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
+  if (open.length > 0 && caps.reviewChecks) {
+    const checks = await caps.reviewChecks(item, pullNumber);
+    const waiting = checks !== null && checks.pending.length > 0 && caps.now() < checks.until;
+    caps.noteReviewWait?.(waiting ? { head: checks.head, names: checks.pending } : null);
+    if (waiting) return "wait";
+  }
   const threads = open.length > 0 ? await caps.threads(item, pullNumber) : [];
   const findings = await caps.closeoutFindings(item);
   const head = await pullCiHead(db, item, pullNumber, caps.pullHead);

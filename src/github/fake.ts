@@ -422,3 +422,40 @@ export function createFakeMergeQueue(
     },
   };
 }
+
+export type FakeCheckRun = {
+  name: string;
+  app: string | null;
+  status: "queued" | "in_progress" | "completed";
+  startedAt?: string | null;
+};
+
+export function createFakeCheckRuns(runs: Record<string, FakeCheckRun[]> = {}): {
+  runs: Record<string, FakeCheckRun[]>;
+  reads: number;
+  respond(request: { method: string; path: string }): GitHubResponse | null;
+} {
+  const fake = {
+    runs,
+    reads: 0,
+    respond(request: { method: string; path: string }): GitHubResponse | null {
+      const match = /\/commits\/([^/]+)\/check-runs/.exec(request.path);
+      if (request.method !== "GET" || !match) return null;
+      fake.reads += 1;
+      const list = fake.runs[match[1]!] ?? [];
+      return {
+        status: 200,
+        body: {
+          total_count: list.length,
+          check_runs: list.map((run) => ({
+            name: run.name,
+            status: run.status,
+            started_at: run.startedAt ?? null,
+            app: run.app === null ? null : { slug: run.app },
+          })),
+        },
+      };
+    },
+  };
+  return fake;
+}

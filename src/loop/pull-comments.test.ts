@@ -21,10 +21,13 @@ import {
   PULL_COMMENT_SETTLE_MS,
 } from "../db";
 import {
+  createFakeCheckRuns,
   createFakeMergeQueue,
   createFakeReviewThreads,
+  readHeadCheckRuns,
   leaveGitHubMergeQueue,
   readReviewThreads,
+  type FakeCheckRun,
   type FakeReviewThread,
   type GitHubClient,
 } from "../github";
@@ -41,6 +44,7 @@ import {
   handlePullReview,
   type PullReviewCapabilities,
 } from "./pull-reviews";
+import { readReviewChecks } from "./review-checks";
 import { worktreeBranch } from "./sources";
 
 const THREADS: FakeReviewThread[] = [
@@ -101,10 +105,15 @@ function setup(threads = THREADS) {
   recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
   const github = createFakeReviewThreads(threads);
   const queue = createFakeMergeQueue();
+  const checkRuns = createFakeCheckRuns();
   const client: GitHubClient = {
     request: async (request) =>
-      github.respond(request) ?? (await queue.respond(request)) ?? { status: 404, body: null },
+      github.respond(request) ??
+      checkRuns.respond(request) ??
+      (await queue.respond(request)) ?? { status: 404, body: null },
   };
+  let reviewApps: string[] = [];
+  const reviewWaits: unknown[] = [];
   const tokenProvider = { mode: "app" as const, tokenFor: async () => "token" };
   let busy = false;
   let limit = 3;
@@ -134,6 +143,18 @@ function setup(threads = THREADS) {
     closeoutFindings: async () => findings,
     session: (item) => item.sessionKey,
     flush: async () => {},
+    reviewChecks: () =>
+      readReviewChecks(db, {
+        owner: "acme",
+        repo: "one",
+        head: "h",
+        configured: reviewApps,
+        maxMs: 900_000,
+        since: pendingPullComments(db, "eng-1")[0]?.receivedAt ?? clock,
+        checkRuns: (head) =>
+          readHeadCheckRuns({ client, owner: "acme", repo: "one", head, tokenProvider }),
+      }),
+    noteReviewWait: (wait) => reviewWaits.push(wait),
   };
   let delivery = 0;
   const send = (event: string, payload: Record<string, unknown>) =>
@@ -215,6 +236,9 @@ function setup(threads = THREADS) {
     setLimit: (value: number) => (limit = value),
     setFindings: (value: StoredReviewFinding[]) => (findings = value),
     tick: (ms: number) => (clock += ms),
+    checkRuns,
+    setReviewApps: (value: string[]) => (reviewApps = value),
+    reviewWaits,
   };
 }
 
@@ -510,6 +534,75 @@ describe("timing", () => {
     expect(question?.body).toContain("all 0 fix rounds are spent");
     expect(question?.body).toContain("Rename it.");
     expect(getPullComment(db, "conversation", 1)?.outcome).toBe("asked");
+  });
+});
+
+describe("review apps still checking the head", () => {
+  const started = new Date(1_000).toISOString();
+  const run = (name: string, app: string, status: FakeCheckRun["status"]): FakeCheckRun => ({
+    name,
+    app,
+    status,
+    startedAt: started,
+  });
+
+  test("comments wait for every review app's check, then restart once with all of them", async () => {
+    const f = setup();
+    f.setReviewApps(["acme-lint"]);
+    f.checkRuns.runs.h = [
+      run("Acme Review", "acme-review", "completed"),
+      run("Acme Lint", "acme-lint", "in_progress"),
+      run("ci", "github-actions", "in_progress"),
+    ];
+    f.conversation({ id: 1, author: "acme-review[bot]", body: "Bug: the key ignores the tenant." });
+    f.tick(PULL_COMMENT_SETTLE_MS);
+    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
+    expect(resumeJobs(f.db)).toHaveLength(0);
+    expect(f.reviewWaits.at(-1)).toEqual({ head: "h", names: ["Acme Lint"] });
+
+    f.db.run(
+      "UPDATE job SET payload = json_set(payload, '$.reviewChecks', json(?)) WHERE queue = ?",
+      [JSON.stringify(f.reviewWaits.at(-1)), JOB_KIND.pullComments],
+    );
+    expect(
+      await advanceMerge(f.db, { itemId: "eng-1", payload: {}, jobId: 1 }, laneCapabilities()),
+    ).toMatchObject({ kind: "wait", message: "Waiting for review checks on h: Acme Lint." });
+
+    f.tick(120_000);
+    f.checkRuns.runs.h = f.checkRuns.runs.h.map((check) => ({ ...check, status: "completed" }));
+    f.conversation({ id: 2, author: "acme-lint[bot]", body: "Nit: rename the helper." });
+    f.tick(PULL_COMMENT_SETTLE_MS);
+    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
+    expect(resumeJobs(f.db)).toHaveLength(1);
+    const text = handoff(f.db)!.handoff;
+    expect(text).toContain("@acme-review[bot] in the conversation");
+    expect(text).toContain("@acme-lint[bot] in the conversation");
+    expect(f.reviewWaits.at(-1)).toBeNull();
+  });
+
+  test("a review check still running past the longest wait restarts with what arrived", async () => {
+    const f = setup();
+    f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
+    f.setReviewApps(["acme-lint"]);
+    f.conversation({ id: 1, author: "pascal", body: "Rename it." });
+    f.tick(PULL_COMMENT_SETTLE_MS);
+    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
+    f.tick(900_000);
+    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
+    expect(handoff(f.db)!.handoff).toContain("Rename it.");
+  });
+
+  test("with no review check pending, the quiet window alone decides", async () => {
+    const f = setup();
+    f.setReviewApps(["acme-lint"]);
+    f.checkRuns.runs.h = [
+      run("Acme Lint", "acme-lint", "completed"),
+      run("ci", "github-actions", "queued"),
+    ];
+    f.conversation({ id: 1, author: "pascal", body: "Rename it." });
+    expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
+    expect(f.checkRuns.reads).toBe(1);
+    expect(resumeJobs(f.db)).toHaveLength(1);
   });
 });
 

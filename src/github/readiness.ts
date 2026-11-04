@@ -1,6 +1,10 @@
 import { journalCaught } from "../journal";
 import { z } from "zod";
-import { acquireOperationToken, type GitHubTokenProvider } from "./auth";
+import {
+  acquireOperationToken,
+  type GitHubCredentialInput,
+  type GitHubTokenProvider,
+} from "./auth";
 import { repoApiPath } from "./client";
 import type { CiCheck, CiCheckState, GitHubClient } from "./types";
 
@@ -590,4 +594,64 @@ export async function readPullCi(input: {
   if (read.outcome === "pending") return { state: "pending", message: read.message };
   if (read.outcome === "sha_moved") return { state: "unknown", message: read.message, moved: true };
   return { state: "unknown", message: read.message };
+}
+
+export type HeadCheckRun = {
+  name: string;
+  app: string | null;
+  status: string;
+  startedAt: string | null;
+};
+
+const checkRunsSchema = z.object({
+  total_count: z.number(),
+  check_runs: z.array(
+    z.object({
+      name: z.string(),
+      status: z.string(),
+      started_at: z.string().nullable().optional(),
+      app: z.object({ slug: z.string() }).nullable().optional(),
+    }),
+  ),
+});
+
+export async function readHeadCheckRuns(
+  input: {
+    client: GitHubClient;
+    owner: string;
+    repo: string;
+    head: string;
+    signal?: AbortSignal;
+  } & GitHubCredentialInput,
+): Promise<HeadCheckRun[] | null> {
+  try {
+    const token = await acquireOperationToken(input, "merge");
+    const runs: HeadCheckRun[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const response = await input.client.request({
+        method: "GET",
+        path: repoApiPath(
+          input.owner,
+          input.repo,
+          `/commits/${input.head}/check-runs?per_page=100&page=${page}`,
+        ),
+        token,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      const parsed = checkRunsSchema.safeParse(response.body);
+      if (response.status !== 200 || !parsed.success) return null;
+      for (const run of parsed.data.check_runs)
+        runs.push({
+          name: run.name,
+          app: run.app?.slug ?? null,
+          status: run.status,
+          startedAt: run.started_at ?? null,
+        });
+      if (parsed.data.check_runs.length < 100 || runs.length >= parsed.data.total_count) break;
+    }
+    return runs;
+  } catch (error) {
+    journalCaught(error, "readiness.readHeadCheckRuns", null);
+    return null;
+  }
 }
