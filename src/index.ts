@@ -77,6 +77,7 @@ import {
   isTransient,
 } from "./core";
 import {
+  workspaceMemberUsable,
   enqueueCommand,
   enqueueJobOnce,
   getJob,
@@ -676,6 +677,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
       }
       workspace = startWorkspaceAccess({
+        onMemberRevoked: async () => {
+          const coordinator = await runnerReady;
+          coordinator?.control.expireConnections();
+        },
+        interruptItem: async (itemId) => {
+          await orchestrator?.interruptItem(itemId);
+        },
         assignments,
         onboardingReadiness: createOnboardingReadiness(db),
         createVmAvailable,
@@ -1447,7 +1455,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               : null;
             if (!currentWorkspace) return [];
             return listWorkspaceMembers(db, currentWorkspace.id)
-              .filter((member) => member.active && isWorkspaceAdmin(member.role))
+              .filter((member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role))
               .flatMap((member) => {
                 const linked = db
                   .query<{ id: string }, [string]>(
