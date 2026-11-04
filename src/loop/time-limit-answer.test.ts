@@ -243,12 +243,13 @@ for (const state of ["running", "verifying"] as const) {
   });
 }
 
-test("Continue after the time limit stopped Closeout checks the same head again", () => {
+test("Continue after the time limit stopped Closeout checks the same head again with a fresh budget", () => {
   const { clock, db, item } = askedBeforeAcceptance("verifying");
   expect(reply(db, "Continue", clock.now()).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "verifying",
-    maxAwakeMs: 31 * MINUTE + 60 * MINUTE,
+    awakeMs: 0,
+    maxAwakeMs: 3 * 60 * MINUTE,
     checkpoint: { phase: "verifying", wipCommit: "head" },
   });
   expect(
@@ -266,7 +267,8 @@ test("Continue after the time limit stopped an agent without an accepted head re
   expect(reply(db, "Continue", clock.now()).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "queued",
-    maxAwakeMs: 31 * MINUTE + 60 * MINUTE,
+    awakeMs: 0,
+    maxAwakeMs: 3 * 60 * MINUTE,
   });
   expect(
     listJobs(db).find((job) => job.queue === "run.resume" && job.status === "pending"),
