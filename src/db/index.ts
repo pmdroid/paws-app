@@ -851,11 +851,14 @@ export { yieldFindingGroupHelpers, runnerHelperAvailability } from "./runner-cap
 
 export {
   getReviewFindingIssue,
+  claimReviewFindingIssue,
+  reviewFindingIssueClaims,
   reviewFindingIssues,
   reviewFindingKey,
   reviewFindingPlace,
   saveReviewFindingIssue,
   type ReviewFindingIssue,
+  type ReviewFindingIssueClaim,
   type ReviewFindingPlace,
 } from "./review-finding-issues";
 

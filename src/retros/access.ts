@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { getRetro, listWorkspaceRepositoryNames, readRetroArtifact, type Retro } from "../db";
+import { getRetro, readRetroArtifact, type Retro } from "../db";
+import { memberRepositories } from "../improvements";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RetroDigest } from "./digest";
 
@@ -61,7 +62,9 @@ export function retroReaderAccess(
   const index = digestIndex(db, root, retro);
   if (index === null) return null;
   const accessible = new Set(
-    listWorkspaceRepositoryNames(db, principal.workspaceId).map((name) => name.toLowerCase()),
+    memberRepositories(db, principal.workspaceId, principal.userId).map((name) =>
+      name.toLowerCase(),
+    ),
   );
   const sessions = new Map(
     db

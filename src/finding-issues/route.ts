@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   auditWorkspaceAccess,
+  claimReviewFindingIssue,
   getReviewFindingIssue,
   getWorkItemRepository,
   listWorkItems,
@@ -123,6 +124,19 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
     let pending = filing.get(key);
     let filed = false;
     if (pending === undefined) {
+      if (
+        !claimReviewFindingIssue(db, {
+          key,
+          finding: { repository, location, text: explanation },
+          itemId: item.id,
+          by: principal.userId,
+          now: now(),
+        })
+      )
+        return Response.json(
+          { error: "The improvement inbox already accepted this finding and files its issue." },
+          { status: 409 },
+        );
       filed = true;
       const file = options.file;
       pending = (async () => {

@@ -9,6 +9,7 @@ import {
   listRetroEvidence,
   listRetros,
   retroScheduleRuntime,
+  reviewFindingIssueClaims,
   reviewFindingItems,
   type FindingGroupRun,
   type Improvement,
@@ -131,6 +132,21 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
       );
       if (!visible) return [];
       legacy = legacyActions(findings, groups);
+      const covered = new Set(legacy.flatMap((action) => action.findingIds));
+      const claims = reviewFindingIssueClaims(db, findings);
+      for (const f of findings) {
+        const claim = claims.get(f.key);
+        if (covered.has(f.id) || claim === undefined) continue;
+        legacy.push({
+          kind: claim.issue ? "filed" : "claimed",
+          groupId: null,
+          findingIds: [f.id],
+          issue: claim.issue?.identifier ?? null,
+          reason: null,
+          by: claim.issue?.filedBy ?? null,
+          at: claim.issue?.filedAt ?? null,
+        });
+      }
       const decided = new Set(legacy.flatMap((a) => a.findingIds));
       undecided = findings.filter((f) => !decided.has(f.id)).map((f) => f.id);
       members = findings.map((f) => ({

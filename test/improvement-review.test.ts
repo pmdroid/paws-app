@@ -34,7 +34,8 @@ import {
   ingestDailyFindings,
 } from "../src/improvements";
 import { createRetroReviewHttp, retroReaderAccess } from "../src/retros";
-import type { WorkspacePrincipal } from "../src/workspace";
+import { createFindingIssueRoute } from "../src/finding-issues";
+import { issueWorkspaceSession, type WorkspacePrincipal } from "../src/workspace";
 
 type Json = ReturnType<typeof JSON.parse>;
 
@@ -357,6 +358,30 @@ describe("improvement decisions", () => {
     });
   });
 
+  test("a repeated accept must match the frozen criterion and accepts the issue identifier", async () => {
+    const w = world();
+    const id = w.retro.a;
+    const path = `/api/improvements/${id}/decision`;
+    const link = { kind: "link", issue: "PAS-60" };
+    expect((await w.api("ada", path, accept(1, link))).body.status).toBe("decided");
+    const again = await w.api("bea", path, accept(1, link));
+    expect([again.status, again.body.status]).toEqual([200, "unchanged"]);
+    const same = await w.api(
+      "bea",
+      path,
+      accept(1, link, {
+        verificationCriterion: "No push-recovery question in the next two retros.",
+      }),
+    );
+    expect(same.body.status).toBe("unchanged");
+    const other = await w.api(
+      "bea",
+      path,
+      accept(1, link, { verificationCriterion: "Something else." }),
+    );
+    expect([other.status, other.body.reason]).toEqual([409, "stale"]);
+  });
+
   test("reject then accept: rejection records the reason and no delivery", async () => {
     const w = world();
     const id = w.retro.a;
@@ -672,6 +697,119 @@ describe("daily findings share legacy claims", () => {
   });
 });
 
+describe("individual finding issues share the inbox claim", () => {
+  const ORIGIN = "https://paws.example";
+  function route(w: ReturnType<typeof world>, file: () => Promise<void> = async () => {}) {
+    const filed: string[] = [];
+    const handle = createFindingIssueRoute({
+      db: w.db,
+      reviews: () => [
+        {
+          id: "independent-review",
+          rounds: [
+            {
+              attempt: 1,
+              baseSha: "a1c9e07",
+              headSha: "91fd0c4e5b2a",
+              failOn: "P1",
+              findings: [
+                {
+                  severity: "P2",
+                  location: "src/a.ts:1",
+                  explanation: "Problem at src/a.ts:1",
+                  evidence: "",
+                  preExisting: true,
+                  blocking: false,
+                  since: "new",
+                },
+              ],
+              fixed: [],
+            },
+          ],
+        },
+      ],
+      file: async (request) => {
+        filed.push(request.key);
+        await file();
+        return { id: "issue-solo", identifier: "PAS-77", url: null };
+      },
+      now: () => END + 50,
+    });
+    const { session } = issueWorkspaceSession(w.db, {
+      workspaceId: "ws",
+      userId: "user-bea",
+      now: END,
+    });
+    const post = () =>
+      handle(
+        new Request(`${ORIGIN}/api/review-findings/issues`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: ORIGIN,
+            "x-paws-csrf": session.csrfToken,
+          },
+          body: JSON.stringify({
+            itemId: "item-a",
+            reviewId: "independent-review",
+            location: "src/a.ts:1",
+            explanation: "Problem at src/a.ts:1",
+          }),
+        }),
+        {
+          principal: { workspaceId: "ws", userId: "user-bea" },
+          session,
+          origin: ORIGIN,
+          sessionIds: ONLY_A,
+        },
+      );
+    return { post, filed };
+  }
+  const acceptDaily = async (w: ReturnType<typeof world>) => {
+    const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
+    return w.api(
+      "ada",
+      `/api/improvements/${daily.id}/decision`,
+      accept(1, undefined, {
+        verificationCriterion: "Gone.",
+        proposalVersion: daily.proposal.version,
+      }),
+    );
+  };
+
+  test("an inbox accept blocks filing the same finding individually", async () => {
+    const w = world();
+    seedDaily(w.db);
+    expect((await acceptDaily(w)).body.status).toBe("decided");
+    const { post, filed } = route(w);
+    const refused = await post();
+    expect(refused!.status).toBe(409);
+    expect(filed).toEqual([]);
+  });
+
+  test("an individual filing, finished or in flight, blocks the inbox accept", async () => {
+    const w = world();
+    seedDaily(w.db);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const { post, filed } = route(w, () => gate);
+    const pending = post();
+    await Bun.sleep(0);
+    expect(filed).toHaveLength(1);
+    const during = await acceptDaily(w);
+    expect([during.status, during.body.reason]).toEqual([409, "legacy"]);
+    release();
+    expect((await pending)!.status).toBe(200);
+    const after = await acceptDaily(w);
+    expect([after.status, after.body.reason]).toEqual([409, "known_issue"]);
+    expect(after.body.item).toMatchObject({
+      issue: { identifier: "PAS-77", origin: "legacy" },
+      legacy: [{ kind: "filed", issue: "PAS-77" }],
+    });
+    expect(listImprovementDeliveries(w.db, after.body.item.id)).toEqual([]);
+  });
+});
+
 describe("partial repository access", () => {
   test("a member who reads only one of two repositories sees only that repository", async () => {
     const w = world();
@@ -725,6 +863,19 @@ describe("partial repository access", () => {
     ).response.json()) as Json;
     expect(none).toMatchObject({ retros: [], total: 0 });
     expect((await w.retroApi("ada", "/api/retros/reports/r1", [])).status).toBe(404);
+  });
+
+  test("readable sessions do not replace repository permission for downloads", async () => {
+    const w = world();
+    for (const file of ["digest", "report", "prompt"])
+      expect((await w.retroApi("ada", `/api/retros/reports/r1/${file}`, ALL)).status).toBe(403);
+    const report = (await (
+      await w.retroApi("ada", "/api/retros/reports/r1", ALL)
+    ).response.json()) as Json;
+    expect(report.report.filtered).toBe(true);
+    expect(JSON.stringify(report)).not.toContain(B);
+    const list = await w.api("ada", "/api/improvements", undefined, ALL);
+    expect(list.body.repositories).toEqual([A]);
   });
 
   test("full access downloads the digest, report and rendered prompt", async () => {

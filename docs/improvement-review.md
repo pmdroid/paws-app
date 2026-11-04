@@ -2,7 +2,7 @@
 
 The improvement inbox lists daily findings and weekly retro proposals together. Each improvement carries one review decision, tied to one immutable proposal version. `src/improvements` serves the shared review routes; `src/retros/http.ts` serves the retro history, report, evidence and download routes.
 
-Every route checks active workspace membership on each request before it reads anything. The reader's Linear sessions (see [Dashboard API](dashboard-api.md#authorization)) decide what is visible. A daily item needs every member finding in a readable session. A retro item needs all of its saved evidence in readable sessions and workspace repositories. An item outside that set answers the same 404 as an unknown id. Lists, counts and repository filters are built only from visible items. Responses are `no-store`. A mutation passes the server's origin and CSRF checks and is audited.
+Every route checks active workspace membership on each request before it reads anything. The reader's Linear sessions (see [Dashboard API](dashboard-api.md#authorization)) decide what is visible. A daily item needs every member finding in a readable session. A member reads the repositories mapped to their Linear teams; an administrator reads every workspace repository. A retro item needs all of its saved evidence in readable sessions and readable repositories. An item outside that set answers the same 404 as an unknown id. Lists, counts and repository filters are built only from visible items. Responses are `no-store`. A mutation passes the server's origin and CSRF checks and is audited.
 
 ## Inbox
 
@@ -22,10 +22,10 @@ An accept writes the actor, time, chosen intent, destination and exact proposal 
 
 ### Conflicts and retries
 
-- Sending the decision already recorded again answers 200 with `status: "unchanged"`. That covers duplicate clicks and repeated requests.
+- Sending the decision already recorded again answers 200 with `status: "unchanged"`. That covers duplicate clicks and repeated requests. A link matches by the issue id or identifier it was given. A `verificationCriterion` that differs from the saved one is a new decision, not a repeat.
 - A different decision with an old `expectedVersion` answers 409 `stale` and returns the current decision. It never overwrites another reviewer.
 - An accepted item cannot be rejected or reopened (409 `accepted`): its delivery may already have reached Linear.
-- If a Findings action already claimed, filed or added any of an item's findings, the inbox accept answers 409 `legacy`. The other way round, a Findings File or Add on findings the inbox accepted answers 409.
+- If a Findings group action or an individual "File issue" on a finding already claimed, filed or added any of an item's findings, the inbox accept answers 409 `legacy`. An individual filing records a durable claim before it calls Linear, so a filing still in flight counts. The other way round, a group File or Add, or an individual filing, on findings the inbox accepted answers 409.
 - A delivery reports `pending`, `retryable` (failed), `unknown` or `succeeded`. Only a succeeded delivery has a canonical issue. Retrying a failed delivery keeps the item accepted. An `unknown` delivery answers 409 `reconciling`: the handler checks the same operation before writing again.
 
 ## Retros
@@ -37,4 +37,4 @@ An accept writes the actor, time, chosen intent, destination and exact proposal 
 | `GET /api/retros/reports/<id>/items/<item>/evidence`        | The item's excerpts from the saved evidence. Mutable session history is never queried.                                                                         |
 | `GET /api/retros/reports/<id>/digest`, `/report`, `/prompt` | Download the frozen digest, the rendered report or the rendered prompt.                                                                                        |
 
-The rendered prompt embeds the full digest. So all three downloads need full access: every included repository and every session in the digest. Partial access answers 403 `partial_access`, without naming what is missing. Each download is audited.
+The rendered prompt embeds the full digest. So all three downloads need full access: every included repository readable by the member and every session in the digest. Partial access answers 403 `partial_access`, without naming what is missing. Each download is audited.

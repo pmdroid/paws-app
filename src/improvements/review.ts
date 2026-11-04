@@ -8,7 +8,9 @@ import {
   listImprovementProposals,
   listRetroEvidence,
   listWorkspaceRepositories,
+  listWorkspaceRepositoryNames,
   requeueImprovementDelivery,
+  workspaceMember,
   type ImprovementDelivery,
   type ImprovementProposal,
   type ImprovementReview,
@@ -211,6 +213,19 @@ export function listImprovementPage(db: Database, access: ImprovementAccess, fil
   };
 }
 
+export function memberRepositories(db: Database, workspaceId: string, userId: string): string[] {
+  const member = workspaceMember(db, workspaceId, userId);
+  if (!member?.active) return [];
+  if (member.role === "admin") return listWorkspaceRepositoryNames(db, workspaceId);
+  return [
+    ...new Set(
+      listWorkspaceRepositories(db, workspaceId)
+        .filter((entry) => member.teamIds.includes(entry.teamId))
+        .map((entry) => entry.repository),
+    ),
+  ];
+}
+
 export function improvementDestinations(
   db: Database,
   reviewer: ImprovementReviewer,
@@ -320,21 +335,25 @@ function sameDecision(db: Database, item: InboxItem, request: ImprovementDecisio
   if (current.reviewState !== "accepted" || current.reviewedProposal !== request.proposalVersion)
     return false;
   const intent = request.intent;
-  if (intent.kind === "create")
-    return (
-      current.intent === "create" &&
-      listImprovementDeliveries(db, current.id).some(
-        (d) => d.operation === "create_issue" && d.targetTeamId === intent.teamId,
-      )
-    );
-  const target = listImprovementDeliveries(db, current.id).find(
-    (d) => d.operation === "link_issue",
+  const deliveries = listImprovementDeliveries(db, current.id);
+  const frozen = deliveries.find(
+    (d) => d.operation === (intent.kind === "create" ? "create_issue" : "link_issue"),
   );
+  const criterion = request.verificationCriterion?.trim();
+  if (
+    frozen === undefined ||
+    (criterion !== undefined && frozen.content?.verificationCriterion !== criterion)
+  )
+    return false;
+  if (intent.kind === "create")
+    return current.intent === "create" && frozen.targetTeamId === intent.teamId;
+  const linked = frozen.content?.issue as { id?: unknown; identifier?: unknown } | undefined;
   return (
     current.intent === "link" &&
-    target !== undefined &&
     (current.intentIssueId === intent.issue ||
-      target.remoteIdentifier === intent.issue ||
+      linked?.id === intent.issue ||
+      linked?.identifier === intent.issue ||
+      frozen.remoteIdentifier === intent.issue ||
       current.issue?.identifier === intent.issue) &&
     current.evidenceComment === (intent.addEvidenceComment === true)
   );

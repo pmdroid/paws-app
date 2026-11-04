@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import { auditWorkspaceAccess, listWorkspaceRepositoryNames, workspaceMember } from "../db";
+import { auditWorkspaceAccess, workspaceMember } from "../db";
 import { journalCaught } from "../journal";
 import type { WorkspacePrincipal } from "../workspace";
 import {
@@ -8,6 +8,7 @@ import {
   improvementDetail,
   IMPROVEMENT_REVIEW_LIMITS,
   listImprovementPage,
+  memberRepositories,
   retryInboxDelivery,
   type ImprovementReviewer,
   type IssueLookup,
@@ -113,7 +114,7 @@ export function createImprovementsHttp(options: {
     const evidence = new Map<string, ReadonlySet<string> | null>();
     const reviewer: ImprovementReviewer = {
       workspaceId: principal.workspaceId,
-      repositories: listWorkspaceRepositoryNames(db, principal.workspaceId),
+      repositories: memberRepositories(db, principal.workspaceId, principal.userId),
       sessionIds,
       userId: principal.userId,
       role: member.role,

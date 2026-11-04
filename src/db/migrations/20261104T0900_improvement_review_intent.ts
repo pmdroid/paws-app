@@ -22,5 +22,14 @@ CREATE TABLE improvement_criterion (
 ) STRICT;
 CREATE TRIGGER improvement_criterion_immutable BEFORE UPDATE ON improvement_criterion
 BEGIN SELECT RAISE(ABORT, 'improvement criterion annotations are immutable'); END;
+
+CREATE TABLE review_finding_issue_claim (
+  key TEXT PRIMARY KEY CHECK(length(key)=64),
+  finding_key TEXT NOT NULL,
+  item_id TEXT,
+  claimed_by TEXT,
+  claimed_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX review_finding_issue_claim_finding ON review_finding_issue_claim(finding_key);
 `,
 };
