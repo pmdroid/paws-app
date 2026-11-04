@@ -92,18 +92,19 @@ test("a pending legacy status keeps the pull request waiting", async () => {
   expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: legacy." });
 });
 
-test("a check that registers after the others went green holds the merge until it reports", async () => {
-  // Cloudflare Pages reported on the base head, so it is expected on the candidate too.
+test("a required check that registers after the others went green holds the merge until it reports", async () => {
   const base = [run("build", "SUCCESS"), run("Cloudflare Pages", "SUCCESS")];
-  const f = fixture((_, poll) =>
-    withChecks(
-      poll === 1
-        ? [run("build", "SUCCESS")]
-        : poll === 2
-          ? [run("build", "SUCCESS"), run("Cloudflare Pages", null)]
-          : [run("build", "SUCCESS"), run("Cloudflare Pages", "SUCCESS")],
-      base,
-    ),
+  const f = fixture(
+    (_, poll) =>
+      withChecks(
+        poll === 1
+          ? [run("build", "SUCCESS")]
+          : poll === 2
+            ? [run("build", "SUCCESS"), run("Cloudflare Pages", null)]
+            : [run("build", "SUCCESS"), run("Cloudflare Pages", "SUCCESS")],
+        base,
+      ),
+    { protection: ["Cloudflare Pages"] },
   );
   const messages: string[] = [];
   const result = await waitForMergeReadiness({
@@ -134,7 +135,7 @@ test("a required check that reported green lets the merge through", async () => 
   expect(result.outcome).toBe("ready");
 });
 
-for (const conclusion of ["NEUTRAL", "STALE", "ACTION_REQUIRED"]) {
+for (const conclusion of ["STALE", "ACTION_REQUIRED"]) {
   test(`${conclusion} is not green`, async () => {
     const result = await readOnce(() =>
       withChecks([run("build", "SUCCESS"), run("lint", conclusion)]),
@@ -143,25 +144,16 @@ for (const conclusion of ["NEUTRAL", "STALE", "ACTION_REQUIRED"]) {
   });
 }
 
-test("SKIPPED is green when the same check was skipped on the base head", async () => {
-  const result = await readOnce(() =>
-    withChecks(
-      [run("build", "SUCCESS"), run("release", "SKIPPED")],
-      [run("build", "SUCCESS"), run("release", "SKIPPED")],
-    ),
-  );
-  expect(result.outcome).toBe("ready");
-});
-
 for (const [label, base] of [
+  ["was skipped", [run("release", "SKIPPED")]],
   ["ran", [run("release", "SUCCESS")]],
   ["did not report", []],
 ] as const) {
-  test(`SKIPPED is not green when the check ${label} on the base head`, async () => {
+  test(`SKIPPED is green when the check ${label} on the base head`, async () => {
     const result = await readOnce(() =>
       withChecks([run("build", "SUCCESS"), run("release", "SKIPPED")], [...base]),
     );
-    expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: release." });
+    expect(result.outcome).toBe("ready");
   });
 }
 
@@ -197,19 +189,86 @@ test("reads every check context page past the first 100 on the head and the base
   ]);
 });
 
-test("a check expected from the base head's second page keeps the merge waiting", async () => {
+test("a failure on the base head's second page marks the candidate's failure as failing on base", async () => {
   const result = await readOnce((variables) => {
     const body = fakeMergeReadiness(head);
+    body.data.repository.object.statusCheckRollup.contexts.nodes = [run("e2e", "FAILURE")];
     const base = body.data.repository.pullRequest.baseRef.target.statusCheckRollup.contexts;
     base.nodes =
-      variables.baseChecksCursor === null ? [run("ci", "SUCCESS")] : [run("e2e", "SUCCESS")];
+      variables.baseChecksCursor === null ? [run("ci", "SUCCESS")] : [run("e2e", "FAILURE")];
     base.pageInfo = {
       hasNextPage: variables.baseChecksCursor === null,
       endCursor: variables.baseChecksCursor === null ? "base-2" : null,
     };
     return { status: 200, body };
   });
+  expect(result.outcome).toBe("ci_failed");
+  expect(result.failedChecks?.map((check) => [check.name, check.failsOnBase])).toEqual([
+    ["e2e", true],
+  ]);
+});
+
+const named = (prefix: string, count: number, conclusion: string | null) =>
+  Array.from({ length: count }, (_, i) => run(`${prefix}-${i}`, conclusion));
+const pathFilteredPull = () => [...named("app", 10, "SUCCESS"), ...named("lib", 40, "SKIPPED")];
+const pathFilteredMain = () => [
+  ...named("app", 10, "SUCCESS"),
+  ...named("lib", 30, "SUCCESS"),
+  ...named("sql", 20, "SUCCESS"),
+];
+
+test("in a path-filtered monorepo, checks that ran only on main and checks skipped on the pull request do not block", async () => {
+  const result = await readOnce(() => withChecks(pathFilteredPull(), pathFilteredMain()));
+  expect(result.outcome).toBe("ready");
+  expect(result.message).toContain("40 skipped checks count as passed");
+});
+
+test("in a path-filtered monorepo, a required check that has not reported keeps the merge waiting and is named", async () => {
+  const result = await readOnce(() => withChecks(pathFilteredPull(), pathFilteredMain()), {
+    protection: ["deploy"],
+  });
+  expect(result).toEqual({
+    outcome: "pending",
+    message: "Waiting for checks: deploy. 40 skipped checks count as passed.",
+  });
+});
+
+test("in a path-filtered monorepo, a failed check still fails CI and is compared with main", async () => {
+  const result = await readOnce(() =>
+    withChecks(
+      [...pathFilteredPull(), run("app-x", "FAILURE")],
+      [...pathFilteredMain(), run("app-x", "FAILURE")],
+    ),
+  );
+  expect(result.outcome).toBe("ci_failed");
+  expect(result.failedChecks?.map((check) => [check.name, check.failsOnBase])).toEqual([
+    ["app-x", true],
+  ]);
+});
+
+test("NEUTRAL is green", async () => {
+  const result = await readOnce(() =>
+    withChecks([run("build", "SUCCESS"), run("lint", "NEUTRAL")]),
+  );
+  expect(result).toEqual({
+    outcome: "ready",
+    message: "CI passed and all review threads are resolved",
+  });
+});
+
+test("a check that is still running keeps the merge waiting, even when nothing is required", async () => {
+  const result = await readOnce(() =>
+    withChecks([run("build", "SUCCESS"), run("e2e", null)], pathFilteredMain()),
+  );
   expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: e2e." });
+});
+
+test("no checks and no required checks still waits for CI on the candidate commit", async () => {
+  const result = await readOnce(() => withChecks([], pathFilteredMain()));
+  expect(result).toEqual({
+    outcome: "pending",
+    message: "Waiting for CI on the candidate commit.",
+  });
 });
 
 test("a failing check fails CI with its name, even while others still run", async () => {
