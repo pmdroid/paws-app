@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "bun:test";
+import { GitError } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
 import {
   FakeClock,
@@ -85,6 +86,51 @@ test("a tracker 503 retries without applying run_failed", async () => {
   expect(result.retries, result.detail).toEqual([1]);
   expect(result.errors, result.detail).toEqual([]);
   expect(result.states, result.detail).not.toContain("failed");
+}, 90_000);
+
+const mirrorFetch = (stderr: string) => () =>
+  new GitError(
+    [
+      "--git-dir",
+      "/home/acme/.paws/repos/acme/widgets.git",
+      "fetch",
+      "--prune",
+      "https://github.com/acme/widgets.git",
+      "+refs/heads/*:refs/remotes/origin/*",
+    ],
+    128,
+    stderr,
+  );
+
+test("a mirror fetch that times out once during a run is retried and the run continues", async () => {
+  const result = await runWithFault({
+    error: mirrorFetch(
+      "fatal: unable to access 'https://github.com/acme/widgets.git/': Connection timed out after 300009 milliseconds\n",
+    ),
+    times: 1,
+  });
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.states, result.detail).not.toContain("failed");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.retries, result.detail).toEqual([1]);
+  expect(
+    result.thoughts.some((body) => body.includes("Connection timed out")),
+    result.detail,
+  ).toBe(true);
+  expect(result.implementations, result.detail).toBe(1);
+}, 90_000);
+
+test("a mirror fetch refused for authentication still fails the task", async () => {
+  const result = await runWithFault({
+    error: mirrorFetch(
+      "remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/acme/widgets.git/'\n",
+    ),
+    times: 1,
+  });
+  expect(result.state, result.detail).toBe("failed");
+  expect(result.retries, result.detail).toEqual([]);
+  expect(result.errors.join("\n"), result.detail).toContain("Authentication failed");
+  expect(result.implementations, result.detail).toBe(0);
 }, 90_000);
 
 test("a Linear rate limit while a run starts is waited out without a retry", async () => {
