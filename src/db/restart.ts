@@ -15,6 +15,7 @@ export type RestartHandoff = {
   jobKey?: string;
   /** The fix-attempt limit this round's lines name, when it differs from the fix rounds. */
   limit?: number;
+  fixRound?: boolean;
 };
 
 /**
@@ -49,6 +50,7 @@ export function restart(
       handoff: handoff.body,
       reason: handoff.reason,
       ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
+      ...(handoff.fixRound ? { fixRound: true } : {}),
     };
     const job = reenqueueJob(
       db,
@@ -59,7 +61,7 @@ export function restart(
         now: handoff.now,
       },
       (previous) => {
-        if (!["findings", "ci", "review"].includes(handoff.reason)) return payload;
+        if (!FIX_REASONS.includes(handoff.reason) && !handoff.fixRound) return payload;
         const old = previous?.payload as
           | { fixRoundsAfter?: number; fixRounds?: number }
           | undefined;
@@ -77,6 +79,8 @@ export function restart(
     return job.id;
   });
 }
+
+const FIX_REASONS: readonly string[] = ["findings", "ci", "review"];
 
 /** Latest human retry window, ordered by activation rather than reusable row id. */
 export function latestHumanTurn(db: Database, itemId: string): number {
@@ -96,7 +100,8 @@ export function fixRounds(db: Database, itemId: string): number {
     .query<{ count: number }, [string, string, number, number]>(`
     SELECT COALESCE(SUM(COALESCE(json_extract(payload,'$.fixRounds'),1)),0) AS count
     FROM job WHERE queue=? AND json_extract(payload,'$.itemId')=?
-      AND json_extract(payload,'$.reason') IN ('findings','ci','review')
+      AND (json_extract(payload,'$.reason') IN ('findings','ci','review')
+        OR json_extract(payload,'$.fixRound')=1)
       AND (json_extract(payload,'$.fixRoundsAfter')=? OR
         (json_extract(payload,'$.fixRoundsAfter') IS NULL AND activation_id>?))
   `)
