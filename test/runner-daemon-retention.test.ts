@@ -71,7 +71,7 @@ test("routine pruning drops only expired, acknowledged commands and their receip
   }
 });
 
-test("pruning drops expired retro commands with their receipts and keeps live ones", () => {
+test("pruning drops delivered expired retro commands and keeps live or undelivered ones", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-daemon-retention-"));
   let now = 10 * DAY;
   const daemon = openRunnerDaemon({
@@ -82,12 +82,16 @@ test("pruning drops expired retro commands with their receipts and keeps live on
   });
   const db = openDatabase(join(root, "commands.db"));
   try {
-    for (const [id, expiresAt] of [
-      ["retro-expired", now - 2 * DAY],
-      ["retro-live", now + DAY],
+    for (const [id, expiresAt, delivered] of [
+      ["retro-expired", now - 2 * DAY, 1],
+      ["retro-undelivered", now - 2 * DAY, 0],
+      ["retro-live", now + DAY, 1],
     ] as const) {
       db.run("INSERT INTO command_receipt VALUES (?,?)", [id, expiresAt]);
-      db.run("INSERT INTO pending_retro_command (id,payload) VALUES (?,'{}')", [id]);
+      db.run("INSERT INTO pending_retro_command (id,payload,delivered) VALUES (?,'{}',?)", [
+        id,
+        delivered,
+      ]);
     }
     expect(daemon.pruneRetired()).toBe(2);
     const ids = (table: string) =>
@@ -95,8 +99,8 @@ test("pruning drops expired retro commands with their receipts and keeps live on
         .query<{ id: string }, []>(`SELECT id FROM ${table} ORDER BY id`)
         .all()
         .map(({ id }) => id);
-    expect(ids("pending_retro_command")).toEqual(["retro-live"]);
-    expect(ids("command_receipt")).toEqual(["retro-live"]);
+    expect(ids("pending_retro_command")).toEqual(["retro-live", "retro-undelivered"]);
+    expect(ids("command_receipt")).toEqual(["retro-live", "retro-undelivered"]);
   } finally {
     db.close();
     daemon.close();

@@ -168,7 +168,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     "CREATE TABLE IF NOT EXISTS pending_command (id TEXT PRIMARY KEY REFERENCES command_receipt(id), payload TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged IN (0,1,2))) STRICT",
   );
   db.run(
-    "CREATE TABLE IF NOT EXISTS pending_retro_command (id TEXT PRIMARY KEY REFERENCES command_receipt(id), payload TEXT NOT NULL) STRICT",
+    "CREATE TABLE IF NOT EXISTS pending_retro_command (id TEXT PRIMARY KEY REFERENCES command_receipt(id), payload TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1))) STRICT",
   );
   db.run(
     "CREATE TABLE IF NOT EXISTS retro_attempt (retro_id TEXT PRIMARY KEY, attempt INTEGER NOT NULL) STRICT",
@@ -188,7 +188,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           [cutoff],
         ).changes +
         db.run(
-          "DELETE FROM pending_retro_command WHERE id IN (SELECT id FROM command_receipt WHERE expires_at<?)",
+          "DELETE FROM pending_retro_command WHERE delivered=1 AND id IN (SELECT id FROM command_receipt WHERE expires_at<?)",
           [cutoff],
         ).changes;
       const receipts = db.run(
@@ -368,6 +368,17 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       .get(id);
     if (!row) throw new Error("Runner retro command is unknown.");
     return RunnerRetroCommandSchema.parse(JSON.parse(row.payload));
+  }
+  async function retroTerminal(id: string, action: "result" | "released", body: unknown) {
+    try {
+      const response = await authenticated(retroPath(id, action), "POST", body);
+      db.run("UPDATE pending_retro_command SET delivered=1 WHERE id=?", [id]);
+      return response;
+    } catch (error) {
+      if (error instanceof RunnerRequestError && error.status >= 400 && error.status < 500)
+        db.run("UPDATE pending_retro_command SET delivered=1 WHERE id=?", [id]);
+      throw error;
+    }
   }
   async function pollRetroCommands() {
     const identity = paired();
@@ -891,15 +902,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       retroCommand(body.commandId);
       return z
         .strictObject({ duplicate: z.boolean() })
-        .parse(await authenticated(retroPath(body.commandId, "result"), "POST", body));
+        .parse(await retroTerminal(body.commandId, "result", body));
     },
     async releaseRetroCommand(id: string) {
       const command = retroCommand(id);
       return z
         .strictObject({ ok: z.literal(true) })
-        .parse(
-          await authenticated(retroPath(command.id, "released"), "POST", { reason: "teardown" }),
-        );
+        .parse(await retroTerminal(command.id, "released", { reason: "teardown" }));
     },
     async helperLease(id: string) {
       const command = helperCommand(id);
