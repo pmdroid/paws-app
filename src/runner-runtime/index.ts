@@ -43,6 +43,8 @@ import {
   RUNNER_AUTHORITY_STOP_MS,
   RUNNER_LEASE_GRACE_MS,
   RunnerResultSchema,
+  type RunnerRepositoryCommand,
+  type RunnerRepositoryCommandResult,
   type RunnerResult,
 } from "../runner-protocol";
 import { openExecutionJournal, type Execution, type TerminalExecution } from "../runner-journal";
@@ -200,7 +202,14 @@ export async function openRunnerRuntime(options: {
     Partial<
       Pick<
         RunnerDaemon,
-        "readInputs" | "followUps" | "uploadSession" | "finishSession" | "readSession"
+        | "readInputs"
+        | "followUps"
+        | "uploadSession"
+        | "finishSession"
+        | "readSession"
+        | "repositoryCommandGrant"
+        | "repositoryCommandCredential"
+        | "postRepositoryCommandResult"
       >
     >;
   spool: RunnerSpool;
@@ -1005,6 +1014,50 @@ export async function openRunnerRuntime(options: {
       return credential.token;
     },
   });
+  const repositoryCommands = new Map<string, Promise<void>>();
+  const repositoryResults = new Map<string, RunnerRepositoryCommandResult>();
+  async function runRepositoryCommand(command: RunnerRepositoryCommand) {
+    const { repositoryCommandGrant, repositoryCommandCredential, postRepositoryCommandResult } =
+      options.daemon;
+    if (!repositoryCommandGrant || !repositoryCommandCredential || !postRepositoryCommandResult)
+      return;
+    if (command.expiresAt <= now()) {
+      repositoryResults.delete(command.id);
+      await options.daemon.acknowledgeCommand(command.id);
+      return;
+    }
+    let result = repositoryResults.get(command.id);
+    if (!result) {
+      result = await repositories
+        .rebase(
+          command,
+          async () => {
+            const grant = await remote(() => repositoryCommandGrant(command.id));
+            return (await remote(() => repositoryCommandCredential(command.id, grant.token))).token;
+          },
+          closing.signal,
+        )
+        .catch((error: unknown): RunnerRepositoryCommandResult => {
+          if (
+            closing.signal.aborted ||
+            (error instanceof RemoteFailure && !(error instanceof GitHubFailure))
+          )
+            throw error;
+          journalCaught(error, "runner-runtime.runRepositoryCommand.rebase", command.itemId);
+          const reason = error instanceof Error ? error.message : String(error);
+          return { outcome: "failed", reason: (reason || "Rebase failed").slice(0, 4096) };
+        });
+      repositoryResults.set(command.id, result);
+    }
+    try {
+      await remote(() => postRepositoryCommandResult(command.id, result));
+    } catch (error) {
+      if (!(error instanceof RunnerRequestError)) throw error;
+      journalCaught(error, "runner-runtime.runRepositoryCommand.result", command.itemId);
+    }
+    repositoryResults.delete(command.id);
+    await options.daemon.acknowledgeCommand(command.id);
+  }
   function pulse(): Promise<void> {
     if (pulsing) return pulsing;
     if (closed) return Promise.resolve();
@@ -1795,6 +1848,15 @@ export async function openRunnerRuntime(options: {
         entry.checkpoints.asked++;
       }
       await options.daemon.acknowledgeCommand(command.id);
+    }
+    for (const command of commands) {
+      if (command.type !== "rebase" || unreachable || repositoryCommands.has(command.id)) continue;
+      repositoryCommands.set(
+        command.id,
+        runRepositoryCommand(command)
+          .catch(journalRejection("runner-runtime.step.repositoryCommand", report, command.itemId))
+          .finally(() => repositoryCommands.delete(command.id)),
+      );
     }
     await settle(
       [...active.values()]
