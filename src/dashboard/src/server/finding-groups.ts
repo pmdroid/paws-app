@@ -212,7 +212,7 @@ export async function handleFindingGroupsRequest(
     ).length
   )
     return Response.json(
-      { error: "The improvement inbox already accepted these findings. Open the improvement." },
+      { error: "The improvement inbox already accepted these findings and files their issue." },
       { status: 409 },
     );
   if (activeActions.has(group.id))
