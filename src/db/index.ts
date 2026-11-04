@@ -821,7 +821,11 @@ export { jobVersionCurrent } from "./jobs";
 
 export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
 
-export { changeWorkspaceRevocation } from "./workspace-revocation";
+export {
+  changeWorkspaceRevocation,
+  listWorkspaceMemberSummaries,
+  type WorkspaceMemberSummary,
+} from "./workspace-revocation";
 export { listFindingGroups, lastFindingGroupRun, findingGroupSources } from "./finding-groups";
 export type { FindingGroup, FindingGroupRun } from "./finding-groups";
 
