@@ -1,4 +1,9 @@
-export { advanceMerge, type MergeCapabilities, type MergePublication } from "./advance";
+export {
+  advanceMerge,
+  type MergeCapabilities,
+  type MergePublication,
+  type RunnerRebase,
+} from "./advance";
 export {
   mergeable,
   type AcceptRow,

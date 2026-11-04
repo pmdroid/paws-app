@@ -23,12 +23,14 @@ import {
   type WorkItemRecord,
 } from "../db";
 import {
+  adoptRunnerRebase,
   readPullFacts,
   rebaseOntoMain,
   squashPull,
   type GitExec,
   type GitHubBinding,
   type PullFacts,
+  type RebaseResult,
   type SerialMergeInput,
 } from "../github";
 import { journal } from "../journal";
@@ -69,7 +71,17 @@ export type MergePublication = MergePull & {
   commit: { title: string; message?: string; env?: Record<string, string> };
 };
 
+export type RunnerRebase =
+  | { outcome: "rebased"; head: string }
+  | { outcome: "conflict"; files: string[] }
+  | { outcome: "failed"; reason: string };
+
 export type MergeCapabilities = OrderCapabilities & {
+  runnerRebase?(
+    item: WorkItemRecord,
+    heads: { head: string; main: string },
+    signal: AbortSignal,
+  ): Promise<RunnerRebase>;
   publish(item: WorkItemRecord): Promise<MergePublication | MergeStep>;
   settings(item: WorkItemRecord, signal: AbortSignal): Promise<TaskMergeSettings>;
   /**
@@ -211,7 +223,7 @@ export async function advanceMerge(
         mergeSettings.mainMoved,
         { head: published.head, approval: riskApproval },
       ),
-    rebase: () => rebaseOntoMain(lane),
+    rebase: (facts) => rebaseOnRunner(item, caps, lane, facts, published.signal),
     squash: async (head, facts) => {
       const squashed = await squashPull(
         {
@@ -368,6 +380,58 @@ export async function advanceMerge(
   const message = failure(turn, step);
   voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
   return { kind: "failed", reason: "merge", message };
+}
+
+async function rebaseOnRunner(
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+  lane: SerialMergeInput,
+  pull: PullFacts,
+  signal: AbortSignal,
+): Promise<RebaseResult> {
+  const asked: RunnerRebase = caps.runnerRebase
+    ? await caps
+        .runnerRebase(item, { head: pull.head, main: pull.base }, signal)
+        .catch((error: unknown) => {
+          if (signal.aborted) throw error;
+          return {
+            outcome: "failed" as const,
+            reason: error instanceof Error ? error.message : String(error),
+          };
+        })
+    : { outcome: "failed", reason: "no runner rebase" };
+  signal.throwIfAborted();
+  if (asked.outcome === "conflict")
+    return {
+      rebased: false,
+      result: {
+        merged: false,
+        outcome: "conflict",
+        branch: pull.branch,
+        base: pull.base,
+        message: "rebase conflict",
+        ...(asked.files.length > 0 ? { conflictFiles: asked.files } : {}),
+      },
+    };
+  let reason = asked.outcome === "failed" ? asked.reason : "";
+  if (asked.outcome === "rebased") {
+    const adopted = await adoptRunnerRebase(
+      lane,
+      {
+        head: pull.head,
+        base: pull.base,
+        rebased: asked.head,
+      },
+      signal,
+    ).catch((error: unknown) => {
+      if (signal.aborted) throw error;
+      return { refused: error instanceof Error ? error.message : String(error) };
+    });
+    if (!("refused" in adopted)) return adopted;
+    reason = `refused ${asked.head.slice(0, 7)}: ${adopted.refused}`;
+  }
+  journal(`item ${item.linearIdentifier} rebases on the control plane: runner rebase ${reason}`);
+  return rebaseOntoMain(lane);
 }
 
 /** The repository as the merge queue names it. */

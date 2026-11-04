@@ -1,7 +1,11 @@
 import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
 import { delegatedLinearUserId, runnerAccountUnsupported, workspaceMember } from "../db";
-import type { RunnerCodingAgent } from "../runner-protocol";
+import {
+  REPOSITORY_COMMAND_RUNNER_VERSION,
+  runnerReleaseAtLeast,
+  type RunnerCodingAgent,
+} from "../runner-protocol";
 import type {
   EligibleRunner,
   EligibleRunnerReason,
@@ -260,4 +264,40 @@ export function itemOwnerEligibleRunner(
     }))
     .sort((a, b) => Number(b.own) - Number(a.own) || a.name.localeCompare(b.name));
   return named[0] ? { id: named[0].id, name: named[0].name } : null;
+}
+
+export function itemRepositoryRunner(
+  db: Database,
+  input: { itemId: string; now?: number },
+): { id: string; workspaceId: string } | null {
+  const scope = itemOwnerScope(db, input.itemId);
+  if (!scope) return null;
+  const last = db
+    .query<{ runnerId: string | null; agent: string }, [string]>(
+      `SELECT w.runner_id AS runnerId,r.agent FROM run r LEFT JOIN runner_work w ON w.run_id=r.id
+       WHERE r.item_id=? ORDER BY w.runner_id IS NULL,r.created_at DESC,r.rowid DESC LIMIT 1`,
+    )
+    .get(input.itemId);
+  const eligible = eligibleRunners(db, {
+    ...scope,
+    agent: last?.agent ?? "",
+    purpose: "prepare",
+    ...(input.now === undefined ? {} : { now: input.now }),
+  }).filter(
+    (runner) =>
+      runner.eligible &&
+      runnerReleaseAtLeast(
+        db
+          .query<{ version: string | null }, [string]>(
+            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+          )
+          .get(runner.id)?.version,
+        REPOSITORY_COMMAND_RUNNER_VERSION,
+      ),
+  );
+  const runner =
+    eligible.find((candidate) => candidate.id === last?.runnerId) ??
+    eligible.find((candidate) => candidate.ownerId === scope.ownerUserId) ??
+    eligible[0];
+  return runner ? { id: runner.id, workspaceId: runner.workspaceId } : null;
 }

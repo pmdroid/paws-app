@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   consumeWorkspaceBootstrap,
+  insertQueuedItem,
   migrate,
   openDatabase,
   putWorkspaceUser,
@@ -11,6 +12,7 @@ import {
 } from "../src/db";
 import {
   eligibleRunners,
+  itemRepositoryRunner,
   RUNNER_ONLINE_MS,
   type EligibleRunnerReason,
   type EligibleRunnersInput,
@@ -87,7 +89,9 @@ function workspace(runners: Record<string, Runner>) {
   }
   return {
     db,
+    ws,
     users,
+    now,
     check(input: Partial<EligibleRunnersInput> & { leads?: string[] } = {}) {
       const { leads = [], ...given } = input;
       const rest = Object.fromEntries(
@@ -274,5 +278,44 @@ test("a runner with an unacknowledged cancel stays online; capacity accounts for
     expect(space.check({ now }).map((runner) => runner.reason)).toEqual(["own"]);
   } finally {
     space.close();
+  }
+});
+
+test("a repository command goes to the item's last runner while it is eligible and new enough, then to another", () => {
+  const w = workspace({ first: { owner: "me" }, last: { owner: "me", ready: 0 } });
+  try {
+    const { db, now } = w;
+    db.run(
+      "INSERT INTO linear_session(session_id,organization_id,team_id,created_at) VALUES('ses','org','team',?)",
+      [now],
+    );
+    insertQueuedItem(db, { id: "item", now, sessionKey: "ses" });
+    db.run("UPDATE work_item SET owner_user_id=? WHERE id='item'", [w.users.me!]);
+    for (const id of ["first", "last"])
+      db.run(
+        "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.63',?)",
+        [id, now],
+      );
+    db.run(
+      "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES('run','item','implement','codex','ended',?,?)",
+      [now, now],
+    );
+    db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES('run','last',?,1,0,'cmd',?)",
+      [w.ws.id, now],
+    );
+    expect(itemRepositoryRunner(db, { itemId: "item", now })).toEqual({
+      id: "last",
+      workspaceId: w.ws.id,
+    });
+    db.run("UPDATE runner_host_status SET runner_version='0.1.62' WHERE runner_id='last'");
+    expect(itemRepositoryRunner(db, { itemId: "item", now })?.id).toBe("first");
+    db.run("UPDATE runner_host_status SET runner_version='0.1.63'");
+    db.run("UPDATE runner SET last_seen_at=? WHERE id='last'", [now - RUNNER_ONLINE_MS]);
+    expect(itemRepositoryRunner(db, { itemId: "item", now })?.id).toBe("first");
+    db.run("UPDATE runner_host_status SET runner_version='0.1.62' WHERE runner_id='first'");
+    expect(itemRepositoryRunner(db, { itemId: "item", now })).toBeNull();
+  } finally {
+    w.close();
   }
 });

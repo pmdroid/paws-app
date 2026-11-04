@@ -219,6 +219,7 @@ import {
   itemOwnerEligibleRunner,
   itemOwnerHasEligibleRunner,
   itemOwnerRunnerSetupNeed,
+  itemRepositoryRunner,
 } from "./runner-placement";
 import { startServer } from "./server";
 import { activeRunnerReadiness } from "./settings";
@@ -253,6 +254,7 @@ import {
 } from "./runner-coordinator";
 import { createRunnerSessionMoves } from "./runner-control";
 import { cacheRepositoryCredentials } from "./runner-repository-access";
+import { rebaseOnRunner } from "./runner-repository-commands";
 import {
   encryptRunnerEvents,
   loadRunnerEventKey,
@@ -1245,6 +1247,39 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
               eligibleRunner: (itemId: string, agent: string, now: number) =>
                 itemOwnerEligibleRunner(db, { itemId, agent, now }),
+              runnerRebase: async (
+                item: WorkItemRecord,
+                heads: { head: string; main: string },
+                signal: AbortSignal,
+              ) => {
+                const now = Date.now();
+                const target = itemRepositoryRunner(db, { itemId: item.id, now });
+                const repository = getWorkItemRepository(db, item.id);
+                if (!target || !repository)
+                  return { outcome: "failed" as const, reason: "no eligible runner" };
+                const name = `${repository.owner}/${repository.repo}`;
+                const bot = await repositoryAccess?.checkpointBot?.(name);
+                if (!bot) return { outcome: "failed" as const, reason: "no GitHub App bot" };
+                return rebaseOnRunner(
+                  db,
+                  {
+                    runnerId: target.id,
+                    workspaceId: target.workspaceId,
+                    itemId: item.id,
+                    repository: {
+                      owner: repository.owner,
+                      repo: repository.repo,
+                      remoteUrl: repository.remoteUrl,
+                    },
+                    branch: item.branchName,
+                    head: heads.head,
+                    main: heads.main,
+                    bot,
+                    now,
+                  },
+                  signal,
+                );
+              },
             }
           : {}),
         linearAccess: linearTaskAccess ?? undefined,

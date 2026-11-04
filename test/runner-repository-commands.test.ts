@@ -14,6 +14,8 @@ import { createRepositoryCommandAccess } from "../src/runner-repository-access";
 import {
   createRepositoryCommandsHttp,
   enqueueRepositoryCommand,
+  rebaseOnRunner,
+  recordRepositoryCommandResult,
   repositoryCommandState,
   waitForRepositoryCommand,
 } from "../src/runner-repository-commands";
@@ -149,6 +151,9 @@ function fixture() {
     grant,
     credential,
     advance: (ms: number) => (now += ms),
+    now: () => now,
+    workspace,
+    item,
   };
 }
 
@@ -251,4 +256,63 @@ test("a branch outside paws/ or an old runner is refused at enqueue", () => {
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.63'");
   f.db.run("UPDATE work_item SET branch_name='main' WHERE id='item-1'");
   expect(() => f.enqueue()).toThrow();
+});
+
+test("a runner rebase resolves with the runner's result, and as failed on a timeout or refusal", async () => {
+  const f = fixture();
+  const rebase = (runnerId = "runner-a", signal?: AbortSignal) =>
+    rebaseOnRunner(
+      f.db,
+      {
+        runnerId,
+        workspaceId: f.workspace,
+        itemId: f.item.id,
+        repository,
+        branch: f.item.branchName,
+        head: "a".repeat(40),
+        main: "b".repeat(40),
+        bot,
+        now: f.now(),
+      },
+      signal,
+    );
+  const rebased = rebase();
+  const [command] = await f.poll("runner-a");
+  recordRepositoryCommandResult(
+    f.db,
+    {
+      runnerId: "runner-a",
+      commandId: command!.id,
+      result: { outcome: "rebased", head: "c".repeat(40) },
+    },
+    f.now(),
+  );
+  expect(await rebased).toEqual({ outcome: "rebased", head: "c".repeat(40) });
+
+  const slow = rebase();
+  f.advance(10 * 60_000);
+  expect(await f.poll("runner-a")).toEqual([]);
+  expect(await slow).toEqual({ outcome: "failed", reason: "timed out after 10 minutes" });
+
+  const stop = new AbortController();
+  const stopped = rebase("runner-a", stop.signal);
+  stop.abort(new Error("item stopped"));
+  await expect(stopped).rejects.toThrow("item stopped");
+  expect(await f.poll("runner-a")).toEqual([]);
+
+  const granted = new AbortController();
+  const late = rebase("runner-a", granted.signal);
+  const [delivered] = await f.poll("runner-a");
+  const issued = await f.grant(delivered!.id);
+  expect(issued.status).toBe(200);
+  granted.abort(new Error("item stopped"));
+  await expect(late).rejects.toThrow("item stopped");
+  expect(repositoryCommandState(f.db, delivered!.id, f.now())).toBe("expired");
+  expect((await f.credential(delivered!.id, issued.body.token))!.status).toBe(403);
+  expect((await f.grant(delivered!.id)).status).toBe(403);
+
+  expect(await rebase("runner-missing")).toEqual({
+    outcome: "failed",
+    reason: "Runner is not accepting repository commands.",
+  });
 });
