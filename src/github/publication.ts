@@ -82,9 +82,21 @@ function persistentRepository(root: string | null, remote: string): string | und
 
 const queues = new Map<string, Promise<unknown>>();
 
-function serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const next = (queues.get(key) ?? Promise.resolve()).then(fn);
-  const tail = next.catch(() => undefined);
+function abortable(waiting: Promise<unknown>, signal?: AbortSignal): Promise<unknown> {
+  if (!signal) return waiting;
+  return Promise.race([
+    waiting,
+    new Promise((_, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+  ]);
+}
+
+function serialized<T>(key: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const previous = queues.get(key) ?? Promise.resolve();
+  const next = abortable(previous, signal).then(fn);
+  const tail = previous.then(() => next.catch(() => undefined));
   queues.set(key, tail);
   void tail.then(() => {
     if (queues.get(key) === tail) queues.delete(key);
@@ -281,14 +293,18 @@ export function publicationExec(
     )
       return publish(call);
     await mkdir(path.dirname(persistent), { recursive: true, mode: 0o700 });
-    return serialized(persistent, async () => {
-      const lock = await lockRepository(persistent, options.signal);
-      try {
-        return await publish(call, { repository: persistent, stale: lock.stale });
-      } finally {
-        await lock.release();
-      }
-    });
+    return serialized(
+      persistent,
+      async () => {
+        const lock = await lockRepository(persistent, options.signal);
+        try {
+          return await publish(call, { repository: persistent, stale: lock.stale });
+        } finally {
+          await lock.release();
+        }
+      },
+      options.signal,
+    );
   };
 }
 

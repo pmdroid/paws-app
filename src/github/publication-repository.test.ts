@@ -178,6 +178,35 @@ test("calls for one repository run one after the other, other repositories in pa
   );
 });
 
+test("a call aborted while it waits for the repository stops without running", async () => {
+  const f = await fixture();
+  let open: () => void = () => undefined;
+  let network = 0;
+  const gated: GitExec = async (args, options) => {
+    if (options.env.PAWS_GITHUB_TOKEN !== undefined && network++ === 0)
+      await new Promise<void>((resolve) => (open = resolve));
+    return f.fake(args, options);
+  };
+  const run = publicationExec(gated, undefined, f.store);
+  const fetch = (signal?: AbortSignal) =>
+    run([...PREFIX, "fetch", WIDGETS, "+refs/heads/main:refs/paws/upstream-main"], {
+      cwd: f.worktree,
+      env: gitEnv(token),
+      signal,
+    });
+  const first = fetch();
+  for (let i = 0; i < 200 && network === 0; i++) await Bun.sleep(10);
+  const controller = new AbortController();
+  const waiting = fetch(controller.signal);
+  const third = fetch();
+  controller.abort(new Error("acme stop"));
+  await expect(waiting).rejects.toThrow("acme stop");
+  expect(network).toBe(1);
+  open();
+  await Promise.all([first, third]);
+  expect(network).toBe(2);
+});
+
 for (const damage of ["missing", "corrupt", "missing objects", "stale lock"] as const) {
   test(`a ${damage} publication repository is rebuilt and the push starts from empty`, async () => {
     const f = await fixture();
