@@ -28,6 +28,7 @@ import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { githubClient } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
+import { cloneRunner, runnerCheckout } from "./helpers";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -61,32 +62,40 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
     },
   ]);
   const checksRuns: Array<boolean | undefined> = [];
-  const runner = async (options: RunAgentOptions): Promise<RunAgentResult> => {
-    if (options.checkpoint !== false) return runAgent(options);
-    checksRuns.push(options.closeoutRulesFirst);
-    const session = createCloseoutSession(options.worktreePath, {
-      policy: async () => workspacePolicyFiles(options.worktreePath),
-      ...(options.closeoutRulesFirst ? { rulesFirst: true } : {}),
-    });
-    const listed = JSON.parse(await session.report()) as { pending: string[] };
-    for (const id of listed.pending) await session.run(id);
-    return {
-      role: "implementer",
-      stopReason: "end_turn",
-      timedOut: false,
-      cancelled: false,
-      authRequired: false,
-      agentExited: true,
-      closeoutReport: await session.report({ probes: true }),
-    };
-  };
+  const repository = { owner: "pmdroid", repo: "paws-demo" };
+  const runner = cloneRunner(
+    repository,
+    async (options: RunAgentOptions): Promise<RunAgentResult> => {
+      if (options.checkpoint !== false) return runAgent(options);
+      checksRuns.push(options.closeoutRulesFirst);
+      const session = createCloseoutSession(options.worktreePath, {
+        policy: async () => workspacePolicyFiles(options.worktreePath),
+        ...(options.closeoutRulesFirst ? { rulesFirst: true } : {}),
+      });
+      const listed = JSON.parse(await session.report()) as { pending: string[] };
+      for (const id of listed.pending) await session.run(id);
+      return {
+        role: "implementer",
+        stopReason: "end_turn",
+        timedOut: false,
+        cancelled: false,
+        authRequired: false,
+        agentExited: true,
+        closeoutReport: await session.report({ probes: true }),
+      };
+    },
+  );
   const launch: AgentLaunch = (input) => {
     const scriptPath = path.join(root, `script-${crypto.randomUUID()}.json`);
     writeFileSync(
       scriptPath,
       JSON.stringify({
         steps: [
-          { type: "fs_write", path: path.join(input.worktree, "feature.txt"), content: "new\n" },
+          {
+            type: "fs_write",
+            path: path.join(runnerCheckout(pawsRoot, input.itemId), "feature.txt"),
+            content: "new\n",
+          },
           { type: "end", stopReason: "end_turn" },
         ],
       }),
@@ -104,7 +113,7 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
     home,
     tracker,
     publicUrl: "https://paws.example",
-    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: bare }],
+    repositories: [{ ...repository, remoteUrl: bare }],
     githubForRepository: () => ({
       appId: "1",
       installationId: "2",
@@ -152,6 +161,8 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
     expect(checksRuns).toEqual([true, undefined]);
     expect(existsSync(checkMark)).toBe(true);
     expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
+    // A runner-backed item reaches the merge queue with no worktree on the control plane.
+    expect(existsSync(path.join(pawsRoot, "worktrees"))).toBe(false);
   } finally {
     await orchestrator.shutdown();
     db.close();

@@ -643,12 +643,9 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
       "Show the findings",
       "Add the findings contract",
     ]);
-    expect(git(["--git-dir", paws, "ls-tree", "-r", "--name-only", ref]).split("\n").sort()).toEqual([
-      "contract.ts",
-      "findings.tsx",
-      "notes.txt",
-      "result.txt",
-    ]);
+    expect(
+      git(["--git-dir", paws, "ls-tree", "-r", "--name-only", ref]).split("\n").sort(),
+    ).toEqual(["contract.ts", "findings.tsx", "notes.txt", "result.txt"]);
   } finally {
     context.release("0.1.44");
   }

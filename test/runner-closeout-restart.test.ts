@@ -36,7 +36,7 @@ import {
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { migratedDatabase, seedCandidate } from "./helpers";
 
 const REMOTE = "https://github.com/acme/fixture.git";
 const REVIEW_TEXT = "[]";
@@ -62,6 +62,8 @@ async function fixture() {
   writeFileSync(join(worktree, "app.txt"), "two\n");
   await git(["-C", worktree, "commit", "-am", "head"], { env });
   const head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
+  // Paws holds the candidate in the bare mirror; the checkout only made the commits.
+  seedCandidate(root, "item", worktree, { owner: "acme", repo: "fixture" });
 
   const path = join(root, "paws.db");
   let db: Database = migratedDatabase(path);

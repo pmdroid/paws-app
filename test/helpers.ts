@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { candidateRef, mirrorPath } from "../src/acp";
+import { candidateRef, mirrorPath, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import { migrate, openDatabase } from "../src/db";
 import type { Database } from "bun:sqlite";
 
@@ -86,4 +86,45 @@ export function seedCandidate(
   const adopt = () => git(["--git-dir", mirror, "fetch", "-q", source, `+HEAD:${ref}`]);
   adopt();
   return { mirror, ref, adopt, head: () => git(["--git-dir", mirror, "rev-parse", ref]) };
+}
+
+/** Where {@link cloneRunner} checks an item out, as a runner's own checkout. */
+export function runnerCheckout(pawsRoot: string, itemId: string): string {
+  return join(pawsRoot, "runner-checkouts", itemId);
+}
+
+/**
+ * Stands in for a remote runner: runs `agent` in its own clone of the item's candidate ref, then
+ * imports the clone's HEAD back into the bare mirror, as the candidate import does. The control
+ * plane keeps no worktree for a runner-backed item, so a fake runner cannot use one either.
+ */
+export function cloneRunner(
+  repository: { owner: string; repo: string },
+  agent: (options: RunAgentOptions) => Promise<RunAgentResult>,
+) {
+  const git = (args: string[]) => {
+    const child = Bun.spawnSync(["/usr/bin/git", ...args]);
+    if (child.exitCode !== 0) throw new Error(child.stderr.toString());
+    return child.stdout.toString().trim();
+  };
+  return async (options: RunAgentOptions): Promise<RunAgentResult> => {
+    const mirror = mirrorPath(options.pawsRoot, repository.owner, repository.repo);
+    const ref = candidateRef(options.itemId);
+    const tree = runnerCheckout(options.pawsRoot, options.itemId);
+    if (!existsSync(tree)) git(["clone", "-q", "--no-checkout", mirror, tree]);
+    git([
+      "-C",
+      tree,
+      "fetch",
+      "-q",
+      mirror,
+      `+${ref}:refs/paws/start`,
+      "+refs/remotes/origin/*:refs/remotes/origin/*",
+    ]);
+    git(["-C", tree, "checkout", "-q", "--detach", "-f", "refs/paws/start"]);
+    const result = await agent({ ...options, worktreePath: tree });
+    if (options.role === "implementer")
+      git(["--git-dir", mirror, "fetch", "-q", tree, `+HEAD:${ref}`]);
+    return result;
+  };
 }

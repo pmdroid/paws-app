@@ -3800,7 +3800,9 @@ export class Orchestrator {
       ...(commands ? { commandRunner: commands } : {}),
       reviewer: {
         async review(request) {
-          await checkoutPatterns(request.worktree, exclusionPatterns(checkoutExclusions));
+          // A runner-backed item's review runs on its runner; the mirror has no files to narrow.
+          if (!mirror)
+            await checkoutPatterns(request.worktree, exclusionPatterns(checkoutExclusions));
           return reviewer.review(request);
         },
       },

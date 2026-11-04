@@ -26,7 +26,7 @@ import type { RunnerCommand } from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { migratedDatabase } from "./helpers";
+import { migratedDatabase, seedCandidate } from "./helpers";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const LIMIT = "You've hit your session limit. Retry-After: 120";
@@ -145,6 +145,7 @@ async function usageLimitScenario(
   const candidateSha = await git(["-C", source, "rev-parse", "HEAD"]);
   await git(["-C", source, "push", origin, "HEAD:refs/heads/candidate"]);
   await git(["clone", origin, worktree]);
+  const candidate = seedCandidate(root, "item", worktree, { owner: "acme", repo: "fixture" });
   Object.assign(process.env, {
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: `url.${origin}.insteadOf`,
@@ -475,7 +476,7 @@ async function usageLimitScenario(
       paused: sim.pause,
       cancelAcknowledged: cancel?.acknowledged !== null && cancel?.acknowledged !== undefined,
       finished,
-      head: await git(["-C", worktree, "rev-parse", "HEAD"]),
+      head: candidate.head(),
       detail: JSON.stringify({
         receipts: db
           .query("SELECT command_id,outcome,ended_at,resets_at FROM runner_execution_usage")
