@@ -6,6 +6,8 @@ import { GitCommandError, type GitExec } from "./types";
 
 /** A branch literally named `HEAD`, which some repositories carry by accident. */
 const HEAD_BRANCH = "refs/heads/HEAD";
+/** Where a candidate pushed from a named ref lands in the publication repository. */
+const STAGED_CANDIDATE = "refs/paws/staged-candidate";
 
 export function publicationEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
@@ -179,6 +181,9 @@ async function knownCommits(run: Run, repository: string): Promise<string[]> {
  * A branch named `HEAD` makes the name ambiguous, and `git bundle` then leaves the checkout's HEAD
  * out, so HEAD is resolved to its commit ($GIT_DIR/HEAD wins over refs/heads/HEAD), carried in the
  * bundle by id, and the `HEAD` branch stays out of the publication repository.
+ *
+ * A `source` other than HEAD names the candidate in a shared bare mirror, such as
+ * `refs/paws/candidates/<item>`: the bundle carries that ref alone, not every branch the mirror has.
  */
 async function stageCandidate(
   run: Run,
@@ -186,9 +191,10 @@ async function stageCandidate(
   repository: string,
   bundle: string,
   known: string[],
+  source = "HEAD",
 ): Promise<boolean> {
   const head = (
-    await run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], candidate)
+    await run(["rev-parse", "--verify", "--quiet", `${source}^{commit}`], candidate)
   ).stdout.trim();
   if (await partialCandidate(run, candidate)) {
     const objects = (
@@ -211,10 +217,9 @@ async function stageCandidate(
         "bundle",
         "create",
         bundle,
-        `--exclude=${HEAD_BRANCH}`,
-        "--branches",
-        "--tags",
-        head,
+        ...(source === "HEAD"
+          ? [`--exclude=${HEAD_BRANCH}`, "--branches", "--tags", head]
+          : [source]),
         ...shared.map((id) => `^${id}`),
       ],
       candidate,
@@ -231,9 +236,9 @@ async function stageCandidate(
       repository,
       "fetch",
       bundle,
-      "+refs/heads/*:refs/heads/*",
-      "+refs/tags/*:refs/tags/*",
-      `^${HEAD_BRANCH}`,
+      ...(source === "HEAD"
+        ? ["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", `^${HEAD_BRANCH}`]
+        : [`+${source}:${STAGED_CANDIDATE}`]),
     ]);
   } catch (error) {
     if (!(error instanceof GitCommandError)) throw error;
@@ -249,16 +254,29 @@ async function partialCandidate(run: Run, candidate: string): Promise<boolean> {
   );
 }
 
-async function stagePersistent(run: Run, candidate: string, repository: string, bundle: string) {
+async function stagePersistent(
+  run: Run,
+  candidate: string,
+  repository: string,
+  bundle: string,
+  source: string,
+) {
   try {
-    await stageCandidate(run, candidate, repository, bundle, await knownCommits(run, repository));
+    await stageCandidate(
+      run,
+      candidate,
+      repository,
+      bundle,
+      await knownCommits(run, repository),
+      source,
+    );
     return;
   } catch (error) {
     if (!(error instanceof UnusableRepositoryError)) throw error;
     journalCaught(error, "publication.stageCandidate", null, "rebuilding the repository");
   }
   await resetRepository(run, repository);
-  await stageCandidate(run, candidate, repository, bundle, []);
+  await stageCandidate(run, candidate, repository, bundle, [], source);
 }
 
 export function publicationExec(
@@ -334,6 +352,10 @@ async function publish(
         ]
       : args;
   let publicationArgs = command === "clone" ? args : ["--git-dir", repository, ...commandArgs];
+  // The pushed refspec names the candidate in the caller's repository; staged, it is HEAD here.
+  const refspec = command === "push" ? args.at(-1)?.split(":") : undefined;
+  const source = refspec?.length === 2 && refspec[0]?.startsWith("refs/") ? refspec[0] : "HEAD";
+  if (source !== "HEAD") publicationArgs = [...publicationArgs.slice(0, -1), `HEAD:${refspec![1]}`];
   const env = publicationEnv(options.env);
   env.HOME = dir;
   const run: Run = (argv, cwd = dir) => gitExec(argv, { cwd, env, signal: options.signal });
@@ -342,8 +364,8 @@ async function publish(
     else if (command !== "clone") await run(["init", "--bare", "--template=", repository]);
     if (command === "push") {
       try {
-        if (persistent) await stagePersistent(run, options.cwd, repository, bundle);
-        else if (await stageCandidate(run, options.cwd, repository, bundle, []))
+        if (persistent) await stagePersistent(run, options.cwd, repository, bundle, source);
+        else if (await stageCandidate(run, options.cwd, repository, bundle, [], source))
           publicationArgs = publicationArgs.toSpliced(operation + 3, 0, "--no-thin");
       } catch (error) {
         throw new PublicationStagingError(

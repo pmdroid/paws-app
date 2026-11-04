@@ -146,7 +146,7 @@ async function setup() {
     now: () => now,
     pollIntervalMs: 1,
     async fetchCandidate(candidate) {
-      run(["-C", candidate.worktree, "reset", "-q", "--hard", candidate.candidateSha]);
+      run(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
     },
   });
   const seen = new Set<string>();

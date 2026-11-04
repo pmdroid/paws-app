@@ -96,10 +96,17 @@ export async function mergeHarness(
   options: {
     settings?: Partial<Pick<TaskMergeSettings, "order" | "mainMoved">>;
     queue?: FakeMergeQueue;
+    /**
+     * Runner-backed items: the lane reads each head from `refs/paws/candidates/<id>` in one bare
+     * mirror, and an item's clone stands in for its runner.
+     */
+    mirror?: boolean;
   } = {},
 ) {
   const root = await mkdtemp(path.join(tmpdir(), "paws-advance-"));
   const bare = path.join(root, "origin.git");
+  const mirror = options.mirror ? path.join(root, "repos", "acme", "app.git") : undefined;
+  const candidate = (id: string) => `refs/paws/candidates/${id}`;
   const seed = path.join(root, "seed");
   await exec("git", ["init", "--bare", "-b", "main", bare]);
   await exec("git", ["clone", "-q", bare, seed]);
@@ -109,6 +116,14 @@ export async function mergeHarness(
   await git(seed, "add", ".");
   await git(seed, "commit", "-qm", "init");
   await git(seed, "push", "-q", "origin", "HEAD:main");
+  if (mirror) await exec("git", ["clone", "-q", "--bare", bare, mirror]);
+  /** Where the lane reads an item's head: its clone's HEAD, or its candidate ref in the mirror. */
+  const laneHead = (item: HarnessItem) =>
+    mirror ? git(mirror, "rev-parse", candidate(item.id)) : git(item.worktree, "rev-parse", "HEAD");
+  /** The candidate import: the mirror takes the head the item's runner made. */
+  const adopt = async (item: { id: string; worktree: string }) => {
+    if (mirror) await git(mirror, "fetch", "-q", item.worktree, `+HEAD:${candidate(item.id)}`);
+  };
 
   const db: Database = openDatabase(":memory:");
   migrate(db);
@@ -313,6 +328,7 @@ export async function mergeHarness(
     markRun(db, run.id, "ended", clock.now());
     acceptHead(id, base, head);
     const item = { id, worktree, pull: items.size + 1, accepted: head, base };
+    await adopt(item);
     items.set(id, item);
     recordItemPullRequest(db, {
       itemId: id,
@@ -349,8 +365,9 @@ export async function mergeHarness(
       await writeFile(path.join(item.worktree, `${id}.txt`), fix);
       await git(item.worktree, "commit", "-qam", `${id} fix`);
       await git(item.worktree, "push", "-qf", "origin", `HEAD:paws/${id}`);
+      await adopt(item);
     }
-    const head = await git(item.worktree, "rev-parse", "HEAD");
+    const head = await laneHead(item);
     const current = getWorkItem(db, id)!;
     if (current.state === "queued") applyWorkItemEvent(db, id, "dispatched");
     applyWorkItemEvent(db, id, "turn_ended");
@@ -364,8 +381,8 @@ export async function mergeHarness(
   /** What the reverify job does for an item the lane sent back: Closeout accepts its head. */
   async function closeout(id: string): Promise<string> {
     const item = items.get(id)!;
-    const head = await git(item.worktree, "rev-parse", "HEAD");
-    const base = await git(item.worktree, "rev-parse", "refs/paws/upstream-main");
+    const head = await laneHead(item);
+    const base = await git(mirror ?? item.worktree, "rev-parse", "refs/paws/upstream-main");
     verified.push(head);
     if (getWorkItem(db, id)?.state === "verifying") applyWorkItemEvent(db, id, "closeout_accepted");
     saveCheckpoint(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
@@ -405,8 +422,9 @@ export async function mergeHarness(
       },
       session: (current) => current.sessionKey,
       fetchMain: async () => {
-        await git(item.worktree, "fetch", "-q", bare, "+refs/heads/main:refs/paws/upstream-main");
-        return git(item.worktree, "rev-parse", "refs/paws/upstream-main");
+        const repo = mirror ?? item.worktree;
+        await git(repo, "fetch", "-q", bare, "+refs/heads/main:refs/paws/upstream-main");
+        return git(repo, "rev-parse", "refs/paws/upstream-main");
       },
       ciFixAttempts: () => state.ciFixAttempts,
       feedbackWait: () => state.feedbackWait,
@@ -457,7 +475,8 @@ export async function mergeHarness(
           pull: { number: item.pull, url: `https://github.com/acme/app/pull/${item.pull}` },
           head: current.checkpoint?.wipCommit ?? item.accepted,
           signal: state.publication.signal,
-          worktree: item.worktree,
+          worktree: mirror ?? item.worktree,
+          ...(mirror ? { ref: candidate(id) } : {}),
           branchKey: id,
           summary: "Closeout accepted.",
           commit: { title: `${id} change` },
@@ -554,6 +573,8 @@ export async function mergeHarness(
     github,
     root,
     bare,
+    mirror,
+    candidate,
     state,
     settings,
     lines,

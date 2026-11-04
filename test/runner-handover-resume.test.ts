@@ -135,8 +135,8 @@ async function setup() {
     pollIntervalMs: 1,
     placement: createRunnerPlacement({ db, now: () => now }),
     async fetchCandidate(candidate) {
-      git(["-C", candidate.worktree, "fetch", "-q", checkout, candidate.candidateSha]);
-      git(["-C", candidate.worktree, "reset", "-q", "--hard", candidate.candidateSha]);
+      git(["-C", candidate.mirror, "fetch", "-q", checkout, candidate.candidateSha]);
+      git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
     },
   });
   const seen = new Set<string>();

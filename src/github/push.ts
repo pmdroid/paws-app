@@ -5,6 +5,8 @@ import { GitCommandError, type GitExec } from "./types";
 
 type PushInput = {
   worktree: string;
+  /** The ref that names the pushed commit in `worktree`; `HEAD` when unset. */
+  ref?: string;
   url: string;
   branch: string;
   token: string;
@@ -25,7 +27,7 @@ export async function pushWithLease(input: PushInput & { head?: string }): Promi
         async (helper) => {
           const args = [...helper.argsPrefix, "push"];
           if (remote) args.push(`--force-with-lease=refs/heads/${input.branch}:${remote}`);
-          args.push(input.url, `HEAD:refs/heads/${input.branch}`);
+          args.push(input.url, `${input.ref ?? "HEAD"}:refs/heads/${input.branch}`);
           await helper.exec(args, { cwd: input.worktree, env: helper.env });
         },
         { sleep: input.sleep },

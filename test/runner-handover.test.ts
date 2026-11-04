@@ -138,8 +138,8 @@ async function setup() {
     pollIntervalMs: 1,
     // Through networkGit in production; here Paws fetches the WIP commit from the runner's checkout.
     async fetchCandidate(candidate) {
-      git(["-C", candidate.worktree, "fetch", "-q", runner, candidate.candidateSha]);
-      git(["-C", candidate.worktree, "reset", "-q", "--hard", candidate.candidateSha]);
+      git(["-C", candidate.mirror, "fetch", "-q", runner, candidate.candidateSha]);
+      git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
     },
   });
   const seen = new Set<string>();

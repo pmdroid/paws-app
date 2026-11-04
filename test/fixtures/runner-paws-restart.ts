@@ -145,8 +145,8 @@ spyOn(loop, "attachOrchestrator").mockImplementation((options) => {
     placement: createRunnerPlacement({ db }),
     pollIntervalMs: 5,
     async fetchCandidate(input) {
-      await git(["-C", input.worktree, "fetch", origin, input.candidateSha]);
-      await git(["-C", input.worktree, "reset", "--hard", input.candidateSha]);
+      await git(["-C", input.mirror, "fetch", origin, input.candidateSha]);
+      await git(["-C", input.mirror, "update-ref", input.ref, input.candidateSha]);
     },
     transcripts: {
       async download(runId) {

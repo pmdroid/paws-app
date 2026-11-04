@@ -294,8 +294,8 @@ async function usageLimitScenario(
       },
       async fetchCandidate(candidate) {
         candidate.signal.throwIfAborted();
-        await git(["-C", candidate.worktree, "fetch", origin, candidate.candidateSha]);
-        await git(["-C", candidate.worktree, "reset", "--hard", candidate.candidateSha]);
+        await git(["-C", candidate.mirror, "fetch", origin, candidate.candidateSha]);
+        await git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
       },
       async checkpointBot() {
         return { appId: "1", login: "paws[bot]", id: 1 };

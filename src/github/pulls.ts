@@ -15,6 +15,8 @@ import {
 export async function pushBranch(
   input: {
     worktree: string;
+    /** The ref that names the candidate in `worktree`; `HEAD` when unset. */
+    ref?: string;
     issue: string;
     branchKey?: string;
     owner: string;
@@ -27,9 +29,18 @@ export async function pushBranch(
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
   const gitExec = input.gitExec ?? defaultGitExec();
   const token = await acquireOperationToken(input, "push");
-  const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
+  const ref = input.ref ?? "HEAD";
+  const head = await git(input.worktree, ["rev-parse", ref], gitExec);
   try {
-    await pushWithLease({ worktree: input.worktree, url, branch, token, gitExec, head });
+    await pushWithLease({
+      worktree: input.worktree,
+      ...(input.ref ? { ref: input.ref } : {}),
+      url,
+      branch,
+      token,
+      gitExec,
+      head,
+    });
   } catch (error) {
     const denial =
       error instanceof GitCommandError
@@ -139,6 +150,7 @@ export async function publishAccepted(
     accepted: boolean;
     evidence: string;
     worktree: string;
+    ref?: string;
     issue: string;
     branchKey?: string;
     owner: string;

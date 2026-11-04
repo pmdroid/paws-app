@@ -65,7 +65,10 @@ import { wakeMergesBehind } from "./wait";
 
 export type MergePublication = MergePull & {
   github: GitHubBinding & { gitExec: GitExec };
+  /** The item worktree, or the bare mirror of a runner-backed item. */
   worktree: string;
+  /** The candidate ref that names the head in the mirror; `HEAD` of the worktree when unset. */
+  ref?: string;
   branchKey: string;
   summary: string;
   commit: { title: string; message?: string; env?: Record<string, string> };
@@ -85,7 +88,7 @@ export type MergeCapabilities = OrderCapabilities & {
   publish(item: WorkItemRecord): Promise<MergePublication | MergeStep>;
   settings(item: WorkItemRecord, signal: AbortSignal): Promise<TaskMergeSettings>;
   /**
-   * Closeout's policy digest for the item's worktree now, and the digest of its checks marked
+   * Closeout's policy digest for the item's worktree or mirror now, and the digest of its checks marked
    * `recheck: true`: `""` without a policy or such a check, null when the policy is unreadable.
    */
   policyDigests(item: WorkItemRecord, worktree: string): { digest: string; recheck: string } | null;
@@ -187,6 +190,7 @@ export async function advanceMerge(
   }
   const lane: SerialMergeInput = {
     worktree: published.worktree,
+    ...(published.ref ? { ref: published.ref } : {}),
     issue: item.linearIdentifier,
     branchKey: published.branchKey,
     owner: repository.owner,

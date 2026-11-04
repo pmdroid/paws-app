@@ -181,7 +181,13 @@ export async function probeRunnerBackend(
       assert.equal(candidate.baseSha, base);
       assert.equal(candidate.candidateSha, head);
       fetched++;
-      await git(["-C", candidate.worktree, "reset", "--hard", importWrongHead ? base : head]);
+      await git([
+        "-C",
+        candidate.mirror,
+        "update-ref",
+        candidate.ref,
+        importWrongHead ? base : head,
+      ]);
     },
   };
   const backend = createRemoteAgentRunner(backendOptions);
@@ -2236,7 +2242,7 @@ export async function probeRunnerBackend(
         placement,
         async fetchCandidate(candidate) {
           assert.equal(candidate.candidateSha, head);
-          await git(["-C", candidate.worktree, "reset", "--hard", head]);
+          await git(["-C", candidate.mirror, "update-ref", candidate.ref, head]);
         },
       });
       for (const host of hostIds)
