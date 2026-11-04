@@ -824,7 +824,14 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     );
     expect(artifactIndex).toBeGreaterThanOrEqual(0);
     expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
-    expect(selectedRepositories).toHaveLength(6);
+    const deleteJobs = db
+      .query<{ status: string }, []>(
+        "SELECT status FROM job WHERE queue='github.delete_checkpoint_ref'",
+      )
+      .all();
+    expect(deleteJobs).toHaveLength(2);
+    const deleted = deleteJobs.filter((job) => job.status === "done").length;
+    expect(selectedRepositories).toHaveLength(4 + deleted);
     for (const item of listWorkItems(db)) {
       expect(getWorkItemRepository(db, item.id)).toEqual(repository);
     }

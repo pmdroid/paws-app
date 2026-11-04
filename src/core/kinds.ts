@@ -8,6 +8,7 @@ export const JOB_KIND = {
   /** Main moved: queued pull requests behind the front that now conflict go back for a rebase. */
   queueConflicts: "github.queue_conflicts",
   closeStoppedPull: "github.close_stopped",
+  deleteCheckpointRef: "github.delete_checkpoint_ref",
   /** One per GitHub review id; the payload names the review, not the item, so a restart keeps it. */
   pullReview: "github.pull_review",
   /**
