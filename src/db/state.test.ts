@@ -579,6 +579,7 @@ describe("hard caps", () => {
   test("awake time counts monotonic time and ignores a wall-clock sleep", () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
+    db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
     beginImplementRun(db, item.id, clock.now());
     accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     clock.sleep(3 * 60 * 60_000);
@@ -591,7 +592,7 @@ describe("hard caps", () => {
     expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).capped).toBe(true);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
     expect(listOutbox(db)[0]?.payload).toEqual({
-      sessionId: item.sessionKey ?? item.id,
+      sessionId: item.id,
       kind: "error",
       body: "Run hit the awake time cap (1 min). Counted: agent turns under 1 min, Closeout 0 min.",
     });
@@ -655,7 +656,7 @@ describe("hard caps", () => {
     // The merge queue dropped the baseline; the supervisor's next tick starts the clock again.
     accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(2_000);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).capped).toBe(true);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).asked).toBe(true);
   });
 });
 

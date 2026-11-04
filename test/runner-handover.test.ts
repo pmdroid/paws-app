@@ -8,6 +8,7 @@ import type { AskTeamContext } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
   accrueAwake,
+  applyWorkItemEvent,
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
@@ -586,9 +587,13 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
           "-m",
           "Save work in progress so far",
         ]);
-        // The time cap fails the item, and Paws stops the agent.
+        // The time cap asks in Linear, and Paws stops the agent.
         db.run("UPDATE work_item SET awake_ms=max_awake_ms WHERE id=?", [record.id]);
-        expect(accrueAwake(db, record.id, 0, Date.now()).capped).toBe(true);
+        expect(accrueAwake(db, record.id, 0, Date.now())).toMatchObject({
+          asked: true,
+          stopAgent: true,
+        });
+        applyWorkItemEvent(db, record.id, "blocking_question");
         stop.abort();
         expect(await context.next()).toMatchObject({
           type: "checkpoint",

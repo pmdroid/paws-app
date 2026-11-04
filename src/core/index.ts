@@ -67,10 +67,13 @@ export {
   capActivityText,
   formatAwakeBreakdown,
   timeLimitQuestion,
+  unacceptedTimeLimitQuestion,
   TIME_LIMIT_EXTENSION_MS,
   TIME_LIMIT_CONTINUE,
   TIME_LIMIT_MERGE,
   TIME_LIMIT_OPTIONS,
+  TIME_LIMIT_VERIFYING_REASON,
+  UNACCEPTED_TIME_LIMIT_OPTIONS,
   type AwakeBreakdown,
 } from "./caps";
 export {

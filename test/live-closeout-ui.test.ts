@@ -228,6 +228,7 @@ describe("live closeout ui", () => {
     const now = 1_700_000_000_000;
     const id = "ENG-302";
     insertQueuedItem(db, { id, title: "Capped repair", maxAwakeMs: 1_000, now });
+    db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [id]);
     seedVerifying(db, id, sha("b"), now);
     // Closeout time counts while a job verifies the item.
     enqueueJob(db, { queue: "run.reverify", payload: { itemId: id }, now });

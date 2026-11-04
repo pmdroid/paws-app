@@ -9,8 +9,11 @@ import {
   capActivityText,
   formatAwakeBreakdown,
   timeLimitQuestion,
+  unacceptedTimeLimitQuestion,
   TIME_LIMIT_EXTENSION_MS,
   TIME_LIMIT_OPTIONS,
+  TIME_LIMIT_VERIFYING_REASON,
+  UNACCEPTED_TIME_LIMIT_OPTIONS,
   type AwakeBreakdown,
   type AwakeCategory,
   hasVerificationCandidate,
@@ -343,7 +346,7 @@ export function syncClock(db: Database, id: string, mono: number): void {
 export type CapOutcome = {
   /** The task failed on its cap. */
   capped: boolean;
-  /** Closeout had accepted the work, so the cap asked in Linear instead of failing. */
+  /** The cap asked in Linear instead of failing. */
   asked?: boolean;
   /** The agent's run ended at the time limit: the caller must stop the live agent. */
   stopAgent?: boolean;
@@ -503,30 +506,35 @@ function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId
 }
 
 /**
- * Fails an item past a cap. Work Closeout already accepted never fails on the time
- * cap: Paws keeps publishing and merging it, and a resumed agent asks in Linear.
+ * Asks in Linear when an item reaches its time cap. Work Closeout already accepted keeps
+ * publishing and merging, and only a resumed agent stops to ask. Before acceptance, a
+ * running agent or Closeout run stops to ask. The cap fails an item only when it cannot ask.
  */
 function enforceCaps(db: Database, id: string, now: number): CapOutcome {
   const updated = getWorkItem(db, id);
   if (updated === null) throw new Error(`work item ${id} not found`);
   if (!awakeCapReached(updated)) return { capped: false, item: updated };
-  if (updated.acceptedHead !== null) {
-    if (updated.state !== "running") return { capped: false, item: updated };
-    if (
-      db
-        .query(
-          "SELECT 1 FROM job WHERE queue='item.ask' AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=?",
-        )
-        .get(id)
-    )
-      return { capped: false, item: updated };
-    if (askTimeLimit(db, updated, now))
-      return { capped: false, asked: true, stopAgent: true, item: refetch() };
-    pauseAtTimeLimit(db, updated, now);
-    return { capped: false, stopAgent: true, item: refetch() };
+  const accepted = updated.acceptedHead !== null;
+  if (
+    !accepted &&
+    (updated.sessionKey === null || (updated.state !== "running" && updated.state !== "verifying"))
+  ) {
+    failForCap(db, updated, now);
+    return { capped: true, item: refetch() };
   }
-  failForCap(db, updated, now);
-  return { capped: true, item: refetch() };
+  if (accepted && updated.state !== "running") return { capped: false, item: updated };
+  if (
+    db
+      .query(
+        "SELECT 1 FROM job WHERE queue='item.ask' AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=?",
+      )
+      .get(id)
+  )
+    return { capped: false, item: updated };
+  if (askTimeLimit(db, updated, now))
+    return { capped: false, asked: true, stopAgent: true, item: refetch() };
+  pauseAtTimeLimit(db, updated, now);
+  return { capped: false, stopAgent: true, item: refetch() };
 
   function refetch(): WorkItemRecord {
     const item = getWorkItem(db, id);
@@ -569,17 +577,20 @@ export function resetAwakeTime(db: Database, id: string): void {
 }
 
 /**
- * Cancels the agent's pending start and resume jobs at the time limit. Merge jobs
- * stay: Closeout accepted this work, so Paws keeps publishing and merging it.
+ * Cancels the agent's pending start and resume jobs at the time limit, and the Closeout
+ * run of work not yet accepted. Merge jobs stay: Paws keeps publishing and merging
+ * accepted work.
  */
-function cancelAgentJobs(db: Database, itemId: string, now: number): void {
+function cancelAgentJobs(db: Database, itemId: string, now: number, closeout = false): void {
+  const queues: string[] = [JOB_KIND.start, JOB_KIND.resume];
+  if (closeout) queues.push(JOB_KIND.reverify);
   db.run(
     `UPDATE job
      SET status = 'cancelled', last_error = 'time_limit', locked_by = NULL,
          locked_until = NULL, finished_at = ?
-     WHERE status IN ('pending', 'running') AND queue IN (?, ?)
+     WHERE status IN ('pending', 'running') AND queue IN (${queues.map(() => "?").join(", ")})
        AND json_extract(payload, '$.itemId') = ?`,
-    [now, JOB_KIND.start, JOB_KIND.resume, itemId],
+    [now, ...queues, itemId],
   );
 }
 
@@ -638,24 +649,28 @@ function timeLimitPausedNote(item: WorkItemRecord): string {
 }
 
 /**
- * Stops the resumed agent's run and asks "continue or stop?" in Linear.
- * Returns false when the task has no Linear session to ask in.
+ * Stops the agent's or Closeout's run and asks "continue or stop?" in Linear, offering
+ * Merge when Closeout accepted a head. Returns false when the task has no Linear session.
  */
 function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean {
   const sessionId = item.sessionKey;
   if (sessionId === null) return false;
-  cancelAgentJobs(db, item.id, now);
+  const accepted = item.acceptedHead !== null;
+  const verifying = item.state === "verifying";
+  cancelAgentJobs(db, item.id, now, !accepted);
   const held = heldHandoffs(db, item.id).length > 0;
-  if (item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
+  if (accepted && item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
   enqueueJobOnce(db, {
     queue: "item.ask",
     jobKey: `time-limit:${item.id}:${item.version}`,
     payload: {
       itemId: item.id,
       kind: "time-limit",
-      reason: "time_limit",
-      body: timeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item), held),
-      options: [...TIME_LIMIT_OPTIONS],
+      reason: verifying ? TIME_LIMIT_VERIFYING_REASON : "time_limit",
+      body: accepted
+        ? timeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item), held)
+        : unacceptedTimeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item), verifying, held),
+      options: accepted ? [...TIME_LIMIT_OPTIONS] : [...UNACCEPTED_TIME_LIMIT_OPTIONS],
     },
     now,
   });

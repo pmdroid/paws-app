@@ -69,7 +69,8 @@ describe("journal", () => {
 
   test("writes one line when a work item hits its time cap", () => {
     const db = database();
-    insertQueuedItem(db, { id: "PAS-3", sessionKey: "s", maxAwakeMs: 1_000 });
+    insertQueuedItem(db, { id: "PAS-3", maxAwakeMs: 1_000 });
+    db.run("UPDATE work_item SET session_key = NULL WHERE id = 'PAS-3'");
     beginImplementRun(db, "PAS-3", 1_000);
     accrueAwake(db, "PAS-3", 0, 1_000, undefined, true);
     lines = [];
