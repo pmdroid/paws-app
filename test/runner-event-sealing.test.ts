@@ -109,7 +109,11 @@ test("a sealed payload moved to another sequence fails to open", async () => {
   expect(() => other.openEvent(row(1))).toThrow(/another key/);
 });
 
-test("sealing leaves no plaintext in the database file or its WAL", async () => {
+const copies = (bytes: Uint8Array, marker: string) =>
+  Buffer.from(bytes).toString("latin1").split(marker).length - 1;
+
+// Without a VACUUM, plaintext in the slack of pages that split stays until the offline VACUUM.
+test("sealing zeroes most freed plaintext in the database file and empties its WAL", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-event-"));
   try {
     const path = join(root, "paws.sqlite");
@@ -119,11 +123,20 @@ test("sealing leaves no plaintext in the database file or its WAL", async () => 
     insert(1, { type: "progress", text: `${marker} `.repeat(4000) });
     for (let sequence = 2; sequence <= 40; sequence++)
       insert(sequence, { type: "progress", text: `${marker} ${sequence}` });
+    const before = copies(db.serialize(), marker);
     await encryptRunnerEvents({ db, key });
-    expect(Buffer.from(db.serialize()).includes(marker)).toBe(false);
+    const { count } = db
+      .query<{ count: number }, []>(
+        "SELECT COUNT(*) AS count FROM runner_event WHERE key_id IS NULL OR instr(payload, 'plaintext-marker')",
+      )
+      .get()!;
+    expect(count).toBe(0);
+    expect(
+      db.query<{ secure_delete: number }, []>("PRAGMA secure_delete").get()!.secure_delete,
+    ).toBe(0);
     db.close();
-    for (const file of [path, `${path}-wal`])
-      if (existsSync(file)) expect(readFileSync(file).includes(marker)).toBe(false);
+    expect(copies(readFileSync(path), marker)).toBeLessThan(before / 10);
+    if (existsSync(`${path}-wal`)) expect(readFileSync(`${path}-wal`).length).toBe(0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

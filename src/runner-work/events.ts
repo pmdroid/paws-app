@@ -4,6 +4,7 @@ import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { loadSecretKey } from "../credentials";
 import { immediate } from "../db";
 import { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
+import { incrementalVacuum } from "./prune";
 
 export const RUNNER_EVENT_KEY_FILE = "runner-event.key";
 const KEY_CONTEXT = "paws-runner-event-key\0";
@@ -107,34 +108,43 @@ export async function encryptRunnerEvents(options: {
   );
   let after: [string, number, number] = ["", 0, 0];
   let sealed = 0;
-  for (;;) {
-    signal?.throwIfAborted();
-    const rows = immediate(db, () => {
-      const batch = next.all(...after);
-      for (const row of batch) {
-        const columns = sealRunnerEvent(key, row, row.payload);
-        update.run(
-          columns.payload,
-          columns.keyId,
-          columns.payloadSha256,
-          columns.type,
-          columns.handedOver,
-          columns.reason,
-          row.runId,
-          row.generation,
-          row.sequence,
-        );
-      }
-      return batch;
-    });
-    const last = rows.at(-1);
-    if (!last) break;
-    after = [last.runId, last.generation, last.sequence];
-    sealed += rows.length;
-    await yieldToLoop();
+  // Zero the plaintext that sealing frees, without rebuilding the file. Bytes left in the slack of
+  // pages that split stay until the offline rebuild in the README.
+  const mode = db.query<{ secure_delete: number }, []>("PRAGMA secure_delete").get()?.secure_delete;
+  const secureDelete = mode === 2 ? "FAST" : mode ? "ON" : "OFF";
+  db.run("PRAGMA secure_delete=ON");
+  try {
+    for (;;) {
+      signal?.throwIfAborted();
+      const rows = immediate(db, () => {
+        const batch = next.all(...after);
+        for (const row of batch) {
+          const columns = sealRunnerEvent(key, row, row.payload);
+          update.run(
+            columns.payload,
+            columns.keyId,
+            columns.payloadSha256,
+            columns.type,
+            columns.handedOver,
+            columns.reason,
+            row.runId,
+            row.generation,
+            row.sequence,
+          );
+        }
+        return batch;
+      });
+      const last = rows.at(-1);
+      if (!last) break;
+      after = [last.runId, last.generation, last.sequence];
+      sealed += rows.length;
+      await yieldToLoop();
+    }
+    incrementalVacuum(db);
+    const [checkpoint] = db.query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").all();
+    if (checkpoint?.busy) throw new Error("Runner event WAL checkpoint is busy.");
+  } finally {
+    db.run(`PRAGMA secure_delete=${secureDelete}`);
   }
-  db.run("VACUUM");
-  const [checkpoint] = db.query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").all();
-  if (checkpoint?.busy) throw new Error("Runner event WAL checkpoint is busy.");
   return { sealed };
 }
