@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { withCredential } from "./git";
+import { gitFailureReason, withCredential } from "./git";
 import { isPushOutage, PushOutageError } from "./transport";
 import { GitCommandError, type GitExec } from "./types";
 
@@ -12,9 +12,12 @@ type PushInput = {
   sleep?: (ms: number) => Promise<void>;
 };
 
-export async function pushWithLease(input: PushInput): Promise<void> {
+export async function pushWithLease(input: PushInput & { head?: string }): Promise<void> {
+  let known = input.head === undefined ? undefined : await currentRemote(input);
+  if (input.head !== undefined && known === input.head) return;
   for (let attempt = 1; ; attempt++) {
-    const remote = await remoteBranchSha(input);
+    const remote = known === undefined ? await remoteBranchSha(input) : known;
+    known = undefined;
     try {
       await withCredential(
         input.token,
@@ -45,6 +48,20 @@ export async function pushWithLease(input: PushInput): Promise<void> {
         throw new PushOutageError(error.args, error.stderr);
       throw error;
     }
+  }
+}
+
+async function currentRemote(input: PushInput): Promise<string | null | undefined> {
+  try {
+    return await remoteBranchSha(input);
+  } catch (error) {
+    journalCaught(
+      gitFailureReason(input.token, error),
+      "push.currentRemote",
+      null,
+      "remote branch unread; pushing",
+    );
+    return undefined;
   }
 }
 
