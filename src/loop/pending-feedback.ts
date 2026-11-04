@@ -194,7 +194,11 @@ export function deliverFeedback(
         detail: {
           comments: comments
             .filter((comment) => comment.body.trim() !== "")
-            .map((comment) => ({ id: comment.commentId, author: comment.author, body: comment.body })),
+            .map((comment) => ({
+              id: comment.commentId,
+              author: comment.author,
+              body: comment.body,
+            })),
         },
         recordedAt: now,
       });

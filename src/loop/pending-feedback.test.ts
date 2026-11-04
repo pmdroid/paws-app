@@ -29,7 +29,11 @@ import {
   storedFeedbackReads,
   type FeedbackCapabilities,
 } from "./pending-feedback";
-import { COMMENT_FIX_INSTRUCTION, handlePullComments, type PullCommentFilter } from "./pull-comments";
+import {
+  COMMENT_FIX_INSTRUCTION,
+  handlePullComments,
+  type PullCommentFilter,
+} from "./pull-comments";
 import type { PullReviewCapabilities } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
 
