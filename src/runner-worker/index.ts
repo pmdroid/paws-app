@@ -2069,3 +2069,18 @@ export async function runRunnerWorker(options: {
     },
   });
 }
+
+export {
+  downloadRetroInput,
+  executeRetroCommand,
+  readRetroResult,
+  recordRetroResult,
+  RETRO_DIGEST_FILE,
+  RETRO_RESULT_FILE,
+  RetroCommandMismatchError,
+  RetroInputIntegrityError,
+  RetroResultConflictError,
+  type RetroInputFetch,
+  type RetroWorkerOptions,
+  type RetroWorkerResult,
+} from "./retro";
