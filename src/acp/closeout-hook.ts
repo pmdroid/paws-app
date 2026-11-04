@@ -177,7 +177,7 @@ def block():
 def main():
     try:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(20)
+        client.settimeout(25)
         client.connect(SOCKET)
         client.sendall(b'{"id":1,"tool":"closeout_finish","arguments":{}}\\n')
         data = b""

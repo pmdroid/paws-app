@@ -260,8 +260,22 @@ export function remoteCloseoutPolicy(
   }) => void,
   answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
   signal: AbortSignal,
+  now: () => number = Date.now,
 ): () => Promise<PolicyFilesLoad> {
+  let cached: { at: number; value: PolicyFilesLoad } | undefined;
+  let inflight: Promise<PolicyFilesLoad> | undefined;
   return async () => {
+    if (cached && now() - cached.at <= REMOTE_POLICY_REUSE_MS) return cached.value;
+    if (inflight) return inflight;
+    inflight = fetchRemotePolicy().finally(() => {
+      inflight = undefined;
+    });
+    const value = await inflight;
+    if (value.ok) cached = { at: now(), value };
+    return value;
+  };
+
+  async function fetchRemotePolicy(): Promise<PolicyFilesLoad> {
     try {
       let content = "";
       let hash: string | undefined;
@@ -304,8 +318,10 @@ export function remoteCloseoutPolicy(
         message: `Paws could not provide the Closeout policy: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
-  };
+  }
 }
+
+const REMOTE_POLICY_REUSE_MS = 5 * 60_000;
 
 export function remoteCiLog(
   emit: (event: { type: "ci_log"; requestId: string; job?: string }) => void,
