@@ -13,6 +13,8 @@ export async function runGitHubGit(input: {
   dest?: string;
   refspec?: string;
   lease?: string;
+  filter?: string;
+  objects?: string[];
   env?: NodeJS.ProcessEnv;
   gitBin?: string;
   signal?: AbortSignal;
@@ -29,11 +31,29 @@ export async function runGitHubGit(input: {
       let cwd = input.cwd;
       if (input.operation === "clone") {
         if (!input.dest) throw new Error("clone needs a destination");
-        args = ["clone", "--bare", input.remoteUrl, path.resolve(input.cwd, input.dest)];
+        args = [
+          "clone",
+          "--bare",
+          ...(input.filter ? [`--filter=${input.filter}`] : []),
+          input.remoteUrl,
+          path.resolve(input.cwd, input.dest),
+        ];
       } else if (input.operation === "fetch") {
         if (!input.dest) throw new Error("fetch needs a git dir");
         cwd = path.resolve(input.cwd, input.dest);
-        args = ["fetch", input.remoteUrl, "+refs/heads/*:refs/heads/*"];
+        args = input.objects
+          ? [
+              "fetch",
+              "--no-tags",
+              "--no-write-fetch-head",
+              "--recurse-submodules=no",
+              input.remoteUrl,
+              ...input.objects.map((object) => {
+                if (!/^[a-f0-9]{40,64}$/.test(object)) throw new Error("invalid object id");
+                return object;
+              }),
+            ]
+          : ["fetch", input.remoteUrl, "+refs/heads/*:refs/heads/*"];
       } else {
         if (!input.refspec) throw new Error("push needs a refspec");
         args = input.lease
