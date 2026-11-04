@@ -23,7 +23,7 @@ export const ACTIONS_RERUN_PERMISSIONS = {
 
 export const UPSTREAM_MAIN_REF = "refs/paws/upstream-main";
 
-export type GitHubMethod = "GET" | "POST" | "PUT" | "PATCH";
+export type GitHubMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export type GitHubResponse = {
   status: number;

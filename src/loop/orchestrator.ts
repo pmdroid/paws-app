@@ -174,6 +174,7 @@ import {
   resumeRetrySpreadMs,
   retryNote,
   transientRetryDelayMs,
+  checkpointRef,
 } from "../core";
 import {
   saveCandidateRisk,
@@ -331,6 +332,7 @@ import {
   publishAccepted,
   storeEvidenceFiles,
   closeStoppedPull,
+  deleteHiddenRef,
   fetchUpstreamMain,
   leaveGitHubMergeQueue,
   readPullMergeable,
@@ -1960,6 +1962,7 @@ export class Orchestrator {
         ...this.gitHubCredentials(github),
         signal: context.signal,
       });
+      await this.deleteCheckpointRef(item, repository, context.signal);
     });
     jobs.register(JOB_KIND.pullReview, async (job, context) => {
       const reviewId = (job.payload as { reviewId?: unknown }).reviewId;
@@ -5410,6 +5413,7 @@ export class Orchestrator {
     });
     if (!merged) return;
     wakeMergesBehind(this.db, this.now());
+    await this.deleteCheckpointRef(item, repository);
     await (this.options.remoteExecution ? removeCandidateRef : removeWorktree)({
       owner: repository.owner,
       repo: repository.repo,
@@ -8413,6 +8417,32 @@ export class Orchestrator {
         this.options.journal,
       ),
     );
+  }
+
+  private async deleteCheckpointRef(
+    item: WorkItemRecord,
+    repository: RepositoryBinding,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const github = this.githubForRepository(repository);
+    if (!github || !item.branchName) return;
+    await deleteHiddenRef({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      ref: checkpointRef(item.branchName),
+      ...this.gitHubCredentials(github),
+      ...(signal ? { signal } : {}),
+    }).catch((error: unknown) => {
+      journalCaught(
+        error,
+        "orchestrator.deleteCheckpointRef",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return false;
+    });
   }
 
   private gitHubCredentials(
