@@ -255,6 +255,33 @@ test("a cancelled assignment keeps the handoff for the next command", async () =
   expect(result.thoughts).toHaveLength(1);
 });
 
+test("a hidden-ref checkpoint goes to a current runner to restore, leaving the PR branch alone", async () => {
+  const result = await startScenario({
+    local: [],
+    push: "fails",
+    hiddenCheckpoint: { runnerVersion: "0.1.63" },
+  });
+  expect(result.error, result.detail).toBeUndefined();
+  expect(result.restoreCheckpoint).toEqual({ sha: result.hiddenWip!, branch: "paws/item" });
+  expect(result.baseSha).toBe(result.prHead);
+  expect(result.head).toBe(result.prHead);
+  expect(result.remoteBranch).toBe(result.prHead);
+  expect(result.pushes).toBe(0);
+});
+
+test("a runner too old to restore a hidden-ref checkpoint is refused before Paws checks it out", async () => {
+  const result = await startScenario({
+    local: [],
+    push: "works",
+    hiddenCheckpoint: { runnerVersion: "0.1.62" },
+  });
+  expect(String(result.error)).toContain("fixture: excluded after failed attempt");
+  expect(result.baseSha).toBeUndefined();
+  expect(result.head).toBe(result.prHead);
+  expect(result.remoteBranch).toBe(result.prHead);
+  expect(result.pushes).toBe(0);
+});
+
 async function startScenario(input: {
   local: string[];
   push: "works" | "fails";
@@ -270,6 +297,7 @@ async function startScenario(input: {
   failFirstDispatch?: true;
   /** Paws saved the fallback and stopped before it moved the candidate ref. */
   stoppedBeforeReset?: true;
+  hiddenCheckpoint?: { runnerVersion: string };
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-start-commit-"));
   const source = join(root, "source");
@@ -325,6 +353,15 @@ async function startScenario(input: {
   await git(["clone", "--bare", origin, mirror]);
   const adopt = () => git(["--git-dir", mirror, "fetch", worktree, `+HEAD:${REF}`]);
   await adopt();
+  let hiddenWip: string | undefined;
+  if (input.hiddenCheckpoint) {
+    const other = join(root, "other");
+    await git(["clone", origin, other]);
+    await git(["-C", other, "checkout", "--detach", prHead]);
+    await commit(other, "Save work in progress so far");
+    hiddenWip = await git(["-C", other, "rev-parse", "HEAD"]);
+    await git(["-C", other, "push", origin, `HEAD:refs/paws/checkpoints/${BRANCH}`]);
+  }
 
   // GitHub, served from the bare repository; a refused push fails like the 403s did.
   let pushes = 0;
@@ -377,6 +414,12 @@ async function startScenario(input: {
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);
+  if (input.hiddenCheckpoint)
+    db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
+      runnerId,
+      input.hiddenCheckpoint.runnerVersion,
+      now,
+    ]);
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session", branchName: BRANCH });
   const { run } = beginImplementRun(db, item.id, now);
@@ -395,7 +438,8 @@ async function startScenario(input: {
   saveCheckpoint(db, item.id, {
     phase: "running",
     baseSha: base,
-    wipCommit: input.stoppedBeforeReset ? prHead : input.earlierWip ? earlierWip : localHead,
+    wipCommit:
+      hiddenWip ?? (input.stoppedBeforeReset ? prHead : input.earlierWip ? earlierWip : localHead),
     ...(input.stoppedBeforeReset
       ? {
           lostCommits: `Your commits after ${prHead.slice(0, 8)} didn't reach GitHub: ${[...input.local].reverse().join("; ")}. Redo them.`,
@@ -534,6 +578,8 @@ async function startScenario(input: {
       pushes,
       thoughts,
       baseSha: assigned?.repository.baseSha,
+      restoreCheckpoint: assigned?.restoreCheckpoint,
+      hiddenWip,
       prompt: assigned?.prompt,
       remoteBranch: await git(["--git-dir", origin, "rev-parse", `refs/heads/${BRANCH}`]).catch(
         () => undefined,

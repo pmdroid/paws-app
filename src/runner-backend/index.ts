@@ -114,6 +114,7 @@ import {
 } from "./failover";
 import {
   checkpointRef,
+  checkpointStart,
   isReadOnlyTaskMode,
   isResponseTaskMode,
   PawsShutdown,
@@ -357,7 +358,6 @@ export function createRemoteAgentRunner(options: {
     baseSha: string;
     candidateSha: string;
     branch: string;
-    ref?: string;
     remoteUrl: string;
     networkGit: (args: string[]) => Promise<string>;
     signal: AbortSignal;
@@ -1112,31 +1112,19 @@ export function createRemoteAgentRunner(options: {
                 networkGit,
               )) === wip;
             if (hidden) {
-              const onHead = await git([
-                "-C",
-                input.worktreePath,
-                "merge-base",
-                "--is-ancestor",
-                head,
-                wip,
-              ]).then(
-                () => true,
-                () => false,
-              );
               const version = db
                 .query<{ version: string | null }, [string]>(
                   "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
                 )
                 .get(selected.id)?.version;
-              if (onHead && versionAtLeast(version, HIDDEN_CHECKPOINT_RUNNER_VERSION))
+              if (versionAtLeast(version, HIDDEN_CHECKPOINT_RUNNER_VERSION))
                 return { sha: wip, branch: scoped.item.branchName };
-              if (!onHead) {
-                journal(
-                  `item ${itemId} does not restore its checkpoint ${wip}: the branch moved to ${head} since it was saved`,
-                );
-                return;
-              }
-            } else if (local) return;
+              throw new RetryableRunnerError(
+                selected.id,
+                `Runner ${selected.id} is older than ${HIDDEN_CHECKPOINT_RUNNER_VERSION.join(".")} and cannot restore the saved work at ${wip.slice(0, 7)} without putting it on ${scoped.item.branchName}`,
+              );
+            }
+            if (local) return;
             // The turn must start from the saved work; a checkout without it would lose it.
             try {
               await options.fetchCandidate({
@@ -1146,7 +1134,6 @@ export function createRemoteAgentRunner(options: {
                 baseSha: head,
                 candidateSha: wip,
                 branch: scoped.item.branchName,
-                ...(hidden ? { ref: checkpointRef(scoped.item.branchName) } : {}),
                 remoteUrl: scoped.repository.remoteUrl,
                 networkGit,
                 signal,
@@ -1314,26 +1301,6 @@ export function createRemoteAgentRunner(options: {
                 ))
               )
                 restorePlan = { eligible: false, failure: "no_snapshot" };
-              if (
-                restoreCheckpoint &&
-                (!head ||
-                  !(await git([
-                    "-C",
-                    input.worktreePath,
-                    "merge-base",
-                    "--is-ancestor",
-                    head,
-                    restoreCheckpoint.sha,
-                  ]).then(
-                    () => true,
-                    () => false,
-                  )))
-              ) {
-                journal(
-                  `item ${itemId} does not restore its checkpoint ${restoreCheckpoint.sha} on ${head ?? "no head"}`,
-                );
-                restoreCheckpoint = undefined;
-              }
               const baseSha = taskScope
                 ? taskScope.repository
                   ? snapshotCommit(input.worktreePath, taskScope.repository)
@@ -1408,6 +1375,28 @@ export function createRemoteAgentRunner(options: {
                     })))
                   ? mainCandidate
                   : undefined;
+              if (
+                restoreCheckpoint &&
+                getWorkItem(db, itemId)?.checkpoint?.wipCommit !== restoreCheckpoint.sha
+              ) {
+                journal(
+                  `item ${itemId} starts from ${head ?? "no head"} instead of its checkpoint ${restoreCheckpoint.sha}`,
+                );
+                restoreCheckpoint = undefined;
+              }
+              if (restoreCheckpoint && head) {
+                const saved = restoreCheckpoint.sha;
+                await checkpointStart(
+                  (args) => git(["-C", input.worktreePath, ...args]),
+                  saved,
+                  mainSha ? [head, mainSha] : [head],
+                ).catch((error: unknown) => {
+                  throw new Error(
+                    `Paws could not restore the saved work at ${saved.slice(0, 7)}: it is on neither ${restoreCheckpoint!.branch} at ${head.slice(0, 7)} nor main`,
+                    { cause: error },
+                  );
+                });
+              }
               const generation =
                 (db
                   .query<{ generation: number }, [string]>(
