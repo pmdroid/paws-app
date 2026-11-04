@@ -23,7 +23,7 @@ CREATE TABLE retro_dispatch (
   result_at INTEGER,
   released_at INTEGER,
   release_reason TEXT CHECK(release_reason IS NULL OR release_reason IN
-    ('result','not_started','teardown','revoked')),
+    ('result','not_started','teardown')),
   settled_at INTEGER,
   UNIQUE (retro_id, attempt),
   CHECK((released_at IS NULL) = (release_reason IS NULL)),

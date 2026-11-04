@@ -4,7 +4,7 @@ import { ulid } from "./ulid";
 
 export const newRetroCommandId = (now: number): string => ulid(now);
 
-export type RetroDispatchRelease = "result" | "not_started" | "teardown" | "revoked";
+export type RetroDispatchRelease = "result" | "not_started" | "teardown";
 
 export type RetroGenerationDiagnostic =
   | "no_runner"
