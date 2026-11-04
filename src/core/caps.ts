@@ -23,7 +23,7 @@ export const TIME_LIMIT_CONTINUE = "Continue";
 
 export const TIME_LIMIT_OPTIONS = [TIME_LIMIT_MERGE, TIME_LIMIT_CONTINUE, "Stop"] as const;
 
-/** How much more awake time a Continue answer gives the agent. */
+/** How much more awake time resuming accepted work paused at the time limit gives the agent. */
 export const TIME_LIMIT_EXTENSION_MS = 60 * 60 * 1000;
 
 export function capActivityText(maxAwakeMs: number, breakdown?: AwakeBreakdown): string {
@@ -57,7 +57,7 @@ export function timeLimitQuestion(
     heldHandoff
       ? "The agent had not started on the latest feedback yet: Continue hands it over, Merge and Stop leave it unaddressed."
       : null,
-    `${TIME_LIMIT_MERGE} sends the accepted head to the merge queue without another agent turn. Continue gives the agent another ${minutes(TIME_LIMIT_EXTENSION_MS)}. Stop ends the task without merging: the accepted work stays on its branch and its pull request is not closed.`,
+    `${TIME_LIMIT_MERGE} sends the accepted head to the merge queue without another agent turn. Continue starts the agent on a fresh time limit of the configured length. Stop ends the task without merging: the accepted work stays on its branch and its pull request is not closed.`,
   ]
     .filter((part) => part !== null)
     .join(" ");

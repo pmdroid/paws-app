@@ -2,7 +2,7 @@ import { mergeAcceptedWork } from "./accepted-work";
 import { SLOW_CI_REASON } from "./merge-jobs";
 import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, TIME_LIMIT_CONTINUE, TIME_LIMIT_MERGE } from "../core";
+import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
 import { startFreshBudget } from "./time-budget";
 import {
   applyLinearTurns,
@@ -11,7 +11,6 @@ import {
   completePlanTask,
   enqueueJobOnce,
   enqueueOutboxOnce,
-  extendAwakeCap,
   failWorkItem,
   getPlanProposal,
   getWorkItem,
@@ -130,8 +129,8 @@ export function questionEffects(
     );
   };
   /**
-   * Merge sends the accepted head to the merge queue without another turn. Continue gives the
-   * resumed agent more awake time. Stop ends the task; the accepted work stays.
+   * Merge sends the accepted head to the merge queue without another turn. Continue, or a typed
+   * reply, resumes the agent with a fresh budget. Stop ends the task; the accepted work stays.
    */
   const timeLimit = (question: StoredQuestion) => {
     if ((question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_MERGE.toLowerCase()) {
@@ -140,16 +139,13 @@ export function questionEffects(
       return;
     }
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {
-      if ((question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_CONTINUE.toLowerCase())
-        extendAwakeCap(db, question.itemId);
-      else
-        startFreshBudget(db, {
-          itemId: question.itemId,
-          sessionId: question.sessionId,
-          key: question.id,
-          maxAwakeMs: input.maxAwakeMs,
-          now: input.now,
-        });
+      startFreshBudget(db, {
+        itemId: question.itemId,
+        sessionId: question.sessionId,
+        key: question.id,
+        maxAwakeMs: input.maxAwakeMs,
+        now: input.now,
+      });
       // A review or comment restart the time limit cut off reaches the agent with the answer.
       resume(question, heldHandoffs(db, question.itemId));
       return;
