@@ -281,7 +281,7 @@ test("a runner with an unacknowledged cancel stays online; capacity accounts for
   }
 });
 
-test("a repository command goes to the item's last runner while it is eligible, then to another", () => {
+test("a repository command goes to the item's last runner while it is eligible and new enough, then to another", () => {
   const w = workspace({ first: { owner: "me" }, last: { owner: "me", ready: 0 } });
   try {
     const { db, now } = w;
@@ -291,6 +291,11 @@ test("a repository command goes to the item's last runner while it is eligible, 
     );
     insertQueuedItem(db, { id: "item", now, sessionKey: "ses" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id='item'", [w.users.me!]);
+    for (const id of ["first", "last"])
+      db.run(
+        "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,'0.1.63',?)",
+        [id, now],
+      );
     db.run(
       "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES('run','item','implement','codex','ended',?,?)",
       [now, now],
@@ -303,8 +308,13 @@ test("a repository command goes to the item's last runner while it is eligible, 
       id: "last",
       workspaceId: w.ws.id,
     });
+    db.run("UPDATE runner_host_status SET runner_version='0.1.62' WHERE runner_id='last'");
+    expect(itemRepositoryRunner(db, { itemId: "item", now })?.id).toBe("first");
+    db.run("UPDATE runner_host_status SET runner_version='0.1.63'");
     db.run("UPDATE runner SET last_seen_at=? WHERE id='last'", [now - RUNNER_ONLINE_MS]);
     expect(itemRepositoryRunner(db, { itemId: "item", now })?.id).toBe("first");
+    db.run("UPDATE runner_host_status SET runner_version='0.1.62' WHERE runner_id='first'");
+    expect(itemRepositoryRunner(db, { itemId: "item", now })).toBeNull();
   } finally {
     w.close();
   }

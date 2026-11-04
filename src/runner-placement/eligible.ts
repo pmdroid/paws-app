@@ -1,7 +1,11 @@
 import { isWorkspaceAdmin } from "../workspace";
 import type { Database } from "bun:sqlite";
 import { delegatedLinearUserId, runnerAccountUnsupported, workspaceMember } from "../db";
-import type { RunnerCodingAgent } from "../runner-protocol";
+import {
+  REPOSITORY_COMMAND_RUNNER_VERSION,
+  runnerReleaseAtLeast,
+  type RunnerCodingAgent,
+} from "../runner-protocol";
 import type {
   EligibleRunner,
   EligibleRunnerReason,
@@ -279,7 +283,18 @@ export function itemRepositoryRunner(
     agent: last?.agent ?? "",
     purpose: "prepare",
     ...(input.now === undefined ? {} : { now: input.now }),
-  }).filter((runner) => runner.eligible);
+  }).filter(
+    (runner) =>
+      runner.eligible &&
+      runnerReleaseAtLeast(
+        db
+          .query<{ version: string | null }, [string]>(
+            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+          )
+          .get(runner.id)?.version,
+        REPOSITORY_COMMAND_RUNNER_VERSION,
+      ),
+  );
   const runner =
     eligible.find((candidate) => candidate.id === last?.runnerId) ??
     eligible.find((candidate) => candidate.ownerId === scope.ownerUserId) ??
