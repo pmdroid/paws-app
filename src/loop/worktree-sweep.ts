@@ -27,6 +27,11 @@ export type WorktreeSweep = {
   pawsRoot: string;
   now: number;
   signal: AbortSignal;
+  /**
+   * Items run on remote runners, so the control plane keeps no worktree for them: a worktree an
+   * earlier release left goes as soon as no work on its items runs in this process.
+   */
+  runnerBacked?: boolean;
   repositoryForItem(item: WorkItemRecord): RepositoryBinding | null;
   busy(itemId: string): boolean;
   hold(itemIds: readonly string[], operation: () => Promise<void>): Promise<void>;
@@ -39,11 +44,13 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
     const path = worktreePath(sweep.pawsRoot, pathId);
     const repository = sweep.repositoryForItem(items[0]!);
     const touched = lastTouched(sweep.db, items, path);
-    if (!repository || touched === null || !items.every(idle)) continue;
+    const leftover = sweep.runnerBacked === true;
+    if (!repository || touched === null || (!leftover && !items.every(idle))) continue;
     if (items.some((item) => sweep.busy(item.id))) continue;
     const expired =
-      items.every((item) => RETIRED_STATES.has(item.state)) &&
-      touched <= sweep.now - RETIRED_WORKTREE_MS;
+      leftover ||
+      (items.every((item) => RETIRED_STATES.has(item.state)) &&
+        touched <= sweep.now - RETIRED_WORKTREE_MS);
     const heads = expired ? [] : await mergedHeads(sweep, items[0]!, repository);
     if (!expired && !(await worktreeMergedInto(path, heads))) continue;
     const ids = items.map((item) => item.id);

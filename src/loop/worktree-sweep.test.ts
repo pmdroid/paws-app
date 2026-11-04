@@ -123,6 +123,44 @@ test("keeps a worktree when its owners or files change before removal", async ()
   expect(fixture.present()).toEqual({ "ENG-1": true, "ENG-2": true, "ENG-3": true });
 }, 30_000);
 
+test("removes leftover worktrees of runner-backed items unless their work runs here", async () => {
+  const fixture = await setup();
+  for (const [id, state] of [
+    ["ENG-1", "running"],
+    ["ENG-2", "verifying"],
+    ["ENG-3", "merge_queue"],
+    ["ENG-4", "awaiting_input"],
+    ["ENG-5", "running"],
+  ] as const)
+    await fixture.item(id, state, now - 60_000);
+  const local = fixture.sweep({ busy: (itemId) => itemId === "ENG-5" });
+
+  await sweepWorktrees(local);
+  expect(fixture.present()).toEqual({
+    "ENG-1": true,
+    "ENG-2": true,
+    "ENG-3": true,
+    "ENG-4": true,
+    "ENG-5": true,
+  });
+
+  await sweepWorktrees({ ...local, runnerBacked: true });
+  expect(fixture.present()).toEqual({
+    "ENG-1": false,
+    "ENG-2": false,
+    "ENG-3": false,
+    "ENG-4": false,
+    "ENG-5": true,
+  });
+  // Removed through git, so the mirror no longer lists them and their branches stay.
+  const listed = await git(["--git-dir", fixture.mirror, "worktree", "list", "--porcelain"]);
+  expect(listed).not.toContain(worktreePath(fixture.pawsRoot, "ENG-1"));
+  expect(listed).toContain(worktreePath(fixture.pawsRoot, "ENG-5"));
+  expect(
+    (await git(["--git-dir", fixture.mirror, "branch", "--list", "paws/eng-1"])).trim(),
+  ).not.toBe("");
+}, 30_000);
+
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), "paws-sweep-"));
   roots.push(root);
@@ -133,13 +171,14 @@ async function setup() {
   await writeFile(join(source, "README.md"), "hello\n");
   await git(["-C", source, "add", "README.md"]);
   await commitIn(source, "init");
-  await ensureBareMirror({ ...repository, remoteUrl: source, pawsRoot });
+  const mirror = (await ensureBareMirror({ ...repository, remoteUrl: source, pawsRoot })).path;
   const db = openDatabase(join(root, "paws.db"));
   migrate(db);
   const ids: string[] = [];
   return {
     db,
     pawsRoot,
+    mirror,
     async item(id: string, state: WorkItemRecord["state"], touched: number) {
       ids.push(id);
       const item = insertQueuedItem(db, { id });
