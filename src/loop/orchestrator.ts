@@ -654,6 +654,7 @@ export type OrchestratorOptions = {
   runnerRebase?: (
     item: WorkItemRecord,
     heads: { head: string; main: string },
+    signal: AbortSignal,
   ) => Promise<RunnerRebase>;
   clock?: Clock;
   caps?: { maxAwakeMs: number };

@@ -172,8 +172,13 @@ export async function mergeHarness(
     /** Held open while a squash is in flight; the squash goes on when it settles. */
     squashGate: null as Promise<void> | null,
     squashing: false,
+    publication: new AbortController(),
     runnerRebase: null as
-      | ((id: string, heads: { head: string; main: string }) => Promise<RunnerRebase>)
+      | ((
+          id: string,
+          heads: { head: string; main: string },
+          signal: AbortSignal,
+        ) => Promise<RunnerRebase>)
       | null,
   };
   /** Tasks the lane published, in order: every lane attempt past the dependency check. */
@@ -451,7 +456,7 @@ export async function mergeHarness(
           repository: { owner: "acme", repo: "app", remoteUrl: bare },
           pull: { number: item.pull, url: `https://github.com/acme/app/pull/${item.pull}` },
           head: current.checkpoint?.wipCommit ?? item.accepted,
-          signal: new AbortController().signal,
+          signal: state.publication.signal,
           worktree: item.worktree,
           branchKey: id,
           summary: "Closeout accepted.",
@@ -488,7 +493,9 @@ export async function mergeHarness(
         };
       },
       completed: () => completed.push(id),
-      ...(state.runnerRebase ? { runnerRebase: (_, heads) => state.runnerRebase!(id, heads) } : {}),
+      ...(state.runnerRebase
+        ? { runnerRebase: (_, heads, signal) => state.runnerRebase!(id, heads, signal) }
+        : {}),
     };
   }
 

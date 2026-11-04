@@ -77,7 +77,11 @@ export type RunnerRebase =
   | { outcome: "failed"; reason: string };
 
 export type MergeCapabilities = OrderCapabilities & {
-  runnerRebase?(item: WorkItemRecord, heads: { head: string; main: string }): Promise<RunnerRebase>;
+  runnerRebase?(
+    item: WorkItemRecord,
+    heads: { head: string; main: string },
+    signal: AbortSignal,
+  ): Promise<RunnerRebase>;
   publish(item: WorkItemRecord): Promise<MergePublication | MergeStep>;
   settings(item: WorkItemRecord, signal: AbortSignal): Promise<TaskMergeSettings>;
   /**
@@ -219,7 +223,7 @@ export async function advanceMerge(
         mergeSettings.mainMoved,
         { head: published.head, approval: riskApproval },
       ),
-    rebase: (facts) => rebaseOnRunner(item, caps, lane, facts),
+    rebase: (facts) => rebaseOnRunner(item, caps, lane, facts, published.signal),
     squash: async (head, facts) => {
       const squashed = await squashPull(
         {
@@ -383,15 +387,20 @@ async function rebaseOnRunner(
   caps: MergeCapabilities,
   lane: SerialMergeInput,
   pull: PullFacts,
+  signal: AbortSignal,
 ): Promise<RebaseResult> {
   const asked: RunnerRebase = caps.runnerRebase
     ? await caps
-        .runnerRebase(item, { head: pull.head, main: pull.base })
-        .catch((error: unknown) => ({
-          outcome: "failed" as const,
-          reason: error instanceof Error ? error.message : String(error),
-        }))
+        .runnerRebase(item, { head: pull.head, main: pull.base }, signal)
+        .catch((error: unknown) => {
+          if (signal.aborted) throw error;
+          return {
+            outcome: "failed" as const,
+            reason: error instanceof Error ? error.message : String(error),
+          };
+        })
     : { outcome: "failed", reason: "no runner rebase" };
+  signal.throwIfAborted();
   if (asked.outcome === "conflict")
     return {
       rebased: false,

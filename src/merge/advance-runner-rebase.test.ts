@@ -120,4 +120,18 @@ describe("advanceMerge rebases on a runner", () => {
       "item ENG-1 rebases on the control plane: runner rebase timed out after 10 minutes",
     ]);
   });
+
+  test("stopping the item during the runner rebase stops the lane without the fallback", async () => {
+    const h = await start({ settings: { mainMoved: "ci" } });
+    const item = await h.addItem("ENG-1");
+    await h.moveMain("side.txt", "side\n");
+    h.state.runnerRebase = (_, __, signal) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        h.state.publication.abort(new Error("item stopped"));
+      });
+    await expect(h.pass("ENG-1")).rejects.toThrow("item stopped");
+    expect(await h.remoteHead("ENG-1")).toBe(item.accepted);
+    expect(fallbacks()).toEqual([]);
+  });
 });

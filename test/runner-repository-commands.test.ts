@@ -260,18 +260,22 @@ test("a branch outside paws/ or an old runner is refused at enqueue", () => {
 
 test("a runner rebase resolves with the runner's result, and as failed on a timeout or refusal", async () => {
   const f = fixture();
-  const rebase = (runnerId = "runner-a") =>
-    rebaseOnRunner(f.db, {
-      runnerId,
-      workspaceId: f.workspace,
-      itemId: f.item.id,
-      repository,
-      branch: f.item.branchName,
-      head: "a".repeat(40),
-      main: "b".repeat(40),
-      bot,
-      now: f.now(),
-    });
+  const rebase = (runnerId = "runner-a", signal?: AbortSignal) =>
+    rebaseOnRunner(
+      f.db,
+      {
+        runnerId,
+        workspaceId: f.workspace,
+        itemId: f.item.id,
+        repository,
+        branch: f.item.branchName,
+        head: "a".repeat(40),
+        main: "b".repeat(40),
+        bot,
+        now: f.now(),
+      },
+      signal,
+    );
   const rebased = rebase();
   const [command] = await f.poll("runner-a");
   recordRepositoryCommandResult(
@@ -289,6 +293,11 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
   f.advance(10 * 60_000);
   expect(await f.poll("runner-a")).toEqual([]);
   expect(await slow).toEqual({ outcome: "failed", reason: "timed out after 10 minutes" });
+
+  const stop = new AbortController();
+  const stopped = rebase("runner-a", stop.signal);
+  stop.abort(new Error("item stopped"));
+  await expect(stopped).rejects.toThrow("item stopped");
 
   expect(await rebase("runner-missing")).toEqual({
     outcome: "failed",
