@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { RunnerDaemon } from "../runner-daemon";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
+import { openRunnerRetroRuntime } from "../runner-retro-runtime";
 import { createRunnerSkillInstaller } from "../runner-execution";
 import { openRunnerAgents, openRunnerRuntime } from "../runner-runtime";
 
@@ -21,7 +22,7 @@ export async function runPairedDaemon(
   signal.throwIfAborted();
   if (daemon.status().phase !== "paired") throw new Error("Runner must be paired");
   const root = "/var/lib/paws-runner";
-  for (const name of ["runtime", "health", "repositories", "skills"]) {
+  for (const name of ["runtime", "health", "retro", "repositories", "skills"]) {
     const path = join(root, name);
     mkdirSync(path, { recursive: true, mode: 0o700 });
     const info = lstatSync(path);
@@ -54,10 +55,11 @@ export async function runPairedDaemon(
     concurrency: () => daemon.capacity(),
   });
   let health: Awaited<ReturnType<typeof openRunnerHealthRuntime>> | undefined;
+  let retro: Awaited<ReturnType<typeof openRunnerRetroRuntime>> | undefined;
   let stopping: Promise<void> | undefined;
   const stop = () =>
     (stopping ??= (async () => {
-      const results = await Promise.allSettled([runtime.stop(), health?.stop()]);
+      const results = await Promise.allSettled([runtime.stop(), health?.stop(), retro?.stop()]);
       if (results.some((result) => result.status === "rejected"))
         throw new Error("Runner shutdown failed");
     })());
@@ -68,11 +70,14 @@ export async function runPairedDaemon(
     signal.throwIfAborted();
     health = await openRunnerHealthRuntime({ ...shared, root: join(root, "health") });
     signal.throwIfAborted();
+    retro = await openRunnerRetroRuntime({ ...shared, root: join(root, "retro") });
+    signal.throwIfAborted();
     signal.addEventListener("abort", interrupt, { once: true });
     while (!signal.aborted) {
       try {
         if (!signal.aborted) await runtime.tick();
         if (!signal.aborted) await health.tick();
+        if (!signal.aborted) await retro.tick();
       } catch (error) {
         journalCaught(error, "daemon.runPairedDaemon.tick", null);
         if (!signal.aborted)
