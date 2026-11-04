@@ -16,6 +16,7 @@ import {
   migrate,
   openDatabase,
   publishRetro,
+  recordImprovementProposal,
   putWorkspaceUser,
   recordRetroEvidence,
   recordReviewFindings,
@@ -29,6 +30,7 @@ import { handleFindingGroupsRequest } from "../src/dashboard/src/server/finding-
 import {
   createFakeIssueLookup,
   createImprovementsHttp,
+  decideInboxItem,
   ingestDailyFindings,
 } from "../src/improvements";
 import { createRetroReviewHttp, retroReaderAccess } from "../src/retros";
@@ -483,6 +485,42 @@ describe("improvement decisions", () => {
       decision: { intent: "link", intentIssueId: "issue-open", evidenceComment: false },
     });
     expect(listImprovementDeliveries(w.db, id).map((d) => d.operation)).toEqual(["link_issue"]);
+  });
+
+  test("a proposal that changes while Linear is read is not accepted", async () => {
+    const w = world();
+    const id = w.retro.a;
+    const ada = w.people["ada"]!;
+    const outcome = await decideInboxItem(w.db, {
+      reviewer: { ...ada, repositories: [A, B], sessionIds: ONLY_A },
+      improvementId: id,
+      expectedVersion: 1,
+      request: {
+        kind: "accept",
+        proposalVersion: 1,
+        intent: { kind: "link", issue: "PAS-60" },
+      },
+      lookup: async (issue) => {
+        recordImprovementProposal(w.db, {
+          workspaceId: "ws",
+          repository: A,
+          source: { kind: "retro_item", key: "r1/p1" },
+          proposal: {
+            title: "Rewritten while you looked",
+            problem: "Changed.",
+            proposedChange: "Changed.",
+            actionStep: "issue",
+            verificationCriterion: "Changed.",
+            evidence: ["retro:r1:ev-a1", "retro:r1:ev-a2"],
+          },
+          now: END + 2,
+        });
+        return (await w.lookup.lookup(issue))!;
+      },
+      now: w.now,
+    });
+    expect(outcome).toMatchObject({ status: "conflict", reason: "proposal_changed" });
+    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
   });
 
   test("link and add evidence freezes an explicit comment intent; closed needs explicit consent", async () => {

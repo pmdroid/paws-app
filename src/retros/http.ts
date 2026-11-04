@@ -244,7 +244,11 @@ export function createRetroReviewHttp(options: {
       const size = Math.min(limit, HISTORY_PAGE.max);
       const visible = listRetros(db, principal.workspaceId).flatMap((retro) => {
         const access = retroReaderAccess(db, root, principal, sessionIds, retro.id);
-        return access && (access.full || access.readable.size > 0) ? [access] : [];
+        return access &&
+          (access.full ||
+            listRetroItems(db, retro.id).some((item) => visibleItem(access, item.evidenceIds)))
+          ? [access]
+          : [];
       });
       return json({
         retros: visible.slice(cursor, cursor + size).map((access) => historyEntry(db, access)),
@@ -254,7 +258,12 @@ export function createRetroReviewHttp(options: {
     }
     const [, retroId, file, itemId] = report;
     const access = retroReaderAccess(db, root, principal, sessionIds, retroId!);
-    if (!access || (!access.full && access.readable.size === 0)) return missing();
+    if (
+      !access ||
+      (!access.full &&
+        !listRetroItems(db, retroId!).some((item) => visibleItem(access, item.evidenceIds)))
+    )
+      return missing();
     if (file !== undefined) {
       if (!access.full) {
         audit(principal, "access.denied", url.pathname);

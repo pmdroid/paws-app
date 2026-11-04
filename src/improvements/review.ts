@@ -459,6 +459,8 @@ export async function decideInboxItem(
       return { status: "unchanged", item: improvementView(db, item) };
     if (item.improvement.version !== input.expectedVersion) return conflict(item, "stale");
     if (item.legacy.some((action) => action.kind !== "dismissed")) return conflict(item, "legacy");
+    if (request.kind === "accept" && item.proposal.version !== request.proposalVersion)
+      return conflict(item, "proposal_changed");
     let review: ImprovementReview;
     let content: Record<string, unknown> | undefined;
     let criterion: string | undefined;
