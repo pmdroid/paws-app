@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journalCaught, startPhaseClock } from "../journal";
 import {
   createLivePreviewSystem,
   startLivePreview,
@@ -720,6 +720,18 @@ export async function executeRunnerCommand(
   if (process.getuid?.() === 0) throw new Error("Runner agents must run as a non-root user");
   const repository = command.type === "run" || command.type === "review";
   const task = command.type === "task";
+  const phase =
+    (repository || task) && options.resume !== true
+      ? startPhaseClock({
+          ids: {
+            item: command.itemId,
+            run: "runId" in command ? command.runId : job.executionId,
+            execution: job.executionId,
+          },
+          startedAt: command.issuedAt,
+        })
+      : () => {};
+  phase("worker");
   if (
     ![options.outputDirectory, options.workRoot, options.home].every(isAbsolute) ||
     (options.skills !== undefined && !isAbsolute(options.skills)) ||
@@ -1012,7 +1024,9 @@ export async function executeRunnerCommand(
         writeFileSync(join(worktree, file.path), file.bytes, { flag: "wx", mode: 0o600 });
       }
     }
+    phase("checkout");
     const installed = await installCommandRuntimes(command, job.executionId, options, emit);
+    phase("mise");
     const installFailure = installed.failure;
     let reviewText = "";
     let agentLimits: AgentLimit[] = [];
@@ -1090,6 +1104,7 @@ export async function executeRunnerCommand(
             reason: error instanceof SessionIntegrityError ? "integrity" : "unpack",
           });
         }
+      phase("session_restore");
     }
     // A handover stops the agent only when no tool call runs but ask_team calls waiting for a
     // person. A call is ask_team when the agent names it so; any other must finish first.
@@ -1190,6 +1205,9 @@ export async function executeRunnerCommand(
       home,
       signal: options.signal,
       onEvent(event) {
+        if (event.type === "session_started") phase("agent_session");
+        if (event.type === "session_update" && event.update.sessionUpdate === "tool_call")
+          phase("first_tool_call");
         try {
           if (
             event.type === "session_update" &&

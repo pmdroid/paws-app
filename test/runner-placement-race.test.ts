@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
-import { systemClock } from "../src/core";
+import { setJournalSink, systemClock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -313,6 +313,21 @@ test("a real assignment error still fails the item", async () => {
   expect(outcome.runs, detail).toEqual([]);
   expect(outcome.state, detail).toBe("failed");
   expect(outcome.events, detail).toContain("run_failed");
+}, 60_000);
+
+test("a dispatched item journals each control-plane start phase once with its duration", async () => {
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    const outcome = await runItem(({ placement }) => placement);
+    expect(outcome.runs).toEqual([outcome.runnerId]);
+    const phases = lines
+      .filter((line) => line.startsWith("start "))
+      .map((line) => /^start item=\S+ run=\S+ phase=(\S+) durationMs=\d+$/.exec(line)?.[1]);
+    expect(phases).toEqual(["placement", "start_commit", "prompt", "issue"]);
+  } finally {
+    restore();
+  }
 }, 60_000);
 
 function receipt(command: RunnerCommand) {
