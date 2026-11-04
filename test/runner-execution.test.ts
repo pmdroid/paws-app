@@ -12,9 +12,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { createHash } from "node:crypto";
 import {
   publishRunnerJob,
   readRunnerJob,
+  readRunnerJobInputs,
   runnerRepositoryBundlePath,
   type RunnerJob,
 } from "../src/runner-execution";
@@ -170,6 +172,61 @@ describe("Linux execution spool", () => {
       expect(JSON.parse(readFileSync(join(files.root, id, "job.json"), "utf8"))).toEqual(work);
       rmSync(join(files.root, id, "job.json"));
       expect(() => publishRunnerJob(files, work, { repositoryBundle: source })).toThrow();
+    },
+  );
+  test.skipIf(!nonRootLinux)(
+    "spools a retro job with its frozen digest and prompt, and refuses inputs that differ",
+    () => {
+      const files = spool("retro");
+      const digest = Buffer.from('{"sessions":[]}');
+      const prompt = Buffer.from("Find recurring patterns.\n<session_digest>{}</session_digest>");
+      const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+      const retro: RunnerJob = {
+        executionId: id,
+        command: {
+          id: "retro-command",
+          runnerId: "runner",
+          workspaceId: "ws",
+          issuedAt: 1,
+          expiresAt: 2,
+          type: "retro",
+          capability: 1,
+          retroId: "retro",
+          attempt: 1,
+          settingsRevision: 1,
+          profile: { agent: "codex", model: "gpt-x" },
+          executionLimit: { activeMinutes: 15 },
+          output: { maxItems: 5, workedWell: 3, maxChars: 4_000 },
+          digest: {
+            kind: "digest",
+            workspaceId: "ws",
+            retroId: "retro",
+            sha256: sha(digest),
+            sizeBytes: digest.length,
+          },
+          prompt: {
+            kind: "prompt",
+            workspaceId: "ws",
+            retroId: "retro",
+            sha256: sha(prompt),
+            sizeBytes: prompt.length,
+          },
+        },
+      };
+      expect(() => publishRunnerJob(files, retro)).toThrow("retro inputs");
+      expect(() =>
+        publishRunnerJob(files, retro, { retroInputs: { digest: prompt, prompt: digest } }),
+      ).toThrow("retro inputs");
+      expect(() => publishRunnerJob(files, probe, { retroInputs: { digest, prompt } })).toThrow(
+        "retro inputs",
+      );
+      expect(publishRunnerJob(files, retro, { retroInputs: { digest, prompt } })).toEqual(retro);
+      expect(readRunnerJob(files, id)).toEqual(retro);
+      const inputs = readRunnerJobInputs(files, id);
+      expect(inputs.prompt).toBeUndefined();
+      expect(Buffer.from(inputs.retro!.digest).equals(digest)).toBe(true);
+      expect(Buffer.from(inputs.retro!.prompt).equals(prompt)).toBe(true);
+      expect(() => runnerRepositoryBundlePath(files, id)).toThrow("no repository");
     },
   );
 });

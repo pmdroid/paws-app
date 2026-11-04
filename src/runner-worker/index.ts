@@ -38,6 +38,7 @@ import {
 } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { executeRetroCommand, type RetroWorkerResult } from "./retro";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   appBotCommitIdentity,
@@ -699,6 +700,7 @@ export async function executeRunnerCommand(
 ): Promise<RunnerWorkerResult> {
   const job = RunnerJobSchema.parse(options.job);
   const command = job.command;
+  if (command.type === "retro") throw new Error("Retro jobs run through executeRetroCommand");
   if (process.getuid?.() === 0) throw new Error("Runner agents must run as a non-root user");
   const repository = command.type === "run" || command.type === "review";
   const task = command.type === "task";
@@ -2060,11 +2062,44 @@ export async function runRunnerWorker(options: {
   signal?: AbortSignal;
   resume?: boolean;
   skills?: string;
-}): Promise<RunnerWorkerResult> {
+}): Promise<RunnerWorkerResult | RetroWorkerResult> {
   if (process.getuid?.() === 0 || process.getuid?.() !== options.results.agentUid)
     throw new Error("Runner worker identity is invalid");
   const spool = options.spool;
   const job = readRunnerJob(spool, options.executionId);
+  if (job.command.type === "retro") {
+    const command = job.command;
+    const inputs = readRunnerJobInputs(spool, options.executionId).retro;
+    if (!inputs) throw new Error("Runner retro inputs are missing");
+    return executeRetroCommand({
+      executionId: options.executionId,
+      command,
+      expected: {
+        runnerId: command.runnerId,
+        workspaceId: command.workspaceId,
+        attempt: command.attempt,
+        settingsRevision: command.settingsRevision,
+      },
+      fetchInput: async (request) => {
+        const bytes = Buffer.from(inputs[request.kind]).subarray(
+          request.offset,
+          request.offset + request.length,
+        );
+        return {
+          commandId: command.id,
+          kind: request.kind,
+          offset: request.offset,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+          data: bytes.toString("base64"),
+        };
+      },
+      outputDirectory: runnerResultDirectory(options.results, options.executionId),
+      workRoot: options.workRoot,
+      home: options.home,
+      resultsGid: options.results.resultsGid,
+      signal: options.signal,
+    });
+  }
   return executeRunnerCommand({
     job,
     inputs: readRunnerJobInputs(spool, options.executionId),

@@ -291,7 +291,9 @@ function taskRepository(directory: number, spool: RunnerSpool): string {
 export type RunnerJobInputs = {
   inputFiles: { path: string; mimeType: string; bytes: Uint8Array }[];
   prompt?: string;
+  retro?: { digest: Uint8Array; prompt: Uint8Array };
 };
+const RETRO_BLOBS = { digest: "retro-digest.bytes", prompt: "retro-prompt.bytes" } as const;
 function inputDescriptors(job: RunnerJob) {
   return job.command.type === "run" || job.command.type === "review" || job.command.type === "task"
     ? { files: job.command.inputFiles ?? [], context: job.command.promptContext }
@@ -325,6 +327,14 @@ function readInputContents(directory: number, spool: RunnerSpool, job: RunnerJob
       closeSync(fd);
     }
   }
+  if (job.command.type === "retro")
+    return {
+      inputFiles: [],
+      retro: {
+        digest: read(RETRO_BLOBS.digest, job.command.digest),
+        prompt: read(RETRO_BLOBS.prompt, job.command.prompt),
+      },
+    };
   const { files, context } = inputDescriptors(job);
   const inputFiles = files.map((file) => ({
     path: file.path,
@@ -516,9 +526,30 @@ export function publishRunnerJob(
     promptContext?: Uint8Array;
     /** A downloaded session snapshot for a run command that carries `restoreSession`. */
     sessionBundle?: string;
+    /** The frozen digest and prompt a retro command names. */
+    retroInputs?: { digest: Uint8Array; prompt: Uint8Array };
   } = {},
 ): RunnerJob {
   const job = RunnerJobSchema.parse(input);
+  const retroInputs =
+    options.retroInputs === undefined
+      ? undefined
+      : {
+          digest: Buffer.from(options.retroInputs.digest),
+          prompt: Buffer.from(options.retroInputs.prompt),
+        };
+  const retro = job.command.type === "retro" ? job.command : undefined;
+  if (
+    (retro !== undefined) !== (retroInputs !== undefined) ||
+    (retro &&
+      retroInputs &&
+      (["digest", "prompt"] as const).some(
+        (kind) =>
+          retroInputs[kind].length !== retro[kind].sizeBytes ||
+          inputHash(retroInputs[kind]) !== retro[kind].sha256,
+      ))
+  )
+    throw new Error("Runner retro inputs must match the signed command");
   const descriptors = inputDescriptors(job);
   const inputFiles = (options.inputFiles ?? []).map((bytes) => Buffer.from(bytes));
   const promptContext =
@@ -685,6 +716,11 @@ export function publishRunnerJob(
     }
     const blobs = inputFiles.map((bytes, id) => ({ name: `input-${id}.bytes`, bytes }));
     if (promptContext !== undefined) blobs.push({ name: "prompt.bytes", bytes: promptContext });
+    if (retroInputs !== undefined)
+      blobs.push(
+        { name: RETRO_BLOBS.digest, bytes: retroInputs.digest },
+        { name: RETRO_BLOBS.prompt, bytes: retroInputs.prompt },
+      );
     for (const blob of blobs) {
       const fd = openSync(
         `/proc/self/fd/${directory}/${blob.name}`,

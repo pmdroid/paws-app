@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { RUNNER_CODING_AGENTS, type RunnerCodingAgent } from "./agents";
 import type { RunnerCommand } from "./commands";
+import type { RunnerRetroCommand } from "./retro";
 
 export const RUNNER_ACCOUNT_PROTOCOL = 1;
 export const LEGACY_ACCOUNT_PREFIX = "legacy_";
@@ -34,7 +35,7 @@ export function runnerAccountAgentUnsupported(agent: RunnerCodingAgent): string 
 }
 
 export function runnerCommandAccount(
-  command: RunnerCommand,
+  command: RunnerCommand | RunnerRetroCommand,
 ): { account: RunnerAccount; agent: RunnerCodingAgent } | null {
   if (!("account" in command) || !command.account) return null;
   if ("agent" in command) return { account: command.account, agent: command.agent };
