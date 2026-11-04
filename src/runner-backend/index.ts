@@ -2663,23 +2663,33 @@ async function hiddenCheckpoint(
 ): Promise<string | null> {
   const ref = `refs/paws/fetched-checkpoints/${randomUUID()}`;
   try {
-    await networkGit([
-      "-C",
-      worktree,
-      "fetch",
-      "--no-tags",
-      "--no-write-fetch-head",
-      "--",
-      remoteUrl,
-      `+${checkpointRef(branch)}:${ref}`,
-    ]);
-    return (await git(["-C", worktree, "rev-parse", "--verify", `${ref}^{commit}`])).trim();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/couldn't find remote ref/i.test(message))
-      throw new CheckpointLookupFailed(branch, { cause: error });
-    journalCaught(error, "runner-backend.hiddenCheckpoint", null, "the branch saved no checkpoint");
-    return null;
+    try {
+      await networkGit([
+        "-C",
+        worktree,
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--",
+        remoteUrl,
+        `+${checkpointRef(branch)}:${ref}`,
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/couldn't find remote ref/i.test(message))
+        throw new CheckpointLookupFailed(branch, { cause: error });
+      journalCaught(
+        error,
+        "runner-backend.hiddenCheckpoint",
+        null,
+        "the branch saved no checkpoint",
+      );
+      return null;
+    }
+    return await git(["-C", worktree, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).then(
+      (sha) => sha.trim() || null,
+      () => null,
+    );
   } finally {
     await git(["-C", worktree, "update-ref", "-d", ref]).catch(() => undefined);
   }

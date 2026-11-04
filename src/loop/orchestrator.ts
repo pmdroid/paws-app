@@ -568,7 +568,7 @@ import {
   RISK_ANSWERERS,
 } from "./risk-approval";
 import { sweepWorktrees } from "./worktree-sweep";
-import { deleteEndedCheckpointRef } from "./checkpoint-ref";
+import { sweepCheckpointRefs } from "./checkpoint-ref";
 import {
   KEEP_WAITING,
   MOVE_TO_ANOTHER_RUNNER,
@@ -1929,25 +1929,6 @@ export class Orchestrator {
             owner: repository.owner,
             repo: repository.repo,
             prNumber: pullNumber,
-            ...this.gitHubCredentials(github),
-            signal: context.signal,
-          });
-        },
-      });
-    });
-    jobs.register(JOB_KIND.deleteCheckpointRef, async (job, context) => {
-      await deleteEndedCheckpointRef({
-        db: this.db,
-        itemId: readString(job.payload, "checkpointRefFor") ?? "",
-        remove: (repository, ref) => {
-          const github = this.githubForRepository(repository);
-          if (!github) return Promise.resolve(false);
-          context.signal.throwIfAborted();
-          return deleteHiddenRef({
-            client: github.client,
-            owner: repository.owner,
-            repo: repository.repo,
-            ref,
             ...this.gitHubCredentials(github),
             signal: context.signal,
           });
@@ -6460,7 +6441,23 @@ export class Orchestrator {
     this.dispatch();
   }
 
-  sweepWorktrees(signal: AbortSignal): Promise<void> {
+  async sweepWorktrees(signal: AbortSignal): Promise<void> {
+    await sweepCheckpointRefs({
+      db: this.db,
+      signal,
+      remove: (repository, ref) => {
+        const github = this.githubForRepository(repository);
+        if (!github) return Promise.resolve(false);
+        return deleteHiddenRef({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          ref,
+          ...this.gitHubCredentials(github),
+          signal,
+        });
+      },
+    });
     const busy = (itemId: string) =>
       this.jobContexts.has(itemId) ||
       [...this.live.values()].some((live) => live.itemId === itemId);
