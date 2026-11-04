@@ -9,6 +9,62 @@ import {
 import { createFakeTracker, type LinearClient } from "../src/linear";
 
 describe("linear tracker", () => {
+  test("reads the blockers of several issues in one request", async () => {
+    const calls: { query: string; variables: unknown }[] = [];
+    const relation = (blocker: string, blocked: string) => ({
+      type: "blocks",
+      issue: { id: blocker },
+      relatedIssue: { id: blocked },
+    });
+    const client: LinearClient = {
+      async query(query, variables) {
+        calls.push({ query, variables });
+        if (query.includes("IssueBlockers"))
+          return {
+            issues: {
+              nodes: [
+                {
+                  id: "acme-a",
+                  inverseRelations: {
+                    nodes: [
+                      relation("acme-b", "acme-a"),
+                      { ...relation("acme-c", "acme-a"), type: "related" },
+                    ],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+                {
+                  id: "acme-d",
+                  inverseRelations: {
+                    nodes: [relation("acme-b", "acme-d")],
+                    pageInfo: { hasNextPage: true, endCursor: "next" },
+                  },
+                },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          };
+        return {
+          issue: {
+            id: "acme-d",
+            relations: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            inverseRelations: {
+              nodes: [relation("acme-b", "acme-d"), relation("acme-e", "acme-d")],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        };
+      },
+    };
+    const blockers = await createLinearTracker(client).listBlockers(["acme-a", "acme-d"]);
+    expect([...blockers]).toEqual([
+      ["acme-a", ["acme-b"]],
+      ["acme-d", ["acme-b", "acme-e"]],
+    ]);
+    expect(calls[0]?.variables).toEqual({ ids: ["acme-a", "acme-d"] });
+    expect(calls.map((call) => call.query.includes("IssueBlockers"))).toEqual([true, false]);
+  });
+
   test("loads sub-issues in sort order and maps blocks relations", async () => {
     const calls: string[] = [];
     const client: LinearClient = {

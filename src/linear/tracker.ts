@@ -49,6 +49,18 @@ const RELATIONS_QUERY = `query IssueRelations($id: String!, $relationsAfter: Str
   }
 }`;
 
+const BLOCKERS_QUERY = `query IssueBlockers($ids: [ID!]!) {
+  issues(filter: { id: { in: $ids } }, first: 50) {
+    nodes {
+      id
+      inverseRelations(first: 50) {
+        nodes { type issue { id } relatedIssue { id } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
+
 const STATES_QUERY = `query IssueStates($id: String!) {
   issue(id: $id) {
     state { type }
@@ -77,7 +89,7 @@ type LinearTracker = LinearSessionAdapter &
   ReturnType<typeof createLinearSubIssueMethods> &
   ReturnType<typeof createLinearFindingIssueMethods> &
   ReturnType<typeof createLinearMergeReads> &
-  Required<Pick<import("./adapter").TrackerAdapter, "readIssueClosures">>;
+  Required<Pick<import("./adapter").TrackerAdapter, "readIssueClosures" | "listBlockers">>;
 
 type TrackerMethod = {
   [K in keyof LinearTracker]-?: NonNullable<LinearTracker[K]> extends (...args: never[]) => unknown
@@ -109,6 +121,7 @@ const TRACKER_CALLERS: Record<TrackerMethod, string> = {
   loadEpic: "issue-snapshot",
   readBriefIssue: "brief-preview",
   listDeps: "issue-relations",
+  listBlockers: "issue-relations",
   postProgress: "activity-post",
   postProgressWithSession: "activity-post",
   askQuestion: "elicitation-post",
@@ -122,7 +135,7 @@ export function createLinearTracker(client: LinearClient, starts?: IssueStartRea
 function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads): LinearTracker {
   const sessions = createLinearSessionMethods(client);
   const repositories = createLinearRepositoryMethods(client);
-  return {
+  const tracker: LinearTracker = {
     supportsActivityReconciliation: true,
     ...sessions,
     ...createLinearProjectScopeReads(client),
@@ -251,6 +264,28 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
       }
       return edges;
     },
+    async listBlockers(linearIssueIds) {
+      const blockers = new Map<string, readonly string[]>();
+      for (let start = 0; start < linearIssueIds.length; start += 50) {
+        const ids = linearIssueIds.slice(start, start + 50);
+        const data = await client.query(BLOCKERS_QUERY, { ids });
+        for (const node of readGraphConnection(dig(data, ["issues"])).nodes) {
+          const id = readString(node, "id");
+          if (id === null || !ids.includes(id)) throw new Error("Linear returned another issue");
+          const relations = readGraphConnection(node["inverseRelations"]);
+          const edges: DependencyEdge[] = [];
+          if (relations.hasNextPage) edges.push(...(await tracker.listDeps(id)));
+          else pushEdges(relations.nodes, edges, new Set());
+          blockers.set(
+            id,
+            edges
+              .filter((edge) => edge.blockedLinearIssueId === id)
+              .map((edge) => edge.blockerLinearIssueId),
+          );
+        }
+      }
+      return blockers;
+    },
     async postProgress(update, options) {
       await sessions.createActivity(update, options);
     },
@@ -281,6 +316,7 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
       options?.signal?.throwIfAborted();
     },
   };
+  return tracker;
 }
 
 function currentStateType(data: unknown): string | null {

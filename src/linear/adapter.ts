@@ -77,6 +77,7 @@ export interface TrackerAdapter {
   supportsActivityReconciliation?: true;
   loadEpic(linearIssueId: string): Promise<EpicSnapshot>;
   listDeps(linearIssueId: string): Promise<readonly DependencyEdge[]>;
+  listBlockers?(linearIssueIds: readonly string[]): Promise<ReadonlyMap<string, readonly string[]>>;
   postProgress(update: ProgressUpdate, options?: TrackerRequestOptions): Promise<void>;
   postProgressWithSession?(
     update: ProgressUpdate,
