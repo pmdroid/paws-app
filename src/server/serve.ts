@@ -1,6 +1,7 @@
 import { createHealthReport } from "./health";
 import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
+import { BLOCKER_CHECK_PATH } from "../intake";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { handleSlackWebhook } from "../slack";
@@ -87,6 +88,11 @@ export type ServerOptions = {
   runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
   retros?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
   executionControls?: (
+    request: Request,
+    principal: WorkspacePrincipal,
+    sessionIds: readonly string[],
+  ) => Promise<Response | null>;
+  blockerChecks?: (
     request: Request,
     principal: WorkspacePrincipal,
     sessionIds: readonly string[],
@@ -231,6 +237,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.retros ? { retros: options.retros } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
+          ...(options.blockerChecks ? { blockerChecks: options.blockerChecks } : {}),
           ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
           ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
           ...(options.questionAnswers ? { questionAnswers: options.questionAnswers } : {}),
@@ -275,6 +282,7 @@ type Secrets = {
   runnerControl?: ServerOptions["runnerControl"];
   retros?: ServerOptions["retros"];
   executionControls?: ServerOptions["executionControls"];
+  blockerChecks?: ServerOptions["blockerChecks"];
   linkAsks?: ServerOptions["linkAsks"];
   questionAnswers?: ServerOptions["questionAnswers"];
   findingIssues?: ServerOptions["findingIssues"];
@@ -435,6 +443,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       );
       if (path === "/api/execution-controls" && secrets.executionControls !== undefined) {
         const response = await secrets.executionControls(request, access.principal, sessionIds);
+        if (response !== null) return response;
+      }
+      if (path === BLOCKER_CHECK_PATH && secrets.blockerChecks !== undefined) {
+        const response = await secrets.blockerChecks(request, access.principal, sessionIds);
         if (response !== null) return response;
       }
       if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {

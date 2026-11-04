@@ -20,7 +20,19 @@ export {
 export type { DependencyReadiness, DependencyReads } from "./dependencies";
 export { blockingIssues, delegationReadiness, itemReadiness } from "./readiness";
 export type { ReadinessHold, ReadinessPhase } from "./readiness";
-export { createItemReconciler, RELATIONS_POLL_MS, SWEEP_FULL_REFRESH_MS } from "./reconciliation";
+export {
+  BLOCKED_RELATIONS_POLL_MS,
+  createItemReconciler,
+  RELATIONS_POLL_MS,
+  SWEEP_FULL_REFRESH_MS,
+} from "./reconciliation";
+export {
+  BLOCKER_CHECK_COOLDOWN_MS,
+  BLOCKER_CHECK_PATH,
+  createBlockerCheckRoute,
+  createRelationsPolls,
+  relationsPollIntervalMs,
+} from "./relations-poll";
 export type { IntakeReads, ItemChanges } from "./reconciliation";
 export { createPublicationReadiness } from "./publication";
 export type { PublicationCandidate, PublicationPhase } from "./publication";

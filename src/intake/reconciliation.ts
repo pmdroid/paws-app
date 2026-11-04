@@ -18,11 +18,15 @@ import type {
 import { readyItems, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
 import { snapshotProject } from "./project";
-import { listTaskBlockers, saveWorkItemLinearProject } from "../db";
+import { listTaskBlockers, recordBlockerChecks, saveWorkItemLinearProject } from "../db";
 
 export const SWEEP_FULL_REFRESH_MS = 6 * 60 * 60_000;
-/** Linear sends no webhook for an issue relation, so open items' blockers are re-read this often. */
+/**
+ * Linear's webhooks cover no issue relation resource, so open items' blockers are re-read this
+ * often, and every `BLOCKED_RELATIONS_POLL_MS` while an item waits only on blockers.
+ */
 export const RELATIONS_POLL_MS = 5 * 60_000;
+export const BLOCKED_RELATIONS_POLL_MS = 60_000;
 
 export type ItemChanges = {
   delegationId: string;
@@ -37,6 +41,7 @@ export type ItemChanges = {
 };
 
 export type IntakeReads = { snapshot: EpicSnapshot; edges: readonly DependencyEdge[] };
+export type RelationsScope = "all" | "blocked" | { itemId: string };
 type Target = { itemId: string; workspaceId: string; signal?: AbortSignal; known?: IntakeReads };
 type IssueChange = { issueId: string; organizationId: string; parentIssueId?: string | null };
 type Identity = {
@@ -118,7 +123,7 @@ function specHash(value: WorkBrief): string {
 
 export function createItemReconciler(input: {
   db: Database;
-  tracker: Pick<TrackerAdapter, "loadEpic" | "listDeps">;
+  tracker: Pick<TrackerAdapter, "loadEpic" | "listDeps" | "listBlockers">;
   lifecycle: Pick<LinearIssueLifecycle, "inspect">;
   onChanges: (changes: ItemChanges) => void;
   afterChanges?: (changes: ItemChanges) => Promise<void>;
@@ -132,7 +137,7 @@ export function createItemReconciler(input: {
   const { db } = input;
   const flights = new Map<string, { dirty: boolean; promise: Promise<void> }>();
   let sweepFlight: Promise<void> | null = null;
-  let relationsFlight: Promise<Target[]> | null = null;
+  const relationsFlights = new Map<string, Promise<Target[]>>();
   const now = input.now ?? Date.now;
   const shutdown = new AbortController();
   let closing: Promise<void> | null = null;
@@ -527,48 +532,98 @@ export function createItemReconciler(input: {
     return sweepFlight;
   }
 
-  /**
-   * Reads each open item's relations and reconciles the delegations whose blockers no longer
-   * match `task_block`. One relations query per item, against the epic, child and status reads
-   * of a full reconcile.
-   */
-  function pollRelations(options: { signal?: AbortSignal } = {}): Promise<Target[]> {
-    if (shutdown.signal.aborted) return Promise.reject(shutdown.signal.reason);
-    if (relationsFlight) return relationsFlight;
-    relationsFlight = (async () => {
+  function relationItems(scope: RelationsScope) {
+    return db
+      .query<Target & { issueId: string; delegationId: string }, [number, number, string | null]>(
+        `SELECT DISTINCT i.id AS itemId,w.id AS workspaceId,i.linear_issue_id AS issueId,
+         i.delegation_id AS delegationId FROM work_item i
+         JOIN linear_session s ON s.session_id=i.session_key
+         JOIN workspace w ON w.linear_organization_id=s.organization_id
+         JOIN item_dependency_snapshot d ON d.item_id=i.id
+         LEFT JOIN work_item_specification p ON p.item_id=i.id
+         WHERE ${delegationHasOpenWork("i.delegation_id")} AND s.stopped_at IS NULL
+         AND i.state NOT IN ('completed','merged','cancelled') AND COALESCE(p.present,1)=1
+         AND (?1=0 OR (i.state='queued'
+          AND EXISTS(SELECT 1 FROM item_hold h WHERE h.item_id=i.id AND h.reason='blocked')))
+         AND (?2=0 OR i.id=?3)
+         ORDER BY i.id`,
+      )
+      .all(
+        scope === "all" ? 0 : 1,
+        typeof scope === "object" ? 1 : 0,
+        typeof scope === "object" ? scope.itemId : null,
+      );
+  }
+
+  async function readBlockers(items: readonly { itemId: string; issueId: string }[]) {
+    const issueIds = [...new Set(items.map((item) => item.issueId))];
+    const read = new Map<string, readonly string[]>();
+    if (input.tracker.listBlockers) {
+      if (issueIds.length) {
+        try {
+          for (const [id, blockers] of await input.tracker.listBlockers(issueIds))
+            read.set(id, blockers);
+        } catch (error) {
+          journalCaught(error, "reconciliation.pollRelations.listBlockers", null);
+        }
+      }
+      return read;
+    }
+    for (const item of items) {
+      if (read.has(item.issueId)) continue;
       try {
-        const items = db
-          .query<Target & { issueId: string; delegationId: string }, []>(
-            `SELECT DISTINCT i.id AS itemId,w.id AS workspaceId,i.linear_issue_id AS issueId,
-             i.delegation_id AS delegationId FROM work_item i
-             JOIN linear_session s ON s.session_id=i.session_key
-             JOIN workspace w ON w.linear_organization_id=s.organization_id
-             JOIN item_dependency_snapshot d ON d.item_id=i.id
-             LEFT JOIN work_item_specification p ON p.item_id=i.id
-             WHERE ${delegationHasOpenWork("i.delegation_id")} AND s.stopped_at IS NULL
-             AND i.state NOT IN ('completed','merged','cancelled') AND COALESCE(p.present,1)=1
-             ORDER BY i.id`,
-          )
-          .all();
+        const edges = await input.tracker.listDeps(item.issueId);
+        read.set(
+          item.issueId,
+          edges
+            .filter((edge) => edge.blockedLinearIssueId === item.issueId)
+            .map((edge) => edge.blockerLinearIssueId),
+        );
+      } catch (error) {
+        journalCaught(error, "reconciliation.pollRelations.listDeps", item.itemId);
+      }
+    }
+    return read;
+  }
+
+  function blockedItemIds(): string[] {
+    return relationItems("blocked").map((item) => item.itemId);
+  }
+
+  /**
+   * Reads the relations of the open items in `scope` and reconciles the delegations whose
+   * blockers no longer match `task_block`. One request per poll where the tracker reads relations
+   * in a batch, against the epic, child and status reads of a full reconcile.
+   */
+  function pollRelations(
+    options: { signal?: AbortSignal; scope?: RelationsScope } = {},
+  ): Promise<Target[]> {
+    if (shutdown.signal.aborted) return Promise.reject(shutdown.signal.reason);
+    const scope = options.scope ?? "all";
+    const key = JSON.stringify(scope);
+    const running = relationsFlights.get(key);
+    if (running) return running;
+    const flight = (async () => {
+      try {
+        const items = relationItems(scope);
+        options.signal?.throwIfAborted();
+        shutdown.signal.throwIfAborted();
+        const checkedAt = now();
+        const read = await readBlockers(items);
+        options.signal?.throwIfAborted();
+        shutdown.signal.throwIfAborted();
+        recordBlockerChecks(
+          db,
+          items.filter((item) => read.has(item.issueId)).map((item) => item.itemId),
+          checkedAt,
+        );
         const changed = new Map<string, Target>();
         for (const item of items) {
-          if (changed.has(item.delegationId)) continue;
-          options.signal?.throwIfAborted();
-          shutdown.signal.throwIfAborted();
-          let read: readonly DependencyEdge[];
-          try {
-            read = await input.tracker.listDeps(item.issueId);
-          } catch (error) {
-            journalCaught(error, "reconciliation.pollRelations.listDeps", item.itemId);
-            continue;
-          }
-          const blockers = new Set(
-            read
-              .filter((edge) => edge.blockedLinearIssueId === item.issueId)
-              .map((edge) => edge.blockerLinearIssueId),
-          );
+          const blockers = read.get(item.issueId);
+          if (!blockers || changed.has(item.delegationId)) continue;
           const saved = new Set(listTaskBlockers(db, item.issueId));
-          if (blockers.size !== saved.size || [...blockers].some((id) => !saved.has(id)))
+          const found = new Set(blockers);
+          if (found.size !== saved.size || [...found].some((id) => !saved.has(id)))
             changed.set(item.delegationId, { itemId: item.itemId, workspaceId: item.workspaceId });
         }
         db.transaction(() => {
@@ -585,10 +640,11 @@ export function createItemReconciler(input: {
         );
         return [...changed.values()];
       } finally {
-        relationsFlight = null;
+        relationsFlights.delete(key);
       }
     })();
-    return relationsFlight;
+    relationsFlights.set(key, flight);
+    return flight;
   }
 
   function close(): Promise<void> {
@@ -600,5 +656,5 @@ export function createItemReconciler(input: {
     return closing;
   }
 
-  return { reconcile, issueChanged, sweep, pollRelations, close };
+  return { reconcile, issueChanged, sweep, pollRelations, blockedItemIds, close };
 }

@@ -524,6 +524,7 @@ export {
   type StoredTaskClassification,
 } from "./task-requests";
 export { listTaskBlockers, saveTaskBlocks, type TaskBlock } from "./task-blocks";
+export { blockerCheckedAt, recordBlockerChecks } from "./blocker-checks";
 
 export {
   saveArtifact,

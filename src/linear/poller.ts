@@ -60,7 +60,7 @@ export type PollSignals = {
  */
 export function pollIntervalMs(signals: PollSignals): number {
   const interval = webhooksFailing(signals) ? POLL_INTERVAL_FAILING_MS : POLL_INTERVAL_WEBHOOK_MS;
-  if (budgetIsLow(signals.budget ?? null, signals.now)) {
+  if (linearBudgetIsLow(signals.budget ?? null, signals.now)) {
     return Math.max(interval, POLL_INTERVAL_LOW_BUDGET_MS);
   }
   return interval;
@@ -73,7 +73,7 @@ function webhooksFailing(signals: PollSignals): boolean {
   return missed !== null && missed > signals.lastWebhookMs;
 }
 
-function budgetIsLow(budget: LinearRateBudget | null, now: number): boolean {
+export function linearBudgetIsLow(budget: LinearRateBudget | null, now: number): boolean {
   if (budget === null) return false;
   const { requestsRemaining, requestsLimit, requestsResetMs } = budget;
   if (requestsRemaining === null || requestsLimit === null || requestsLimit <= 0) return false;

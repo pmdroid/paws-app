@@ -101,6 +101,7 @@ export {
   WAKE_GAP_MS,
   WEBHOOK_FAILURES_FAILING,
   createTimerSleeper,
+  linearBudgetIsLow,
   persistStopCommand,
   pollIntervalMs,
   sleepGapMs,
