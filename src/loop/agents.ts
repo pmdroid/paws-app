@@ -120,6 +120,7 @@ export function implementPrompt(input: {
     ...(input.continuesBranch ? [continuationPrompt(input.continuesBranch)] : []),
     ...(input.brief ? [input.brief] : []),
     "Work only in this repository.",
+    "History older than the last 200 commits has no file contents in this checkout, so git show or git blame on old versions can fail. Read the current files instead.",
     ...(input.hiddenPaths?.length ? [hiddenPathsPrompt(input.hiddenPaths)] : []),
     "When you need a product decision, call ask_team with select options when there is a closed set of choices.",
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
