@@ -22,6 +22,7 @@ import {
   parkLeasedJob,
   replaceLeasedJobPayload,
   refreshVerificationJobVersion,
+  type RestartHandoff,
 } from "../db";
 import { journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
@@ -437,7 +438,12 @@ import {
 } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
 import { readReviewChecks, withReviewWait } from "./review-checks";
-import { readPendingFeedback, restartWithFeedback, type FeedbackReads } from "./pending-feedback";
+import {
+  readPendingFeedback,
+  restartWithFeedback,
+  storedFeedbackReads,
+  type FeedbackReads,
+} from "./pending-feedback";
 import {
   authorizeLinearComment,
   commitLinearCommentRoute,
@@ -1851,6 +1857,7 @@ export class Orchestrator {
       if (sweep === null || !context.isCurrent()) return;
       await returnQueuedConflicts(this.db, sweep, {
         ask,
+        restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
         now: () => this.now(),
         session: (item) => this.activitySession(item),
         voice: {
@@ -4280,6 +4287,20 @@ export class Orchestrator {
     });
   }
 
+  private restartWithStoredFeedback(item: WorkItemRecord, handoff: RestartHandoff): number | null {
+    return restartWithFeedback(this.db, item, {
+      reason: handoff.reason,
+      now: handoff.now,
+      ...(handoff.jobKey === undefined ? {} : { jobKey: handoff.jobKey }),
+      ...(handoff.limit === undefined ? {} : { limit: handoff.limit }),
+      lead: [handoff.body],
+      reads: storedFeedbackReads(this.db, item, handoff.now),
+      ci: false,
+      fixRoundLimit: this.fixRoundLimit(item),
+      sessionId: this.activitySession(item),
+    });
+  }
+
   private async readPendingFeedback(item: WorkItemRecord): Promise<FeedbackReads | null> {
     return readPendingFeedback(
       this.db,
@@ -5202,6 +5223,7 @@ export class Orchestrator {
           ...this.gitHubCredentials(github),
         });
       },
+      restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
       dependencyHold: (id) => {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
         const admitted = this.admission.canMerge(id);

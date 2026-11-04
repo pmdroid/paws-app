@@ -75,6 +75,16 @@ export async function readPendingFeedback(
   };
 }
 
+export function storedFeedbackReads(
+  db: Database,
+  item: WorkItemRecord,
+  now: number,
+): FeedbackReads | null {
+  const pullNumber = getItemPullRequest(db, item.id)?.pullNumber;
+  if (pullNumber === undefined || pendingPullComments(db, item.id).length === 0) return null;
+  return { pullNumber, threads: [], findings: [], head: null, started: now };
+}
+
 export function pendingFeedback(
   db: Database,
   item: WorkItemRecord,

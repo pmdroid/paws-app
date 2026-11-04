@@ -9,6 +9,7 @@ import {
   immediate,
   recordReviewEscape,
   keepMergeQueuePlace,
+  type RestartHandoff,
   type WorkItemRecord,
 } from "../db";
 import type { ask } from "../questions";
@@ -16,6 +17,8 @@ import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
 import type { FailedCiCheck } from "./ci-fix";
 
 export type MergeReturnReason = "rebase-conflict" | "ci-failed";
+
+export type MergeRestart = (item: WorkItemRecord, handoff: RestartHandoff) => number | null;
 
 export function latestUserTurn(db: Database, itemId: string): number {
   return latestHumanTurn(db, itemId);
@@ -55,6 +58,7 @@ export function returnToAgent(
     /** The failed checks of a `ci-failed` return, kept as a candidate review escape. */
     failedChecks?: readonly FailedCiCheck[];
     pullNumber?: number | null;
+    restart?: MergeRestart;
   },
 ): boolean {
   return immediate(db, () => {
@@ -67,7 +71,7 @@ export function returnToAgent(
     input.announce(current, returns + 1, `${current.id}:${input.reason}:${round}`);
     const jobKey = `${input.reason}:${current.id}:${round}`;
     if (input.keepPlace) keepMergeQueuePlace(db, current.id);
-    const jobId = restart(db, current, {
+    const jobId = (input.restart ?? ((item, handoff) => restart(db, item, handoff)))(current, {
       reason: input.reason === "rebase-conflict" ? "conflict" : "ci",
       body: input.handoff,
       jobKey,
