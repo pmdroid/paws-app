@@ -16,6 +16,7 @@ import {
   immediate,
   listRetroAttempts,
   listWorkspaceMembers,
+  liveAccountBinding,
   markRetroDispatchFetched,
   newRetroCommandId,
   openRetroDispatch,
@@ -42,7 +43,13 @@ import {
   type RetroDispatch,
   type RetroGenerationDiagnostic,
 } from "../db";
-import { eligibleRunners, type EligibleRunner } from "../runner-placement";
+import {
+  BINDING_REASON_TEXT,
+  bindingReadiness,
+  eligibleRunners,
+  type BindingUnavailableReason,
+  type EligibleRunner,
+} from "../runner-placement";
 import {
   acceptRetroResult,
   authorizeRetroInput,
@@ -262,6 +269,28 @@ export function retroRunnerCandidates(
     }
   }
   return { candidates, incompatible };
+}
+
+const HEALTH_HOLDS: ReadonlySet<BindingUnavailableReason> = new Set([
+  "exhausted",
+  "provider-restricted",
+  "unsupported-model",
+  "auth-required",
+]);
+
+function accountHealthHold(
+  db: Database,
+  runnerId: string,
+  accountId: string,
+  model: string | null | undefined,
+  now: number,
+): { reason: BindingUnavailableReason; until: number | null } | null {
+  const binding = liveAccountBinding(db, runnerId, accountId);
+  if (binding === null) return null;
+  const readiness = bindingReadiness(db, { bindingId: binding.id, model, now });
+  return !readiness.ready && HEALTH_HOLDS.has(readiness.reason)
+    ? { reason: readiness.reason, until: readiness.until }
+    : null;
 }
 
 function profileOf(retro: Retro): RetroAgentProfile {
@@ -498,9 +527,43 @@ export function createRetroDispatcher(options: {
       );
       return;
     }
-    const available = candidates.filter((runner) => runner.cooldownUntil <= at);
+    const agent = profile.agent as RunnerCodingAgent;
+    const accountId = admitAgentAccounts(db, retro.workspaceId, agent).eligible[0];
+    if (accountId === undefined) {
+      note(
+        retro.id,
+        "no_runner",
+        `The workspace's default ${profile.agent} account is not enabled.`,
+      );
+      return;
+    }
+    const held = (runnerId: string) =>
+      accountHealthHold(db, runnerId, accountId, profile.model, at);
+    const holds = candidates.map((runner) => held(runner.id));
+    const healthy = candidates.filter((_, index) => holds[index] === null);
+    if (healthy.length === 0) {
+      const blocks = holds.filter((hold) => hold !== null);
+      if (blocks.every((hold) => hold.reason === "exhausted")) {
+        const until = Math.min(...blocks.map((hold) => hold.until ?? Number.MAX_SAFE_INTEGER));
+        note(
+          retro.id,
+          "quota_cooldown",
+          `${profile.agent} is cooling down after its usage limit.`,
+          {
+            until: until === Number.MAX_SAFE_INTEGER ? null : until,
+          },
+        );
+      } else
+        note(
+          retro.id,
+          "no_runner",
+          `The ${profile.agent} account cannot run here: ${BINDING_REASON_TEXT[blocks.find((hold) => hold.reason !== "exhausted")!.reason]}.`,
+        );
+      return;
+    }
+    const available = healthy.filter((runner) => runner.cooldownUntil <= at);
     if (available.length === 0) {
-      const until = Math.min(...candidates.map((runner) => runner.cooldownUntil));
+      const until = Math.min(...healthy.map((runner) => runner.cooldownUntil));
       note(retro.id, "quota_cooldown", `${profile.agent} is cooling down after its usage limit.`, {
         until,
       });
@@ -519,16 +582,6 @@ export function createRetroDispatcher(options: {
         retro.id,
         "capacity_wait",
         `${available.length} compatible runner${available.length === 1 ? " is" : "s are"} busy. Waiting for a free slot.`,
-      );
-      return;
-    }
-    const agent = profile.agent as RunnerCodingAgent;
-    const accountId = admitAgentAccounts(db, retro.workspaceId, agent).eligible[0];
-    if (accountId === undefined) {
-      note(
-        retro.id,
-        "no_runner",
-        `The workspace's default ${profile.agent} account is not enabled.`,
       );
       return;
     }
@@ -586,6 +639,7 @@ export function createRetroDispatcher(options: {
         identity === null ||
         identity.workspaceId !== retro.workspaceId ||
         !runnerHasWorkspaceAuthority(db, identity) ||
+        held(runnerId) !== null ||
         accountFull() ||
         !runnerHasCapacity(
           db,

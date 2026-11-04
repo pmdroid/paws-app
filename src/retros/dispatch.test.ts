@@ -16,6 +16,7 @@ import {
   listRetroItems,
   migrate,
   openDatabase,
+  recordAccountObservation,
   retroSlotsHeld,
   retroWatermarks,
   runnerOccupancy,
@@ -690,6 +691,58 @@ describe("agent account admission", () => {
       diagnostic: "no_runner",
       attempt: 0,
     });
+  });
+
+  test("a persisted provider or model hold blocks dispatch while the runner has no cooldown", () => {
+    const { db, clock, open } = world();
+    addRunner(db, { id: "R1" });
+    db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
+    const binding = ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
+    recordAccountObservation(db, {
+      bindingId: binding.id,
+      source: "result",
+      sourceId: "model-hold",
+      observedAt: clock.now,
+      now: clock.now,
+      state: "unsupported_model",
+      model: "gpt-x",
+    });
+    const dispatcher = open(db);
+    dispatcher.tick();
+    expect(listRetroDispatches(db, "r1")).toEqual([]);
+    expect(dispatcher.generation("r1")).toMatchObject({
+      state: "waiting_for_runner",
+      diagnostic: "no_runner",
+      attempt: 0,
+    });
+    expect(dispatcher.generation("r1")!.detail).toContain("model unavailable");
+
+    recordAccountObservation(db, {
+      bindingId: binding.id,
+      source: "result",
+      sourceId: "provider-hold",
+      observedAt: clock.now + 1,
+      now: clock.now + 1,
+      state: "restricted",
+    });
+    clock.now += 60_000;
+    db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
+    dispatcher.tick();
+    expect(listRetroDispatches(db, "r1")).toEqual([]);
+    expect(dispatcher.generation("r1")).toMatchObject({ diagnostic: "no_runner", attempt: 0 });
+
+    recordAccountObservation(db, {
+      bindingId: binding.id,
+      source: "result",
+      sourceId: "provider-ok",
+      observedAt: clock.now,
+      now: clock.now,
+      state: "ok",
+      model: "gpt-x",
+      clears: ["provider", "model"],
+    });
+    dispatcher.tick();
+    expect(listRetroDispatches(db, "r1")).toHaveLength(1);
   });
 
   test("the account concurrency limit counts retro turns and holds further work", () => {
