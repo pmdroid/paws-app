@@ -556,16 +556,16 @@ export function createRunnerPlacement(options: {
         if (helper && !helper.available)
           return reject("helper already running or no free capacity");
         if (runner.id === input.handedOverFrom) return reject("handed the session over");
-        const refusal = current.repository
+        const repositoryRefusal = current.repository
           ? runnerRepositoryRefusal(
               db,
               runner.id,
               `${current.repository.owner}/${current.repository.repo}`,
             )
           : null;
-        if (refusal)
+        if (repositoryRefusal)
           return reject(
-            refusal.list === "admin"
+            repositoryRefusal.list === "admin"
               ? "repository not allowed on the runner's page"
               : "repository not allowed in the runner's host config",
           );
