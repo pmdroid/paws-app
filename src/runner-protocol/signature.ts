@@ -41,26 +41,22 @@ export function signRunnerCommand(input: {
   privateKey: KeyObject;
   command: RunnerCommand;
 }): SignedRunnerCommand {
-  if (input.privateKey.type !== "private" || input.privateKey.asymmetricKeyType !== "ed25519") {
-    throw new Error("Runner command signing requires an Ed25519 private key");
-  }
-  const command = RunnerCommandSchema.parse(input.command);
-  const bytes = Buffer.from(canonicalJson(command), "utf8");
-  return SignedRunnerCommandSchema.parse({
-    keyId: input.keyId,
-    payload: bytes.toString("base64url"),
-    signature: sign(null, bytes, input.privateKey).toString("base64url"),
-  });
+  return signPayload(input.keyId, input.privateKey, RunnerCommandSchema.parse(input.command));
 }
 
-export function verifyRunnerCommand(
+export function openSignedPayload(
   envelope: unknown,
-  context: RunnerCommandVerifier,
-): RunnerCommandVerification {
+  trustedKeys: ReadonlyMap<string, KeyObject>,
+):
+  | { ok: true; bytes: Buffer; payload: unknown }
+  | {
+      ok: false;
+      reason: "invalid_envelope" | "untrusted_key" | "invalid_signature" | "invalid_payload";
+    } {
   const parsed = SignedRunnerCommandSchema.safeParse(envelope);
   if (!parsed.success) return { ok: false, reason: "invalid_envelope" };
   const input = parsed.data;
-  const key = context.trustedKeys.get(input.keyId);
+  const key = trustedKeys.get(input.keyId);
   if (!key || key.type !== "public" || key.asymmetricKeyType !== "ed25519") {
     return { ok: false, reason: "untrusted_key" };
   }
@@ -73,13 +69,37 @@ export function verifyRunnerCommand(
   )
     return { ok: false, reason: "invalid_envelope" };
   if (!verify(null, bytes, key, signature)) return { ok: false, reason: "invalid_signature" };
-  let payload: unknown;
   try {
-    payload = JSON.parse(bytes.toString("utf8"));
+    return { ok: true, bytes, payload: JSON.parse(bytes.toString("utf8")) };
   } catch (caughtError1) {
-    journalCaught(caughtError1, "signature.verifyRunnerCommand.parse", null);
+    journalCaught(caughtError1, "signature.openSignedPayload.parse", null);
     return { ok: false, reason: "invalid_payload" };
   }
+}
+
+export function signPayload(
+  keyId: string,
+  privateKey: KeyObject,
+  command: unknown,
+): SignedRunnerCommand {
+  if (privateKey.type !== "private" || privateKey.asymmetricKeyType !== "ed25519") {
+    throw new Error("Runner command signing requires an Ed25519 private key");
+  }
+  const bytes = Buffer.from(canonicalJson(command), "utf8");
+  return SignedRunnerCommandSchema.parse({
+    keyId,
+    payload: bytes.toString("base64url"),
+    signature: sign(null, bytes, privateKey).toString("base64url"),
+  });
+}
+
+export function verifyRunnerCommand(
+  envelope: unknown,
+  context: RunnerCommandVerifier,
+): RunnerCommandVerification {
+  const opened = openSignedPayload(envelope, context.trustedKeys);
+  if (!opened.ok) return opened;
+  const { bytes, payload } = opened;
   const result = RunnerCommandSchema.safeParse(payload);
   if (!result.success) return { ok: false, reason: "invalid_payload" };
   const command = result.data;
@@ -121,7 +141,7 @@ export function verifyRunnerCommand(
   return { ok: true, command };
 }
 
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   return JSON.stringify(value, (_key, entry: unknown) => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
     const object = entry as Record<string, unknown>;
