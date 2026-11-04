@@ -337,6 +337,7 @@ export function saveRetroSettings(
     catalogs: readonly AgentModelCatalog[] | null;
     accessibleRepositories: readonly string[];
     now: number;
+    keepSavedProfile?: boolean;
   },
 ): RetroSettingsSave {
   const read = () => readRetroSettings(db, input);
@@ -362,8 +363,16 @@ export function saveRetroSettings(
     const latest = latestRetroSettingsRevision(db, input.workspaceId);
     if ((latest?.revision ?? 0) !== input.expectedRevision)
       return { ok: false, reason: "conflict", current: read(), draft: input.draft };
-    const previous = latest ? (latest.agentProfile as RetroAgentProfile).agent : undefined;
-    const profile = checkRetroProfile(draft.agentProfile, input.catalogs, previous);
+    const saved = latest?.agentProfile as RetroAgentProfile | undefined;
+    const unchanged =
+      input.keepSavedProfile === true &&
+      saved !== undefined &&
+      saved.agent === draft.agentProfile.agent &&
+      saved.model === draft.agentProfile.model &&
+      saved.effort === draft.agentProfile.effort;
+    const profile: RetroProfileCheck = unchanged
+      ? { ok: true, profile: draft.agentProfile }
+      : checkRetroProfile(draft.agentProfile, input.catalogs, saved?.agent);
     if (!profile.ok)
       return { ok: false, reason: profile.reason, problems: [profile.problem], draft: input.draft };
     saveRetroSettingsRevision(db, {
@@ -449,66 +458,4 @@ export function retroAttemptLimits(limits: Record<string, unknown>): {
 } {
   const { activeMinutes, retries } = limits as RetroExecutionLimits;
   return { maxAttempts: retries + 1, activeExecutionMs: activeMinutes * 60_000 };
-}
-
-function zonedParts(at: number, timeZone: string) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "numeric",
-    day: "numeric",
-    hour: "numeric",
-    minute: "numeric",
-    second: "numeric",
-    weekday: "long",
-  }).formatToParts(at);
-  const get = (type: string) => parts.find((part) => part.type === type)!.value;
-  return {
-    year: Number(get("year")),
-    month: Number(get("month")),
-    day: Number(get("day")),
-    hour: Number(get("hour")),
-    minute: Number(get("minute")),
-    second: Number(get("second")),
-    weekday: get("weekday").toLowerCase(),
-  };
-}
-
-function zonedInstant(
-  date: { year: number; month: number; day: number },
-  hour: number,
-  minute: number,
-  timeZone: string,
-): number {
-  const wall = Date.UTC(date.year, date.month - 1, date.day, hour, minute);
-  const offset = (at: number) => {
-    const local = zonedParts(at, timeZone);
-    return (
-      Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second) -
-      Math.floor(at / 1000) * 1000
-    );
-  };
-  const first = wall - offset(wall);
-  return wall - offset(first);
-}
-
-export function nextRetroOccurrence(schedule: RetroSchedule, after: number): number | null {
-  if (schedule.cadence === "paused") return null;
-  const [hour, minute] = schedule.time.split(":").map(Number) as [number, number];
-  const today = zonedParts(after, schedule.timeZone);
-  for (let days = 0; days <= 8; days++) {
-    const noon = Date.UTC(today.year, today.month - 1, today.day + days, 12);
-    const candidate = new Date(noon);
-    const date = {
-      year: candidate.getUTCFullYear(),
-      month: candidate.getUTCMonth() + 1,
-      day: candidate.getUTCDate(),
-    };
-    const weekday = RETRO_WEEKDAYS[(candidate.getUTCDay() + 6) % 7];
-    if (weekday !== schedule.weekday) continue;
-    const at = zonedInstant(date, hour, minute, schedule.timeZone);
-    if (at > after) return at;
-  }
-  return null;
 }
