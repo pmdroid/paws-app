@@ -236,11 +236,14 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
         },
       });
       const parsed = responseSchema.safeParse(response.body);
-      if (response.status !== 200 || !parsed.success || parsed.data.errors?.length) {
+      const errors = parsed.success
+        ? parsed.data.errors?.filter((error) => !appHiddenByAllowList(error))
+        : [];
+      if (response.status !== 200 || !parsed.success || errors?.length) {
         console.error(
           `GitHub readiness read failed: status ${response.status}${
-            parsed.success && parsed.data.errors?.length
-              ? `, ${JSON.stringify(parsed.data.errors).slice(0, 500)}`
+            parsed.success && errors?.length
+              ? `, ${JSON.stringify(errors).slice(0, 500)}`
               : parsed.success
                 ? ""
                 : ", unexpected response shape"
@@ -315,6 +318,16 @@ const LINEAR_WAIT = /Linear GraphQL: RATELIMITED|Linear publication freshness is
 
 function unreadable(): Readiness {
   return { outcome: "blocked", message: "could not read GitHub CI and review threads" };
+}
+
+function appHiddenByAllowList(error: unknown): boolean {
+  const parsed = z
+    .object({
+      path: z.array(z.union([z.string(), z.number()])),
+      extensions: z.object({ ip_allow_list_failure: z.literal(true) }),
+    })
+    .safeParse(error);
+  return parsed.success && parsed.data.path.slice(-2).join(".") === "checkSuite.app";
 }
 
 function toChecks(nodes: z.infer<typeof contextsSchema>["nodes"]): Check[] {

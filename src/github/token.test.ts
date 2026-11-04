@@ -148,7 +148,11 @@ describe("GitHub App tokens", () => {
     };
     expect(request.path).toBe("/app/installations/7/access_tokens");
     expect(request.body.repositories).toEqual(["paws-demo"]);
-    expect(request.body.permissions).toEqual({ ...INSTALLATION_PERMISSIONS, workflows: "write" });
+    expect(request.body.permissions).toEqual({
+      ...INSTALLATION_PERMISSIONS,
+      workflows: "write",
+      statuses: "read",
+    });
 
     const now = new Date("2026-10-09T12:00:00.000Z");
     expect(
@@ -192,6 +196,49 @@ describe("GitHub App tokens", () => {
         now,
       ),
     ).toThrow(/selected/);
+  });
+
+  test("an installation without commit statuses still gets workflows, and the next token asks only for what it has", async () => {
+    const asked: Record<string, string>[] = [];
+    const client: GitHubClient = {
+      async request(req) {
+        const permissions = (req.body as { permissions: Record<string, string> }).permissions;
+        asked.push(permissions);
+        if (permissions.statuses) return { status: 422, body: { message: "not granted" } };
+        return {
+          status: 201,
+          body: tokenBody("ghs_scoped", { permissions: { ...permissions, metadata: "read" } }),
+        };
+      },
+    };
+    const mint = () =>
+      mintInstallationToken({
+        client,
+        appId: "99",
+        installationId: "8",
+        privateKeyPem: PRIVATE_KEY,
+        owner: "pmdroid",
+        repo: "paws-demo",
+        now: new Date(),
+      });
+    expect((await mint()).token).toBe("ghs_scoped");
+    expect(asked.at(-1)).toEqual({ ...INSTALLATION_PERMISSIONS, workflows: "write" });
+    const before = asked.length;
+    await mint();
+    expect(asked.slice(before)).toEqual([{ ...INSTALLATION_PERMISSIONS, workflows: "write" }]);
+  });
+
+  test("commit statuses are accepted only as read", () => {
+    const now = new Date("2026-10-09T12:00:00.000Z");
+    const body = (statuses: string) =>
+      tokenBody("ghs_statuses", {
+        expires_at: "2026-10-09T13:00:00.000Z",
+        permissions: { ...INSTALLATION_PERMISSIONS, metadata: "read", statuses },
+      });
+    expect(assertScopedToken(body("read"), "pmdroid", "paws-demo", now).token).toBe("ghs_statuses");
+    expect(() => assertScopedToken(body("write"), "pmdroid", "paws-demo", now)).toThrow(
+      GitHubTokenError,
+    );
   });
 
   test("a repository named in another case is the same repository, and another one is refused", () => {

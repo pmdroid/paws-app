@@ -51,7 +51,9 @@ function mint(client: GitHubClient, installationId: string, access?: "read" | "w
 test("a write token asks for workflows so Paws can push workflow files", async () => {
   const { client, requested } = installation(true);
   await mint(client, "101");
-  expect(requested).toEqual([{ ...INSTALLATION_PERMISSIONS, workflows: "write" }]);
+  expect(requested).toEqual([
+    { ...INSTALLATION_PERMISSIONS, workflows: "write", statuses: "read" },
+  ]);
 });
 
 test("an installation without workflows gets a token without it, and is not asked again", async () => {
@@ -59,9 +61,10 @@ test("an installation without workflows gets a token without it, and is not aske
   expect((await mint(client, "102")).token).toBe("ghs_scoped");
   await mint(client, "102");
   expect(requested).toEqual([
+    { ...INSTALLATION_PERMISSIONS, workflows: "write", statuses: "read" },
     { ...INSTALLATION_PERMISSIONS, workflows: "write" },
-    INSTALLATION_PERMISSIONS,
-    INSTALLATION_PERMISSIONS,
+    { ...INSTALLATION_PERMISSIONS, statuses: "read" },
+    { ...INSTALLATION_PERMISSIONS, statuses: "read" },
   ]);
 });
 
