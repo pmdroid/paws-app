@@ -61,6 +61,8 @@ On a grant, package configuration:
 
 `deny`, or a host without Docker Engine, stops the daemon and removes the unit. The data directory and the subordinate ids stay, so a later grant finds its images. Removing the package does the same; purging it also deletes `/var/lib/paws-runner-docker` and the `paws-runner` lines in `/etc/subuid` and `/etc/subgid`.
 
+Images, containers and the BuildKit cache under `/var/lib/paws-runner-docker/data` stay between runs. The end of a run stops its processes, never its images or build cache. Once a day the runner daemon runs `docker builder prune --keep-storage 20GB` against this daemon, as the account the daemon runs as.
+
 An earlier release added `paws-runner` to the `docker` group instead. An upgrade removes that membership when the install state in `/var/lib/paws-runner-install/docker-group.json` records that Paws added it. A membership Paws did not record adding stays, and the install prints a warning.
 
 To check the daemon:
@@ -74,6 +76,12 @@ $D run -d --rm alpine sleep 20; ps -eo user,cmd | grep '[s]leep 20'  # host user
 sudo -u paws-runner docker -H unix:///var/run/docker.sock ps    # permission denied
 journalctl -u paws-docker.service                              # when it does not start
 ```
+
+### Per-repository caches
+
+Every run, review and task on a repository gets `PAWS_CACHE_DIR=/var/lib/paws-agent/cache/<repo-hash>`, the same folder for every execution on that repository and a different one for each repository. The worker creates it with mode 0700 and the agent account as its owner. It stays between runs. The agent and its Closeout checks also get these tool caches inside it: `BUN_INSTALL_CACHE_DIR`, `GOMODCACHE`, `GOCACHE`, `npm_config_cache`, `PIP_CACHE_DIR` and `XDG_CACHE_HOME`. A repository script that caches anything else can use `PAWS_CACHE_DIR`.
+
+While an execution uses a cache, the worker keeps a hold on it under `/var/lib/paws-agent/cache/.holds`. Once a day the runner daemon deletes cache folders nobody has used for 7 days. It never deletes a folder a live worker holds.
 
 ## Configure the runner
 

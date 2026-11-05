@@ -35,6 +35,10 @@ export const ALLOWED_AGENT_ENV: readonly string[] = [
   "BUN_INSTALL",
   "BUN_INSTALL_CACHE_DIR",
   "npm_config_cache",
+  "PAWS_CACHE_DIR",
+  "GOMODCACHE",
+  "GOCACHE",
+  "PIP_CACHE_DIR",
   "NODE_COMPILE_CACHE",
   "NODE_EXTRA_CA_CERTS",
   // The runner's shared mise installs, which Paws sets in the runner worker's agent env.

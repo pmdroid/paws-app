@@ -84,6 +84,8 @@ import {
   runnerSessionBundlePath,
   runnerTaskRepositoryPath,
   RunnerJobSchema,
+  holdRunnerCache,
+  RUNNER_CACHE_ROOT,
   sharedDirectoryAllowed,
   type RunnerAccountOwners,
   type RunnerJob,
@@ -177,6 +179,7 @@ export interface RunnerWorkerOptions {
   home: string;
   resultsGid: number;
   owners?: RunnerAccountOwners;
+  cacheEnv?: Record<string, string>;
   signal?: AbortSignal;
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
@@ -1084,6 +1087,7 @@ export async function executeRunnerCommand(
       ...(process.env.DOCKER_HOST ? { DOCKER_HOST: process.env.DOCKER_HOST } : {}),
       ...options.launch?.env,
       ...homeEnv,
+      ...options.cacheEnv,
       MISE_DATA_DIR: mise.dataDir,
       MISE_CACHE_DIR: mise.cacheDir,
     });
@@ -2171,8 +2175,36 @@ export async function runRunnerWorker(options: {
       signal: options.signal,
     });
   }
+  const command = job.command;
+  const cacheRepository =
+    command.type === "run" || command.type === "review" || command.type === "task"
+      ? command.repository
+      : undefined;
+  const cache = cacheRepository
+    ? holdRunnerCache({
+        root: RUNNER_CACHE_ROOT,
+        repository: cacheRepository,
+        executionId: options.executionId,
+      })
+    : undefined;
+  if (cache) Object.assign(process.env, cache.env);
+  try {
+    return await workerCommand(options, job, cache?.env);
+  } finally {
+    cache?.release();
+  }
+}
+
+function workerCommand(
+  options: Parameters<typeof runRunnerWorker>[0],
+  job: RunnerJob,
+  cacheEnv: Record<string, string> | undefined,
+): Promise<RunnerWorkerResult> {
+  const spool = options.spool;
+  const owners = { runnerUid: spool.runnerUid, agentGid: spool.agentGid };
   return executeRunnerCommand({
     job,
+    ...(cacheEnv ? { cacheEnv } : {}),
     inputs: readRunnerJobInputs(spool, options.executionId),
     ...(job.command.type === "run" || job.command.type === "review"
       ? {

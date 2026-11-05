@@ -44,3 +44,12 @@ export {
   runnerAccountHome,
 } from "./accounts";
 export { sharedDirectoryAllowed } from "./shared";
+export {
+  createRunnerCachePruner,
+  holdRunnerCache,
+  pruneRunnerCaches,
+  RUNNER_CACHE_ROOT,
+  runnerCacheDirectory,
+  runnerCacheEnv,
+  type RunnerCacheFs,
+} from "./cache";
