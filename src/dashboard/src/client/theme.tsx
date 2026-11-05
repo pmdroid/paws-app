@@ -437,7 +437,10 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "grid min-w-0 grid-cols-1 items-start gap-x-6 gap-y-3 sm:grid-cols-[10rem_minmax(0,1fr)]",
     );
-  if (has("runner-agent-name")) return styled("flex min-h-6 items-center gap-2 text-sm");
+  if (has("runner-agent-name"))
+    return styled(
+      "flex min-h-6 min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm [&>.tag]:whitespace-normal",
+    );
   if (name === "ul" && has("runner-skill-list"))
     return styled("m-0 flex min-w-0 list-none flex-col gap-3 p-0");
   if (name === "ul" && has("run-setup-list"))
