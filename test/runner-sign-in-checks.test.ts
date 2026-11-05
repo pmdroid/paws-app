@@ -22,7 +22,7 @@ afterEach(() => {
   for (const db of databases.splice(0)) db.close();
 });
 
-function fixture() {
+function fixture(extraUsage?: (agent: string) => boolean) {
   const db = new Database(":memory:");
   databases.push(db);
   db.run("PRAGMA foreign_keys=ON");
@@ -63,7 +63,12 @@ function fixture() {
     eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
-  const health = createRunnerHealth({ db, work, now: () => at });
+  const health = createRunnerHealth({
+    db,
+    work,
+    now: () => at,
+    ...(extraUsage ? { extraUsage } : {}),
+  });
   const runner = (
     status: "active" | "paused" | "draining" | "revoked" = "active",
     lastSeenAt: number | null = at,
@@ -269,6 +274,29 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
     ["grok", "unknown"],
     ["opencode", "unknown"],
   ]);
+});
+
+test("a spent usage window cools the agent down unless it may run on extra usage", () => {
+  for (const extra of [false, true]) {
+    const f = fixture(extra ? (agent) => agent === "claude" : undefined);
+    const runnerId = f.runner();
+    f.health.refresh();
+    const [claude] = f.checks();
+    const resetsAt = f.now() + 3_600_000;
+    f.answer(claude!, true, [
+      { window: "5-hour", usedPercent: 100, resetsAt },
+      { window: "Weekly", usedPercent: 46, resetsAt: null },
+    ]);
+    const policy = f.db
+      .query<{ quota: string; cooldown: number }, [string]>(
+        "SELECT quota_state AS quota, cooldown_until AS cooldown FROM runner_agent_policy WHERE runner_id=? AND agent='claude'",
+      )
+      .get(runnerId);
+    expect(policy).toEqual(
+      extra ? { quota: "ok", cooldown: 0 } : { quota: "exhausted", cooldown: resetsAt },
+    );
+    expect(f.health.agents(f.owner, runnerId)[0]!.status).toBe(extra ? "signed_in" : "usage_limit");
+  }
 });
 
 test("the latest usage windows reach the runner list with when they were read", () => {
