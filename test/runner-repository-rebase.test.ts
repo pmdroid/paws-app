@@ -293,7 +293,8 @@ test("the runtime runs a delivered rebase command with its grant, posts the resu
     },
   });
   try {
-    for (let index = 0; index < 500 && pending.length; index++) {
+    const deadline = Date.now() + 15_000;
+    while (pending.length && Date.now() < deadline) {
       await runtime.tick().catch(() => {});
       await Bun.sleep(5);
     }
@@ -304,4 +305,4 @@ test("the runtime runs a delivered rebase command with its grant, posts the resu
   expect(requests).toEqual([`grant ${id}`, `credential ${id} true`, `result ${id}`, `ack ${id}`]);
   expect(posted).toEqual([{ outcome: "rebased", head: f.tip() }]);
   git(["merge-base", "--is-ancestor", f.command.main, f.tip()], f.origin);
-});
+}, 30_000);

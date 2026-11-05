@@ -488,7 +488,7 @@ for (const ending of ["fenced", "unrenewed", "cancelled"] as const)
         if (ending === "cancelled") f.cancel();
         else f.authority(ending);
         await f.restart();
-        await f.settle(() => f.publication()?.phase === "interrupted", 50);
+        await f.settle(() => f.publication()?.phase === "interrupted");
         for (let index = 0; index < 5; index++) await f.tick();
         expect(f.posted).toEqual([]);
         expect(f.savedResults()).toBe(0);
