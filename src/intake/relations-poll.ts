@@ -5,6 +5,7 @@ import {
   RELATIONS_POLL_MS,
   type createItemReconciler,
   type RelationsScope,
+  UnreadBlockersError,
 } from "./reconciliation";
 
 const BLOCKER_CHECK_PATH = "/api/blocker-checks";
@@ -96,7 +97,13 @@ export function createBlockerCheckRoute(input: {
       );
     if (!item)
       return Response.json({ error: `${itemId} is not waiting on a blocker.` }, { status: 409 });
-    const result = await input.polls.checkNow(item.id, input.signal);
+    let result: Awaited<ReturnType<typeof input.polls.checkNow>>;
+    try {
+      result = await input.polls.checkNow(item.id, input.signal);
+    } catch (error) {
+      if (!(error instanceof UnreadBlockersError)) throw error;
+      return Response.json({ error: error.message }, { status: 502 });
+    }
     if (!result.ok) {
       const seconds = Math.ceil(result.retryAfterMs / 1000);
       return Response.json(

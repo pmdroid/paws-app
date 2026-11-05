@@ -109,6 +109,7 @@ export type FakeTracker = LinearSessionAdapter &
     ): Promise<BriefIssueRead | null>;
     deps: Map<string, readonly DependencyEdge[]>;
     blockerReads: string[][];
+    blockerFailures: Error[];
     progress: ProgressUpdate[];
     questions: SessionElicitation[];
     statuses: StatusUpdate[];
@@ -131,6 +132,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const briefReads: string[] = [];
   const deps = new Map<string, readonly DependencyEdge[]>();
   const blockerReads: string[][] = [];
+  const blockerFailures: Error[] = [];
   const progress: ProgressUpdate[] = [];
   const questions: SessionElicitation[] = [];
   const statuses: StatusUpdate[] = [];
@@ -229,6 +231,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     },
     deps,
     blockerReads,
+    blockerFailures,
     progress,
     questions,
     statuses,
@@ -373,6 +376,8 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     },
     async listBlockers(linearIssueIds) {
       blockerReads.push([...linearIssueIds]);
+      const failure = blockerFailures.shift();
+      if (failure) throw failure;
       return new Map(
         linearIssueIds.map((id) => [
           id,

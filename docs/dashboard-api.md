@@ -69,7 +69,7 @@ No list or page resource carries check `stdout` or `stderr`. `GET /api/issues/<i
 
 A queued item waiting only on Linear blockers shows when Paws last read its relations. Linear sends no webhook for a relation, so Paws reads the relations of blocked items every minute in one request, and every 5 minutes for all open items or while less than 20% of the Linear request budget is left. An `Issue` webhook for an item or its blocker refreshes it at once.
 
-**Check blockers now** sends `POST /api/blocker-checks` with `{"itemId": "<id>"}` (the item id or its Linear identifier) and reads that item's relations at once. A second press for the same item within 15 seconds answers 429 with `Retry-After`; an item that is not waiting on a blocker answers 409.
+**Check blockers now** sends `POST /api/blocker-checks` with `{"itemId": "<id>"}` (the item id or its Linear identifier) and reads that item's relations at once. A second press for the same item within 15 seconds answers 429 with `Retry-After`; an item that is not waiting on a blocker answers 409; a relations read that Linear fails answers 502.
 
 ## Route coverage
 

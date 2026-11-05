@@ -173,6 +173,30 @@ test("Check blockers now reads the item at once and refuses a second press withi
   expect((await press("ACME-2")).status).toBe(200);
 });
 
+test("Check blockers now reports a failed Linear read instead of an unchanged check", async () => {
+  await using fixture = await blockedFixture();
+  const route = createBlockerCheckRoute({
+    db: fixture.db,
+    polls: fixture.polls,
+    blockedItemIds: fixture.reconciler.blockedItemIds,
+  });
+  fixture.tracker.blockerFailures.push(new Error("Linear is unavailable"));
+  const response = await route(
+    new Request("http://127.0.0.1/api/blocker-checks", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": "20" },
+      body: JSON.stringify({ itemId: "ACME-2" }),
+    }),
+    ["acme-session"],
+  );
+  if (!response) throw new Error("the route did not answer");
+  expect(response.status).toBe(502);
+  expect(((await response.json()) as { error: string }).error).toBe(
+    "Linear did not return this item's blockers. Try again in a moment.",
+  );
+  expect(fixture.executionReconciles()).toBe(0);
+});
+
 test("an Issue webhook for a blocker still refreshes the items it blocks", async () => {
   await using fixture = await blockedFixture();
   const reads = fixture.epicReads();

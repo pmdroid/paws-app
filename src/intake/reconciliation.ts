@@ -42,6 +42,13 @@ export type ItemChanges = {
 
 export type IntakeReads = { snapshot: EpicSnapshot; edges: readonly DependencyEdge[] };
 export type RelationsScope = "all" | "blocked" | { itemId: string };
+
+export class UnreadBlockersError extends Error {
+  constructor() {
+    super("Linear did not return this item's blockers. Try again in a moment.");
+    this.name = "UnreadBlockersError";
+  }
+}
 type Target = { itemId: string; workspaceId: string; signal?: AbortSignal; known?: IntakeReads };
 type IssueChange = { issueId: string; organizationId: string; parentIssueId?: string | null };
 type Identity = {
@@ -617,6 +624,8 @@ export function createItemReconciler(input: {
           items.filter((item) => read.has(item.issueId)).map((item) => item.itemId),
           checkedAt,
         );
+        if (typeof scope === "object" && items.some((item) => !read.has(item.issueId)))
+          throw new UnreadBlockersError();
         const changed = new Map<string, Target>();
         for (const item of items) {
           const blockers = read.get(item.issueId);
