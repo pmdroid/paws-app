@@ -29,7 +29,8 @@ import {
   immediate,
   inMergeQueue,
   listHooks,
-  markAgentWait,
+  startAgentWait,
+  endAgentWait,
   pinnedSlotsReserved,
   releasePinnedSlot,
   restartedFromMergeQueue,
@@ -1859,8 +1860,10 @@ export function createRemoteAgentRunner(options: {
                 );
               }
               if (event.type === "hook_failed") await emit(event, origin);
-              if (event.type === "agent_wait_started" || event.type === "agent_wait_ended")
-                markAgentWait(db, itemId, event.type === "agent_wait_started", mono(), now());
+              const waitRun = { itemId, runId: assigned.runId, generation: assigned.generation };
+              if (event.type === "agent_wait_started") startAgentWait(db, waitRun, mono(), now());
+              if (event.type === "agent_wait_ended")
+                endAgentWait(db, waitRun, mono(), now(), event.waitedMs);
               if (event.type === "checkpoint" && assigned.type === "run")
                 recordRunnerCheckpoint(db, {
                   itemId,
@@ -2380,7 +2383,13 @@ export function createRemoteAgentRunner(options: {
                   state === "running");
             if (!detached)
               try {
-                markAgentWait(db, itemId, false, mono(), now());
+                if (command)
+                  endAgentWait(
+                    db,
+                    { itemId, runId: command.runId, generation: command.generation },
+                    mono(),
+                    now(),
+                  );
               } catch (error) {
                 journalCaught(error, "runner-backend.cleanup.agentWait", itemId);
               }

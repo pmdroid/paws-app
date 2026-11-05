@@ -15,6 +15,7 @@ function harness() {
       return next;
     },
     clear: (handle) => pending.delete(handle as number),
+    now: () => clock.now(),
   };
   const events: (AgentWaitEvent & { at: number })[] = [];
   const tracker = agentWaitTracker((event) => events.push({ ...event, at: clock.now() }), timers);
@@ -62,11 +63,14 @@ test("a 30-minute tool call with no other output waits 28 minutes after 2 minute
   });
   expect(events).toEqual([
     { type: "agent_wait_started", kind: "execute", title: "run.sh --build --mcp", at: 2 * MINUTE },
-    { type: "agent_wait_ended", kind: "execute", title: "run.sh --build --mcp", at: 30 * MINUTE },
+    {
+      type: "agent_wait_ended",
+      kind: "execute",
+      title: "run.sh --build --mcp",
+      waitedMs: 28 * MINUTE,
+      at: 30 * MINUTE,
+    },
   ]);
-  const waited = events[1]!.at - events[0]!.at;
-  expect(waited).toBe(28 * MINUTE);
-  expect(30 * MINUTE - waited).toBe(2 * MINUTE);
 });
 
 test("agent output ends the wait at that output", () => {
@@ -78,9 +82,9 @@ test("agent output ends the wait at that output", () => {
     content: { type: "text", text: "still building" },
   });
   advance(MINUTE);
-  expect(events.map(({ type, at }) => ({ type, at }))).toEqual([
+  expect(events).toMatchObject([
     { type: "agent_wait_started", at: 2 * MINUTE },
-    { type: "agent_wait_ended", at: 5 * MINUTE },
+    { type: "agent_wait_ended", waitedMs: 3 * MINUTE, at: 5 * MINUTE },
   ]);
   advance(MINUTE);
   expect(events.at(-1)).toMatchObject({ type: "agent_wait_started", at: 7 * MINUTE });
