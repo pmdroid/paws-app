@@ -297,7 +297,7 @@ Paws keeps the turn's live tokens in an encrypted file in the runner authority f
 
 The journal records each mint with its repository, each refresh and the revoke, never the token; a mint failure or a revoke failure is one journal line for the turn. A mint failure doesn't stop the turn: it runs without a token. Paws leaves the token out of the stored transcript, the runner's own `acp.jsonl`, `post_update` and `ask_team` text, pull request and Linear text, and the journal, matching both the exact token and the `ghs_` prefix.
 
-The turn's prompt says `gh` is signed in only when Paws minted a token for it. Runners before 0.1.67 get no token and still run the item. To turn the token off for a repository, list it in `config.toml`; the next turn reads the setting, without a restart:
+The turn's prompt says `gh` is signed in only when Paws minted a token for it. Runners before 0.1.68 get no token and still run the item. To turn the token off for a repository, list it in `config.toml`; the next turn reads the setting, without a restart:
 
 ```toml
 [github]

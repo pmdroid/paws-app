@@ -582,8 +582,8 @@ function recordingAgentRead(minted = true) {
 
 test("a turn on a runner that takes it gets one read token and its prompt line; an older runner gets neither", async () => {
   for (const [version, current] of [
-    ["0.1.66", false],
-    ["0.1.67", true],
+    ["0.1.67", false],
+    ["0.1.68", true],
   ] as const) {
     const read = recordingAgentRead();
     const f = await fixture(read.agentRead);
