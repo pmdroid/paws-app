@@ -14,7 +14,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/acp";
 import type { FakeResult } from "../src/acp/testing/script";
-import type { RunnerJob } from "../src/runner-execution";
+import { publishRunnerJob, type RunnerJob } from "../src/runner-execution";
+import {
+  publishRunnerAnswer,
+  readRunnerAnswer,
+  removeRunnerGitHubRead,
+  runnerGitHubReadId,
+} from "../src/runner-answers";
 import { executeRunnerCommand } from "../src/runner-worker";
 import { openGitHubReadConfig } from "../src/runner-worker/github-read";
 
@@ -116,12 +122,22 @@ async function turn(githubRead: boolean, tokens: Record<number, string> = { 1: T
     trace,
     asked,
     journal: readFileSync(join(outputDirectory, "events.jsonl"), "utf8"),
+    transcript: readFileSync(
+      join(
+        workRoot,
+        ".paws",
+        "runs",
+        readdirSync(join(workRoot, ".paws", "runs"))[0]!,
+        "acp.jsonl",
+      ),
+      "utf8",
+    ),
     directory: join(workRoot, `.gh-${runId}`),
   };
 }
 
 test("the agent finds the turn's token in gh's config, never in its environment, and the folder goes when the turn ends", async () => {
-  const { result, trace, journal, directory } = await turn(true);
+  const { result, trace, journal, transcript, directory } = await turn(true);
   expect(result.run.stopReason).toBe("end_turn");
   expect(trace.env?.ghConfig).toEqual({
     directory,
@@ -133,6 +149,8 @@ test("the agent finds the turn's token in gh's config, never in its environment,
   expect(trace.env?.githubToken).toBe(false);
   expect(journal).not.toContain(TOKEN);
   expect(journal).toContain("gh auth token printed [redacted]");
+  expect(transcript).not.toContain(TOKEN);
+  expect(transcript).toContain("gh auth token printed [redacted]");
   expect(existsSync(directory)).toBe(false);
 });
 
@@ -143,7 +161,7 @@ test("a turn without a read token gets no GH_CONFIG_DIR and nothing is written",
   ] as const) {
     const { trace, asked, directory } = await turn(githubRead, tokens);
     expect(trace.env?.ghConfig).toBeUndefined();
-    expect(asked).toEqual(githubRead ? [1] : []);
+    expect(asked.length > 0).toBe(githubRead);
     expect(existsSync(directory)).toBe(false);
   }
 }, 30_000);
@@ -170,4 +188,52 @@ test("a fresh token replaces hosts.yml atomically before the old one expires", a
   expect(config.tokens()).toEqual([TOKEN, FRESH]);
   config.close();
   expect(existsSync(directory)).toBe(false);
+});
+
+test("a restarted worker starts from the newest token the runner kept", async () => {
+  const directory = join(temporary(), ".gh-run");
+  const config = openGitHubReadConfig(directory, (sequence) =>
+    sequence === 3 ? { token: FRESH, expiresAt: Date.now() + 3_600_000 } : null,
+  )!;
+  expect(readFileSync(join(directory, "hosts.yml"), "utf8")).toContain(`oauth_token: ${FRESH}`);
+  expect(config.tokens()).toEqual([FRESH]);
+  config.close();
+});
+
+test("the spool keeps only the newest token, and none once the turn is gone", () => {
+  const root = temporary();
+  const spool = {
+    root: join(root, "spool"),
+    runnerUid: process.getuid!(),
+    agentGid: process.getgid!(),
+  };
+  mkdirSync(spool.root);
+  chmodSync(spool.root, 0o750);
+  const executionId = "01J00000000000000000000009";
+  publishRunnerJob(spool, {
+    executionId,
+    command: {
+      id: "check",
+      runnerId: "runner",
+      workspaceId: "workspace",
+      issuedAt: 1,
+      expiresAt: Date.now() + 60_000,
+      type: "login_check",
+      agent: "codex",
+    },
+  });
+  const held = () =>
+    [1, 2, 3].filter((sequence) =>
+      readRunnerAnswer(spool, executionId, runnerGitHubReadId(sequence)),
+    );
+  for (const sequence of [1, 2, 3]) {
+    publishRunnerAnswer(spool, executionId, {
+      requestId: runnerGitHubReadId(sequence),
+      answer: JSON.stringify({ token: TOKEN, expiresAt: Date.now() + 3_600_000 }),
+    });
+    removeRunnerGitHubRead(spool, executionId, sequence);
+  }
+  expect(held()).toEqual([3]);
+  removeRunnerGitHubRead(spool, executionId);
+  expect(held()).toEqual([]);
 });

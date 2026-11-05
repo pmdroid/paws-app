@@ -58,7 +58,20 @@ export function runnerCheckpointPublishedId(sequence: number): string {
 export function runnerGitHubReadId(sequence: number): string {
   if (!Number.isSafeInteger(sequence) || sequence < 1)
     throw new Error("Invalid GitHub read token sequence");
-  return `00000000-0000-4000-c000-${sequence.toString(16).padStart(12, "0")}`;
+  return `00000000-0000-4000-8001-${sequence.toString(16).padStart(12, "0")}`;
+}
+
+export const GITHUB_READ_TOKENS_PER_TURN = 64;
+
+export function removeRunnerGitHubRead(
+  spool: RunnerSpool,
+  executionId: string,
+  below = GITHUB_READ_TOKENS_PER_TURN + 1,
+): void {
+  if (process.getuid?.() !== spool.runnerUid) throw new Error("Only the runner may remove answers");
+  const answers = `${runnerJobDirectory(spool, executionId)}/answers`;
+  for (let sequence = 1; sequence < below && sequence <= GITHUB_READ_TOKENS_PER_TURN; sequence++)
+    rmSync(`${answers}/${runnerGitHubReadId(sequence)}`, { recursive: true, force: true });
 }
 
 export function removeRunnerAnswers(spool: RunnerSpool, executionId: string): void {

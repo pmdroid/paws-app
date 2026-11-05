@@ -99,6 +99,7 @@ import {
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
   runnerGitHubReadId,
+  GITHUB_READ_TOKENS_PER_TURN,
 } from "../runner-answers";
 import { openGitHubReadConfig, type GitHubReadConfig, type GitHubReadSource } from "./github-read";
 import {
@@ -1084,6 +1085,8 @@ export async function executeRunnerCommand(
       githubRead = openGitHubReadConfig(
         join(options.workRoot, `.gh-${command.runId}`),
         options.githubRead,
+        undefined,
+        GITHUB_READ_TOKENS_PER_TURN,
       );
     if (githubRead) agentEnv.GH_CONFIG_DIR = githubRead.directory;
     const closeoutBasePath = withoutRunnerBin(process.env.PATH);
@@ -1172,6 +1175,9 @@ export async function executeRunnerCommand(
         : {}),
       ...(command.type === "run" && command.hooks?.length ? { workspaceHooks: command.hooks } : {}),
       env: agentEnv,
+      ...(command.type === "run" && command.githubRead
+        ? { redactTranscript: (line: string) => redactGitHubTokens(line, githubRead?.tokens()) }
+        : {}),
       ...(installed.binPaths.length ? { runtimeBinPaths: installed.binPaths } : {}),
       closeoutBasePath,
       checkpointEnv: env,

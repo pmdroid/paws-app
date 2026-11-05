@@ -15,8 +15,14 @@ export function openGitHubReadConfig(
   directory: string,
   read: GitHubReadSource,
   intervalMs = 5_000,
+  maxTokens = 64,
 ): GitHubReadConfig | undefined {
-  const first = read(1);
+  let sequence = 0;
+  let first: { token: string } | null = null;
+  for (let candidate = 1; candidate <= maxTokens; candidate++) {
+    const found = read(candidate);
+    if (found) [sequence, first] = [candidate, found];
+  }
   if (!first) return undefined;
   rmSync(directory, { recursive: true, force: true });
   mkdirSync(directory, { mode: 0o700 });
@@ -25,10 +31,11 @@ export function openGitHubReadConfig(
   writeHosts(directory, first.token);
   const timer = setInterval(() => {
     try {
-      const next = read(tokens.length + 1);
+      const next = sequence < maxTokens ? read(sequence + 1) : null;
       if (!next) return;
       writeHosts(directory, next.token);
       tokens.push(next.token);
+      sequence += 1;
     } catch (error) {
       journalCaught(error, "runner-worker.githubRead.refresh", null);
     }

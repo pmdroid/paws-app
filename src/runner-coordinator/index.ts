@@ -1,6 +1,7 @@
 import { journalCaught, journalRejection } from "../journal";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
+import { z } from "zod";
 import { isAbsolute, join } from "node:path";
 import { createRunnerInputStore } from "../runner-inputs";
 import type { Database } from "bun:sqlite";
@@ -157,9 +158,11 @@ export async function openRunnerCoordinator(options: {
       ? createAgentReadTokens({
           ...options.repositoryAccess,
           revoke: revokeToken,
+          store: secretList(join(options.root, AGENT_READ_FILE)),
           now: options.now,
         })
       : undefined;
+  void agentRead?.recover();
   const agentReadAccess = agentRead ? createAgentReadAccess({ work, agentRead }) : undefined;
   const repositoryCommands = createRepositoryCommandsHttp({ db: options.db, now: options.now });
   const repositoryCommandAccess = options.repositoryAccess
@@ -301,6 +304,18 @@ export async function openRunnerCoordinator(options: {
       clearInterval(signInTimer);
       clearInterval(pruneTimer);
       await listener?.stop();
+    },
+  };
+}
+
+const AGENT_READ_FILE = "agent-read-tokens.json";
+
+function secretList(path: string) {
+  return {
+    read: () => z.array(z.string()).parse(JSON.parse(readSecretFile(path) ?? "[]")),
+    write(tokens: readonly string[]) {
+      if (tokens.length) writeSecretFile(path, JSON.stringify(tokens));
+      else rmSync(path, { force: true });
     },
   };
 }

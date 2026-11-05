@@ -660,3 +660,35 @@ test("a turn without a token still runs, and a stopped turn revokes its token", 
     await g.close();
   }
 }, 60_000);
+
+test("a turn Paws reattaches after a restart gets a fresh read lease, and the old one is revoked", async () => {
+  const read = recordingAgentRead();
+  const f = await fixture(read.agentRead);
+  try {
+    const withRead = (signal: AbortSignal) => ({
+      ...f.checks(signal),
+      githubRead: { prompt: READ_PROMPT },
+    });
+    const command = await shutDownMidCommand(f, withRead);
+    expect(command.type === "run" && command.githubRead).toBe(true);
+    expect(read.closed).toEqual([command.id]);
+    restartWithRunnerHolding(f);
+    const resumed = f.services.backend.forItem(f.item.id)(withRead(new AbortController().signal));
+    await f.until(() => read.opened.length === 2);
+    f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+    expect(await resumed).toMatchObject({ stopReason: "end_turn", closeoutReport: REPORT });
+    expect(f.placed).toHaveLength(1);
+    expect(read.opened).toEqual([
+      expect.objectContaining({ commandId: command.id }),
+      {
+        commandId: command.id,
+        itemId: f.item.id,
+        runId: command.runId,
+        repository: "acme/fixture",
+      },
+    ]);
+    expect(read.closed).toEqual([command.id, command.id]);
+  } finally {
+    await f.close();
+  }
+}, 60_000);

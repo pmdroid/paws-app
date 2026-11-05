@@ -12,7 +12,8 @@ beforeEach(() => {
 });
 afterEach(() => restore());
 
-function fixture(options: { fail?: boolean; revokeFails?: boolean } = {}) {
+function fixture(options: { fail?: boolean; revokeFails?: boolean; stored?: string[] } = {}) {
+  const stored = { tokens: [...(options.stored ?? [])] };
   let clock = 1_800_000_000_000;
   const minted: MintTokenInput[] = [];
   const revoked: string[] = [];
@@ -34,6 +35,12 @@ function fixture(options: { fail?: boolean; revokeFails?: boolean } = {}) {
       revoked.push(token);
       if (options.revokeFails) throw new Error("installation token revoke failed with status 500");
     },
+    store: {
+      read: () => stored.tokens,
+      write(live) {
+        stored.tokens = [...live];
+      },
+    },
     now: () => clock,
   });
   const open = (repository: string | null = "acme/monorepo") =>
@@ -42,6 +49,7 @@ function fixture(options: { fail?: boolean; revokeFails?: boolean } = {}) {
     tokens,
     minted,
     revoked,
+    stored,
     open,
     advance(ms: number) {
       clock += ms;
@@ -115,4 +123,19 @@ test("a revoke failure is one journal line for the turn", async () => {
   expect(lines.filter((line) => line.includes("revoke failed"))).toEqual([
     "agent-read item=I1 run=R1 repositories=acme/monorepo revoke failed: installation token revoke failed with status 500",
   ]);
+});
+
+test("live tokens are kept where a restarted Paws revokes them", async () => {
+  const f = fixture();
+  await f.open();
+  const live = f.tokens.tokens("C1");
+  expect(f.stored.tokens).toEqual([...live]);
+  const restarted = fixture({ stored: [...live] });
+  expect(restarted.revoked).toEqual([]);
+  await restarted.tokens.recover();
+  expect(restarted.revoked).toEqual([...live]);
+  expect(restarted.stored.tokens).toEqual([]);
+  expect(lines.at(-1)).toBe("agent-read revoked 1 tokens left from before a restart");
+  await f.tokens.close("C1");
+  expect(f.stored.tokens).toEqual([]);
 });

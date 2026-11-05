@@ -732,7 +732,12 @@ export function createRemoteAgentRunner(options: {
    * which names the heads it covers: it attaches only to the same command, and cancels other open
    * work no attempt here is reading so it can be placed again.
    */
-  function attachedWork(itemId: string, type: WorkCommand["type"], closeoutPrompt?: string) {
+  function attachedWork(
+    itemId: string,
+    type: WorkCommand["type"],
+    closeoutPrompt?: string,
+    readPrompt?: string,
+  ) {
     const runId = getWorkItem(db, itemId)?.currentRunId;
     if (!runId) return undefined;
     const row = db
@@ -760,10 +765,13 @@ export function createRemoteAgentRunner(options: {
         "utf8",
       ),
     ) as WorkCommand;
-    if (
-      closeoutPrompt !== undefined &&
-      (command.type !== type || command.prompt !== closeoutPrompt)
-    ) {
+    const sameCloseout =
+      command.prompt === closeoutPrompt ||
+      (command.type === "run" &&
+        command.githubRead === true &&
+        readPrompt !== undefined &&
+        command.prompt === `${closeoutPrompt}\n\n${readPrompt}`);
+    if (closeoutPrompt !== undefined && (command.type !== type || !sameCloseout)) {
       // The run holds one command at a time, so the stale one would block the new assignment.
       if (!reservations.has(runId)) {
         try {
@@ -951,6 +959,7 @@ export function createRemoteAgentRunner(options: {
               itemId,
               responseTask ? "task" : input.role === "reviewer" ? "review" : "run",
               closeoutWork ? input.prompt : undefined,
+              input.githubRead?.prompt,
             );
         const chosen = attached
           ? undefined
@@ -991,6 +1000,19 @@ export function createRemoteAgentRunner(options: {
                 redactGitHubTokens(JSON.stringify(value), options.agentRead.tokens(readCommand)),
               ) as T)
             : value;
+        const reattached = attached?.assigned;
+        if (
+          reattached?.type === "run" &&
+          reattached.githubRead &&
+          options.agentRead &&
+          (await options.agentRead.open({
+            commandId: reattached.id,
+            itemId,
+            runId: reattached.runId,
+            repository: `${reattached.repository.owner}/${reattached.repository.repo}`,
+          }))
+        )
+          readCommand = reattached.id;
         const emit = async (raw: AcpEvent, origin?: AcpEventOrigin) => {
           const event = scrub(raw);
           const line = `${JSON.stringify({ t: new Date(now()).toISOString(), event })}\n`;

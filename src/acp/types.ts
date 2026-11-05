@@ -146,6 +146,7 @@ export interface RunAgentOptions {
   commitPolicy?: GitCommitPolicy;
   closeoutPolicy?: () => Promise<PolicyFilesLoad>;
   githubRead?: { prompt: string };
+  redactTranscript?: (line: string) => string;
   ciRerun?: (reason: string) => Promise<string>;
   /**
    * The task repository's runtime list from its mise config on origin/main. A remote runner
