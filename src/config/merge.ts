@@ -36,7 +36,14 @@ export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
  */
 export const MAIN_MOVED = ["overlap", "green", "ci", "closeout"] as const;
 
+/**
+ * Which merge-queue lane an item joins in its repository. `project` (default): one lane per Linear
+ * project, and items without a project share the repository-wide lane. `repository`: one lane.
+ */
+export const MERGE_LANES = ["project", "repository"] as const;
+
 export type MergeOrder = (typeof MERGE_ORDERS)[number];
+export type MergeLane = (typeof MERGE_LANES)[number];
 export type MainMoved = (typeof MAIN_MOVED)[number];
 export type MergeChoice = { order: MergeOrder; mainMoved: MainMoved };
 /** A missing choice inherits from the next level. */
@@ -64,6 +71,9 @@ export type MergeRepositories = Record<
   }
 >;
 export type MergeSettings = MergePolicy & {
+  lane: MergeLane;
+  /** `[merge.projects."<Linear project id>"] lane`, kept apart from the Merging settings policy. */
+  projectLanes: Record<string, MergeLane>;
   autoApproveHighRisk: boolean;
   ciFixAttempts: number;
   repositories: MergeRepositories;
@@ -71,6 +81,8 @@ export type MergeSettings = MergePolicy & {
 };
 /** The `[merge]` tables as written. Missing keys are not rendered. */
 export type StoredMerge = Partial<MergeChoice> & {
+  lane?: MergeLane;
+  projectLanes?: Record<string, MergeLane>;
   autoApproveHighRisk?: boolean;
   ciFixAttempts?: number;
   commentQuietSeconds?: number;
@@ -87,6 +99,7 @@ export type ResolvedMergeSettings = MergeChoice & {
 };
 
 export const DEFAULT_MERGE_CHOICE: MergeChoice = { order: "queue", mainMoved: "ci" };
+export const DEFAULT_MERGE_LANE: MergeLane = "project";
 
 /**
  * Bots that comment on pull requests with status, not findings: deploy previews, coverage
@@ -155,7 +168,11 @@ const tomlSchema = z.object({
       projects: z
         .record(
           projectId,
-          z.strictObject({ order: override.order, main_moved: override.mainMoved }),
+          z.strictObject({
+            order: override.order,
+            main_moved: override.mainMoved,
+            lane: z.enum(MERGE_LANES).optional(),
+          }),
         )
         .optional(),
       repositories: z
@@ -202,6 +219,8 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
   return {
     ...(config.mergeOrder === undefined ? {} : { order: config.mergeOrder }),
     ...(mainMoved === undefined ? {} : { mainMoved }),
+    ...(config.mergeLane === undefined ? {} : { lane: config.mergeLane }),
+    ...(config.mergeProjectLanes === undefined ? {} : { projectLanes: config.mergeProjectLanes }),
     ...(config.autoApproveHighRisk === undefined
       ? {}
       : { autoApproveHighRisk: config.autoApproveHighRisk }),
@@ -230,6 +249,8 @@ export function readMergeSettings(config: PawsConfigFile): MergeSettings {
     },
     projects: stored.projects,
     rules: stored.rules,
+    lane: stored.lane ?? DEFAULT_MERGE_LANE,
+    projectLanes: stored.projectLanes ?? {},
     repositories: stored.repositories ?? {},
     autoApproveHighRisk: stored.autoApproveHighRisk ?? false,
     ciFixAttempts: Math.min(stored.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS, MAX_CI_FIX_ATTEMPTS),
@@ -328,6 +349,19 @@ export function resolveMergeSettings(
   };
 }
 
+/**
+ * The item's merge-queue lane in its repository: its Linear project id, or `""` for the
+ * repository-wide lane. A `[merge.projects.*] lane` wins over `[merge] lane`; labels play no part.
+ */
+export function mergeLaneKey(
+  project: string | null,
+  settings: Pick<MergeSettings, "lane" | "projectLanes">,
+): string {
+  if (project === null) return "";
+  const lane = settings.projectLanes[project] ?? settings.lane;
+  return lane === "project" ? project : "";
+}
+
 /** Bot logins whose comments on this repository's pull requests Paws ignores, lowercased. */
 export function ignoredCommentBots(settings: MergeSettings, repository: string): string[] {
   const wanted = repository.toLowerCase();
@@ -413,7 +447,10 @@ export function repositoryPackages(settings: MergeSettings, repository: string):
 /** `[merge.projects."…"]` and `[[merge.rules]]`. The flat `[merge]` keys are read in `file.ts`. */
 export function parseMergeTables(
   text: string,
-): Pick<PawsConfigFile, "mergeProjects" | "mergeRules" | "mergeRepositories"> {
+): Pick<
+  PawsConfigFile,
+  "mergeProjects" | "mergeProjectLanes" | "mergeRules" | "mergeRepositories"
+> {
   if (!/^\s*\[\[?\s*merge\.(projects|rules|repositories)/m.test(text)) return {};
   const parsed = tomlSchema.safeParse(Bun.TOML.parse(text));
   if (!parsed.success) {
@@ -424,6 +461,9 @@ export function parseMergeTables(
   }
   const merge = parsed.data.merge;
   const projects = Object.entries(merge?.projects ?? {});
+  const lanes = projects.flatMap(([id, value]) =>
+    value.lane === undefined ? [] : [[id, value.lane] as const],
+  );
   const repositories = Object.entries(merge?.repositories ?? {});
   return {
     ...(repositories.length
@@ -450,6 +490,7 @@ export function parseMergeTables(
           mergeProjects: Object.fromEntries(projects.map(([id, value]) => [id, fromToml(value)])),
         }
       : {}),
+    ...(lanes.length ? { mergeProjectLanes: Object.fromEntries(lanes) } : {}),
     ...(merge?.rules?.length
       ? {
           mergeRules: merge.rules.map(({ project, label: name, ...value }) => ({
@@ -511,8 +552,10 @@ function choiceLines(value: MergeOverride): string[] {
 }
 
 export function renderMergeSettings(settings: StoredMerge): string {
+  const projectLanes = settings.projectLanes ?? {};
   const lines = [
     ...choiceLines(settings),
+    ...(settings.lane === undefined ? [] : [`lane = ${JSON.stringify(settings.lane)}`]),
     ...(settings.autoApproveHighRisk === undefined
       ? []
       : [`auto_approve_high_risk = ${settings.autoApproveHighRisk}`]),
@@ -531,9 +574,12 @@ export function renderMergeSettings(settings: StoredMerge): string {
   ];
   return [
     lines.length === 0 ? "" : `\n[merge]\n${lines.join("\n")}\n`,
-    ...Object.entries(settings.projects).map(
-      ([id, value]) =>
-        `\n[merge.projects.${JSON.stringify(id)}]\n${choiceLines(value)
+    ...[...new Set([...Object.keys(settings.projects), ...Object.keys(projectLanes)])].map(
+      (id) =>
+        `\n[merge.projects.${JSON.stringify(id)}]\n${[
+          ...choiceLines(settings.projects[id] ?? {}),
+          ...(projectLanes[id] === undefined ? [] : [`lane = ${JSON.stringify(projectLanes[id])}`]),
+        ]
           .map((line) => `${line}\n`)
           .join("")}`,
     ),
@@ -603,6 +649,8 @@ export function writeMergePolicy(
     path,
     setMergeSettingsText(text, {
       ...policy.default,
+      ...(current.lane === undefined ? {} : { lane: current.lane }),
+      ...(current.projectLanes === undefined ? {} : { projectLanes: current.projectLanes }),
       ...(current.autoApproveHighRisk === undefined
         ? {}
         : { autoApproveHighRisk: current.autoApproveHighRisk }),

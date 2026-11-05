@@ -23,6 +23,7 @@ import {
   joinMergeQueue,
   leaveMergeQueue,
   listJobs,
+  listMergeQueues,
   migrate,
   openDatabase,
   parkLeasedJob,
@@ -61,11 +62,16 @@ function claim(
   return claimNextJob(db, { workerId, leaseMs, now: clock.now(), queues });
 }
 
-function holdMergeQueuePlace(db: ReturnType<typeof openDatabase>, clock: FakeClock, id: string) {
+function holdMergeQueuePlace(
+  db: ReturnType<typeof openDatabase>,
+  clock: FakeClock,
+  id: string,
+  lane = "",
+) {
   beginImplementRun(db, id, clock.now());
   applyWorkItemEvent(db, id, "turn_ended");
   applyWorkItemEvent(db, id, "closeout_accepted");
-  joinMergeQueue(db, { itemId: id, repository: "acme/one", now: clock.now() });
+  joinMergeQueue(db, { itemId: id, repository: "acme/one", lane, now: clock.now() });
 }
 
 describe("job queue", () => {
@@ -366,6 +372,67 @@ describe("job queue", () => {
     enqueueMerge(db, clock, "eng-1");
     enqueueMerge(db, clock, "eng-2");
     expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
+    expect(claim(db, clock, [JOB_KIND.merge])).toBeNull();
+  });
+
+  test("merge jobs in one repository's different project lanes are both claimed, each first in its lane", () => {
+    const { db, clock } = queue();
+    for (const id of ["eng-1", "eng-2"]) {
+      insertQueuedItem(db, { id, now: clock.now() });
+      bindRepo(db, id, "acme", "one");
+    }
+    holdMergeQueuePlace(db, clock, "eng-1", "project-a");
+    holdMergeQueuePlace(db, clock, "eng-2", "project-b");
+    enqueueMerge(db, clock, "eng-1");
+    enqueueMerge(db, clock, "eng-2");
+    expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
+    expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-2" });
+    expect(
+      listMergeQueues(db).map((entry) => [entry.itemId, entry.lane, entry.position, entry.total]),
+    ).toEqual([
+      ["eng-1", "project-a", 1, 1],
+      ["eng-2", "project-b", 1, 1],
+    ]);
+  });
+
+  test("a second merge job in the same project lane is not claimed", () => {
+    const { db, clock } = queue();
+    for (const id of ["eng-1", "eng-2"]) {
+      insertQueuedItem(db, { id, now: clock.now() });
+      bindRepo(db, id, "acme", "one");
+    }
+    holdMergeQueuePlace(db, clock, "eng-1", "project-a");
+    holdMergeQueuePlace(db, clock, "eng-2", "project-a");
+    enqueueMerge(db, clock, "eng-1");
+    enqueueMerge(db, clock, "eng-2");
+    expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
+    expect(claim(db, clock, [JOB_KIND.merge])).toBeNull();
+    expect(
+      listMergeQueues(db).map((entry) => [entry.itemId, entry.position, entry.aheadItemId]),
+    ).toEqual([
+      ["eng-1", 1, null],
+      ["eng-2", 2, "eng-1"],
+    ]);
+  });
+
+  test("a merge job with no queue place yet waits only for the repository-wide lane", () => {
+    const { db, clock } = queue();
+    for (const id of ["eng-1", "eng-2", "eng-3"]) {
+      insertQueuedItem(db, { id, now: clock.now() });
+      bindRepo(db, id, "acme", "one");
+    }
+    holdMergeQueuePlace(db, clock, "eng-1", "project-a");
+    enqueueMerge(db, clock, "eng-1");
+    enqueueMerge(db, clock, "eng-2");
+    expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
+    const unplaced = claim(db, clock, [JOB_KIND.merge]);
+    expect(unplaced?.payload).toEqual({ itemId: "eng-2" });
+    expect(unplaced !== null && completeJob(db, unplaced, clock.now())).toBe(true);
+
+    holdMergeQueuePlace(db, clock, "eng-3");
+    enqueueMerge(db, clock, "eng-3");
+    expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-3" });
+    enqueueMerge(db, clock, "eng-2");
     expect(claim(db, clock, [JOB_KIND.merge])).toBeNull();
   });
 

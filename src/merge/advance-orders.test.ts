@@ -15,6 +15,7 @@ import {
   listReviewEscapes,
   pendingPullCiFailures,
   recordCiRerun,
+  saveWorkItemLinearProject,
 } from "../db";
 import { createFakeMergeQueue } from "../github";
 import { findOpenQuestion } from "../questions";
@@ -289,6 +290,52 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(queued(h)).toEqual(["ENG-131"]);
     expect(await h.pass("ENG-131")).toEqual({ kind: "merged" });
     expect(mergedOrder(h, ids)).toEqual(["ENG-132", "ENG-131"]);
+  });
+
+  test("project lanes move independently, and the second lane to merge rebases onto the first's main", async () => {
+    const h = await start({ settings: { order: "queue", mainMoved: "ci" } });
+    const ids = ["ENG-171", "ENG-172", "ENG-173"];
+    for (const id of ids) await h.addItem(id);
+    const lanes: Record<string, [string, string]> = {
+      "ENG-171": ["project-a", "Billing"],
+      "ENG-172": ["project-b", "Search"],
+      "ENG-173": ["project-a", "Billing"],
+    };
+    for (const [id, [lane, name]] of Object.entries(lanes)) {
+      h.state.lanes.set(id, lane);
+      saveWorkItemLinearProject(h.db, id, { id: lane, name });
+    }
+    h.state.ci = pendingCi;
+    for (const id of ids) {
+      await h.pass(id);
+      h.clock.advance(1_000);
+    }
+    expect(
+      listMergeQueues(h.db).map((entry) => [entry.itemId, entry.lane, entry.position]),
+    ).toEqual([
+      ["ENG-171", "project-a", 1],
+      ["ENG-173", "project-a", 2],
+      ["ENG-172", "project-b", 1],
+    ]);
+    expect(h.bodies("status")).toContain(
+      "Second in the acme/app queue for Billing. ENG-171 merges first.",
+    );
+
+    h.state.ci = () => undefined;
+    const accepted = await h.remoteHead("ENG-172");
+    expect(await h.pass("ENG-171")).toEqual({ kind: "merged" });
+    // The fake records the squash; land it on main as GitHub would.
+    await h.moveMain("lane-a.txt", "lane a\n");
+    // Lane B's head no longer contains main, so it is not mergeable: it goes through
+    // `main_moved = "ci"` (rebase, wait for CI) instead of squashing.
+    expect(await h.pass("ENG-172")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(mergedOrder(h, ids)).toEqual(["ENG-171"]);
+    const rebased = await h.remoteHead("ENG-172");
+    expect(rebased).not.toBe(accepted);
+    expect(await h.pass("ENG-172")).toEqual({ kind: "merged" });
+    expect(h.github.merged.at(-1)?.expectedHeadSha).toBe(rebased);
+    expect(await passUntilMerged(h, "ENG-173")).toEqual({ kind: "merged" });
+    expect(mergedOrder(h, ids)).toEqual(["ENG-171", "ENG-172", "ENG-173"]);
   });
 
   test("a task with no dependencies behind a blocked one merges without waiting", async () => {

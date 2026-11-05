@@ -374,6 +374,7 @@ export {
 } from "./reads";
 export {
   applyLinearIssueProject,
+  getWorkItemLinearProjectId,
   saveWorkItemLinearProject,
   type WorkItemLinearProject,
 } from "./linear-project";

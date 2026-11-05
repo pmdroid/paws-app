@@ -28,8 +28,17 @@ const PLACES = [
   "Tenth",
 ];
 
-/** "Second in the acme/platform queue." */
-export function mergeQueueLine(entry: { position: number; repository: string }): string {
+/**
+ * "Second in the acme/platform queue", or "Second in the acme/platform queue for Billing" in a
+ * Linear project's lane.
+ */
+export function mergeQueueLine(entry: {
+  position: number;
+  repository: string;
+  lane?: string;
+  laneName?: string | null;
+}): string {
   const place = PLACES[entry.position - 1] ?? ordinal(entry.position);
-  return `${place} in the ${entry.repository} queue`;
+  const lane = entry.lane ? ` for ${entry.laneName ?? "its Linear project"}` : "";
+  return `${place} in the ${entry.repository} queue${lane}`;
 }

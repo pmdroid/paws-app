@@ -46,6 +46,7 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     feedbackWait: () => DEFAULT_PULL_FEEDBACK_WAIT,
     readPullCi: unused("readPullCi"),
     dependencyHold: () => null,
+    mergeLane: () => "",
     mergedOutsideLane: async () => null,
     completed: () => calls.push("completed"),
     voice: {

@@ -20,11 +20,13 @@ import {
 
 import {
   MAIN_MOVED,
+  MERGE_LANES,
   MERGE_ORDERS,
   parseMergeTables,
   renderMergeSettings,
   storedMerge,
   type MainMoved,
+  type MergeLane,
   type MergeOrder,
   type MergeOverride,
   type MergeRepositories,
@@ -98,10 +100,14 @@ export type PawsConfigFile = {
   mergeOrder?: MergeOrder;
   /** `[merge] main_moved`. Missing means `ci`. */
   mainMoved?: MainMoved;
+  /** `[merge] lane`. Missing means `project`. */
+  mergeLane?: MergeLane;
   /** `[merge.projects."<Linear project id>"]`. */
   mergeProjects?: Record<string, MergeOverride>;
   /** `[[merge.rules]]`. */
   mergeRules?: MergeRule[];
+  /** `[merge.projects."<Linear project id>"] lane`. */
+  mergeProjectLanes?: Record<string, MergeLane>;
   mergeRepositories?: MergeRepositories;
   /** `[merge] ci_fix_attempts`. Missing means the default of 3. */
   ciFixAttempts?: number;
@@ -548,6 +554,7 @@ function assignConfig(
     else if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, line, "merge.order");
     else if (key === "main_moved")
       config.mainMoved = oneOf(MAIN_MOVED, value, line, "merge.main_moved");
+    else if (key === "lane") config.mergeLane = oneOf(MERGE_LANES, value, line, "merge.lane");
     else throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
     return;
   }

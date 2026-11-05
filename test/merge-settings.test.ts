@@ -6,6 +6,7 @@ import {
   MAIN_MOVED,
   ignoredCommentBots,
   loadConfigFile,
+  mergeLaneKey,
   parseCommentWait,
   parseConfigToml,
   readMergeSettings,
@@ -113,6 +114,8 @@ packages = ["apps/*", "packages/*"]
         { project: PAYMENTS, label: 'Needs "care"' },
       ],
       repositories: { "acme/platform": { packages: ["apps/*", "packages/*"] } },
+      lane: "project",
+      projectLanes: {},
       autoApproveHighRisk: false,
       ciFixAttempts: 2,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
@@ -178,6 +181,37 @@ packages = ["apps/*", "packages/*"]
       writeMergePolicy(path, settings, storedMerge(config));
       expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
     }
+  });
+
+  test("lane defaults to the Linear project, and a project's lane wins over [merge]", () => {
+    const fallback = readMergeSettings(parseConfigToml(""));
+    expect(fallback.lane).toBe("project");
+    expect(mergeLaneKey(PAWS, fallback)).toBe(PAWS);
+    // An item without a project shares the repository-wide lane.
+    expect(mergeLaneKey(null, fallback)).toBe("");
+
+    const config = parseConfigToml(
+      `[merge]\nlane = "repository"\n\n[merge.projects."${PAWS}"]\nlane = "project"\n\n[merge.projects."${PAYMENTS}"]\norder = "ci-green"\n`,
+    );
+    const settings = readMergeSettings(config);
+    expect(settings.lane).toBe("repository");
+    expect(settings.projectLanes).toEqual({ [PAWS]: "project" });
+    expect(settings.projects).toEqual({ [PAWS]: {}, [PAYMENTS]: { order: "ci-green" } });
+    expect(mergeLaneKey(PAWS, settings)).toBe(PAWS);
+    expect(mergeLaneKey(PAYMENTS, settings)).toBe("");
+    expect(mergeLaneKey(null, settings)).toBe("");
+
+    // Saving the Merging settings keeps both lane keys.
+    const path = join(tempHome(), "config.toml");
+    writeMergePolicy(path, settings, storedMerge(config));
+    expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
+
+    expect(() => parseConfigToml('[merge]\nlane = "label"\n')).toThrow("merge.lane");
+    expect(() => parseConfigToml(`[merge.projects."${PAWS}"]\nlane = "issue"\n`)).toThrow();
+    // No label rules for lanes.
+    expect(() =>
+      parseConfigToml('[[merge.rules]]\nlabel = "Bug"\nlane = "repository"\n'),
+    ).toThrow();
   });
 
   test("package roots must be relative paths in the repository", () => {
@@ -393,6 +427,8 @@ describe("Merging settings API", () => {
       projects: { [PAWS]: {}, [PAYMENTS]: { order: "github-queue", mainMoved: "overlap" } },
       rules: [{ label: "Bug", mainMoved: "closeout" }],
       repositories: { "acme/platform": { packages: ["apps/*"] } },
+      lane: "project",
+      projectLanes: {},
       autoApproveHighRisk: false,
       ciFixAttempts: 5,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },

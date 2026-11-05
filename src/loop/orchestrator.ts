@@ -71,6 +71,7 @@ import {
   checkoutExclusionsFor,
   highRiskPaths,
   loadConfigFile,
+  mergeLaneKey,
   readMergeSettings,
   repositoryPackages,
   reviewApps,
@@ -309,6 +310,7 @@ import {
   receivedLinearComments,
   settleLinearComments,
   recordLinearComment,
+  getWorkItemLinearProjectId,
 } from "../db";
 import {
   publishAccepted,
@@ -5230,6 +5232,8 @@ export class Orchestrator {
         if (admitted.ok || admitted.held !== "blocked") return null;
         return openBlockers(this.db, id);
       },
+      mergeLane: (item) =>
+        mergeLaneKey(getWorkItemLinearProjectId(this.db, item.id), this.readMergePolicy()),
       voice: {
         thought: (item, body, key) => this.post(item, "thought", body, key),
         status: (item, body) => this.statusAfterPullRequest(item, body),
