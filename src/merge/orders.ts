@@ -18,6 +18,7 @@ import {
   pendingPullCiFailures,
   pendingLinearComments,
   pendingPullComments,
+  pullReviewCheckWait,
   recordPullCiFailure,
   settlePullCiFailures,
   wakePullReviews,
@@ -73,9 +74,12 @@ export function reviewHold(
       reason: "review",
     };
   wakePullReviews(db, itemId, now, wait);
+  const checks = pullReviewCheckWait(db, itemId);
   return {
     kind: "wait",
-    message: "Requested changes go back to the agent before this pull request merges.",
+    message: checks
+      ? `Waiting for review checks on ${checks.head.slice(0, 7)}: ${checks.names.join(", ")}.`
+      : "Requested changes go back to the agent before this pull request merges.",
     queued: true,
     reason: "review",
   };

@@ -12,8 +12,19 @@ export const MAX_CI_FIX_ATTEMPTS = 10;
  * to the agent together: `quietSeconds` after the latest one, and never longer than
  * `maxWaitSeconds` after the first.
  */
-export type CommentWait = { quietSeconds: number; maxWaitSeconds: number };
-export const DEFAULT_COMMENT_WAIT: CommentWait = { quietSeconds: 60, maxWaitSeconds: 300 };
+export type CommentWait = {
+  quietSeconds: number;
+  maxWaitSeconds: number;
+  reviewWaitMaxSeconds: number;
+};
+export type CommentWaitInput = Omit<CommentWait, "reviewWaitMaxSeconds"> & {
+  reviewWaitMaxSeconds?: number;
+};
+export const DEFAULT_COMMENT_WAIT: CommentWait = {
+  quietSeconds: 60,
+  maxWaitSeconds: 300,
+  reviewWaitMaxSeconds: 900,
+};
 export const MAX_COMMENT_WAIT_SECONDS = 3600;
 
 /** `queue`: one pull request at a time per repository. `ci-green`: each merges on its own green CI. */
@@ -45,7 +56,12 @@ export type MergePolicy = {
  */
 export type MergeRepositories = Record<
   string,
-  { packages: string[]; ignoreCommentBots?: string[]; highRiskPaths?: string[] }
+  {
+    packages: string[];
+    ignoreCommentBots?: string[];
+    reviewApps?: string[];
+    highRiskPaths?: string[];
+  }
 >;
 export type MergeSettings = MergePolicy & {
   autoApproveHighRisk: boolean;
@@ -59,6 +75,7 @@ export type StoredMerge = Partial<MergeChoice> & {
   ciFixAttempts?: number;
   commentQuietSeconds?: number;
   commentMaxWaitSeconds?: number;
+  reviewWaitMaxSeconds?: number;
   projects: Record<string, MergeOverride>;
   rules: MergeRule[];
   repositories?: MergeRepositories;
@@ -90,6 +107,7 @@ const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const PACKAGE_ROOT = /^(?:[^/*\s\\]+|\*)(?:\/(?:[^/*\s\\]+|\*))*\/?$/;
 const LABEL_MAX = 200;
 const BOT_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$/;
+const APP_SLUG = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 const highRiskGlob = z.string().superRefine((glob, context) => {
   const error = highRiskGlobError(glob);
   if (error) context.addIssue({ code: "custom", message: error });
@@ -157,6 +175,10 @@ const tomlSchema = z.object({
               .array(z.string().regex(BOT_LOGIN, "must be a GitHub login such as codecov[bot]"))
               .max(100)
               .optional(),
+            review_apps: z
+              .array(z.string().regex(APP_SLUG, "must be a GitHub App slug such as acme-review"))
+              .max(100)
+              .optional(),
             high_risk_paths: highRiskGlobs.optional(),
           }),
         )
@@ -190,6 +212,9 @@ export function storedMerge(config: PawsConfigFile): StoredMerge {
     ...(config.commentMaxWaitSeconds === undefined
       ? {}
       : { commentMaxWaitSeconds: config.commentMaxWaitSeconds }),
+    ...(config.reviewWaitMaxSeconds === undefined
+      ? {}
+      : { reviewWaitMaxSeconds: config.reviewWaitMaxSeconds }),
     projects: config.mergeProjects ?? {},
     rules: config.mergeRules ?? [],
     ...(config.mergeRepositories ? { repositories: config.mergeRepositories } : {}),
@@ -223,14 +248,21 @@ function commentWait(stored: StoredMerge): CommentWait {
       bound(stored.commentMaxWaitSeconds, DEFAULT_COMMENT_WAIT.maxWaitSeconds),
       quietSeconds,
     ),
+    reviewWaitMaxSeconds: bound(
+      stored.reviewWaitMaxSeconds,
+      DEFAULT_COMMENT_WAIT.reviewWaitMaxSeconds,
+    ),
   };
 }
 
 /** The Merging settings body's `commentWait`: whole seconds, the longest wait at least the quiet time. */
-export function parseCommentWait(value: unknown): CommentWait {
+export function parseCommentWait(value: unknown): CommentWaitInput {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new Error("commentWait must be an object");
-  const { quietSeconds, maxWaitSeconds, ...rest } = value as Record<string, unknown>;
+  const { quietSeconds, maxWaitSeconds, reviewWaitMaxSeconds, ...rest } = value as Record<
+    string,
+    unknown
+  >;
   if (Object.keys(rest).length > 0) throw new Error("commentWait has an unknown key");
   const seconds = (name: string, field: unknown) => {
     if (
@@ -247,6 +279,9 @@ export function parseCommentWait(value: unknown): CommentWait {
   const wait = {
     quietSeconds: seconds("quietSeconds", quietSeconds),
     maxWaitSeconds: seconds("maxWaitSeconds", maxWaitSeconds),
+    ...(reviewWaitMaxSeconds === undefined
+      ? {}
+      : { reviewWaitMaxSeconds: seconds("reviewWaitMaxSeconds", reviewWaitMaxSeconds) }),
   };
   if (wait.maxWaitSeconds < wait.quietSeconds)
     throw new Error("commentWait.maxWaitSeconds must be at least the quiet time");
@@ -300,6 +335,14 @@ export function ignoredCommentBots(settings: MergeSettings, repository: string):
     ([name]) => name.toLowerCase() === wanted,
   )?.[1].ignoreCommentBots;
   return (configured ?? DEFAULT_IGNORED_COMMENT_BOTS).map((login) => login.toLowerCase());
+}
+
+export function reviewApps(settings: MergeSettings, repository: string): string[] {
+  const wanted = repository.toLowerCase();
+  return (
+    Object.entries(settings.repositories).find(([name]) => name.toLowerCase() === wanted)?.[1]
+      .reviewApps ?? []
+  ).map((slug) => slug.toLowerCase());
 }
 
 /** The high-risk globs Paws settings give this repository. */
@@ -393,6 +436,7 @@ export function parseMergeTables(
                 ...(value.ignore_comment_bots === undefined
                   ? {}
                   : { ignoreCommentBots: value.ignore_comment_bots }),
+                ...(value.review_apps === undefined ? {} : { reviewApps: value.review_apps }),
                 ...(value.high_risk_paths === undefined
                   ? {}
                   : { highRiskPaths: value.high_risk_paths }),
@@ -481,6 +525,9 @@ export function renderMergeSettings(settings: StoredMerge): string {
     ...(settings.commentMaxWaitSeconds === undefined
       ? []
       : [`comment_max_wait_seconds = ${settings.commentMaxWaitSeconds}`]),
+    ...(settings.reviewWaitMaxSeconds === undefined
+      ? []
+      : [`review_wait_max_seconds = ${settings.reviewWaitMaxSeconds}`]),
   ];
   return [
     lines.length === 0 ? "" : `\n[merge]\n${lines.join("\n")}\n`,
@@ -506,6 +553,10 @@ export function renderMergeSettings(settings: StoredMerge): string {
           value.ignoreCommentBots === undefined
             ? ""
             : `ignore_comment_bots = [${value.ignoreCommentBots.map((login) => JSON.stringify(login)).join(", ")}]\n`
+        }${
+          value.reviewApps === undefined
+            ? ""
+            : `review_apps = [${value.reviewApps.map((slug) => JSON.stringify(slug)).join(", ")}]\n`
         }${
           value.highRiskPaths === undefined
             ? ""
@@ -541,7 +592,7 @@ export function writeMergePolicy(
   policy: MergePolicy,
   current: StoredMerge,
   riskPaths?: Record<string, string[]>,
-  wait?: CommentWait,
+  wait?: CommentWaitInput,
 ): void {
   const text = existsSync(path) ? readFileSync(path, "utf8") : "";
   const repositories =
@@ -556,6 +607,11 @@ export function writeMergePolicy(
         ? {}
         : { autoApproveHighRisk: current.autoApproveHighRisk }),
       ...(current.ciFixAttempts === undefined ? {} : { ciFixAttempts: current.ciFixAttempts }),
+      ...(wait?.reviewWaitMaxSeconds !== undefined
+        ? { reviewWaitMaxSeconds: wait.reviewWaitMaxSeconds }
+        : current.reviewWaitMaxSeconds === undefined
+          ? {}
+          : { reviewWaitMaxSeconds: current.reviewWaitMaxSeconds }),
       ...(wait
         ? { commentQuietSeconds: wait.quietSeconds, commentMaxWaitSeconds: wait.maxWaitSeconds }
         : {

@@ -1,6 +1,10 @@
 import { journalCaught } from "../journal";
 import { z } from "zod";
-import { acquireOperationToken, type GitHubTokenProvider } from "./auth";
+import {
+  acquireOperationToken,
+  type GitHubCredentialInput,
+  type GitHubTokenProvider,
+} from "./auth";
 import { repoApiPath } from "./client";
 import type { CiCheck, CiCheckState, GitHubClient } from "./types";
 
@@ -590,4 +594,63 @@ export async function readPullCi(input: {
   if (read.outcome === "pending") return { state: "pending", message: read.message };
   if (read.outcome === "sha_moved") return { state: "unknown", message: read.message, moved: true };
   return { state: "unknown", message: read.message };
+}
+
+export type HeadCheckRun = { name: string; app: string | null; status: string };
+
+export type HeadChecks = { runs: HeadCheckRun[]; pushedAt: number | null };
+
+const checkRunsSchema = z.object({
+  total_count: z.number(),
+  check_runs: z.array(
+    z.object({
+      name: z.string(),
+      status: z.string(),
+      app: z.object({ slug: z.string() }).nullable().optional(),
+    }),
+  ),
+});
+
+const checkSuitesSchema = z.object({
+  check_suites: z.array(z.object({ created_at: z.string().nullable().optional() })),
+});
+
+export async function readHeadCheckRuns(
+  input: {
+    client: GitHubClient;
+    owner: string;
+    repo: string;
+    head: string;
+    signal?: AbortSignal;
+  } & GitHubCredentialInput,
+): Promise<HeadChecks | null> {
+  try {
+    const token = await acquireOperationToken(input, "merge");
+    const get = (suffix: string) =>
+      input.client.request({
+        method: "GET",
+        path: repoApiPath(input.owner, input.repo, `/commits/${input.head}/${suffix}`),
+        token,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+    const runs: HeadCheckRun[] = [];
+    for (let page = 1; page <= 10; page++) {
+      const response = await get(`check-runs?per_page=100&page=${page}`);
+      const parsed = checkRunsSchema.safeParse(response.body);
+      if (response.status !== 200 || !parsed.success) return null;
+      for (const run of parsed.data.check_runs)
+        runs.push({ name: run.name, app: run.app?.slug ?? null, status: run.status });
+      if (parsed.data.check_runs.length < 100 || runs.length >= parsed.data.total_count) break;
+    }
+    const suites = await get("check-suites?per_page=100");
+    const parsed = checkSuitesSchema.safeParse(suites.body);
+    if (suites.status !== 200 || !parsed.success) return null;
+    const created = parsed.data.check_suites
+      .map((suite) => (suite.created_at ? Date.parse(suite.created_at) : Number.NaN))
+      .filter((time) => Number.isFinite(time));
+    return { runs, pushedAt: created.length > 0 ? Math.min(...created) : null };
+  } catch (error) {
+    journalCaught(error, "readiness.readHeadCheckRuns", null);
+    return null;
+  }
 }

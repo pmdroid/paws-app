@@ -110,6 +110,7 @@ export type PawsConfigFile = {
   commentQuietSeconds?: number;
   /** `[merge] comment_max_wait_seconds`. Missing means the default of 300. */
   commentMaxWaitSeconds?: number;
+  reviewWaitMaxSeconds?: number;
   /** `[queue] start_timeout_hours`. Missing means the default of 24. */
   queueStartTimeoutHours?: number;
   /** `[queue] max_running_per_owner`. Missing means no cap. */
@@ -543,6 +544,7 @@ function assignConfig(
     else if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
     else if (key === "comment_quiet_seconds") config.commentQuietSeconds = asInt(value, line);
     else if (key === "comment_max_wait_seconds") config.commentMaxWaitSeconds = asInt(value, line);
+    else if (key === "review_wait_max_seconds") config.reviewWaitMaxSeconds = asInt(value, line);
     else if (key === "order") config.mergeOrder = oneOf(MERGE_ORDERS, value, line, "merge.order");
     else if (key === "main_moved")
       config.mainMoved = oneOf(MAIN_MOVED, value, line, "merge.main_moved");

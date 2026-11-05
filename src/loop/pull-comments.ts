@@ -32,6 +32,7 @@ import {
   replyListSection,
   replyTargets,
 } from "./review-replies";
+import { holdForReviewChecks } from "./review-checks";
 import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
 import {
   clip,
@@ -250,6 +251,8 @@ export async function handlePullComments(
     }
   }
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
+  if (open.length > 0 && (await holdForReviewChecks(item, pullNumber, open[0]!.receivedAt, caps)))
+    return "wait";
   const threads = open.length > 0 ? await caps.threads(item, pullNumber) : [];
   const findings = await caps.closeoutFindings(item);
   const head = await pullCiHead(db, item, pullNumber, caps.pullHead);

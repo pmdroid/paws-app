@@ -15,6 +15,7 @@ import {
   type PullReviewRecord,
   type PullFeedbackWait,
   type PullReviewState,
+  type ReviewCheckWait,
   type WorkItemRecord,
 } from "../db";
 import type { StoredReviewFinding } from "../closeout";
@@ -23,6 +24,7 @@ import { ask, restart } from "./operations";
 import { commentDigest } from "./pull-comments";
 import { currentPullCi, pullCiAsked, pullCiHandoff, pullCiHead, pullCiRestarted } from "./pull-ci";
 import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
+import { holdForReviewChecks, type ReviewChecks } from "./review-checks";
 import { recordReplyTargets, replyListSection, replyTargets } from "./review-replies";
 import { worktreeBranch } from "./sources";
 
@@ -137,6 +139,12 @@ export type PullReviewCapabilities = {
   closeoutFindings(item: WorkItemRecord): Promise<readonly StoredReviewFinding[]>;
   session(item: WorkItemRecord): string | null;
   flush(): Promise<void>;
+  reviewChecks?(
+    item: WorkItemRecord,
+    pullNumber: number,
+    since: number,
+  ): Promise<ReviewChecks | null>;
+  noteReviewWait?(wait: ReviewCheckWait | null): void;
 };
 
 export type PullReviewStep = "wait" | "restarted" | "asked" | "dropped" | "done";
@@ -173,6 +181,7 @@ export async function handlePullReview(
     }
   }
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
+  if (await holdForReviewChecks(item, review.pullNumber, review.receivedAt, caps)) return "wait";
   const threads = await caps.threads(item, review.pullNumber);
   const findings = await caps.closeoutFindings(item);
   const head = await pullCiHead(db, item, review.pullNumber, caps.pullHead);

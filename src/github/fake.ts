@@ -422,3 +422,54 @@ export function createFakeMergeQueue(
     },
   };
 }
+
+export type FakeCheckRun = {
+  name: string;
+  app: string | null;
+  status: "queued" | "in_progress" | "completed";
+};
+
+export function createFakeCheckRuns(runs: Record<string, FakeCheckRun[]> = {}): {
+  runs: Record<string, FakeCheckRun[]>;
+  pushedAt: Record<string, number>;
+  failing: boolean;
+  reads: number;
+  respond(request: { method: string; path: string }): GitHubResponse | null;
+} {
+  const fake = {
+    runs,
+    pushedAt: {} as Record<string, number>,
+    failing: false,
+    reads: 0,
+    respond(request: { method: string; path: string }): GitHubResponse | null {
+      const match = /\/commits\/([^/]+)\/(check-runs|check-suites)/.exec(request.path);
+      if (request.method !== "GET" || !match) return null;
+      if (fake.failing) return { status: 502, body: null };
+      const head = match[1]!;
+      if (match[2] === "check-suites") {
+        const pushed = fake.pushedAt[head];
+        return {
+          status: 200,
+          body: {
+            check_suites:
+              pushed === undefined ? [] : [{ created_at: new Date(pushed).toISOString() }],
+          },
+        };
+      }
+      fake.reads += 1;
+      const list = fake.runs[head] ?? [];
+      return {
+        status: 200,
+        body: {
+          total_count: list.length,
+          check_runs: list.map((run) => ({
+            name: run.name,
+            status: run.status,
+            app: run.app === null ? null : { slug: run.app },
+          })),
+        },
+      };
+    },
+  };
+  return fake;
+}
