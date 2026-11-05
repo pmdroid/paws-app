@@ -30,7 +30,14 @@ test("removing obsolete states preserves work items, references, indexes and set
     migrate(db);
     migrate(db);
     expect(db.query("SELECT * FROM work_item ORDER BY id").all()).toEqual(
-      before.map((row) => ({ ...row, state: row.state === "exhausted" ? "failed" : row.state })),
+      before.map((row) => ({
+        ...row,
+        state: row.state === "exhausted" ? "failed" : row.state,
+        implement_ms: row.agent_ms,
+        fix_ms: 0,
+        max_fix_ms: 0,
+        max_closeout_ms: 0,
+      })),
     );
     expect(db.query("SELECT * FROM run").all()).toEqual(references);
     expect(db.query("SELECT * FROM work_item_event").all()).toEqual(events);

@@ -264,7 +264,7 @@ test.each([false, true, "cap"] as const)(
       if (stop === true) await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
       if (stop === "cap") {
         const item = listWorkItems(db)[0]!;
-        configureWorkItem(db, item.id, { maxAwakeMs: 1_000 });
+        configureWorkItem(db, item.id, { limits: { fixes: 1_000 } });
         expect(accrueAwake(db, item.id, 1_000, Date.now(), 0)).toMatchObject({
           asked: true,
           stopAgent: true,
@@ -277,7 +277,7 @@ test.each([false, true, "cap"] as const)(
         expect(getWorkItem(db, item.id)).toMatchObject({
           state: "queued",
           cancelRequested: false,
-          awakeMs: 0,
+          fixMs: 0,
           maxAwakeMs: 3 * 60 * 60 * 1000,
         });
         running = tickWithRestarts(jobs, orchestrator, db);
