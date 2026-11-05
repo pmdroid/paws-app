@@ -37,6 +37,21 @@ function git(args: string[], cwd: string) {
 
 type Refusal = "expired-once" | "fenced" | null;
 
+async function settleUntil(
+  tick: () => Promise<unknown>,
+  what: string,
+  holds: () => boolean,
+  { timeoutMs = 10_000 }: { timeoutMs?: number } = {},
+): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (!holds()) {
+    if (performance.now() > deadline)
+      throw new Error(`Timed out after ${timeoutMs} ms waiting until ${what}`);
+    await tick();
+    await Bun.sleep(2);
+  }
+}
+
 async function fixture(input: { pushMs?: number; chunkMs?: number; refuse?: Refusal }) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-grant-"));
   let wall = Date.now();
@@ -213,11 +228,7 @@ async function fixture(input: { pushMs?: number; chunkMs?: number; refuse?: Refu
     },
   });
   const tick = () => runtime.tick().catch(() => {});
-  const started = () => execution !== "";
-  for (let index = 0; index < 400 && !started(); index++) {
-    await tick();
-    await Bun.sleep(1);
-  }
+  await settleUntil(tick, "the execution starts", () => execution !== "");
   const directory = join(results.root, execution);
   const event = (value: object) =>
     appendFileSync(join(directory, "events.jsonl"), `${JSON.stringify(value)}\n`);
@@ -256,12 +267,8 @@ async function fixture(input: { pushMs?: number; chunkMs?: number; refuse?: Refu
     progress(text: string) {
       event({ type: "progress", text });
     },
-    async settle() {
-      for (let index = 0; index < 60; index++) {
-        await tick();
-        await Bun.sleep(2);
-      }
-    },
+    settleUntil: (what: string, holds: () => boolean, options?: { timeoutMs?: number }) =>
+      settleUntil(tick, what, holds, options),
     async cleanup() {
       await runtime.stop();
       rmSync(root, { recursive: true, force: true });
@@ -279,7 +286,9 @@ linuxOnly(
     const f = await fixture({ pushMs: 2 * GRANT_MS });
     try {
       f.checkpoint();
-      await f.settle();
+      await f.settleUntil("the checkpoint event is sent", () =>
+        f.sent.some((event) => event.type === "checkpoint"),
+      );
       const checkpoint = f.sent.find((event) => event.type === "checkpoint");
       expect(checkpoint).toBeDefined();
       expect(f.issuedCount()).toBeGreaterThan(1);
@@ -297,7 +306,9 @@ linuxOnly(
     const f = await fixture({ chunkMs: 40_000 });
     try {
       f.artifact(3);
-      await f.settle();
+      await f.settleUntil("the artifact event is sent", () =>
+        f.sent.some((event) => event.type === "artifact"),
+      );
       expect(f.chunks).toHaveLength(3);
       expect(new Set(f.chunks).size).toBeGreaterThan(1);
       expect(f.sent.some((event) => event.type === "artifact")).toBe(true);
@@ -315,7 +326,9 @@ linuxOnly(
     const f = await fixture({ refuse: "expired-once" });
     try {
       f.progress("Working on the acme widgets");
-      await f.settle();
+      await f.settleUntil("the progress event is sent", () =>
+        f.sent.some((event) => event.type === "progress"),
+      );
       expect(f.sent.map((event) => event.type)).toContain("progress");
       expect(f.issuedCount()).toBeGreaterThan(1);
       expect(f.stopped).toEqual([]);
@@ -332,7 +345,7 @@ linuxOnly(
     const f = await fixture({ refuse: "fenced" });
     try {
       f.progress("Working on the acme widgets");
-      await f.settle();
+      await f.settleUntil("the fenced run stops", () => f.stopped.length > 0);
       expect(f.sent).toEqual([]);
       expect(f.stopped.length).toBeGreaterThan(0);
     } finally {
