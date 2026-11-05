@@ -13,6 +13,7 @@ import {
   updatePullRequestText,
   type GitHubBinding,
 } from "../github";
+import { JOB_KIND } from "../core";
 
 const CLOSED_STATES = new Set(["merged", "completed", "cancelled"]);
 
@@ -46,19 +47,19 @@ export async function applyPullRequestDraft(input: {
   try {
     if (input.stopped()) return "stopped";
     let written = getPullRequestText(input.db, input.itemId);
+    if (written && sameText(written, input.issue, input.draft)) return "unchanged";
+    const live = await readPullRequestText(target);
+    if (input.stopped()) return "stopped";
+    if (!live.open) return "no_pull";
     if (!written) {
-      const live = await readPullRequestText(target);
-      if (input.stopped()) return "stopped";
-      if (!live.open) return "no_pull";
-      written = recoveredText(input.issue, input.previous, live);
+      written = recoveredText(input.issue, live, [
+        input.previous?.body,
+        acceptedSummary(input.db, input.itemId),
+      ]);
       savePullRequestText(input.db, input.itemId, written, input.now);
+      if (sameText(written, input.issue, input.draft)) return "unchanged";
     }
-    const body = publishedPullRequestBody({
-      issue: input.issue,
-      description: input.draft.body,
-      evidence: written.evidence,
-    });
-    if (title === written.title && body === written.body) return "unchanged";
+    const body = textBody(written, input.issue, input.draft);
     await updatePullRequestText({ ...target, title, body });
     if (input.stopped()) return "stopped";
     savePullRequestText(input.db, input.itemId, { ...written, title, body }, input.now);
@@ -74,18 +75,54 @@ export async function applyPullRequestDraft(input: {
   }
 }
 
+function textBody(written: PullRequestText, issue: string, draft: PullRequestDraft): string {
+  return publishedPullRequestBody({ issue, description: draft.body, evidence: written.evidence });
+}
+
+function sameText(written: PullRequestText, issue: string, draft: PullRequestDraft): boolean {
+  return draft.title === written.title && textBody(written, issue, draft) === written.body;
+}
+
+function acceptedSummary(db: Database, itemId: string): string | undefined {
+  return (
+    db
+      .query<{ summary: string | null }, [string, string]>(
+        `SELECT json_extract(payload, '$.summary') AS summary FROM job
+         WHERE queue = ? AND json_extract(payload, '$.itemId') = ? ORDER BY id DESC LIMIT 1`,
+      )
+      .get(JOB_KIND.merge, itemId)?.summary ?? undefined
+  );
+}
+
 function recoveredText(
   issue: string,
-  previous: PullRequestDraft | null,
   live: { title: string; body: string },
+  hints: readonly (string | undefined)[],
 ): PullRequestText {
-  const description = previous ? { description: previous.body } : {};
-  const prefix = publishedPullRequestBody({ issue, ...description, evidence: "" }).trimEnd();
-  const evidence = live.body.startsWith(prefix) ? live.body.slice(prefix.length).trim() : null;
-  if (
-    evidence === null ||
-    publishedPullRequestBody({ issue, ...description, evidence }) !== live.body
-  )
-    throw new Error("its body no longer matches what Paws published");
-  return { title: live.title, body: live.body, evidence };
+  const head = publishedPullRequestBody({ issue, evidence: "" }).trimEnd();
+  const rest = live.body.startsWith(`${head}\n\n`) ? live.body.slice(head.length + 2) : null;
+  const trimmed = rest?.trim();
+  if (trimmed)
+    for (const evidence of candidateEvidence(trimmed, hints)) {
+      const description = trimmed.slice(0, trimmed.length - evidence.length).trim();
+      const rebuilt = publishedPullRequestBody({
+        issue,
+        ...(description ? { description } : {}),
+        evidence,
+      });
+      if (rebuilt === live.body) return { title: live.title, body: live.body, evidence };
+    }
+  throw new Error("its body no longer matches what Paws published");
+}
+
+function* candidateEvidence(trimmed: string, hints: readonly (string | undefined)[]) {
+  const [description, summary] = hints;
+  if (description?.trim() && trimmed.startsWith(`${description.trim()}\n\n`))
+    yield trimmed.slice(description.trim().length + 2).trim();
+  const lead = summary?.trim();
+  if (lead) {
+    if (trimmed.startsWith(lead)) yield trimmed;
+    const at = trimmed.indexOf(`\n\n${lead}`);
+    if (at >= 0) yield trimmed.slice(at + 2);
+  }
 }

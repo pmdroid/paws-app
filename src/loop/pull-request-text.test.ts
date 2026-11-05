@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
+import { JOB_KIND } from "../core";
 import {
+  enqueueJob,
   getPullRequestDraft,
   getPullRequestText,
   migrate,
@@ -16,7 +18,14 @@ import { applyPullRequestDraft } from "./pull-request-text";
 const EVIDENCE = "## Closeout\n\nAll checks passed at 474f2d1b.";
 
 async function fixture(
-  options: { pull?: boolean; stored?: boolean; status?: number; patch?: Promise<void> } = {},
+  options: {
+    pull?: boolean;
+    stored?: boolean;
+    status?: number;
+    patch?: Promise<void>;
+    state?: string;
+    savedDescription?: string;
+  } = {},
 ) {
   const db = openDatabase(":memory:");
   migrate(db);
@@ -70,7 +79,12 @@ async function fixture(
         if (method === "GET")
           return {
             status: 200,
-            body: { number: 12, state: "open", title: "Grade release races", body: published },
+            body: {
+              number: 12,
+              state: options.state ?? "open",
+              title: "Grade release races",
+              body: published,
+            },
           };
         if (options.patch) await options.patch;
         return options.status === 422
@@ -82,7 +96,14 @@ async function fixture(
   const status: string[] = [];
   const journal: string[] = [];
   const controller = new AbortController();
-  if (options.stored === false) savePullRequestDraft(db, itemId, { title: "x", body: "Old" }, 1);
+  if (options.stored === false)
+    savePullRequestDraft(db, itemId, { title: "x", body: options.savedDescription ?? "Old" }, 1);
+  if (options.savedDescription)
+    enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      payload: { itemId, summary: "## Closeout", head: "474f2d1b" },
+      now: 1,
+    });
   const apply = (draft: { title: string; body: string }) => {
     const previous = getPullRequestDraft(db, itemId);
     savePullRequestDraft(db, itemId, draft, 2);
@@ -112,8 +133,8 @@ const draft = {
 test("a saved title reaches the open pull request without a push", async () => {
   const f = await fixture();
   expect(await f.apply(draft)).toBe("updated");
-  expect(f.requests).toHaveLength(1);
-  const [patch] = f.requests;
+  expect(f.requests.map((request) => request.method)).toEqual(["GET", "PATCH"]);
+  const patch = f.requests[1];
   expect(patch!.method).toBe("PATCH");
   expect(patch!.path).toBe("/repos/acme/monorepo/pulls/12");
   const sent = patch!.body as { title: string; body: string };
@@ -126,8 +147,9 @@ test("a saved title reaches the open pull request without a push", async () => {
 test("saving the same title and body again sends nothing", async () => {
   const f = await fixture();
   await f.apply(draft);
+  const sent = f.requests.length;
   expect(await f.apply(draft)).toBe("unchanged");
-  expect(f.requests).toHaveLength(1);
+  expect(f.requests).toHaveLength(sent);
 });
 
 test("before a pull request exists the draft waits for the pull request to open", async () => {
@@ -199,4 +221,17 @@ test("a stopped run sends nothing", async () => {
   f.controller.abort();
   expect(await f.apply(draft)).toBe("stopped");
   expect(f.requests).toEqual([]);
+});
+
+test("a pull request closed on GitHub is left alone", async () => {
+  const f = await fixture({ state: "closed" });
+  expect(await f.apply(draft)).toBe("no_pull");
+  expect(f.requests.map((request) => request.method)).toEqual(["GET"]);
+});
+
+test("recovery finds the evidence from the Closeout summary when a later draft was never published", async () => {
+  const f = await fixture({ stored: false, savedDescription: "Unpublished description" });
+  expect(await f.apply(draft)).toBe("updated");
+  expect(f.requests.map((request) => request.method)).toEqual(["GET", "PATCH"]);
+  expect(getPullRequestText(f.db, f.itemId)?.evidence).toBe(EVIDENCE);
 });
