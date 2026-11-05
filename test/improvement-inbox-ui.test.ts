@@ -16,8 +16,29 @@ import {
   parseRetroHistory,
   parseRetroReport,
 } from "../src/dashboard/src/improvements";
-import { createImprovements } from "../src/dashboard/src/client/improvements-page";
-import { matchRoute, retroRedirect, routePath } from "../src/dashboard/src/client/route";
+type Node = {
+  value: string;
+  checked: boolean;
+  scrollTop: number;
+  textContent: string | null;
+  click(): void;
+  focus(): void;
+  getAttribute(name: string): string | null;
+  hasAttribute(name: string): boolean;
+  dispatchEvent(event: unknown): boolean;
+  requestSubmit(submitter?: Node): void;
+  querySelector(selector: string): Node | null;
+};
+type Route = { view: string; tab?: string; id: string | null };
+const client = (path: string) => import(path);
+const { createImprovements } = await client("../src/dashboard/src/client/improvements-page.ts");
+const { matchRoute, retroRedirect, routePath } = (await client(
+  "../src/dashboard/src/client/route.ts",
+)) as {
+  matchRoute(path: string): Route | null;
+  retroRedirect(path: string): string | null;
+  routePath(route: Route): string;
+};
 import { END, ONLY_A, seedDaily, world } from "./improvement-fixtures";
 
 const DOM_GLOBALS = [
@@ -102,7 +123,7 @@ function harness() {
       holds.push({ path: target.pathname, release: gate.resolve });
       await gate.promise;
     }
-    const request = new Request(target, {
+    const request = new Request(target.toString(), {
       method: init?.method ?? "GET",
       ...(init?.body ? { body: init.body as string } : {}),
     });
@@ -120,18 +141,18 @@ function harness() {
   let search = "";
   const page = createImprovements({
     fetch: serve as typeof fetch,
-    poll: (next) => {
+    poll: (next: () => void) => {
       tick = next;
       return () => {
         tick = () => {};
       };
     },
     csrf: () => "token",
-    paint: (root, html) => {
+    paint: (root: { innerHTML: string }, html: string) => {
       root.innerHTML = html;
     },
     location: () => ({ pathname: "/dashboard/improvements", search }),
-    replaceSearch: (next) => {
+    replaceSearch: (next: string) => {
       search = next;
     },
   });
@@ -142,26 +163,26 @@ function harness() {
     search = query ? `?${query}` : "";
     const route = matchRoute(pathname!);
     if (route?.view !== "improvements") throw new Error(`not an improvements route: ${path}`);
-    page.mount(root as unknown as HTMLElement, "http://paws.test", route, "ada@ws");
+    page.mount(root, "http://paws.test", route, "ada@ws");
     await settle();
   };
-  const find = <T extends Element = HTMLElement>(selector: string) => {
+  const find = (selector: string): Node => {
     const element = root.querySelector(selector);
     if (!element) throw new Error(`missing ${selector} in:\n${root.textContent}`);
-    return element as unknown as T;
+    return element as unknown as Node;
   };
   const click = async (selector: string) => {
-    find<HTMLElement>(selector).click();
+    find(selector).click();
     await settle();
   };
   const type = (selector: string, value: string) => {
-    const input = find<HTMLInputElement>(selector);
+    const input = find(selector);
     input.value = value;
-    input.dispatchEvent(new window.Event("input", { bubbles: true }) as unknown as Event);
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
   };
   const submit = async (selector: string, submitter?: string) => {
-    const form = find<HTMLFormElement>(selector);
-    form.requestSubmit(submitter ? form.querySelector<HTMLButtonElement>(submitter)! : undefined);
+    const form = find(selector);
+    form.requestSubmit(submitter ? form.querySelector(submitter)! : undefined);
     await settle();
   };
   const deliver = (now = END + 60 * 60_000) =>
@@ -254,9 +275,9 @@ describe("improvement inbox", () => {
     expect(t.text()).toContain("Weekly retro");
     expect(t.requests.some((r) => r.path.startsWith("/api/status"))).toBe(false);
 
-    const source = t.find<HTMLSelectElement>('[data-improvement-filter="source"]');
+    const source = t.find('[data-improvement-filter="source"]');
     source.value = "weekly";
-    source.dispatchEvent(new window.Event("change", { bubbles: true }) as unknown as Event);
+    source.dispatchEvent(new window.Event("change", { bubbles: true }));
     await settle();
     const shown = [...t.root.querySelectorAll("[data-improvement-row]")].map(
       (row) => row.textContent,
@@ -331,13 +352,13 @@ describe("improvement inbox", () => {
     await t.poll();
     expect(t.text()).toContain("Merged · awaiting verification");
     expect(t.text()).toContain("does not prove the change is deployed");
-    expect(t.find<HTMLInputElement>('[data-improvement-draft="revision"]').value).toBe(MERGE);
+    expect(t.find('[data-improvement-draft="revision"]').value).toBe(MERGE);
 
     t.type('[data-improvement-draft="check"]', "Weekly retro push-recovery questions");
     t.type('[data-improvement-draft="result"]', "None in the two retros after the merge.");
     t.type('[data-improvement-draft="url"]', "https://linear.app/x/retro");
     await t.poll();
-    expect(t.find<HTMLInputElement>('[data-improvement-draft="check"]').value).toBe(
+    expect(t.find('[data-improvement-draft="check"]').value).toBe(
       "Weekly retro push-recovery questions",
     );
     await t.submit('[data-improvement-form="verification"]');
@@ -366,11 +387,11 @@ describe("improvement inbox", () => {
     const daily = list.body.items[0].id as string;
     await t.open(`/improvements/${daily}`);
     expect(t.find('[data-improvement-choice="link"]').getAttribute("aria-pressed")).toBe("true");
-    expect(t.find<HTMLInputElement>('[data-improvement-draft="issue"]').value).toBe("PAS-60");
+    expect(t.find('[data-improvement-draft="issue"]').value).toBe("PAS-60");
     expect(t.text()).toContain("posts nothing to it");
-    const comment = t.find<HTMLInputElement>('[data-improvement-draft="comment"]');
+    const comment = t.find('[data-improvement-draft="comment"]');
     comment.checked = true;
-    comment.dispatchEvent(new window.Event("change", { bubbles: true }) as unknown as Event);
+    comment.dispatchEvent(new window.Event("change", { bubbles: true }));
     await settle();
     expect(t.text()).toContain("Link and add evidence");
     t.type('[data-improvement-draft="criterion"]', "No timing finding in src/a.ts for a week.");
@@ -446,16 +467,16 @@ describe("improvement inbox", () => {
     const t = harness();
     const id = t.w.retro.a;
     await t.open(`/improvements/${id}?source=weekly`);
-    const back = t.find<HTMLAnchorElement>("[data-improvement-back]");
+    const back = t.find("[data-improvement-back]");
     expect(back.getAttribute("href")).toBe("/dashboard/improvements?source=weekly");
     expect(t.find("[data-improvement-row]").getAttribute("aria-current")).toBe("true");
-    const pane = t.find<HTMLElement>('[data-scroll-key="list"]');
+    const pane = t.find('[data-scroll-key="list"]');
     pane.scrollTop = 40;
     await t.click('[data-improvement-choice="reject"]');
     t.type('[data-improvement-draft="reason"]', "Half typed");
     await t.poll();
-    expect(t.find<HTMLInputElement>('[data-improvement-draft="reason"]').value).toBe("Half typed");
-    expect(t.find<HTMLElement>('[data-scroll-key="list"]').scrollTop).toBe(pane.scrollTop);
+    expect(t.find('[data-improvement-draft="reason"]').value).toBe("Half typed");
+    expect(t.find('[data-scroll-key="list"]').scrollTop).toBe(pane.scrollTop);
     expect(t.find("[data-improvement-row]").getAttribute("aria-current")).toBe("true");
     await t.open("/improvements?source=weekly");
     expect(t.find("[data-improvement-row]").getAttribute("aria-current")).toBeNull();
