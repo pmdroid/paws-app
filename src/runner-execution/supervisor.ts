@@ -26,6 +26,7 @@ import {
   openRunnerAccountHome,
   releaseRunnerAccountHome,
   runnerAccountHome,
+  shareRunnerAgentState,
 } from "./accounts";
 import {
   agentUnit,
@@ -191,6 +192,7 @@ export function createDirectWorkerSupervisor(options: {
   const scope = executionScope(options.stateRoot);
   mkdirSync(options.stateRoot, { recursive: true, mode: 0o700 });
   const held = new Map<string, string>();
+  const shared = new Set<string>();
   function homeFor(executionId: string): string {
     if (!options.spool || !options.results) return process.env.HOME ?? "/var/lib/paws-agent";
     const job = readRunnerJob(options.spool, executionId);
@@ -361,6 +363,13 @@ export function createDirectWorkerSupervisor(options: {
           },
         );
         held.set(executionId, home);
+      }
+      if (asAgent && options.spool && !shared.has(home)) {
+        shareRunnerAgentState(home, {
+          runnerUid: options.spool.runnerUid,
+          agentGid: options.spool.agentGid,
+        });
+        shared.add(home);
       }
       options.skills?.prepareHome(home);
       const skills = options.skills?.hold(home, executionId);

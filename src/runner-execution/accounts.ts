@@ -35,6 +35,8 @@ const MANIFEST = "account.json";
 const ACTIVE = ".paws-active";
 const PUBLISHING = ".paws-publishing";
 const ADMISSION_MS = 60_000;
+const SHARE_LIMIT = 100_000;
+const AGENT_STATE = [".claude", ".codex", ".grok", ".config", ".local/share"] as const;
 
 const HOME_FOLDERS = [
   ".claude",
@@ -369,6 +371,43 @@ export function accountHomeVerdict(
   if (info.uid !== self || (info.mode & SETGID) !== 0)
     return "Agent account home is not shared with the agent group";
   return "repair";
+}
+
+export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners): void {
+  const self = process.getuid?.();
+  let seen = 0;
+  const visit = (path: string) => {
+    if (++seen > SHARE_LIMIT) throw new RunnerAccountHomeError("Agent state has too many files");
+    let info;
+    try {
+      info = lstatSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) return;
+    if (info.uid === self) {
+      const group = (info.mode & 0o700) >> 3;
+      const regroup = info.gid !== owners.agentGid;
+      const remode = (info.mode & 0o070) !== group;
+      if (regroup || remode) {
+        const descriptor = openSync(
+          path,
+          constants.O_RDONLY |
+            constants.O_NOFOLLOW |
+            (info.isDirectory() ? constants.O_DIRECTORY : 0),
+        );
+        try {
+          if (regroup) fchownSync(descriptor, -1, owners.agentGid);
+          if (remode) fchmodSync(descriptor, (info.mode & 0o707) | group);
+        } finally {
+          closeSync(descriptor);
+        }
+      }
+    }
+    if (info.isDirectory()) for (const name of readdirSync(path)) visit(join(path, name));
+  };
+  for (const folder of AGENT_STATE) visit(join(home, folder));
 }
 
 function shareWithAgents(descriptor: number, owners: RunnerAccountOwners): void {

@@ -21,6 +21,7 @@ import {
   releaseRunnerAccountHome,
   runnerAccountBindings,
   runnerAccountHome,
+  shareRunnerAgentState,
 } from "./accounts";
 import { executionScope, executionTag, startTime } from "./processes";
 
@@ -232,4 +233,29 @@ test("a manifest written 0600 before agents ran as paws-agent is shared on the n
   expect(statSync(join(home, "account.json")).mode & 0o777).toBe(0o640);
   chmodSync(join(home, "account.json"), 0o660);
   expect(() => openRunnerAccountHome(root, a, "claude")).toThrow(/manifest is unsafe/);
+});
+
+test("agent state written by the runner is shared with the agent group before paws-agent runs", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  mkdirSync(join(root, ".codex/sessions/2026"), { recursive: true, mode: 0o700 });
+  chmodSync(join(root, ".codex"), 0o700);
+  chmodSync(join(root, ".codex/sessions"), 0o700);
+  chmodSync(join(root, ".codex/sessions/2026"), 0o700);
+  writeFileSync(join(root, ".codex/auth.json"), "{}", { mode: 0o600 });
+  chmodSync(join(root, ".codex/auth.json"), 0o600);
+  writeFileSync(join(root, ".codex/sessions/2026/rollout.jsonl"), "", { mode: 0o600 });
+  chmodSync(join(root, ".codex/sessions/2026/rollout.jsonl"), 0o600);
+  writeFileSync(join(root, "elsewhere"), "", { mode: 0o600 });
+  chmodSync(join(root, "elsewhere"), 0o600);
+  symlinkSync(join(root, "elsewhere"), join(root, ".codex/link"));
+  shareRunnerAgentState(root, owners);
+  const mode = (path: string) => statSync(join(root, path)).mode & 0o7777;
+  expect(mode(".codex")).toBe(0o770);
+  expect(mode(".codex/sessions/2026")).toBe(0o770);
+  expect(mode(".codex/auth.json")).toBe(0o660);
+  expect(mode(".codex/sessions/2026/rollout.jsonl")).toBe(0o660);
+  expect(mode("elsewhere")).toBe(0o600);
+  shareRunnerAgentState(root, owners);
+  expect(mode(".codex/auth.json")).toBe(0o660);
 });
