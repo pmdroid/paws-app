@@ -176,7 +176,7 @@ test('"paws-agent" starts the unit with an environment file and stops it through
       : [],
   );
   expect(supervisor.alive!(id)).toBe(true);
-  writeFileSync(join(root, id, "worker.log"), "worker says hello\n", { flag: "a" });
+  writeFileSync(join(root, `${id}.log`), "worker says hello\n", { flag: "a" });
   expect(supervisor.log!(id)).toContain("worker says hello");
 
   await supervisor.stop(id);

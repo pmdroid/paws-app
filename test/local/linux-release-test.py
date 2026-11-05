@@ -1732,7 +1732,7 @@ class AgentUnit(unittest.TestCase):
         unit = self.unit("paws-agent@.service")
         self.assertEqual(unit["EnvironmentFile"], ["/run/paws-runner/agent/%i.env"])
         self.assertEqual(unit["ExecStart"], ["/opt/paws-runner/bin/paws-runner runner worker --execution-id %i $PAWS_RESUME"])
-        self.assertEqual(unit["StandardOutput"], ["append:/var/lib/paws-agent-tasks/%i/worker.log"])
+        self.assertEqual(unit["StandardOutput"], ["append:/run/paws-runner/agent/%i.log"])
         self.assertEqual(unit["StandardError"], unit["StandardOutput"])
         self.assertEqual(unit["UMask"], ["0007"])
         self.assertEqual(unit["User"], ["paws-agent"])

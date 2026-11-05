@@ -12,8 +12,8 @@ Environment=PAWS_AGENT_USER=paws-agent
 EnvironmentFile=/run/paws-runner/agent/%i.env
 WorkingDirectory=/var/lib/paws-agent
 ExecStart=/opt/paws-runner/bin/paws-runner runner worker --execution-id %i $PAWS_RESUME
-StandardOutput=append:/var/lib/paws-agent-tasks/%i/worker.log
-StandardError=append:/var/lib/paws-agent-tasks/%i/worker.log
+StandardOutput=append:/run/paws-runner/agent/%i.log
+StandardError=append:/run/paws-runner/agent/%i.log
 KillMode=control-group
 KillSignal=SIGKILL
 TimeoutStartSec=30s

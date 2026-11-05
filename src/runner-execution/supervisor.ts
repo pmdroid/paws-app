@@ -195,7 +195,7 @@ export function createDirectWorkerSupervisor(options: {
     if (!options.spool || !options.results) return process.env.HOME ?? "/var/lib/paws-agent";
     const job = readRunnerJob(options.spool, executionId);
     const named = runnerCommandAccount(job.command);
-    if (job.command.type === "task" || asAgent)
+    if (job.command.type === "task")
       ensureDirectory(join(taskRoot, executionId), options.spool.agentGid, 0o770);
     if (!named) return agentHome;
     return openRunnerAccountHome(agentHome, named.account, named.agent, {
@@ -241,7 +241,7 @@ export function createDirectWorkerSupervisor(options: {
   }
   function logPath(executionId: string): string {
     ExecutionIdSchema.parse(executionId);
-    if (asAgent) return join(taskRoot, executionId, "worker.log");
+    if (asAgent) return join(agentEnvRoot, `${executionId}.log`);
     return join(options.stateRoot, `${executionId}.log`);
   }
   function alive(executionId: string): boolean {
@@ -344,8 +344,6 @@ export function createDirectWorkerSupervisor(options: {
     }
     let child: ReturnType<typeof launch> | undefined;
     let unit = false;
-    if (asAgent && !options.spool)
-      mkdirSync(join(taskRoot, executionId), { recursive: true, mode: 0o770 });
     const log = openSync(
       logPath(executionId),
       constants.O_CREAT | constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
