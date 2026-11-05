@@ -220,7 +220,14 @@ export function startCatchUpPoller(options: {
       .all();
     for (const thread of threads) {
       if (control.stopped) return;
-      const replies = await read(thread.session_id, thread.created_at);
+      let replies: readonly PolledActivity[];
+      try {
+        replies = await read(thread.session_id, thread.created_at);
+      } catch (error) {
+        if (error instanceof LinearRateLimitError || control.stopped) throw error;
+        journalCaught(error, "poller.rereadQuestionThreads.read", null);
+        continue;
+      }
       for (const reply of replies) {
         const event = activityEvent(reply);
         if (event !== null && options.store.get(event.dedupeKey) === null)
