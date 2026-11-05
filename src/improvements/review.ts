@@ -551,7 +551,14 @@ export async function decideInboxItem(
         verificationCriterion: criterion ?? effectiveCriterion(db, item),
         evidence: proposal.evidence,
         ...(linked
-          ? { issue: { id: linked.id, identifier: linked.identifier, state: linked.state } }
+          ? {
+              issue: {
+                id: linked.id,
+                identifier: linked.identifier,
+                teamId: linked.teamId,
+                state: linked.state,
+              },
+            }
           : {}),
       };
       review = {
@@ -563,6 +570,7 @@ export async function decideInboxItem(
             : {
                 kind: "link",
                 issueId: linked!.id,
+                teamId: linked!.teamId,
                 addEvidenceComment: request.intent.addEvidenceComment === true,
               },
       };

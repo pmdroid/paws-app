@@ -116,7 +116,7 @@ export type ImprovementOutcomeRecord = ImprovementOutcome & {
 
 export type ImprovementIntent =
   | { kind: "create"; teamId?: string }
-  | { kind: "link"; issueId: string; addEvidenceComment?: boolean };
+  | { kind: "link"; issueId: string; teamId?: string; addEvidenceComment?: boolean };
 
 export type ImprovementReview =
   | { kind: "accept"; proposalVersion: number; intent: ImprovementIntent }
@@ -475,7 +475,7 @@ export function decideImprovement(
     );
     if (review.kind === "accept") {
       const operation = review.intent.kind === "create" ? "create_issue" : "link_issue";
-      const team = review.intent.kind === "create" ? (review.intent.teamId ?? null) : null;
+      const team = review.intent.teamId ?? null;
       const content = input.content === undefined ? null : JSON.stringify(input.content);
       insertDelivery(db, input.improvementId, operation, intentIssue, team, content, input.now);
       if (comment === 1)
@@ -484,7 +484,7 @@ export function decideImprovement(
           input.improvementId,
           "evidence_comment",
           intentIssue,
-          null,
+          team,
           content,
           input.now,
         );
