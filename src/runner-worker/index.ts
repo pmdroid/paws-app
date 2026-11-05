@@ -524,6 +524,7 @@ async function snapshotAgentSession(
     turn: number;
   },
   emit: (event: RunnerWorkerEvent) => void,
+  redact?: (text: string) => string,
 ): Promise<void> {
   if (!isSessionAgent(agent)) return;
   const stagingName = `.session-${randomUUID()}.tmp`;
@@ -540,6 +541,7 @@ async function snapshotAgentSession(
           options.sessionSnapshotMaxBytes ?? AGENT_SESSION_MAX_BYTES,
           AGENT_SESSION_MAX_BYTES,
         ),
+        ...(redact ? { redact } : {}),
       };
       bundle =
         agent === "codex"
@@ -801,6 +803,10 @@ export async function executeRunnerCommand(
   let activityOmitted = false;
   const updates = createUpdateLimiter();
   let githubRead: GitHubReadConfig | undefined;
+  const readRedactor = () =>
+    command.type === "run" && command.githubRead
+      ? (text: string) => redactGitHubTokens(text, githubRead?.tokens())
+      : undefined;
   function emit(event: RunnerWorkerEvent): void {
     const serialized = JSON.stringify({ ...event, t: new Date().toISOString() });
     const line = `${command.type === "run" && command.githubRead ? redactGitHubTokens(serialized, githubRead?.tokens()) : serialized}\n`;
@@ -1590,6 +1596,7 @@ export async function executeRunnerCommand(
               turn: runCommand!.generation,
             },
             emit,
+            readRedactor(),
           ),
         );
         if (!existsSync(join(options.outputDirectory, SESSION_METADATA_FILE)))
@@ -1994,6 +2001,7 @@ export async function executeRunnerCommand(
           turn: command.generation,
         },
         emit,
+        readRedactor(),
       );
     const serialized = JSON.stringify(
       command.type === "helper"
@@ -2009,14 +2017,15 @@ export async function executeRunnerCommand(
           }
         : result,
     );
-    if (Buffer.byteLength(serialized) > 1_048_576)
+    const redacted = readRedactor()?.(serialized) ?? serialized;
+    if (Buffer.byteLength(redacted) > 1_048_576)
       throw new Error("Runner result exceeds size limit");
     const stagingName = `.result-${randomUUID()}.tmp`;
     const stagingPath = join(options.outputDirectory, stagingName);
     try {
       const final = outputFile(options.outputDirectory, stagingName, options.resultsGid);
       try {
-        writeFileSync(final, serialized);
+        writeFileSync(final, redacted);
         fsyncSync(final);
       } finally {
         closeSync(final);

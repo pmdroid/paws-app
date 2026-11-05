@@ -109,7 +109,7 @@ type SessionFile = { fd: number; info: Stats };
  * A gzipped NDJSON bundle written to `output` as entries are added. Each line is
  * `{path, mode, data}` with `data` in base64; files are read in pieces, never whole.
  */
-function bundleWriter(output: number, maxBytes: number) {
+function bundleWriter(output: number, maxBytes: number, redact?: (text: string) => string) {
   const gzip = createGzip();
   const digest = createHash("sha256");
   let size = 0;
@@ -146,6 +146,14 @@ function bundleWriter(output: number, maxBytes: number) {
     async add(file: SessionFile, path: string) {
       files.push(path);
       await push(`{"path":${JSON.stringify(path)},"mode":${file.info.mode & 0o777},"data":"`);
+      let pending = Buffer.alloc(0);
+      let carry = "";
+      const encode = async (bytes: Buffer, last: boolean) => {
+        pending = Buffer.concat([pending, bytes]);
+        const whole = last ? pending.length : pending.length - (pending.length % 3);
+        if (whole) await push(pending.subarray(0, whole).toString("base64"));
+        pending = pending.subarray(whole);
+      };
       while (true) {
         let filled = 0;
         while (filled < buffer.length) {
@@ -153,8 +161,16 @@ function bundleWriter(output: number, maxBytes: number) {
           if (count === 0) break;
           filled += count;
         }
-        if (filled) await push(buffer.subarray(0, filled).toString("base64"));
-        if (filled < buffer.length) break;
+        const last = filled < buffer.length;
+        if (!redact) await encode(buffer.subarray(0, filled), last);
+        else {
+          const text = carry + buffer.subarray(0, filled).toString("latin1");
+          const word = last ? text.length : text.search(/[A-Za-z0-9_]{0,4096}$/);
+          carry = text.slice(word);
+          await encode(Buffer.from(redact(text.slice(0, word)), "latin1"), false);
+          if (last) await encode(Buffer.from(redact(carry), "latin1"), true);
+        }
+        if (last) break;
       }
       await push('"}\n');
     },
@@ -186,6 +202,7 @@ export async function writeClaudeSessionBundle(options: {
   sessionId: string;
   output: number;
   maxBytes: number;
+  redact?: (text: string) => string;
 }): Promise<SessionBundle | null> {
   if (!SESSION_ID.test(options.sessionId)) throw new Error("Invalid Claude session id");
   const sanitized = options.cwd.replace(/[^a-zA-Z0-9]/g, "-");
@@ -195,7 +212,7 @@ export async function writeClaudeSessionBundle(options: {
     opened.push(fd);
     return fd;
   };
-  const writer = bundleWriter(options.output, options.maxBytes);
+  const writer = bundleWriter(options.output, options.maxBytes, options.redact);
   try {
     const home = openSync(options.home, constants.O_RDONLY | constants.O_DIRECTORY);
     opened.push(home);
@@ -293,6 +310,7 @@ export async function writeCodexSessionBundle(options: {
   sessionId: string;
   output: number;
   maxBytes: number;
+  redact?: (text: string) => string;
 }): Promise<SessionBundle | null> {
   if (!CODEX_SESSION_ID.test(options.sessionId)) throw new Error("Invalid Codex session id");
   const opened: number[] = [];
@@ -307,7 +325,7 @@ export async function writeCodexSessionBundle(options: {
       .map((entry) => entry.name)
       .sort()
       .reverse();
-  const writer = bundleWriter(options.output, options.maxBytes);
+  const writer = bundleWriter(options.output, options.maxBytes, options.redact);
   try {
     const home = openSync(options.home, constants.O_RDONLY | constants.O_DIRECTORY);
     opened.push(home);
@@ -361,6 +379,7 @@ export async function writeGrokSessionBundle(options: {
   sessionId: string;
   output: number;
   maxBytes: number;
+  redact?: (text: string) => string;
 }): Promise<SessionBundle | null> {
   if (!GROK_SESSION_ID.test(options.sessionId)) throw new Error("Invalid Grok session id");
   const folder = grokCwdFolder(options.cwd);
@@ -371,7 +390,7 @@ export async function writeGrokSessionBundle(options: {
     opened.push(fd);
     return fd;
   };
-  const writer = bundleWriter(options.output, options.maxBytes);
+  const writer = bundleWriter(options.output, options.maxBytes, options.redact);
   try {
     const home = openSync(options.home, constants.O_RDONLY | constants.O_DIRECTORY);
     opened.push(home);

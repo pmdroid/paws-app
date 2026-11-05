@@ -4,6 +4,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  closeSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -12,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { git } from "../src/acp";
 import type { FakeResult } from "../src/acp/testing/script";
 import { publishRunnerJob, type RunnerJob } from "../src/runner-execution";
@@ -21,7 +24,8 @@ import {
   removeRunnerGitHubRead,
   runnerGitHubReadId,
 } from "../src/runner-answers";
-import { executeRunnerCommand } from "../src/runner-worker";
+import { executeRunnerCommand, writeCodexSessionBundle } from "../src/runner-worker";
+import { redactGitHubTokens } from "../src/runner-protocol";
 import { openGitHubReadConfig } from "../src/runner-worker/github-read";
 
 const roots: string[] = [];
@@ -39,7 +43,11 @@ function temporary() {
   return root;
 }
 
-async function turn(githubRead: boolean, tokens: Record<number, string> = { 1: TOKEN }) {
+async function turn(
+  githubRead: boolean,
+  tokens: Record<number, string> = { 1: TOKEN },
+  extra: Record<string, unknown> = {},
+) {
   const root = temporary();
   const source = join(root, "source");
   mkdirSync(source);
@@ -96,6 +104,7 @@ async function turn(githubRead: boolean, tokens: Record<number, string> = { 1: T
         },
         { type: "end" },
       ],
+      ...extra,
     }),
   );
   const outputDirectory = join(root, "output");
@@ -122,6 +131,7 @@ async function turn(githubRead: boolean, tokens: Record<number, string> = { 1: T
     trace,
     asked,
     journal: readFileSync(join(outputDirectory, "events.jsonl"), "utf8"),
+    stored: readFileSync(join(outputDirectory, "result.json"), "utf8"),
     transcript: readFileSync(
       join(
         workRoot,
@@ -236,4 +246,46 @@ test("the spool keeps only the newest token, and none once the turn is gone", ()
   expect(held()).toEqual([3]);
   removeRunnerGitHubRead(spool, executionId);
   expect(held()).toEqual([]);
+});
+
+test("an agent error that carries the token is stored redacted in the worker's result", async () => {
+  const { result, stored } = await turn(
+    true,
+    { 1: TOKEN },
+    { modelError: `model refused ${TOKEN}` },
+  );
+  expect(result.run.errorMessage).toBeDefined();
+  expect(stored).not.toContain(TOKEN);
+  expect(stored).toContain("[redacted]");
+});
+
+test("a session snapshot leaves the token out, even where it straddles a read chunk", async () => {
+  const root = temporary();
+  const home = join(root, "home");
+  const thread = "01a17acb-43ee-7330-b820-362fdbcbc801";
+  const day = join(home, ".codex", "sessions", "2026", "10", "27");
+  mkdirSync(day, { recursive: true, mode: 0o700 });
+  const head = "x".repeat(196_608 - 10) + " ";
+  const content = `${head}${TOKEN} and ${FRESH}\n${"é".repeat(5)} tail`;
+  writeFileSync(join(day, `rollout-2026-10-27T00-38-23-${thread}.jsonl`), content, { mode: 0o600 });
+  const output = join(root, "session.ndjson.gz");
+  const fd = openSync(output, "w", 0o600);
+  try {
+    await writeCodexSessionBundle({
+      home,
+      sessionId: thread,
+      output: fd,
+      maxBytes: 64 * 1024 * 1024,
+      redact: (text) => redactGitHubTokens(text, [TOKEN]),
+    });
+  } finally {
+    closeSync(fd);
+  }
+  const entry = JSON.parse(gunzipSync(readFileSync(output)).toString("utf8").trim()) as {
+    data: string;
+  };
+  const restored = Buffer.from(entry.data, "base64").toString("utf8");
+  expect(restored).not.toContain(TOKEN);
+  expect(restored).not.toContain(FRESH);
+  expect(restored).toBe(`${head}[redacted] and [redacted]\n${"é".repeat(5)} tail`);
 });
