@@ -611,7 +611,12 @@ export function createRunnerPlacement(options: {
         const reviewRank =
           input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
         const rank = (helper?.preempts ? 1000 : 0) + reviewRank * 10 + (runner.own ? 0 : 1);
-        return fits.map((fit) => ({ runner, ...fit, rank }));
+        return fits.map((fit) => ({
+          runner,
+          ...fit,
+          rank,
+          extra: !fit.account.named && runner.quotaState === "spent_extra",
+        }));
       });
       // A run leaving its pinned runner goes first to a free runner that can restore its saved
       // agent session, the agent version that wrote it ahead of other versions. It never waits
@@ -679,6 +684,7 @@ export function createRunnerPlacement(options: {
       );
       ranked.sort(
         (a, b) =>
+          Number(a.extra) - Number(b.extra) ||
           a.index - b.index ||
           a.rank - b.rank ||
           load.get(a.runner.id)!.current - load.get(b.runner.id)!.current ||
@@ -701,13 +707,17 @@ export function createRunnerPlacement(options: {
               .join("; ")
               .slice(0, 500)
           : null;
-      for (const { runner, account, index } of ranked)
+      for (const { runner, account, index, extra } of ranked)
         admissions.set(admissionKey(runner.id, input, account.bindingId), {
           request: input,
           account,
           scope: binding,
           policy: policy(runner.id, input.profile?.agent),
-          reason: restorers.has(`${runner.id}:${account.bindingId}`) ? "session_restore" : null,
+          reason: restorers.has(`${runner.id}:${account.bindingId}`)
+            ? "session_restore"
+            : extra
+              ? "extra_usage"
+              : null,
           fallback: fallback(index),
           expiresAt: at + 15_000,
         });

@@ -120,6 +120,8 @@ async function placeItem(bindTask = true) {
     placement,
     workspaceId: workspace.id,
     owner,
+    colleague,
+    pool,
     now: () => clock,
     tick(ms: number) {
       clock += ms;
@@ -541,6 +543,108 @@ test("a runner low on quota follows equally loaded runners", () =>
     pool.occupy("b");
     expect(await pool.ids()).toEqual(["a", "c", "b"]);
   }));
+
+test("a runner with quota left goes before one running on extra usage, which names it", () =>
+  withPool(
+    async (pool) => {
+      pool.db.run(
+        "UPDATE runner_agent_policy SET quota_state='spent_extra',extra_usage=1 WHERE runner_id='a'",
+      );
+      pool.worked("b", pool.now() - 30 * 60_000, pool.now());
+      expect(await pool.ids()).toEqual(["b", "a"]);
+      // b is busy and no other runner is free: a, still last, is the only one with a slot.
+      pool.occupy("b");
+      expect(await pool.ids()).toEqual(["b", "a"]);
+      const profile = { agent: "codex" as const, model: "implementation-model" };
+      pool.placement.started({
+        commandId: "command-a",
+        runnerId: "a",
+        itemId: "item",
+        profile,
+        role: "implementer",
+        purpose: "work",
+        startedAt: pool.now(),
+      });
+      const response = await createRunnerPlacementBrowser({ db: pool.db })(
+        new Request("http://127.0.0.1/api/runners/usage"),
+        {
+          workspaceId: pool.workspaceId,
+          userId: pool.owner,
+          role: "admin",
+          authenticatedAt: pool.now(),
+          teamIds: [],
+        },
+      );
+      const body = (await response!.json()) as {
+        usage: Array<{ commandId: string; preferredBecause: string | null }>;
+      };
+      expect(body.usage.find((row) => row.commandId === "command-a")!.preferredBecause).toBe(
+        "runs on extra usage: no runner with quota was free",
+      );
+    },
+    { a: 1, b: 1 },
+  ));
+
+test("a runner the item's owner can't use is never offered, even with quota left", async () => {
+  const placed = await placeItem();
+  try {
+    placed.db.run(
+      "UPDATE runner_agent_policy SET quota_state='spent_extra',extra_usage=1 WHERE runner_id IN ('own','second')",
+    );
+    expect(await placed.ids()).toEqual(["own", "second"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("the runner's owner and admins switch extra usage per agent, others get 403", async () => {
+  const placed = await placeItem();
+  try {
+    const runnerId = workspaceId();
+    placed.db.run(
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,'host','active',0,0)",
+      [runnerId, placed.workspaceId, placed.colleague],
+    );
+    placed.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [
+      runnerId,
+    ]);
+    const browser = createRunnerPlacementBrowser({ db: placed.db, now: placed.now });
+    const as = (userId: string, role: "admin" | "member") => ({
+      workspaceId: placed.workspaceId,
+      userId,
+      role,
+      authenticatedAt: placed.now(),
+      teamIds: ["team"],
+    });
+    const toggle = async (userId: string, role: "admin" | "member", extraUsage: boolean) =>
+      (await browser(
+        new Request(`http://127.0.0.1/api/runners/${runnerId}/agents/claude/extra-usage`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ extraUsage }),
+        }),
+        as(userId, role),
+      ))!.status;
+    const read = async () =>
+      (
+        (await (await browser(
+          new Request(`http://127.0.0.1/api/runners/${runnerId}/policy`),
+          as(placed.pool, "member"),
+        ))!.json()) as { agents: { agent: string; extraUsage: boolean }[] }
+      ).agents.map(({ agent, extraUsage }) => ({ agent, extraUsage }));
+    expect(await read()).toEqual([{ agent: "claude", extraUsage: false }]);
+    expect(await toggle(placed.colleague, "member", true)).toBe(200);
+    expect(await read()).toEqual([{ agent: "claude", extraUsage: true }]);
+    expect(await toggle(placed.pool, "member", false)).toBe(403);
+    expect(await read()).toEqual([{ agent: "claude", extraUsage: true }]);
+    expect(await toggle(placed.owner, "admin", false)).toBe(200);
+    expect(await read()).toEqual([{ agent: "claude", extraUsage: false }]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
 
 test("run pins apply to every role and never expire while the host is online", async () => {
   const placed = await placeItem();

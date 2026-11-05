@@ -9,10 +9,14 @@ import type { WorkspacePrincipal } from "../workspace";
 const policyInput = z.strictObject({
   sharing: z.boolean(),
 });
+const extraUsageInput = z.strictObject({
+  extraUsage: z.boolean(),
+});
 
 /** Why placement ranked the runner first, in the words the runner list shows. */
 const PREFERRED_BECAUSE: Record<string, string> = {
   session_restore: "can continue the agent's session",
+  extra_usage: "runs on extra usage: no runner with quota was free",
 };
 
 export function createRunnerPlacementBrowser(options: { db: Database; now?: () => number }) {
@@ -69,7 +73,11 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
   ): Promise<Response | null> {
     const path = new URL(request.url).pathname;
     const match = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/policy$/.exec(path);
-    if (!match && path !== "/api/runners/usage") return null;
+    const extra =
+      /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/agents\/(claude|codex|grok|opencode)\/extra-usage$/.exec(
+        path,
+      );
+    if (!match && !extra && path !== "/api/runners/usage") return null;
     try {
       const current = member(principal);
       if (path === "/api/runners/usage") {
@@ -112,6 +120,47 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
             })),
         });
       }
+      if (extra) {
+        if (request.method !== "POST") return json({ error: "Use POST." }, 405);
+        const [, runnerId, agent] = extra;
+        const input = extraUsageInput.parse(await body(request));
+        immediate(db, () => {
+          const changer = member(principal);
+          const host = db
+            .query<{ ownerId: string; revokedAt: number | null }, [string, string]>(
+              "SELECT owner_user_id AS ownerId,revoked_at AS revokedAt FROM runner WHERE id=? AND workspace_id=?",
+            )
+            .get(runnerId!, principal.workspaceId);
+          if (
+            !host ||
+            host.revokedAt !== null ||
+            (host.ownerId !== principal.userId && !isWorkspaceAdmin(changer.role))
+          )
+            throw new Error("Only the host owner or a workspace admin can change extra usage.");
+          const at = now();
+          const changed = db.run(
+            `UPDATE runner_agent_policy SET extra_usage=?1,
+             quota_state=CASE
+               WHEN ?1=1 AND quota_state='exhausted' AND cooldown_until>?2 THEN 'spent_extra'
+               WHEN ?1=0 AND quota_state='spent_extra' THEN 'exhausted' ELSE quota_state END,
+             cooldown_until=CASE
+               WHEN ?1=1 AND quota_state='exhausted' AND cooldown_until>?2 THEN 0
+               WHEN ?1=0 AND quota_state='spent_extra' THEN COALESCE(resets_at,?2+900000)
+               ELSE cooldown_until END
+             WHERE runner_id=?3 AND agent=?4`,
+            [input.extraUsage ? 1 : 0, at, runnerId!, agent!],
+          );
+          if (changed.changes === 0) throw new Error("Sign the agent in on this runner first.");
+          auditWorkspaceAccess(db, {
+            workspaceId: principal.workspaceId,
+            userId: principal.userId,
+            action: "runner.extra_usage.updated",
+            subject: `${runnerId}:${agent}`,
+            now: at,
+          });
+        });
+        return json({ ok: true });
+      }
       const runnerId = match![1]!;
       function runner() {
         const row = db
@@ -133,8 +182,13 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
             .get(runnerId),
           agents: db
             .query(`SELECT agent,ready,auth_expired AS authExpired,quota_state AS quotaState,
-        resets_at AS resetsAt,cooldown_until AS cooldownUntil,resolved_model AS resolvedModel FROM runner_agent_policy WHERE runner_id=? ORDER BY agent`)
-            .all(runnerId),
+        resets_at AS resetsAt,cooldown_until AS cooldownUntil,resolved_model AS resolvedModel,
+        extra_usage=1 AS extraUsage FROM runner_agent_policy WHERE runner_id=? ORDER BY agent`)
+            .all(runnerId)
+            .map((row) => ({
+              ...(row as object),
+              extraUsage: (row as { extraUsage: number }).extraUsage === 1,
+            })),
         });
       if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
       const input = policyInput.parse(await body(request));
@@ -160,7 +214,14 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
     } catch (error) {
       journalCaught(error, "browser.createRunnerPlacementBrowser.member", null);
       if (error instanceof z.ZodError || error instanceof SyntaxError)
-        return json({ error: "Choose a valid sharing setting." }, 400);
+        return json(
+          {
+            error: extra
+              ? "Choose a valid extra usage setting."
+              : "Choose a valid sharing setting.",
+          },
+          400,
+        );
       return json(
         { error: error instanceof Error ? error.message : "Runner settings are unavailable." },
         403,
