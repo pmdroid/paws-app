@@ -809,8 +809,10 @@ export type {
 export {
   recordRunnerRepositories,
   runnerAllowsRepository,
+  runnerRepositoryRefusal,
   setRunnerAdminRepositories,
   type RunnerRepositoryLists,
+  type RunnerRepositoryRefusal,
 } from "./runner-repositories";
 export {
   listRunnerAgents,

@@ -117,6 +117,7 @@ import {
   PawsShutdown,
   RunnerCapacityWait,
   RunnerSetupRequired,
+  RunnerRepositoryRefused,
   WORKSPACE_HOOK_LIMIT,
   systemClock,
   type WorkspaceHook,
@@ -444,6 +445,11 @@ export function createRemoteAgentRunner(options: {
     });
     // No runner the delegator may use, as opposed to usable runners that are busy: a first start
     // holds the task until the delegator sets a runner up. Later runs wait as before.
+    const refused =
+      offered.length === 0 && placement.role === "implementer" && placement.purpose !== "helper"
+        ? (options.placement?.repositoryRefusals?.(placement) ?? null)
+        : null;
+    if (refused) throw new RunnerRepositoryRefused(refused.repository, refused.refusals);
     if (offered.length === 0 && options.placement?.setupNeed && !startedWork(itemId)) {
       const need = options.placement.setupNeed(placement);
       if (need) throw new RunnerSetupRequired(need);

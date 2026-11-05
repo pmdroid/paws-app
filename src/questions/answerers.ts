@@ -7,6 +7,7 @@ export type AnswerableQuestion =
   | { kind: "clarification" }
   | { kind: "repository" }
   | { kind: "runner-wait" }
+  | { kind: "runner-repository" }
   | { kind: "time-limit" }
   | { kind: "closeout-help" }
   | { kind: "ci-help" }
@@ -44,6 +45,7 @@ export const ANSWER_POLICY: Policy = {
   clarification: canAnswer,
   repository: canAnswer,
   "runner-wait": canAnswer,
+  "runner-repository": canAnswer,
   "time-limit": canAnswer,
   "closeout-help": canAnswer,
   "ci-help": canAnswer,

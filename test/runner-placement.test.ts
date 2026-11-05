@@ -180,7 +180,7 @@ test("work goes only to runners whose reported repositories include the item's r
     expect(await placed.ids({ onRejected: (id, reason) => rejected.push([id, reason]) })).toEqual([
       "second",
     ]);
-    expect(rejected).toContainEqual(["own", "repository not allowed on this runner"]);
+    expect(rejected).toContainEqual(["own", "repository not allowed in the runner's host config"]);
     recordRunnerRepositories(placed.db, "own", ["ACME/looky"], now);
     recordRunnerRepositories(placed.db, "second", null, now);
     expect(await placed.ids()).toEqual(["own", "second"]);

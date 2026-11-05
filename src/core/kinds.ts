@@ -24,6 +24,7 @@ export const JOB_KIND = {
   reaskQuestion: "question.reask",
   /** Written by the SQLite triggers of migration 144, one pending job per hold owner. */
   runnerSetupCheck: "runner_setup.check",
+  runnerRepositoryCheck: "runner_repository.check",
 } as const;
 
 /** Activity rows the host posts. Delivery to Linear is a later dispatcher. */

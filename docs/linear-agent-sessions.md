@@ -145,6 +145,16 @@ The setup can also end early, each time with at most one activity:
 
 `test/first-delegation-budget.test.ts` holds a first delegation to 30 Linear requests or fewer, with none while it waits.
 
+### No runner may take the repository
+
+When every runner the delegator may use, online or not, refuses the item's repository, Paws asks one `runner-repository` question through `ask()` and the item waits in `awaiting_input`. The check runs when the item starts, right after its repository is chosen, and again whenever placement offers no runner. The question names each runner and the list that refuses: "No runner can run acme/cli. runner-1 allows only acme/monorepo in its host config (`/etc/paws-runner/config.json`, `allowedRepositories`). Add acme/cli there and restart `paws-runner.service`, or allow it on the runner's page in Paws." When the runner's page list refuses, the question says that list and links the runner's page. The options are **Retry** and **Stop**.
+
+- **Retry** restarts the item, which checks placement again at once. If no runner allows the repository yet, Paws asks once more with the current reasons.
+- **Stop** cancels the item.
+- A runner heartbeat that changes its host list, or an admin who changes the runner's page list, answers the open question as Retry when that runner now allows the repository and the delegator may use it. The question records the runner (`runner:<id>`) or the admin as the answerer.
+
+While the question is open nothing retries, so Linear gets nothing more. When a runner that allows the repository is only offline or busy, there is no question: the item waits as before, and the wait says "Waiting for a paired runner to come online" only when a runner is offline.
+
 ### Measuring the story
 
 The outbox records every post, so these queries show whether sessions follow the rule. The live run of them is tracked in PAS-744.

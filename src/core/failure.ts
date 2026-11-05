@@ -9,6 +9,7 @@ const TRANSIENT_ERROR_NAMES = new Set([
   "RunnerUnavailableError",
   "RunnerCapacityWait",
   "RunnerSetupRequired",
+  "RunnerRepositoryRefused",
   "AccountPolicyUnavailable",
   "PawsShutdown",
   "TimeoutError",
@@ -70,7 +71,33 @@ export class RunnerCapacityWait extends Error {
     super(
       runnerIds.length
         ? `Waiting for a free slot on runner ${runnerIds.join(", ")}`
-        : `Waiting for a paired runner to come online${rejections.length ? ` (${rejections.join("; ")})` : ""}`,
+        : rejections.length === 0 || rejections.some((entry) => entry.endsWith(": offline"))
+          ? `Waiting for a paired runner to come online${rejections.length ? ` (${rejections.join("; ")})` : ""}`
+          : `Waiting for a paired runner that can take this run (${rejections.join("; ")})`,
+    );
+  }
+}
+
+export type RunnerRepositoryRefusal = {
+  runnerId: string;
+  runnerName: string;
+  code: "repository_admin" | "repository_host";
+  allowed: readonly string[];
+};
+
+export class RunnerRepositoryRefused extends Error {
+  override readonly name = "RunnerRepositoryRefused";
+  constructor(
+    readonly repository: string,
+    readonly refusals: readonly RunnerRepositoryRefusal[],
+  ) {
+    super(
+      `No runner can run ${repository} (${refusals
+        .map(
+          (refusal) =>
+            `${refusal.runnerName}: not allowed ${refusal.code === "repository_admin" ? "on the runner's page" : "in its host config"}`,
+        )
+        .join("; ")})`,
     );
   }
 }
