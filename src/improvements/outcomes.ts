@@ -119,7 +119,6 @@ export type FollowThrough = {
 
 const BLOCKED_WORK = new Set(["failed", "awaiting_input", "paused", "manual", "exhausted"]);
 const DONE: readonly ImprovementImplementationState[] = ["merged", "completed"];
-const ENDED_WORK = new Set(["failed", "cancelled"]);
 const TERMINAL_WORK = new Set(["failed", "cancelled", "merged", "completed"]);
 const TERMINAL_ISSUE = new Set(["completed", "canceled", "duplicate"]);
 
@@ -160,22 +159,35 @@ function issueOpen(sync: ImprovementIssueSync | null): boolean {
   );
 }
 
+function acknowledged(actions: { action: string }[]): boolean {
+  return (
+    actions.findLastIndex((a) => a.action === "acknowledge") >
+    actions.findLastIndex((a) => a.action === "return_to_review")
+  );
+}
+
+function names(criterion: string, term: string): boolean {
+  const escaped = term.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`).test(criterion.toLowerCase());
+}
+
 function followWork(db: Database, item: InboxItem, now: number): void {
   const { improvement } = item;
   const issue = improvement.issue;
   if (!issue) return;
-  if (listImprovementActions(db, improvement.id).at(-1)?.action === "acknowledge") return;
+  if (acknowledged(listImprovementActions(db, improvement.id))) return;
   const binding = improvementWorkBinding(db, improvement.id);
   const current = boundImprovementWork(db, {
     id: improvement.id,
     issueId: issue.id,
     repository: improvement.repository,
   });
-  if (current && !ENDED_WORK.has(current.state)) return;
+  if (current && !TERMINAL_WORK.has(current.state)) return;
   const next = newestIssueWork(db, {
     issueId: issue.id,
     repository: improvement.repository,
     createdSince: current?.createdAt ?? 0,
+    linkedAt: issue.confirmedAt,
     ...(current ? { exceptItemId: current.itemId } : {}),
   });
   if (!next) return;
@@ -262,7 +274,7 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
       ? now - issue.confirmedAt <= IMPROVEMENT_OUTCOME_LIMITS.staleSyncMs
       : sync.status === "available" &&
         now - sync.observedAt <= IMPROVEMENT_OUTCOME_LIMITS.staleSyncMs);
-  const acknowledged = actions.at(-1)?.action === "acknowledge";
+  const closed = acknowledged(actions);
   const delegating =
     delegation !== null && delegation.state !== "failed" && delegation.issueId === issue?.id;
   const sharedDelegation =
@@ -286,7 +298,7 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
   else if (!issue)
     attention =
       delivery === "failed" || delivery === "unknown" ? "filing_failed" : "accepted_unfiled";
-  else if (acknowledged) attention = "closed";
+  else if (closed) attention = "closed";
   else if (sync && sync.status !== "available") attention = "unavailable";
   else if (improvement.verificationState === "contradicted" || stale)
     attention = "verification_stale";
@@ -305,7 +317,7 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
   const recovery: RecoveryChoice[] = [];
   if (issue) {
     if (["canceled", "unavailable", "blocked"].includes(attention)) recovery.push("acknowledge");
-    if (work && ENDED_WORK.has(work.state) && issueOpen(sync)) recovery.push("redelegate");
+    if (work?.state === "cancelled" && issueOpen(sync)) recovery.push("redelegate");
     if (settled && (work === null || TERMINAL_WORK.has(work.state)))
       recovery.push("return_to_review");
   }
@@ -820,8 +832,7 @@ export function recordVerification(
         return refuse("invalid", "evidence_not_found", view);
       if (verified && (step.state !== "passed" || step.kind !== "command"))
         return refuse("invalid", "evidence_failed", view);
-      const named = criterion.toLowerCase();
-      if (!named.includes(step.stepId.toLowerCase()) && !named.includes(step.command.toLowerCase()))
+      if (!names(criterion, step.stepId) && !names(criterion, step.command))
         return refuse("invalid", "not_applicable", view);
       const accepted = view.work?.acceptedHead?.toLowerCase();
       if (!accepted || step.head.toLowerCase() !== accepted)
@@ -1077,6 +1088,7 @@ export async function syncImprovementOutcomes(options: {
         issueId: delegation.issueId,
         repository: improvement.repository,
         createdSince: delegation.updatedAt,
+        linkedAt: 0,
       });
     settleImprovementDelegation(db, {
       improvementId: delegation.improvementId,

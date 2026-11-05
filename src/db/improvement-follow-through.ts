@@ -478,15 +478,23 @@ export function newestIssueWork(
     issueId: string;
     repository: string;
     createdSince: number;
+    linkedAt: number;
     exceptItemId?: string;
   },
 ): IssueWork | null {
   const row = db
-    .query<WorkRow, [string, string, number, string]>(
+    .query<WorkRow, [string, string, number, number, string]>(
       `${WORK_SELECT} WHERE w.linear_issue_id = ? AND ${IN_REPOSITORY} AND w.created_at >= ?
+         AND (w.created_at >= ? OR w.state NOT IN ('completed','merged','cancelled','failed'))
          AND w.id <> ? ORDER BY w.created_at DESC, w.rowid DESC LIMIT 1`,
     )
-    .get(input.issueId, input.repository, input.createdSince, input.exceptItemId ?? "");
+    .get(
+      input.issueId,
+      input.repository,
+      input.createdSince,
+      input.linkedAt,
+      input.exceptItemId ?? "",
+    );
   return row ? workFromRow(row) : null;
 }
 

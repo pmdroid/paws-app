@@ -12,6 +12,7 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import {
+  createFakeIssueLookup,
   improvementFollowThrough,
   IMPROVEMENT_OUTCOME_LIMITS,
   syncImprovementOutcomes,
@@ -85,7 +86,7 @@ async function linked(options: { delegated?: boolean; stateType?: string } = {})
     linear.issues.set(ISSUE, { ...linear.issues.get(ISSUE)!, ...change });
   const work = (state: string) => {
     if (!w.db.query("SELECT 1 FROM work_item WHERE id = 'work-x'").get()) {
-      insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END });
+      insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
       w.db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = 'work-x'", [ISSUE]);
     }
     w.db.run("UPDATE work_item SET state = ? WHERE id = 'work-x'", [state]);
@@ -550,7 +551,7 @@ describe("second review fixes", () => {
   test("a redelegated issue follows its replacement work item, not the cancelled one", async () => {
     const t = await linked();
     t.work("cancelled");
-    insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 10 });
+    insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 2_600 });
     t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-y'", [
       ISSUE,
     ]);
@@ -610,7 +611,7 @@ describe("second review fixes", () => {
 
 describe("one bound work item", () => {
   const second = (t: Awaited<ReturnType<typeof linked>>, state: string, repo?: string) => {
-    insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 10 });
+    insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 2_600 });
     t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = ? WHERE id = 'work-y'", [
       ISSUE,
       state,
@@ -619,7 +620,7 @@ describe("one bound work item", () => {
       t.w.db.run("INSERT INTO work_item_repository VALUES ('work-y', 'acme', ?, 'x')", [repo]);
   };
 
-  test("verified merged work stays the evidence when a newer run starts on the issue", async () => {
+  test("a newer run on the issue replaces verified merged work and makes verification stale", async () => {
     const t = await linked();
     t.merge();
     await t.sync();
@@ -627,9 +628,122 @@ describe("one bound work item", () => {
     second(t, "running");
     await t.sync();
     expect(await t.follow()).toMatchObject({
-      attention: "verified",
-      work: { itemId: "work-x", state: "merged" },
+      attention: "verification_stale",
+      work: { itemId: "work-y", state: "running" },
     });
+    expect(t.starter.calls).toEqual([]);
+  });
+
+  test("work that finished before the issue was linked is not this improvement's work", async () => {
+    const t = await linked();
+    insertQueuedItem(t.w.db, { id: "work-old", sessionKey: "session-a", now: END });
+    t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'merged' WHERE id = 'work-old'", [
+      ISSUE,
+    ]);
+    await t.sync();
+    expect(await t.follow()).toMatchObject({
+      work: null,
+      attention: "ready_to_delegate",
+      delegate: { offered: true },
+    });
+    const early = await t.post("verification", verify(t.version(), { revision: MERGE }));
+    expect(early.body.reason).toBe("not_implemented");
+  });
+
+  test("returning to review and relinking does not reuse the old merged work as proof", async () => {
+    const linear = createFakeImprovementLinear();
+    const starter = sessions();
+    const lookup = createFakeIssueLookup([
+      { id: ISSUE, identifier: "PAS-70", url: null, teamId: "team-a", state: "open" },
+    ]);
+    const w = world({
+      linear,
+      startSession: starter.start,
+      dashboardUrl: "https://paws.test/",
+      lookup: lookup.lookup,
+    });
+    const id = w.retro.a;
+    const settle = (at: number) => {
+      const d = listImprovementDeliveries(w.db, id).find((x) => x.state !== "succeeded")!;
+      claimImprovementDelivery(w.db, { deliveryId: d.id, owner: "o", now: at, leaseMs: 60_000 });
+      settleImprovementDelivery(w.db, {
+        deliveryId: d.id,
+        attempt: 1,
+        owner: "o",
+        outcome: "succeeded",
+        remote: { id: ISSUE, identifier: "PAS-70", url: "https://linear.app/x/PAS-70" },
+        now: at + 1,
+      });
+    };
+    const version = () => getImprovement(w.db, id)!.version;
+    const post = (action: string, body: unknown) =>
+      w.api("ada", `/api/improvements/${id}/${action}`, body);
+    const sync = () =>
+      syncImprovementOutcomes({ db: w.db, linearFor: async () => linear, now: w.now });
+    await w.api("ada", `/api/improvements/${id}/decision`, accept());
+    settle(END + 2_000);
+    linear.issues.set(ISSUE, {
+      id: ISSUE,
+      identifier: "PAS-70",
+      url: null,
+      teamId: "team-a",
+      state: "closed",
+      stateType: "completed",
+      delegated: false,
+    });
+    insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
+    w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'merged' WHERE id = 'work-x'", [
+      ISSUE,
+    ]);
+    w.db.run(
+      "INSERT INTO remote_merge_fact VALUES ('work-x', 'acme', 'a', 42, 'https://gh/pull/42', ?, ?)",
+      [MERGE, END + 3_000],
+    );
+    await sync();
+    expect(
+      (await post("verification", verify(version(), { revision: MERGE }))).body.item.attention,
+    ).toBe("verified");
+    linear.issues.set(ISSUE, { ...linear.issues.get(ISSUE)!, state: "open", stateType: "started" });
+    await sync();
+    const back = await post("recovery", {
+      expectedVersion: version(),
+      choice: "return_to_review",
+      reason: "The fix did not hold",
+    });
+    expect(back.body.item.attention).toBe("needs_review");
+    const relinked = await w.api(
+      "ada",
+      `/api/improvements/${id}/decision`,
+      accept(version(), { kind: "link", issue: "PAS-70" }),
+    );
+    expect(relinked.body.status).toBe("decided");
+    settle(END + 9_000);
+    await sync();
+    const view = (await w.api("ada", `/api/improvements/${id}/follow-through`)).body.followThrough;
+    expect(view).toMatchObject({
+      work: null,
+      attention: "ready_to_delegate",
+      delegate: { offered: true },
+    });
+    const reused = await post("verification", verify(version(), { revision: MERGE }));
+    expect(reused.body.reason).toBe("not_implemented");
+    expect((await post("delegate", { expectedVersion: version() })).body.status).toBe("delegated");
+    expect(starter.calls).toEqual([ISSUE]);
+  });
+
+  test("an older run still active at link time is shown instead of a second run", async () => {
+    const t = await linked();
+    insertQueuedItem(t.w.db, { id: "work-old", sessionKey: "session-a", now: END });
+    t.w.db.run(
+      "UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-old'",
+      [ISSUE],
+    );
+    const shown = await t.post("delegate", { expectedVersion: t.version() });
+    expect(shown.body).toMatchObject({
+      status: "existing",
+      item: { work: { itemId: "work-old" } },
+    });
+    expect(t.starter.calls).toEqual([]);
   });
 
   test("replacement work is adopted once, audited, and stales an open form", async () => {
@@ -665,11 +779,63 @@ describe("one bound work item", () => {
       improvementId: t.id,
       issueId: ISSUE,
       actor: "user-ada",
-      now: t.w.now(),
+      now: END + 5_000,
       leaseMs: 1,
     });
-    await t.sync();
+    await syncImprovementOutcomes({
+      db: t.w.db,
+      linearFor: async () => t.linear,
+      now: () => END + 10_000,
+    });
     expect((await t.follow()).delegation).toMatchObject({ state: "failed" });
+  });
+
+  test("failed work offers no redelegation that intake would refuse", async () => {
+    const t = await linked();
+    t.work("failed");
+    await t.sync();
+    expect((await t.follow()).recovery).toEqual(["acknowledge", "return_to_review"]);
+  });
+
+  test("an acknowledged item stays closed after a later criterion", async () => {
+    const t = await linked();
+    t.work("failed");
+    await t.sync();
+    await t.post("recovery", { expectedVersion: t.version(), choice: "acknowledge", reason: "No" });
+    const annotated = await t.post("criterion", {
+      expectedVersion: t.version(),
+      criterion: "The retro-recovery check passes.",
+    });
+    expect(annotated.body.item.attention).toBe("closed");
+    await t.sync();
+    expect((await t.follow()).attention).toBe("closed");
+  });
+
+  test("a Closeout step only matches the criterion as a whole word", async () => {
+    const t = await linked();
+    t.merge();
+    t.w.db.run("UPDATE work_item SET accepted_head = ? WHERE id = 'work-x'", [MERGE]);
+    await t.sync();
+    t.w.db.run(
+      `INSERT INTO closeout_progress (id, item_id, task_id, base, head, policy_digest, started_at,
+         updated_at) VALUES ('p1', 'work-x', 't', 'b', ?, 'd', 1, 1)`,
+      [MERGE],
+    );
+    t.w.db.run(
+      `INSERT INTO closeout_step (progress_id, step_id, kind, state, command, attempt, ordinal)
+       VALUES ('p1', 'test', 'command', 'passed', 'bun run unit', 1, 0)`,
+    );
+    await t.post("criterion", {
+      expectedVersion: t.version(),
+      criterion: "The latest weekly retro shows no push-recovery question.",
+    });
+    const loose = await t.post(
+      "verification",
+      verify(t.version(), {
+        evidence: { kind: "closeout_step", progressId: "p1", stepId: "test" },
+      }),
+    );
+    expect(loose.body.reason).toBe("not_applicable");
   });
 });
 
