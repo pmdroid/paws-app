@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -194,7 +195,8 @@ test("a sign-in renames new credentials over the ones running turns read", async
   try {
     mkdirSync(join(home, ".codex"));
     const live = join(home, ".codex", "auth.json");
-    writeFileSync(live, old);
+    writeFileSync(live, old, { mode: 0o660 });
+    chmodSync(live, 0o660);
     const before = statSync(live).ino;
     const path = join(home, "provider.js");
     // The provider writes its credentials slowly, a piece at a time, as a real CLI may.
@@ -247,7 +249,7 @@ input.on("line", async (line) => {
     expect(updates.at(-1)!.state).toBe("connected");
     expect([...seen].sort()).toEqual(["new", "old"]);
     expect(statSync(live).ino).not.toBe(before);
-    expect(statSync(live).mode & 0o777).toBe(0o600);
+    expect(statSync(live).mode & 0o777).toBe(0o660);
     expect(readdirSync(join(home, ".codex"))).toEqual(["auth.json"]);
     expect(readdirSync(home).filter((name) => name.startsWith(".paws-login-"))).toEqual([]);
   } finally {
