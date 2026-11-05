@@ -2,6 +2,7 @@ import { z } from "zod";
 import { journalCaught } from "../journal";
 import { acquireOperationToken, type GitHubTokenProvider } from "./auth";
 import { repoApiPath } from "./client";
+import { latestPerName } from "./readiness";
 import { GitHubTokenError, type GitHubClient } from "./types";
 
 export const CI_ALREADY_RERUN = "CI was already re-run for this commit";
@@ -15,7 +16,10 @@ const pullSchema = z.object({ state: z.string(), head: z.object({ sha: z.string(
 const checkRunsSchema = z.object({
   check_runs: z.array(
     z.object({
+      name: z.string(),
       status: z.string(),
+      started_at: z.string().nullable().optional(),
+      completed_at: z.string().nullable().optional(),
       conclusion: z.string().nullable().optional(),
       html_url: z.string().nullable().optional(),
       details_url: z.string().nullable().optional(),
@@ -79,7 +83,10 @@ async function rerunOnce(input: CiRerunInput): Promise<CiRerunResult> {
     };
   const runIds = [
     ...new Set(
-      runs
+      latestPerName(runs, (run) => ({
+        startedAt: run.started_at ?? null,
+        completedAt: run.completed_at ?? null,
+      }))
         .filter((run) => run.app?.slug === "github-actions" && FAILED.has(run.conclusion ?? ""))
         .flatMap((run) => {
           const id = /\/actions\/runs\/(\d+)(?:\/|$)/.exec(run.html_url ?? run.details_url ?? "");

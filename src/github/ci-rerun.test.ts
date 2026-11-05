@@ -5,7 +5,14 @@ import { GitHubTokenError, type GitHubClient } from "./types";
 
 const head = "b".repeat(40);
 
-type Run = { status: string; conclusion: string | null; html_url: string; slug?: string };
+type Run = {
+  name?: string;
+  status: string;
+  conclusion: string | null;
+  html_url: string;
+  started_at?: string;
+  slug?: string;
+};
 
 const failedRun: Run = {
   status: "completed",
@@ -26,6 +33,7 @@ function fakeGitHub(runs: Run[], rerunStatus = 201) {
           body: {
             check_runs: runs.map((run, index) => ({
               id: index + 1,
+              name: `job-${index + 1}`,
               ...run,
               app: { slug: run.slug ?? "github-actions" },
             })),
@@ -110,4 +118,52 @@ test("an App without Actions write cannot mint the token and gets the permission
     },
   });
   expect(result).toEqual({ answer: CI_RERUN_PERMISSION_MISSING });
+});
+
+test("a cancelled run that a newer run of the same check replaced is not re-run", async () => {
+  const actions = (runId: number) =>
+    `https://github.com/acme/monorepo/actions/runs/${runId}/job/${runId + 1}`;
+  const github = fakeGitHub([
+    {
+      name: "PR title type",
+      status: "completed",
+      conclusion: "cancelled",
+      html_url: actions(42088086452),
+      started_at: "2026-11-05T19:00:00Z",
+    },
+    {
+      name: "PR title type",
+      status: "completed",
+      conclusion: "success",
+      html_url: actions(42088104327),
+      started_at: "2026-11-05T19:02:00Z",
+    },
+    {
+      name: "Linear task linked",
+      status: "completed",
+      conclusion: "cancelled",
+      html_url: actions(42088086445),
+      started_at: "2026-11-05T19:00:00Z",
+    },
+  ]);
+  const result = await rerun(github.client);
+  expect(result.rerun).toEqual({ head, runIds: [42088086445] });
+  const replaced = fakeGitHub([
+    {
+      name: "PR title type",
+      status: "completed",
+      conclusion: "cancelled",
+      html_url: actions(42088086452),
+      started_at: "2026-11-05T19:00:00Z",
+    },
+    {
+      name: "PR title type",
+      status: "completed",
+      conclusion: "success",
+      html_url: actions(42088104327),
+      started_at: "2026-11-05T19:02:00Z",
+    },
+  ]);
+  expect((await rerun(replaced.client)).answer).toContain("No GitHub Actions job failed");
+  expect(replaced.requests.some((request) => request.method === "POST")).toBe(false);
 });

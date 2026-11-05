@@ -644,22 +644,28 @@ test("rules first: a passing rule leaves pending alone and probes once per commi
   expect(probeRuns(marks)).toBe(2);
 });
 
-test("an agent turn's report includes each rule's result and a break leaves pending alone", async () => {
+test("an agent turn probes rules only once the command checks pass, and a break leaves pending alone", async () => {
   const { root, marks } = rulesFirstRepo(1);
   const session = createCloseoutSession(root, local(root));
+
+  const before = JSON.parse(await session.report({ progress: true, probes: true })) as RuleReport;
+  expect(before.rules?.[0]?.result).toBeUndefined();
+  expect(before.pending).toEqual(["check"]);
+  expect(probeRuns(marks)).toBe(0);
+  expect(await session.run("check")).toBe("check passed.");
+  expect(checkRan(marks)).toBe(true);
 
   const report = JSON.parse(await session.report({ progress: true, probes: true })) as RuleReport;
   expect(report.rules).toHaveLength(1);
   expect(report.rules?.[0]).toMatchObject({ id: "api-contract", result: { exitCode: 1 } });
-  expect(report.pending).toEqual(["check"]);
+  expect(report.pending).toEqual([]);
   expect(report.blocked).toBeNull();
-  expect(await session.run("check")).toBe("check passed.");
-  expect(checkRan(marks)).toBe(true);
 });
 
 test("an agent turn probes once per commit and again after an edit changes the fingerprint", async () => {
   const { root, marks } = rulesFirstRepo(0);
   const session = createCloseoutSession(root, local(root));
+  expect(await session.run("check")).toBe("check passed.");
 
   for (let call = 0; call < 2; call++) {
     const report = JSON.parse(await session.report({ probes: true })) as RuleReport;
@@ -668,6 +674,7 @@ test("an agent turn probes once per commit and again after an edit changes the f
   expect(probeRuns(marks)).toBe(1);
 
   writeFileSync(join(root, "src", "main.ts"), "export const value = 2;\n");
+  expect(await session.run("check")).toBe("check passed.");
   const edited = JSON.parse(await session.report({ probes: true })) as RuleReport;
   expect(edited.rules?.[0]?.result?.exitCode).toBe(0);
   expect(probeRuns(marks)).toBe(2);

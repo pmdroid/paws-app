@@ -46,6 +46,10 @@ The agent uses two tools in its session:
 
 Command checks run in the agent's workspace. On a remote runner they run on that runner. Review checks are listed but not run here, because the review must come from a different session. Evidence checks run nothing: `run_closeout` answers with the hint and the `publish_artifact` call to make.
 
+During the turn, Closeout fails fast. Setup runs first, then the command checks that failed earlier in this session or in the last Closeout run of a fix round (see the fix-round focus below), then the other command checks in policy order, and last the ones with the policy's longest command timeout (`test` in this repository). The checks in one step may run in parallel. When a command check fails, Closeout starts no further command checks and stops the ones still running, so `run_closeout` returns as soon as the failing check finishes. The checks that did not run stay pending, and `get_closeout` gives each one the detail "not run: fix <check-id> first". When that check is exhausted, the ones waiting on it are listed as `deferred` instead of pending, so the agent can finish with a note and Closeout runs them after the turn. Rule probes wait until every command check passed or is deferred. Each command check runs with `PAWS_TEST_BAIL=1`, which makes `bun scripts/affected-tests.ts` add `--bail=1`, so the test run stops at its first failing test. The policy's `exec` is unchanged.
+
+Paws Closeout after the turn does not fail fast: it runs every check to the end, without `PAWS_TEST_BAIL`, and records evidence for each one.
+
 Each check has its own retry limit, `retry.attempts_per_check`, which is 3 in this repository. With `scope: task`, failed attempts count across the whole task, including new commits. When a check fails, the agent fixes the cause and runs it again. When a check reaches its limit, it is exhausted. The agent stops retrying it and finishes with a short note on why. Paws Closeout then decides what happens next.
 
 The agent cannot end its turn while a check is still pending. When the agent tries to finish, the Stop hook checks the Closeout status and sends the agent back with the pending check ids. A check that is exhausted does not hold the agent back.
@@ -294,7 +298,7 @@ When the diff, a test, or an imported helper cannot be read, when import parsing
 ````
 test/merge-lane.test.ts  imports src/merge/index.ts
 full suite (556 files): package.json changed
-``` `bun scripts/affected-tests.ts --list <base> <head>` prints the selection without running it.
+``` `bun scripts/affected-tests.ts --list <base> <head>` prints the selection without running it. `--bail`, or `PAWS_TEST_BAIL=1`, adds `--bail=1` to the test command.
 
 ## Review escapes
 
