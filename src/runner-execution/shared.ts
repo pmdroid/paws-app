@@ -1,14 +1,5 @@
 import { journalCaught } from "../journal";
-import {
-  chmodSync,
-  closeSync,
-  constants,
-  fchmodSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  statSync,
-} from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, mkdirSync, openSync } from "node:fs";
 
 export const SETGID = 0o2000;
 const SHARED_MODE_MASK = 0o7777 & ~SETGID;
@@ -55,6 +46,14 @@ export function openSharedDirectory(
 }
 
 export function clearInheritedSetgid(path: string): void {
-  const mode = statSync(path).mode & 0o7777;
-  if (mode & SETGID) chmodSync(path, mode & ~SETGID);
+  const directory = openSync(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    const mode = fstatSync(directory).mode & 0o7777;
+    if (mode & SETGID) fchmodSync(directory, mode & ~SETGID);
+  } finally {
+    closeSync(directory);
+  }
 }
