@@ -62,6 +62,50 @@ test("eight run_closeout calls issued together take about the slowest; setup run
   expect(JSON.parse(await session.report()).pending).toEqual([]);
 }, 30_000);
 
+test("an explicit setup call waits for the setup steps before it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-closeout-setup-order-"));
+  roots.push(root);
+  const repo = join(root, "repo");
+  const ran = join(root, "ran");
+  mkdirSync(repo);
+  git(repo, ["init", "-b", "main"]);
+  writeFileSync(join(repo, "README.md"), "acme\n");
+  commit(repo);
+  git(repo, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  const step = (id: string, seconds: number) =>
+    JSON.stringify(["sh", "-c", `sleep ${seconds}; echo ${id} >> ${ran}`]);
+  mkdirSync(join(repo, ".agents"));
+  writeFileSync(
+    join(repo, ".agents", "closeout.yaml"),
+    [
+      'specVersion: "0.1"',
+      "setup:",
+      "  - id: install",
+      `    exec: ${step("install", 0.3)}`,
+      "    timeoutSeconds: 30",
+      "  - id: generate",
+      `    exec: ${step("generate", 0)}`,
+      "    timeoutSeconds: 30",
+      "items:",
+      "  - id: lint",
+      "    kind: command",
+      "    gate: beforePR",
+      `    exec: ${step("lint", 0)}`,
+      "    timeoutSeconds: 30",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(repo, "widget.ts"), "export const acme = 1;\n");
+  commit(repo);
+  const session = createCloseoutSession(repo, { policy: async () => workspacePolicyFiles(repo) });
+  await session.report();
+
+  const answers = await Promise.all([session.run("generate"), session.run("install")]);
+
+  expect(answers).toEqual(["generate passed.", "install passed."]);
+  expect(readFileSync(ran, "utf8").trim().split("\n")).toEqual(["install", "generate"]);
+}, 30_000);
+
 function commit(repo: string): void {
   git(repo, ["add", "-A"]);
   git(repo, ["-c", "user.name=Acme", "-c", "user.email=dev@acme.test", "commit", "-qm", "acme"]);

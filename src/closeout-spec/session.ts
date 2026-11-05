@@ -658,9 +658,10 @@ async function runId(
     return `Check ${id} is exhausted. Stop retrying and report the blocker.`;
   }
   const digest = policy.digest;
-  if (item.kind === "command") {
-    for (const step of required) {
-      if (step.kind !== "setup" || step.id === item.id) continue;
+  if (item.kind === "command" || item.kind === "setup") {
+    const before = item.kind === "setup" ? required.indexOf(item) : required.length;
+    for (const step of required.slice(0, before)) {
+      if (step.kind !== "setup") continue;
       if (memory.get(step.id)?.passed) continue;
       if (statusOf(memory.get(step.id), 2) === "exhausted") {
         return `Check ${step.id} is exhausted. Stop retrying and report the blocker.`;
