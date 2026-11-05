@@ -62,7 +62,9 @@ export function recordImprovementIssueSync(
   return (
     db.run(
       `INSERT INTO improvement_issue_sync (improvement_id, issue_id, status, state_type, team_id,
-         delegated, observed_at, confirmed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         delegated, observed_at, confirmed_at)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+       WHERE EXISTS (SELECT 1 FROM improvement WHERE id = ?1 AND issue_id = ?2)
        ON CONFLICT(improvement_id) DO UPDATE SET status = excluded.status,
          issue_id = excluded.issue_id,
          state_type = CASE WHEN excluded.status = 'available' THEN excluded.state_type ELSE state_type END,
@@ -212,6 +214,24 @@ export function settleImprovementDelegation(
       ],
     ).changes === 1
   );
+}
+
+export function otherDelegationForIssue(
+  db: Database,
+  input: { improvementId: string; issueId: string; now: number },
+): ImprovementDelegation | null {
+  const row = db
+    .query<DelegationRow, [string, string, number]>(
+      `SELECT * FROM improvement_delegation WHERE issue_id = ? AND improvement_id <> ?
+         AND (state IN ('started','existing') OR (state = 'requested' AND lease_expires_at > ?))
+       ORDER BY updated_at DESC LIMIT 1`,
+    )
+    .get(input.issueId, input.improvementId, input.now);
+  return row ? delegationFromRow(row) : null;
+}
+
+export function bumpImprovementVersion(db: Database, improvementId: string): void {
+  db.run("UPDATE improvement SET version = version + 1 WHERE id = ?", [improvementId]);
 }
 
 export function expiredImprovementDelegations(db: Database, now: number): ImprovementDelegation[] {
@@ -399,7 +419,9 @@ export function workForLinearIssue(db: Database, issueId: string): IssueWork | n
        LEFT JOIN work_item_repository r ON r.item_id = w.id
        LEFT JOIN item_pull_request p ON p.item_id = w.id
        LEFT JOIN remote_merge_fact m ON m.item_id = w.id
-       WHERE w.linear_issue_id = ?`,
+       WHERE w.linear_issue_id = ?
+       ORDER BY w.state NOT IN ('completed','merged','cancelled') DESC, w.created_at DESC,
+         w.rowid DESC LIMIT 1`,
     )
     .get(issueId);
   if (!row) return null;

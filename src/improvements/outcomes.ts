@@ -4,6 +4,7 @@ import {
   annotateImprovementCriterion,
   claimImprovementDelegation,
   closeoutStepResult,
+  bumpImprovementVersion,
   expiredImprovementDelegations,
   followThroughCandidates,
   immediate,
@@ -13,6 +14,7 @@ import {
   listImprovementCriteria,
   listImprovementDeliveries,
   listImprovementOutcomes,
+  otherDelegationForIssue,
   recordImprovementAction,
   recordImprovementIssueSync,
   recordImprovementOutcome,
@@ -201,7 +203,11 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
   const acknowledged = actions.at(-1)?.action === "acknowledge";
   const delegating =
     delegation !== null && delegation.state !== "failed" && delegation.issueId === issue?.id;
-  const ownedElsewhere = work !== null || sync?.delegated === true || delegating;
+  const sharedDelegation =
+    issue !== null &&
+    otherDelegationForIssue(db, { improvementId: improvement.id, issueId: issue.id, now }) !== null;
+  const ownedElsewhere =
+    work !== null || sync?.delegated === true || delegating || sharedDelegation;
   const delegateReason = !issue
     ? "not_linked"
     : ownedElsewhere
@@ -569,7 +575,12 @@ export async function delegateImprovement(
       status: view.delegation.state === "requested" ? "in_progress" : "unchanged",
       item: view,
     };
-  if (!input.again && view.work) {
+  const shared = otherDelegationForIssue(db, {
+    improvementId: first.improvement.id,
+    issueId: issue.id,
+    now: input.now(),
+  });
+  if ((!input.again && view.work) || shared) {
     claimAndSettleExisting(db, first, input.reviewer.userId, input.now());
     return { status: "existing", item: followThrough(db, first, input.now()) };
   }
@@ -614,6 +625,16 @@ export async function delegateImprovement(
     if (item.improvement.version !== input.expectedVersion) {
       if (latest.delegation?.state === "requested") return { status: "in_progress", item: latest };
       return refuse("conflict", "stale", latest);
+    }
+    if (
+      otherDelegationForIssue(db, {
+        improvementId: item.improvement.id,
+        issueId: issue.id,
+        now: input.now(),
+      })
+    ) {
+      claimAndSettleExisting(db, item, current.userId, input.now());
+      return { status: "existing", item: followThrough(db, item, input.now()) };
     }
     const claimed = claimImprovementDelegation(db, {
       improvementId: item.improvement.id,
@@ -942,7 +963,7 @@ export function reconcileImprovement(
         actor: "paws",
         now,
       });
-    if (improvement.verificationState === "unknown" && DONE.includes(implementation.state))
+    if (improvement.verificationState === "unknown" && DONE.includes(implementation.state)) {
       recordImprovementOutcome(db, {
         improvementId,
         track: "verification",
@@ -951,7 +972,9 @@ export function reconcileImprovement(
         actor: "paws",
         now,
       });
-    if (improvement.verificationState === "verified" && view.verification.stale)
+      bumpImprovementVersion(db, improvementId);
+    }
+    if (improvement.verificationState === "verified" && view.verification.stale) {
       recordImprovementOutcome(db, {
         improvementId,
         track: "verification",
@@ -967,6 +990,8 @@ export function reconcileImprovement(
         actor: "paws",
         now,
       });
+      bumpImprovementVersion(db, improvementId);
+    }
   });
 }
 
@@ -995,7 +1020,14 @@ export async function syncImprovementOutcomes(options: {
     options.limit ?? IMPROVEMENT_OUTCOME_LIMITS.syncBatch,
   )) {
     const linear = await options.linearFor(candidate.workspaceId);
-    if (linear) {
+    if (!linear)
+      recordImprovementIssueSync(db, {
+        improvementId: candidate.id,
+        issueId: candidate.issueId,
+        status: "unavailable",
+        observedAt: now(),
+      });
+    else {
       const observedAt = now();
       syncFrom(
         db,

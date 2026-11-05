@@ -1058,6 +1058,7 @@ export {
 } from "./improvements";
 export {
   annotateImprovementCriterion,
+  bumpImprovementVersion,
   claimImprovementDelegation,
   closeoutStepResult,
   expiredImprovementDelegations,
@@ -1065,6 +1066,7 @@ export {
   improvementDelegation,
   improvementIssueSync,
   listImprovementActions,
+  otherDelegationForIssue,
   recordImprovementAction,
   recordImprovementIssueSync,
   returnImprovementToReview,

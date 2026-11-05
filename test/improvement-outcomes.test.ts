@@ -532,6 +532,81 @@ describe("review fixes", () => {
   });
 });
 
+describe("second review fixes", () => {
+  test("a contradiction from the sweep makes an open verification form stale", async () => {
+    const t = await linked({ stateType: "completed" });
+    await t.sync();
+    await t.post("verification", verify(t.version(), { deployment: "v1" }));
+    const form = t.version();
+    t.setIssue({ state: "open", stateType: "started" });
+    await t.sync();
+    expect(t.version()).toBeGreaterThan(form);
+    const replayed = await t.post("verification", verify(form, { deployment: "v1" }));
+    expect([replayed.status, replayed.body.reason]).toEqual([409, "stale"]);
+    expect(getImprovement(t.w.db, t.id)!.verificationState).toBe("contradicted");
+  });
+
+  test("a redelegated issue follows its replacement work item, not the cancelled one", async () => {
+    const t = await linked();
+    t.work("cancelled");
+    insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 10 });
+    t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-y'", [
+      ISSUE,
+    ]);
+    await t.sync();
+    expect(await t.follow()).toMatchObject({
+      attention: "working",
+      work: { itemId: "work-y", state: "running" },
+    });
+  });
+
+  test("two improvements linked to one issue delegate it once", async () => {
+    const t = await linked();
+    const other = t.w.retro.b;
+    t.w.db.run("INSERT INTO workspace_repository VALUES ('ws', 'acme/b', 'team-a')");
+    t.w.db.run(
+      `UPDATE improvement SET review_state = 'accepted', reviewed_proposal = 1, intent = 'link',
+         intent_issue_id = ?, issue_id = ?, issue_identifier = 'PAS-70', issue_confirmed_at = ?
+       WHERE id = ?`,
+      [ISSUE, ISSUE, END, other],
+    );
+    const first = await t.post("delegate", { expectedVersion: t.version() });
+    expect(first.body.status).toBe("delegated");
+    const view = await t.w.api("admin", `/api/improvements/${other}/follow-through`);
+    expect(view.body.followThrough).toMatchObject({
+      attention: "working",
+      delegate: { offered: false },
+    });
+    const second = await t.w.api("admin", `/api/improvements/${other}/delegate`, {
+      expectedVersion: getImprovement(t.w.db, other)!.version,
+    });
+    expect(second.body.status).toBe("existing");
+    expect(t.starter.calls).toEqual([ISSUE]);
+  });
+
+  test("a delayed read for a replaced issue is not recorded", async () => {
+    const t = await linked();
+    const stale = recordImprovementIssueSync(t.w.db, {
+      improvementId: t.id,
+      issueId: "issue-old",
+      status: "available",
+      stateType: "canceled",
+      observedAt: END + 99_000,
+    });
+    expect(stale).toBe(false);
+    expect((await t.follow()).issue.sync).toBeNull();
+  });
+
+  test("a workspace without a Linear connection still advances and shows unavailable", async () => {
+    const t = await linked();
+    await syncImprovementOutcomes({ db: t.w.db, linearFor: async () => null, now: t.w.now });
+    expect(await t.follow()).toMatchObject({
+      attention: "unavailable",
+      issue: { sync: { status: "unavailable" } },
+    });
+  });
+});
+
 describe("manual recovery", () => {
   test("a canceled issue offers acknowledge or return to review, keeping the audit trail", async () => {
     const t = await linked({ stateType: "canceled" });
