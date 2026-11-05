@@ -242,6 +242,7 @@ import {
   getLinkAsk,
   getPullRequestDraft,
   savePullRequestDraft,
+  savePullRequestText,
   listAgentCloseout,
   recordAgentCloseout,
   immediate,
@@ -330,6 +331,7 @@ import {
 } from "../db";
 import {
   publishAccepted,
+  publishedPullRequestBody,
   storeEvidenceFiles,
   closeStoppedPull,
   deleteHiddenRef,
@@ -553,6 +555,7 @@ import { classifyTask } from "./task-classifier";
 import { PLAN_PROMPT, parsePlanResult, planOptions, planProposalBody } from "./plan-proposal";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
+import { applyPullRequestDraft } from "./pull-request-text";
 import {
   askAboutPushOutage,
   holdPush,
@@ -5178,30 +5181,32 @@ export class Orchestrator {
       ...(this.options.journal ? { journal: this.options.journal } : {}),
     });
     if (this.stopped(item.id)) return { kind: "obsolete" };
+    const evidence = [
+      summary,
+      riskLine(risk),
+      visualReviewPullRequestNote(
+        this.db,
+        item,
+        this.options.evidence?.publicUrl ?? null,
+        this.now(),
+      ),
+      screenshots,
+      policy ? policyPullRequestCredit(policy) : "",
+      openFindingsSection(open),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const title = draft?.title ?? item.title;
     const published = await publishAccepted({
       accepted: true,
-      evidence: [
-        summary,
-        riskLine(risk),
-        visualReviewPullRequestNote(
-          this.db,
-          item,
-          this.options.evidence?.publicUrl ?? null,
-          this.now(),
-        ),
-        screenshots,
-        policy ? policyPullRequestCredit(policy) : "",
-        openFindingsSection(open),
-      ]
-        .filter(Boolean)
-        .join("\n\n"),
+      evidence,
       worktree,
       ...(ref === "HEAD" ? {} : { ref }),
       issue: item.linearIdentifier,
       branchKey: taskBranchKey(item),
       owner: repository.owner,
       repo: repository.repo,
-      title: draft?.title ?? item.title,
+      title,
       ...(draft ? { description: draft.body } : {}),
       reviewer: getItemRunCommitPolicy(this.db, item.id)?.credit?.login,
       client: github.client,
@@ -5225,6 +5230,20 @@ export class Orchestrator {
       pullUrl: published.pull.url ?? null,
       openedAt: this.now(),
     });
+    savePullRequestText(
+      this.db,
+      item.id,
+      {
+        title,
+        body: publishedPullRequestBody({
+          issue: item.linearIdentifier,
+          ...(draft ? { description: draft.body } : {}),
+          evidence,
+        }),
+        evidence,
+      },
+      this.now(),
+    );
     saveOpenFindings(this.db, {
       itemId: item.id,
       head: published.head,
@@ -6834,7 +6853,27 @@ export class Orchestrator {
     return {
       update: async (description) => {
         if (this.stopped(item.id)) throw new Error("Pull request updates are closed for this run");
+        const previous = getPullRequestDraft(this.db, item.id);
         savePullRequestDraft(this.db, item.id, description, this.now());
+        const repository = this.repositoryForItem(item);
+        const signal = this.signalForItem(item.id);
+        await applyPullRequestDraft({
+          db: this.db,
+          itemId: item.id,
+          issue: item.linearIdentifier,
+          draft: description,
+          previous,
+          stopped: () => this.stopped(item.id),
+          ...(signal ? { signal } : {}),
+          repository,
+          github: repository ? this.githubForRepository(repository) : null,
+          now: this.now(),
+          status: (line) => {
+            for (const live of this.live.values())
+              if (live.itemId === item.id) live.progress = line;
+          },
+          ...(this.options.journal ? { journal: this.options.journal } : {}),
+        });
       },
     };
   }

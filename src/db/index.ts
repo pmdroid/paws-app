@@ -246,8 +246,11 @@ export {
 export type { CatalogEntry } from "./repository-catalog";
 export {
   getPullRequestDraft,
+  getPullRequestText,
   savePullRequestDraft,
+  savePullRequestText,
   type PullRequestDraft,
+  type PullRequestText,
 } from "./pull-request-drafts";
 export {
   getCandidateRisk,

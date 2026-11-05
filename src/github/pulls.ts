@@ -69,10 +69,7 @@ export async function openPullRequest(
   } & GitHubCredentialInput,
 ): Promise<OpenedPull> {
   const branch = branchForIssue(input.branchKey ?? input.issue);
-  const body = pullRequestBody(
-    input.issue,
-    input.description ? `${input.description.trim()}\n\n${input.evidence}` : input.evidence,
-  );
+  const body = publishedPullRequestBody(input);
   const token = await acquireOperationToken(input, "pr");
   const created = await input.client.request({
     method: "POST",
@@ -110,6 +107,69 @@ export async function openPullRequest(
     return pullFrom(patched.body, body);
   }
   throw new Error(`opening the pull request failed with status ${created.status}`);
+}
+
+export function publishedPullRequestBody(input: {
+  issue: string;
+  description?: string;
+  evidence: string;
+}): string {
+  return pullRequestBody(
+    input.issue,
+    input.description ? `${input.description.trim()}\n\n${input.evidence}` : input.evidence,
+  );
+}
+
+export async function updatePullRequestText(
+  input: {
+    owner: string;
+    repo: string;
+    number: number;
+    title: string;
+    body: string;
+    client: GitHubClient;
+    signal?: AbortSignal;
+  } & GitHubCredentialInput,
+): Promise<void> {
+  const token = await acquireOperationToken(input, "pr");
+  input.signal?.throwIfAborted();
+  const patched = await input.client.request({
+    method: "PATCH",
+    path: repoApiPath(input.owner, input.repo, `/pulls/${input.number}`),
+    token,
+    body: { title: input.title, body: input.body },
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  if (patched.status === 200) return;
+  const message =
+    isRecord(patched.body) && typeof patched.body.message === "string" ? patched.body.message : "";
+  throw new Error(`GitHub answered ${patched.status}${message ? `: ${message}` : ""}`);
+}
+
+export async function readPullRequestText(
+  input: {
+    owner: string;
+    repo: string;
+    number: number;
+    client: GitHubClient;
+    signal?: AbortSignal;
+  } & GitHubCredentialInput,
+): Promise<{ title: string; body: string; open: boolean }> {
+  const token = await acquireOperationToken(input, "pr");
+  input.signal?.throwIfAborted();
+  const read = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, `/pulls/${input.number}`),
+    token,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  if (read.status !== 200 || !isRecord(read.body) || typeof read.body.title !== "string")
+    throw new Error(`GitHub answered ${read.status} reading pull request #${input.number}`);
+  return {
+    title: read.body.title,
+    body: typeof read.body.body === "string" ? read.body.body.replaceAll("\r\n", "\n") : "",
+    open: read.body.state === "open",
+  };
 }
 
 async function findOpenPull(
