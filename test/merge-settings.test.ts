@@ -114,6 +114,8 @@ packages = ["apps/*", "packages/*"]
         { project: PAYMENTS, label: 'Needs "care"' },
       ],
       repositories: { "acme/platform": { packages: ["apps/*", "packages/*"] } },
+      lane: "project",
+      projectLanes: {},
       autoApproveHighRisk: false,
       ciFixAttempts: 2,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
@@ -205,11 +207,11 @@ packages = ["apps/*", "packages/*"]
     expect(readMergeSettings(loadConfigFile(path))).toEqual(settings);
 
     expect(() => parseConfigToml('[merge]\nlane = "label"\n')).toThrow("merge.lane");
-    expect(() =>
-      parseConfigToml(`[merge.projects."${PAWS}"]\nlane = "issue"\n`),
-    ).toThrow();
+    expect(() => parseConfigToml(`[merge.projects."${PAWS}"]\nlane = "issue"\n`)).toThrow();
     // No label rules for lanes.
-    expect(() => parseConfigToml('[[merge.rules]]\nlabel = "Bug"\nlane = "repository"\n')).toThrow();
+    expect(() =>
+      parseConfigToml('[[merge.rules]]\nlabel = "Bug"\nlane = "repository"\n'),
+    ).toThrow();
   });
 
   test("package roots must be relative paths in the repository", () => {
@@ -425,6 +427,8 @@ describe("Merging settings API", () => {
       projects: { [PAWS]: {}, [PAYMENTS]: { order: "github-queue", mainMoved: "overlap" } },
       rules: [{ label: "Bug", mainMoved: "closeout" }],
       repositories: { "acme/platform": { packages: ["apps/*"] } },
+      lane: "project",
+      projectLanes: {},
       autoApproveHighRisk: false,
       ciFixAttempts: 5,
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },

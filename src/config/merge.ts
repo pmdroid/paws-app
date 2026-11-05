@@ -354,12 +354,12 @@ export function resolveMergeSettings(
  * repository-wide lane. A `[merge.projects.*] lane` wins over `[merge] lane`; labels play no part.
  */
 export function mergeLaneKey(
-  projectId: string | null,
+  project: string | null,
   settings: Pick<MergeSettings, "lane" | "projectLanes">,
 ): string {
-  if (projectId === null) return "";
-  const lane = settings.projectLanes[projectId] ?? settings.lane;
-  return lane === "project" ? projectId : "";
+  if (project === null) return "";
+  const lane = settings.projectLanes[project] ?? settings.lane;
+  return lane === "project" ? project : "";
 }
 
 /** Bot logins whose comments on this repository's pull requests Paws ignores, lowercased. */

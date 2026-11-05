@@ -322,12 +322,18 @@ describe("advanceMerge in the repository merge queue", () => {
     );
 
     h.state.ci = () => undefined;
+    const accepted = await h.remoteHead("ENG-172");
     expect(await h.pass("ENG-171")).toEqual({ kind: "merged" });
-    // Lane A's squash moved main: lane B's head no longer contains it, so it is not mergeable.
-    // It goes through `main_moved = "ci"` (rebase, wait for CI) instead of squashing.
+    // The fake records the squash; land it on main as GitHub would.
+    await h.moveMain("lane-a.txt", "lane a\n");
+    // Lane B's head no longer contains main, so it is not mergeable: it goes through
+    // `main_moved = "ci"` (rebase, wait for CI) instead of squashing.
     expect(await h.pass("ENG-172")).toMatchObject({ kind: "wait", reason: "ci" });
     expect(mergedOrder(h, ids)).toEqual(["ENG-171"]);
-    expect(await passUntilMerged(h, "ENG-172")).toEqual({ kind: "merged" });
+    const rebased = await h.remoteHead("ENG-172");
+    expect(rebased).not.toBe(accepted);
+    expect(await h.pass("ENG-172")).toEqual({ kind: "merged" });
+    expect(h.github.merged.at(-1)?.expectedHeadSha).toBe(rebased);
     expect(await passUntilMerged(h, "ENG-173")).toEqual({ kind: "merged" });
     expect(mergedOrder(h, ids)).toEqual(["ENG-171", "ENG-172", "ENG-173"]);
   });

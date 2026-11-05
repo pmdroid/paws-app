@@ -407,7 +407,9 @@ describe("job queue", () => {
     enqueueMerge(db, clock, "eng-2");
     expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
     expect(claim(db, clock, [JOB_KIND.merge])).toBeNull();
-    expect(listMergeQueues(db).map((entry) => [entry.itemId, entry.position, entry.aheadItemId])).toEqual([
+    expect(
+      listMergeQueues(db).map((entry) => [entry.itemId, entry.position, entry.aheadItemId]),
+    ).toEqual([
       ["eng-1", 1, null],
       ["eng-2", 2, "eng-1"],
     ]);
