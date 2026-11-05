@@ -55,13 +55,20 @@ const ManifestSchema = z.strictObject({
   accountId: RunnerAccountSchema.shape.accountId,
   agent: z.enum(RUNNER_CODING_AGENTS),
 });
-const ReceiptSchema = z.union([
-  z.strictObject({
-    receipt: z.string().min(1).max(4096),
-    scope: z.string().regex(/^[a-f0-9]{16}$/),
-  }),
-  z.strictObject({ pid: z.number().int().min(2), born: z.string().min(1).max(64) }),
+const ScopeSchema = z.string().regex(/^[a-f0-9]{16}$/);
+const PidSchema = z.number().int().min(2);
+const BornSchema = z.string().min(1).max(64);
+const LockSchema = z.strictObject({ pid: PidSchema, born: BornSchema });
+const HoldSchema = z.union([
+  z.strictObject({ scope: ScopeSchema, pid: PidSchema, born: BornSchema }),
+  z.strictObject({ scope: ScopeSchema }),
+  z
+    .strictObject({ scope: ScopeSchema, receipt: z.string().min(1).max(4096) })
+    .transform((hold) => ({
+      scope: hold.scope,
+    })),
 ]);
+type Hold = { scope: string; pid?: number; born?: string };
 
 export type RunnerAccountOwners = { runnerUid: number; agentGid: number };
 
@@ -160,21 +167,39 @@ export function runnerAccountBindings(
 export function holdRunnerAccountHome(
   home: string,
   executionId: string,
-  holder: { receipt: string; scope: string },
+  holder: { scope: string },
   owners: RunnerAccountOwners = processOwners(),
 ): void {
   const active = join(home, ACTIVE);
   privateDirectory(active, true, owners);
-  writeSharedFile(
-    join(active, ExecutionIdSchema.parse(executionId)),
-    JSON.stringify(ReceiptSchema.parse({ receipt: holder.receipt, scope: holder.scope })),
-    owners,
-  );
-  const publisher = readReceipt(join(home, PUBLISHING));
+  writeHold(home, executionId, { scope: holder.scope }, owners);
+  const publisher = readLock(join(home, PUBLISHING));
   if (publisher && publisher !== "stale") {
     releaseRunnerAccountHome(home, executionId);
     throw new RunnerAccountHomeError("This agent account is signing in on the runner");
   }
+}
+
+export function confirmRunnerAccountHold(
+  home: string,
+  executionId: string,
+  holder: { scope: string; pid: number; born: string },
+  owners: RunnerAccountOwners = processOwners(),
+): void {
+  writeHold(home, executionId, holder, owners);
+}
+
+function writeHold(
+  home: string,
+  executionId: string,
+  holder: Hold,
+  owners: RunnerAccountOwners,
+): void {
+  writeSharedFile(
+    join(home, ACTIVE, ExecutionIdSchema.parse(executionId)),
+    JSON.stringify(HoldSchema.parse(holder)),
+    owners,
+  );
 }
 
 export function releaseRunnerAccountHome(home: string, executionId: string): void {
@@ -190,7 +215,7 @@ export function publishRunnerAccountHome(
   const born = startTime(process.pid);
   if (!born) throw new RunnerAccountHomeError("Runner sign-in process is unavailable");
   const lock = join(home, PUBLISHING);
-  const owner = readReceipt(lock);
+  const owner = readLock(lock);
   if (owner && owner !== "stale")
     throw new RunnerAccountHomeError("Another sign-in is publishing this agent account");
   if (owner === "stale") rmSync(lock, { force: true });
@@ -236,58 +261,63 @@ export function activeExecutions(home: string, except?: string): string[] {
   const live: string[] = [];
   for (const name of names) {
     if (name === except || !ExecutionIdSchema.safeParse(name).success) continue;
-    const state = readReceipt(join(active, name), name);
+    const state = readHold(join(active, name), name);
     if (state === "stale") rmSync(join(active, name), { force: true });
     else if (state) live.push(name);
   }
   return live;
 }
 
-function readReceipt(path: string, executionId?: string): "live" | "stale" | null {
-  let text: string;
-  let modified: number;
+function readShared(path: string): { text: string; modified: number } | "live" | "stale" | null {
   try {
     const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
-      modified = fstatSync(descriptor).mtimeMs;
-      text = readFileSync(descriptor, "utf8");
+      return { modified: fstatSync(descriptor).mtimeMs, text: readFileSync(descriptor, "utf8") };
     } finally {
       closeSync(descriptor);
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      journalCaught(error, "accounts.readReceipt", null, "optional file may be absent");
+      journalCaught(error, "accounts.readShared", null, "optional file may be absent");
       return null;
     }
     if ((error as NodeJS.ErrnoException).code === "ELOOP") return "stale";
     if ((error as NodeJS.ErrnoException).code === "EACCES") return "live";
     throw error;
   }
-  let holder: z.infer<typeof ReceiptSchema>;
+}
+
+function admitting(modified: number): "live" | "stale" {
+  return Date.now() - modified < ADMISSION_MS ? "live" : "stale";
+}
+
+function readLock(path: string): "live" | "stale" | null {
+  const file = readShared(path);
+  if (file === null || typeof file === "string") return file;
+  let lock: z.infer<typeof LockSchema>;
   try {
-    holder = ReceiptSchema.parse(JSON.parse(text));
+    lock = LockSchema.parse(JSON.parse(file.text));
   } catch (caughtError1) {
-    journalCaught(caughtError1, "accounts.readReceipt.parse", null);
-    return Date.now() - modified < ADMISSION_MS ? "live" : "stale";
+    journalCaught(caughtError1, "accounts.readLock.parse", null);
+    return admitting(file.modified);
   }
-  if ("pid" in holder) return startTime(holder.pid) === holder.born ? "live" : "stale";
-  if (
-    executionId &&
-    listExecutionProcesses(holder.scope).some((entry) => entry.executionId === executionId)
-  )
-    return "live";
-  let worker = "";
+  return startTime(lock.pid) === lock.born ? "live" : "stale";
+}
+
+function readHold(path: string, executionId: string): "live" | "stale" | null {
+  const file = readShared(path);
+  if (file === null || typeof file === "string") return file;
+  let hold: Hold;
   try {
-    worker = readFileSync(holder.receipt, "utf8").trim();
-  } catch (error) {
-    if (!["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-    journalCaught(error, "accounts.readReceipt.worker", null, "optional file may be absent");
+    hold = HoldSchema.parse(JSON.parse(file.text));
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "accounts.readHold.parse", null);
+    return admitting(file.modified);
   }
-  const [pidText, born] = worker.split(" ");
-  const pid = Number(pidText);
-  if (!born || !Number.isSafeInteger(pid) || pid <= 1)
-    return Date.now() - modified < ADMISSION_MS ? "live" : "stale";
-  return startTime(pid) === born ? "live" : "stale";
+  if (listExecutionProcesses(hold.scope).some((entry) => entry.executionId === executionId))
+    return "live";
+  if (hold.pid === undefined || hold.born === undefined) return admitting(file.modified);
+  return startTime(hold.pid) === hold.born ? "live" : "stale";
 }
 
 function readManifest(

@@ -22,6 +22,7 @@ import type { RunnerBrokerClient } from "./broker";
 import type { RunnerSkillInstaller } from "./skills";
 import { openSharedDirectory } from "./shared";
 import {
+  confirmRunnerAccountHold,
   holdRunnerAccountHome,
   openRunnerAccountHome,
   releaseRunnerAccountHome,
@@ -356,7 +357,7 @@ export function createDirectWorkerSupervisor(options: {
         holdRunnerAccountHome(
           home,
           executionId,
-          { receipt: path, scope },
+          { scope },
           {
             runnerUid: options.spool.runnerUid,
             agentGid: options.spool.agentGid,
@@ -406,6 +407,13 @@ export function createDirectWorkerSupervisor(options: {
       if (born === undefined) throw new Error("Runner worker did not start");
       writeSync(fd, `${child.pid} ${born}\n`);
       fsyncSync(fd);
+      if (held.has(executionId) && options.spool)
+        confirmRunnerAccountHold(
+          home,
+          executionId,
+          { scope, pid: child.pid, born },
+          { runnerUid: options.spool.runnerUid, agentGid: options.spool.agentGid },
+        );
       syncDirectory(options.stateRoot);
       child.unref();
       return { alreadyAdmitted: false };
