@@ -55,6 +55,12 @@ export function runnerCheckpointPublishedId(sequence: number): string {
   return `00000000-0000-4000-b000-${sequence.toString(16).padStart(12, "0")}`;
 }
 
+export function runnerGitHubReadId(sequence: number): string {
+  if (!Number.isSafeInteger(sequence) || sequence < 1)
+    throw new Error("Invalid GitHub read token sequence");
+  return `00000000-0000-4000-c000-${sequence.toString(16).padStart(12, "0")}`;
+}
+
 export function removeRunnerAnswers(spool: RunnerSpool, executionId: string): void {
   if (process.getuid?.() !== spool.runnerUid) throw new Error("Only the runner may remove answers");
   try {

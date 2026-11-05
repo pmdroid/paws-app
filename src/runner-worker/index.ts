@@ -6,7 +6,11 @@ import {
   type LivePreviewSystem,
 } from "../live-preview";
 import { runProviderLogin } from "../runner-login-worker";
-import { runnerCommandAccount, type RunnerLoginUpdate } from "../runner-protocol";
+import {
+  redactGitHubTokens,
+  runnerCommandAccount,
+  type RunnerLoginUpdate,
+} from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import {
   createReviewCommandRunner,
@@ -94,7 +98,9 @@ import {
   runnerHandoverRequestId,
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
+  runnerGitHubReadId,
 } from "../runner-answers";
+import { openGitHubReadConfig, type GitHubReadConfig, type GitHubReadSource } from "./github-read";
 import {
   installRuntimes,
   prependRuntimePath,
@@ -206,6 +212,7 @@ export interface RunnerWorkerOptions {
   /** How often a running turn publishes a WIP commit when its worktree changed. Tests lower it. */
   checkpointIntervalMs?: number;
   livePreviewSystem?: LivePreviewSystem;
+  githubRead?: GitHubReadSource;
 }
 
 /** A turn that runs this long loses at most this much work to a runner crash or upgrade. */
@@ -336,18 +343,6 @@ const REMOTE_POLICY_REUSE_MS = 5 * 60_000;
 
 export type RemoteCloseoutPolicy = (() => Promise<PolicyFilesLoad>) & { invalidate(): void };
 
-export function remoteCiLog(
-  emit: (event: { type: "ci_log"; requestId: string; job?: string }) => void,
-  answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
-  signal: AbortSignal,
-): (job?: string) => Promise<string> {
-  return async (job) => {
-    const requestId = randomUUID();
-    emit({ type: "ci_log", requestId, ...(job === undefined ? {} : { job }) });
-    return decodeHostAnswer((await answer(requestId, signal)).answer, "CI log");
-  };
-}
-
 export function remoteCiRerun(
   emit: (event: { type: "ci_rerun"; requestId: string; reason: string }) => void,
   answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
@@ -375,7 +370,6 @@ function decodeHostAnswer(response: string, what: string): string {
 export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
   | { type: "closeout_policy"; requestId: string; offset?: number; hash?: string }
-  | { type: "ci_log"; requestId: string; job?: string }
   | { type: "ci_rerun"; requestId: string; reason: string }
   | { type: "acp"; event: AcpEvent }
   | {
@@ -805,8 +799,10 @@ export async function executeRunnerCommand(
   let journalSize = fstatSync(eventJournal).size;
   let activityOmitted = false;
   const updates = createUpdateLimiter();
+  let githubRead: GitHubReadConfig | undefined;
   function emit(event: RunnerWorkerEvent): void {
-    const line = `${JSON.stringify({ ...event, t: new Date().toISOString() })}\n`;
+    const serialized = JSON.stringify({ ...event, t: new Date().toISOString() });
+    const line = `${command.type === "run" && command.githubRead ? redactGitHubTokens(serialized, githubRead?.tokens()) : serialized}\n`;
     const length = Buffer.byteLength(line);
     if (event.type === "acp" && journalSize + length > ACTIVITY_JOURNAL_LIMIT) {
       if (activityOmitted) return;
@@ -1084,6 +1080,12 @@ export async function executeRunnerCommand(
       MISE_CACHE_DIR: mise.cacheDir,
     });
     agentEnv.PATH = withoutRunnerBin(agentEnv.PATH);
+    if (command.type === "run" && command.githubRead && options.githubRead)
+      githubRead = openGitHubReadConfig(
+        join(options.workRoot, `.gh-${command.runId}`),
+        options.githubRead,
+      );
+    if (githubRead) agentEnv.GH_CONFIG_DIR = githubRead.directory;
     const closeoutBasePath = withoutRunnerBin(process.env.PATH);
     // Pinned bin dirs, not shims: nothing on PATH reads the repository's mise config.
     if (installed.binPaths.length)
@@ -1191,15 +1193,6 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
       ...(command.type === "run" && command.suggestedFindings?.length
         ? { suggestedFindings: command.suggestedFindings }
-        : {}),
-      ...(command.type === "run" && command.ciLog && options.answer
-        ? {
-            ciLog: remoteCiLog(
-              emit,
-              options.answer,
-              options.signal ?? new AbortController().signal,
-            ),
-          }
         : {}),
       ...(command.type === "run" && command.ciRerun && options.answer
         ? {
@@ -2037,6 +2030,7 @@ export async function executeRunnerCommand(
     }
     return result;
   } finally {
+    githubRead?.close();
     previewStart.abort();
     await (await preview)?.stop("run_ended");
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
@@ -2201,6 +2195,18 @@ export async function runRunnerWorker(options: {
               if (request) return { deadline: Number(request.answer) };
               await delay(250, undefined, { signal });
             }
+          },
+          githubRead(sequence: number) {
+            const published = readRunnerAnswer(
+              spool,
+              options.executionId,
+              runnerGitHubReadId(sequence),
+            );
+            if (!published) return null;
+            const value = JSON.parse(published.answer) as { token?: unknown; expiresAt?: unknown };
+            if (typeof value.token !== "string" || !/^ghs_[A-Za-z0-9_]+$/.test(value.token))
+              throw new Error("Runner GitHub read token is invalid");
+            return { token: value.token, expiresAt: Number(value.expiresAt) };
           },
           checkpointPublished(sequence: number) {
             return (

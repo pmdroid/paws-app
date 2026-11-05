@@ -76,6 +76,7 @@ import {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
   checkoutExclusionsFor,
   highRiskPaths,
+  agentReadAllowed,
   loadConfigFile,
   mergeLaneKey,
   readMergeSettings,
@@ -338,7 +339,6 @@ import {
   readHeadCheckRuns,
   readReviewThreads,
   readPullCi,
-  readCiLog,
   commentOnPullRequest,
   replyToReviewComment,
   resolveReviewThread,
@@ -530,6 +530,7 @@ import {
   createReviewCommandReviewer,
   hiddenPathsPrompt,
   implementPrompt,
+  GITHUB_READ_PROMPT,
   POST_UPDATE_PROMPT,
   type AgentLaunch,
   type AcpAgentDeps,
@@ -8733,7 +8734,7 @@ export class Orchestrator {
     input: RunAgentOptions,
   ): Pick<
     RunAgentOptions,
-    "closeoutPolicy" | "runtimes" | "ciLog" | "ciRerun" | "suggestedFindings"
+    "closeoutPolicy" | "runtimes" | "githubRead" | "ciRerun" | "suggestedFindings"
   > {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
@@ -8752,17 +8753,11 @@ export class Orchestrator {
     return {
       ...runtimes,
       ...(suggested.length ? { suggestedFindings: suggested } : {}),
+      ...(!input.readOnly && this.agentReadAllowed(item, `${repository.owner}/${repository.repo}`)
+        ? { githubRead: { prompt: GITHUB_READ_PROMPT } }
+        : {}),
       ...(pull && github && !input.readOnly
         ? {
-            ciLog: (job?: string) =>
-              readCiLog({
-                client: github.client,
-                owner: repository.owner,
-                repo: repository.repo,
-                prNumber: pull.pullNumber,
-                job,
-                ...this.gitHubCredentials(github),
-              }),
             ciRerun: (reason: string) =>
               rerunItemCi({
                 db: this.db,
@@ -8796,6 +8791,24 @@ export class Orchestrator {
           : load;
       },
     };
+  }
+
+  private agentReadAllowed(item: WorkItemRecord, repository: string): boolean {
+    try {
+      return agentReadAllowed(
+        loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+        repository,
+      );
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.agentReadAllowed.loadConfigFile",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return false;
+    }
   }
 
   private async runtimeList(

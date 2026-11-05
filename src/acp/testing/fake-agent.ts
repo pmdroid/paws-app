@@ -1,8 +1,8 @@
 import { journalCaught } from "../../journal";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { FakeResult, FakeScript, FakeStep } from "./script";
 
 /**
@@ -24,6 +24,8 @@ const state: FakeResult = {
   env: {
     xaiApiKey: present("XAI_API_KEY"),
     ghToken: present("GH_TOKEN"),
+    githubToken: present("GITHUB_TOKEN"),
+    ...(process.env.GH_CONFIG_DIR ? { ghConfig: ghConfig(process.env.GH_CONFIG_DIR) } : {}),
     sshAuthSock: present("SSH_AUTH_SOCK"),
     aws: Object.keys(process.env).some((key) => key.startsWith("AWS_") && present(key)),
   },
@@ -46,6 +48,16 @@ const spawnSteps = (() => {
   writeFileSync(counter, String(spawned + 1));
   return script.sessions[Math.min(spawned, script.sessions.length - 1)]!;
 })();
+
+function ghConfig(directory: string) {
+  const hosts = join(directory, "hosts.yml");
+  return {
+    directory,
+    directoryMode: statSync(directory).mode & 0o777,
+    hostsMode: statSync(hosts).mode & 0o777,
+    hosts: readFileSync(hosts, "utf8"),
+  };
+}
 
 function present(key: string): boolean {
   const value = process.env[key];

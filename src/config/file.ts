@@ -91,6 +91,7 @@ export type PawsConfigFile = {
   trackerKind: TrackerKind | null;
   repo: string | null;
   githubRepos: string[];
+  agentReadOff?: string[];
   publicUrl: string | null;
   checkout: string | null;
   maxAwakeMs: number | null;
@@ -149,6 +150,7 @@ export type PawsSetupConfig = {
   trackerKind?: "linear";
   repo: string;
   githubRepos?: readonly string[];
+  agentReadOff?: readonly string[];
   checkout: string;
   maxAwakeMs: number;
   implementer: ImplementerName;
@@ -247,6 +249,8 @@ export function renderConfigToml(config: PawsSetupConfig): string {
   lines.push("", "[github]", `auth = ${tomlString(config.githubAuth)}`);
   lines.push(`repo = ${tomlString(config.repo)}`);
   if (config.githubRepos?.length) lines.push(`repos = ${tomlStringArray(config.githubRepos)}`);
+  if (config.agentReadOff?.length)
+    lines.push(`agent_read_off = ${tomlStringArray(config.agentReadOff)}`);
   if (config.trackerKind !== undefined) {
     lines.push("", "[tracker]", `kind = ${tomlString(config.trackerKind)}`);
   }
@@ -271,6 +275,11 @@ export function renderConfigToml(config: PawsSetupConfig): string {
   return lines.join("\n");
 }
 
+export function agentReadAllowed(config: Pick<PawsConfigFile, "agentReadOff">, repository: string) {
+  const name = repository.toLowerCase();
+  return !(config.agentReadOff ?? []).some((entry) => entry.toLowerCase() === name);
+}
+
 /**
  * Write `config.toml`. Returns false when the file already has these bytes
  * so a second setup does not touch it.
@@ -283,6 +292,7 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
     renderConfigToml({
       ...config,
       githubRepos: config.githubRepos ?? stored.githubRepos,
+      agentReadOff: config.agentReadOff ?? stored.agentReadOff,
       linearCommentAgents: config.linearCommentAgents ?? stored.linearCommentAgents,
       closeoutProjects: config.closeoutProjects ?? stored.closeoutProjects,
     }) +
@@ -524,6 +534,7 @@ function assignConfig(
     if (key === "auth") config.githubAuth = githubAuth(value, line);
     else if (key === "repo") config.repo = asString(value, line);
     else if (key === "repos") config.githubRepos = asStringArray(value, line);
+    else if (key === "agent_read_off") config.agentReadOff = asStringArray(value, line);
     return;
   }
   if (section === "tracker") {

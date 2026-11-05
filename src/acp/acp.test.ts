@@ -1349,6 +1349,7 @@ test("grok authenticates with cached_token, scrubs the key, and denies a path ou
   expect(trace.env).toEqual({
     xaiApiKey: false,
     ghToken: false,
+    githubToken: false,
     sshAuthSock: false,
     aws: false,
   });

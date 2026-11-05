@@ -509,7 +509,7 @@ export function logTail(log: string): string {
 
 const ANSI_COLOUR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, "g");
 
-export function cleanLogLines(log: string): string[] {
+function cleanLogLines(log: string): string[] {
   return log
     .replace(ANSI_COLOUR, "")
     .split(/\r?\n/)

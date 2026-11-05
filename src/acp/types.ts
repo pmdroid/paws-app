@@ -145,7 +145,7 @@ export interface RunAgentOptions {
   checkpointIdentity?: GitCommitIdentity;
   commitPolicy?: GitCommitPolicy;
   closeoutPolicy?: () => Promise<PolicyFilesLoad>;
-  ciLog?: (job?: string) => Promise<string>;
+  githubRead?: { prompt: string };
   ciRerun?: (reason: string) => Promise<string>;
   /**
    * The task repository's runtime list from its mise config on origin/main. A remote runner

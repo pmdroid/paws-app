@@ -245,7 +245,7 @@ export const RunnerCommandSchema = z
         )
         .max(50)
         .optional(),
-      ciLog: z.literal(true).optional(),
+      githubRead: z.literal(true).optional(),
       ciRerun: z.literal(true).optional(),
       resumeSessionId: id.optional(),
       livePreview: RunnerLivePreviewSchema.optional(),

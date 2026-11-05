@@ -77,6 +77,10 @@ export const RunnerRepositoryCredentialSchema = z.strictObject({
     .refine((value) => !value.includes("..") && !value.endsWith(".") && !value.endsWith(".lock"))
     .nullable(),
 });
+export const RunnerGitHubReadCredentialSchema = RunnerRepositoryCredentialSchema.pick({
+  token: true,
+  expiresAt: true,
+}).extend({ token: z.string().regex(/^ghs_[A-Za-z0-9_]{1,4092}$/) });
 export const RunnerRepositoryCommandCredentialSchema = RunnerRepositoryCredentialSchema.extend({
   branch: RunnerRepositoryBranchSchema,
 });

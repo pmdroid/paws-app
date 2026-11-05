@@ -34,6 +34,7 @@ import {
   runnerHandoverRequestId,
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
+  runnerGitHubReadId,
 } from "../runner-answers";
 import {
   CandidateRebaseConflict,
@@ -162,7 +163,10 @@ type Active = {
   checkpointSha?: string;
   /** How many checkpoints this execution pushed, each acknowledged to the worker. */
   checkpointsPublished?: number;
+  githubRead?: { sent: number; expiresAt: number; nextAt: number; fetching?: Promise<void> };
 };
+
+const GITHUB_READ_REFRESH_MS = 10 * 60_000;
 
 /** The session description the worker writes next to its bundle. */
 const SessionMetadataSchema = AgentSessionFinishSchema.omit({
@@ -210,6 +214,7 @@ export async function openRunnerRuntime(options: {
         | "repositoryCommandGrant"
         | "repositoryCommandCredential"
         | "postRepositoryCommandResult"
+        | "githubReadCredential"
       >
     >;
   spool: RunnerSpool;
@@ -547,6 +552,31 @@ export async function openRunnerRuntime(options: {
       entry.grant = undefined;
       const renewed = await grant(entry);
       return await remote(() => request(renewed));
+    }
+  }
+  async function fetchGitHubRead(entry: Active) {
+    const command = entry.execution.command;
+    const fetch = options.daemon.githubReadCredential;
+    if (command.type !== "run" || !command.githubRead || !fetch) return;
+    const read = (entry.githubRead ??= { sent: 0, expiresAt: 0, nextAt: 0 });
+    read.nextAt = now() + 60_000;
+    try {
+      const credential = await withGrant(entry, (token) =>
+        fetch(command.runId, command.generation, token),
+      );
+      check(entry);
+      if (credential.expiresAt <= read.expiresAt) return;
+      publishRunnerAnswer(options.spool, entry.execution.id, {
+        requestId: runnerGitHubReadId(read.sent + 1),
+        answer: JSON.stringify(credential),
+      });
+      read.sent += 1;
+      read.expiresAt = credential.expiresAt;
+      read.nextAt = credential.expiresAt - GITHUB_READ_REFRESH_MS;
+    } catch (error) {
+      if (entry.abort.signal.aborted) return;
+      if (read.sent === 0) read.nextAt = Number.POSITIVE_INFINITY;
+      journalCaught(error, "runner-runtime.fetchGitHubRead", command.itemId);
     }
   }
   async function interrupt(
@@ -1315,6 +1345,7 @@ export async function openRunnerRuntime(options: {
           ...inputs,
         },
       );
+      await fetchGitHubRead(entry);
       check(entry);
       if (entry.execution.command.expiresAt <= now())
         throw new Error("Runner command expired before dispatch");
@@ -1958,6 +1989,11 @@ export async function openRunnerRuntime(options: {
         });
         entry.checkpoints.sent++;
       }
+      const read = entry.githubRead;
+      if (read && entry.execution.phase === "running" && now() >= read.nextAt)
+        read.fetching ??= fetchGitHubRead(entry).finally(() => {
+          read.fetching = undefined;
+        });
       entry.delivering ??= advance(entry).finally(() => {
         entry.delivering = undefined;
       });

@@ -118,12 +118,20 @@ function publicValue(value: unknown, depth = 0): unknown {
   );
 }
 
-function publicText(text: string): string {
-  return text
-    .replace(
-      /github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{20,}/g,
-      "[redacted]",
+const GITHUB_TOKENS = /github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}/g;
+
+export function redactGitHubTokens(text: string, exact: readonly string[] = []): string {
+  return exact
+    .reduce(
+      (scrubbed, token) => (token ? scrubbed.split(token).join("[redacted]") : scrubbed),
+      text,
     )
+    .replace(GITHUB_TOKENS, "[redacted]");
+}
+
+function publicText(text: string): string {
+  return redactGitHubTokens(text)
+    .replace(/AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{20,}/g, "[redacted]")
     .replace(
       /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g,
       "[redacted]",
