@@ -140,7 +140,12 @@ export {
   type RunnerSetupNeed,
   TRANSIENT_RETRY_BASE_MS,
   AgentServiceError,
+  formatBytes,
+  HostDiskFullError,
+  hostDiskFullReason,
   isAgentServiceError,
+  isDiskFullText,
+  isHostDiskFull,
   isTransient,
   placementWaitMs,
   resumeRetrySpreadMs,
@@ -149,6 +154,7 @@ export {
   retryAfterMs,
   transientRetryDelayMs,
 } from "./failure";
+export { diskSpace, hostDiskFullError, type DiskSpace, type StatFs } from "./disk";
 export { mergeQueueLine, ordinal, queueLine } from "./queue-line";
 export {
   HOOK_AGENTS,

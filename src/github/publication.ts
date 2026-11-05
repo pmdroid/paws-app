@@ -1,5 +1,6 @@
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { hostDiskFullError, isDiskFullText } from "../core";
 import { journalCaught } from "../journal";
 import { gitTempDirectory } from "./temp";
 import { GitCommandError, type GitExec } from "./types";
@@ -50,8 +51,8 @@ export function publicationRemote(url: string): void {
 export const PUBLICATION_STAGING_FAILURE = "Paws could not stage the candidate for publication";
 
 /**
- * Copying the candidate into the private publication repository failed, before any network push.
- * Retrying cannot help, and GitHub was not involved.
+ * Copying the candidate into the private publication repository failed, before any network push,
+ * for a reason other than a full disk. Retrying cannot help, and GitHub was not involved.
  */
 class PublicationStagingError extends GitCommandError {
   constructor(args: string[], stderr: string) {
@@ -368,9 +369,11 @@ async function publish(
         else if (await stageCandidate(run, options.cwd, repository, bundle, [], source))
           publicationArgs = publicationArgs.toSpliced(operation + 3, 0, "--no-thin");
       } catch (error) {
+        const stderr = error instanceof GitCommandError ? error.stderr : String(error);
+        if (isDiskFullText(stderr)) throw hostDiskFullError([dir, repository], stderr, error);
         throw new PublicationStagingError(
           error instanceof GitCommandError ? error.args : [],
-          error instanceof GitCommandError ? error.stderr : String(error),
+          stderr,
         );
       }
     }

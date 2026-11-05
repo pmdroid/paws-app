@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { diskSpace } from "./disk";
 import {
   AgentServiceError,
+  HostDiskFullError,
+  hostDiskFullReason,
   isAgentServiceError,
+  isHostDiskFull,
   isTransient,
   resumeRetrySpreadMs,
 } from "./failure";
@@ -134,4 +138,52 @@ test("agent service errors are the provider's temporary failures, not the task's
   ])
     expect(isAgentServiceError(message), String(message)).toBe(false);
   expect(isTransient(new AgentServiceError("Internal error"))).toBe(true);
+});
+
+describe("a full disk", () => {
+  test.each(["Out of diskspace", "No space left on device", "ENOSPC"])(
+    "a git error naming %s is transient",
+    (text) => {
+      const git = Object.assign(new Error("git push failed"), {
+        name: "GitCommandError",
+        stderr: `fatal: ${text}`,
+      });
+      expect(isHostDiskFull(git)).toBe(true);
+      expect(isTransient(git)).toBe(true);
+      expect(isTransient(new Error("push rejected", { cause: git }))).toBe(true);
+    },
+  );
+
+  test("a filesystem ENOSPC code is transient", () => {
+    expect(isTransient(Object.assign(new Error("write failed"), { code: "ENOSPC" }))).toBe(true);
+  });
+
+  test("the stored error text keeps the path and the space left", () => {
+    const error = new HostDiskFullError("/tmp", 12 * 1024 ** 2, "fatal: Out of diskspace");
+    expect(hostDiskFullReason(`push failed: ${error.message}`)).toBe(
+      "Paws's host is out of disk space (/tmp, 12 MB left)",
+    );
+    expect(hostDiskFullReason("fatal: No space left on device")).toBe(
+      "Paws's host is out of disk space",
+    );
+    expect(hostDiskFullReason("push failed: permission denied")).toBeNull();
+  });
+
+  test("a path is low below 1 GB or 5% free, whichever is larger", () => {
+    const statfs = (free: number, total: number) => () => ({
+      bavail: free,
+      blocks: total,
+      bsize: 1,
+    });
+    const gb = 1024 ** 3;
+    expect(diskSpace("/small", statfs(gb - 1, 4 * gb)).low).toBe(true);
+    expect(diskSpace("/small", statfs(gb, 4 * gb)).low).toBe(false);
+    expect(diskSpace("/large", statfs(4 * gb, 100 * gb)).low).toBe(true);
+    expect(diskSpace("/large", statfs(5 * gb, 100 * gb))).toEqual({
+      path: "/large",
+      freeBytes: 5 * gb,
+      minFreeBytes: 5 * gb,
+      low: false,
+    });
+  });
 });

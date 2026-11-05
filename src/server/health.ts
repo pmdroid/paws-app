@@ -6,6 +6,7 @@ import {
   LINEAR_WEBHOOK_SILENCE_MS,
   type JobLoopLiveness,
 } from "../db";
+import { diskSpace, type StatFs } from "../core";
 import { RUNNER_ONLINE_MS } from "../runner-placement";
 import { RUNNER_LEASE_GRACE_MS } from "../runner-protocol";
 
@@ -15,6 +16,7 @@ type Check = {
   count?: number;
   ageMs?: number | null;
   maxAgeMs?: number;
+  paths?: Record<string, { freeBytes: number; minFreeBytes: number }>;
 };
 
 export type HealthOptions = {
@@ -27,6 +29,7 @@ export type HealthOptions = {
    * or not-yet-polling result means startup, not a stall.
    */
   jobLoop?: () => JobLoopLiveness | null;
+  disk?: { paths: Readonly<Record<string, string>>; statfs?: StatFs };
 };
 
 /** Local reads only. Log changes so a failed probe and recovery appear in the journal. */
@@ -137,6 +140,26 @@ export function createHealthReport(options: HealthOptions) {
       options.githubWebhook,
       "SELECT max(received_at) AS at FROM github_delivery",
     );
+    if (options.disk === undefined) {
+      checks.diskSpace = { status: "skipped", reason: "not_configured" };
+    } else {
+      try {
+        const spaces = Object.entries(options.disk.paths).map(
+          ([label, path]) => [label, diskSpace(path, options.disk!.statfs)] as const,
+        );
+        checks.diskSpace = {
+          status: spaces.some(([, space]) => space.low) ? "failed" : "ok",
+          paths: Object.fromEntries(
+            spaces.map(([label, { freeBytes, minFreeBytes }]) => [
+              label,
+              { freeBytes, minFreeBytes },
+            ]),
+          ),
+        };
+      } catch {
+        checks.diskSpace = { status: "failed", reason: "read_failed" };
+      }
+    }
     const failedChecks = Object.keys(checks).filter((name) => checks[name]!.status === "failed");
     const state = failedChecks.join(",");
     if (state !== previous) {
