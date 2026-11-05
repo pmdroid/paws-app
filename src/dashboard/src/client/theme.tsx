@@ -304,7 +304,7 @@ function replace(node: DOMNode): ReactElement | undefined {
       <Table
         {...props}
         className={cn(
-          has("runner-history", "merge-table") && "[overflow-wrap:normal]",
+          has("runner-history", "merge-table", "members-table") && "[overflow-wrap:normal]",
           has("runner-history") &&
             "max-sm:[&_td]:px-3 max-sm:[&_th]:px-3 [&_.lin-id]:whitespace-nowrap",
         )}

@@ -6,7 +6,7 @@ import {
   changeWorkspaceRole,
   changeWorkspaceRevocation,
   getWorkspace,
-  listWorkspaceMembers,
+  listWorkspaceMemberSummaries,
   listWorkspaceAudit,
   listWorkspaceRepositories,
   replaceWorkspaceRepositories,
@@ -71,7 +71,7 @@ export async function handleWorkspaceAdministration(
   if (request.method === "GET")
     return Response.json(
       path.endsWith("/members")
-        ? { members: listWorkspaceMembers(options.db, principal.workspaceId) }
+        ? { members: listWorkspaceMemberSummaries(options.db, principal.workspaceId) }
         : { repositories: listWorkspaceRepositories(options.db, principal.workspaceId) },
       { headers: { "cache-control": "no-store" } },
     );

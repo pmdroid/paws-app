@@ -8,6 +8,7 @@ import {
   workspaceMember,
   workspaceMemberUsable,
   WORKSPACE_REVOKED_RESPONSE,
+  type WorkspaceRole,
 } from "./workspace";
 
 /** Persist the access cut-off and stop its work in the same write transaction. */
@@ -41,18 +42,7 @@ export function changeWorkspaceRevocation(
           SELECT id FROM runner WHERE workspace_id=? AND owner_user_id=?)`,
         [input.now, input.workspaceId, input.userId],
       );
-      const excludedStates = [...TERMINAL_WORK_ITEM_STATES, "manual"];
-      const items = db
-        .query<{ id: string }, string[]>(
-          `SELECT i.id FROM work_item i
-           LEFT JOIN linear_session s ON s.session_id=i.session_key
-           JOIN workspace w ON w.id=?
-           WHERE (s.organization_id IS NULL OR s.organization_id=w.linear_organization_id)
-             AND (i.owner_user_id=? OR
-               (i.owner_user_id IS NULL AND ${delegatedLinearUserIdSql("i", "s")}=?))
-             AND i.state NOT IN (${excludedStates.map(() => "?").join(",")})`,
-        )
-        .all(input.workspaceId, input.userId, member.linearUserId, ...excludedStates);
+      const items = memberOpenItems(db, input.workspaceId, input.userId, member.linearUserId);
       for (const item of items) {
         const result = applyLinearCommand(
           db,
@@ -81,4 +71,61 @@ export function changeWorkspaceRevocation(
     });
     return stopped;
   });
+}
+
+function memberOpenItems(
+  db: Database,
+  workspaceId: string,
+  userId: string,
+  linearUserId: string,
+): { id: string }[] {
+  const excludedStates = [...TERMINAL_WORK_ITEM_STATES, "manual"];
+  return db
+    .query<{ id: string }, string[]>(
+      `SELECT i.id FROM work_item i
+       LEFT JOIN linear_session s ON s.session_id=i.session_key
+       JOIN workspace w ON w.id=?
+       WHERE (s.organization_id IS NULL OR s.organization_id=w.linear_organization_id)
+         AND (i.owner_user_id=? OR
+           (i.owner_user_id IS NULL AND ${delegatedLinearUserIdSql("i", "s")}=?))
+         AND i.state NOT IN (${excludedStates.map(() => "?").join(",")})`,
+    )
+    .all(workspaceId, userId, linearUserId, ...excludedStates);
+}
+
+export type WorkspaceMemberSummary = {
+  id: string;
+  name: string;
+  email: string;
+  role: WorkspaceRole;
+  active: number;
+  revokedAt: number | null;
+  revokedBy: string | null;
+  revokedByName: string | null;
+  lastSignInAt: number | null;
+  runners: number;
+  openItems: number;
+};
+
+export function listWorkspaceMemberSummaries(
+  db: Database,
+  workspaceId: string,
+): WorkspaceMemberSummary[] {
+  const members = db
+    .query<Omit<WorkspaceMemberSummary, "openItems"> & { linearUserId: string }, [string, string]>(
+      `SELECT u.id,u.name,u.email,u.linear_user_id AS linearUserId,m.role,m.active,
+         m.revoked_at AS revokedAt,m.revoked_by AS revokedBy,r.name AS revokedByName,
+         (SELECT max(a.created_at) FROM workspace_access_audit a
+           WHERE a.workspace_id=? AND a.action='session.created' AND a.subject=u.id) AS lastSignInAt,
+         (SELECT count(*) FROM runner x WHERE x.workspace_id=m.workspace_id
+           AND x.owner_user_id=u.id AND x.revoked_at IS NULL) AS runners
+       FROM workspace_member m JOIN workspace_user u ON u.id=m.user_id
+       LEFT JOIN workspace_user r ON r.id=m.revoked_by
+       WHERE m.workspace_id=? ORDER BY u.name,u.id`,
+    )
+    .all(workspaceId, workspaceId);
+  return members.map(({ linearUserId, ...member }) => ({
+    ...member,
+    openItems: memberOpenItems(db, workspaceId, member.id, linearUserId).length,
+  }));
 }

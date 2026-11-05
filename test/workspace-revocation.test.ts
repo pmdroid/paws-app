@@ -64,12 +64,31 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
       "INSERT INTO runner_certificate(fingerprint,runner_id,serial,pem,not_before,not_after,accepted_until) VALUES('cert','box','serial','pem',?,?,?)",
       [now, now + 100_000, now + 100_000],
     );
+    const members = async () =>
+      (
+        (await (
+          await fetch(`${f.origin}/api/workspaces/members`, { headers: f.headers("admin") })
+        ).json()) as { members: Record<string, unknown>[] }
+      ).members.find((entry) => entry["id"] === "member")!;
+    expect(await members()).toMatchObject({
+      role: "member",
+      revokedAt: null,
+      revokedByName: null,
+      runners: 1,
+      openItems: 3,
+    });
     const response = await fetch(`${f.origin}/api/workspaces/members`, {
       method: "PUT",
       headers: f.headers("admin"),
       body: JSON.stringify({ userId: "member", revoked: true }),
     });
     expect(response.status).toBe(200);
+    expect(await members()).toMatchObject({
+      revokedBy: "admin",
+      revokedByName: expect.any(String),
+      runners: 0,
+      openItems: 0,
+    });
     const member = workspaceMember(db, "workspace", "member")!;
     expect(member.active).toBe(true);
     expect(member.revokedAt).not.toBeNull();

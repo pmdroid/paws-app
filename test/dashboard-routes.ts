@@ -40,6 +40,7 @@ export const SETTINGS_PAGE_IDS = [
   "brief",
   "findings",
   "integrations",
+  "members",
   "workspace",
   "account",
   "audit",

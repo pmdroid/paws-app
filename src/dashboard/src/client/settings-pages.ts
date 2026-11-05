@@ -32,9 +32,14 @@ export const SETTINGS_PAGES = [
     description: "Connect the services your workspace uses.",
   },
   {
+    id: "members",
+    name: "Members",
+    description: "Change roles, and revoke or restore a member's access.",
+  },
+  {
     id: "workspace",
     name: "Workspace access",
-    description: "Manage members, roles, and repository access.",
+    description: "Manage repository access and member account links.",
   },
   {
     id: "account",
