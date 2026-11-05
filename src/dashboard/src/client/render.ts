@@ -103,6 +103,7 @@ export interface Rendered {
 const AGENT_ACCOUNTS =
   '<section id="agent-accounts" class="runner-section" aria-label="Agent accounts"><div id="account-settings" class="agent-settings"></div><div id="account-order-settings" class="agent-settings"></div></section>';
 const FINDINGS_ROOT = `${pageHeading("findings")}<div id="findings-page"></div>`;
+const IMPROVEMENTS_ROOT = `${pageHeading("improvements")}<div id="improvements-page"></div>`;
 
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
 
@@ -123,35 +124,38 @@ export function render(model: RenderModel): Rendered {
           ? `<div id="runner-settings"></div>${model.route.id === null ? AGENT_ACCOUNTS : ""}`
           : model.route.view === "findings"
             ? FINDINGS_ROOT
-            : model.route.view === "settings"
-              ? renderSettingsPage(model.route.page)
-              : model.route.view === "questions"
-                ? renderQuestions({
-                    selected: model.route.id,
-                    list: model.questions ?? null,
-                    detail: model.question?.question.id === model.route.id ? model.question : null,
-                    missing: model.route.id !== null && model.missingQuestion === model.route.id,
-                    error: model.phase === "error" ? model.error : null,
-                  })
-                : model.route.view === "evidence"
-                  ? renderEvidence(model)
-                  : model.route.view === "overview"
-                    ? model.overview
-                      ? viewOverview(model.overview)
-                      : renderPending(model)
-                    : model.route.view === "mergeQueue"
-                      ? viewMergeQueue(model)
-                      : model.phase !== "loading" && openDetail(model)
-                        ? issuePage(
-                            model.issue!,
-                            model.closeout ?? emptyCloseoutView(),
-                            model.engineUrl,
-                          )
-                        : model.phase !== "loading" && model.issues && route.view === "issues"
-                          ? viewIssues(model.issues, route.id)
-                          : model.phase !== "loading" && model.issues && route.view === "runs"
-                            ? viewRuns(model.issues, route.id)
-                            : renderPending(model),
+            : model.route.view === "improvements"
+              ? IMPROVEMENTS_ROOT
+              : model.route.view === "settings"
+                ? renderSettingsPage(model.route.page)
+                : model.route.view === "questions"
+                  ? renderQuestions({
+                      selected: model.route.id,
+                      list: model.questions ?? null,
+                      detail:
+                        model.question?.question.id === model.route.id ? model.question : null,
+                      missing: model.route.id !== null && model.missingQuestion === model.route.id,
+                      error: model.phase === "error" ? model.error : null,
+                    })
+                  : model.route.view === "evidence"
+                    ? renderEvidence(model)
+                    : model.route.view === "overview"
+                      ? model.overview
+                        ? viewOverview(model.overview)
+                        : renderPending(model)
+                      : model.route.view === "mergeQueue"
+                        ? viewMergeQueue(model)
+                        : model.phase !== "loading" && openDetail(model)
+                          ? issuePage(
+                              model.issue!,
+                              model.closeout ?? emptyCloseoutView(),
+                              model.engineUrl,
+                            )
+                          : model.phase !== "loading" && model.issues && route.view === "issues"
+                            ? viewIssues(model.issues, route.id)
+                            : model.phase !== "loading" && model.issues && route.view === "runs"
+                              ? viewRuns(model.issues, route.id)
+                              : renderPending(model),
     title,
   };
 }

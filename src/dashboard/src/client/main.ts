@@ -27,6 +27,7 @@ import { readCsrfToken } from "./csrf";
 import { issueRowMatches, openDetail, render, type RenderModel } from "./render";
 import {
   issueListRedirect,
+  retroRedirect,
   routePath,
   matchRoute,
   parseRoute,
@@ -52,6 +53,7 @@ import { createCheckoutSettings } from "./checkout-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createFindings } from "./findings";
+import { createImprovements } from "./improvements-page";
 import { createExecutionControls } from "./execution-controls";
 import { linkAskAnchor } from "./link-ask";
 import { rememberLinkAskDraft, stopFromLinkAsk, submitLinkAsk } from "./link-ask-submit";
@@ -95,6 +97,9 @@ const checkoutSettings = createCheckoutSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const findings = createFindings();
+const improvements = createImprovements({
+  counted: (total) => shell.setCounts({ improvements: total }),
+});
 const executionControls = createExecutionControls(reload);
 const deadDeliveryRetry = createDeadDeliveryRetry(reload);
 const blockerCheck = createBlockerCheck(reload);
@@ -141,9 +146,13 @@ router.subscribe((state) => {
     paint();
     return;
   }
+  const within = [shownPath, state.location.pathname].every(
+    (path) => parseRoute(path.slice(routerBase(path).length)).view === "improvements",
+  );
   shownPath = state.location.pathname;
   shownSearch = state.location.search;
   routeChanged();
+  if (within) return;
   window.scrollTo({ top: 0, behavior: "instant" });
   document.querySelector<HTMLElement>("#content")?.focus({ preventScroll: true });
 });
@@ -182,6 +191,7 @@ async function boot(): Promise<void> {
   booted = true;
   phase = "loading";
   paint();
+  if (currentRoute().view !== "improvements") void improvements.refreshCount(currentEngine());
   await reload();
 }
 
@@ -320,7 +330,13 @@ async function followAlias(route: Extract<Route, { view: "alias" }>): Promise<vo
 
 function followIssueRedirect(): boolean {
   const pathname = router.state.location.pathname;
-  const target = issueListRedirect(pathname.slice(routerBase(pathname).length));
+  const path = pathname.slice(routerBase(pathname).length);
+  const retro = retroRedirect(path);
+  if (retro !== null) {
+    void router.navigate(retro, { replace: true });
+    return true;
+  }
+  const target = issueListRedirect(path);
   if (target === null) return false;
   void router.navigate(`${target}${router.state.location.search}${location.hash}`, {
     replace: true,
@@ -487,6 +503,10 @@ function paint(): void {
   const findingsRoot = document.querySelector<HTMLElement>("#findings-page");
   if (findingsRoot && model.route.view === "findings")
     findings.mount(findingsRoot, currentEngine(), source());
+  const improvementsRoot = document.querySelector<HTMLElement>("#improvements-page");
+  if (improvementsRoot && model.route.view === "improvements")
+    improvements.mount(improvementsRoot, currentEngine(), model.route, workspaceReader());
+  else improvements.leave();
   if (loadOpenLogs()) paint();
 }
 

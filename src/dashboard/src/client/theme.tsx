@@ -188,6 +188,10 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   }
   if (name === "a") {
+    if (has("improvement-row"))
+      return styled(
+        "flex min-h-control min-w-0 flex-col gap-2 rounded-base border-2 border-border bg-secondary-background px-4 py-3 no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring hover:bg-background aria-[current=true]:bg-main aria-[current=true]:text-main-foreground aria-[current=true]:shadow-shadow",
+      );
     if (has("runner-row"))
       return styled(
         "flex min-w-0 flex-col gap-3 rounded-base border-2 border-border bg-secondary-background px-4 py-3 shadow-shadow transition-transform hover:translate-x-1 hover:translate-y-1 hover:shadow-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:flex-row sm:items-center sm:justify-between",
@@ -327,6 +331,33 @@ function replace(node: DOMNode): ReactElement | undefined {
         {children()}
       </TableCell>
     );
+  if (has("improvements-layout"))
+    return styled(
+      "grid min-w-0 grid-cols-1 items-start gap-6 md:grid-cols-[minmax(16rem,2fr)_minmax(0,3fr)] [&>*]:min-w-0",
+    );
+  if (has("improvement-list-pane"))
+    return styled("flex min-w-0 flex-col gap-3 md:max-h-[80vh] md:overflow-y-auto md:p-1");
+  if (has("improvement-detail-pane", "improvement-detail", "improvement-part"))
+    return styled("flex min-w-0 flex-col gap-3 [overflow-wrap:anywhere]");
+  if (name === "ul" && has("improvement-rows"))
+    return styled("flex min-w-0 list-none flex-col gap-2 p-0");
+  if (has("improvement-row-title")) return styled("text-base font-heading");
+  if (has("improvement-sources")) return styled("flex min-w-0 flex-col gap-4");
+  if (has("improvement-source"))
+    return styled("flex min-w-0 flex-col gap-2 [overflow-wrap:anywhere]");
+  if (
+    name === "ul" &&
+    has(
+      "improvement-evidence",
+      "improvement-deliveries",
+      "improvement-history",
+      "improvement-candidates",
+    )
+  )
+    return styled("flex min-w-0 list-none flex-col gap-2 p-0 [&>li]:py-1");
+  if (name === "ol" && has("improvement-report-items"))
+    return styled("flex min-w-0 list-none flex-col gap-4 p-0");
+  if (has("improvement-numbers")) return styled("flex list-none flex-wrap gap-4 p-0");
   if (has("status-meta")) return styled("flex min-w-0 flex-wrap items-center gap-3");
   if (has("status-actions"))
     return styled("grid grid-cols-2 gap-3 self-stretch sm:flex sm:shrink-0 sm:self-auto");
