@@ -20,6 +20,7 @@ export {
   workerSpawn,
 } from "./supervisor";
 export { RUNNER_AGENT_USER_ENV, type RunnerSystemctl } from "./agent-unit";
+export { RUNNER_AGENT_USERS, type RunnerAgentUser } from "../runner-protocol";
 export {
   createRunnerResultDirectory,
   runnerResultDirectory,

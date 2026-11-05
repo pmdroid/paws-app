@@ -7,10 +7,11 @@ import { createRunnerHostSampler, EnrollmentTokenSchema, openRunnerDaemon } from
 import {
   ExecutionIdSchema,
   RUNNER_AGENT_USER_ENV,
+  RUNNER_AGENT_USERS,
+  type RunnerAgentUser,
   RUNNER_SKILLS_ENV,
   runnerAccountBindings,
 } from "../runner-execution";
-import { RUNNER_AGENT_USERS, type RunnerAgentUser } from "../runner-protocol";
 import { runRunnerWorker } from "../runner-worker";
 import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "./cause";
 import { runPairedDaemon } from "./daemon";

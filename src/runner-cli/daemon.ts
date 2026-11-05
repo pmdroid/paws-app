@@ -3,10 +3,9 @@ import { lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { RunnerDaemon } from "../runner-daemon";
-import type { RunnerAgentUser } from "../runner-protocol";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
 import { openRunnerRetroRuntime } from "../runner-retro-runtime";
-import { createRunnerSkillInstaller } from "../runner-execution";
+import { createRunnerSkillInstaller, type RunnerAgentUser } from "../runner-execution";
 import { openRunnerAgents, openRunnerRuntime } from "../runner-runtime";
 
 export async function runPairedDaemon(
