@@ -135,7 +135,12 @@ export interface StatusItem {
   stateTimes?: StatusStateTimes;
   doing?: StatusDoing;
   activeMs?: number;
+  stageTimes?: StatusStageTimes;
 }
+
+export const TIME_STAGES = ["implementation", "fixes", "closeout"] as const;
+export type TimeStage = (typeof TIME_STAGES)[number];
+export type StatusStageTimes = Record<TimeStage, { ms: number; limitMs: number }>;
 
 export const DOING_KINDS = ["running", "slot", "paused", "person", "idle"] as const;
 export type DoingKind = (typeof DOING_KINDS)[number];
@@ -1802,6 +1807,25 @@ function readItem(input: unknown, index: number): StatusItem {
       : { stateTimes: readStateTimes(body.stateTimes, `${path}.stateTimes`) }),
     ...(body.doing === undefined ? {} : { doing: readDoing(body.doing, `${path}.doing`) }),
     ...(body.activeMs === undefined ? {} : { activeMs: count(body, "activeMs", path) }),
+    ...(body.stageTimes === undefined
+      ? {}
+      : { stageTimes: readStageTimes(body.stageTimes, `${path}.stageTimes`) }),
+  };
+}
+
+function readStageTimes(input: unknown, path: string): StatusStageTimes {
+  const body = object(input, path);
+  const stage = (key: TimeStage) => {
+    const fields = object(body[key], `${path}.${key}`);
+    return {
+      ms: count(fields, "ms", `${path}.${key}`),
+      limitMs: count(fields, "limitMs", `${path}.${key}`),
+    };
+  };
+  return {
+    implementation: stage("implementation"),
+    fixes: stage("fixes"),
+    closeout: stage("closeout"),
   };
 }
 

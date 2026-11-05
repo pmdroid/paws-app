@@ -57,7 +57,14 @@ import { renderIntake } from "./intake";
 import { renderPushOutages } from "./push-outage";
 import { renderPolicyRunnerWarnings } from "./policy-runners";
 import { itemAge, itemAgeLine, mergedTimesSection, stateTimeBar } from "./state-times";
-import { doingLabel, doingTimeLine, itemPill, itemTime, PREPARING_LABEL } from "./doing";
+import {
+  doingLabel,
+  doingTimeLine,
+  issueTimeLine,
+  itemPill,
+  itemTime,
+  PREPARING_LABEL,
+} from "./doing";
 import { JOURNEY_ORDER, journey, journeyPill, journeyStepper } from "./journey";
 import { deadDeliveriesSection } from "./dead-deliveries";
 import { visualReviewSection } from "./visual-review";
@@ -498,7 +505,7 @@ function issuePage(
         : new URL(transcriptPath, engine).href;
   const blocked = snapshot.blocks;
   const now = journey(item, run, verdict);
-  const time = doingTimeLine(item, Date.parse(snapshot.generatedAt));
+  const time = issueTimeLine(item, Date.parse(snapshot.generatedAt));
   const checks = verdict?.checks ?? [];
   const passed = checks.filter((check) => check.state === "passed").length;
   const rules = checks.filter((check) => check.kind === "rule");

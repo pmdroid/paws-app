@@ -12,7 +12,7 @@ import {
 } from "../../../db";
 import { JOB_KIND } from "../../../core";
 import type { StatusItem } from "../contract";
-import { doingTimeLine, itemPill, itemTime } from "../client/doing";
+import { doingTimeLine, issueTimeLine, itemPill, itemTime } from "../client/doing";
 import { createLiveStatusProvider } from "./provider";
 import { STALL_MS } from "./doing";
 
@@ -137,6 +137,25 @@ describe("what an item does now", () => {
     expect(itemPill(shown)).toContain(">Waiting for a slot<");
     expect(itemTime(shown, now)).toContain("Waiting for a slot on agentbox, spare · 1.9 h active");
     expect(doingTimeLine(shown, now)).toBe("1.9 h active · waiting 26 min");
+  });
+
+  test("the issue page splits the item's time by stage and marks stages that are not counted", () => {
+    const db = database();
+    const now = START + MINUTE;
+    running(db, "staged");
+    db.run(
+      "UPDATE work_item SET implement_ms=?, fix_ms=?, closeout_ms=?, max_awake_ms=?, max_fix_ms=0, max_closeout_ms=0 WHERE id='staged'",
+      [130 * MINUTE, 65 * MINUTE, 22 * MINUTE, 180 * MINUTE],
+    );
+    const shown = item(db, "staged", now);
+    expect(shown.stageTimes).toEqual({
+      implementation: { ms: 130 * MINUTE, limitMs: 180 * MINUTE },
+      fixes: { ms: 65 * MINUTE, limitMs: 0 },
+      closeout: { ms: 22 * MINUTE, limitMs: 0 },
+    });
+    expect(issueTimeLine(shown, now)).toBe(
+      "Implementation 2 h 10 m of 3 h · Fixes 1 h 05 m (not counted) · Closeout 22 m (not counted) · waiting 1 min",
+    );
   });
 
   test("an item with a usage pause shows Paused with the reset time", () => {

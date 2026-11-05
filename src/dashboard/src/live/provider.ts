@@ -142,6 +142,7 @@ import {
   type StatusItemRisk,
   type StatusItemEvent,
   type StatusMergedTimes,
+  type StatusStageTimes,
   type StatusStateTimes,
   type StatusMergeQueue,
   type StatusMergeEntry,
@@ -957,6 +958,7 @@ function readIssueScope(db: Database, options: LiveStatusOptions, only?: string)
       lastChange: changed.get(record.id) ?? facts.get(record.id)?.createdAt ?? now.getTime(),
       now: now.getTime(),
     }),
+    stageTimes: stageTimesOf(record),
   }));
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
@@ -1390,6 +1392,14 @@ export function doingFor(
     phase: record.state === "running" ? runnerPhase(db, record.currentRunId) : null,
   });
   return doing === undefined ? { activeMs: record.awakeMs } : { doing, activeMs: record.awakeMs };
+}
+
+function stageTimesOf(record: WorkItemRecord): StatusStageTimes {
+  return {
+    implementation: { ms: record.implementMs, limitMs: record.maxAwakeMs },
+    fixes: { ms: record.fixMs, limitMs: record.maxFixMs },
+    closeout: { ms: record.closeoutMs, limitMs: record.maxCloseoutMs },
+  };
 }
 
 /**
