@@ -69,7 +69,7 @@ const errors = [];
         .getByRole("region", { name: "Settings", exact: true })
         .getByRole("link")
         .count(),
-      6,
+      10,
     );
     await navigation.getByRole("link", { name, exact: true }).click();
     if (mobile)
@@ -349,6 +349,7 @@ const errors = [];
           "Decisions",
           "Agents",
           "Integrations",
+          "Members",
           "Workspace access",
           "Your account",
           "Audit history",
@@ -377,11 +378,14 @@ const errors = [];
               table.parentElement.scrollLeft = 0;
             });
           }
-          if ([1440, 390].includes(width) && ["Integrations", "Audit history"].includes(name))
+          if (
+            [1440, 390].includes(width) &&
+            ["Integrations", "Members", "Audit history"].includes(name)
+          )
             await page.screenshot({
               path: path.join(
                 root,
-                `settings-${name === "Integrations" ? "integrations" : "audit"}-${width}-${appearance.toLowerCase()}.png`,
+                `settings-${name === "Audit history" ? "audit" : name.toLowerCase()}-${width}-${appearance.toLowerCase()}.png`,
               ),
               fullPage: true,
             });
@@ -405,6 +409,9 @@ const errors = [];
     assert.equal(await member.page.getByRole("link", { name: "Manage on GitHub" }).count(), 0);
     await settings(member.page, "Workspace access");
     assert.equal(await member.page.getByRole("button", { name: "Save repositories" }).count(), 0);
+    await settings(member.page, "Members");
+    await member.page.getByText("Ask an admin to change members or roles.").waitFor();
+    assert.equal(await member.page.getByRole("table", { name: "Workspace members" }).count(), 0);
     await settings(member.page, "Agents");
     await member.page.getByText("Only workspace admins can change agent profiles.").waitFor();
     await settings(member.page, "Audit history");
@@ -414,12 +421,11 @@ const errors = [];
       administratorControlsHidden: true,
       adminAgentControlsPreserved: true,
     });
-    await settings(page, "Workspace access");
+    await settings(page, "Members");
     await page.getByRole("button", { name: "Refresh members" }).click();
-    const row = page.locator(".workspace-member").filter({ hasText: "Fixture member" }).first();
+    const row = page.getByRole("row").filter({ hasText: "Fixture member" }).first();
     await row.getByRole("combobox").selectOption("admin");
-    await row.getByRole("button", { name: "Save role" }).click();
-    await page.getByText("Workspace role saved.", { exact: true }).waitFor();
+    await page.getByText("Fixture member is now an admin.", { exact: true }).waitFor();
     await member.page.reload();
     await settings(member.page, "Integrations");
     await member.page.getByRole("link", { name: "Manage on GitHub" }).waitFor();

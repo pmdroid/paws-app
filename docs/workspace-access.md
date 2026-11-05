@@ -26,7 +26,13 @@ If Linear revokes the app authorization, the dashboard offers **Reconnect Linear
 
 Subsequent members use **Sign in with Linear** to open the workspace. A connected instance verifies each user's current membership against its installed Linear workspace.
 
-Paws has two workspace roles: `admin` and `member`. Admins assign roles and map repositories to verified Linear teams in the workspace controls. Linear guests cannot use Paws. Membership refresh updates team visibility and revokes sessions when a member loses access or becomes a guest. Sign out ends the current browser session. Each visit extends the session; it expires after thirty days without use. The dashboard shows only the sign-in page until you sign in.
+Paws has two workspace roles: `admin` and `member`. Admins assign roles on **Settings › Members** and map repositories to verified Linear teams in **Settings › Integrations**. Linear guests cannot use Paws. Membership refresh updates team visibility and revokes sessions when a member loses access or becomes a guest. Sign out ends the current browser session. Each visit extends the session; it expires after thirty days without use. The dashboard shows only the sign-in page until you sign in.
+
+## Members page
+
+**Settings › Members** lists everyone with a membership row. `GET /api/workspaces/members` (admins only) returns each member's `id`, `name`, `email`, `role`, `active`, `revokedAt`, `revokedBy` and `revokedByName`, `lastSignInAt` (the latest `session.created` audit entry), `runners` (runners not yet revoked) and `openItems` (the items a revoke would stop). The page filters by All, Active or Revoked; Not in Linear (`active=0`) rows show under All.
+
+An admin changes a role with `PUT /api/workspaces/members` and `{ userId, role }`, revokes with `{ userId, revoked: true }` after a confirmation that names the runners and items it cuts off, and restores with `{ userId, revoked: false }`. Each request carries the CSRF token, and each change is an entry in **Settings › Audit history**. Your own row has no revoke, and the last active admin's role and revoke are disabled with the reason. Restoring access does not restore runners; the member pairs them again. A member sees "Ask an admin to change members or roles."
 
 ## Admission
 
