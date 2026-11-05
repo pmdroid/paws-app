@@ -548,10 +548,16 @@ export function endAgentWait(
     db.run("DELETE FROM agent_wait WHERE run_id=?", [run.runId]);
     if (waitedMs === undefined) return;
     const counted = Math.max(0, item.waitingMs - open.waitingMs);
-    const moved = Math.min(Math.max(0, waitedMs - counted), item.agentMs);
+    const stage = agentTurnStage(db, run.itemId);
+    const moved = Math.min(
+      Math.max(0, waitedMs - counted),
+      item.agentMs,
+      stage === "implementation" ? item.implementMs : item.fixMs,
+    );
     if (moved > 0)
       db.run(
         `UPDATE work_item SET awake_ms = awake_ms - ?1, agent_ms = agent_ms - ?1,
+           ${STAGE_COLUMN[stage]} = ${STAGE_COLUMN[stage]} - ?1,
            waiting_ms = waiting_ms + ?1 WHERE id = ?2`,
         [moved, run.itemId],
       );

@@ -467,6 +467,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       state: "running",
       awakeMs: 10 * MINUTE,
       agentMs: 10 * MINUTE,
+      implementMs: 10 * MINUTE,
       waitingMs: 50 * MINUTE,
     });
     expect(listJobs(db).some((job) => job.queue === "item.ask")).toBe(false);
@@ -482,6 +483,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(accrue().item).toMatchObject({
       awakeMs: 2 * MINUTE,
       agentMs: 2 * MINUTE,
+      implementMs: 2 * MINUTE,
       waitingMs: 28 * MINUTE,
     });
     db.close();
