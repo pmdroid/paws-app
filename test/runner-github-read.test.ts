@@ -47,6 +47,7 @@ async function turn(
   githubRead: boolean,
   tokens: Record<number, string> = { 1: TOKEN },
   extra: Record<string, unknown> = {},
+  launchEnv: Record<string, string> = {},
 ) {
   const root = temporary();
   const source = join(root, "source");
@@ -118,7 +119,11 @@ async function turn(
     workRoot,
     home: join(root, "home"),
     resultsGid: process.getgid!(),
-    launch: { command: process.execPath, args: [fakeAgent, join(root, "trace.json"), script] },
+    launch: {
+      command: process.execPath,
+      args: [fakeAgent, join(root, "trace.json"), script],
+      env: launchEnv,
+    },
     githubRead(sequence) {
       asked.push(sequence);
       const token = tokens[sequence];
@@ -164,12 +169,20 @@ test("the agent finds the turn's token in gh's config, never in its environment,
   expect(existsSync(directory)).toBe(false);
 });
 
-test("a turn without a read token gets no GH_CONFIG_DIR and nothing is written", async () => {
+test("a turn without a read token gets no GH_CONFIG_DIR, not even an inherited one, and nothing is written", async () => {
   for (const [githubRead, tokens] of [
     [false, { 1: TOKEN }],
     [true, {}],
   ] as const) {
-    const { trace, asked, directory } = await turn(githubRead, tokens);
+    const inherited = join(temporary(), "operator-gh");
+    const { trace, asked, directory } = await turn(
+      githubRead,
+      tokens,
+      {},
+      {
+        GH_CONFIG_DIR: inherited,
+      },
+    );
     expect(trace.env?.ghConfig).toBeUndefined();
     expect(asked.length > 0).toBe(githubRead);
     expect(existsSync(directory)).toBe(false);

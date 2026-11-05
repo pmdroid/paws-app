@@ -1094,7 +1094,6 @@ export async function executeRunnerCommand(
         undefined,
         GITHUB_READ_TOKENS_PER_TURN,
       );
-    if (githubRead) agentEnv.GH_CONFIG_DIR = githubRead.directory;
     const closeoutBasePath = withoutRunnerBin(process.env.PATH);
     // Pinned bin dirs, not shims: nothing on PATH reads the repository's mise config.
     if (installed.binPaths.length)
@@ -1184,6 +1183,7 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.githubRead
         ? { redactTranscript: (line: string) => redactGitHubTokens(line, githubRead?.tokens()) }
         : {}),
+      ...(githubRead ? { ghConfigDir: githubRead.directory } : {}),
       ...(installed.binPaths.length ? { runtimeBinPaths: installed.binPaths } : {}),
       closeoutBasePath,
       checkpointEnv: env,

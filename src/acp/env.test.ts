@@ -29,6 +29,7 @@ const credentials = Object.fromEntries(
     "KUBECONFIG",
     "GH_TOKEN",
     "GITHUB_TOKEN",
+    "GH_CONFIG_DIR",
     "GITHUB_APP_PRIVATE_KEY",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",

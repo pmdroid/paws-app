@@ -233,6 +233,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     adapter.args,
     {
       ...minimalAgentEnv(sourceEnv, { allowXaiApiKey: grok && agents.grok.allowApiKey }),
+      ...(options.ghConfigDir ? { GH_CONFIG_DIR: options.ghConfigDir } : {}),
       ...attributionEnv,
       ...stopHook?.env,
       ...codexSkillsHome,

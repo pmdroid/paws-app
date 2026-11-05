@@ -42,7 +42,6 @@ export const ALLOWED_AGENT_ENV: readonly string[] = [
   "MISE_CACHE_DIR",
   // A local Docker socket only, such as the runner's rootless daemon; see `isLocalDockerHost`.
   "DOCKER_HOST",
-  "GH_CONFIG_DIR",
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
   "HTTP_PROXY",
