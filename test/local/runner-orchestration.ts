@@ -998,14 +998,8 @@ export async function probeRunnerOrchestration(
           }
         }
         const verified = getWorkItem(db, item.id)!;
-        if (legacy)
-          observe("a legacy branch head becomes the candidate ref: " + scenario, true, {
-            state: verified.state,
-            head:
-              verified.state === "merged"
-                ? null
-                : await git(["--git-dir", mirror, "rev-parse", candidate]),
-          });
+        if (legacy && verified.state !== "merged")
+          assert.equal(await git(["--git-dir", mirror, "rev-parse", candidate]), accepted);
         if (rebase) {
           const reverifyChecks = calls.filter((call) => call.checks && call.reverifying);
           const question = findOpenQuestion(db, "session");
