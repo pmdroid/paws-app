@@ -4676,9 +4676,32 @@ export class Orchestrator {
           return { kind: "asked" };
         },
         mergedOutsideLane: (item) => this.mergedOutsideLane(item),
+        rerunCi: (item, pullNumber, reason) => this.rerunCi(item, pullNumber, reason),
         completed: () => this.dispatch(),
       },
     );
+  }
+
+  private async rerunCi(item: WorkItemRecord, pullNumber: number, reason: string): Promise<string> {
+    const repository = this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!repository || !github) return "no GitHub binding for the item";
+    return rerunItemCi({
+      db: this.db,
+      itemId: item.id,
+      label: item.linearIdentifier,
+      reason,
+      github: {
+        client: github.client,
+        owner: repository.owner,
+        repo: repository.repo,
+        prNumber: pullNumber,
+        ...this.gitHubCredentials(github),
+      },
+      now: () => this.now(),
+      journal: this.options.journal,
+      requestedBy: "Paws",
+    });
   }
 
   /** The merge of the item's pull request when a person merged it on GitHub, outside the lane. */

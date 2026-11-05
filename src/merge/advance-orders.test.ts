@@ -8,11 +8,13 @@ import {
   getJob,
   getWorkItem,
   joinMergeQueue,
+  listCiReruns,
   listCiRounds,
   listJobs,
   listMergeQueues,
   listReviewEscapes,
   pendingPullCiFailures,
+  recordCiRerun,
 } from "../db";
 import { createFakeMergeQueue } from "../github";
 import { findOpenQuestion } from "../questions";
@@ -480,6 +482,102 @@ describe("advanceMerge on a CI failure", () => {
     expect(findOpenQuestion(h.db, "ses-ENG-1")?.body).toContain(
       "The agent used all 1 fix round across Closeout, CI and review.",
     );
+  });
+});
+
+function cancelledShard(
+  conclusion = "CANCELLED",
+  shard2 = "SUCCESS",
+): ReturnType<typeof failingTest> {
+  const job = (
+    name: string,
+    result: string,
+    id: number,
+    startedAt: string,
+    completedAt: string,
+  ) => ({
+    name,
+    conclusion: result,
+    detailsUrl: `https://github.com/acme/app/actions/runs/900/job/${id}`,
+    startedAt,
+    completedAt,
+    checkSuite: { app: { slug: "github-actions" } },
+  });
+  return [
+    job("test (1/4)", conclusion, 1, "2026-11-04T22:21:00Z", "2026-11-04T22:33:00Z"),
+    job("test (2/4)", shard2, 2, "2026-11-04T22:21:00Z", "2026-11-04T22:27:00Z"),
+    job(
+      "lint, format, types, test, dashboard build",
+      "FAILURE",
+      5,
+      "2026-11-04T22:33:10Z",
+      "2026-11-04T22:33:20Z",
+    ),
+  ];
+}
+
+describe("advanceMerge on cancelled CI jobs", () => {
+  for (const conclusion of ["CANCELLED", "TIMED_OUT"])
+    test(`a ${conclusion.toLowerCase()} shard and the aggregate job it fails are re-run once, then the head merges with no agent turn`, async () => {
+      const h = await start();
+      const item = await h.addItem("ENG-1");
+      h.state.ci = () => cancelledShard(conclusion);
+      expect(await h.pass("ENG-1")).toMatchObject({
+        kind: "wait",
+        reason: "ci",
+        head: item.accepted,
+      });
+      expect(h.state.ciReruns).toEqual(["/repos/acme/app/actions/runs/900/rerun-failed-jobs"]);
+      expect(listCiReruns(h.db, "ENG-1")).toMatchObject([
+        { head: item.accepted, runIds: [900], reason: "cancelled or timed-out CI job" },
+      ]);
+      expect(h.bodies("status")).toContain(
+        `Re-ran cancelled CI jobs on ${item.accepted.slice(0, 7)}.`,
+      );
+      expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
+      expect(resumes(h)).toEqual([]);
+      expect(listCiRounds(h.db, "ENG-1")).toEqual([]);
+
+      h.state.ci = () => undefined;
+      expect(await passUntilMerged(h, "ENG-1")).toEqual({ kind: "merged" });
+      expect(resumes(h)).toEqual([]);
+    });
+
+  test("a re-run cancelled again goes back to the agent as today", async () => {
+    const h = await start();
+    await h.addItem("ENG-1");
+    h.state.ci = () => cancelledShard();
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(h.state.ciReruns).toHaveLength(1);
+    expect(resumes(h).map((resume) => resume.reason)).toEqual(["ci"]);
+    expect(h.bodies("status")).toContain(
+      "CI: `test (1/4)`, `lint, format, types, test, dashboard build` failed. Sent back to the agent, fix 1 of 3.",
+    );
+  });
+
+  test("a cancelled shard beside a real test failure goes back to the agent with no re-run", async () => {
+    const h = await start();
+    await h.addItem("ENG-1");
+    h.state.ci = () => cancelledShard("CANCELLED", "FAILURE");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(h.state.ciReruns).toEqual([]);
+    expect(listCiReruns(h.db, "ENG-1")).toEqual([]);
+  });
+
+  test("a head already re-run is not re-run again", async () => {
+    const h = await start();
+    const item = await h.addItem("ENG-1");
+    recordCiRerun(h.db, {
+      itemId: "ENG-1",
+      head: item.accepted,
+      runIds: [899],
+      reason: "flaky",
+      at: 1,
+    });
+    h.state.ci = () => cancelledShard();
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(h.state.ciReruns).toEqual([]);
   });
 });
 

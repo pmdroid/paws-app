@@ -124,6 +124,7 @@ export type Readiness = {
   failedChecks?: FailedCheck[];
   /** Every check on the head, set when CI failed. */
   checks?: CiCheck[];
+  onlyCancelled?: true;
   /** Set when CI is green and only unresolved review threads hold the merge. */
   unresolvedThreads?: number;
   /** Every check on the head with its conclusion, set when CI is green. */
@@ -374,6 +375,7 @@ function judgeChecks(checks: Check[], baseChecks: Check[], required: Set<string>
         url: check.url,
         failsOnBase: failedOnBase.has(check.name),
       })),
+      ...(onlyCancelled(failed) ? { onlyCancelled: true as const } : {}),
     };
   }
   if (checks.length === 0 && required.size === 0) {
@@ -389,6 +391,33 @@ function judgeChecks(checks: Check[], baseChecks: Check[], required: Set<string>
     };
   }
   return { outcome: "ready", message: `CI passed.${skippedNote(checks)}` };
+}
+
+const CANCELLED = new Set(["CANCELLED", "TIMED_OUT"]);
+
+function onlyCancelled(failed: Check[]): boolean {
+  const cancelled = failed.filter((check) => CANCELLED.has(check.result ?? ""));
+  return (
+    cancelled.length > 0 &&
+    failed.every(
+      (check) =>
+        CANCELLED.has(check.result ?? "") ||
+        cancelled.some((cause) => ranAfterInSameRun(check, cause)),
+    )
+  );
+}
+
+function ranAfterInSameRun(check: Check, cause: Check): boolean {
+  const run = workflowRun(cause.url);
+  return (
+    run !== null &&
+    run === workflowRun(check.url) &&
+    Date.parse(check.startedAt ?? "") >= Date.parse(cause.completedAt ?? "")
+  );
+}
+
+function workflowRun(url: string | null): string | null {
+  return /\/actions\/runs\/(\d+)(?:\/|$)/.exec(url ?? "")?.[1] ?? null;
 }
 
 function skippedNote(checks: Check[]): string {

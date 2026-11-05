@@ -296,6 +296,7 @@ test("a failing check fails CI with its name, even while others still run", asyn
         { name: "build", url: "https://ci.example/build", logTail: null, failsOnBase: false },
       ],
       checks: [ci("build", "failed"), ci("lint", "running"), ci("legacy", "passed")],
+      ...(conclusion === "TIMED_OUT" || conclusion === "CANCELLED" ? { onlyCancelled: true } : {}),
     });
   }
   const status = await readOnce(() =>
