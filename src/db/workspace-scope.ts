@@ -26,3 +26,21 @@ export function workspaceSessionIds(
     .map((row) => row.session_id)
     .filter((id) => getLinearSessionAccess(db, id) === "allowed");
 }
+
+export function sessionRepositoriesAllowed(
+  db: Database,
+  sessionIds: readonly string[],
+  repositories: readonly string[],
+): Set<string> {
+  if (sessionIds.length === 0 || repositories.length === 0) return new Set();
+  const marks = sessionIds.map(() => "?").join(",");
+  const query = db.query<{ allowed: number }, string[]>(
+    `WITH target AS (SELECT lower(?) AS name) SELECT EXISTS(
+      SELECT 1 FROM target, linear_session s JOIN workspace w ON w.linear_organization_id=s.organization_id
+      WHERE s.session_id IN (${marks}) AND s.team_id IS NOT NULL
+      AND ${teamRepositoryAllowedSql("w.id", "s.team_id", "target.name")}) AS allowed`,
+  );
+  return new Set(
+    repositories.filter((repository) => query.get(repository, ...sessionIds)?.allowed === 1),
+  );
+}

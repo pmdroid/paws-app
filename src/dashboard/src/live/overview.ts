@@ -133,8 +133,8 @@ export function readOverview(db: Database, options: LiveStatusOptions): Overview
     intake: intake.intake ?? [],
     linearBudget: intake.linearBudget ?? null,
     linearWebhook: intake.linearWebhook ?? null,
-    pushOutages: readPushOutages(db).pushOutages ?? [],
-    policyRunnerWarnings: readPolicyRunnerWarnings(db).policyRunnerWarnings ?? [],
+    pushOutages: readPushOutages(db, options).pushOutages ?? [],
+    policyRunnerWarnings: readPolicyRunnerWarnings(db, options).policyRunnerWarnings ?? [],
     mergeQueueCount: listed.filter(
       (record) =>
         record.state === "merge_queue" || (record.state === "verifying" && places.has(record.id)),
