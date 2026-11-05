@@ -19,6 +19,7 @@ export {
   samePatch,
   reviewRequirements,
   trustedPolicyFiles,
+  trustedMirrorMain,
   trustedOriginMain,
   trustedRootFiles,
   trustedRootFilesAt,

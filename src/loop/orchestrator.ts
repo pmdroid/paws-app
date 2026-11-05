@@ -24,7 +24,7 @@ import {
   refreshVerificationJobVersion,
   type RestartHandoff,
 } from "../db";
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
@@ -98,6 +98,7 @@ import {
   PolicyFetchError,
   reviewRequirements,
   trustedPolicyFiles,
+  trustedMirrorMain,
   trustedOriginMain,
   trustedRootFilesAt,
   visualReviewRequirements,
@@ -764,10 +765,14 @@ export class Orchestrator {
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
   private readonly reviewerFaults = new Map<string, string>();
-  private readonly runtimeLists = createRuntimeLists({
-    originMain: trustedOriginMain,
-    rootFilesAt: trustedRootFilesAt,
-  });
+  private readonly runtimeLists = createRuntimeLists(
+    {
+      originMain: trustedOriginMain,
+      mirrorMain: trustedMirrorMain,
+      rootFilesAt: trustedRootFilesAt,
+    },
+    { journal: (line) => (this.options.journal ?? journal)(line) },
+  );
   private shuttingDown = false;
   private readonly activitySeqs = new Map<string, number>();
   private waitFaces = new Map<string, string>();
@@ -8519,11 +8524,12 @@ export class Orchestrator {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
     // A runner-backed code item has no worktree; origin/main is read in the bare mirror.
-    const repo =
-      this.options.remoteExecution && !isResponseTaskMode(getTaskMode(this.db, item.id))
-        ? this.itemHead(item).repo
-        : input.worktreePath;
-    const runtimes = { runtimes: () => this.runtimeList(item, repo) };
+    const mirror =
+      !!this.options.remoteExecution && !isResponseTaskMode(getTaskMode(this.db, item.id));
+    const repo = mirror ? this.itemHead(item).repo : input.worktreePath;
+    const runtimes = {
+      runtimes: () => this.runtimeList(item, repo, mirror ? "mirror" : "checkout"),
+    };
     if (input.role !== "implementer") return runtimes;
     const { home, policyRoot } = this.closeoutHome(item);
     const pull = getItemPullRequest(this.db, item.id);
@@ -8578,9 +8584,13 @@ export class Orchestrator {
     };
   }
 
-  private async runtimeList(item: WorkItemRecord, repo: string): Promise<RuntimeList> {
+  private async runtimeList(
+    item: WorkItemRecord,
+    repo: string,
+    source: "checkout" | "mirror",
+  ): Promise<RuntimeList> {
     const runId = getWorkItem(this.db, item.id)?.currentRunId ?? item.id;
-    return this.runtimeLists.read(item.id, runId, repo);
+    return this.runtimeLists.read(item.id, runId, repo, source);
   }
 
   /**

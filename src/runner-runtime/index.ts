@@ -1,4 +1,4 @@
-import { journalCaught, journalRejection } from "../journal";
+import { journal as journalLine, journalCaught, journalRejection } from "../journal";
 import { closeSync, constants, fsyncSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { prepareRepositorySnapshot } from "../acp";
@@ -1904,6 +1904,13 @@ export async function openRunnerRuntime(options: {
           await options.daemon.acknowledgeCommand(command.id);
           continue;
         }
+        journalLine(
+          `runtimes item=${command.itemId} run=${command.runId} execution=${execution.id} ${
+            command.runtimes?.length
+              ? `requested=${command.runtimes.map((runtime) => `${runtime.tool}@${runtime.version}`).join(",")}`
+              : "no runtimes requested"
+          }`,
+        );
         const entry: Active = {
           execution,
           abort: new AbortController(),

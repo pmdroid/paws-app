@@ -106,6 +106,7 @@ export {
   reviewRoundFindings,
   run,
   trustedPolicyFiles,
+  trustedMirrorMain,
   trustedOriginMain,
   trustedRootFiles,
   trustedRootFilesAt,

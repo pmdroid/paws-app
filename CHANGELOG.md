@@ -2,6 +2,13 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-05: Runner-backed runs get the repository's runtimes again
+
+### Fixed
+
+- A runner-backed run reads `mise.toml`, `.mise.toml` and `.tool-versions` from the `origin/main` its bare mirror last fetched. Since runner-backed items stopped keeping a worktree, every item read `origin/main` through the mirror's shared `FETCH_HEAD`, and items read at the same time could see each other's half-written fetch and dispatch with no runtimes, so Closeout could not find Bun.
+- When Paws cannot read the runtime files, it retries the read twice, then posts one line naming the cause in Linear and journals one line for the run. The runner journals the runtimes each run asked for. See [runtimes](docs/runtimes.md).
+
 ## 2026-11-04: No control-plane worktrees for runner-backed items
 
 ### Changed
