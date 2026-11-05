@@ -1,7 +1,9 @@
 import type { Database } from "bun:sqlite";
 import {
+  cancelImprovementEvidenceComment,
   decideImprovement,
   immediate,
+  improvementWithdrawable,
   listImprovementCriteria,
   listImprovementDecisions,
   listImprovementDeliveries,
@@ -9,6 +11,7 @@ import {
   listRetroEvidence,
   listWorkspaceRepositories,
   listWorkspaceRepositoryNames,
+  repairImprovementDestination,
   requeueImprovementDelivery,
   workspaceMember,
   workspaceMemberUsable,
@@ -80,6 +83,9 @@ export type DeliveryView = {
   targetTeamId: string | null;
   issue: { id: string | null; identifier: string | null; url: string | null } | null;
   error: string | null;
+  blocked: ImprovementDelivery["blocked"];
+  nextAttemptAt: number | null;
+  recovery: "retry" | "choose_destination" | "reopen" | "cancel_comment" | null;
   updatedAt: number;
 };
 
@@ -121,9 +127,44 @@ function effectiveCriterion(db: Database, item: InboxItem): string | null {
   return listImprovementCriteria(db, item.improvement.id).at(-1)?.criterion ?? item.criterion;
 }
 
+const STRANDED: readonly (ImprovementDelivery["blocked"] & string)[] = [
+  "destination",
+  "conflict",
+  "unavailable",
+];
+
+function deliveryRecovery(
+  delivery: ImprovementDelivery,
+  deliveries: readonly ImprovementDelivery[],
+): DeliveryView["recovery"] {
+  const stranded =
+    delivery.state === "failed" &&
+    delivery.remoteId === null &&
+    delivery.blocked !== null &&
+    STRANDED.includes(delivery.blocked);
+  if (stranded && delivery.operation === "link_issue") return "reopen";
+  if (
+    stranded &&
+    delivery.operation === "evidence_comment" &&
+    deliveries.some((d) => d.operation === "link_issue" && d.state === "succeeded")
+  )
+    return "cancel_comment";
+  if (
+    delivery.operation === "create_issue" &&
+    delivery.state === "failed" &&
+    delivery.blocked === "destination" &&
+    delivery.remoteId === null
+  )
+    return "choose_destination";
+  if (delivery.state === "failed" || (delivery.state === "unknown" && delivery.blocked !== null))
+    return "retry";
+  return null;
+}
+
 export function improvementView(db: Database, item: InboxItem): ImprovementView {
   const { improvement, proposal } = item;
   const { improvementId: _id, contentSha256: _sha, ...shown } = proposal;
+  const deliveries = listImprovementDeliveries(db, improvement.id);
   return {
     id: improvement.id,
     version: improvement.version,
@@ -144,7 +185,7 @@ export function improvementView(db: Database, item: InboxItem): ImprovementView 
     },
     issue: item.issue,
     legacy: item.legacy,
-    deliveries: listImprovementDeliveries(db, improvement.id).map((delivery) => ({
+    deliveries: deliveries.map((delivery) => ({
       id: delivery.id,
       operation: delivery.operation,
       status: deliveryStatus(delivery.state),
@@ -161,6 +202,9 @@ export function improvementView(db: Database, item: InboxItem): ImprovementView 
             }
           : null,
       error: delivery.state === "failed" || delivery.state === "unknown" ? delivery.error : null,
+      blocked: delivery.blocked,
+      nextAttemptAt: delivery.nextAttemptAt,
+      recovery: deliveryRecovery(delivery, deliveries),
       updatedAt: delivery.updatedAt,
     })),
     implementation: improvement.implementationState,
@@ -364,6 +408,8 @@ const CONFLICT_MESSAGE = {
   stale: "Someone decided this improvement after you opened it. Review the current decision.",
   accepted:
     "This improvement is already accepted and its issue delivery may have reached Linear. It cannot be rejected or reopened here.",
+  cancel_comment:
+    "This evidence comment may already have reached Linear, or its link has not finished. Retry it instead.",
   legacy:
     "A Findings action already filed, added or is filing these findings. Review the existing issue instead.",
   proposal_changed:
@@ -455,7 +501,11 @@ export async function decideInboxItem(
       item: improvementView(db, item),
     }) as const;
   if (first.improvement.version !== input.expectedVersion) return conflict(first, "stale");
-  if (first.improvement.reviewState === "accepted") return conflict(first, "accepted");
+  if (
+    first.improvement.reviewState === "accepted" &&
+    !(request.kind === "reopen" && improvementWithdrawable(db, first.improvement.id))
+  )
+    return conflict(first, "accepted");
 
   let linked: LinkableIssue | null = null;
   if (request.kind === "accept") {
@@ -531,7 +581,14 @@ export async function decideInboxItem(
         verificationCriterion: criterion ?? effectiveCriterion(db, item),
         evidence: proposal.evidence,
         ...(linked
-          ? { issue: { id: linked.id, identifier: linked.identifier, state: linked.state } }
+          ? {
+              issue: {
+                id: linked.id,
+                identifier: linked.identifier,
+                teamId: linked.teamId,
+                state: linked.state,
+              },
+            }
           : {}),
       };
       review = {
@@ -543,6 +600,7 @@ export async function decideInboxItem(
             : {
                 kind: "link",
                 issueId: linked!.id,
+                teamId: linked!.teamId,
                 addEvidenceComment: request.intent.addEvidenceComment === true,
               },
       };
@@ -574,7 +632,7 @@ export async function decideInboxItem(
 }
 
 export type DeliveryRetryOutcome =
-  | { status: "requeued" | "in_progress" | "succeeded"; item: ImprovementView }
+  | { status: "requeued" | "in_progress" | "succeeded" | "cancelled"; item: ImprovementView }
   | { status: "not_found" | "conflict"; reason: string; message: string; item?: ImprovementView };
 
 export function retryInboxDelivery(
@@ -594,7 +652,7 @@ export function retryInboxDelivery(
       };
     if (delivery.state === "succeeded")
       return { status: "succeeded", item: improvementView(db, item) };
-    if (delivery.state === "unknown")
+    if (delivery.state === "unknown" && delivery.blocked === null)
       return {
         status: "conflict",
         reason: "reconciling",
@@ -602,11 +660,85 @@ export function retryInboxDelivery(
           "Paws does not know whether this write reached Linear. It checks the same operation before trying again.",
         item: improvementView(db, item),
       };
-    if (delivery.state === "failed")
-      requeueImprovementDelivery(db, { deliveryId: delivery.id, now: input.now });
+    const requeued =
+      requeueImprovementDelivery(db, { deliveryId: delivery.id, now: input.now }) !== null;
     return {
-      status: delivery.state === "failed" ? "requeued" : "in_progress",
+      status: requeued ? "requeued" : "in_progress",
       item: improvementView(db, item),
+    };
+  });
+}
+
+export function repairInboxDestination(
+  db: Database,
+  input: {
+    reviewer: ImprovementReviewer;
+    improvementId: string;
+    deliveryId: string;
+    teamId: string;
+    now: number;
+  },
+): DeliveryRetryOutcome | ImprovementDecisionOutcome {
+  return immediate(db, (): DeliveryRetryOutcome | ImprovementDecisionOutcome => {
+    const item = findInboxItem(db, input.reviewer, input.improvementId);
+    const delivery = item
+      ? listImprovementDeliveries(db, item.improvement.id).find((d) => d.id === input.deliveryId)
+      : undefined;
+    if (!item || !delivery)
+      return {
+        status: "not_found",
+        reason: "not_found",
+        message: "This delivery is not in your inbox. Refresh the item.",
+      };
+    const refused = destinationRefusal(db, input.reviewer, item, input.teamId);
+    if (refused) return refused;
+    if (
+      deliveryRecovery(delivery, listImprovementDeliveries(db, item.improvement.id)) !==
+      "choose_destination"
+    )
+      return {
+        status: "conflict",
+        reason: "destination_frozen",
+        message:
+          "Paws may already have sent this issue to Linear, so its team cannot change. Retry to reconcile it.",
+        item: improvementView(db, item),
+      };
+    repairImprovementDestination(db, {
+      deliveryId: delivery.id,
+      teamId: input.teamId,
+      now: input.now,
+    });
+    return { status: "requeued", item: improvementView(db, item) };
+  });
+}
+
+export function cancelInboxEvidenceComment(
+  db: Database,
+  input: { access: ImprovementAccess; improvementId: string; deliveryId: string },
+): DeliveryRetryOutcome {
+  return immediate(db, (): DeliveryRetryOutcome => {
+    const item = findInboxItem(db, input.access, input.improvementId);
+    const deliveries = item ? listImprovementDeliveries(db, item.improvement.id) : [];
+    const delivery = deliveries.find((d) => d.id === input.deliveryId);
+    if (!item || !delivery)
+      return {
+        status: "not_found",
+        reason: "not_found",
+        message: "This delivery is not in your inbox. Refresh the item.",
+      };
+    if (
+      deliveryRecovery(delivery, deliveries) !== "cancel_comment" ||
+      cancelImprovementEvidenceComment(db, delivery.id) === null
+    )
+      return {
+        status: "conflict",
+        reason: "cancel_comment",
+        message: CONFLICT_MESSAGE.cancel_comment,
+        item: improvementView(db, item),
+      };
+    return {
+      status: "cancelled",
+      item: improvementView(db, findInboxItem(db, input.access, item.improvement.id) ?? item),
     };
   });
 }

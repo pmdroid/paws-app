@@ -1,5 +1,9 @@
 import { createFindingIssueAdapter, type FindingIssueAdapter } from "./finding-group-issues";
-import { createLinearImprovementIssueLookup } from "./improvement-issues";
+import {
+  createLinearImprovementDelivery,
+  createLinearImprovementIssueLookup,
+  type ImprovementLinear,
+} from "./improvement-issues";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { IN_FLIGHT_ITEM_STATES, type LinearCommand } from "../core";
@@ -40,6 +44,7 @@ export type LinearRunning = {
 export type OpenLinear = {
   findingIssues: FindingIssueAdapter | null;
   improvementIssues: ReturnType<typeof createLinearImprovementIssueLookup> | null;
+  improvementDelivery: ImprovementLinear | null;
   memberships: LinearMembershipReads | null;
   webhook: LinearWebhookDeps;
   tracker: TrackerAdapter | null;
@@ -132,6 +137,10 @@ export function openLinear(options: {
       client === null
         ? null
         : createLinearImprovementIssueLookup(defaultCallerClient(client, "finding-groups")),
+    improvementDelivery:
+      client === null
+        ? null
+        : createLinearImprovementDelivery(defaultCallerClient(client, "finding-groups")),
     memberships: client === null ? null : createLinearMembershipReads(callerClient(client, "auth")),
     webhook: { store, onEvent, intake: intake?.queue },
     tracker,
