@@ -322,7 +322,11 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     if (view.id === null) return false;
     const attention = view.follow?.followThrough.attention;
     const deliveries = view.detail?.item.deliveries ?? [];
+    const listed = view.list?.items.find((item) => item.id === view.id);
+    const listedAttention = view.attention?.items.find((item) => item.id === view.id)?.attention;
     return (
+      (listed !== undefined && listed.version > (view.detail?.item.version ?? 0)) ||
+      (listedAttention !== undefined && listedAttention !== attention) ||
       attention === undefined ||
       !QUIET_ATTENTION.has(attention) ||
       deliveries.some((d) => d.status !== "succeeded")
@@ -607,7 +611,8 @@ export function createImprovements(options: ImprovementsOptions = {}) {
           ? String(target.checked)
           : target.value,
     };
-    if (event.type === "change") paint();
+    if (event.type === "change" && !(target instanceof HTMLInputElement && target.type === "text"))
+      paint();
   };
 
   const change = (event: Event) => {

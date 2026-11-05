@@ -297,7 +297,8 @@ function renderReview(view: ImprovementsView): string {
     ? `<p class="muted">${counts.needsReview} to review · ${counts.daily} from daily findings · ${counts.weekly} from weekly retros · ${counts.linked} linked</p>`
     : "";
   const open = view.id !== null;
-  return `${renderSources(view)}${renderFilters(view)}${summary}<div class="improvements-layout" data-open="${open}">
+  const lists = `${renderSources(view)}${renderFilters(view)}${summary}`;
+  return `${open ? `<div class="flex min-w-0 flex-col gap-6 max-md:hidden">${lists}</div>` : lists}<div class="improvements-layout" data-open="${open}">
     <section class="improvement-list-pane${open ? " max-md:hidden" : ""}" aria-label="Improvements" data-scroll-key="list">${renderList(view)}</section>
     <section class="improvement-detail-pane${open ? "" : " max-md:hidden"}" aria-label="Selected improvement" aria-busy="${view.detailState === "loading"}">${renderDetail(view)}</section>
   </div>`;
@@ -332,7 +333,7 @@ function row(view: ImprovementsView, item: ImprovementItem): string {
   const selected = item.id === view.id;
   const attention = attentionOf(view, item);
   const state = attention ? attentionTag(attention) : tag(LIFECYCLE_LABEL[item.lifecycle]);
-  const issue = item.issue ? `<span class="lin-id">${esc(item.issue.identifier ?? "")}</span>` : "";
+  const issue = item.issue?.identifier ? tag(item.issue.identifier) : "";
   return `<li><a class="improvement-row" href="${esc(itemHref(item.id, view.filter))}" data-improvement-row="${esc(item.id)}"${selected ? ' aria-current="true"' : ""}>
     <span class="row">${tag(SOURCE_LABEL[item.sourceKind])}<span class="muted">${esc(item.repository)}</span></span>
     <span class="improvement-row-title">${esc(item.proposal.title)}</span>
@@ -464,7 +465,7 @@ function renderChoices(view: ImprovementsView, detail: ImprovementDetail): strin
     `<button class="btn primary" type="submit"${disabled(view)}>${busy ? "Saving…" : label}</button>`;
   let form: string;
   if (choice === "reject")
-    form = `<form class="col" data-improvement-form="reject">${input(view, "reason", "Why reject it?", { required: true, max: 500, placeholder: "Not recurring, tracked elsewhere…" })}<p class="muted">A rejection stays in history and files nothing.</p>${submit("Reject")}</form>`;
+    form = `<form class="col" data-improvement-form="reject">${input(view, "reason", "Why reject it?", { required: true, max: 500, placeholder: "Not recurring, tracked elsewhere…" })}<p class="muted">A rejection stays in history and files nothing.</p>${submit("Reject with this reason")}</form>`;
   else if (choice === "link") {
     const fallback = detail.candidates.find((c) => c.issue.identifier)?.issue.identifier ?? "";
     const comment = draft(view, "comment") === "true";
@@ -477,7 +478,7 @@ function renderChoices(view: ImprovementsView, detail: ImprovementDetail): strin
     const teams = detail.destinations;
     const team = draft(view, "team", teams[0] ?? "");
     form = teams.length
-      ? `<form class="col" data-improvement-form="create"><label class="field"><span>Linear team</span><select name="team" data-improvement-draft="team">${teams.map((id) => `<option value="${esc(id)}"${id === team ? " selected" : ""}>${esc(id)}</option>`).join("")}</select></label>${criterion}<p class="muted">Paws files one issue in this team, in Triage, with the proposal and its evidence counts. It does not delegate it.</p>${submit("Create issue")}</form>`
+      ? `<form class="col" data-improvement-form="create"><label class="field"><span>Linear team</span><select name="team" data-improvement-draft="team">${teams.map((id) => `<option value="${esc(id)}"${id === team ? " selected" : ""}>${esc(id)}</option>`).join("")}</select></label>${criterion}<p class="muted">Paws files one issue in this team, in Triage, with the proposal and its evidence counts. It does not delegate it.</p>${submit("File the issue")}</form>`
       : `<p class="muted">No Linear team you belong to is mapped to ${esc(item.repository)}. Link an existing issue, or ask an admin to map a team.</p>`;
   }
   return `<section class="improvement-part" aria-labelledby="improvement-decision"><h3 id="improvement-decision">Decide</h3><div class="row" role="group" aria-label="Decision">${button("create", "Create issue")}${button("link", "Link existing issue")}${button("reject", "Reject")}</div>${form}</section>`;
@@ -613,7 +614,7 @@ function renderHistoryOf(
     })),
     ...(follow?.outcomes ?? []).map((o) => ({
       at: o.recordedAt,
-      text: `${o.track} ${o.state}${o.actor && o.actor !== "paws" ? ` by ${o.actor}` : ""}`,
+      text: `${o.track === "implementation" ? "Implementation" : "Verification"}: ${(o.track === "implementation" ? IMPLEMENTATION_LABEL : VERIFICATION_LABEL)[o.state] ?? o.state}${o.actor && o.actor !== "paws" ? ` by ${o.actor}` : ""}`,
     })),
   ].sort((a, b) => b.at - a.at);
   if (!entries.length) return "";
