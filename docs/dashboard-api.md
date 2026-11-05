@@ -73,6 +73,10 @@ A queued item waiting only on Linear blockers shows when Paws last read its rela
 
 **Check blockers now** sends `POST /api/blocker-checks` with `{"itemId": "<id>"}` (the item id or its Linear identifier) and reads that item's relations at once. A second press for the same item within 15 seconds answers 429 with `Retry-After`; an item that is not waiting on a blocker answers 409; a relations read that Linear fails answers 502.
 
+## Extra usage
+
+`POST /api/runners/<id>/agents/<agent>/extra-usage` with `{"extraUsage": true}` keeps Paws sending that agent work on that runner after a usage window is spent; the provider bills the extra usage. The runner's owner and workspace admins may change it, others get 403, and an agent never signed in on the runner answers 403. `GET /api/runners/<id>/policy` returns `extraUsage` per agent, and `GET /api/runners` reports a spent window with the switch on as status `extra_usage` instead of `usage_limit`. Placement uses such a runner only when no runner the item may use with quota left was free, and the runner history says so.
+
 ## Route coverage
 
 [`test/dashboard-routes.ts`](../test/dashboard-routes.ts) lists every dashboard page shape, settings page, HTML entrypoint, old link and HTTP route family with its method, a disposition and its owning issue or module:
