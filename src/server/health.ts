@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { statfsSync } from "node:fs";
 import {
   actionableDue,
   JOB_PROGRESS_STALE_MS,
@@ -6,7 +7,6 @@ import {
   LINEAR_WEBHOOK_SILENCE_MS,
   type JobLoopLiveness,
 } from "../db";
-import { diskSpace, type StatFs } from "../core";
 import { RUNNER_ONLINE_MS } from "../runner-placement";
 import { RUNNER_LEASE_GRACE_MS } from "../runner-protocol";
 
@@ -31,6 +31,18 @@ export type HealthOptions = {
   jobLoop?: () => JobLoopLiveness | null;
   disk?: { paths: Readonly<Record<string, string>>; statfs?: StatFs };
 };
+
+type StatFs = (path: string) => { bavail: number; blocks: number; bsize: number };
+
+function diskSpace(path: string, statfs: StatFs = statfsSync) {
+  const stats = statfs(path);
+  const freeBytes = Number(stats.bavail) * Number(stats.bsize);
+  const minFreeBytes = Math.max(
+    1024 ** 3,
+    Math.ceil(Number(stats.blocks) * Number(stats.bsize) * 0.05),
+  );
+  return { freeBytes, minFreeBytes, low: freeBytes < minFreeBytes };
+}
 
 /** Local reads only. Log changes so a failed probe and recovery appear in the journal. */
 export function createHealthReport(options: HealthOptions) {

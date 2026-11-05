@@ -154,7 +154,6 @@ export {
   retryAfterMs,
   transientRetryDelayMs,
 } from "./failure";
-export { diskSpace, hostDiskFullError, type DiskSpace, type StatFs } from "./disk";
 export { mergeQueueLine, ordinal, queueLine } from "./queue-line";
 export {
   HOOK_AGENTS,

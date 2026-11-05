@@ -157,6 +157,39 @@ describe("server health", () => {
     },
   );
 
+  test("diskSpace keeps a 1 GB floor on a small disk", async () => {
+    const db = fakeDatabase();
+    try {
+      const small = (free: number) => ({
+        paths: { tmpdir: "/tmp" },
+        statfs: () => ({ bavail: free, blocks: 4 * GB, bsize: 1 }),
+      });
+      const probeSmall = async (free: number) => {
+        const server = startServer({
+          db,
+          port: 0,
+          hostname: "127.0.0.1",
+          webhooks: false,
+          healthNow: () => NOW,
+          healthDisk: small(free),
+        });
+        try {
+          const response = await fetch(`http://127.0.0.1:${server.port}/health`);
+          return ((await response.json()) as HealthReport).checks.diskSpace;
+        } finally {
+          await server.stop(true);
+        }
+      };
+      expect(await probeSmall(GB - 1)).toMatchObject({ status: "failed" });
+      expect(await probeSmall(GB)).toEqual({
+        status: "ok",
+        paths: { tmpdir: { freeBytes: GB, minFreeBytes: GB } },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   test("database read failure returns 503 without exposing the error", async () => {
     const db = fakeDatabase();
     db.close();

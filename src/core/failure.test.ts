@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { diskSpace } from "./disk";
 import {
   AgentServiceError,
   HostDiskFullError,
@@ -167,23 +166,5 @@ describe("a full disk", () => {
       "Paws's host is out of disk space",
     );
     expect(hostDiskFullReason("push failed: permission denied")).toBeNull();
-  });
-
-  test("a path is low below 1 GB or 5% free, whichever is larger", () => {
-    const statfs = (free: number, total: number) => () => ({
-      bavail: free,
-      blocks: total,
-      bsize: 1,
-    });
-    const gb = 1024 ** 3;
-    expect(diskSpace("/small", statfs(gb - 1, 4 * gb)).low).toBe(true);
-    expect(diskSpace("/small", statfs(gb, 4 * gb)).low).toBe(false);
-    expect(diskSpace("/large", statfs(4 * gb, 100 * gb)).low).toBe(true);
-    expect(diskSpace("/large", statfs(5 * gb, 100 * gb))).toEqual({
-      path: "/large",
-      freeBytes: 5 * gb,
-      minFreeBytes: 5 * gb,
-      low: false,
-    });
   });
 });

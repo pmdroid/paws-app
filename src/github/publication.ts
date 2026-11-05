@@ -1,6 +1,7 @@
+import { statfsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { hostDiskFullError, isDiskFullText } from "../core";
+import { HostDiskFullError, isDiskFullText } from "../core";
 import { journalCaught } from "../journal";
 import { gitTempDirectory } from "./temp";
 import { GitCommandError, type GitExec } from "./types";
@@ -62,6 +63,22 @@ class PublicationStagingError extends GitCommandError {
 }
 
 class UnusableRepositoryError extends GitCommandError {}
+
+function hostDiskFull(paths: readonly string[], stderr: string, cause: unknown): HostDiskFullError {
+  let fullest: { path: string; freeBytes: number } | null = null;
+  for (const at of paths) {
+    try {
+      const stats = statfsSync(at);
+      const freeBytes = Number(stats.bavail) * Number(stats.bsize);
+      if (fullest === null || freeBytes < fullest.freeBytes) fullest = { path: at, freeBytes };
+    } catch {
+      continue;
+    }
+  }
+  return new HostDiskFullError(fullest?.path ?? null, fullest?.freeBytes ?? null, stderr, {
+    cause,
+  });
+}
 
 type Run = (argv: string[], cwd?: string) => Promise<{ stdout: string }>;
 
@@ -370,7 +387,7 @@ async function publish(
           publicationArgs = publicationArgs.toSpliced(operation + 3, 0, "--no-thin");
       } catch (error) {
         const stderr = error instanceof GitCommandError ? error.stderr : String(error);
-        if (isDiskFullText(stderr)) throw hostDiskFullError([dir, repository], stderr, error);
+        if (isDiskFullText(stderr)) throw hostDiskFull([dir, repository], stderr, error);
         throw new PublicationStagingError(
           error instanceof GitCommandError ? error.args : [],
           stderr,
