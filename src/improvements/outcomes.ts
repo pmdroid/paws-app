@@ -26,7 +26,6 @@ import {
   type IssueWork,
 } from "../db";
 import { journalCaught } from "../journal";
-import type { ImprovementLinear } from "../linear";
 import { listInboxItems, type ImprovementAccess, type InboxItem } from "./inbox";
 import { findInboxItem, improvementDestinations, type ImprovementReviewer } from "./review";
 
@@ -41,7 +40,21 @@ export const IMPROVEMENT_OUTCOME_LIMITS = {
   reason: 500,
 } as const;
 
-export type IssueReader = Pick<ImprovementLinear, "findIssue">;
+export type IssueReader = {
+  findIssue(id: string): Promise<
+    | {
+        ok: true;
+        value: {
+          id: string;
+          teamId: string;
+          state: "open" | "closed";
+          stateType?: string;
+          delegated: boolean;
+        } | null;
+      }
+    | { ok: false; failure: "rate_limited" | "unauthorized" | "unavailable" | "unknown" }
+  >;
+};
 export type StartIssueSession = (
   target: { kind: "issue"; id: string },
   dashboardUrl: string,
