@@ -157,6 +157,23 @@ describe("status views", () => {
     expect(order).toEqual([...order].sort((left, right) => left - right));
   });
 
+  test("the issue page splits the time line by stage", () => {
+    const snapshot = fullStatusFixture();
+    const item = snapshot.items.find((entry) => entry.id === "ENG-102")!;
+    item.doing = { kind: "running", runners: ["agentbox"], since: null, stalled: false };
+    item.activeMs = 217 * 60_000;
+    item.stageTimes = {
+      implementation: { ms: 130 * 60_000, limitMs: 180 * 60_000 },
+      fixes: { ms: 65 * 60_000, limitMs: 0 },
+      closeout: { ms: 0, limitMs: 0 },
+    };
+    const page = render(model({ snapshot, route: { view: "issues", id: "ENG-102" } })).content;
+    expect(page).toContain(
+      '<span class="muted" data-item-now>Implementation 2 h 10 m of 3 h · Fixes 1 h 05 m (not counted)</span>',
+    );
+    expect(render(model({ snapshot })).content).toContain("3.6 h active");
+  });
+
   test("runner work still preparing shows Preparing on Overview, Issues and the issue page", () => {
     const snapshot = fullStatusFixture();
     snapshot.questions = [];

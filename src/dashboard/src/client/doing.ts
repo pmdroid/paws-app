@@ -1,4 +1,4 @@
-import type { StatusItem } from "../contract";
+import { TIME_STAGES, type StatusItem, type StatusStageTimes, type TimeStage } from "../contract";
 import { esc, itemLabel, statePill, utcClock } from "./format";
 import { hoursLabel, itemAge } from "./state-times";
 
@@ -48,14 +48,48 @@ export function doingTimeLine(
   item: Pick<StatusItem, "doing" | "activeMs">,
   now: number,
 ): string | null {
+  if (!item.doing || item.activeMs === undefined) return null;
+  return [activeLabel(item.activeMs), ...waitingPart(item, now)].join(" · ");
+}
+
+function waitingPart(item: Pick<StatusItem, "doing">, now: number): string[] {
   const doing = item.doing;
-  if (!doing || item.activeMs === undefined) return null;
-  const since = doing.since === null ? NaN : Date.parse(doing.since);
-  const waiting =
-    doing.kind !== "running" && !Number.isNaN(since)
-      ? [`waiting ${hoursLabel(Math.max(0, now - since))}`]
-      : [];
-  return [activeLabel(item.activeMs), ...waiting].join(" · ");
+  const since = doing?.since ? Date.parse(doing.since) : NaN;
+  return doing && doing.kind !== "running" && !Number.isNaN(since)
+    ? [`waiting ${hoursLabel(Math.max(0, now - since))}`]
+    : [];
+}
+
+const STAGE_NAMES: Record<TimeStage, string> = {
+  implementation: "Implementation",
+  fixes: "Fixes",
+  closeout: "Closeout",
+};
+
+export function stageDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 60_000));
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  if (hours === 0) return `${minutes} m`;
+  return minutes === 0 ? `${hours} h` : `${hours} h ${String(minutes).padStart(2, "0")} m`;
+}
+
+export function stageTimeLine(times: StatusStageTimes): string {
+  return TIME_STAGES.flatMap((stage) => {
+    const { ms, limitMs } = times[stage];
+    if (limitMs > 0)
+      return [`${STAGE_NAMES[stage]} ${stageDuration(ms)} of ${stageDuration(limitMs)}`];
+    return ms > 0 ? [`${STAGE_NAMES[stage]} ${stageDuration(ms)} (not counted)`] : [];
+  }).join(" · ");
+}
+
+export function issueTimeLine(
+  item: Pick<StatusItem, "doing" | "activeMs" | "stageTimes">,
+  now: number,
+): string | null {
+  const stages = item.stageTimes ? stageTimeLine(item.stageTimes) : "";
+  if (!stages) return doingTimeLine(item, now);
+  return [stages, ...waitingPart(item, now)].join(" · ");
 }
 
 export function itemTime(item: StatusItem, now: number): string {
