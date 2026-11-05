@@ -129,14 +129,6 @@ export async function resolveStartRef(
   return undefined;
 }
 
-export async function mirrorMain(
-  mirror: string,
-): Promise<{ ok: true; commit: string } | { ok: false; message: string }> {
-  const ref = await resolveStartRef(mirror);
-  const commit = ref && (await revParse(mirror, `${ref}^{commit}`));
-  return commit ? { ok: true, commit } : { ok: false, message: `${mirror} has no origin/main` };
-}
-
 /**
  * The last fetched `origin/main` of the repository's bare mirror and every file path in it, from
  * local objects only. `null` before Paws has cloned the repository.
@@ -148,9 +140,9 @@ export async function mirrorFiles(options: {
 }): Promise<{ mirror: string; commit: string; files: string[] } | null> {
   const mirror = mirrorPath(options.pawsRoot, options.owner, options.repo);
   if (!(await exists(mirror))) return null;
-  const main = await mirrorMain(mirror);
-  if (!main.ok) return null;
-  const commit = main.commit;
+  const ref = await resolveStartRef(mirror);
+  const commit = ref && (await revParse(mirror, `${ref}^{commit}`));
+  if (!commit) return null;
   const listed = await git(["--git-dir", mirror, "ls-tree", "-r", "-z", "--name-only", commit]);
   return { mirror, commit, files: listed.split("\0").filter(Boolean) };
 }

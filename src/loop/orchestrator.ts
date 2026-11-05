@@ -57,7 +57,6 @@ import {
   runAgent,
   createWorktree,
   ensureBareMirror,
-  mirrorMain,
   ensureCandidateRef,
   adoptLegacyCandidate,
   removeCandidateRef,
@@ -99,6 +98,7 @@ import {
   PolicyFetchError,
   reviewRequirements,
   trustedPolicyFiles,
+  trustedMirrorMain,
   trustedOriginMain,
   trustedRootFilesAt,
   visualReviewRequirements,
@@ -766,7 +766,11 @@ export class Orchestrator {
   private readonly verifyingStops = new Map<string, string>();
   private readonly reviewerFaults = new Map<string, string>();
   private readonly runtimeLists = createRuntimeLists(
-    { originMain: trustedOriginMain, mirrorMain, rootFilesAt: trustedRootFilesAt },
+    {
+      originMain: trustedOriginMain,
+      mirrorMain: trustedMirrorMain,
+      rootFilesAt: trustedRootFilesAt,
+    },
     { journal: (line) => (this.options.journal ?? journal)(line) },
   );
   private shuttingDown = false;

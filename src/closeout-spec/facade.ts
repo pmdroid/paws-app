@@ -242,6 +242,20 @@ export function trustedOriginMain(
   return confirmedOriginMain({ repo, git: gitReader });
 }
 
+export function trustedMirrorMain(
+  repo: string,
+): { ok: true; commit: string } | { ok: false; message: string; absent?: true } {
+  if (!statSync(repo, { throwIfNoEntry: false })?.isDirectory())
+    return { ok: false, message: `${repo} is not cloned`, absent: true };
+  const head = gitSync(
+    repo,
+    ["rev-parse", "--verify", "--end-of-options", "refs/remotes/origin/main^{commit}"],
+    GIT_TIMEOUT_MS,
+  );
+  if (!head.ok) return { ok: false, message: `${repo} has no origin/main` };
+  return { ok: true, commit: head.stdout.toString("utf8").trim().toLowerCase() };
+}
+
 export function trustedRootFilesAt(
   repo: string,
   commit: string,

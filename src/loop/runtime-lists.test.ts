@@ -17,7 +17,7 @@ function fakeMain(toolVersions: Record<string, string>) {
         mains.push("origin");
         return { ok: true as const, commit: head };
       },
-      mirrorMain: async () => {
+      mirrorMain: () => {
         mains.push("mirror");
         return { ok: true as const, commit: head };
       },
@@ -97,7 +97,7 @@ test("an unreadable main is retried, then noticed and journaled once per run", a
   const lists = createRuntimeLists(
     {
       originMain: () => ({ ok: true, commit: "a".repeat(40) }),
-      mirrorMain: async () => {
+      mirrorMain: () => {
         attempts++;
         return failing
           ? { ok: false, message: "/paws/repos/acme/widgets.git has no origin/main" }
@@ -130,4 +130,25 @@ test("an unreadable main is retried, then noticed and journaled once per run", a
     runtimes: [{ tool: "bun", version: "1.4.2" }],
     notices: [],
   });
+});
+
+test("a mirror that is not cloned is not retried, and still gets its notice", async () => {
+  const journal: string[] = [];
+  const slept: number[] = [];
+  const lists = createRuntimeLists(
+    {
+      originMain: () => ({ ok: true, commit: "a".repeat(40) }),
+      mirrorMain: () => ({
+        ok: false,
+        message: "/paws/repos/acme/widgets.git is not cloned",
+        absent: true,
+      }),
+      rootFilesAt: () => ({ ok: true, files: new Map() }),
+    },
+    { journal: (line) => journal.push(line), sleep: async (ms) => void slept.push(ms) },
+  );
+  const list = await lists.read("acme-item", "run-1", "/paws/repos/acme/widgets.git", "mirror");
+  expect(slept).toEqual([]);
+  expect(list.notices).toHaveLength(1);
+  expect(journal).toHaveLength(1);
 });

@@ -1,11 +1,11 @@
 import type { RootFilesLoad } from "../closeout";
 import { parseRuntimeFiles, RUNTIME_FILES, type RuntimeList } from "../runtimes";
 
-type OriginMain = { ok: true; commit: string } | { ok: false; message: string };
+type OriginMain = { ok: true; commit: string } | { ok: false; message: string; absent?: true };
 
 export type RuntimeListReader = {
   originMain(repo: string): OriginMain;
-  mirrorMain(repo: string): Promise<OriginMain>;
+  mirrorMain(repo: string): OriginMain;
   rootFilesAt(repo: string, commit: string, names: readonly string[]): RootFilesLoad;
 };
 
@@ -39,7 +39,7 @@ export function createRuntimeLists(
       const sameRun = cached?.runId === runId;
       let failure = "";
       for (let attempt = 0; ; attempt++) {
-        const main = source === "mirror" ? await reader.mirrorMain(repo) : reader.originMain(repo);
+        const main = source === "mirror" ? reader.mirrorMain(repo) : reader.originMain(repo);
         if (main.ok && sameRun && cached.mainCommit === main.commit)
           return { runtimes: cached.list.runtimes, notices: [] };
         const load = main.ok ? reader.rootFilesAt(repo, main.commit, RUNTIME_FILES) : main;
@@ -49,7 +49,7 @@ export function createRuntimeLists(
         }
         failure = load.message;
         const delay = RUNTIME_READ_RETRY_MS[attempt];
-        if (delay === undefined) break;
+        if (delay === undefined || (!main.ok && main.absent)) break;
         await sleep(delay);
       }
       if (sameRun && cached.unread) return { runtimes: [], notices: [] };
