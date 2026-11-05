@@ -103,7 +103,7 @@ export async function executeCommand(input: {
   pullRequest?: PullRequestDraft;
 }): Promise<CommandRunResult> {
   const secrets = credentialSecrets(input.env);
-  const env = scrubCommandEnv(input.env);
+  const { PAWS_TEST_BAIL: _inTurnBail, ...env } = scrubCommandEnv(input.env);
   const before = await porcelain(input.cwd, env);
   const expected = input.expectedHead ?? (await readHead(input.cwd, env)) ?? "";
   const started = Date.now();

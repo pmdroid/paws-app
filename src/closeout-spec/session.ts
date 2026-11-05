@@ -1245,6 +1245,7 @@ function commandEnv({ runtimeBinPaths = [], basePath, bail, env: extra }: CheckP
   if (runtimeBinPaths.length)
     env.PATH = [...runtimeBinPaths, ...(env.PATH ? [env.PATH] : [])].join(delimiter);
   if (bail) env.PAWS_TEST_BAIL = "1";
+  else delete env.PAWS_TEST_BAIL;
   return env;
 }
 
