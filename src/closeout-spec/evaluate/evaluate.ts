@@ -97,9 +97,12 @@ export type EvaluateRequest = {
   retryBaseline?: readonly string[];
   evidenceError?: string;
   policyLoadError?: string;
+  candidatePolicyError?: string;
   published?: readonly PublishedEvidence[];
   approvals?: readonly EvidenceApproval[];
 };
+
+export const POLICY_VALID_ID = "policy-valid";
 
 /**
  * A rule judged like a command at `beforePR`. Its record's argv is {@link probeArgv} at that
@@ -196,6 +199,16 @@ export function evaluate(
       if (result.message === "changed paths are unavailable") pathsUnreadable = true;
       items.push(result);
     }
+  }
+  if (request.candidatePolicyError !== undefined) {
+    items.push({
+      id: POLICY_VALID_ID,
+      kind: "rule",
+      state: "failed",
+      message: clip(
+        `P1 finding: the changed Closeout policy does not load: ${request.candidatePolicyError}`,
+      ),
+    });
   }
 
   const decision = decide(items);

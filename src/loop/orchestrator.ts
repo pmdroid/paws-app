@@ -4635,7 +4635,7 @@ export class Orchestrator {
         result?.decision?.items
           .filter(
             (check) =>
-              bypassable(check.state) &&
+              bypassable(check) &&
               !result.bypasses?.some((approval) => approval.checkIds.includes(check.id)),
           )
           .map((check) => check.id) ?? [],

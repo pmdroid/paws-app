@@ -31,7 +31,12 @@ import {
 } from "./policy/load";
 import type { GitBlob, GitReader } from "./policy/git";
 import { recheckDigest } from "./policy/canonical";
-import { loadHomePolicy, unknownKeysWarning, type TreePolicy } from "./policy/resolve";
+import {
+  loadHomePolicy,
+  PUBLIC_POLICY_PATH,
+  unknownKeysWarning,
+  type TreePolicy,
+} from "./policy/resolve";
 import { isPreExisting, type ChangedLines } from "./review/changed";
 import { earlierFindings } from "./review/earlier";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
@@ -573,7 +578,7 @@ export async function decision(input: DecisionInput): Promise<DecisionDocument> 
     return evaluate(
       ABSENT,
       [],
-      requestOf(input, candidate, { policyLoadError: loaded.message }),
+      requestOf(input, candidate, { policyLoadError: await policyLoadError(input, loaded) }),
       input.trust,
     );
   }
@@ -591,7 +596,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
     return evaluate(
       ABSENT,
       [],
-      requestOf(input, candidate, { policyLoadError: loaded.message }),
+      requestOf(input, candidate, { policyLoadError: await policyLoadError(input, loaded) }),
       input.trust,
     );
   }
@@ -857,6 +862,7 @@ async function finish(
       input.trust,
     );
   }
+  const policyError = await candidatePolicyError(input.repo, policy, base, head, input.env);
   const lines = policy.items.some((item) => item.gate === input.gate && "minChangedLines" in item)
     ? await changedLines(input.repo, base, head, scrubCommandEnv(input.env))
     : undefined;
@@ -894,9 +900,42 @@ async function finish(
       ...(lineRanges !== undefined ? { changedLineRanges: lineRanges } : {}),
       ...(published !== undefined ? { published } : {}),
       ...(approvals !== undefined ? { approvals } : {}),
+      ...(policyError !== undefined ? { candidatePolicyError: policyError } : {}),
     }),
     input.trust,
   );
+}
+
+async function candidatePolicyError(
+  repo: string,
+  policy: ResolvedPolicy,
+  base: string,
+  head: string,
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<string | undefined> {
+  const candidate = loadCommitPolicy({ repo, git: gitReader }, head);
+  if (candidate.ok) return undefined;
+  const diff = await diffPaths(repo, base, head, scrubCommandEnv(env));
+  if (!diff.ok) return candidate.message;
+  const read = new Set([PUBLIC_POLICY_PATH, ...policy.files.map((file) => file.path)]);
+  return diff.paths.some((path) => read.has(path)) ? candidate.message : undefined;
+}
+
+async function policyLoadError(
+  input: { repo: string; head: string; policyRoot?: string; env?: NodeJS.ProcessEnv },
+  loaded: { source: string; message: string },
+): Promise<string> {
+  if (
+    input.policyRoot !== undefined ||
+    loaded.source !== "repo" ||
+    loaded.message.startsWith("origin/main is unavailable")
+  )
+    return loaded.message;
+  const head = await resolveCommit(input.repo, input.head, scrubCommandEnv(input.env));
+  if (head === null) return loaded.message;
+  const candidate = loadCommitPolicy({ repo: input.repo, git: gitReader }, head);
+  if (!candidate.ok || candidate.policy === null) return loaded.message;
+  return `main's ${PUBLIC_POLICY_PATH} is invalid (${loaded.message}); this branch fixes it, and Closeout can run once it merges`;
 }
 
 /**
@@ -955,6 +994,8 @@ function requestOf(
   if (extra.changedLineRanges !== undefined) request.changedLineRanges = extra.changedLineRanges;
   if (extra.evidenceError !== undefined) request.evidenceError = extra.evidenceError;
   if (extra.policyLoadError !== undefined) request.policyLoadError = extra.policyLoadError;
+  if (extra.candidatePolicyError !== undefined)
+    request.candidatePolicyError = extra.candidatePolicyError;
   if (extra.published !== undefined) request.published = extra.published;
   if (extra.approvals !== undefined) request.approvals = extra.approvals;
   return request;

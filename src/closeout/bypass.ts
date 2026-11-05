@@ -1,3 +1,4 @@
+import { POLICY_VALID_ID } from "../closeout-spec";
 import type { Evaluation } from "./run";
 
 export type CloseoutBypass = {
@@ -14,8 +15,9 @@ export type CloseoutBypass = {
   reason: string;
 };
 
-export function bypassable(state: string): boolean {
-  return state === "failed" || state === "exhausted" || state === "independence";
+export function bypassable(check: { id: string; state: string }): boolean {
+  if (check.id === POLICY_VALID_ID) return false;
+  return check.state === "failed" || check.state === "exhausted" || check.state === "independence";
 }
 
 export function applyBypasses(
@@ -33,11 +35,12 @@ export function applyBypasses(
       approval.actor.trim() !== "" &&
       approval.reason.trim() !== "" &&
       approval.checkIds.length > 0 &&
+      !approval.checkIds.includes(POLICY_VALID_ID) &&
       approval.checkIds.every((id) =>
         decision.items.some(
           (item) =>
             item.id === id &&
-            (bypassable(item.state) || item.state === "passed" || item.state === "skipped"),
+            (bypassable(item) || item.state === "passed" || item.state === "skipped"),
         ),
       ),
   );
