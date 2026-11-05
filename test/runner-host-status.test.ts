@@ -189,6 +189,21 @@ test("a heartbeat stores host metrics and the runner list returns them", async (
   ).toEqual({ miseVersion: null });
 });
 
+test("the runner list says who a runner starts agents as", async () => {
+  const runner = await fixture();
+  expect((await runner.heartbeat({ runnerVersion: "0.1.66" }))!.status).toBe(200);
+  expect((await runner.list()).runners[0]!.agentUser).toBe("runner");
+  expect((await runner.heartbeat({ runnerVersion: "0.1.67" }))!.status).toBe(200);
+  expect((await runner.list()).runners[0]!.agentUser).toBeNull();
+  expect(
+    (await runner.heartbeat({ runnerVersion: "0.1.67", agentUser: "paws-agent" }))!.status,
+  ).toBe(200);
+  expect((await runner.list()).runners[0]!.agentUser).toBe("paws-agent");
+  expect((await runner.heartbeat({ runnerVersion: "0.1.67", agentUser: "root" }))!.status).toBe(
+    403,
+  );
+});
+
 test("a heartbeat without host fields is still accepted", async () => {
   const runner = await fixture();
   expect((await runner.heartbeat({}))!.status).toBe(200);
