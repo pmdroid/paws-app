@@ -1,6 +1,6 @@
 import { mergeStopRequested } from "../db";
 import type { ask } from "../questions";
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
@@ -19,6 +19,7 @@ import {
   pendingLinearComments,
   pendingPullComments,
   pullReviewCheckWait,
+  rebaseReturnedFor,
   recordPullCiFailure,
   settlePullCiFailures,
   wakePullReviews,
@@ -36,6 +37,7 @@ import {
   readPullReview,
   type GitHubBinding,
   type PullCi,
+  type PullMergeable,
 } from "../github";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
 import type { RebaseConflict } from "./budget";
@@ -185,6 +187,8 @@ export type OrderCapabilities = {
   ciFixAttempts(item: WorkItemRecord): number;
   feedbackWait(): PullFeedbackWait;
   readPullCi(item: WorkItemRecord, pull: { number: number; head: string }): Promise<PullCi>;
+  /** GitHub's `mergeable` for the item's pull request, read again while GitHub computes it. */
+  readPull(item: WorkItemRecord, pullNumber: number): Promise<PullMergeable | null>;
   /**
    * Null when the task's Linear dependencies let it merge. Otherwise the identifiers of the
    * blockers it waits for, empty when none can be named. A held task takes no place in the queue.
@@ -282,7 +286,7 @@ export async function mergeQueueTurn(
   repository: { owner: string; repo: string },
   github: GitHubBinding,
   pull: { number: number; url: string | null; head: string },
-): Promise<MergeWait | undefined> {
+): Promise<MergeWait | Extract<MergeStep, { kind: "returned" | "asked" }> | undefined> {
   const prNumber = pull.number;
   const name = `${repository.owner}/${repository.repo}`;
   const held = (itemId: string) => caps.dependencyHold(itemId) !== null;
@@ -302,6 +306,10 @@ export async function mergeQueueTurn(
     };
   if (review === "required" || review === "changes_requested") {
     leaveMergeQueue(db, item.id);
+    // Reviewers do not approve a conflicting pull request, so the rebase does not wait for them.
+    const conflict = await reviewWaitConflict({ db, item, caps }, pull.number);
+    if (caps.stopped()) return undefined;
+    if (conflict) return conflict;
     const body =
       review === "required"
         ? `Waiting for an approving review on pull request #${prNumber}. It joins the ${name} merge queue once approved.`
@@ -337,6 +345,64 @@ export async function mergeQueueTurn(
   }
   if (place.nextItemId === null) return undefined;
   return { message: `${mergeQueueLine(place)}. ${first}`, queued: true, reason: "ahead" };
+}
+
+/**
+ * A pull request waiting for a review that no longer merges into main goes back to rebase, through
+ * the lane's conflict return and rebase budget; with the budget spent Paws asks. Null when it
+ * merges cleanly, GitHub has not computed `mergeable`, or this head already went back once.
+ */
+async function reviewWaitConflict(
+  merge: MergeContext,
+  prNumber: number,
+): Promise<Extract<MergeStep, { kind: "returned" | "asked" }> | null> {
+  const { db, item, caps } = merge;
+  const read = await caps.readPull(item, prNumber);
+  if (caps.stopped() || read === null || !read.open || read.merges !== "conflict") return null;
+  if (rebaseReturnedFor(db, item.id, read.head)) return null;
+  const base = await caps.fetchMain(item).catch((error: unknown) => {
+    journalCaught(error, "orders.reviewWaitConflict.fetchMain", item.id);
+    return null;
+  });
+  if (caps.stopped() || base === null) return null;
+  const conflict: RebaseConflict = { base, files: null };
+  const found = `item ${item.linearIdentifier} pull request #${prNumber} at ${read.head.slice(0, 7)} conflicts with main while it waits for a review`;
+  if (
+    sendBack(
+      merge,
+      "rebase-conflict",
+      () => rebaseBudgetFor(db, item.id, conflict, caps.now()).allowed,
+      REBASE_CONFLICT_INSTRUCTION,
+      {
+        thought: () => REBASE_CONFLICT_THOUGHT,
+        record: (jobId) =>
+          recordRebaseReturn(db, {
+            itemId: item.id,
+            jobId,
+            candidate: read.head,
+            reason: "merge",
+            ...conflict,
+            recordedAt: caps.now(),
+          }),
+      },
+    )
+  ) {
+    journal(`${found}: sent back to the agent to rebase`);
+    return { kind: "returned" };
+  }
+  const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
+  if (
+    budget.allowed ||
+    !askHelp(
+      merge,
+      `${budget.message} Reply with guidance to continue, or stop the task.`,
+      "rebase_budget_spent",
+    )
+  )
+    return null;
+  journal(`${found}: the rebase budget is spent, asked for guidance`);
+  await caps.voice.flush();
+  return { kind: "asked" };
 }
 
 function reviewWaitNotice(

@@ -160,6 +160,7 @@ function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
         head: pull.head,
         tokenProvider,
       }),
+    readPull: async () => null,
     dependencyHold: () => null,
     mergeLane: () => "",
     voice: {

@@ -273,7 +273,7 @@ export async function mergeHarness(
       const required = fakeRequiredChecks(req);
       if (required) return required;
       const pull = /^\/repos\/acme\/app\/pulls\/(\d+)$/.exec(req.path);
-      if (req.method === "GET" && pull) return readPull(Number(pull[1]));
+      if (req.method === "GET" && pull) return pullResponse(Number(pull[1]));
       if (req.method === "PUT" && req.path.endsWith("/merge")) {
         state.squashing = true;
         await state.squashGate;
@@ -296,8 +296,19 @@ export async function mergeHarness(
     },
   };
 
+  function readPull(prNumber: number) {
+    return readPullMergeable({
+      client,
+      owner: "acme",
+      repo: "app",
+      prNumber,
+      tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
+      sleep: async () => {},
+    });
+  }
+
   /** GitHub's pull request read: `mergeable` from whether the branch merges into main. */
-  async function readPull(number: number): Promise<GitHubResponse> {
+  async function pullResponse(number: number): Promise<GitHubResponse> {
     state.pullReads.set(number, (state.pullReads.get(number) ?? 0) + 1);
     state.onPullRead(number);
     const id = [...items.values()].find((item) => item.pull === number)?.id;
@@ -467,6 +478,7 @@ export async function mergeHarness(
           tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
         });
       },
+      readPull: (_, prNumber) => readPull(prNumber),
       mergeLane: (current) => state.lanes.get(current.id) ?? "",
       dependencyHold: (itemId) => {
         const open = (state.blockedBy.get(itemId) ?? []).filter(
@@ -596,15 +608,7 @@ export async function mergeHarness(
           thought: (_, body, key) => say("thought", body, key),
           flush: async () => {},
         },
-        readPull: (_, prNumber) =>
-          readPullMergeable({
-            client,
-            owner: "acme",
-            repo: "app",
-            prNumber,
-            tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
-            sleep: async () => {},
-          }),
+        readPull: (_, prNumber) => readPull(prNumber),
       },
     );
   }

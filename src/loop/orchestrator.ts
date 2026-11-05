@@ -351,9 +351,11 @@ import {
   readBranchWork,
   UPSTREAM_MAIN_REF,
   pushOutageCause,
+  GitHubHttpError,
   type GitExec,
   type GitHubBinding,
   type GitHubTokenProvider,
+  type PullMergeable,
 } from "../github";
 import {
   asksForFreshStart,
@@ -1925,19 +1927,7 @@ export class Orchestrator {
           thought: (item, body, key) => this.post(item, "thought", body, key),
           flush: () => this.flush(),
         },
-        readPull: async (item, pullNumber) => {
-          const repository = this.repositoryForItem(item);
-          const github = repository ? this.githubForRepository(repository) : null;
-          if (!repository || !github) return null;
-          return readPullMergeable({
-            client: github.client,
-            owner: repository.owner,
-            repo: repository.repo,
-            prNumber: pullNumber,
-            ...this.gitHubCredentials(github),
-            signal: context.signal,
-          });
-        },
+        readPull: (item, pullNumber) => this.readItemPull(item, pullNumber, context.signal),
       });
     });
     jobs.register(JOB_KIND.closeStoppedPull, async (job, context) => {
@@ -2172,6 +2162,7 @@ export class Orchestrator {
             else await this.settleMerge(job.payload, step);
           });
         } catch (error) {
+          if (await this.sendBackAfterServerError(job.payload, error, context)) return;
           if (!(error instanceof LinearReconciliationPendingError)) throw error;
           journalCaught(
             error,
@@ -2197,6 +2188,53 @@ export class Orchestrator {
         }
       }),
     );
+  }
+
+  /**
+   * GitHub answered the merge attempt with a 5xx. A pull request that conflicts with main gets the
+   * same answer on every retry, so one `mergeable` read decides: a conflict goes back to rebase
+   * instead of retrying. False leaves the retry as it was.
+   */
+  private async sendBackAfterServerError(
+    payload: unknown,
+    error: unknown,
+    context: JobContext,
+  ): Promise<boolean> {
+    if (!(error instanceof GitHubHttpError) || error.status < 500 || !context.isCurrent())
+      return false;
+    const itemId = readString(payload, "itemId");
+    const item = itemId ? getWorkItem(this.db, itemId) : null;
+    const pull = item ? getItemPullRequest(this.db, item.id) : null;
+    if (!item || item.state !== "merge_queue" || pull === null) return false;
+    const read = await this.readItemPull(item, pull.pullNumber, context.signal, 1).catch(
+      () => null,
+    );
+    if (read === null || !read.open || read.merges !== "conflict") return false;
+    return this.sendBackForConflict(
+      item,
+      read.head,
+      `merge attempt got ${error.message}; pull request #${pull.pullNumber} at ${read.head.slice(0, 7)}`,
+    );
+  }
+
+  private async readItemPull(
+    item: WorkItemRecord,
+    pullNumber: number,
+    signal?: AbortSignal,
+    reads?: number,
+  ): Promise<PullMergeable | null> {
+    const repository = this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!repository || !github) return null;
+    return readPullMergeable({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      prNumber: pullNumber,
+      ...(reads === undefined ? {} : { reads }),
+      ...this.gitHubCredentials(github),
+      ...(signal ? { signal } : {}),
+    });
   }
 
   private async deliverLinearMessage(
@@ -4409,7 +4447,11 @@ export class Orchestrator {
    * the merge lane's conflict return does, within the shared rebase budget. False when the head
    * already went back once, main cannot be fetched or the budget is spent, so the checks run.
    */
-  private async sendBackForConflict(item: WorkItemRecord, head: string): Promise<boolean> {
+  private async sendBackForConflict(
+    item: WorkItemRecord,
+    head: string,
+    found = `re-check at ${head.slice(0, 7)}`,
+  ): Promise<boolean> {
     this.assertJobCurrent(item.id);
     if (rebaseReturnedFor(this.db, item.id, head)) return false;
     const base = await this.fetchUpstreamMain(item);
@@ -4448,7 +4490,7 @@ export class Orchestrator {
     });
     if (sent)
       this.options.journal?.(
-        `item ${item.linearIdentifier} re-check at ${head.slice(0, 7)}: the pull request conflicts with main. Sent back to the agent to rebase.`,
+        `item ${item.linearIdentifier} ${found}: the pull request conflicts with main. Sent back to the agent to rebase.`,
       );
     return sent;
   }
@@ -5478,6 +5520,8 @@ export class Orchestrator {
           ...this.gitHubCredentials(github),
         });
       },
+      readPull: (item, pullNumber) =>
+        this.readItemPull(item, pullNumber, this.signalForItem(item.id)),
       restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
       dependencyHold: (id) => {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
