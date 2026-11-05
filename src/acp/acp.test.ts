@@ -2065,7 +2065,7 @@ test("Claude refuses finish through a session stop hook", async () => {
     };
   };
   const hook = meta.claudeCode.options.settings.hooks.Stop[0]?.hooks[0];
-  const scriptPath = join(layout.pawsRoot, "runs", "claude-stop", "closeout-stop");
+  const scriptPath = join(layout.pawsRoot, "runs", "claude-stop", "closeout-stop.ts");
   expect(meta.claudeCode.options.settingSources).toEqual(["user", "project"]);
   expect(meta.claudeCode.options.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP).toBe("100");
   expect(hook).toMatchObject({ type: "command", args: [scriptPath] });
@@ -2231,7 +2231,7 @@ test("a read-only session does not install a closeout stop hook", async () => {
   expect(result.closeoutReport).toBeUndefined();
   const trace = await readResult(files.resultPath);
   expect(trace.sessionMeta).toBeUndefined();
-  const script = join(layout.pawsRoot, "runs", "readonly-stop", "closeout-stop");
+  const script = join(layout.pawsRoot, "runs", "readonly-stop", "closeout-stop.ts");
   await expect(lstat(script)).rejects.toThrow();
 });
 

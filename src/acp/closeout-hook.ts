@@ -1,6 +1,16 @@
 import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  access,
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { WorkspaceHook } from "../core";
 import {
@@ -12,6 +22,8 @@ import {
 } from "./workspace-hooks";
 
 export const CLOSEOUT_STOP_TIMEOUT_SECONDS = 30;
+/** How long the stop hook waits for `closeout_finish`, inside the agent's own limit. */
+const CLOSEOUT_STOP_WAIT_SECONDS = 25;
 
 const FINISH_UNAVAILABLE_REASON = "Cannot finish yet. Closeout status is unavailable.";
 
@@ -159,57 +171,74 @@ export function codexConfigWithTrustedHooks(
   return `${lines.join("\n")}\n`;
 }
 
-export function closeoutStopScript(socketPath: string, pythonPath: string): string {
-  return `#!${pythonPath}
-import json, socket, sys, threading
-SOCKET = ${JSON.stringify(socketPath)}
-UNAVAILABLE = ${JSON.stringify(CLOSEOUT_FINISH_UNAVAILABLE)}
-def drain():
-    try:
-        sys.stdin.read()
-    except Exception:
-        return
-threading.Thread(target=drain, daemon=True).start()
-def emit(value):
-    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\\n")
-def block():
-    sys.stdout.write(UNAVAILABLE + "\\n")
-def main():
-    try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(25)
-        client.connect(SOCKET)
-        client.sendall(b'{"id":1,"tool":"closeout_finish","arguments":{}}\\n')
-        data = b""
-        while b"\\n" not in data and len(data) < 65536:
-            chunk = client.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-        client.close()
-        message = json.loads(data.split(b"\\n", 1)[0])
-        answer = message.get("answer") if isinstance(message, dict) else None
-        if not isinstance(answer, str):
-            block()
-            return
-        decision = json.loads(answer)
-        if decision == {}:
-            emit({})
-            return
-        if (
-            isinstance(decision, dict)
-            and decision.get("decision") == "block"
-            and isinstance(decision.get("reason"), str)
-            and set(decision) == {"decision", "reason"}
-        ):
-            emit({"decision": "block", "reason": decision["reason"]})
-            return
-        block()
-    except Exception:
-        block()
-if __name__ == "__main__":
-    main()
+/**
+ * The stop hook the agent runs: a self-contained TypeScript file for Bun, importing only Node
+ * built-ins, so it reads nothing from the Paws tree and a Paws update mid-run cannot change it.
+ */
+export function closeoutStopScript(socketPath: string, bunPath: string): string {
+  return `#!${bunPath}
+import { connect } from "node:net";
+
+const SOCKET = ${JSON.stringify(socketPath)};
+const UNAVAILABLE = ${JSON.stringify(CLOSEOUT_FINISH_UNAVAILABLE)};
+const WAIT_MS = ${CLOSEOUT_STOP_WAIT_SECONDS * 1000};
+const MAX_BYTES = 65536;
+
+let done = false;
+function finish(line: string): void {
+  if (done) return;
+  done = true;
+  process.stdout.write(\`\${line}\\n\`, () => process.exit(0));
+}
+
+function decide(data: Buffer): string {
+  const message: unknown = JSON.parse(data.toString("utf8").split("\\n", 1)[0] ?? "");
+  if (!message || typeof message !== "object" || Array.isArray(message)) return UNAVAILABLE;
+  const answer = (message as Record<string, unknown>).answer;
+  if (typeof answer !== "string") return UNAVAILABLE;
+  const decision: unknown = JSON.parse(answer);
+  if (!decision || typeof decision !== "object" || Array.isArray(decision)) return UNAVAILABLE;
+  const record = decision as Record<string, unknown>;
+  const keys = Object.keys(record).sort().join(",");
+  if (keys === "") return "{}";
+  if (keys === "decision,reason" && record.decision === "block" && typeof record.reason === "string")
+    return JSON.stringify({ decision: "block", reason: record.reason });
+  return UNAVAILABLE;
+}
+
+process.stdin.on("data", () => {});
+process.stdin.on("error", () => {});
+setTimeout(() => finish(UNAVAILABLE), WAIT_MS);
+try {
+  let data = Buffer.alloc(0);
+  const settle = () => {
+    try {
+      finish(decide(data));
+    } catch {
+      finish(UNAVAILABLE);
+    }
+  };
+  const client = connect(SOCKET, () =>
+    client.write('{"id":1,"tool":"closeout_finish","arguments":{}}\\n'),
+  );
+  client.on("data", (chunk: Buffer) => {
+    data = Buffer.concat([data, chunk]);
+    if (data.includes(10) || data.length >= MAX_BYTES) {
+      client.destroy();
+      settle();
+    }
+  });
+  client.on("end", settle);
+  client.on("error", () => finish(UNAVAILABLE));
+} catch {
+  finish(UNAVAILABLE);
+}
 `;
+}
+
+/** The shell command Codex runs for the stop hook: Bun with the script. */
+export function closeoutStopCommand(bunPath: string, scriptPath: string): string {
+  return `${shellQuote(bunPath)} ${shellQuote(scriptPath)}`;
 }
 
 export async function installCloseoutStopHook(input: {
@@ -223,24 +252,29 @@ export async function installCloseoutStopHook(input: {
   codexSkills?: string;
 }): Promise<InstalledCloseoutStopHook | undefined> {
   if (input.agent === "grok" || input.agent === "opencode") return undefined;
-  const pythonPath = Bun.which("python3");
-  if (!pythonPath) throw new Error("python3 is required for the closeout stop hook");
+  const bunPath = process.execPath;
+  try {
+    await access(bunPath, constants.X_OK);
+  } catch (error) {
+    throw new Error(`the closeout stop hook runs with Bun at ${bunPath}, which is not executable`, {
+      cause: error,
+    });
+  }
   await mkdir(input.runDirectory, { recursive: true, mode: 0o700 });
-  const scriptPath = join(input.runDirectory, "closeout-stop");
-  await writeFile(scriptPath, closeoutStopScript(input.socketPath, pythonPath), { mode: 0o700 });
+  const scriptPath = join(input.runDirectory, "closeout-stop.ts");
+  await writeFile(scriptPath, closeoutStopScript(input.socketPath, bunPath), { mode: 0o700 });
   await chmod(scriptPath, 0o700);
   const workspace = await installWorkspaceHooks({
     agent: input.agent,
     hooks: input.workspaceHooks ?? [],
     runDirectory: input.runDirectory,
-    pythonPath,
     skillRoot: input.skillRoot,
   });
   if (input.agent === "claude") {
     return {
       scriptPath,
       env: {},
-      sessionMeta: claudeStopMeta(scriptPath, pythonPath, workspace),
+      sessionMeta: claudeStopMeta(bunPath, scriptPath, workspace),
     };
   }
   const overlay = join(input.runDirectory, "codex-home");
@@ -250,7 +284,7 @@ export async function installCloseoutStopHook(input: {
     overlay,
     input.codexSkills,
   );
-  const document = codexHooksDocument(scriptPath, workspace);
+  const document = codexHooksDocument(closeoutStopCommand(bunPath, scriptPath), workspace);
   await writeFile(hooksPath, `${JSON.stringify(document)}\n`, {
     mode: 0o600,
   });
@@ -272,8 +306,8 @@ export async function installCloseoutStopHook(input: {
 }
 
 function claudeStopMeta(
+  bunPath: string,
   scriptPath: string,
-  pythonPath: string,
   workspace: readonly InstalledWorkspaceHook[],
 ): Record<string, unknown> {
   return {
@@ -287,14 +321,14 @@ function claudeStopMeta(
               hooks: [
                 {
                   type: "command",
-                  command: pythonPath,
+                  command: bunPath,
                   args: [scriptPath],
                   timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS,
                 },
               ],
             },
             workspace,
-            (hook) => ({ command: pythonPath, args: [hook.scriptPath] }),
+            (hook) => ({ command: hook.interpreter, args: [hook.scriptPath] }),
           ),
         },
         env: {
@@ -306,13 +340,13 @@ function claudeStopMeta(
 }
 
 function codexHooksDocument(
-  scriptPath: string,
+  command: string,
   workspace: readonly InstalledWorkspaceHook[],
 ): { hooks: AgentHooks } {
   return {
     hooks: mergeHooks(
       {
-        hooks: [{ type: "command", command: scriptPath, timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS }],
+        hooks: [{ type: "command", command, timeout: CLOSEOUT_STOP_TIMEOUT_SECONDS }],
       },
       workspace,
       (hook) => ({ command: hook.scriptPath }),
@@ -434,6 +468,10 @@ function canonicalize(value: unknown): unknown {
     return sorted;
   }
   return value;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function block(reason: string): string {
