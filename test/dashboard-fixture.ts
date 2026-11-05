@@ -12,6 +12,7 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
+import type { LinearUsage } from "../src/linear";
 import { startServer } from "../src/server";
 import { screenshotPng } from "./png";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
@@ -20,7 +21,7 @@ const PNG = screenshotPng(320, 200, [{ x: 40, y: 40, width: 240, height: 120, rg
 
 export type DashboardFixture = Awaited<ReturnType<typeof startDashboardFixture>>;
 
-export async function startDashboardFixture() {
+export async function startDashboardFixture(options: { linearUsage?: () => LinearUsage } = {}) {
   const home = mkdtempSync(join(tmpdir(), "paws-dashboard-fixture-"));
   const db = openDatabase(join(home, "paws.sqlite"));
   migrate(db);
@@ -115,6 +116,7 @@ export async function startDashboardFixture() {
     db,
     workspaceAccess: access,
     evidenceDir,
+    ...options,
   });
   const session = issueWorkspaceSession(db, {
     workspaceId: "workspace",

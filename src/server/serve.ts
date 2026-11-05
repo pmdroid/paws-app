@@ -325,12 +325,11 @@ type Secrets = {
 async function route(request: Request, secrets: Secrets): Promise<Response> {
   const path = new URL(request.url).pathname;
   if (request.method === "GET" && path === "/health") {
-    const usage = secrets.linearUsage?.();
     const report = secrets.health();
-    return Response.json(
-      { ...report, ...(usage ? { linear: usage } : {}) },
-      { status: report.ok ? 200 : 503, headers: { "cache-control": "no-store" } },
-    );
+    return Response.json(report, {
+      status: report.ok ? 200 : 503,
+      headers: { "cache-control": "no-store" },
+    });
   }
   if (path === "/api/runner-enrollments" && secrets.runnerHostEnrollment !== undefined)
     return secrets.runnerHostEnrollment(request);
