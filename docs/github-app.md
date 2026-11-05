@@ -78,6 +78,12 @@ Every commit is authored and committed by the App bot. To be credited, a member 
 
 When that member delegates an issue, each commit of the run carries one `Co-authored-by: <name> <id+login@users.noreply.github.com>` trailer with their GitHub noreply address, and the pull request body credits their GitHub login. Paws reads the stored link at run start and makes no Linear or GitHub request for it. A member who has not linked, or who revoked the link with **Revoke attribution consent**, gets no trailer, and the run starts without waiting. The runner refuses a candidate whose new commits are not authored by the App bot or whose trailers differ from the run's credit.
 
+## Screenshots on the pull request
+
+The pull request body has a **Screenshots** section with the images Closeout counted for the published head, up to 20 and each at most 10 MB. Videos and larger images keep only the Paws link. GitHub's attachment upload accepts only user tokens, so Paws commits the images with the App's push token to the hidden ref `refs/paws/evidence` in the same repository, with the Git Data API. Each file is named by its SHA-256, and the ref keeps every image ever stored. The ref is not a branch, so it does not appear in the branch list or start CI.
+
+The images are visible to anyone with read access to the repository, and to no one else. Do not delete `refs/paws/evidence`: the images in older pull requests link to its commits and break without it. If storing the images fails, Paws opens or updates the pull request without the section and writes one journal line.
+
 ## Webhook deliveries
 
 Signed deliveries are stored durably and deduplicated by delivery ID. A delivery for a task's pull request, branch or head commit wakes its merge at once, so CI results, reviews and merge queue changes are picked up without polling. While deliveries arrive, a waiting merge reads GitHub only every 5 minutes as a backstop. After an hour without a delivery it reads every 10 to 30 seconds again. **Settings > Integrations** shows the last delivery on the GitHub line.

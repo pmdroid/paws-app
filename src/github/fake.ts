@@ -473,3 +473,105 @@ export function createFakeCheckRuns(runs: Record<string, FakeCheckRun[]> = {}): 
   };
   return fake;
 }
+
+export type FakeGitData = {
+  tip: string | null;
+  trees: Map<string, string[]>;
+  commits: Map<string, { tree: string; parents: string[]; message: string }>;
+  blobs: string[];
+  refWrites: { method: string; body: unknown }[];
+  rejectRefWrites: number;
+  failPath: string | null;
+  respond(request: { method: string; path: string; body?: unknown }): GitHubResponse | null;
+};
+
+export function createFakeGitData(options: { files?: string[] } = {}): FakeGitData {
+  let next = 0;
+  const sha = (kind: string) => `${kind}${String(++next).padStart(40 - kind.length, "0")}`;
+  const data: FakeGitData = {
+    tip: null,
+    trees: new Map(),
+    commits: new Map(),
+    blobs: [],
+    refWrites: [],
+    rejectRefWrites: 0,
+    failPath: null,
+    respond(request) {
+      const match = /^\/repos\/[^/]+\/[^/]+\/git\/(.+)$/.exec(request.path);
+      if (!match) return null;
+      const path = match[1]!;
+      if (data.failPath !== null && path.startsWith(data.failPath))
+        return { status: 500, body: { message: "synthetic failure" } };
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      if (request.method === "GET" && path === "ref/paws/evidence")
+        return data.tip === null
+          ? { status: 404, body: { message: "Not Found" } }
+          : { status: 200, body: { ref: "refs/paws/evidence", object: { sha: data.tip } } };
+      const commit = /^commits\/(\w+)$/.exec(path);
+      if (request.method === "GET" && commit) {
+        const found = data.commits.get(commit[1]!);
+        return found ? { status: 200, body: { sha: commit[1], tree: { sha: found.tree } } } : null;
+      }
+      const tree = /^trees\/(\w+)$/.exec(path);
+      if (request.method === "GET" && tree) {
+        const paths = data.trees.get(tree[1]!) ?? [];
+        return { status: 200, body: { tree: paths.map((p) => ({ path: p, type: "blob" })) } };
+      }
+      if (request.method === "POST" && path === "blobs") {
+        data.blobs.push(String(body.content));
+        return { status: 201, body: { sha: sha("b") } };
+      }
+      if (request.method === "POST" && path === "trees") {
+        const base =
+          typeof body.base_tree === "string" ? (data.trees.get(body.base_tree) ?? []) : [];
+        const added = (body.tree as { path: string }[]).map((entry) => entry.path);
+        const id = sha("t");
+        data.trees.set(id, [...new Set([...base, ...added])]);
+        return { status: 201, body: { sha: id } };
+      }
+      if (request.method === "POST" && path === "commits") {
+        const id = sha("c");
+        data.commits.set(id, {
+          tree: String(body.tree),
+          parents: body.parents as string[],
+          message: String(body.message),
+        });
+        return { status: 201, body: { sha: id } };
+      }
+      if (
+        (request.method === "POST" && path === "refs") ||
+        (request.method === "PATCH" && path === "refs/paws/evidence")
+      ) {
+        data.refWrites.push({ method: request.method, body: request.body });
+        if (data.rejectRefWrites > 0) {
+          data.rejectRefWrites--;
+          const moved = sha("c");
+          const tip = data.tip === null ? null : data.commits.get(data.tip)!;
+          const treeId = sha("t");
+          data.trees.set(treeId, tip ? [...data.trees.get(tip.tree)!] : []);
+          data.commits.set(moved, {
+            tree: treeId,
+            parents: data.tip === null ? [] : [data.tip],
+            message: "another publication",
+          });
+          data.tip = moved;
+          return { status: 422, body: { message: "Update is not a fast forward" } };
+        }
+        data.tip = String(body.sha);
+        return {
+          status: request.method === "POST" ? 201 : 200,
+          body: { object: { sha: body.sha } },
+        };
+      }
+      return null;
+    },
+  };
+  if (options.files) {
+    const treeId = sha("t");
+    const commitId = sha("c");
+    data.trees.set(treeId, options.files);
+    data.commits.set(commitId, { tree: treeId, parents: [], message: "existing" });
+    data.tip = commitId;
+  }
+  return data;
+}

@@ -10,6 +10,7 @@ export type {
 } from "./app";
 export {
   createFakeCheckRuns,
+  createFakeGitData,
   createFakeGitHub,
   createFakeMergeQueue,
   createFakeReviewThreads,
@@ -19,6 +20,7 @@ export {
 export type {
   FakeCheckContext,
   FakeCheckRun,
+  FakeGitData,
   FakeGitHub,
   FakeMergeQueue,
   FakeReviewThread,
@@ -55,6 +57,8 @@ export { checkRepositoryWriteAccess, checkRepositoryReadAccess } from "./reposit
 export type { FetchLike } from "./client";
 export { branchForIssue, fixesLine, githubHttpsUrl, pullRequestBody } from "./branch";
 export { openPullRequest, publishAccepted, pushBranch } from "./pulls";
+export { EVIDENCE_REF, EVIDENCE_REF_ATTEMPTS, storeEvidenceFiles } from "./evidence-ref";
+export type { StoredEvidenceFiles } from "./evidence-ref";
 export {
   adoptRunnerRebase,
   fetchUpstreamMain,
