@@ -5,6 +5,7 @@ import {
   immediate,
   improvementWithdrawable,
   listImprovementCriteria,
+  listImprovementActions,
   listImprovementDecisions,
   listImprovementDeliveries,
   listImprovementProposals,
@@ -415,7 +416,15 @@ const CONFLICT_MESSAGE = {
   proposal_changed:
     "A newer proposal replaced the one you reviewed. Review the current text before deciding.",
   known_issue: "This improvement already has an issue. Link it instead of creating a duplicate.",
+  recovered_issue:
+    "Paws already created a Linear issue for this improvement before it returned to review. Link an existing issue instead of creating a replacement.",
 } as const;
+
+function recoveredCreatedIssue(db: Database, improvementId: string): boolean {
+  return listImprovementActions(db, improvementId).some(
+    (action) => action.action === "return_to_review" && action.detail["createdIssue"] !== undefined,
+  );
+}
 
 function destinationRefusal(
   db: Database,
@@ -522,6 +531,8 @@ export async function decideInboxItem(
     const intent = request.intent;
     if (intent.kind === "create") {
       if (first.issue) return conflict(first, "known_issue");
+      if (recoveredCreatedIssue(db, first.improvement.id))
+        return conflict(first, "recovered_issue");
       const refused = destinationRefusal(db, reviewer, first, intent.teamId);
       if (refused) return refused;
     } else {

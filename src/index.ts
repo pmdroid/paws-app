@@ -248,7 +248,11 @@ import {
   RETRO_SCHEDULE_TICK_MS,
   type RetroDispatcher,
 } from "./retros";
-import { createImprovementsHttp, startImprovementDeliveries } from "./improvements";
+import {
+  createImprovementsHttp,
+  startImprovementDeliveries,
+  startImprovementOutcomeSync,
+} from "./improvements";
 import { itemReviews } from "./dashboard";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
@@ -1043,6 +1047,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       improvements: createImprovementsHttp({
         db,
         ...(linear?.improvementIssues ? { lookup: linear.improvementIssues } : {}),
+        ...(linear?.improvementDelivery ? { linear: linear.improvementDelivery } : {}),
+        ...(linear?.startSession ? { startSession: linear.startSession } : {}),
+        dashboardUrl: dashboardUrl(runtime.publicUrl ?? "http://127.0.0.1:8787"),
         retroEvidence: (principal, sessionIds, retroId) =>
           retroReaderAccess(db, join(paths.home, "retros"), principal, sessionIds, retroId)
             ?.readable ?? null,
@@ -1252,6 +1259,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           runtime.publicUrl ?? "http://127.0.0.1:8787",
           `/improvements/${encodeURIComponent(improvementId)}`,
         ),
+    });
+    startImprovementOutcomeSync({
+      db,
+      signal: abort.signal,
+      linearFor: async (workspaceId) =>
+        getWorkspace(db, workspaceId)?.organizationId === (await access).organizationId
+          ? improvementDelivery
+          : null,
     });
   }
   const loops = startLoops({

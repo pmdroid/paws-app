@@ -51,6 +51,7 @@ export type ImprovementLinearFailure = {
 };
 export type ImprovementLinearResult<T> = { ok: true; value: T } | ImprovementLinearFailure;
 export type ImprovementLinearIssue = LinearLinkableIssue & {
+  stateType?: string;
   delegated: boolean;
   description?: string | null;
 };
@@ -114,6 +115,9 @@ function issueFrom(node: unknown): ImprovementLinearIssue | null {
     url: readString(node, "url"),
     teamId,
     state: isRecord(state) && CLOSED.has(readString(state, "type") ?? "") ? "closed" : "open",
+    ...(isRecord(state) && readString(state, "type")
+      ? { stateType: readString(state, "type")! }
+      : {}),
     delegated: isRecord(node["delegate"]),
     description: readString(node, "description"),
   };

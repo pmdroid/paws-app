@@ -1057,6 +1057,28 @@ export {
   type ImprovementVerificationState,
 } from "./improvements";
 export {
+  annotateImprovementCriterion,
+  claimImprovementDelegation,
+  closeoutStepResult,
+  expiredImprovementDelegations,
+  followThroughCandidates,
+  improvementDelegation,
+  improvementIssueSync,
+  listImprovementActions,
+  recordImprovementAction,
+  recordImprovementIssueSync,
+  returnImprovementToReview,
+  settleImprovementDelegation,
+  workForLinearIssue,
+  type CloseoutStepResult,
+  type ImprovementAction,
+  type ImprovementActionKind,
+  type ImprovementDelegation,
+  type ImprovementIssueSync,
+  type ImprovementIssueSyncStatus,
+  type IssueWork,
+} from "./improvement-follow-through";
+export {
   readRetroActivity,
   type RetroActivityCheck,
   type RetroActivityCiRound,
