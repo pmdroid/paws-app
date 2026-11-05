@@ -25,6 +25,8 @@ Paws reads `mise.toml`, `.mise.toml`, and `.tool-versions`, in that order of pre
 
 Paws reads these files from `origin/main`, the same way it reads `.agents/closeout.yaml`. Changing them on a task branch has no effect until that change merges. A change merged to `main` reaches each item's next turn, including turns of a task that is already running; a turn keeps the list from the `main` it started on. Each file may be at most 64 KiB.
 
+With runner execution, Paws reads them from the `origin/main` its bare mirror last fetched, which it refreshes before it places the work. When Paws cannot read them, it tries twice more over five seconds, then sends the run without runtimes, posts one line in Linear that starts with "Couldn't read mise.toml at origin/main" and journals one `runtimes … unread` line for the run. The runner journals one `runtimes` line per run with the runtimes it was asked for, or `no runtimes requested`.
+
 ## Tools and backends
 
 Paws carries any mise tool: a registry short name such as `uv`, `ruff` or `golangci-lint`, a core tool such as `node`, or a `backend:name` entry such as `aqua:cli/cli`, `npm:prettier`, `cargo:ripgrep`, `pipx:black` or `go:github.com/owner/repo/cmd/tool`. `nodejs` and `golang` are accepted as aliases, and core tools may be written with a `core:` prefix, such as `"core:node"`.

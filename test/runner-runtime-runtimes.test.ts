@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { setJournalSink } from "../src/journal";
 import { readRunnerJob } from "../src/runner-execution";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import type { RunnerCommand, RunnerInstalledRuntime } from "../src/runner-protocol";
@@ -151,6 +152,8 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
         },
         daemon,
       });
+    const lines: string[] = [];
+    const restoreJournal = setJournalSink((line) => lines.push(line));
     const runtime = await open();
     try {
       for (let tries = 0; tries < 200; tries += 1) {
@@ -165,12 +168,19 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
     } finally {
       await runtime.stop();
     }
+    expect(lines.filter((line) => line.startsWith("runtimes "))).toEqual([
+      expect.stringMatching(
+        /^runtimes item=item run=run execution=\S+ requested=node@22,python@3\.99$/,
+      ),
+    ]);
     const restarted = await open();
     try {
       await restarted.tick();
       expect(heartbeats.at(-1)).toEqual(report);
     } finally {
       await restarted.stop();
+      restoreJournal();
+      expect(lines.filter((line) => line.startsWith("runtimes "))).toHaveLength(1);
       rmSync(root, { recursive: true, force: true });
     }
   },
