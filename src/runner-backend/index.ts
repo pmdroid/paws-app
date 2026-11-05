@@ -44,7 +44,9 @@ import {
   ArtifactRejectedError,
   assertDescendsFromAny,
   DEFAULT_RUN_TIMEOUT_MS,
+  candidateRef,
   git,
+  mirrorPath,
   recoverAcpConversation,
   snapshotAgentInputs,
   snapshotImplementationSkills,
@@ -344,7 +346,8 @@ export function createRemoteAgentRunner(options: {
   inputs?: Pick<RunnerInputStore, "stage" | "stagePrompt">;
   fetchCandidate(input: {
     itemId: string;
-    worktree: string;
+    mirror: string;
+    ref: string;
     baseSha: string;
     candidateSha: string;
     branch: string;
@@ -794,6 +797,17 @@ export function createRemoteAgentRunner(options: {
         }
         const mode = getTaskMode(db, itemId);
         const responseTask = isResponseTaskMode(mode);
+        // The control plane keeps no worktree for the item: its head is a ref in the bare mirror.
+        const itemCandidate = (repository: { owner: string; repo: string }) => ({
+          mirror: mirrorPath(input.pawsRoot, repository.owner, repository.repo),
+          ref: candidateRef(input.itemId),
+        });
+        const candidateHead = async (repository: { owner: string; repo: string }) => {
+          const { mirror, ref } = itemCandidate(repository);
+          return (
+            await git(["--git-dir", mirror, "rev-parse", "--verify", `${ref}^{commit}`])
+          ).trim();
+        };
         if (
           responseTask &&
           (input.role !== "implementer" ||
@@ -1033,25 +1047,28 @@ export function createRemoteAgentRunner(options: {
             throw new RemotePreparationTimeout();
           }
           /**
-           * Brings a WIP commit a runner published after this worktree's head into it, so a
+           * Brings a WIP commit a runner published after the item's candidate into it, so a
            * restarted turn starts from the work a stopped or lost one saved.
            */
           const importCheckpoint = async (networkGit: (args: string[]) => Promise<string>) => {
             const scoped = work.scope(selected.runId, selected.workspaceId);
-            if (scoped.repository && scoped.item.branchName)
+            if (!scoped.repository) return;
+            const { mirror, ref } = itemCandidate(scoped.repository);
+            if (scoped.item.branchName)
               await fastForwardToBranchTip({
-                worktree: input.worktreePath,
+                mirror,
+                ref,
                 branch: scoped.item.branchName,
                 remoteUrl: scoped.repository.remoteUrl,
                 networkGit,
                 signal,
               });
             const wip = getWorkItem(db, itemId)?.checkpoint?.wipCommit;
-            const head = (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
-            if (!wip || wip === head || !scoped.repository) return;
+            const head = await candidateHead(scoped.repository);
+            if (!wip || wip === head) return;
             const known = await git([
-              "-C",
-              input.worktreePath,
+              "--git-dir",
+              mirror,
               "merge-base",
               "--is-ancestor",
               wip,
@@ -1063,8 +1080,8 @@ export function createRemoteAgentRunner(options: {
             if (known) return;
             // A commit Paws already holds is its own history; only a runner's checkpoint is new.
             const local = await git([
-              "-C",
-              input.worktreePath,
+              "--git-dir",
+              mirror,
               "cat-file",
               "-e",
               `${wip}^{commit}`,
@@ -1077,7 +1094,8 @@ export function createRemoteAgentRunner(options: {
             try {
               await options.fetchCandidate({
                 itemId,
-                worktree: input.worktreePath,
+                mirror,
+                ref,
                 baseSha: head,
                 candidateSha: wip,
                 branch: scoped.item.branchName,
@@ -1094,7 +1112,10 @@ export function createRemoteAgentRunner(options: {
           };
           /** Pushes a head GitHub lacks, else falls back; returns the handoff for lost commits. */
           const remoteStart = async (
-            scoped: { item: { branchName: string }; repository?: { remoteUrl: string } },
+            scoped: {
+              item: { branchName: string };
+              repository?: { owner: string; repo: string; remoteUrl: string };
+            },
             networkGit: (args: string[]) => Promise<string>,
           ) => {
             const checkpoint = getWorkItem(db, itemId)?.checkpoint;
@@ -1104,14 +1125,13 @@ export function createRemoteAgentRunner(options: {
             // A first run starts from the mirror's commit, which came from GitHub.
             if (
               !checkpoint?.baseSha ||
-              (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim() ===
-                checkpoint.baseSha
+              (await candidateHead(scoped.repository)) === checkpoint.baseSha
             )
               return pending;
             let lostCommits: string | undefined;
             let repeated = false;
             const start = await ensureStartOnRemote({
-              worktree: input.worktreePath,
+              ...itemCandidate(scoped.repository),
               branch: scoped.item.branchName,
               remoteUrl: scoped.repository!.remoteUrl,
               networkGit,
@@ -1180,7 +1200,7 @@ export function createRemoteAgentRunner(options: {
                 !taskScope && input.role === "implementer"
                   ? await snapshotImplementationSkills({
                       pawsRoot: input.pawsRoot,
-                      worktree: input.worktreePath,
+                      worktree: itemCandidate(scoped.repository!).mirror,
                       repository: `${scoped.repository!.owner}/${scoped.repository!.repo}`,
                       signal,
                     })
@@ -1225,16 +1245,15 @@ export function createRemoteAgentRunner(options: {
                       ...(selected.account ? { targetAccount: selected.account } : {}),
                     })
                   : undefined;
-              const head = taskScope
-                ? undefined
-                : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
+              const mirror = taskScope ? undefined : itemCandidate(scoped.repository!).mirror;
+              const head = taskScope ? undefined : await candidateHead(scoped.repository!);
               // A session snapshot is conversation state, never authority for an unverified start.
               if (
                 restorePlan?.eligible &&
                 head &&
                 !(await git([
-                  "-C",
-                  input.worktreePath,
+                  "--git-dir",
+                  mirror!,
                   "merge-base",
                   "--is-ancestor",
                   restorePlan.commitSha,
@@ -1265,8 +1284,8 @@ export function createRemoteAgentRunner(options: {
               const checkpointBase = getWorkItem(db, itemId)?.checkpoint?.baseSha;
               const upstreamMain = acceptsRebase
                 ? await git([
-                    "-C",
-                    input.worktreePath,
+                    "--git-dir",
+                    mirror!,
                     "rev-parse",
                     "--verify",
                     "--quiet",
@@ -1283,8 +1302,8 @@ export function createRemoteAgentRunner(options: {
                 upstreamMain &&
                 checkpointBase &&
                 (await git([
-                  "-C",
-                  input.worktreePath,
+                  "--git-dir",
+                  mirror!,
                   "merge-base",
                   "--is-ancestor",
                   upstreamMain,
@@ -1305,8 +1324,8 @@ export function createRemoteAgentRunner(options: {
                 mainCandidate !== baseSha &&
                 (acceptsRebase ||
                   (await git([
-                    "-C",
-                    input.worktreePath,
+                    "--git-dir",
+                    mirror!,
                     "merge-base",
                     "--is-ancestor",
                     mainCandidate,
@@ -2204,9 +2223,10 @@ export function createRemoteAgentRunner(options: {
           if (complete.candidateSha) {
             if (assigned.type !== "run" || !input.networkGit)
               throw new Error("Runner candidate requires an authorized implementation import.");
+            const imported = itemCandidate(assigned.repository);
             await options.fetchCandidate({
               itemId,
-              worktree: input.worktreePath,
+              ...imported,
               baseSha: baseSha!,
               ...(mainSha ? { mainSha } : {}),
               candidateSha: complete.candidateSha,
@@ -2217,13 +2237,10 @@ export function createRemoteAgentRunner(options: {
             });
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
-            if (
-              (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim() !==
-              complete.candidateSha
-            )
+            if ((await candidateHead(assigned.repository)) !== complete.candidateSha)
               throw new Error("Fetched runner candidate HEAD does not match");
             await assertDescendsFromAny(
-              (args) => git(["-C", input.worktreePath, ...args]),
+              (args) => git(["--git-dir", imported.mirror, ...args]),
               mainSha ? [baseSha!, mainSha] : [baseSha!],
               complete.candidateSha,
             );

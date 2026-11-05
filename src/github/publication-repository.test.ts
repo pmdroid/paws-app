@@ -294,3 +294,31 @@ test("a partial-clone candidate and a fetch by object id keep the temporary repo
   for (const call of f.calls.filter((entry) => entry.credentialed))
     expect(call.args[1]).toContain("paws-publication-");
 });
+
+test("a candidate ref pushed from a bare mirror bundles that ref alone", async () => {
+  const f = await fixture();
+  const candidate = await f.commit("candidate");
+  const mirror = path.join(f.root, "mirror.git");
+  await exec("git", ["clone", "--bare", "--quiet", f.worktree, mirror]);
+  await exec("git", ["--git-dir", mirror, "branch", "unrelated", candidate]);
+  await exec("git", ["--git-dir", mirror, "update-ref", "refs/paws/candidates/ACME-1", candidate]);
+  await exec("git", ["--git-dir", mirror, "update-ref", "HEAD", `${candidate}~1`]);
+
+  await f.publication(
+    [...PREFIX, "push", WIDGETS, "refs/paws/candidates/ACME-1:refs/heads/paws/acme-1"],
+    { cwd: mirror, env: gitEnv(token) },
+  );
+
+  const [created] = bundleCreates(f.calls);
+  expect(created!.args).toContain("refs/paws/candidates/ACME-1");
+  expect(created!.args).not.toContain("--branches");
+  const pushed = f.calls.find((call) => call.args.includes("push"))!;
+  expect(pushed.args.at(-1)).toBe("HEAD:refs/heads/paws/acme-1");
+  const remote = f.remotes[WIDGETS]!;
+  expect(
+    (await exec("git", ["--git-dir", remote, "rev-parse", "refs/heads/paws/acme-1"])).stdout.trim(),
+  ).toBe(candidate);
+  expect(
+    (await exec("git", ["--git-dir", remote, "branch", "--list", "unrelated"])).stdout.trim(),
+  ).toBe("");
+});

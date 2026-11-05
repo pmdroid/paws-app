@@ -2,7 +2,13 @@ import { tickWithRestarts } from "../helpers";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { runAgent, type RunAgentOptions } from "../../src/acp";
+import {
+  branchName,
+  candidateRef,
+  mirrorPath,
+  runAgent,
+  type RunAgentOptions,
+} from "../../src/acp";
 import { JOB_KIND, systemClock, FakeClock } from "../../src/core";
 import {
   JobLoop,
@@ -37,7 +43,7 @@ import { intakeDelegatedIssue } from "../../src/intake";
 import { fakeMergeReadiness, fakeRequiredChecks } from "../../src/github";
 import { attachOrchestrator, itemPathId } from "../../src/loop";
 import { saveSchedulingContext } from "../../src/scheduler";
-import { migratedDatabase } from "../helpers";
+import { cloneRunner, migratedDatabase } from "../helpers";
 import { workspaceAdmission } from "../fake-workspace";
 
 export const RUNNER_ORCHESTRATION_SCENARIOS = [
@@ -458,71 +464,252 @@ export async function probeRunnerOrchestration(
           throw new Error("This fixture does not request a routing helper");
         },
         agentForItem(itemId) {
-          return async (options: RunAgentOptions) => {
-            const reviewing = options.role === "reviewer" && !options.prepareOnly;
-            if (reviewing) {
-              if (reverifying !== exclusionsForReverify) {
-                verificationExclusions = [];
-                exclusionsForReverify = reverifying;
+          return cloneRunner(
+            { owner: "acme", repo: "fixture" },
+            async (options: RunAgentOptions) => {
+              const reviewing = options.role === "reviewer" && !options.prepareOnly;
+              if (reviewing) {
+                if (reverifying !== exclusionsForReverify) {
+                  verificationExclusions = [];
+                  exclusionsForReverify = reverifying;
+                }
+                if (verificationExclusions.length === 0) {
+                  verificationExclusions = [...(options.checkoutExclusions ?? [])];
+                  assert(verificationExclusions.length > 0);
+                  writeFileSync(
+                    join(home, "config.toml"),
+                    `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude_from_checks = ["changed-after-capture"]\n`,
+                  );
+                }
+                assert.deepEqual(
+                  [...(options.checkoutExclusions ?? [])],
+                  [...verificationExclusions],
+                );
+                // The live gate's review is the agent's review command on this runner.
+                assert.match(options.reviewCommand?.base ?? "", /^[a-f0-9]{40}$/);
+                assert.equal(options.readOnly, true);
+                assert(!options.prompt.includes("Reply with a JSON array of findings"));
               }
-              if (verificationExclusions.length === 0) {
-                verificationExclusions = [...(options.checkoutExclusions ?? [])];
-                assert(verificationExclusions.length > 0);
+              if (reverifying) laterDispatches++;
+              const item = getWorkItem(db, itemId)!;
+              assert.equal(getRun(db, item.currentRunId!)?.status, "active");
+              const checks = options.runId.startsWith("checks-");
+              calls.push({
+                role: options.role,
+                prepare: !!options.prepareOnly,
+                checks,
+                reverifying,
+                prompt: options.prompt,
+                networkGit: !!options.networkGit,
+                mainSha: options.mainSha,
+              });
+              if (unavailable) throw new Error("fixture remote transport unavailable");
+              if (checks) {
+                assert.equal(options.role, "implementer");
+                if (runnerWait) assert(runnerResumed, "checks wait until the runner resumes");
+                assert(options.closeoutPolicy);
+                if (scenario === "rebase-unreachable" && reverifying)
+                  throw new Error("fixture runner is offline");
+                if (scenario === "rebase-rate-limited" && reverifying && rateLimited < 2) {
+                  rateLimited += 1;
+                  throw new LinearRateLimitError(0, {
+                    requestsRemaining: 0,
+                    requestsLimit: 5000,
+                    requestsResetMs: null,
+                    complexityRemaining: null,
+                    complexityLimit: null,
+                    complexityResetMs: null,
+                    complexity: null,
+                  });
+                }
+                const head = await git(["-C", options.worktreePath, "rev-parse", "HEAD"]);
+                checkedHeads.push(head);
+                const script = join(home, `agent-${calls.length}.json`);
                 writeFileSync(
-                  join(home, "config.toml"),
-                  `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude_from_checks = ["changed-after-capture"]\n`,
+                  script,
+                  JSON.stringify({
+                    sessionId: `session-${calls.length}`,
+                    model: "fixture-implement-model",
+                    steps: [{ type: "end" }],
+                  }),
+                );
+                const result = await runAgent({
+                  ...options,
+                  command: process.execPath,
+                  args: [join(import.meta.dir, "../../src/acp/testing/fake-agent.ts"), "", script],
+                  env: { PATH: process.env.PATH!, HOME: home },
+                });
+                if (scenario === "rebase-empty-report" && reverifying)
+                  return {
+                    ...result,
+                    closeoutReport: JSON.stringify({
+                      required: [],
+                      pending: [],
+                      blocked: null,
+                      bypassed: false,
+                    }),
+                  };
+                const failing =
+                  !reverifying ||
+                  (scenario === "rebase-failing" &&
+                    calls.filter((call) => call.checks && call.reverifying).length === 1);
+                return {
+                  ...result,
+                  closeoutReport: JSON.stringify({
+                    required: ["prepare", "check"].map((id) => ({
+                      id,
+                      status: failing && id === "check" ? "failed" : "passed",
+                      result: {
+                        argv: ["/forbidden-local-check", id === "prepare" ? "setup" : "check"],
+                        head,
+                        exitCode: failing && id === "check" ? 1 : 0,
+                        timedOut: false,
+                        durationMs: 42,
+                        timeoutSeconds: 5,
+                        stdout:
+                          failing && id === "check"
+                            ? `RUNNER_CHECK_FAILED on ${head}\n`
+                            : `runner ${id} output\n`,
+                        stderr: "",
+                        truncated: false,
+                      },
+                    })),
+                    pending: [],
+                    blocked: null,
+                    bypassed: false,
+                  }),
+                };
+              }
+              if (initialLease && !options.prepareOnly && options.role === "implementer")
+                await reclaim(options.signal);
+              if (
+                scenario === "success" &&
+                !options.prepareOnly &&
+                options.role === "implementer" &&
+                implementationCount === 0
+              ) {
+                const baseSha = await git(["-C", options.worktreePath, "rev-parse", "HEAD"]);
+                const checkpoint = { phase: "running" as const, baseSha, wipCommit: baseSha };
+                saveCheckpoint(db, item.id, checkpoint);
+                assert(options.networkGit);
+                const before = appChecks.length;
+                await options.networkGit(["-C", options.worktreePath, "fetch", origin, baseSha]);
+                assert(appChecks.length > before);
+                for (const check of appChecks.slice(before))
+                  assert.deepEqual(check, { currentRunId: item.currentRunId, checkpoint });
+                setCurrentRun(db, item.id, null);
+                try {
+                  await assert.rejects(
+                    options.networkGit(["-C", options.worktreePath, "fetch", origin, baseSha]),
+                    /obsolete task/,
+                  );
+                } finally {
+                  setCurrentRun(db, item.id, item.currentRunId);
+                }
+                observe(
+                  "candidate import revalidates the current checkpoint with the workspace App",
+                  true,
+                  {
+                    itemId,
+                    currentRunId: item.currentRunId,
+                    baseSha,
+                    appRechecks: appChecks.length - before,
+                    supersededRunRejected: true,
+                  },
                 );
               }
-              assert.deepEqual(
-                [...(options.checkoutExclusions ?? [])],
-                [...verificationExclusions],
-              );
-              // The live gate's review is the agent's review command on this runner.
-              assert.match(options.reviewCommand?.base ?? "", /^[a-f0-9]{40}$/);
-              assert.equal(options.readOnly, true);
-              assert(!options.prompt.includes("Reply with a JSON array of findings"));
-            }
-            if (reverifying) laterDispatches++;
-            const item = getWorkItem(db, itemId)!;
-            assert.equal(getRun(db, item.currentRunId!)?.status, "active");
-            const checks = options.runId.startsWith("checks-");
-            calls.push({
-              role: options.role,
-              prepare: !!options.prepareOnly,
-              checks,
-              reverifying,
-              prompt: options.prompt,
-              networkGit: !!options.networkGit,
-              mainSha: options.mainSha,
-            });
-            if (unavailable) throw new Error("fixture remote transport unavailable");
-            if (checks) {
-              assert.equal(options.role, "implementer");
-              if (runnerWait) assert(runnerResumed, "checks wait until the runner resumes");
-              assert(options.closeoutPolicy);
-              if (scenario === "rebase-unreachable" && reverifying)
-                throw new Error("fixture runner is offline");
-              if (scenario === "rebase-rate-limited" && reverifying && rateLimited < 2) {
-                rateLimited += 1;
-                throw new LinearRateLimitError(0, {
-                  requestsRemaining: 0,
-                  requestsLimit: 5000,
-                  requestsResetMs: null,
-                  complexityRemaining: null,
-                  complexityLimit: null,
-                  complexityResetMs: null,
-                  complexity: null,
+              const script = join(home, `agent-${calls.length}.json`);
+              const reviewer = options.role === "reviewer";
+              const answer = mergeDependencyYield && itemId === "new-blocker";
+              if (!reviewer && !options.prepareOnly) implementationCount++;
+              if (runnerWait && !reviewer && !options.prepareOnly && implementationCount === 1) {
+                pauseTaskRunner(item.currentRunId!);
+                runnerWatch = watchRunnerWait(item.id).catch((error: unknown) => {
+                  watchFailed = { error };
+                  parked?.reject(error);
+                  throw error;
                 });
               }
-              const head = await git(["-C", options.worktreePath, "rev-parse", "HEAD"]);
-              checkedHeads.push(head);
-              const script = join(home, `agent-${calls.length}.json`);
+              if (reverifying && reviewing) {
+                assert.equal(item.state, "verifying");
+                assert.notEqual(item.currentRunId, originalRunId);
+                assert.equal(getRun(db, item.currentRunId!)?.kind, "recheck");
+                reviewRunId = item.currentRunId!;
+                if (implementationCount === 2)
+                  assert.deepEqual(
+                    readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
+                    originalProfile,
+                  );
+                if (scenario === "reverify-lease") await reclaim(options.signal);
+                if (scenario === "error")
+                  throw new Error("fixture remote verification unavailable");
+                if (!changed) {
+                  changed = true;
+                  if (scenario === "cancelled") applyWorkItemEvent(db, item.id, "cancel");
+                  if (scenario === "reassigned") {
+                    const replacement = insertRun(db, {
+                      itemId: item.id,
+                      kind: "review",
+                      status: "active",
+                      now: clock.now(),
+                    });
+                    setCurrentRun(db, item.id, replacement.id);
+                  }
+                  if (scenario === "stale") {
+                    const path = join(home, "runs", reviewRunId, "agent-profile.json");
+                    const snapshot = JSON.parse(readFileSync(path, "utf8")) as {
+                      candidate: { model: string };
+                    };
+                    snapshot.candidate.model = "unexpected-candidate";
+                    writeFileSync(path, JSON.stringify(snapshot));
+                  }
+                }
+              }
               writeFileSync(
                 script,
                 JSON.stringify({
                   sessionId: `session-${calls.length}`,
-                  model: "fixture-implement-model",
-                  steps: [{ type: "end" }],
+                  model: reviewer ? "fixture-review-model" : "fixture-implement-model",
+                  steps: reviewer
+                    ? [
+                        {
+                          type: "update",
+                          update: {
+                            sessionUpdate: "agent_message_chunk",
+                            content: { type: "text", text: "[]" },
+                          },
+                        },
+                        { type: "end" },
+                      ]
+                    : answer
+                      ? [
+                          {
+                            type: "update",
+                            update: {
+                              sessionUpdate: "agent_message_chunk",
+                              content: { type: "text", text: "Blocker delivered remotely." },
+                            },
+                          },
+                          { type: "end" },
+                        ]
+                      : [
+                          {
+                            type: "fs_write",
+                            path: join(options.worktreePath, "result.txt"),
+                            content:
+                              implementationCount === 1
+                                ? `${scenario} initial\n`
+                                : `${scenario} fix ${implementationCount}\n`,
+                          },
+                          {
+                            type: "update",
+                            update: {
+                              sessionUpdate: "agent_message_chunk",
+                              content: { type: "text", text: "PUBLIC_REMOTE_RESPONSE" },
+                            },
+                          },
+                          { type: "end" },
+                        ],
                 }),
               );
               const result = await runAgent({
@@ -531,213 +718,36 @@ export async function probeRunnerOrchestration(
                 args: [join(import.meta.dir, "../../src/acp/testing/fake-agent.ts"), "", script],
                 env: { PATH: process.env.PATH!, HOME: home },
               });
-              if (scenario === "rebase-empty-report" && reverifying)
-                return {
-                  ...result,
-                  closeoutReport: JSON.stringify({
-                    required: [],
-                    pending: [],
-                    blocked: null,
-                    bypassed: false,
-                  }),
-                };
-              const failing =
-                !reverifying ||
-                (scenario === "rebase-failing" &&
-                  calls.filter((call) => call.checks && call.reverifying).length === 1);
+              if (reviewer || options.prepareOnly) return result;
               return {
                 ...result,
-                closeoutReport: JSON.stringify({
-                  required: ["prepare", "check"].map((id) => ({
-                    id,
-                    status: failing && id === "check" ? "failed" : "passed",
-                    result: {
-                      argv: ["/forbidden-local-check", id === "prepare" ? "setup" : "check"],
-                      head,
-                      exitCode: failing && id === "check" ? 1 : 0,
-                      timedOut: false,
-                      durationMs: 42,
-                      timeoutSeconds: 5,
-                      stdout:
-                        failing && id === "check"
-                          ? `RUNNER_CHECK_FAILED on ${head}\n`
-                          : `runner ${id} output\n`,
-                      stderr: "",
-                      truncated: false,
-                    },
-                  })),
-                  pending: [],
-                  blocked: null,
-                  bypassed: false,
-                }),
+                closeoutReport: JSON.stringify(
+                  implementationCount > 1
+                    ? {
+                        required: ["prepare", "check"].map((id) => ({
+                          id,
+                          status: "passed",
+                          result: {
+                            argv: ["/forbidden-local-check", id === "prepare" ? "setup" : "check"],
+                            head: result.checkpoint?.sha ?? "",
+                            exitCode: 0,
+                            timedOut: false,
+                            durationMs: 42,
+                            timeoutSeconds: 5,
+                            stdout: `remote ${id} output\n`,
+                            stderr: "",
+                            truncated: false,
+                          },
+                        })),
+                        pending: [],
+                        blocked: null,
+                        bypassed: false,
+                      }
+                    : { required: ["check"], pending: ["check"], blocked: null, bypassed: false },
+                ),
               };
-            }
-            if (initialLease && !options.prepareOnly && options.role === "implementer")
-              await reclaim(options.signal);
-            if (
-              scenario === "success" &&
-              !options.prepareOnly &&
-              options.role === "implementer" &&
-              implementationCount === 0
-            ) {
-              const baseSha = await git(["-C", options.worktreePath, "rev-parse", "HEAD"]);
-              const checkpoint = { phase: "running" as const, baseSha, wipCommit: baseSha };
-              saveCheckpoint(db, item.id, checkpoint);
-              assert(options.networkGit);
-              const before = appChecks.length;
-              await options.networkGit(["-C", options.worktreePath, "fetch", origin, baseSha]);
-              assert(appChecks.length > before);
-              for (const check of appChecks.slice(before))
-                assert.deepEqual(check, { currentRunId: item.currentRunId, checkpoint });
-              setCurrentRun(db, item.id, null);
-              try {
-                await assert.rejects(
-                  options.networkGit(["-C", options.worktreePath, "fetch", origin, baseSha]),
-                  /obsolete task/,
-                );
-              } finally {
-                setCurrentRun(db, item.id, item.currentRunId);
-              }
-              observe(
-                "candidate import revalidates the current checkpoint with the workspace App",
-                true,
-                {
-                  itemId,
-                  currentRunId: item.currentRunId,
-                  baseSha,
-                  appRechecks: appChecks.length - before,
-                  supersededRunRejected: true,
-                },
-              );
-            }
-            const script = join(home, `agent-${calls.length}.json`);
-            const reviewer = options.role === "reviewer";
-            const answer = mergeDependencyYield && itemId === "new-blocker";
-            if (!reviewer && !options.prepareOnly) implementationCount++;
-            if (runnerWait && !reviewer && !options.prepareOnly && implementationCount === 1) {
-              pauseTaskRunner(item.currentRunId!);
-              runnerWatch = watchRunnerWait(item.id).catch((error: unknown) => {
-                watchFailed = { error };
-                parked?.reject(error);
-                throw error;
-              });
-            }
-            if (reverifying && reviewing) {
-              assert.equal(item.state, "verifying");
-              assert.notEqual(item.currentRunId, originalRunId);
-              assert.equal(getRun(db, item.currentRunId!)?.kind, "recheck");
-              reviewRunId = item.currentRunId!;
-              if (implementationCount === 2)
-                assert.deepEqual(
-                  readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
-                  originalProfile,
-                );
-              if (scenario === "reverify-lease") await reclaim(options.signal);
-              if (scenario === "error") throw new Error("fixture remote verification unavailable");
-              if (!changed) {
-                changed = true;
-                if (scenario === "cancelled") applyWorkItemEvent(db, item.id, "cancel");
-                if (scenario === "reassigned") {
-                  const replacement = insertRun(db, {
-                    itemId: item.id,
-                    kind: "review",
-                    status: "active",
-                    now: clock.now(),
-                  });
-                  setCurrentRun(db, item.id, replacement.id);
-                }
-                if (scenario === "stale") {
-                  const path = join(home, "runs", reviewRunId, "agent-profile.json");
-                  const snapshot = JSON.parse(readFileSync(path, "utf8")) as {
-                    candidate: { model: string };
-                  };
-                  snapshot.candidate.model = "unexpected-candidate";
-                  writeFileSync(path, JSON.stringify(snapshot));
-                }
-              }
-            }
-            writeFileSync(
-              script,
-              JSON.stringify({
-                sessionId: `session-${calls.length}`,
-                model: reviewer ? "fixture-review-model" : "fixture-implement-model",
-                steps: reviewer
-                  ? [
-                      {
-                        type: "update",
-                        update: {
-                          sessionUpdate: "agent_message_chunk",
-                          content: { type: "text", text: "[]" },
-                        },
-                      },
-                      { type: "end" },
-                    ]
-                  : answer
-                    ? [
-                        {
-                          type: "update",
-                          update: {
-                            sessionUpdate: "agent_message_chunk",
-                            content: { type: "text", text: "Blocker delivered remotely." },
-                          },
-                        },
-                        { type: "end" },
-                      ]
-                    : [
-                        {
-                          type: "fs_write",
-                          path: join(options.worktreePath, "result.txt"),
-                          content:
-                            implementationCount === 1
-                              ? `${scenario} initial\n`
-                              : `${scenario} fix ${implementationCount}\n`,
-                        },
-                        {
-                          type: "update",
-                          update: {
-                            sessionUpdate: "agent_message_chunk",
-                            content: { type: "text", text: "PUBLIC_REMOTE_RESPONSE" },
-                          },
-                        },
-                        { type: "end" },
-                      ],
-              }),
-            );
-            const result = await runAgent({
-              ...options,
-              command: process.execPath,
-              args: [join(import.meta.dir, "../../src/acp/testing/fake-agent.ts"), "", script],
-              env: { PATH: process.env.PATH!, HOME: home },
-            });
-            if (reviewer || options.prepareOnly) return result;
-            return {
-              ...result,
-              closeoutReport: JSON.stringify(
-                implementationCount > 1
-                  ? {
-                      required: ["prepare", "check"].map((id) => ({
-                        id,
-                        status: "passed",
-                        result: {
-                          argv: ["/forbidden-local-check", id === "prepare" ? "setup" : "check"],
-                          head: result.checkpoint?.sha ?? "",
-                          exitCode: 0,
-                          timedOut: false,
-                          durationMs: 42,
-                          timeoutSeconds: 5,
-                          stdout: `remote ${id} output\n`,
-                          stderr: "",
-                          truncated: false,
-                        },
-                      })),
-                      pending: [],
-                      blocked: null,
-                      bypassed: false,
-                    }
-                  : { required: ["check"], pending: ["check"], blocked: null, bypassed: false },
-              ),
-            };
-          };
+            },
+          );
         },
       },
     });
@@ -942,6 +952,21 @@ export async function probeRunnerOrchestration(
           await git(["-C", source, "push", origin, "HEAD:main"]);
           movedMain = await git(["-C", source, "rev-parse", "HEAD"]);
         }
+        const legacy = scenario === "crashed-review" || scenario === "merge";
+        const mirror = mirrorPath(home, "acme", "fixture");
+        const candidate = candidateRef(itemPathId(item));
+        if (legacy) {
+          // An item from before candidate refs keeps its head only on its branch.
+          const held = await git(["--git-dir", mirror, "rev-parse", candidate]);
+          await git([
+            "--git-dir",
+            mirror,
+            "update-ref",
+            `refs/heads/${branchName(itemPathId(item))}`,
+            held,
+          ]);
+          await git(["--git-dir", mirror, "update-ref", "-d", candidate]);
+        }
         const reverifyId = merging
           ? listJobs(db).find((job) => job.queue === JOB_KIND.merge && job.status === "pending")!.id
           : enqueueJob(db, {
@@ -973,6 +998,8 @@ export async function probeRunnerOrchestration(
           }
         }
         const verified = getWorkItem(db, item.id)!;
+        if (legacy && verified.state !== "merged")
+          assert.equal(await git(["--git-dir", mirror, "rev-parse", candidate]), accepted);
         if (rebase) {
           const reverifyChecks = calls.filter((call) => call.checks && call.reverifying);
           const question = findOpenQuestion(db, "session");

@@ -51,11 +51,14 @@ import {
   providerFor,
   worktreePath,
   mirrorPath,
-  branchName,
+  candidateRef,
   runDir,
   runAgent,
   createWorktree,
   ensureBareMirror,
+  ensureCandidateRef,
+  adoptLegacyCandidate,
+  removeCandidateRef,
   FOLLOW_UP_INTERRUPTION,
   type RunAgentOptions,
   type RunAgentResult,
@@ -3185,6 +3188,7 @@ export class Orchestrator {
         home: this.options.home ?? homedir(),
         checkoutExclusions: checkout.agent,
         ...(worktreeStartRef(item) ? { startRef: worktreeStartRef(item) } : {}),
+        ...(this.options.remoteExecution ? { workspace: this.runnerWorkspace(run.id) } : {}),
         signal: controller.signal,
         promptRunner,
         askTeam,
@@ -3211,7 +3215,7 @@ export class Orchestrator {
       }
       // A run handed over to another runner keeps its question; the item waits for the answer.
       if (executed.run.handedOver && this.askedRuns.has(run.id)) {
-        await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
+        await this.keepAskedWork(finished.id, run.id);
         return;
       }
       if (executed.run.handoverFailure && !this.askedRuns.has(run.id)) {
@@ -3226,7 +3230,7 @@ export class Orchestrator {
       }
       if (executed.run.cancelled || executed.run.stopReason === "cancelled") return;
       if (this.askedRuns.has(run.id)) {
-        await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
+        await this.keepAskedWork(finished.id, run.id);
         return;
       }
       if (executed.run.stopReason === "error" && isAgentServiceError(executed.run.errorMessage))
@@ -3248,10 +3252,9 @@ export class Orchestrator {
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
       this.saveCandidate(run.id, executed.run.identity);
-      const head = (await git(["-C", executed.worktreePath, "rev-parse", "HEAD"])).trim();
-      const base = (
-        await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
-      ).trim();
+      const at = this.itemHead(finished);
+      const head = (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
+      const base = (await git(["-C", at.repo, "merge-base", at.ref, "origin/main"])).trim();
       saveCheckpoint(this.db, item.id, {
         ...getWorkItem(this.db, item.id)?.checkpoint,
         phase: "running",
@@ -3259,9 +3262,7 @@ export class Orchestrator {
         wipCommit: head,
       });
       const commits = Number(
-        (
-          await git(["-C", executed.worktreePath, "rev-list", "--count", `${base}..${head}`])
-        ).trim(),
+        (await git(["-C", at.repo, "rev-list", "--count", `${base}..${head}`])).trim(),
       );
       recordItemBranchState(this.db, {
         itemId: item.id,
@@ -3278,7 +3279,7 @@ export class Orchestrator {
           executed.run.closeoutReport,
         );
       else closeActiveRun(this.db, run.id, this.now());
-      await this.verify(finished, executed.worktreePath, base, head, this.candidateFor(run.id));
+      await this.verify(finished, at.repo, base, head, this.candidateFor(run.id));
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
       if (
@@ -3443,7 +3444,9 @@ export class Orchestrator {
       const after = getWorkItem(this.db, item.id);
       if (after === null) return;
       if (verdict.decision === "accepted" && !verdict.exhausted) {
-        const acceptedHead = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
+        const acceptedHead = (
+          await git(["-C", worktree, "rev-parse", this.itemHead(item).ref])
+        ).trim();
         const mergeJob = acceptCloseout(this.db, {
           itemId: item.id,
           expected: verdict.owner,
@@ -3671,7 +3674,7 @@ export class Orchestrator {
       this.options.remoteExecution && repository
         ? {
             path: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
-            branch: branchName(itemPathId(item)),
+            ref: candidateRef(itemPathId(item)),
           }
         : undefined;
     const policy = await this.commitPolicy(item);
@@ -3798,7 +3801,9 @@ export class Orchestrator {
       ...(commands ? { commandRunner: commands } : {}),
       reviewer: {
         async review(request) {
-          await checkoutPatterns(request.worktree, exclusionPatterns(checkoutExclusions));
+          // A runner-backed item's review runs on its runner; the mirror has no files to narrow.
+          if (!mirror)
+            await checkoutPatterns(request.worktree, exclusionPatterns(checkoutExclusions));
           return reviewer.review(request);
         },
       },
@@ -3910,7 +3915,7 @@ export class Orchestrator {
           itemId: itemPathId(item),
           runId: `checks-${itemPathId(item)}-${short}-${attempt}`,
           prompt: closeoutChecksPrompt(head, input.fromCi),
-          worktreePath: worktree,
+          worktreePath: this.runnerWorkspace(`checks-${itemPathId(item)}-${short}-${attempt}`),
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
@@ -3921,8 +3926,14 @@ export class Orchestrator {
         };
         const result = await runner!({ ...options, ...this.trustedRunInputs(item, options) });
         assertCurrent();
-        if ((await git(["-C", worktree, "rev-parse", "HEAD"])).trim() !== head) {
-          await git(["-C", worktree, "reset", "--hard", head]);
+        const { ref } = this.itemHead(item);
+        const at = (await git(["-C", worktree, "rev-parse", ref])).trim();
+        if (at !== head) {
+          await git(
+            ref === "HEAD"
+              ? ["-C", worktree, "reset", "--hard", head]
+              : ["-C", worktree, "update-ref", ref, head, at],
+          );
           reason = "the checks run changed the commit";
         } else if (result.cancelled) reason = "the run was cancelled";
         else if (result.stopReason !== "end_turn" || result.errorMessage)
@@ -4521,11 +4532,11 @@ export class Orchestrator {
       this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
-    const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
+    const { repo: worktree, ref } = await this.legacyItemHead(item);
     let head = "";
     let base = item.checkpoint?.baseSha ?? "";
     try {
-      head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
+      head = (await git(["-C", worktree, "rev-parse", ref])).trim();
       if (base === "" || item.checkpoint?.wipCommit !== head) {
         const upstream = await git([
           "-C",
@@ -4546,7 +4557,7 @@ export class Orchestrator {
             );
             return "origin/main";
           });
-        base = (await git(["-C", worktree, "merge-base", "HEAD", upstream])).trim();
+        base = (await git(["-C", worktree, "merge-base", ref, upstream])).trim();
       }
     } catch (error) {
       if (isTransient(error)) throw error;
@@ -4581,7 +4592,9 @@ export class Orchestrator {
         policyDigest = current?.digest ?? null;
         policyPaths = current?.paths ?? null;
         const { home, policyRoot } = this.closeoutHome(item);
-        const roots = [worktree, ...(home ? [home] : []), ...(policyRoot ? [policyRoot] : [])];
+        // A runner-backed item has no checkout to observe; its head already names its files.
+        const checkout = this.itemHead(item).ref === "HEAD" ? [worktree] : [];
+        const roots = [...checkout, ...(home ? [home] : []), ...(policyRoot ? [policyRoot] : [])];
         policyFiles = this.riskDisplayReader.observeFiles(
           roots.flatMap((root) =>
             [...(policyPaths ?? []), ".paws/high-risk-paths"].map((path) => join(root, path)),
@@ -4790,7 +4803,7 @@ export class Orchestrator {
     });
     const candidate = await this.candidateForItem(item);
     if (!candidate) return { kind: "obsolete" };
-    const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
+    const { repo: worktree, ref } = await this.legacyItemHead(item);
     const summary = readString(run.payload, "summary") ?? "Closeout accepted.";
     const policy = await this.commitPolicy(item);
     if (this.stopped(item.id)) return { kind: "obsolete" };
@@ -4829,7 +4842,7 @@ export class Orchestrator {
       link: pawsIssueUrl(publicUrl, item),
     };
     const openLine = openFindingsLine(open);
-    const candidateHead = await git(["-C", worktree, "rev-parse", "HEAD"])
+    const candidateHead = await git(["-C", worktree, "rev-parse", ref])
       .then((head) => head.trim())
       .catch((caughtError: unknown) => {
         journalCaught(
@@ -4865,6 +4878,7 @@ export class Orchestrator {
         .filter(Boolean)
         .join("\n\n"),
       worktree,
+      ...(ref === "HEAD" ? {} : { ref }),
       issue: item.linearIdentifier,
       branchKey: taskBranchKey(item),
       owner: repository.owner,
@@ -4935,6 +4949,7 @@ export class Orchestrator {
       pull: published.pull,
       head: published.head,
       worktree,
+      ...(ref === "HEAD" ? {} : { ref }),
       branchKey: taskBranchKey(item),
       summary,
       commit: {
@@ -4980,11 +4995,12 @@ export class Orchestrator {
     candidate: { sha: string; baseSha: string } | undefined,
   ): Promise<RiskClassification> {
     const run = (args: string[]) => git(["-C", worktree, ...args]);
-    const head = (await run(["rev-parse", "HEAD"])).trim();
+    const { ref } = this.itemHead(item);
+    const head = (await run(["rev-parse", ref])).trim();
     const base =
       candidate?.sha === head
         ? candidate.baseSha
-        : (await run(["merge-base", "HEAD", await this.upstreamMainRef(worktree, item.id)])).trim();
+        : (await run(["merge-base", ref, await this.upstreamMainRef(worktree, item.id)])).trim();
     const changed = await changedPaths(run, base, head);
     // Every changed path, so the scheduler can hold work that changes the same hot files.
     saveCandidatePaths(this.db, { itemId: item.id, head, paths: changed, recordedAt: this.now() });
@@ -5073,7 +5089,7 @@ export class Orchestrator {
     });
     if (!merged) return;
     wakeMergesBehind(this.db, this.now());
-    await removeWorktree({
+    await (this.options.remoteExecution ? removeCandidateRef : removeWorktree)({
       owner: repository.owner,
       repo: repository.repo,
       itemId: itemPathId(item),
@@ -5188,9 +5204,7 @@ export class Orchestrator {
 
   private fixRoundLimit(item: WorkItemRecord): number {
     const { home, policyRoot } = this.closeoutHome(item);
-    return (
-      policyFixBudget(worktreePath(this.options.pawsRoot, itemPathId(item)), home, policyRoot) ?? 3
-    );
+    return policyFixBudget(this.itemHead(item).repo, home, policyRoot) ?? 3;
   }
 
   /**
@@ -5488,7 +5502,7 @@ export class Orchestrator {
     });
   }
 
-  private async keepAskedWork(itemId: string, runId: string, worktree: string): Promise<void> {
+  private async keepAskedWork(itemId: string, runId: string): Promise<void> {
     let current = getWorkItem(this.db, itemId);
     if (!current || current.state === "cancelled" || current.cancelRequested) return;
     // Accepted work that went to the merge queue keeps its accepted head, not the rejected turn's.
@@ -5512,10 +5526,11 @@ export class Orchestrator {
         ? current.state
         : null;
     if (phase === null) return;
+    const { repo: worktree, ref } = await this.legacyItemHead(current);
     let head = "";
     let base = current.checkpoint?.baseSha ?? "";
     try {
-      head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
+      head = (await git(["-C", worktree, "rev-parse", ref])).trim();
     } catch (caughtError13) {
       journalCaught(
         caughtError13,
@@ -5527,7 +5542,7 @@ export class Orchestrator {
       return;
     }
     if (base === "")
-      base = await git(["-C", worktree, "merge-base", "HEAD", "origin/main"]).then(
+      base = await git(["-C", worktree, "merge-base", ref, "origin/main"]).then(
         (out) => out.trim(),
         (caughtError1) => {
           journalCaught(
@@ -6046,6 +6061,7 @@ export class Orchestrator {
       pawsRoot: this.options.pawsRoot,
       now: this.now(),
       signal,
+      runnerBacked: this.options.remoteExecution !== undefined,
       repositoryForItem: (item) => this.repositoryForItem(item),
       busy,
       hold: async (itemIds, operation) => {
@@ -6939,13 +6955,13 @@ export class Orchestrator {
   }
 
   /**
-   * Fetch main into the item's worktree, as a merge pass does before a
-   * rebase-conflict return. Returns main's commit, or null without a worktree.
+   * Fetch main into the item's worktree, or the bare mirror of a runner-backed item, as a merge
+   * pass does before a rebase-conflict return. Returns main's commit, or null without either.
    */
   private async fetchUpstreamMain(item: WorkItemRecord): Promise<string | null> {
     const repository = this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
-    const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
+    const worktree = this.itemHead(item).repo;
     if (!repository || !github || !existsSync(worktree)) return null;
     return fetchUpstreamMain({
       worktree,
@@ -7445,10 +7461,9 @@ export class Orchestrator {
       sessionId,
       uploads: Boolean(this.options.files && evidence.root),
       reviewed: (checkId) =>
-        this.visualReviewRequirements(
-          item,
-          worktreePath(this.options.pawsRoot, itemPathId(item)),
-        ).some((requirement) => requirement.id === checkId),
+        this.visualReviewRequirements(item, this.itemHead(item).repo).some(
+          (requirement) => requirement.id === checkId,
+        ),
       ...(linear ? { linear } : {}),
       now: () => this.now(),
     });
@@ -8198,15 +8213,24 @@ export class Orchestrator {
       networkGit: this.repositoryGit(item, repository, signal, "write"),
     });
     const startRef = worktreeStartRef(item);
-    const worktree = await createWorktree({
+    const placement = {
       ...repository,
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
-      checkoutExclusions: this.runCheckout(item).agent,
       ...(startRef ? { startRef } : {}),
-    });
+    };
+    // A runner-backed item gets its candidate ref in the mirror, not a worktree.
+    const worktree = this.options.remoteExecution
+      ? {
+          path: this.runnerWorkspace(runId),
+          repo: (await ensureCandidateRef(placement)).mirrorPath,
+        }
+      : await createWorktree({
+          ...placement,
+          checkoutExclusions: this.runCheckout(item).agent,
+        }).then((created) => ({ path: created.path, repo: created.path }));
     const required = (this.options.reviewRequirements ?? reviewRequirements)(
-      worktree.path,
+      worktree.repo,
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
     );
@@ -8301,7 +8325,12 @@ export class Orchestrator {
   ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes" | "ciLog" | "ciRerun"> {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
-    const runtimes = { runtimes: () => this.runtimeList(item, input.worktreePath) };
+    // A runner-backed code item has no worktree; origin/main is read in the bare mirror.
+    const repo =
+      this.options.remoteExecution && !isResponseTaskMode(getTaskMode(this.db, item.id))
+        ? this.itemHead(item).repo
+        : input.worktreePath;
+    const runtimes = { runtimes: () => this.runtimeList(item, repo) };
     if (input.role !== "implementer") return runtimes;
     const { home, policyRoot } = this.closeoutHome(item);
     const pull = getItemPullRequest(this.db, item.id);
@@ -8338,7 +8367,7 @@ export class Orchestrator {
           }
         : {}),
       closeoutPolicy: async () => {
-        const load = trustedPolicyFiles(input.worktreePath, home, policyRoot);
+        const load = trustedPolicyFiles(repo, home, policyRoot);
         // The runner parses the policy with its own release: say which keys it would leave out.
         if (load.ok && !load.absent)
           checkPolicyRunners(this.db, {
@@ -8395,6 +8424,38 @@ export class Orchestrator {
 
   private repositoryForItem(item: WorkItemRecord): RepositoryBinding | null {
     return getWorkItemRepository(this.db, item.id);
+  }
+
+  /**
+   * Where the item's head lives. A runner-backed item keeps no worktree on the control plane: its
+   * head is its candidate ref in the bare mirror. Local execution reads the worktree's HEAD.
+   */
+  private itemHead(item: WorkItemRecord): { repo: string; ref: string } {
+    const repository = this.repositoryForItem(item);
+    return this.options.remoteExecution && repository
+      ? {
+          repo: mirrorPath(this.options.pawsRoot, repository.owner, repository.repo),
+          ref: candidateRef(itemPathId(item)),
+        }
+      : { repo: worktreePath(this.options.pawsRoot, itemPathId(item)), ref: "HEAD" };
+  }
+
+  private async legacyItemHead(item: WorkItemRecord): Promise<{ repo: string; ref: string }> {
+    const repository = this.repositoryForItem(item);
+    if (this.options.remoteExecution && repository)
+      await adoptLegacyCandidate({
+        ...repository,
+        itemId: itemPathId(item),
+        pawsRoot: this.options.pawsRoot,
+      });
+    return this.itemHead(item);
+  }
+
+  /** Where a runner-backed run stages the agent's input files; it is no checkout. */
+  private runnerWorkspace(runId: string): string {
+    const path = join(runDir(this.options.pawsRoot, runId), "workspace");
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    return path;
   }
 
   private async selectRepository(

@@ -67,7 +67,7 @@ describe("closeout decides from the bare mirror", () => {
     }
   });
 
-  test("a moved branch blocks the mirror's decision as a moved HEAD blocks the worktree's", async () => {
+  test("a moved ref blocks the mirror's decision as a moved HEAD blocks the worktree's", async () => {
     const repo = await mirroredRepo({ ".agents/closeout.yaml": policy([pass("lint")]) });
     try {
       const head = await repo.commit({ "src/app.ts": "export {};\n" });
@@ -93,7 +93,7 @@ describe("closeout decides from the bare mirror", () => {
       const mirror = await decide(repo.mirror);
       expect(local.outcome).toBe("blocked");
       expect(mirror.outcome).toBe("blocked");
-      expect(mirror.summary).toContain(`branch ${BRANCH} moved while closeout ran`);
+      expect(mirror.summary).toContain(`refs/heads/${BRANCH} moved while closeout ran`);
     } finally {
       await repo.cleanup();
     }
@@ -225,7 +225,7 @@ async function mirroredRepo(files: Record<string, string>) {
   ]);
   await exec("git", ["--git-dir", mirrorPath, "worktree", "add", "-b", BRANCH, worktree, base]);
   await identity(worktree);
-  const mirror: CloseoutMirror = { path: mirrorPath, branch: BRANCH };
+  const mirror: CloseoutMirror = { path: mirrorPath, ref: `refs/heads/${BRANCH}` };
   let runs = 0;
   const evaluate = (head: string, from?: CloseoutMirror, finding?: string) => {
     runs += 1;

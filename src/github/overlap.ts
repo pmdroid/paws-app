@@ -10,8 +10,9 @@ export async function mainOverlap(
   worktree: string,
   packages: readonly string[],
   gitExec: GitExec,
+  head = "HEAD",
 ): Promise<MainOverlap> {
-  const base = await git(worktree, ["merge-base", "HEAD", UPSTREAM_MAIN_REF], gitExec);
+  const base = await git(worktree, ["merge-base", head, UPSTREAM_MAIN_REF], gitExec);
   const changed = async (to: string) =>
     (
       await gitExec(["diff", "--name-only", "--no-renames", "-z", base, to, "--"], {
@@ -21,7 +22,7 @@ export async function mainOverlap(
     ).stdout
       .split("\0")
       .filter((file) => file !== "");
-  const [onMain, inPull] = await Promise.all([changed(UPSTREAM_MAIN_REF), changed("HEAD")]);
+  const [onMain, inPull] = await Promise.all([changed(UPSTREAM_MAIN_REF), changed(head)]);
   return { base, shared: overlappingPaths(inPull, onMain, packages) };
 }
 

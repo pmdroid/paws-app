@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { candidateRef, mirrorPath } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
   beginImplementRun,
@@ -117,15 +118,17 @@ async function setup() {
     if (child.exitCode !== 0) throw new Error(child.stderr.toString());
     return child.stdout.toString().trim();
   };
-  // Paws' worktree of the item, and runner A's checkout of the same repository.
-  const paws = join(root, "paws-worktree");
-  git(["init", "-q", "-b", "main", paws]);
-  writeFileSync(join(paws, "result.txt"), "base");
-  git(["-C", paws, "add", "."]);
-  git(["-C", paws, "commit", "-q", "-m", "Base"]);
-  const base = git(["-C", paws, "rev-parse", "HEAD"]);
+  // Paws' bare mirror of the repository, and runner A's checkout of the same repository.
+  const source = join(root, "source");
+  git(["init", "-q", "-b", "main", source]);
+  writeFileSync(join(source, "result.txt"), "base");
+  git(["-C", source, "add", "."]);
+  git(["-C", source, "commit", "-q", "-m", "Base"]);
+  const base = git(["-C", source, "rev-parse", "HEAD"]);
+  const paws = mirrorPath(root, "fixture", "repository");
+  git(["clone", "-q", "--bare", source, paws]);
   const checkout = join(root, "runner-a");
-  git(["clone", "-q", paws, checkout]);
+  git(["clone", "-q", source, checkout]);
   const backend = createRemoteAgentRunner({
     db,
     work,
@@ -135,8 +138,8 @@ async function setup() {
     pollIntervalMs: 1,
     placement: createRunnerPlacement({ db, now: () => now }),
     async fetchCandidate(candidate) {
-      git(["-C", candidate.worktree, "fetch", "-q", checkout, candidate.candidateSha]);
-      git(["-C", candidate.worktree, "reset", "-q", "--hard", candidate.candidateSha]);
+      git(["-C", candidate.mirror, "fetch", "-q", checkout, candidate.candidateSha]);
+      git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
     },
   });
   const seen = new Set<string>();
@@ -254,7 +257,6 @@ async function setup() {
    */
   function item(alongside = false) {
     if (!alongside) {
-      git(["-C", paws, "reset", "-q", "--hard", base]);
       git(["-C", checkout, "reset", "-q", "--hard", base]);
       db.run("UPDATE run SET status='ended' WHERE status='active'");
       db.run("DELETE FROM runner_capacity");
@@ -279,6 +281,7 @@ async function setup() {
       );
     }
     const id = `item-${++sequence}`;
+    git(["--git-dir", paws, "update-ref", candidateRef(`display-${id}`), base]);
     const sessionKey = `session-${sequence}`;
     const record = insertQueuedItem(db, { id, now, sessionKey });
     const { run } = beginImplementRun(db, id, now);
@@ -314,7 +317,7 @@ async function setup() {
         itemId: `display-${record.id}`,
         runId: record.runId,
         prompt: "Implement fixture",
-        worktreePath: paws,
+        worktreePath: join(root, "workspace"),
         pawsRoot: root,
         networkGit: async () => "",
         signal: stop.signal,
@@ -389,7 +392,7 @@ async function setup() {
     db,
     now,
     root,
-    paws,
+    base,
     git,
     runners,
     backend,
@@ -467,7 +470,7 @@ test("a reviewer after a moved session never carries the implementer's native se
       itemId: `display-${record.id}`,
       runId: `rev-${record.id}-1`,
       prompt: "Review fixture",
-      worktreePath: context.paws,
+      worktreePath: join(context.root, "workspace"),
       pawsRoot: context.root,
       signal: stop.signal,
     })
@@ -602,7 +605,7 @@ async function runningOnA(notices: string[] = []) {
 
 /** A ends the turn at the base commit, so the next test starts with A free. */
 async function finish(onA: RunCommand, running: Promise<unknown>) {
-  const base = context.git(["-C", context.paws, "rev-parse", "HEAD"]);
+  const base = context.base;
   context.submit(onA, context.runners.a, { candidateSha: base });
   expect(await running).toMatchObject({ stopReason: "end_turn", candidateSha: base });
 }

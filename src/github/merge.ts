@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { acquireOperationToken } from "./auth/provider";
 import type { GitHubTokenProvider } from "./auth/types";
@@ -9,6 +10,7 @@ import { repoApiPath } from "./client";
 import { defaultGitExec, git, gitEnv, gitFailureReason, redact, withCredential } from "./git";
 import { mainOverlap, readUpToDateRule } from "./overlap";
 import { pushDenial, pushWithLease } from "./push";
+import { gitTempDirectory } from "./temp";
 import { pushOutageCause } from "./transport";
 import { waitForMergeReadiness, type Readiness } from "./readiness";
 import { readPullReview, type PullReview } from "./review";
@@ -22,7 +24,13 @@ import {
 } from "./types";
 
 export type SerialMergeInput = {
+  /** The repository the lane's git commands run in: the item worktree or the bare mirror. */
   worktree: string;
+  /**
+   * The ref that names S in `worktree`; `HEAD` when unset. A runner-backed item has no worktree,
+   * so its S is its candidate ref in the bare mirror.
+   */
+  ref?: string;
   issue: string;
   branchKey?: string;
   owner: string;
@@ -56,7 +64,7 @@ export type SerialMergeInput = {
 /** What the merge lane reads about the branch head S under the repository lock. */
 export type PullFacts = {
   branch: string;
-  /** S: the branch head in the worktree, which is the head the pull request should carry. */
+  /** S: the branch head Paws holds, which is the head the pull request should carry. */
   head: string;
   /** Main as just fetched. */
   base: string;
@@ -87,7 +95,9 @@ export async function readPullFacts(input: SerialMergeInput): Promise<PullFactsR
   const branch = laneBranch(input);
   if (typeof branch !== "string") return { kind: "stopped", result: branch };
   const gitExec = input.gitExec ?? defaultGitExec();
-  const status = await git(input.worktree, ["status", "--porcelain"], gitExec);
+  const ref = input.ref ?? "HEAD";
+  // A bare mirror has no work tree to be dirty.
+  const status = input.ref ? "" : await git(input.worktree, ["status", "--porcelain"], gitExec);
   if (status !== "")
     return {
       kind: "stopped",
@@ -104,10 +114,10 @@ export async function readPullFacts(input: SerialMergeInput): Promise<PullFactsR
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
   await fetchMain(input.worktree, url, token, gitExec, input.sleep);
   const base = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
-  const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
+  const head = await git(input.worktree, ["rev-parse", ref], gitExec);
   const containsMain = await git(
     input.worktree,
-    ["merge-base", "--is-ancestor", UPSTREAM_MAIN_REF, "HEAD"],
+    ["merge-base", "--is-ancestor", UPSTREAM_MAIN_REF, ref],
     gitExec,
   ).then(
     () => true,
@@ -136,7 +146,7 @@ async function readOverlap(
 ): Promise<Pick<PullFacts, "apart" | "shared" | "upToDateRule">> {
   const { shared } = input.overlap?.anyFiles
     ? { shared: [] as string[] }
-    : await mainOverlap(input.worktree, input.overlap?.packages ?? [], gitExec);
+    : await mainOverlap(input.worktree, input.overlap?.packages ?? [], gitExec, input.ref);
   if (shared.length > 0) return { apart: false, shared };
   const rule = await readUpToDateRule({
     client: input.client,
@@ -166,7 +176,10 @@ export async function rebaseOntoMain(input: SerialMergeInput): Promise<RebaseRes
   if (typeof branch !== "string") return { rebased: false, result: branch };
   if (input.isCancelled?.()) return { rebased: false, result: cancelled(branch) };
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
-  const pushed = await pushRebased(input, url, branch, input.gitExec ?? defaultGitExec());
+  const gitExec = input.gitExec ?? defaultGitExec();
+  const pushed = input.ref
+    ? await rebaseInCheckout(input, input.ref, url, branch, gitExec)
+    : await pushRebased(input, url, branch, gitExec);
   if (!pushed.ok) return { rebased: false, result: pushed.result };
   return { rebased: true, branch, base: pushed.base, head: pushed.head };
 }
@@ -213,7 +226,8 @@ export async function adoptRunnerRebase(
     patchId(input.worktree, heads.base, heads.rebased, signal),
   ]);
   if (before !== after) return { refused: "its patch-id differs from the accepted head's" };
-  await run(["reset", "--hard", heads.rebased]);
+  if (input.ref) await run(["update-ref", input.ref, heads.rebased, heads.head]);
+  else await run(["reset", "--hard", heads.rebased]);
   return { rebased: true, branch, base: heads.base, head: heads.rebased };
 }
 
@@ -357,6 +371,35 @@ function laneBranch(input: SerialMergeInput): string | SerialMergeResult {
 
 function cancelled(branch: string): SerialMergeResult {
   return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
+}
+
+/**
+ * A bare mirror has no work tree to rebase in. The rebase runs in a detached checkout of `ref`
+ * under the Git temp directory, never under the worktrees, and `ref` moves to the pushed head.
+ */
+async function rebaseInCheckout(
+  input: SerialMergeInput,
+  ref: string,
+  url: string,
+  branch: string,
+  gitExec: GitExec,
+): Promise<Awaited<ReturnType<typeof pushRebased>>> {
+  const before = await git(input.worktree, ["rev-parse", "--verify", `${ref}^{commit}`], gitExec);
+  const dir = await gitTempDirectory("paws-rebase-");
+  const tree = path.join(dir, "tree");
+  try {
+    await git(input.worktree, ["worktree", "add", "--detach", tree, before], gitExec);
+    const checkout: SerialMergeInput = { ...input, worktree: tree };
+    delete checkout.ref;
+    const pushed = await pushRebased(checkout, url, branch, gitExec);
+    if (pushed.ok) await git(input.worktree, ["update-ref", ref, pushed.head, before], gitExec);
+    return pushed;
+  } finally {
+    await git(input.worktree, ["worktree", "remove", "--force", tree], gitExec).catch(
+      (caughtError) => journalCaught(caughtError, "merge.rebaseInCheckout.remove", input.issue),
+    );
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 async function pushRebased(

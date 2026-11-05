@@ -76,10 +76,12 @@ export async function probeRunnerRebaseReturn(
   const mainSha = await commit("conflict.txt", "main\n", "Main moved");
   await invoke(["clone", "-q", "--bare", source, origin]);
 
-  const host = join(root, "host");
-  await invoke(["clone", "-q", origin, host]);
-  await invoke(["-C", host, "checkout", "-q", "-B", branch, headSha]);
-  await invoke(["-C", host, "update-ref", "refs/paws/upstream-main", mainSha]);
+  // The host keeps a bare mirror; the item's head is its candidate ref there.
+  const host = join(root, "host.git");
+  const candidate = "refs/paws/candidates/item";
+  await invoke(["clone", "-q", "--bare", origin, host]);
+  await invoke(["--git-dir", host, "update-ref", candidate, headSha]);
+  await invoke(["--git-dir", host, "update-ref", "refs/paws/upstream-main", mainSha]);
 
   const newerSha = await commit("newer.txt", "newer\n", "Main moved again");
   await invoke(["-C", source, "push", "-q", origin, "main"]);
@@ -216,7 +218,8 @@ export async function probeRunnerRebaseReturn(
   );
 
   await fetchRunnerCandidate({
-    worktree: host,
+    mirror: host,
+    ref: candidate,
     baseSha: headSha,
     mainSha,
     candidateSha,
@@ -228,7 +231,7 @@ export async function probeRunnerRebaseReturn(
     },
     signal: AbortSignal.timeout(30_000),
   });
-  const imported = (await invoke(["-C", host, "rev-parse", "HEAD"])).trim();
+  const imported = (await invoke(["--git-dir", host, "rev-parse", candidate])).trim();
   observe("the host imports the rebased candidate", imported === candidateSha, {
     imported,
     candidateSha,

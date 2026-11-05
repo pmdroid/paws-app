@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { git } from "../../src/acp";
@@ -23,14 +23,16 @@ export async function probeRunnerCandidate(
   const run = (args: string[]) => git(args, { env });
   const source = join(root, "publisher"),
     remote = join(root, "remote.git"),
-    worktree = join(root, "task");
+    mirror = join(root, "repos", "fixture", "repository.git"),
+    ref = "refs/paws/candidates/task";
   await run(["init", "-b", "main", source]);
   writeFileSync(join(source, "result.txt"), "base");
   await run(["-C", source, "add", "."]);
   await run(["-C", source, "commit", "-m", "Base"]);
   const baseSha = (await run(["-C", source, "rev-parse", "HEAD"])).trim();
   await run(["clone", "--bare", source, remote]);
-  await run(["clone", "--no-hardlinks", remote, worktree]);
+  await run(["clone", "--bare", "--no-hardlinks", remote, mirror]);
+  await run(["--git-dir", mirror, "update-ref", ref, baseSha]);
   writeFileSync(join(source, "result.txt"), "candidate");
   await run(["-C", source, "commit", "-am", "Candidate"]);
   const candidateSha = (await run(["-C", source, "rev-parse", "HEAD"])).trim();
@@ -49,7 +51,8 @@ export async function probeRunnerCandidate(
     return run(local);
   };
   const input = {
-    worktree,
+    mirror,
+    ref,
     baseSha,
     candidateSha,
     branch: "candidate",
@@ -57,28 +60,30 @@ export async function probeRunnerCandidate(
     networkGit,
     signal: new AbortController().signal,
   };
-  const head = async () => (await run(["-C", worktree, "rev-parse", "HEAD"])).trim();
+  const head = async () => (await run(["--git-dir", mirror, "rev-parse", ref])).trim();
+  const moveTo = (sha: string) => run(["--git-dir", mirror, "update-ref", ref, sha]);
+  const scratch = async () =>
+    (await run(["--git-dir", mirror, "for-each-ref", "refs/paws/imports"])).trim();
   const retained = async () => {
     assert.equal(await head(), baseSha);
-    assert.equal(readFileSync(join(worktree, "result.txt"), "utf8"), "base");
-    assert.equal((await run(["-C", worktree, "for-each-ref", "refs/paws/candidates"])).trim(), "");
+    assert.equal(await scratch(), "");
   };
-  await assert.rejects(run(["-C", worktree, "cat-file", "-e", candidateSha]));
+  await assert.rejects(run(["--git-dir", mirror, "cat-file", "-e", candidateSha]));
   await fetchRunnerCandidate(input);
   assert.equal(await head(), candidateSha);
-  assert.equal(readFileSync(join(worktree, "result.txt"), "utf8"), "candidate");
-  assert.equal((await run(["-C", worktree, "for-each-ref", "refs/paws/candidates"])).trim(), "");
+  assert.equal(await scratch(), "");
+  assert.equal(existsSync(join(root, "worktrees")), false);
   observe("exact descendant imports through the canonical credential-scoped network port", true, {
     baseSha,
     candidateSha,
     networkRemote: calls[0]!.at(-2),
   });
-  await run(["-C", worktree, "reset", "--hard", baseSha]);
+  await moveTo(baseSha);
   await assert.rejects(
     fetchRunnerCandidate({ ...input, candidateSha: unrelated, branch: "unrelated" }),
   );
   await retained();
-  observe("unrelated fetched commit is rejected before changing the task checkout", true, {
+  observe("unrelated fetched commit is rejected before moving the candidate ref", true, {
     head: await head(),
   });
   await run(["-C", source, "push", "--force", remote, "HEAD:refs/heads/candidate"]);
@@ -98,8 +103,14 @@ export async function probeRunnerCandidate(
   await run(["-C", source, "commit", "-am", "Rebased"]);
   const rebasedSha = (await run(["-C", source, "rev-parse", "HEAD"])).trim();
   await run(["-C", source, "push", remote, "HEAD:refs/heads/rebased"]);
-  await run(["-C", worktree, "fetch", remote, "refs/heads/moved-main:refs/paws/upstream-main"]);
-  await run(["-C", worktree, "reset", "--hard", candidateSha]);
+  await run([
+    "--git-dir",
+    mirror,
+    "fetch",
+    remote,
+    "refs/heads/moved-main:refs/paws/upstream-main",
+  ]);
+  await moveTo(candidateSha);
   const rebasedInput = {
     ...input,
     baseSha: candidateSha,
@@ -109,7 +120,7 @@ export async function probeRunnerCandidate(
   await assert.rejects(fetchRunnerCandidate(rebasedInput));
   await fetchRunnerCandidate({ ...rebasedInput, mainSha: movedSha });
   const rebasedHead = await head();
-  await run(["-C", worktree, "reset", "--hard", baseSha]);
+  await moveTo(baseSha);
   observe(
     "a candidate rebased onto the run's main imports only when that main is named",
     rebasedHead === rebasedSha,
@@ -128,6 +139,7 @@ export async function probeRunnerCandidate(
   );
   const count = calls.length;
   await assert.rejects(fetchRunnerCandidate({ ...input, candidateSha: "HEAD" }), /invalid/);
+  await assert.rejects(fetchRunnerCandidate({ ...input, ref: "refs/heads/main" }), /invalid/);
   await assert.rejects(fetchRunnerCandidate({ ...input, networkGit: undefined! }), /invalid/);
   await assert.rejects(fetchRunnerCandidate({ ...input, branch: "candidate:other" }));
   assert.equal(calls.length, count);
@@ -147,20 +159,20 @@ export async function probeRunnerCandidate(
   });
   await assert.rejects(cancelled, /abort/i);
   await retained();
-  observe("cancellation during the network operation never checks out a candidate", true, {});
+  observe("cancellation during the network operation never moves the candidate ref", true, {});
   await assert.rejects(
     fetchRunnerCandidate({
       ...input,
       networkGit: async (args) => {
         await networkGit(args);
-        await run(["-C", worktree, "reset", "--hard", unrelated]);
+        await moveTo(unrelated);
         return "";
       },
     }),
     /base changed/,
   );
   assert.equal(await head(), unrelated);
-  observe("a concurrently changed task HEAD is retained rather than overwritten", true, {
+  observe("a concurrently moved candidate ref is retained rather than overwritten", true, {
     head: await head(),
   });
 }

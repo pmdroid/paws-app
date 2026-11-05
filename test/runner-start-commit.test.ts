@@ -33,6 +33,7 @@ import { migratedDatabase } from "./helpers";
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const BRANCH = "paws/item";
+const REF = "refs/paws/candidates/item";
 
 test("a head that is already on GitHub starts as before, with no push", async () => {
   const result = await startScenario({ local: [], push: "works" });
@@ -131,7 +132,7 @@ test("a fallback saved before a stop is repeated once, with its handoff and no s
   expect(result.pendingAfter, result.detail).toBeUndefined();
 });
 
-test("the fallback and its handoff are saved before the worktree moves", async () => {
+test("the fallback and its handoff are saved before the candidate ref moves", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-start-order-"));
   const env = {
     PATH: "/usr/bin:/bin",
@@ -167,9 +168,12 @@ test("the fallback and its handoff are saved before the worktree moves", async (
     await git(["-C", worktree, "add", "."]);
     await git(["-C", worktree, "commit", "-m", "Lost one"]);
     const head = await git(["-C", worktree, "rev-parse", "HEAD"]);
+    const mirror = join(worktree, ".git");
+    await git(["--git-dir", mirror, "update-ref", REF, head]);
     const saved: unknown[] = [];
     const pending = ensureStartOnRemote({
-      worktree,
+      mirror,
+      ref: REF,
       branch: BRANCH,
       remoteUrl: GITHUB_URL,
       async networkGit(args) {
@@ -186,7 +190,7 @@ test("the fallback and its handoff are saved before the worktree moves", async (
     });
     await expect(pending).rejects.toThrow("Paws stopped");
     expect(saved).toEqual([{ head, start: base, lost: ["Lost one"] }]);
-    expect(await git(["-C", worktree, "rev-parse", "HEAD"])).toBe(head);
+    expect(await git(["--git-dir", mirror, "rev-parse", REF])).toBe(head);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -223,17 +227,14 @@ test("fallback reports only commits absent from all fetched GitHub tips", async 
   expect(result.pushes).toBe(1);
 });
 
-for (const mutation of ["dirtyDuringPush", "moveDuringPush"] as const)
-  test(`fallback preserves a concurrent worktree change: ${mutation}`, async () => {
-    const result = await startScenario({ local: ["Lost one"], push: "fails", [mutation]: true });
-    expect(result.error, result.detail).toBeInstanceOf(RemoteStartUnverified);
-    expect(result.baseSha).toBeUndefined();
-    if (mutation === "dirtyDuringPush") {
-      expect(result.head).toBe(result.localHead);
-      expect(result.fileAfter).toBe("Uncommitted work");
-    } else expect(result.head).not.toBe(result.prHead);
-    expect(result.pendingAfter).toBeUndefined();
-  });
+test("fallback preserves a candidate ref that moved during the push", async () => {
+  const result = await startScenario({ local: ["Lost one"], push: "fails", moveDuringPush: true });
+  expect(result.error, result.detail).toBeInstanceOf(RemoteStartUnverified);
+  expect(result.baseSha).toBeUndefined();
+  expect(result.head).not.toBe(result.prHead);
+  expect(result.head).not.toBe(result.localHead);
+  expect(result.pendingAfter).toBeUndefined();
+});
 
 test("fallback replaces an unpublished intermediate WIP checkpoint", async () => {
   const result = await startScenario({
@@ -259,7 +260,6 @@ async function startScenario(input: {
   push: "works" | "fails";
   pushError?: string;
   mergeMain?: true;
-  dirtyDuringPush?: true;
   moveDuringPush?: true;
   earlierWip?: true;
   cancelFirstRun?: true;
@@ -268,13 +268,15 @@ async function startScenario(input: {
   prBranch?: false;
   /** The first attempt fails after the fallback, before any runner gets the command. */
   failFirstDispatch?: true;
-  /** Paws saved the fallback and stopped before it reset the worktree. */
+  /** Paws saved the fallback and stopped before it moved the candidate ref. */
   stoppedBeforeReset?: true;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-start-commit-"));
   const source = join(root, "source");
   const origin = join(root, "origin.git");
+  // The item's commits are made in a scratch checkout; Paws holds them in the bare mirror only.
   const worktree = join(root, "worktree");
+  const mirror = join(root, "repos", "acme", "fixture.git");
   const env = {
     PATH: "/usr/bin:/bin",
     HOME: root,
@@ -320,6 +322,9 @@ async function startScenario(input: {
     await git(["-C", worktree, "merge", "--no-edit", "FETCH_HEAD"]);
   }
   const localHead = await git(["-C", worktree, "rev-parse", "HEAD"]);
+  await git(["clone", "--bare", origin, mirror]);
+  const adopt = () => git(["--git-dir", mirror, "fetch", worktree, `+HEAD:${REF}`]);
+  await adopt();
 
   // GitHub, served from the bare repository; a refused push fails like the 403s did.
   let pushes = 0;
@@ -328,9 +333,10 @@ async function startScenario(input: {
       throw new Error("fatal: unable to access GitHub: The requested URL returned error: 502");
     if (args.includes("push")) {
       pushes++;
-      if (pushes === 1 && input.dirtyDuringPush)
-        writeFileSync(join(worktree, "Lost-one.txt"), "Uncommitted work");
-      if (pushes === 1 && input.moveDuringPush) await commit(worktree, "Concurrent commit");
+      if (pushes === 1 && input.moveDuringPush) {
+        await commit(worktree, "Concurrent commit");
+        await adopt();
+      }
       if (input.push === "fails")
         throw new Error(input.pushError ?? "remote: Permission denied (403)");
     }
@@ -415,7 +421,13 @@ async function startScenario(input: {
     pollIntervalMs: 5,
     placement: createRunnerPlacement({ db }),
     async fetchCandidate(candidate) {
-      await git(["-C", candidate.worktree, "reset", "--hard", candidate.candidateSha]);
+      await git([
+        "--git-dir",
+        candidate.mirror,
+        "update-ref",
+        candidate.ref,
+        candidate.candidateSha,
+      ]);
     },
     async checkpointBot() {
       return { appId: "1", login: "paws[bot]", id: 1 };
@@ -498,7 +510,7 @@ async function startScenario(input: {
           itemId: item.id,
           runId: run.id,
           prompt: "Write output",
-          worktreePath: worktree,
+          worktreePath: join(root, "workspace"),
           pawsRoot: root,
           profile: { agent: "claude", model: null },
           networkGit,
@@ -516,7 +528,7 @@ async function startScenario(input: {
     return {
       error,
       base,
-      head: await git(["-C", worktree, "rev-parse", "HEAD"]),
+      head: await git(["--git-dir", mirror, "rev-parse", REF]),
       prHead,
       localHead,
       pushes,
@@ -530,9 +542,6 @@ async function startScenario(input: {
       wipCommit: stored?.checkpoint?.wipCommit,
       pendingBetween,
       pendingAtAssignment,
-      fileAfter: await Bun.file(join(worktree, "Lost-one.txt"))
-        .text()
-        .catch(() => undefined),
       pendingAfter: stored?.checkpoint?.lostCommits,
       detail: JSON.stringify({
         prHead,

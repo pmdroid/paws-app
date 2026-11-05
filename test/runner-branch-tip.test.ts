@@ -36,7 +36,11 @@ async function fixture() {
   await run(["clone", "--quiet", "--bare", publisher, remote]);
   await run(["-C", publisher, "push", "--quiet", remote, "HEAD:refs/heads/paws/task"]);
   await run(["clone", "--quiet", "--no-hardlinks", remote, worktree]);
-  const head = async () => (await run(["-C", worktree, "rev-parse", "HEAD"])).trim();
+  // The checkout only makes commits; the item's head is the candidate ref in its Git directory.
+  const mirror = join(worktree, ".git");
+  const adopt = () => run(["--git-dir", mirror, "update-ref", REF, "HEAD"]);
+  await adopt();
+  const head = async () => (await run(["--git-dir", mirror, "rev-parse", REF])).trim();
   const commit = async (text: string) => {
     writeFileSync(join(publisher, "result.txt"), text);
     await run(["-C", publisher, "commit", "-qam", text]);
@@ -48,12 +52,15 @@ async function fixture() {
     const local = args.map((arg) => (arg === remoteUrl ? remote : arg));
     return run(local);
   };
-  return { worktree, head, commit, push, run, publisher, networkGit };
+  return { worktree, mirror, adopt, head, commit, push, run, publisher, networkGit };
 }
 
-function input(worktree: string, networkGit: (args: string[]) => Promise<string>) {
+const REF = "refs/paws/candidates/task";
+
+function input(mirror: string, networkGit: (args: string[]) => Promise<string>) {
   return {
-    worktree,
+    mirror,
+    ref: REF,
     branch: "paws/task",
     remoteUrl,
     networkGit,
@@ -66,43 +73,44 @@ test("a run starts from the branch tip when an earlier run pushed commits after 
   const pushed = await f.commit("pushed by an earlier run");
   await f.push("paws/task");
 
-  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBe(pushed);
+  expect(await fastForwardToBranchTip(input(f.mirror, f.networkGit))).toBe(pushed);
   expect(await f.head()).toBe(pushed);
 });
 
-test("a branch tip that rewrote the checkout's history leaves the checkout alone", async () => {
+test("a branch tip that rewrote the checkout's history leaves the candidate alone", async () => {
   const f = await fixture();
   const before = await f.head();
   await f.run(["-C", f.publisher, "checkout", "--quiet", "--orphan", "rewritten"]);
   await f.commit("rewritten");
   await f.push("paws/task");
 
-  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBeNull();
+  expect(await fastForwardToBranchTip(input(f.mirror, f.networkGit))).toBeNull();
   expect(await f.head()).toBe(before);
 });
 
-test("a branch that is not on GitHub yet leaves the checkout alone", async () => {
+test("a branch that is not on GitHub yet leaves the candidate alone", async () => {
   const f = await fixture();
   const before = await f.head();
 
   expect(
-    await fastForwardToBranchTip({ ...input(f.worktree, f.networkGit), branch: "paws/missing" }),
+    await fastForwardToBranchTip({ ...input(f.mirror, f.networkGit), branch: "paws/missing" }),
   ).toBeNull();
   expect(await f.head()).toBe(before);
 });
 
-test("a checkout already at the branch tip stays where it is", async () => {
+test("a candidate already at the branch tip stays where it is", async () => {
   const f = await fixture();
   const before = await f.head();
 
-  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBeNull();
+  expect(await fastForwardToBranchTip(input(f.mirror, f.networkGit))).toBeNull();
   expect(await f.head()).toBe(before);
 });
 
 async function localCommit(f: Awaited<ReturnType<typeof fixture>>, text: string) {
   writeFileSync(join(f.worktree, "result.txt"), text);
   await f.run(["-C", f.worktree, "commit", "-qam", text]);
-  return (await f.run(["-C", f.worktree, "rev-parse", "HEAD"])).trim();
+  await f.adopt();
+  return f.head();
 }
 
 async function rebasedUpstream(f: Awaited<ReturnType<typeof fixture>>, text: string) {
@@ -118,7 +126,7 @@ test("a branch tip that rebased the checkout's commits onto a newer main is adop
   const rebased = await rebasedUpstream(f, "the item's work");
   await f.push("paws/task");
 
-  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBe(rebased);
+  expect(await fastForwardToBranchTip(input(f.mirror, f.networkGit))).toBe(rebased);
   expect(await f.head()).toBe(rebased);
 });
 
@@ -129,7 +137,7 @@ test("a rebased branch tip is not adopted when the checkout has work it lacks", 
   await rebasedUpstream(f, "the item's work");
   await f.push("paws/task");
 
-  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBeNull();
+  expect(await fastForwardToBranchTip(input(f.mirror, f.networkGit))).toBeNull();
   expect(await f.head()).toBe(unpushed);
 });
 
@@ -146,8 +154,9 @@ test("a local rebase onto newer main that never reached GitHub gives way to the 
   await f.run(["-C", f.worktree, "update-ref", "refs/paws/upstream-main", main]);
   await f.run(["-C", f.worktree, "checkout", "--quiet", "-B", "work", tip]);
   await f.run(["-C", f.worktree, "rebase", "--quiet", main]);
+  await f.adopt();
 
-  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBe(tip);
+  expect(await fastForwardToBranchTip(input(f.mirror, f.networkGit))).toBe(tip);
   expect(await f.head()).toBe(tip);
 });
 
@@ -161,6 +170,6 @@ test("a branch tip whose rebase resolved a conflict in the checkout's commit is 
   const rebased = (await f.run(["-C", f.publisher, "rev-parse", "HEAD"])).trim();
   await f.push("paws/task");
 
-  expect(await fastForwardToBranchTip(input(f.worktree, f.networkGit))).toBe(rebased);
+  expect(await fastForwardToBranchTip(input(f.mirror, f.networkGit))).toBe(rebased);
   expect(await f.head()).toBe(rebased);
 });

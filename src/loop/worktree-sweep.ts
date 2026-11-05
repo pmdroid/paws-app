@@ -1,7 +1,13 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
-import { removeWorktree, worktreeMergedInto, worktreePath } from "../acp";
+import {
+  adoptLegacyCandidate,
+  git,
+  removeWorktree,
+  worktreeMergedInto,
+  worktreePath,
+} from "../acp";
 import type { RepositoryBinding, WorkItemState } from "../core";
 import { listWorkItems, type WorkItemRecord } from "../db";
 import { itemPathId } from "./sources";
@@ -27,6 +33,11 @@ export type WorktreeSweep = {
   pawsRoot: string;
   now: number;
   signal: AbortSignal;
+  /**
+   * Items run on remote runners, so the control plane keeps no worktree for them: a worktree an
+   * earlier release left goes as soon as no work on its items runs in this process.
+   */
+  runnerBacked?: boolean;
   repositoryForItem(item: WorkItemRecord): RepositoryBinding | null;
   busy(itemId: string): boolean;
   hold(itemIds: readonly string[], operation: () => Promise<void>): Promise<void>;
@@ -39,11 +50,13 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
     const path = worktreePath(sweep.pawsRoot, pathId);
     const repository = sweep.repositoryForItem(items[0]!);
     const touched = lastTouched(sweep.db, items, path);
-    if (!repository || touched === null || !items.every(idle)) continue;
+    const leftover = sweep.runnerBacked === true;
+    if (!repository || touched === null || (!leftover && !items.every(idle))) continue;
     if (items.some((item) => sweep.busy(item.id))) continue;
     const expired =
-      items.every((item) => RETIRED_STATES.has(item.state)) &&
-      touched <= sweep.now - RETIRED_WORKTREE_MS;
+      leftover ||
+      (items.every((item) => RETIRED_STATES.has(item.state)) &&
+        touched <= sweep.now - RETIRED_WORKTREE_MS);
     const heads = expired ? [] : await mergedHeads(sweep, items[0]!, repository);
     if (!expired && !(await worktreeMergedInto(path, heads))) continue;
     const ids = items.map((item) => item.id);
@@ -55,6 +68,7 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
           (item) => items.find((before) => before.id === item.id)?.state === item.state,
         );
       if (!unchanged || (!expired && !(await worktreeMergedInto(path, heads)))) return;
+      if (leftover && !(await keepLeftoverHead(sweep, repository, pathId, path))) return;
       await removeWorktree({ ...repository, itemId: pathId, pawsRoot: sweep.pawsRoot }).catch(
         (caughtError1) => {
           journalCaught(
@@ -66,6 +80,27 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
         },
       );
     });
+  }
+}
+
+async function keepLeftoverHead(
+  sweep: WorktreeSweep,
+  repository: RepositoryBinding,
+  pathId: string,
+  path: string,
+): Promise<boolean> {
+  try {
+    const worktreeHead = (await git(["-C", path, "rev-parse", "--verify", "HEAD"])).trim();
+    await adoptLegacyCandidate({
+      ...repository,
+      itemId: pathId,
+      pawsRoot: sweep.pawsRoot,
+      worktreeHead,
+    });
+    return true;
+  } catch (caughtError4) {
+    journalCaught(caughtError4, "worktree-sweep.keepLeftoverHead", pathId);
+    return false;
   }
 }
 

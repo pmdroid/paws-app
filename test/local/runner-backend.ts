@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createAcpActivityReporter } from "../../src/loop";
 import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -45,6 +45,8 @@ import {
 } from "../../src/runner-protocol";
 import {
   ArtifactRejectedError,
+  candidateRef,
+  mirrorPath,
   prepareRepositorySnapshot,
   recoverAcpConversation,
   runDir,
@@ -157,6 +159,12 @@ export async function probeRunnerBackend(
   await git(["-C", source, "commit", "-am", "Candidate"]);
   const head = await git(["-C", source, "rev-parse", "HEAD"]);
   await git(["-C", source, "reset", "--hard", base]);
+  // Paws keeps the repository's bare mirror and each item's candidate ref there. Here the mirror
+  // is `source`'s Git directory and every candidate ref follows `main`, so the probe reads and
+  // moves the item's head through `source` as it always has.
+  const mirror = mirrorPath(root, "fixture", "repository");
+  mkdirSync(join(root, "repos", "fixture"), { recursive: true });
+  symlinkSync(join(source, ".git"), mirror);
   let fetched = 0;
   let importWrongHead = false;
   const artifacts = createRunnerArtifactStore({ root: join(root, "artifact-store"), work });
@@ -181,7 +189,13 @@ export async function probeRunnerBackend(
       assert.equal(candidate.baseSha, base);
       assert.equal(candidate.candidateSha, head);
       fetched++;
-      await git(["-C", candidate.worktree, "reset", "--hard", importWrongHead ? base : head]);
+      await git([
+        "-C",
+        candidate.mirror,
+        "update-ref",
+        candidate.ref,
+        importWrongHead ? base : head,
+      ]);
     },
   };
   const backend = createRemoteAgentRunner(backendOptions);
@@ -259,6 +273,15 @@ export async function probeRunnerBackend(
     finishRuns();
     const record = insertQueuedItem(db, { id, now, sessionKey: sessionId });
     const { run } = beginImplementRun(db, id, now);
+    const linked = Bun.spawnSync([
+      "/usr/bin/git",
+      "--git-dir",
+      mirror,
+      "symbolic-ref",
+      candidateRef(`display-${id}`),
+      "refs/heads/main",
+    ]);
+    assert.equal(linked.exitCode, 0, linked.stderr.toString());
     recordLinearInstallation(db, {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
@@ -2236,7 +2259,7 @@ export async function probeRunnerBackend(
         placement,
         async fetchCandidate(candidate) {
           assert.equal(candidate.candidateSha, head);
-          await git(["-C", candidate.worktree, "reset", "--hard", head]);
+          await git(["-C", candidate.mirror, "update-ref", candidate.ref, head]);
         },
       });
       for (const host of hostIds)

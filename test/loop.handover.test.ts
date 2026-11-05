@@ -1,4 +1,4 @@
-import { tickWithRestarts } from "./helpers";
+import { cloneRunner, tickWithRestarts } from "./helpers";
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
@@ -71,6 +71,7 @@ async function handOver(options: {
   let handed = false;
   let sequence = 0;
   const prompts: string[] = [];
+  const repository = { owner: "pmdroid", repo: "paws-demo" };
   const orchestrator = attachOrchestrator({
     db,
     admission: workspaceAdmission(db),
@@ -79,14 +80,14 @@ async function handOver(options: {
     tracker,
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    repositories: [{ ...repository, remoteUrl: layout.bare }],
     retryBaseMs: 10,
     remoteExecution: {
       agentForSession() {
         throw new Error("This fixture does not request a routing helper");
       },
       agentForItem() {
-        return async (input: RunAgentOptions): Promise<RunAgentResult> => {
+        return cloneRunner(repository, async (input: RunAgentOptions): Promise<RunAgentResult> => {
           if (input.prepareOnly) return runAgent(input);
           prompts.push(input.prompt);
           const failing = options.failure !== undefined && prompts.length === 1;
@@ -130,7 +131,7 @@ async function handOver(options: {
             agentExited: true,
             sessionId: "claude-session",
           };
-        };
+        });
       },
     },
     launch(input) {

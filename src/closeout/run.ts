@@ -23,7 +23,7 @@ import {
   type RuleApproval,
   type StoredReviewFinding,
 } from "./types";
-import { isSha, readBranch, readHead } from "./worktree";
+import { isSha, readHead, readRef } from "./worktree";
 import {
   addReview,
   credentialSecrets,
@@ -554,7 +554,7 @@ async function attemptFix(
   if (!fix.ok) return { reason: fix.reason, final: fix.reason === "fix cancelled" };
   let actual: string;
   try {
-    actual = await readHead(input.worktree);
+    actual = await currentHead(input);
   } catch (error) {
     journalCaught(error, "run.attemptFix.readHead", input.taskId);
     return { reason: error instanceof Error ? error.message : String(error), final: true };
@@ -1251,9 +1251,7 @@ function decisionRepo(input: DecisionSource): string {
 }
 
 function currentHead(input: DecisionSource): Promise<string> {
-  return input.mirror
-    ? readBranch(input.mirror.path, input.mirror.branch)
-    : readHead(input.worktree);
+  return input.mirror ? readRef(input.mirror.path, input.mirror.ref) : readHead(input.worktree);
 }
 
 async function headUnmoved(input: DecisionSource & { head: string }): Promise<string | null> {
@@ -1261,7 +1259,7 @@ async function headUnmoved(input: DecisionSource & { head: string }): Promise<st
     const actual = await currentHead(input);
     if (actual !== input.head)
       return input.mirror
-        ? `branch ${input.mirror.branch} moved while closeout ran`
+        ? `${input.mirror.ref} moved while closeout ran`
         : "worktree HEAD changed while closeout ran";
     return null;
   } catch (error) {

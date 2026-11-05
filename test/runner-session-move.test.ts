@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { candidateRef, mirrorPath } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import { RunnerCapacityWait } from "../src/core";
 import {
@@ -138,6 +139,9 @@ async function setup() {
   writeFileSync(join(source, "result.txt"), "candidate");
   run(["-C", source, "commit", "-q", "-am", "Candidate"]);
   const head = run(["-C", source, "rev-parse", "HEAD"]);
+  // Paws keeps the repository's bare mirror; each item's head is its candidate ref there.
+  const mirror = mirrorPath(root, "fixture", "repository");
+  run(["clone", "-q", "--bare", source, mirror]);
   const backend = createRemoteAgentRunner({
     db,
     work,
@@ -146,7 +150,7 @@ async function setup() {
     now: () => now,
     pollIntervalMs: 1,
     async fetchCandidate(candidate) {
-      run(["-C", candidate.worktree, "reset", "-q", "--hard", candidate.candidateSha]);
+      run(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
     },
   });
   const seen = new Set<string>();
@@ -177,6 +181,7 @@ async function setup() {
       "UPDATE run SET status='ended' WHERE status='active' AND id IN (SELECT run_id FROM runner_work WHERE ended_at IS NOT NULL)",
     );
     const id = `item-${++sequence}`;
+    run(["--git-dir", mirror, "update-ref", candidateRef(`display-${id}`), base]);
     const sessionKey = `session-${sequence}`;
     const record = insertQueuedItem(db, { id, now, sessionKey });
     const { run: started } = beginImplementRun(db, id, now);
@@ -332,7 +337,7 @@ async function setup() {
         itemId: `display-${record.id}`,
         runId: record.runId,
         prompt: "Implement fixture",
-        worktreePath: source,
+        worktreePath: join(root, "workspace"),
         pawsRoot: root,
         networkGit: async () => "",
         onEvent(event) {
@@ -644,7 +649,7 @@ test("another Grok version still restores, and a failed load names both versions
  * item is first in its merge queue and re-verifies.
  */
 async function mergeQueueItemOnFullRunner() {
-  const { db, runners, backend, source, root } = context;
+  const { db, runners, backend, root } = context;
   context.reset();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   const record = context.item();
@@ -655,7 +660,7 @@ async function mergeQueueItemOnFullRunner() {
       itemId: `display-${record.id}`,
       runId: record.runId,
       prompt: "Implement fixture",
-      worktreePath: source,
+      worktreePath: join(root, "workspace"),
       pawsRoot: root,
       networkGit: async () => "",
       ...options,

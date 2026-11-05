@@ -383,8 +383,8 @@ async function runRemoteFault(fault: Fault) {
     ...(fault.startsWith("silent") ? { silentRunMs: SILENT_RUN_MS } : {}),
     ...(fault === "silent-hung" ? { hungRunMs: HUNG_RUN_MS } : {}),
     async fetchCandidate(candidate) {
-      await git(["-C", candidate.worktree, "fetch", origin, candidate.candidateSha]);
-      await git(["-C", candidate.worktree, "reset", "--hard", candidate.candidateSha]);
+      await git(["-C", candidate.mirror, "fetch", origin, candidate.candidateSha]);
+      await git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
     },
     async checkpointBot() {
       if (fault === "busy" && runner.faulty) {

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AskTeamContext } from "../src/acp";
+import { candidateRef, mirrorPath, type AskTeamContext } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
   accrueAwake,
@@ -120,15 +120,19 @@ async function setup() {
     if (child.exitCode !== 0) throw new Error(child.stderr.toString());
     return child.stdout.toString().trim();
   };
-  // Paws' worktree of the item, and the runner's checkout of the same repository.
-  const paws = join(root, "paws-worktree");
-  git(["init", "-q", "-b", "main", paws]);
-  writeFileSync(join(paws, "result.txt"), "base");
-  git(["-C", paws, "add", "."]);
-  git(["-C", paws, "commit", "-q", "-m", "Base"]);
-  const base = git(["-C", paws, "rev-parse", "HEAD"]);
+  // Paws' bare mirror of the repository, and the runner's checkout of the same repository.
+  const source = join(root, "source");
+  git(["init", "-q", "-b", "main", source]);
+  writeFileSync(join(source, "result.txt"), "base");
+  git(["-C", source, "add", "."]);
+  git(["-C", source, "commit", "-q", "-m", "Base"]);
+  const base = git(["-C", source, "rev-parse", "HEAD"]);
+  const paws = mirrorPath(root, "fixture", "repository");
+  git(["clone", "-q", "--bare", source, paws]);
   const runner = join(root, "runner-worktree");
-  git(["clone", "-q", paws, runner]);
+  git(["clone", "-q", source, runner]);
+  /** The item's head on the Paws side: its candidate ref in the mirror. */
+  const head = (id: string) => `${candidateRef(`display-${id}`)}`;
   const backend = createRemoteAgentRunner({
     db,
     work,
@@ -138,8 +142,8 @@ async function setup() {
     pollIntervalMs: 1,
     // Through networkGit in production; here Paws fetches the WIP commit from the runner's checkout.
     async fetchCandidate(candidate) {
-      git(["-C", candidate.worktree, "fetch", "-q", runner, candidate.candidateSha]);
-      git(["-C", candidate.worktree, "reset", "-q", "--hard", candidate.candidateSha]);
+      git(["-C", candidate.mirror, "fetch", "-q", runner, candidate.candidateSha]);
+      git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
     },
   });
   const seen = new Set<string>();
@@ -179,12 +183,12 @@ async function setup() {
   }
   let sequence = 0;
   function item() {
-    git(["-C", paws, "reset", "-q", "--hard", base]);
     git(["-C", runner, "reset", "-q", "--hard", base]);
     git(["-C", runner, "clean", "-qfd"]);
     db.run("UPDATE run SET status='ended' WHERE status='active'");
     work.heartbeat(runnerId);
     const id = `item-${++sequence}`;
+    git(["--git-dir", paws, "update-ref", head(id), base]);
     const sessionKey = `session-${sequence}`;
     const record = insertQueuedItem(db, { id, now: now(), sessionKey });
     const { run } = beginImplementRun(db, id, now());
@@ -221,7 +225,7 @@ async function setup() {
       itemId: `display-${record.id}`,
       runId: record.runId,
       prompt: "Implement fixture",
-      worktreePath: paws,
+      worktreePath: join(root, "workspace"),
       pawsRoot: root,
       networkGit: async () => "",
       ...(signal ? { signal } : {}),
@@ -339,6 +343,7 @@ async function setup() {
     db,
     git,
     paws,
+    head,
     runner,
     base,
     sessions,
@@ -387,12 +392,12 @@ test("a fake runner handover leaves its WIP commit on the Paws side as the check
   );
   await expect(turn).rejects.toThrow();
   expect(outcome).toEqual({ status: "handed_over", wipCommit: wip });
-  // Paws' worktree holds the runner's worktree exactly.
-  expect(git(["-C", paws, "rev-parse", "HEAD"])).toBe(wip);
-  expect(git(["-C", paws, "rev-parse", "HEAD^{tree}"])).toBe(
+  // Paws' candidate ref holds the runner's worktree exactly.
+  const ref = context.head(record.id);
+  expect(git(["--git-dir", paws, "rev-parse", ref])).toBe(wip);
+  expect(git(["--git-dir", paws, "rev-parse", `${ref}^{tree}`])).toBe(
     git(["-C", runner, "rev-parse", "HEAD^{tree}"]),
   );
-  expect(git(["-C", paws, "status", "--porcelain"])).toBe("");
   expect(getWorkItem(context.db, record.id)?.checkpoint).toMatchObject({
     phase: "running",
     baseSha: context.base,
@@ -631,18 +636,16 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
       context.submit(command, { candidateSha: snapshot });
     });
     expect(restarted.result.stopReason).toBe("end_turn");
-    expect(git(["-C", paws, "rev-parse", "HEAD"])).toBe(snapshot);
-    expect(git(["-C", paws, "log", "--format=%s", "-3"]).split("\n")).toEqual([
+    const ref = context.head(record.id);
+    expect(git(["--git-dir", paws, "rev-parse", ref])).toBe(snapshot);
+    expect(git(["--git-dir", paws, "log", "--format=%s", "-3", ref]).split("\n")).toEqual([
       "Save work in progress so far",
       "Show the findings",
       "Add the findings contract",
     ]);
-    expect(git(["-C", paws, "ls-files"]).split("\n").sort()).toEqual([
-      "contract.ts",
-      "findings.tsx",
-      "notes.txt",
-      "result.txt",
-    ]);
+    expect(
+      git(["--git-dir", paws, "ls-tree", "-r", "--name-only", ref]).split("\n").sort(),
+    ).toEqual(["contract.ts", "findings.tsx", "notes.txt", "result.txt"]);
   } finally {
     context.release("0.1.44");
   }
@@ -681,7 +684,7 @@ test("a restarted turn whose saved work cannot be fetched fails instead of start
     itemId: `display-${record.id}`,
     runId: record.runId,
     prompt: "Implement fixture",
-    worktreePath: context.paws,
+    worktreePath: join(context.root, "workspace"),
     pawsRoot: context.root,
     networkGit: async () => "",
   });
