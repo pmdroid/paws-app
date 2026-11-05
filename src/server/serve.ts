@@ -86,7 +86,11 @@ export type ServerOptions = {
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
   /** `POST /api/runner-enrollments`, where a host enrolls itself with a member's token. */
   runnerHostEnrollment?: (request: Request) => Promise<Response>;
-  runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
+  runnerControl?: (
+    request: Request,
+    principal: WorkspacePrincipal,
+    sessionIds: readonly string[],
+  ) => Promise<Response | null>;
   retros?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -325,12 +329,11 @@ type Secrets = {
 async function route(request: Request, secrets: Secrets): Promise<Response> {
   const path = new URL(request.url).pathname;
   if (request.method === "GET" && path === "/health") {
-    const usage = secrets.linearUsage?.();
     const report = secrets.health();
-    return Response.json(
-      { ...report, ...(usage ? { linear: usage } : {}) },
-      { status: report.ok ? 200 : 503, headers: { "cache-control": "no-store" } },
-    );
+    return Response.json(report, {
+      status: report.ok ? 200 : 503,
+      headers: { "cache-control": "no-store" },
+    });
   }
   if (path === "/api/runner-enrollments" && secrets.runnerHostEnrollment !== undefined)
     return secrets.runnerHostEnrollment(request);
@@ -464,7 +467,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         if (response !== null) return response;
       }
       if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {
-        const response = await secrets.runnerControl(request, access.principal);
+        const response = await secrets.runnerControl(request, access.principal, sessionIds);
         if (response !== null) return response;
       }
       if (path.startsWith("/api/retros/") && secrets.retros !== undefined) {

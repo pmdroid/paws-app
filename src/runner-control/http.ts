@@ -82,13 +82,17 @@ export function createRunnerHttp(
         enrolling -= 1;
       }
     },
-    async browser(request: Request, principal: WorkspacePrincipal): Promise<Response | null> {
+    async browser(
+      request: Request,
+      principal: WorkspacePrincipal,
+      sessionIds: readonly string[],
+    ): Promise<Response | null> {
       const path = new URL(request.url).pathname;
       try {
         if (path === "/api/runners" && request.method === "GET")
           return json({
             runners: control
-              .list(principal)
+              .list(principal, sessionIds)
               .map((runner) =>
                 options.agents
                   ? { ...runner, agents: options.agents(principal, runner.id) }

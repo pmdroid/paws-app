@@ -769,7 +769,7 @@ export function createWorkspaceAssignments(options: {
         )
           return;
         const event: AcceptedLinearEvent = JSON.parse(hold.event);
-        // Every Linear request of the resume counts toward the issue under /health linear.items.
+        // Every Linear request of the resume counts toward the issue in the Linear usage ledger.
         await linearItem(holdIdentifier(hold), async () => {
           const verified = await resumeCheck(hold, event, context.signal).catch(
             journalRejection(

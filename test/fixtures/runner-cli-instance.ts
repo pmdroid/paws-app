@@ -104,7 +104,9 @@ if (process.argv[2] === "job") {
         enrollmentRequests++;
         return coordinator.hostEnrollment(request);
       }
-      return (await coordinator.browser(request, principal)) ?? new Response(null, { status: 404 });
+      return (
+        (await coordinator.browser(request, principal, [])) ?? new Response(null, { status: 404 })
+      );
     },
   });
   const config = {

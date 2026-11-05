@@ -122,7 +122,11 @@ async function fixture() {
       return (await response.json()) as Record<string, unknown>;
     },
     async list(as = admin) {
-      const response = await browser.browser(new Request("https://paws.invalid/api/runners"), as);
+      const response = await browser.browser(
+        new Request("https://paws.invalid/api/runners"),
+        as,
+        [],
+      );
       return ((await response!.json()) as { runners: Listed[] }).runners[0]!;
     },
     async set(concurrency: unknown, as = admin) {
@@ -133,6 +137,7 @@ async function fixture() {
           body: JSON.stringify({ concurrency }),
         }),
         as,
+        [],
       ))!;
       return { status: response.status, body: (await response.json()) as { error?: string } };
     },

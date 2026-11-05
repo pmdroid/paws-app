@@ -258,6 +258,7 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
   const response = await http.browser(
     new Request("https://paws.example.invalid/api/runners"),
     f.owner,
+    [],
   );
   const body = (await response!.json()) as {
     runners: { agents: { agent: string; status: string }[] }[];

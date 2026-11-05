@@ -285,10 +285,10 @@ export async function openRunnerCoordinator(options: {
         privateKey: signing.privateKey,
         command,
       }),
-    async browser(request: Request, principal: WorkspacePrincipal) {
+    async browser(request: Request, principal: WorkspacePrincipal, sessionIds: readonly string[]) {
       return (
         (await models.browser(request, principal)) ??
-        (await http.browser(request, principal)) ??
+        (await http.browser(request, principal, sessionIds)) ??
         (await health.browser(request, principal)) ??
         login.browser(request, principal)
       );

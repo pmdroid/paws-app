@@ -30,7 +30,6 @@ import {
   itemOwnerHasEligibleRunner,
   itemOwnerRunnerSetupNeed,
 } from "../src/runner-placement";
-import { startServer } from "../src/server";
 import {
   createWorkspaceAccess,
   createWorkspaceAssignments,
@@ -411,12 +410,6 @@ async function firstDelegation(
       access.recheckLinearEvent(event) && assignments.recheck(event),
     authorizeLinearIntake: (sessionId, spec) => assignments.authorizeIntake(sessionId, spec),
   });
-  const health = startServer({
-    port: 0,
-    hostname: "127.0.0.1",
-    webhooks: false,
-    linearUsage: () => linear.usage(),
-  });
   const state = () => listWorkItems(db)[0]?.state ?? null;
   /** Runs every due job and outbox row, then lets `minutes` of fake time pass with nothing due. */
   const settle = async (minutes = 1) => {
@@ -535,9 +528,6 @@ async function firstDelegation(
       await settle();
     }
     while (outbox.tick().length > 0) await outbox.idle();
-    const reported = (await (await fetch(`http://127.0.0.1:${health.port}/health`)).json()) as {
-      linear: { items: { item: string; requests: number }[] };
-    };
     return {
       server,
       refused: false as const,
@@ -550,11 +540,10 @@ async function firstDelegation(
         waitingForRunner,
         run: server.total - resumed - waitingForRunner,
       },
-      health: reported.linear.items,
+      usage: linear.usage().items,
       pullRequest: github.opened.length,
     };
   } finally {
-    await health.stop(true);
     await access.stop();
     await orchestrator.shutdown();
     await outbox.idle();
@@ -584,10 +573,10 @@ test("a first delegation from an unknown user stays within 30 Linear requests, a
     waitingForRunner: 0,
     run: 17,
   });
-  // /health counts every app request toward ENG-1. Only the delegator's own OAuth code exchange
+  // The Linear ledger counts every app request toward ENG-1. Only the delegator's own OAuth code exchange
   // and identity read, made with their token, are outside the app's ledger.
   expect(result.server.item).toBe(result.server.total - 2);
-  expect(result.health).toEqual([{ item: "ENG-1", requests: result.server.item }]);
+  expect(result.usage).toEqual([{ item: "ENG-1", requests: result.server.item }]);
 }, 60_000);
 
 for (const [change, reason, apply] of [
