@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { changedPaths, describeSelection, selectTests, type Selection } from "./affected-tests";
@@ -292,5 +292,37 @@ test("a densely cyclic import graph is selected quickly and still follows every 
     });
   } finally {
     rmSync(cyclic, { recursive: true, force: true });
+  }
+});
+
+test("--bail or PAWS_TEST_BAIL=1 adds --bail=1 to the test command; without either it is unchanged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "paws-affected-bail-"));
+  try {
+    const bin = join(dir, "bin");
+    const work = join(dir, "work");
+    mkdirSync(bin);
+    mkdirSync(work);
+    const argv = join(dir, "argv");
+    writeFileSync(join(bin, "bun"), `#!/bin/sh\necho "$@" > ${JSON.stringify(argv)}\n`, {
+      mode: 0o755,
+    });
+    const script = join(import.meta.dir, "affected-tests.ts");
+    const { PAWS_TEST_BAIL: _, ...parent } = process.env;
+    const ran = (args: string[], env: Record<string, string> = {}) => {
+      const result = spawnSync(process.execPath, [script, ...args], {
+        cwd: work,
+        env: { ...parent, ...env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      return readFileSync(argv, "utf8").trim();
+    };
+    expect(ran([])).toBe("test --parallel=4 --timeout=20000 --no-orphans");
+    expect(ran(["--bail"])).toBe("test --parallel=4 --timeout=20000 --no-orphans --bail=1");
+    expect(ran([], { PAWS_TEST_BAIL: "1" })).toBe(
+      "test --parallel=4 --timeout=20000 --no-orphans --bail=1",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
