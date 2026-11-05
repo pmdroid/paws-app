@@ -179,6 +179,73 @@ test("a turn pass of a draft check from before the draft was saved is not reused
   expect(turnPasses(events).map((pass) => pass.id)).toEqual(["pr-title", "unit"]);
 });
 
+test("a new title probes the rules again instead of reusing the result for the old title", async () => {
+  const root = initRepo();
+  mkdirSync(join(root, ".agents", "probes"), { recursive: true });
+  writeFileSync(
+    join(root, ".agents", "probes", "title.ts"),
+    'process.exit(process.env.PAWS_PR_TITLE?.startsWith("feat") ? 0 : 1);\n',
+  );
+  writePolicy(
+    root,
+    [command("unit", ["true"])],
+    [
+      "rules:",
+      "  - id: pr-title",
+      "    summary: The title starts with a type.",
+      "    probe: .agents/probes/title.ts",
+      "    failOn: P1",
+      "",
+    ],
+  );
+  let draft: PullRequestDraft | undefined = { title: "Add the widget", body: "Body." };
+  const session = createCloseoutSession(root, {
+    policy: async () => workspacePolicyFiles(root),
+    pullRequest: () => draft,
+    rulesFirst: true,
+  });
+  expect(ruleExit(await session.report({ probes: true }))).toBe(1);
+  draft = { title: "feat: add the widget", body: "Body." };
+  expect(ruleExit(await session.report({ probes: true }))).toBe(0);
+});
+
+test("a draft check that started before the draft was saved is not reused, even when it finished after", () => {
+  const event = (type: "started" | "finished", at: number): AgentCloseoutEvent =>
+    ({
+      at,
+      progress: {
+        type,
+        id: "pr-title",
+        kind: "command",
+        command: DOCS_EXAMPLE.join(" "),
+        head: "a".repeat(40),
+        base: "b".repeat(40),
+        policyDigest: "sha256:x",
+        attempt: 1,
+        maxAttempts: 3,
+        state: "passed",
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 200,
+        stdout: "",
+        stderr: "",
+        truncated: false,
+        clean: true,
+      },
+    }) as AgentCloseoutEvent;
+  const events = [event("started", 100), event("finished", 300)];
+  expect(turnPasses(events, 200)).toEqual([]);
+  expect(turnPasses(events, 50).map((pass) => pass.id)).toEqual(["pr-title"]);
+  expect(turnPasses([event("finished", 300)], 200)).toEqual([]);
+});
+
+function ruleExit(report: string): number | undefined {
+  const parsed = JSON.parse(report) as {
+    rules: Array<{ id: string; result?: { exitCode: number } }>;
+  };
+  return parsed.rules.find((rule) => rule.id === "pr-title")?.result?.exitCode;
+}
+
 function statuses(report: string): Record<string, string> {
   const parsed = JSON.parse(report) as { required: Array<{ id: string; status: string }> };
   return Object.fromEntries(parsed.required.map((item) => [item.id, item.status]));
@@ -197,11 +264,11 @@ function initRepo(): string {
   return root;
 }
 
-function writePolicy(root: string, items: string[]): void {
+function writePolicy(root: string, items: string[], rules: string[] = []): void {
   mkdirSync(join(root, ".agents"), { recursive: true });
   writeFileSync(
     join(root, ".agents", "closeout.yaml"),
-    ['specVersion: "0.1"', "items:", ...items, ""].join("\n"),
+    ['specVersion: "0.1"', "items:", ...items, ...rules, ""].join("\n"),
   );
 }
 

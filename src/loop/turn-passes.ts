@@ -5,11 +5,18 @@ export function turnPasses(
   events: readonly AgentCloseoutEvent[],
   draftSavedAt: number | null = null,
 ): TurnPass[] {
-  const last = new Map<string, AgentCloseoutEvent>();
-  for (const event of events)
-    if (event.progress.type === "finished") last.set(event.progress.id, event);
+  const startedAt = new Map<string, number>();
+  const last = new Map<string, AgentCloseoutEvent & { startedAt: number }>();
+  for (const event of events) {
+    if (event.progress.type === "started") startedAt.set(event.progress.id, event.at);
+    if (event.progress.type === "finished")
+      last.set(event.progress.id, {
+        ...event,
+        startedAt: startedAt.get(event.progress.id) ?? event.at - event.progress.durationMs,
+      });
+  }
   const passes: TurnPass[] = [];
-  for (const { at, progress } of last.values()) {
+  for (const { at, startedAt: began, progress } of last.values()) {
     if (
       progress.type !== "finished" ||
       progress.state !== "passed" ||
@@ -19,7 +26,7 @@ export function turnPasses(
       !progress.base ||
       !progress.policyDigest ||
       !progress.head ||
-      (draftSavedAt !== null && at < draftSavedAt && usesPullRequestDraft([progress.command]))
+      (draftSavedAt !== null && began <= draftSavedAt && usesPullRequestDraft([progress.command]))
     )
       continue;
     passes.push({

@@ -219,7 +219,7 @@ export function createCloseoutSession(
   let draftKey: string | undefined;
   let checkedHead: string | undefined;
   let probed = new Map<string, SessionRuleResult>();
-  let probedFingerprint: string | undefined;
+  let probedKey: string | undefined;
   let chain: Promise<unknown> = Promise.resolve();
   let listed: Prepared | undefined;
   let last: { report: string; head: string | undefined } | undefined;
@@ -302,9 +302,10 @@ export function createCloseoutSession(
   const judgeRules = async (prepared: Prepared): Promise<void> => {
     if (prepared.kind !== "ready") return;
     if (!options.rulesFirst && !commandsPassed(prepared, memory)) return;
-    if (probedFingerprint !== fingerprint) {
+    const probeKey = `${fingerprint}\n${pullRequestDraftKey(options.pullRequest?.())}`;
+    if (probedKey !== probeKey) {
       probed = new Map();
-      probedFingerprint = fingerprint;
+      probedKey = probeKey;
     }
     const unprobed = prepared.rules.filter((rule) => !probed.has(rule.id));
     if (unprobed.length > 0) {
