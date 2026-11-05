@@ -26,7 +26,7 @@ Paws requires a configured Linear workspace. An existing install that runs from 
 
 Linear holds delegated work and questions. GitHub hosts repositories and pull requests. Paws checks the repository's Closeout policy before publication.
 
-To start work, delegate an issue to the Paws app in Linear. Delegation is the approval. Delegate a parent issue to run its sub-issues in Linear `blocks` order, each in its own Linear session that opens once its blockers merge. A project is the Linear project the issue belongs to, and Paws has no project start of its own. To choose the repository for an issue, see [Repository selection](docs/repository-selection.md).
+To start work, delegate an issue to the Paws app in Linear. Delegation is the approval. Delegate a parent issue to run its sub-issues in Linear `blocks` order, each in its own Linear session that opens once its blockers merge. An edit to a blocking issue is noticed at once; Linear sends no webhook for an added or removed `blocks` relation, so Paws re-reads blocked items' relations about every minute, and the item page's **Check blockers now** reads them at once. A project is the Linear project the issue belongs to, and Paws has no project start of its own. To choose the repository for an issue, see [Repository selection](docs/repository-selection.md).
 
 | Path                          | What it is                                                                                                       |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |

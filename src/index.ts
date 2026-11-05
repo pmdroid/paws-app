@@ -151,6 +151,7 @@ import {
   checkRedelegation,
   createInboxStore,
   REDELEGATION_CHECK_DELAY_MS,
+  linearBudgetIsLow,
   linearCaller,
   linearCallerFor,
   linearItem,
@@ -207,7 +208,10 @@ import { handleLinkAskAnswer, handleQuestionAnswer } from "./questions";
 import { createFindingIssueRoute } from "./finding-issues";
 import { dashboardUrl } from "./dashboard-links";
 import {
+  BLOCKED_RELATIONS_POLL_MS,
+  createBlockerCheckRoute,
   createItemReconciler,
+  createRelationsPolls,
   createParentDelegations,
   createPublicationReadiness,
   RELATIONS_POLL_MS,
@@ -415,6 +419,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
+  let blockerChecks: ReturnType<typeof createBlockerCheckRoute> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
   let executionControls: ReturnType<typeof createExecutionControls> | null = null;
   const repositories = runtime.repos
@@ -1015,6 +1020,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         return async (request: Request, principal: WorkspacePrincipal) =>
           (await settings(request, principal)) ?? schedule(request, principal);
       })(),
+      blockerChecks: async (request, _principal, sessionIds) =>
+        blockerChecks?.(request, sessionIds) ??
+        Response.json({ error: "Blocker checks are starting." }, { status: 503 }),
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??
         Response.json({ error: "Execution controls are starting." }, { status: 503 }),
@@ -1581,16 +1589,35 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           recurringEveryMs: 1_800_000,
           now: Date.now(),
         });
+        const relations = createRelationsPolls({
+          db,
+          reconciler,
+          lowBudget: () => linearBudgetIsLow(linear?.usage().budget ?? null, Date.now()),
+          reconcileExecution: () => attached.reconcileExecution(),
+          read: (run) => linearCaller("relations-poll", run),
+        });
+        blockerChecks = createBlockerCheckRoute({
+          db,
+          polls: relations,
+          blockedItemIds: reconciler.blockedItemIds,
+          signal: abort.signal,
+        });
         created.jobs.register("linear.relations.poll", async () => {
-          const targets = await linearCaller("relations-poll", () =>
-            reconciler?.pollRelations({ signal: abort.signal }),
-          );
-          if (targets?.length) attached.reconcileExecution();
+          await relations.all(abort.signal);
         });
         enqueueJobOnce(db, {
           queue: "linear.relations.poll",
           jobKey: "linear.relations.poll",
           recurringEveryMs: RELATIONS_POLL_MS,
+          now: Date.now(),
+        });
+        created.jobs.register("linear.relations.poll.blocked", async () => {
+          await relations.blocked(abort.signal);
+        });
+        enqueueJobOnce(db, {
+          queue: "linear.relations.poll.blocked",
+          jobKey: "linear.relations.poll.blocked",
+          recurringEveryMs: BLOCKED_RELATIONS_POLL_MS,
           now: Date.now(),
         });
       }

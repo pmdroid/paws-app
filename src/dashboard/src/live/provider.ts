@@ -89,6 +89,7 @@ import {
   listPolicyRunnerWarnings,
   listPushOutages,
   listTaskBlockers,
+  blockerCheckedAt,
   listWorkItemFacts,
   listWorkItemsByStates,
   listWorkItemEventRows,
@@ -947,7 +948,7 @@ function readIssueScope(db: Database, options: LiveStatusOptions, only?: string)
       storedRuns.get(record.id)?.length ?? 0,
     ),
     linearRequests: linearRequests.get(record.id) ?? 0,
-    ...heldOf(record, holds),
+    ...heldOf(record, holds, db),
     ...sessionAttempt(db, record, visible, itemsByIssue, storedRuns, facts),
     ...historyOf(db, record, facts, now.getTime()),
     ...doingFor(db, record, {
@@ -1416,14 +1417,17 @@ export function questionLine(body: string): string {
 export function heldOf(
   record: WorkItemRecord,
   holds: ReadonlyMap<string, ItemHold>,
+  db?: Database,
 ): { held?: StatusHeld } {
   const hold = record.state === "queued" ? holds.get(record.id) : undefined;
+  const checkedAt = hold?.reason === "blocked" && db ? blockerCheckedAt(db, record.id) : null;
   return hold
     ? {
         held: {
           reason: hold.reason,
           blockers: hold.blockers,
           ...(hold.files ? { files: hold.files } : {}),
+          ...(checkedAt === null ? {} : { checkedAt: new Date(checkedAt).toISOString() }),
         },
       }
     : {};

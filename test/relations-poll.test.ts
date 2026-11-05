@@ -9,7 +9,7 @@ import {
 import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 
-async function relationsFixture() {
+async function relationsFixture(options: { batched?: boolean } = {}) {
   const db = openDatabase(":memory:");
   migrate(db);
   const tracker = createFakeTracker([
@@ -48,6 +48,7 @@ async function relationsFixture() {
     db,
     tracker: {
       ...tracker,
+      ...(options.batched === false ? { listBlockers: undefined } : {}),
       async listDeps(id) {
         depReads.push(id);
         return tracker.listDeps(id);
@@ -75,11 +76,20 @@ async function relationsFixture() {
   };
 }
 
-test("a relations poll with no relation change reads only relations", async () => {
+test("a relations poll with no relation change reads only relations, in one request", async () => {
   await using fixture = await relationsFixture();
   fixture.depReads.length = 0;
+  fixture.tracker.blockerReads.length = 0;
   expect(await fixture.reconciler.pollRelations()).toEqual([]);
   expect(fixture.epicReads()).toBe(1);
+  expect(fixture.depReads).toEqual([]);
+  expect(fixture.tracker.blockerReads).toEqual([["child"]]);
+});
+
+test("a tracker without batched reads reads each item's relations", async () => {
+  await using fixture = await relationsFixture({ batched: false });
+  fixture.depReads.length = 0;
+  expect(await fixture.reconciler.pollRelations()).toEqual([]);
   expect(fixture.depReads).toEqual(["child"]);
 });
 

@@ -91,6 +91,11 @@ export type ServerOptions = {
     principal: WorkspacePrincipal,
     sessionIds: readonly string[],
   ) => Promise<Response | null>;
+  blockerChecks?: (
+    request: Request,
+    principal: WorkspacePrincipal,
+    sessionIds: readonly string[],
+  ) => Promise<Response | null>;
   /** `POST /api/link-asks`: a decision a signed-in person makes on the item page. */
   linkAsks?: (
     request: Request,
@@ -231,6 +236,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.retros ? { retros: options.retros } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
+          ...(options.blockerChecks ? { blockerChecks: options.blockerChecks } : {}),
           ...(options.findingGroups ? { findingGroups: options.findingGroups } : {}),
           ...(options.linkAsks ? { linkAsks: options.linkAsks } : {}),
           ...(options.questionAnswers ? { questionAnswers: options.questionAnswers } : {}),
@@ -275,6 +281,7 @@ type Secrets = {
   runnerControl?: ServerOptions["runnerControl"];
   retros?: ServerOptions["retros"];
   executionControls?: ServerOptions["executionControls"];
+  blockerChecks?: ServerOptions["blockerChecks"];
   linkAsks?: ServerOptions["linkAsks"];
   questionAnswers?: ServerOptions["questionAnswers"];
   findingIssues?: ServerOptions["findingIssues"];
@@ -435,6 +442,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       );
       if (path === "/api/execution-controls" && secrets.executionControls !== undefined) {
         const response = await secrets.executionControls(request, access.principal, sessionIds);
+        if (response !== null) return response;
+      }
+      if (path === "/api/blocker-checks" && secrets.blockerChecks !== undefined) {
+        const response = await secrets.blockerChecks(request, access.principal, sessionIds);
         if (response !== null) return response;
       }
       if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {

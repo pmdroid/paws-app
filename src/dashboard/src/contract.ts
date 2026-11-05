@@ -291,6 +291,7 @@ export interface StatusHeld {
   blockers: string[];
   /** For `overlap`: the conflict-prone files both items change. */
   files?: string[];
+  checkedAt?: string;
 }
 
 export interface StatusActivity {
@@ -1930,6 +1931,7 @@ function readHeld(input: unknown, path: string): StatusHeld {
     reason: oneOf(string(body, "reason", path), HELD_REASONS, `${path}.reason`),
     blockers: stringArray(body, "blockers", path),
     ...(body.files === undefined ? {} : { files: stringArray(body, "files", path) }),
+    ...(body.checkedAt === undefined ? {} : { checkedAt: text(body, "checkedAt", path) }),
   };
 }
 

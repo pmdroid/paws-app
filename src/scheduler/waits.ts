@@ -134,9 +134,11 @@ export function overlapLine(blocker: string, files: readonly string[]): string {
 export function waitingLine(wait: ItemWait): string | null {
   if (wait.kind === "overlap") return `Still ${overlapLine(wait.blocker, wait.files)}.`;
   if (wait.kind === "blocked")
-    return wait.blockers.length
-      ? `Still waiting for ${wait.blockers.join(", ")}.`
-      : "Still waiting for a blocking issue.";
+    return `${
+      wait.blockers.length
+        ? `Still waiting for ${wait.blockers.join(", ")}.`
+        : "Still waiting for a blocking issue."
+    } Paws checks blockers in Linear every minute while it waits.`;
   if (wait.kind === "runner") return `Still ${ordinal(wait.position)} in line for a runner.`;
   return null;
 }
