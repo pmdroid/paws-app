@@ -8,7 +8,7 @@
 import { execFile } from "node:child_process";
 import {
   chmodSync,
-  cpSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { FakeGitHub } from "../src/github";
 import {
@@ -630,10 +630,10 @@ function copyTemplate(from: string, to: string): void {
   mkdirSync(to, { recursive: true });
   for (const entry of readdirSync(from, { withFileTypes: true })) {
     if (skipped(entry.name)) continue;
-    cpSync(join(from, entry.name), join(to, entry.name), {
-      recursive: true,
-      filter: (source) => !skipped(basename(source)),
-    });
+    const source = join(from, entry.name);
+    const target = join(to, entry.name);
+    if (entry.isDirectory()) copyTemplate(source, target);
+    else copyFileSync(source, target);
   }
 }
 
