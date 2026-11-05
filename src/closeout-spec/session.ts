@@ -68,6 +68,17 @@ export type CloseoutSession = {
    */
   report(options?: { progress?: boolean; probes?: boolean }): Promise<string>;
   run(id: string, model?: string): Promise<string>;
+  /**
+   * The report from the policy and results this session already holds, without loading the
+   * policy again. When the head or the changed files moved since then, checks that had passed
+   * are pending, as a new report would list them. Undefined until a report or run listed a policy.
+   */
+  recorded(): Promise<string | undefined>;
+  /**
+   * The last report `report` or `recorded` returned, when the workspace head is still the head it
+   * was recorded at. Reads only `HEAD`, not the changed files.
+   */
+  lastRecorded(): Promise<string | undefined>;
 };
 
 export type CloseoutSessionOptions = {
@@ -183,6 +194,8 @@ export function createCloseoutSession(
   let probed = new Map<string, SessionRuleResult>();
   let probedFingerprint: string | undefined;
   let chain: Promise<unknown> = Promise.resolve();
+  let listed: Prepared | undefined;
+  let last: { report: string; head: string | undefined } | undefined;
 
   const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
     const run = chain.then(work, work);
@@ -205,15 +218,9 @@ export function createCloseoutSession(
     if (loaded.absent || loaded.policy.digest !== source.digest)
       return { kind: "blocked", message: "The Closeout policy does not match its digest" };
     const policy = loaded.policy;
-    const needsPaths = [...policy.setup, ...policy.items, ...policy.rules].some(
-      (item) => item.paths !== undefined && item.paths.length > 0,
-    );
-    const changes = await changedPaths(workspace, needsPaths);
-    if (!changes.ok) return { kind: "blocked", message: "changed paths are unavailable" };
-    const current = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
-    if (!current.ok) return { kind: "blocked", message: "candidate commit is unavailable" };
-    const head = current.stdout.toString("utf8").trim();
-    const next = `${head}:${policy.digest}:${fingerprintOf(workspace, changes.paths)}`;
+    const current = await candidateOf(workspace, policy);
+    if (!current.ok) return { kind: "blocked", message: current.message };
+    const { head, paths, fingerprint: next } = current;
     if (fingerprint !== undefined && fingerprint !== next) {
       for (const state of memory.values()) {
         if (state.passed && (state.kind !== "setup" || checkedHead !== head)) {
@@ -237,8 +244,8 @@ export function createCloseoutSession(
     return {
       kind: "ready",
       policy,
-      required: select(policy, changes.paths),
-      rules: selectRules(policy.rules, changes.paths),
+      required: select(policy, paths),
+      rules: selectRules(policy.rules, paths),
       published,
     };
   };
@@ -272,6 +279,7 @@ export function createCloseoutSession(
     report: (request) =>
       exclusive(async () => {
         const prepared = await prepare();
+        listed = prepared;
         if (request?.probes || options.rulesFirst) await judgeRules(prepared);
         const broken = ruleBreak(prepared);
         const report = {
@@ -280,11 +288,13 @@ export function createCloseoutSession(
         };
         if (request?.progress && checkedHead !== undefined)
           notifyReport(options, checkedHead, prepared, report);
-        return boundedReport(report);
+        last = { report: boundedReport(report), head: checkedHead };
+        return last.report;
       }),
     run: (id) =>
       exclusive(async () => {
         const prepared = await prepare();
+        listed = prepared;
         if (prepared.kind === "blocked") return prepared.message;
         if (prepared.kind === "empty") return `No closeout check ${id}. Call get_closeout.`;
         if (options.rulesFirst) await judgeRules(prepared);
@@ -292,6 +302,76 @@ export function createCloseoutSession(
         if (broken) return broken;
         return runId(workspace, prepared, memory, id, options);
       }),
+    recorded: async () => {
+      let prepared = listed;
+      // A blocked listing may be a policy load that failed; only a new report can clear it.
+      if (prepared === undefined || prepared.kind === "blocked") return undefined;
+      let view = memory;
+      let recordedHead = checkedHead;
+      if (prepared.kind === "ready") {
+        const current = await candidateOf(workspace, prepared.policy);
+        if (!current.ok) {
+          prepared = { kind: "blocked", message: current.message };
+        } else if (current.fingerprint !== fingerprint) {
+          const head = current.head;
+          view = new Map(
+            [...memory].map(([id, state]) => [
+              id,
+              state.passed && (state.kind !== "setup" || checkedHead !== head)
+                ? { ...state, passed: false, stale: true }
+                : state,
+            ]),
+          );
+          // Select again for the files as they are now; published evidence and rule results
+          // belong to the old candidate.
+          prepared = {
+            ...prepared,
+            required: select(prepared.policy, current.paths),
+            rules: selectRules(prepared.policy.rules, current.paths),
+            published: [],
+          };
+        }
+        recordedHead = current.ok ? current.head : undefined;
+      }
+      const broken = ruleBreak(prepared);
+      last = {
+        report: boundedReport({
+          ...reportOf(prepared, view),
+          ...(broken ? { pending: [], blocked: broken } : {}),
+        }),
+        head: recordedHead,
+      };
+      return last.report;
+    },
+    lastRecorded: async () => {
+      if (last === undefined || last.head === undefined) return undefined;
+      const current = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
+      if (!current.ok || current.stdout.toString("utf8").trim() !== last.head) return undefined;
+      return last.report;
+    },
+  };
+}
+
+/** The candidate's head and its fingerprint: head, policy digest and changed files. */
+async function candidateOf(
+  workspace: string,
+  policy: TreePolicy,
+): Promise<
+  { ok: true; head: string; paths: string[]; fingerprint: string } | { ok: false; message: string }
+> {
+  const needsPaths = [...policy.setup, ...policy.items, ...policy.rules].some(
+    (item) => item.paths !== undefined && item.paths.length > 0,
+  );
+  const changes = await changedPaths(workspace, needsPaths);
+  if (!changes.ok) return { ok: false, message: "changed paths are unavailable" };
+  const current = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
+  if (!current.ok) return { ok: false, message: "candidate commit is unavailable" };
+  const head = current.stdout.toString("utf8").trim();
+  return {
+    ok: true,
+    head,
+    paths: changes.paths,
+    fingerprint: `${head}:${policy.digest}:${fingerprintOf(workspace, changes.paths)}`,
   };
 }
 
