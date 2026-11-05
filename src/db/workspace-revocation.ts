@@ -112,10 +112,7 @@ export function listWorkspaceMemberSummaries(
   workspaceId: string,
 ): WorkspaceMemberSummary[] {
   const members = db
-    .query<
-      Omit<WorkspaceMemberSummary, "openItems"> & { linearUserId: string },
-      [string, string]
-    >(
+    .query<Omit<WorkspaceMemberSummary, "openItems"> & { linearUserId: string }, [string, string]>(
       `SELECT u.id,u.name,u.email,u.linear_user_id AS linearUserId,m.role,m.active,
          m.revoked_at AS revokedAt,m.revoked_by AS revokedBy,r.name AS revokedByName,
          (SELECT max(a.created_at) FROM workspace_access_audit a
