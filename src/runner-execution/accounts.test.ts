@@ -206,3 +206,30 @@ test("a hold stays while the execution's processes outlive its worker", async ()
   }
   expect(activeExecutions(home)).toEqual([]);
 });
+
+test("a binding's manifest, holds and sign-in lock are readable by the agent group", () => {
+  const root = agentHome();
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  markRunnerAccountSignedIn(home, a, "claude");
+  const manifest = statSync(join(home, "account.json"));
+  expect([manifest.mode & 0o777, manifest.gid]).toEqual([0o640, process.getgid!()]);
+  holdRunnerAccountHome(home, execution, liveReceipt(root));
+  expect(statSync(join(home, ".paws-active", execution)).mode & 0o777).toBe(0o640);
+  releaseRunnerAccountHome(home, execution);
+  let lock = 0;
+  publishRunnerAccountHome(home, execution, () => {
+    lock = statSync(join(home, ".paws-publishing")).mode & 0o777;
+  });
+  expect(lock).toBe(0o640);
+});
+
+test("a manifest written 0600 before agents ran as paws-agent is shared on the next open", () => {
+  const root = agentHome();
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  writeFileSync(join(home, "account.json"), `${JSON.stringify({ ...a, agent: "claude" })}\n`);
+  chmodSync(join(home, "account.json"), 0o600);
+  expect(openRunnerAccountHome(root, a, "claude")).toBe(home);
+  expect(statSync(join(home, "account.json")).mode & 0o777).toBe(0o640);
+  chmodSync(join(home, "account.json"), 0o660);
+  expect(() => openRunnerAccountHome(root, a, "claude")).toThrow(/manifest is unsafe/);
+});

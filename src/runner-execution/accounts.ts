@@ -4,6 +4,8 @@ import {
   chmodSync,
   closeSync,
   constants,
+  fchmodSync,
+  fchownSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -117,7 +119,7 @@ export function markRunnerAccountSignedIn(
       throw new RunnerAccountHomeError("Agent account binding belongs to another account");
     return;
   }
-  writePrivateFile(join(home, MANIFEST), `${JSON.stringify(manifest)}\n`);
+  writeSharedFile(join(home, MANIFEST), `${JSON.stringify(manifest)}\n`, owners);
 }
 
 export function runnerAccountBindings(
@@ -161,9 +163,10 @@ export function holdRunnerAccountHome(
 ): void {
   const active = join(home, ACTIVE);
   privateDirectory(active, true, owners);
-  writePrivateFile(
+  writeSharedFile(
     join(active, ExecutionIdSchema.parse(executionId)),
     JSON.stringify(ReceiptSchema.parse({ receipt: holder.receipt, scope: holder.scope })),
+    owners,
   );
   const publisher = readReceipt(join(home, PUBLISHING));
   if (publisher && publisher !== "stale") {
@@ -180,6 +183,7 @@ export function publishRunnerAccountHome(
   home: string,
   executionId: string,
   publish: () => void,
+  owners: RunnerAccountOwners = processOwners(),
 ): void {
   const born = startTime(process.pid);
   if (!born) throw new RunnerAccountHomeError("Runner sign-in process is unavailable");
@@ -190,7 +194,7 @@ export function publishRunnerAccountHome(
   if (owner === "stale") rmSync(lock, { force: true });
   let descriptor: number;
   try {
-    descriptor = openSync(lock, "wx", 0o600);
+    descriptor = openSync(lock, "wx", 0o640);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST")
       throw new RunnerAccountHomeError("Another sign-in is publishing this agent account");
@@ -198,6 +202,7 @@ export function publishRunnerAccountHome(
   }
   try {
     try {
+      shareWithAgents(descriptor, owners);
       writeSync(descriptor, JSON.stringify({ pid: process.pid, born }));
       fsyncSync(descriptor);
     } finally {
@@ -253,6 +258,7 @@ function readReceipt(path: string, executionId?: string): "live" | "stale" | nul
       return null;
     }
     if ((error as NodeJS.ErrnoException).code === "ELOOP") return "stale";
+    if ((error as NodeJS.ErrnoException).code === "EACCES") return "live";
     throw error;
   }
   let holder: z.infer<typeof ReceiptSchema>;
@@ -301,8 +307,16 @@ function readManifest(
     const descriptor = openSync(join(home, MANIFEST), constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const info = fstatSync(descriptor);
-      if (!info.isFile() || info.uid !== process.getuid?.() || info.size > 4096)
+      const self = process.getuid?.();
+      if (
+        !info.isFile() ||
+        info.size > 4096 ||
+        (info.mode & 0o022) !== 0 ||
+        (info.uid !== self && info.uid !== owners.runnerUid && info.gid !== owners.agentGid)
+      )
         throw new RunnerAccountHomeError("Agent account binding manifest is unsafe");
+      if (info.uid === self && (info.gid !== owners.agentGid || (info.mode & 0o777) !== 0o640))
+        shareWithAgents(descriptor, owners);
       text = readFileSync(descriptor, "utf8");
     } finally {
       closeSync(descriptor);
@@ -357,11 +371,17 @@ export function accountHomeVerdict(
   return "repair";
 }
 
-function writePrivateFile(path: string, text: string): void {
+function shareWithAgents(descriptor: number, owners: RunnerAccountOwners): void {
+  fchownSync(descriptor, -1, owners.agentGid);
+  fchmodSync(descriptor, 0o640);
+}
+
+function writeSharedFile(path: string, text: string, owners: RunnerAccountOwners): void {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    const descriptor = openSync(temporary, "wx", 0o600);
+    const descriptor = openSync(temporary, "wx", 0o640);
     try {
+      shareWithAgents(descriptor, owners);
       writeSync(descriptor, text);
       fsyncSync(descriptor);
     } finally {
