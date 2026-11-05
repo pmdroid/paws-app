@@ -35,6 +35,7 @@ export {
 export {
   deliverImprovements,
   improvementCommentUuid,
+  improvementIssueMarker,
   improvementIssueUuid,
   startImprovementDeliveries,
 } from "./delivery";

@@ -50,7 +50,10 @@ export type ImprovementLinearFailure = {
   message: string;
 };
 export type ImprovementLinearResult<T> = { ok: true; value: T } | ImprovementLinearFailure;
-export type ImprovementLinearIssue = LinearLinkableIssue & { delegated: boolean };
+export type ImprovementLinearIssue = LinearLinkableIssue & {
+  delegated: boolean;
+  description?: string | null;
+};
 export type ImprovementLinearComment = { id: string; issueId: string };
 
 export type ImprovementLinear = {
@@ -70,7 +73,7 @@ export type ImprovementLinear = {
   }): Promise<ImprovementLinearResult<ImprovementLinearComment>>;
 };
 
-const ISSUE_FIELDS = "id identifier url team { id } state { type } delegate { id }";
+const ISSUE_FIELDS = "id identifier url description team { id } state { type } delegate { id }";
 
 function classify(error: unknown, phase: "read" | "write"): ImprovementLinearFailure {
   const message = error instanceof Error ? error.message : String(error);
@@ -112,6 +115,7 @@ function issueFrom(node: unknown): ImprovementLinearIssue | null {
     teamId,
     state: isRecord(state) && CLOSED.has(readString(state, "type") ?? "") ? "closed" : "open",
     delegated: isRecord(node["delegate"]),
+    description: readString(node, "description"),
   };
 }
 
@@ -286,6 +290,7 @@ export function createFakeImprovementLinear(seed: { issues?: ImprovementLinearIs
         teamId: input.teamId,
         state: "open",
         delegated: false,
+        description: input.description,
       };
       issues.set(input.id, issue);
       created.push(input);

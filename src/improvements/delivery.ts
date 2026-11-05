@@ -34,6 +34,7 @@ export type DeliveryIssue = {
   url: string | null;
   teamId: string;
   state: "open" | "closed";
+  description?: string | null;
 };
 
 export type ImprovementDeliveryLinear = {
@@ -77,6 +78,11 @@ export const improvementIssueUuid = (workspaceId: string, improvementId: string)
 export const improvementCommentUuid = (workspaceId: string, improvementId: string) =>
   uuid(`paws:improvement:${workspaceId}:${improvementId}:evidence_comment`);
 
+// Written into every issue Paws creates. An issue found under the deterministic id is
+// recorded only when it carries this marker for the same workspace, improvement and repository.
+export const improvementIssueMarker = (improvement: Improvement) =>
+  `paws-improvement:${improvement.workspaceId}:${improvement.id}:${improvement.repository.toLowerCase()}`;
+
 type FrozenContent = {
   proposalVersion: number;
   repository: string;
@@ -88,6 +94,7 @@ type FrozenContent = {
   actionStep: string;
   verificationCriterion: string | null;
   evidence: string[];
+  issue?: { id?: string; teamId?: string; state?: "open" | "closed" };
 };
 
 const STEP = {
@@ -172,6 +179,7 @@ export function improvementIssueBody(
     evidenceLines(db, improvement, content).join("\n"),
     `[Open the improvement in Paws](${sourceUrl}) · proposal version ${content.proposalVersion}`,
     `Filed by Paws from an improvement${accepted ? ` accepted by ${accepted}` : " accepted in Paws"}. Paws has not delegated this issue.`,
+    `Paws reference: ${codeSpan(improvementIssueMarker(improvement))}`,
   ].join("\n\n");
 }
 
@@ -211,16 +219,14 @@ function mapped(db: Database, improvement: Improvement, teamId: string | null): 
 }
 
 function markSourcesFiled(db: Database, improvement: Improvement, identifier: string, now: number) {
-  immediate(db, () => {
-    for (const finding of improvementFindings(db, improvement.id))
-      if (finding.status === "open")
-        markReviewFindingFiled(db, {
-          key: finding.key,
-          issue: identifier,
-          by: improvement.reviewedBy,
-          now,
-        });
-  });
+  for (const finding of improvementFindings(db, improvement.id))
+    if (finding.status === "open")
+      markReviewFindingFiled(db, {
+        key: finding.key,
+        issue: identifier,
+        by: improvement.reviewedBy,
+        now,
+      });
 }
 
 async function deliverOne(
@@ -250,18 +256,20 @@ async function deliverOne(
 
   const succeed = (remote: { id: string; identifier?: string; url?: string | null }) => {
     const now = ctx.now();
-    const settled = settleImprovementDelivery(db, {
-      ...base,
-      outcome: "succeeded",
-      remote: {
-        id: remote.id,
-        ...(remote.identifier ? { identifier: remote.identifier } : {}),
-        ...(remote.url ? { url: remote.url } : {}),
-      },
-      now,
+    immediate(db, () => {
+      const settled = settleImprovementDelivery(db, {
+        ...base,
+        outcome: "succeeded",
+        remote: {
+          id: remote.id,
+          ...(remote.identifier ? { identifier: remote.identifier } : {}),
+          ...(remote.url ? { url: remote.url } : {}),
+        },
+        now,
+      });
+      if (settled && remote.identifier && claimed.operation !== "evidence_comment")
+        markSourcesFiled(db, improvement, remote.identifier, now);
     });
-    if (settled && remote.identifier && claimed.operation !== "evidence_comment")
-      markSourcesFiled(db, improvement, remote.identifier, now);
   };
   const block = (blocked: ImprovementDeliveryBlock, error: string) =>
     settleImprovementDelivery(db, {
@@ -315,6 +323,11 @@ async function deliverOne(
           "conflict",
           "Linear holds this improvement's issue id in a different team. Paws did not link it.",
         );
+      if (!found.value.description?.includes(improvementIssueMarker(improvement)))
+        return void block(
+          "conflict",
+          "Linear holds this improvement's issue id on an issue Paws cannot match to this improvement. Paws did not link it.",
+        );
       return void succeed(found.value);
     }
     if (!authorized)
@@ -339,17 +352,42 @@ async function deliverOne(
   }
 
   const target = claimed.targetIssueId!;
+  // The reviewer was authorized for this team when they accepted; delivery never follows
+  // the issue anywhere else, and a target that closed since then needs a new review choice.
+  const frozenTeam = claimed.targetTeamId ?? content.issue?.teamId ?? null;
+  const linkRefusal = (issue: DeliveryIssue | null): (() => void) | null => {
+    if (!issue)
+      return () =>
+        block("unavailable", "The linked issue no longer exists or Paws cannot read it.");
+    if (frozenTeam === null)
+      return () =>
+        block(
+          "destination",
+          "This link was accepted before Paws recorded its team. Reopen the improvement and link the issue again.",
+        );
+    if (issue.teamId !== frozenTeam)
+      return () =>
+        block(
+          "destination",
+          "The linked issue moved to another team after it was accepted. Reopen the improvement to choose again.",
+        );
+    if (!mapped(db, improvement, issue.teamId))
+      return () =>
+        block("destination", "The linked issue's team is no longer mapped to this repository.");
+    if (issue.state === "closed" && content.issue?.state !== "closed")
+      return () =>
+        block(
+          "conflict",
+          "The linked issue was closed after it was accepted. Reopen the improvement to confirm the link or create an issue.",
+        );
+    return null;
+  };
   if (claimed.operation === "link_issue") {
     const found = await linear.findIssue(target);
     if (!found.ok) return void fail(found);
-    if (!found.value)
-      return void block("unavailable", "The linked issue no longer exists or Paws cannot read it.");
-    if (!mapped(db, improvement, found.value.teamId))
-      return void block(
-        "destination",
-        "The linked issue's team is no longer mapped to this repository.",
-      );
-    return void succeed(found.value);
+    const refused = linkRefusal(found.value);
+    if (refused) return void refused();
+    return void succeed(found.value!);
   }
 
   const commentId = improvementCommentUuid(improvement.workspaceId, improvement.id);
@@ -362,13 +400,8 @@ async function deliverOne(
   }
   const issue = await linear.findIssue(target);
   if (!issue.ok) return void fail(issue);
-  if (!issue.value)
-    return void block("unavailable", "The linked issue no longer exists or Paws cannot read it.");
-  if (!mapped(db, improvement, issue.value.teamId))
-    return void block(
-      "destination",
-      "The linked issue's team is no longer mapped to this repository.",
-    );
+  const refused = linkRefusal(issue.value);
+  if (refused) return void refused();
   if (!reserveImprovementDeliveryRemote(db, { ...base, remoteId: commentId })) return;
   const wasUncertain = uncertain;
   uncertain = true;

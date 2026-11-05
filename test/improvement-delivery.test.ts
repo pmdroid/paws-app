@@ -26,6 +26,7 @@ import {
   dailyFindingKey,
   deliverImprovements,
   improvementCommentUuid,
+  improvementIssueMarker,
   improvementIssueUuid,
   improvementView,
 } from "../src/improvements";
@@ -116,7 +117,7 @@ function acceptRetro(
     workspaceId?: string;
     intent?:
       | { kind: "create"; teamId: string }
-      | { kind: "link"; issueId: string; addEvidenceComment?: boolean };
+      | { kind: "link"; issueId: string; teamId?: string; addEvidenceComment?: boolean };
   } = {},
 ) {
   const step = options.step ?? "issue";
@@ -129,7 +130,12 @@ function acceptRetro(
     now: w.now(),
   });
   const p = proposal(step);
-  const intent = options.intent ?? { kind: "create", teamId: "team-a" };
+  const requested = options.intent ?? { kind: "create", teamId: "team-a" };
+  const linked = requested.kind === "link" ? w.linear.issues.get(requested.issueId) : undefined;
+  const intent =
+    requested.kind === "link" && requested.teamId === undefined && linked
+      ? { ...requested, teamId: linked.teamId }
+      : requested;
   const decided = decideImprovement(w.db, {
     improvementId,
     expectedVersion: 1,
@@ -147,7 +153,15 @@ function acceptRetro(
       actionStep: p.actionStep,
       verificationCriterion: p.verificationCriterion,
       evidence: p.evidence,
-      ...(intent.kind === "link" ? { issue: { id: intent.issueId } } : {}),
+      ...(intent.kind === "link"
+        ? {
+            issue: {
+              id: intent.issueId,
+              ...(intent.teamId ? { teamId: intent.teamId } : {}),
+              state: linked?.state ?? "open",
+            },
+          }
+        : {}),
     },
   });
   if (!decided.ok) throw new Error(decided.reason);
@@ -267,7 +281,19 @@ describe("improvement delivery", () => {
         evidence: findings.map((f) => `review_finding:${f.key}`),
       },
     });
+    // Marking the source findings fails once: the delivery's success rolls back with it,
+    // and the next claim reconciles the same issue and files both findings together.
+    w.db.run(`CREATE TRIGGER fail_filing BEFORE UPDATE ON review_finding
+      BEGIN SELECT RAISE(ABORT, 'disk full'); END`);
     await w.run();
+    expect(delivery(w, improvementId).state).toBe("claimed");
+    expect(getImprovement(w.db, improvementId)!.issue).toBeNull();
+    expect(listReviewFindings(w.db).map((f) => f.status)).toEqual(["open", "open"]);
+    w.db.run("DROP TRIGGER fail_filing");
+    w.advance(10 * MINUTE);
+    await w.run();
+    expect(delivery(w, improvementId).state).toBe("succeeded");
+    expect(w.linear.created).toHaveLength(1);
     const created = w.linear.created[0]!;
     expect(created.label).toBe("review finding");
     expect(created.description).toContain("**Source:** Daily review findings");
@@ -327,7 +353,7 @@ describe("improvement delivery", () => {
       id: improvementIssueUuid("ws", id),
       teamId: "team-a",
       title: "t",
-      description: "d",
+      description: `Paws reference: \`${improvementIssueMarker(getImprovement(w.db, id)!)}\``,
       label: "paws retro",
     });
     await w.run();
@@ -455,6 +481,28 @@ describe("improvement delivery", () => {
     expect(getImprovement(w.db, id)!.issue).toBeNull();
   });
 
+  test("an issue under this improvement's id without its Paws reference is not linked", async () => {
+    const w = world();
+    const id = acceptRetro(w);
+    const other = acceptRetro(w, { key: "r2/issue" });
+    w.linear.issues.set(improvementIssueUuid("ws", id), {
+      id: improvementIssueUuid("ws", id),
+      identifier: "PAS-77",
+      url: null,
+      teamId: "team-a",
+      state: "open",
+      delegated: false,
+      description: `Paws reference: \`${improvementIssueMarker(getImprovement(w.db, other)!)}\``,
+    });
+    await w.run();
+    expect(delivery(w, id)).toMatchObject({ state: "failed", blocked: "conflict" });
+    expect(getImprovement(w.db, id)!.issue).toBeNull();
+    expect(delivery(w, other).state).toBe("succeeded");
+    expect(w.linear.created.at(-1)!.description).toContain(
+      improvementIssueMarker(getImprovement(w.db, other)!),
+    );
+  });
+
   test("each workspace delivers only through its own Linear connection", async () => {
     const w = world();
     const mine = acceptRetro(w);
@@ -503,6 +551,58 @@ describe("improvement delivery", () => {
     });
     expect(w.linear.calls.some((c) => c.method === "createIssue")).toBe(false);
     expect(listImprovementDeliveries(w.db, gone).map((d) => d.operation)).toEqual(["link_issue"]);
+  });
+
+  test("a linked issue that moved to another mapped team is not followed", async () => {
+    const w = world();
+    const id = acceptRetro(w, {
+      intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
+    });
+    expect(delivery(w, id, "link_issue").targetTeamId).toBe("team-a");
+    expect(delivery(w, id, "evidence_comment").targetTeamId).toBe("team-a");
+    w.linear.issues.set("issue-open", { ...w.linear.issues.get("issue-open")!, teamId: "team-b" });
+    await w.run();
+    expect(delivery(w, id, "link_issue")).toMatchObject({
+      state: "failed",
+      blocked: "destination",
+    });
+    expect(w.linear.comments.size).toBe(0);
+    expect(getImprovement(w.db, id)!.issue).toBeNull();
+  });
+
+  test("a target closed after acceptance needs a new review choice before link or evidence", async () => {
+    const w = world();
+    const withComment = acceptRetro(w, {
+      key: "r1/a",
+      intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
+    });
+    w.linear.fail("findComment", { ok: false, failure: "rate_limited", message: "429" });
+    await w.run();
+    expect(delivery(w, withComment, "link_issue").state).toBe("succeeded");
+    expect(delivery(w, withComment, "evidence_comment").state).toBe("failed");
+    const pending = acceptRetro(w, {
+      key: "r1/b",
+      intent: { kind: "link", issueId: "issue-open" },
+    });
+    w.linear.issues.set("issue-open", { ...w.linear.issues.get("issue-open")!, state: "closed" });
+    // Accepted while closed: the reviewer confirmed the closed target.
+    const confirmed = acceptRetro(w, {
+      key: "r1/c",
+      intent: { kind: "link", issueId: "issue-open" },
+    });
+    w.advance(10 * MINUTE);
+    await w.run();
+    expect(delivery(w, withComment, "evidence_comment")).toMatchObject({
+      state: "failed",
+      blocked: "conflict",
+    });
+    expect(delivery(w, pending, "link_issue")).toMatchObject({
+      state: "failed",
+      blocked: "conflict",
+    });
+    expect(delivery(w, confirmed, "link_issue").state).toBe("succeeded");
+    expect(w.linear.comments.size).toBe(0);
+    expect(w.linear.calls.some((c) => c.method === "createComment")).toBe(false);
   });
 
   test("link and add evidence posts one comment, reconciling an uncertain post", async () => {

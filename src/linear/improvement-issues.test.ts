@@ -58,6 +58,7 @@ describe("Linear improvement delivery", () => {
         teamId: "team-a",
         state: "open",
         delegated: false,
+        description: null,
       },
     });
     expect(calls.at(-1)!.variables["input"]).toEqual({
