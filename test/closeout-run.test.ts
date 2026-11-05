@@ -295,6 +295,33 @@ describe("closeout command runner", () => {
     }
   });
 
+  test("the final Closeout runs every command after a failure, without the in-turn bail", async () => {
+    const fx = await fixture();
+    const seen = join(fx.side, "bail");
+    const script = await writeScript(
+      fx.side,
+      "check.js",
+      `require("node:fs").appendFileSync(${JSON.stringify(seen)}, process.argv[2] + "=" + (process.env.PAWS_TEST_BAIL ?? "") + "\\n"); process.exit(process.argv[2] === "lint" ? 1 : 0);`,
+    );
+    try {
+      const result = await run(fx, {
+        items: ["lint", "format", "test"].map((id) => command(id, [process.execPath, script, id])),
+      });
+      expect(result.dispositions.map((item) => [item.id, item.state])).toEqual([
+        ["lint", "ran"],
+        ["format", "ran"],
+        ["test", "ran"],
+      ]);
+      expect(commandRecords(fx.store).map((record) => record.exec.exitCode)).toEqual([1, 0, 0]);
+      expect(commandRecords(fx.store).every((record) => !record.exec.argv.includes("--bail"))).toBe(
+        true,
+      );
+      expect(readFileSync(seen, "utf8")).toBe("lint=\nformat=\ntest=\n");
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
   test("the command environment drops tokens, the oauth token, ssh, and cloud keys", async () => {
     const fx = await fixture();
     const script = await writeScript(
