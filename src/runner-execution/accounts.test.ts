@@ -259,3 +259,35 @@ test("agent state written by the runner is shared with the agent group before pa
   shareRunnerAgentState(root, owners);
   expect(mode(".codex/auth.json")).toBe(0o660);
 });
+
+test("a sign-in never reads its own hold's receipt, and an unreadable receipt does not throw", () => {
+  const root = agentHome();
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  const own = join(root, "own.pid");
+  const theirs = join(root, "theirs.pid");
+  for (const path of [own, theirs]) {
+    writeFileSync(path, "2147483646 1\n");
+    chmodSync(path, 0o000);
+  }
+  holdRunnerAccountHome(home, execution, { receipt: own, scope: executionScope(root) });
+  let published = 0;
+  publishRunnerAccountHome(home, execution, () => published++);
+  expect(published).toBe(1);
+  holdRunnerAccountHome(home, other, { receipt: theirs, scope: executionScope(root) });
+  expect(activeExecutions(home, execution)).toEqual([other]);
+});
+
+test("sharing agent state skips folders the runner cannot list", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  mkdirSync(join(root, ".codex/sessions/private"), { recursive: true });
+  writeFileSync(join(root, ".codex/auth.json"), "{}");
+  chmodSync(join(root, ".codex/auth.json"), 0o600);
+  chmodSync(join(root, ".codex/sessions/private"), 0o000);
+  try {
+    shareRunnerAgentState(root, owners);
+  } finally {
+    chmodSync(join(root, ".codex/sessions/private"), 0o700);
+  }
+  expect(statSync(join(root, ".codex/auth.json")).mode & 0o777).toBe(0o660);
+});

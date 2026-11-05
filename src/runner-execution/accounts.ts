@@ -210,7 +210,7 @@ export function publishRunnerAccountHome(
     } finally {
       closeSync(descriptor);
     }
-    const busy = activeExecutions(home).filter((id) => id !== executionId);
+    const busy = activeExecutions(home, executionId);
     if (busy.length)
       throw new RunnerAccountHomeError(
         "Work is still running with this agent account. Let it finish or stop it, then sign in again.",
@@ -221,7 +221,7 @@ export function publishRunnerAccountHome(
   }
 }
 
-export function activeExecutions(home: string): string[] {
+export function activeExecutions(home: string, except?: string): string[] {
   const active = join(home, ACTIVE);
   let names: string[];
   try {
@@ -235,7 +235,7 @@ export function activeExecutions(home: string): string[] {
   }
   const live: string[] = [];
   for (const name of names) {
-    if (!ExecutionIdSchema.safeParse(name).success) continue;
+    if (name === except || !ExecutionIdSchema.safeParse(name).success) continue;
     const state = readReceipt(join(active, name), name);
     if (state === "stale") rmSync(join(active, name), { force: true });
     else if (state) live.push(name);
@@ -280,7 +280,7 @@ function readReceipt(path: string, executionId?: string): "live" | "stale" | nul
   try {
     worker = readFileSync(holder.receipt, "utf8").trim();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (!["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
     journalCaught(error, "accounts.readReceipt.worker", null, "optional file may be absent");
   }
   const [pidText, born] = worker.split(" ");
@@ -382,7 +382,7 @@ export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners)
     try {
       info = lstatSync(path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if (["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
       throw error;
     }
     if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) return;
@@ -405,7 +405,15 @@ export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners)
         }
       }
     }
-    if (info.isDirectory()) for (const name of readdirSync(path)) visit(join(path, name));
+    if (!info.isDirectory()) return;
+    let names: string[];
+    try {
+      names = readdirSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EACCES") return;
+      throw error;
+    }
+    for (const name of names) visit(join(path, name));
   };
   for (const folder of AGENT_STATE) visit(join(home, folder));
 }
