@@ -231,7 +231,7 @@ export function createRetroReviewHttp(options: {
     const url = new URL(request.url);
     const report = REPORT.exec(url.pathname);
     if (url.pathname !== RETRO_HISTORY_PATH && !report) return null;
-    if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active) {
+    if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId))) {
       audit(principal, "access.denied", url.pathname);
       return json({ error: "Workspace access is unavailable." }, 403);
     }

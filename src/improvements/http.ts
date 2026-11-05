@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import { auditWorkspaceAccess, workspaceMember } from "../db";
+import { auditWorkspaceAccess, workspaceMember, workspaceMemberUsable } from "../db";
 import { journalCaught } from "../journal";
 import type { WorkspacePrincipal } from "../workspace";
 import {
@@ -108,7 +108,7 @@ export function createImprovementsHttp(options: {
     if (path !== IMPROVEMENTS_PATH && !path.startsWith(`${IMPROVEMENTS_PATH}/`)) return null;
     const reviewerFor = (): ImprovementReviewer | null => {
       const member = workspaceMember(db, principal.workspaceId, principal.userId);
-      if (!member?.active) return null;
+      if (!workspaceMemberUsable(member)) return null;
       const evidence = new Map<string, ReadonlySet<string> | null>();
       return {
         workspaceId: principal.workspaceId,

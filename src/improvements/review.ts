@@ -11,6 +11,7 @@ import {
   listWorkspaceRepositoryNames,
   requeueImprovementDelivery,
   workspaceMember,
+  workspaceMemberUsable,
   type ImprovementDelivery,
   type ImprovementProposal,
   type ImprovementReview,
@@ -215,7 +216,7 @@ export function listImprovementPage(db: Database, access: ImprovementAccess, fil
 
 export function memberRepositories(db: Database, workspaceId: string, userId: string): string[] {
   const member = workspaceMember(db, workspaceId, userId);
-  if (!member?.active) return [];
+  if (!workspaceMemberUsable(member)) return [];
   if (member.role === "admin") return listWorkspaceRepositoryNames(db, workspaceId);
   return [
     ...new Set(

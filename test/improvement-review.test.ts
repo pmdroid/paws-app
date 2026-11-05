@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   beginRetroCollection,
+  changeWorkspaceRevocation,
   claimImprovementDelivery,
   createRetro,
   freezeRetroInput,
@@ -642,6 +643,22 @@ describe("improvement decisions", () => {
     expect((await w.api("outsider", "/api/improvements")).status).toBe(403);
     expect((await w.api("outsider", `/api/improvements/${id}`)).status).toBe(403);
     expect((await w.retroApi("outsider", "/api/retros/reports/r1")).status).toBe(403);
+  });
+
+  test("an admin-revoked member loses reads and decisions", async () => {
+    const w = world();
+    const id = w.retro.a;
+    changeWorkspaceRevocation(w.db, {
+      workspaceId: "ws",
+      actorId: "user-admin",
+      userId: "user-bea",
+      revoked: true,
+      now: 3,
+    });
+    expect((await w.api("bea", "/api/improvements")).status).toBe(403);
+    expect((await w.api("bea", `/api/improvements/${id}/decision`, accept())).status).toBe(403);
+    expect((await w.retroApi("bea", "/api/retros/history")).status).toBe(403);
+    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
   });
 
   test("responses are no-store and missing ids are recoverable 404s", async () => {
