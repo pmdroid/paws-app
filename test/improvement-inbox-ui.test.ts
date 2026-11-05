@@ -139,7 +139,9 @@ function harness() {
   };
   let tick = () => {};
   let search = "";
+  const counts: number[] = [];
   const page = createImprovements({
+    counted: (total: number) => counts.push(total),
     fetch: serve as typeof fetch,
     poll: (next: () => void) => {
       tick = next;
@@ -202,6 +204,7 @@ function harness() {
     root,
     page,
     requests,
+    counts,
     holds,
     holdOn(pattern: RegExp | null) {
       hold = pattern;
@@ -495,6 +498,24 @@ describe("improvement inbox", () => {
     await t.poll();
     expect(t.text()).toContain("Your workspace access changed");
     expect(t.text()).toContain("Showing the last list Paws read");
+  });
+
+  test("the navigation count clears on lost access and drops a late answer for an earlier reader", async () => {
+    const t = harness();
+    await t.open("/improvements");
+    expect(t.counts.at(-1)).toBe(2);
+    t.w.db.run("UPDATE workspace_member SET active = 0 WHERE user_id = 'user-ada'");
+    await t.poll();
+    expect(t.counts.at(-1)).toBe(0);
+    t.w.db.run("UPDATE workspace_member SET active = 1 WHERE user_id = 'user-ada'");
+    t.holdOn(/\/attention$/);
+    const late = t.page.refreshCount("http://paws.test");
+    await settle();
+    t.page.resetCount();
+    t.holdOn(null);
+    for (const held of t.holds.splice(0)) held.release();
+    await late;
+    expect(t.counts.at(-1)).toBe(0);
   });
 
   test("history lists the retro and the settings tab keeps daily and weekly controls apart", async () => {

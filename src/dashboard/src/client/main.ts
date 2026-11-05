@@ -278,10 +278,12 @@ function readerChanged(): void {
   loader.reset();
   closeout.logs = {};
   closeout.filing = {};
+  improvements.resetCount();
   phase = "loading";
   error = null;
   if (!workspaceReady) return;
   paint();
+  if (currentRoute().view !== "improvements") void improvements.refreshCount(currentEngine());
   void reload();
 }
 

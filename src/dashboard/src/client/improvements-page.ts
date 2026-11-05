@@ -144,6 +144,10 @@ export function createImprovements(options: ImprovementsOptions = {}) {
   let stopPolling: (() => void) | null = null;
   let focusAfterPaint: string | null = null;
   let dailyLoaded = false;
+  let countToken = 0;
+  const count = (token: number, total: number) => {
+    if (token === countToken) options.counted?.(total);
+  };
 
   const request = async (path: string, init?: RequestInit): Promise<Answer> => {
     const response = await fetchImpl(new URL(path, engine), {
@@ -212,12 +216,19 @@ export function createImprovements(options: ImprovementsOptions = {}) {
 
   const loadAttention = () =>
     guarded("attention", async (current) => {
+      const token = ++countToken;
       const answer = await request(IMPROVEMENT_ATTENTION_PATH);
-      if (!current() || answer.status !== 200) return;
+      if (!current()) return;
+      if (answer.status === 401 || answer.status === 403) {
+        view.attention = null;
+        count(token, 0);
+        return;
+      }
+      if (answer.status !== 200) return;
       const parsed = parseAttention(answer.body);
       if (!parsed.ok) return;
       view.attention = parsed.value;
-      options.counted?.(parsed.value.counts.total);
+      count(token, parsed.value.counts.total);
     });
 
   const loadDetail = () =>
@@ -784,15 +795,21 @@ export function createImprovements(options: ImprovementsOptions = {}) {
       listen(null);
       shown = "";
     },
+    /** Clears the count a previous reader saw; a late answer for them is dropped. */
+    resetCount() {
+      count(++countToken, 0);
+    },
     async refreshCount(nextEngine: string) {
+      const token = ++countToken;
       try {
         const response = await fetchImpl(new URL(IMPROVEMENT_ATTENTION_PATH, nextEngine), {
           cache: "no-store",
           headers: { Accept: "application/json" },
         });
+        if (response.status === 401 || response.status === 403) return count(token, 0);
         if (response.status !== 200) return;
         const parsed = parseAttention(await response.json());
-        if (parsed.ok) options.counted?.(parsed.value.counts.total);
+        if (parsed.ok) count(token, parsed.value.counts.total);
       } catch (error) {
         journalCaught(error, "improvements.refreshCount", null);
       }
