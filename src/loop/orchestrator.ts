@@ -490,6 +490,7 @@ import {
 } from "./suggested-findings";
 import { ciForRecheck, conflictsAt, type CiRecheck } from "./ci-recheck";
 import { turnPasses } from "./turn-passes";
+import { closeoutFocus } from "./closeout-focus";
 import { followUpCi, unavailableCi, type FollowUpCi } from "./follow-up-ci";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
@@ -3308,6 +3309,7 @@ export class Orchestrator {
       const turnHandoff = [handoff, comments?.text, suggestions]
         .filter((part) => part)
         .join("\n\n");
+      const focus = closeoutFocus(this.db, item.id, returned?.reason);
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
@@ -3315,6 +3317,7 @@ export class Orchestrator {
         hiddenPaths: checkout.agent,
         ...(turnHandoff ? { handoff: turnHandoff } : {}),
         ...(item.continuesBranch ? { continuesBranch: item.continuesBranch } : {}),
+        ...(focus ? { closeoutFocus: focus } : {}),
       });
       await this.flush();
       if (this.stopped(item.id)) return;
@@ -3385,6 +3388,7 @@ export class Orchestrator {
         postUpdate: this.updateHook(item),
         publishArtifact: this.artifactPublisher(item),
         closeoutProgress: this.agentCloseoutHook(item, run.id),
+        ...(focus ? { closeoutFocus: focus } : {}),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),

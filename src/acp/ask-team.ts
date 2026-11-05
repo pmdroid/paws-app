@@ -27,6 +27,7 @@ export type { PolicyFilesLoad } from "../closeout-spec";
 import {
   createCloseoutSession,
   workspacePolicyFiles,
+  type CloseoutFocus,
   type CloseoutSession,
   type CloseoutSessionEvent,
   type PolicyFilesLoad,
@@ -179,6 +180,7 @@ interface HostToolBridgeOptions {
   commandGuard?: GuardContext;
   allowCloseoutRun?: boolean;
   closeoutRulesFirst?: boolean;
+  closeoutFocus?: CloseoutFocus;
   suggestedFindings?: readonly SuggestedFindingLine[];
   signal: AbortSignal;
   onAsk?: (question: string) => void | Promise<void>;
@@ -244,6 +246,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
         ...(options.runtimeBinPaths?.length ? { runtimeBinPaths: options.runtimeBinPaths } : {}),
         ...(options.closeoutBasePath !== undefined ? { basePath: options.closeoutBasePath } : {}),
         ...(options.closeoutRulesFirst ? { rulesFirst: true } : {}),
+        ...(options.closeoutFocus ? { focus: options.closeoutFocus } : {}),
         allowCommand(argv) {
           authorizeCloseout(argv, worktreePath, options.commandGuard);
         },
