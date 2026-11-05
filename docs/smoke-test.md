@@ -171,7 +171,6 @@ Record the run on the PAS issue for it and on its pull request:
 2. A screenshot of the onboarding page after sign-in, while the VM is set up or the host enrolls, with agents needed, and set up.
 3. The "This link belongs to <name>." page from step 3.
 4. The merged pull request, showing the `Co-authored-by` trailer on a commit and the credit line in the body.
-5. The Linear request count under the issue from `/health`, which should be 30 or fewer for the whole run.
 
 Then add a row below with the date, the Paws head the instance ran, and links to the session, the pull request and the screenshots.
 

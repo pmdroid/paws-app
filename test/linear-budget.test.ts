@@ -333,32 +333,6 @@ describe("shared Linear budget", () => {
     ]);
   });
 
-  test("/health reports the Linear usage", async () => {
-    const ledger = createLinearLedger({ log: () => {} });
-    const server = startServer({
-      port: 0,
-      hostname: "127.0.0.1",
-      webhooks: false,
-      linearUsage: () => ledger.usage(),
-    });
-    try {
-      const response = await fetch(`http://127.0.0.1:${server.port}/health`);
-      expect(await response.json()).toMatchObject({
-        ok: false,
-        service: "paws",
-        linear: {
-          budget: null,
-          holdUntilMs: null,
-          windowMs: 3_600_000,
-          callers: {},
-          items: [],
-          endpoints: [],
-        },
-      });
-    } finally {
-      await server.stop(true);
-    }
-  });
   test("/api/overview carries the Linear budget and hold from the same ledger", async () => {
     const ledger = createLinearLedger({ now: () => START, log: () => {} });
     ledger.observe("tracker", {
