@@ -254,8 +254,11 @@ test("agent state written by the runner is shared with the agent group before pa
   writeFileSync(join(root, "elsewhere"), "", { mode: 0o600 });
   chmodSync(join(root, "elsewhere"), 0o600);
   symlinkSync(join(root, "elsewhere"), join(root, ".codex/link"));
+  mkdirSync(join(root, ".local/share/opencode"), { recursive: true, mode: 0o700 });
+  chmodSync(join(root, ".local"), 0o700);
   shareRunnerAgentState(root, owners);
   const mode = (path: string) => statSync(join(root, path)).mode & 0o7777;
+  expect(mode(".local")).toBe(0o770);
   expect(mode(".codex")).toBe(0o770);
   expect(mode(".codex/sessions/2026")).toBe(0o770);
   expect(mode(".codex/auth.json")).toBe(0o660);

@@ -409,6 +409,8 @@ export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners)
     AGENT_STATE.map((folder) => join(home, folder)),
     owners,
   );
+  // `.local/share` is shared below; its parent must let the agent group through as well.
+  shareRunnerPaths([join(home, ".local")], owners, { depth: 0 });
 }
 
 /**
