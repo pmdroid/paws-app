@@ -161,6 +161,7 @@ function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
         tokenProvider,
       }),
     dependencyHold: () => null,
+    mergeLane: () => "",
     voice: {
       thought: () => {},
       status: () => {},

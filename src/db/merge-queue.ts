@@ -2,7 +2,8 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 
 /**
- * A task's place in its repository's merge queue. The first task in `merge_queue` moves; the
+ * A task's place in its lane of its repository's merge queue. A lane is a Linear project, or `''`
+ * for the repository-wide lane; lanes move independently. The first task in `merge_queue` moves; the
  * others wait. A task `verifying` while Closeout runs again is busy: it keeps its place but blocks
  * nobody, and moves before the tasks behind it once it is back in `merge_queue`. A task that went
  * back to the agent, waits for an answer, or ended holds no place.
@@ -10,7 +11,11 @@ import { JOB_KIND } from "../core";
 export type MergeQueuePosition = {
   itemId: string;
   repository: string;
-  /** 1 is the front of the queue. */
+  /** The lane's Linear project id, or `''` for the repository-wide lane. */
+  lane: string;
+  /** The lane's Linear project name, or null for the repository-wide lane or an unknown name. */
+  laneName: string | null;
+  /** 1 is the front of the lane. */
   position: number;
   total: number;
   readyAt: number;
@@ -29,16 +34,18 @@ export type MergeQueuePosition = {
 
 const HOLDING = "('merge_queue','verifying')";
 
-/** Join at the end, in the order tasks became ready. A task already in the queue keeps its place. */
+/**
+ * Join the lane at the end, in the order tasks became ready. A task already in the queue keeps its
+ * place and its lane. `lane` is a Linear project id, or `''` (the default) for the whole repository.
+ */
 export function joinMergeQueue(
   db: Database,
-  input: { itemId: string; repository: string; now: number },
+  input: { itemId: string; repository: string; lane?: string; now: number },
 ): void {
-  db.run("INSERT OR IGNORE INTO merge_queue_entry(item_id,repository,ready_at) VALUES(?,?,?)", [
-    input.itemId,
-    input.repository.toLowerCase(),
-    input.now,
-  ]);
+  db.run(
+    "INSERT OR IGNORE INTO merge_queue_entry(item_id,repository,lane,ready_at) VALUES(?,?,?,?)",
+    [input.itemId, input.repository.toLowerCase(), input.lane ?? "", input.now],
+  );
 }
 
 export function leaveMergeQueue(db: Database, itemId: string): void {
@@ -100,7 +107,7 @@ export function markMergeQueueNotified(db: Database, itemId: string, position: n
 }
 
 /**
- * Every queue, each in merge order. A task `held` says may not merge yet, such as one waiting for
+ * Every lane of every queue, each in merge order. A task `held` says may not merge yet, such as one waiting for
  * its Linear dependencies, keeps its row and its `ready_at` but takes no place, so it blocks
  * nobody and returns to its place once released.
  */
@@ -113,25 +120,34 @@ export function listMergeQueues(
       {
         itemId: string;
         repository: string;
+        lane: string;
+        projectName: string | null;
         readyAt: number;
         notifiedPosition: number | null;
         state: string;
       },
       []
     >(
-      `SELECT e.item_id AS itemId, e.repository, e.ready_at AS readyAt,
+      `SELECT e.item_id AS itemId, e.repository, e.lane, e.ready_at AS readyAt,
+              CASE WHEN w.linear_project_id = e.lane THEN w.linear_project_name END AS projectName,
               e.notified_position AS notifiedPosition, w.state
        FROM merge_queue_entry e JOIN work_item w ON w.id = e.item_id
        WHERE w.state IN ${HOLDING} AND w.cancel_requested = 0
-       ORDER BY e.repository, e.ready_at, e.id`,
+       ORDER BY e.repository, e.lane, e.ready_at, e.id`,
     )
     .all();
-  const byRepository = new Map<string, typeof rows>();
-  for (const row of rows.filter((entry) => !held(entry.itemId)))
-    byRepository.set(row.repository, [...(byRepository.get(row.repository) ?? []), row]);
-  return [...byRepository.values()].flatMap((queue) =>
-    queue.map(({ state, ...row }, index) => ({
+  const byLane = new Map<string, typeof rows>();
+  for (const row of rows.filter((entry) => !held(entry.itemId))) {
+    const key = `${row.repository}\0${row.lane}`;
+    byLane.set(key, [...(byLane.get(key) ?? []), row]);
+  }
+  return [...byLane.values()].flatMap((queue) =>
+    queue.map(({ state, projectName: _, ...row }, index) => ({
       ...row,
+      laneName:
+        row.lane === ""
+          ? null
+          : (queue.find((entry) => entry.projectName !== null)?.projectName ?? null),
       position: index + 1,
       total: queue.length,
       aheadItemId: queue[index - 1]?.itemId ?? null,

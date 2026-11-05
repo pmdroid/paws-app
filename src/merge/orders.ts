@@ -190,6 +190,11 @@ export type OrderCapabilities = {
    * blockers it waits for, empty when none can be named. A held task takes no place in the queue.
    */
   dependencyHold(itemId: string): readonly string[] | null;
+  /**
+   * The merge-queue lane the task joins in its repository: its Linear project id, or `''` for the
+   * repository-wide lane.
+   */
+  mergeLane(item: WorkItemRecord): string;
   restart?: MergeRestart;
   voice: MergeVoice;
 };
@@ -310,7 +315,12 @@ export async function mergeQueueTurn(
     if (caps.stopped()) return undefined;
     return { message: body, queued: true, reason: "review" };
   }
-  joinMergeQueue(db, { itemId: item.id, repository: name, now: caps.now() });
+  joinMergeQueue(db, {
+    itemId: item.id,
+    repository: name,
+    lane: caps.mergeLane(item),
+    now: caps.now(),
+  });
   const place = mergeQueuePosition(db, item.id, held);
   if (place === null) return undefined;
   // A busy task ahead keeps its place but does not hold the lane: the first ready task moves.

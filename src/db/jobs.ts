@@ -128,7 +128,8 @@ const HELD_SAME_MERGE_LANE = `EXISTS (SELECT 1 FROM job held WHERE held.id != ca
     AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")}
     AND EXISTS (SELECT 1 FROM merge_queue_entry place JOIN work_item placed ON placed.id = place.item_id
       WHERE place.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
-        AND placed.state = 'merge_queue' AND placed.cancel_requested = 0)
+        AND placed.state = 'merge_queue' AND placed.cancel_requested = 0
+        AND place.lane = COALESCE((SELECT own.lane FROM merge_queue_entry own WHERE own.item_id = ${ITEM_ID}), ''))
     AND NOT (EXISTS (SELECT 1 FROM work_item_repository mine
     JOIN work_item_repository other ON other.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
     WHERE mine.item_id = ${ITEM_ID}
@@ -158,7 +159,7 @@ function claimWhereSql(queueCount: number): string {
  *
  * Queued starts and restarts need the scheduler's reservation. A start parked for a runner
  * slot already began, so it is claimed again without a new reservation (PAS-898). Jobs for
- * the same item and merge jobs in the same repository cannot hold overlapping leases. Other
+ * the same item and merge jobs in the same merge lane cannot hold overlapping leases. Other
  * items run independently.
  */
 export function claimJobSql(queueCount: number): string {

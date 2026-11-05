@@ -14,6 +14,17 @@ function values(project: WorkItemLinearProject | null): [string | null, string |
   return [id, name];
 }
 
+/** The item's Linear project id, or null when the issue has none or Paws has not read it. */
+export function getWorkItemLinearProjectId(db: Database, itemId: string): string | null {
+  return (
+    db
+      .query<{ id: string | null }, [string]>(
+        "SELECT linear_project_id AS id FROM work_item WHERE id=?",
+      )
+      .get(itemId)?.id ?? null
+  );
+}
+
 /** Records the item's Linear project from the issue snapshot Paws already read. */
 export function saveWorkItemLinearProject(
   db: Database,

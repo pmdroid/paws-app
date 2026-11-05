@@ -169,6 +169,8 @@ export async function mergeHarness(
     risk: (_head: string): RiskApproval => "not_required",
     /** Heads the lane asked a person to approve. */
     riskAsked: [] as string[],
+    /** Each task's merge-queue lane; the repository-wide lane unless a test says otherwise. */
+    lanes: new Map<string, string>(),
     /** Each task's Linear blockers; a blocker releases it once its merge is confirmed. */
     blockedBy: new Map<string, string[]>(),
     /** Pull requests a person merged on GitHub, by number, with the merge commit. */
@@ -462,6 +464,7 @@ export async function mergeHarness(
           tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
         });
       },
+      mergeLane: (current) => state.lanes.get(current.id) ?? "",
       dependencyHold: (itemId) => {
         const open = (state.blockedBy.get(itemId) ?? []).filter(
           (blocker) => getConfirmedRemoteMerge(db, blocker) === null,
