@@ -123,7 +123,7 @@ export function world(extra: Partial<Parameters<typeof createImprovementsHttp>[0
   };
   const retroApi = (who: string, path: string, sessions?: readonly string[]) =>
     call(retros, who, path, undefined, sessions);
-  return { db, root, people, lookup, api, retroApi, retro, now };
+  return { db, root, people, lookup, api, retroApi, retro, now, improvements };
 }
 
 function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, root: string) {

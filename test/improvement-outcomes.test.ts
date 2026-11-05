@@ -406,6 +406,21 @@ describe("evidence must match the criterion", () => {
       criterion: "The retro-recovery check passes on the merged revision.",
     });
     expect(annotated.body.item.verification.criterion).toContain("retro-recovery");
+    t.w.db.run(
+      `INSERT INTO closeout_progress (id, item_id, task_id, base, head, policy_digest, started_at,
+         updated_at) VALUES ('p0', 'work-x', 't', 'b', ?, 'd', 0, 0)`,
+      ["0".repeat(40)],
+    );
+    t.w.db.run(
+      `INSERT INTO closeout_step (progress_id, step_id, kind, state, command, attempt, ordinal)
+       VALUES ('p0', 'retro-recovery', 'command', 'passed', 'bun test test/retro.test.ts', 1, 0)`,
+    );
+    t.w.db.run("UPDATE work_item SET accepted_head = ? WHERE id = 'work-x'", [MERGE]);
+    const older = await t.post("verification", {
+      ...verify(t.version()),
+      evidence: { kind: "closeout_step", progressId: "p0", stepId: "retro-recovery" },
+    });
+    expect(older.body.reason).toBe("evidence_outdated");
     const verified = await t.post("verification", verify(t.version(), { evidence }));
     expect(verified.body.item.attention).toBe("verified");
     expect(listImprovementOutcomes(t.w.db, t.id).at(-1)!.revision).toBe(MERGE);
@@ -415,6 +430,105 @@ describe("evidence must match the criterion", () => {
     const t = await linked();
     const early = await t.post("verification", verify(t.version(), { revision: MERGE }));
     expect(early.body.reason).toBe("not_implemented");
+  });
+});
+
+describe("review fixes", () => {
+  test("delegation authorizes the issue's current team, not the one captured at link time", async () => {
+    const t = await linked();
+    t.setIssue({ teamId: "team-b" });
+    const moved = await t.post("delegate", { expectedVersion: t.version() });
+    expect([moved.status, moved.body.reason]).toEqual([403, "destination"]);
+    expect(t.starter.calls).toEqual([]);
+  });
+
+  test("reopening the Linear issue after a verified merge makes verification stale", async () => {
+    const t = await linked();
+    t.merge();
+    t.setIssue({ state: "closed", stateType: "completed" });
+    await t.sync();
+    const done = await t.post("verification", verify(t.version(), { revision: MERGE }));
+    expect(done.body.item.attention).toBe("verified");
+    t.setIssue({ state: "open", stateType: "started" });
+    await t.sync();
+    expect(await t.follow()).toMatchObject({
+      attention: "verification_stale",
+      verification: { state: "contradicted" },
+    });
+  });
+
+  test("acknowledging failed work stays closed after reconciliation", async () => {
+    const t = await linked();
+    t.work("failed");
+    await t.sync();
+    expect((await t.follow()).attention).toBe("blocked");
+    const done = await t.post("recovery", {
+      expectedVersion: t.version(),
+      choice: "acknowledge",
+      reason: "Not worth pursuing",
+    });
+    expect(done.body.item.attention).toBe("closed");
+    const before = listImprovementOutcomes(t.w.db, t.id).length;
+    await t.sync();
+    await t.sync();
+    expect((await t.follow()).attention).toBe("closed");
+    expect(listImprovementOutcomes(t.w.db, t.id).length).toBe(before);
+  });
+
+  test("access revoked while the request body streams refuses the mutation", async () => {
+    const t = await linked();
+    const version = t.version();
+    let sent = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) return controller.close();
+        sent = true;
+        syncWorkspaceMember(t.w.db, {
+          workspaceId: "ws",
+          userId: "user-ada",
+          role: "member",
+          active: false,
+          teamIds: ["team-a"],
+          now: 7,
+        });
+        controller.enqueue(
+          new TextEncoder().encode(
+            JSON.stringify({ expectedVersion: version, choice: "return_to_review", reason: "x" }),
+          ),
+        );
+      },
+    });
+    const response = await t.w.improvements(
+      new Request(`http://paws.test/api/improvements/${t.id}/recovery`, {
+        method: "POST",
+        body,
+        duplex: "half",
+      } as RequestInit),
+      t.w.people["ada"]!,
+      ["session-a"],
+    );
+    expect(response!.status).toBe(403);
+    expect(getImprovement(t.w.db, t.id)!.version).toBe(version);
+  });
+
+  test("a wrong open issue can return to review; active Paws work cannot", async () => {
+    const t = await linked();
+    await t.sync();
+    expect(await t.follow()).toMatchObject({
+      attention: "ready_to_delegate",
+      recovery: ["return_to_review"],
+    });
+    const back = await t.post("recovery", {
+      expectedVersion: t.version(),
+      choice: "return_to_review",
+      reason: "Linked the wrong issue",
+    });
+    expect(back.body.item).toMatchObject({ attention: "needs_review", issue: null });
+
+    const busy = await linked();
+    busy.work("running");
+    await busy.sync();
+    expect((await busy.follow()).recovery).toEqual([]);
   });
 });
 

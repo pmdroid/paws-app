@@ -114,6 +114,8 @@ export type FollowThrough = {
 const BLOCKED_WORK = new Set(["failed", "awaiting_input", "paused", "manual", "exhausted"]);
 const DONE: readonly ImprovementImplementationState[] = ["merged", "completed"];
 const ENDED_WORK = new Set(["failed", "cancelled"]);
+const TERMINAL_WORK = new Set(["failed", "cancelled", "merged", "completed"]);
+const TERMINAL_ISSUE = new Set(["completed", "canceled", "duplicate"]);
 
 function implementationOf(work: IssueWork | null, sync: ImprovementIssueSync | null) {
   if (work) {
@@ -168,10 +170,17 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
   const recurred =
     improvement.verificationState === "verified" &&
     item.members.some((m) => m.status === "open" && m.lastSeenAt > verifiedAt);
+  const actions = listImprovementActions(db, improvement.id);
+  const verifiedIssueState = actions.findLast((a) => a.action === "verify")?.detail["issueState"];
+  const issueReopened =
+    typeof verifiedIssueState === "string" &&
+    TERMINAL_ISSUE.has(verifiedIssueState) &&
+    sync?.status === "available" &&
+    sync.stateType !== null &&
+    !TERMINAL_ISSUE.has(sync.stateType);
   const reopened =
     improvement.verificationState === "verified" &&
-    implementation.source !== "none" &&
-    !DONE.includes(implementation.state);
+    ((implementation.source !== "none" && !DONE.includes(implementation.state)) || issueReopened);
   const stale = recurred ? "recurred" : reopened ? "reopened" : null;
   const delivery: FollowThrough["delivery"] =
     deliveries.length === 0
@@ -189,9 +198,7 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
       ? now - issue.confirmedAt <= IMPROVEMENT_OUTCOME_LIMITS.staleSyncMs
       : sync.status === "available" &&
         now - sync.observedAt <= IMPROVEMENT_OUTCOME_LIMITS.staleSyncMs);
-  const acknowledged =
-    listImprovementActions(db, improvement.id).at(-1)?.action === "acknowledge" &&
-    implementation.state === "canceled";
+  const acknowledged = actions.at(-1)?.action === "acknowledge";
   const delegating =
     delegation !== null && delegation.state !== "failed" && delegation.issueId === issue?.id;
   const ownedElsewhere = work !== null || sync?.delegated === true || delegating;
@@ -228,10 +235,11 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
     (d) => d.state === "succeeded" || d.state === "failed",
   );
   const recovery: RecoveryChoice[] = [];
-  if (issue && ["canceled", "unavailable", "verification_stale", "blocked"].includes(attention)) {
-    if (attention !== "verification_stale") recovery.push("acknowledge");
+  if (issue) {
+    if (["canceled", "unavailable", "blocked"].includes(attention)) recovery.push("acknowledge");
     if (work && ENDED_WORK.has(work.state) && issueOpen(sync)) recovery.push("redelegate");
-    if (settled) recovery.push("return_to_review");
+    if (settled && (work === null || TERMINAL_WORK.has(work.state)))
+      recovery.push("return_to_review");
   }
 
   return {
@@ -470,6 +478,8 @@ const MESSAGES = {
   evidence_not_found: "That check result is not part of this improvement's work.",
   evidence_failed: "That check did not pass, so it cannot verify this improvement.",
   not_applicable: "That check is not the one the verification criterion names.",
+  evidence_outdated:
+    "That check ran on an older revision, not the one Closeout accepted for this work.",
   verified: "This improvement is already verified. Record contrary evidence instead.",
   recovery_unavailable: "That recovery is not available for this improvement now.",
 } as const;
@@ -584,6 +594,11 @@ export async function delegateImprovement(
     return refuse("conflict", "issue_missing", followThrough(db, first, input.now()));
   if (read.value.state === "closed")
     return refuse("conflict", "issue_closed", followThrough(db, first, input.now()));
+  const freshTeam = read.value.teamId;
+  if (
+    !improvementDestinations(db, input.reviewer, first.improvement.repository).includes(freshTeam)
+  )
+    return refuse("forbidden", "destination", followThrough(db, first, input.now()));
   if (!input.again && read.value.delegated) {
     claimAndSettleExisting(db, first, input.reviewer.userId, input.now());
     return { status: "existing", item: followThrough(db, first, input.now()) };
@@ -594,7 +609,7 @@ export async function delegateImprovement(
     const item = current && findInboxItem(db, current, input.improvementId);
     if (!current || !item) return NOT_FOUND;
     const latest = followThrough(db, item, input.now());
-    if (!improvementDestinations(db, current, item.improvement.repository).includes(team))
+    if (!improvementDestinations(db, current, item.improvement.repository).includes(freshTeam))
       return refuse("forbidden", "destination", latest);
     if (item.improvement.version !== input.expectedVersion) {
       if (latest.delegation?.state === "requested") return { status: "in_progress", item: latest };
@@ -721,6 +736,9 @@ export function recordVerification(
       const named = criterion.toLowerCase();
       if (!named.includes(step.stepId.toLowerCase()) && !named.includes(step.command.toLowerCase()))
         return refuse("invalid", "not_applicable", view);
+      const accepted = view.work?.acceptedHead?.toLowerCase();
+      if (!accepted || step.head.toLowerCase() !== accepted)
+        return refuse("invalid", "evidence_outdated", view);
       if (revision !== undefined && !step.head.toLowerCase().startsWith(revision))
         return refuse("invalid", "revision_mismatch", view);
       revision = step.head.toLowerCase();
@@ -752,6 +770,7 @@ export function recordVerification(
         evidence,
         revision: revision ?? null,
         deployment: request.deployment ?? null,
+        issueState: view.issue.sync?.stateType ?? null,
       },
       actor: input.access.userId,
       now: input.now,
@@ -902,6 +921,7 @@ export function reconcileImprovement(
     const item = findInboxItem(db, { workspaceId }, improvementId);
     if (!item || !item.improvement.issue) return;
     const view = followThrough(db, item, now);
+    if (view.attention === "closed") return;
     const { improvement } = item;
     const implementation = view.implementation;
     if (

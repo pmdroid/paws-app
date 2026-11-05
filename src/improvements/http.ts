@@ -226,6 +226,11 @@ export function createImprovementsHttp(options: {
         journalCaught(error, "improvements.http.readFollowThrough", null);
         return json({ error: "Expected a JSON body." }, 400);
       }
+      const actor = reviewerFor();
+      if (!actor) {
+        audit(principal, "access.denied", path);
+        return json({ error: "Workspace access is unavailable." }, 403);
+      }
       const improvementId = follow.match![1]!;
       const action = follow.action;
       const respond = (outcome: Awaited<ReturnType<typeof delegateImprovement>>) => {
@@ -236,7 +241,7 @@ export function createImprovementsHttp(options: {
       };
       const delegate = (expectedVersion: number, again: boolean) =>
         delegateImprovement(db, {
-          reviewer,
+          reviewer: actor,
           reauthorize: reviewerFor,
           improvementId,
           expectedVersion,
@@ -265,7 +270,7 @@ export function createImprovementsHttp(options: {
         const { expectedVersion, evidence, revision, deployment, ...stated } = parsed.data;
         return respond(
           recordVerification(db, {
-            access: reviewer,
+            access: actor,
             improvementId,
             expectedVersion,
             request: {
@@ -286,7 +291,7 @@ export function createImprovementsHttp(options: {
         if (!parsed.success) return json({ error: "Send expectedVersion and the criterion." }, 400);
         return respond(
           recordCriterion(db, {
-            access: reviewer,
+            access: actor,
             improvementId,
             expectedVersion: parsed.data.expectedVersion,
             criterion: parsed.data.criterion,
@@ -301,7 +306,7 @@ export function createImprovementsHttp(options: {
         return respond(await delegate(parsed.data.expectedVersion, true));
       return respond(
         recoverImprovement(db, {
-          access: reviewer,
+          access: actor,
           improvementId,
           expectedVersion: parsed.data.expectedVersion,
           choice: parsed.data.choice,

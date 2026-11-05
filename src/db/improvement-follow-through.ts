@@ -364,6 +364,7 @@ export type IssueWork = {
   identifier: string;
   repository: string | null;
   updatedAt: number;
+  acceptedHead: string | null;
   pull: { number: number; url: string | null; openedAt: number } | null;
   merge: { number: number; url: string | null; sha: string | null; confirmedAt: number } | null;
 };
@@ -376,6 +377,7 @@ export function workForLinearIssue(db: Database, issueId: string): IssueWork | n
         state: string;
         linear_identifier: string;
         created_at: number;
+        accepted_head: string | null;
         owner: string | null;
         repo: string | null;
         updated_at: number | null;
@@ -389,7 +391,7 @@ export function workForLinearIssue(db: Database, issueId: string): IssueWork | n
       },
       [string]
     >(
-      `SELECT w.id, w.state, w.linear_identifier, w.created_at, r.owner, r.repo,
+      `SELECT w.id, w.state, w.linear_identifier, w.created_at, w.accepted_head, r.owner, r.repo,
          (SELECT max(at) FROM work_item_event e WHERE e.item_id = w.id) AS updated_at,
          p.pull_number, p.pull_url, p.opened_at, m.pull_number AS merge_number,
          m.pull_url AS merge_url, m.merge_sha, m.confirmed_at
@@ -407,6 +409,7 @@ export function workForLinearIssue(db: Database, issueId: string): IssueWork | n
     identifier: row.linear_identifier,
     repository: row.owner && row.repo ? `${row.owner}/${row.repo}` : null,
     updatedAt: row.updated_at ?? row.created_at,
+    acceptedHead: row.accepted_head,
     pull:
       row.pull_number === null
         ? null
