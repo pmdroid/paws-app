@@ -503,6 +503,10 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
           },
         });
       }
+      if (query.includes("QuestionThread"))
+        return Response.json({
+          data: { agentSession: { id: variables.id, activities: connection([]) } },
+        });
       if (query.includes("agentActivityCreate"))
         return Response.json({
           data: {

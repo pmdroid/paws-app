@@ -69,6 +69,30 @@ const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDur
   }
 }`;
 
+const QUESTION_THREAD_QUERY = `query QuestionThread($id: String!, $since: DateTimeOrDuration!, $after: String) {
+  agentSession(id: $id) {
+    id
+    activities(
+      first: 50
+      after: $after
+      orderBy: createdAt
+      filter: { createdAt: { gt: $since }, type: { eq: "prompt" } }
+    ) {
+      nodes {
+        id
+        createdAt
+        user { id }
+        updatedAt
+        signal
+        agentSession { id issue { id } }
+        sourceComment { id }
+        content { __typename ... on AgentActivityPromptContent { body type } }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
+
 export type PolledIssue = {
   id: string;
   identifier: string | null;
@@ -126,6 +150,7 @@ export type IntakeSighting = {
 
 export type IntakePollSource = {
   poll(sinceMs: number): Promise<IntakeSighting>;
+  questionReplies?(sessionId: string, sinceMs: number): Promise<readonly PolledActivity[]>;
 };
 
 /** Poll team issues, comments, and agent activities with one query per call. */
@@ -257,6 +282,26 @@ export function createIntakePollSource(
         caughtUp,
         queried: true,
       };
+    },
+    async questionReplies(sessionId, sinceMs) {
+      const nodes: Record<string, unknown>[] = [];
+      let after: string | null = null;
+      for (;;) {
+        const data = await client.query(QUESTION_THREAD_QUERY, {
+          id: sessionId,
+          since: new Date(sinceMs).toISOString(),
+          after,
+        });
+        const session =
+          isRecord(data) && isRecord(data["agentSession"]) ? data["agentSession"] : {};
+        const activities = readConnection(session, "activities");
+        nodes.push(...activities.nodes);
+        if (!activities.hasNextPage) break;
+        if (activities.endCursor === null || activities.endCursor === after)
+          throw new Error("Linear question thread pagination did not advance");
+        after = activities.endCursor;
+      }
+      return dedupeActivities(nodes);
     },
   };
 }
