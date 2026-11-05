@@ -23,12 +23,14 @@ export function openGitHubReadConfig(
     const found = read(candidate);
     if (found) [sequence, first] = [candidate, found];
   }
-  if (!first) return undefined;
   rmSync(directory, { recursive: true, force: true });
   mkdirSync(directory, { mode: 0o700 });
   chmodSync(directory, 0o700);
-  const tokens = [first.token];
-  writeHosts(directory, first.token);
+  const tokens: string[] = [];
+  if (first) {
+    tokens.push(first.token);
+    writeHosts(directory, first.token);
+  }
   const timer = setInterval(() => {
     try {
       const next = sequence < maxTokens ? read(sequence + 1) : null;
