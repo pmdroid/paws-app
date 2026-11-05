@@ -794,6 +794,14 @@ export function readPolicyRunnerWarnings(
   };
 }
 
+export function visibleDiagnosticRepositories(
+  db: Database,
+  options: Pick<LiveStatusOptions, "sessionIds">,
+): string[] {
+  const rows = [...listPushOutages(db), ...listPolicyRunnerWarnings(db)];
+  return [...new Set(visibleDiagnostics(db, options, rows).map((row) => row.repository))].sort();
+}
+
 function visibleDiagnostics<T extends { repository: string }>(
   db: Database,
   options: Pick<LiveStatusOptions, "sessionIds">,

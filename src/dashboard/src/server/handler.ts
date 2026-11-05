@@ -40,6 +40,7 @@ import {
   type CheckLogRequest,
   type CheckOutput,
   type LiveStatusOptions,
+  visibleDiagnosticRepositories,
 } from "../live/provider";
 import { emptyOverview } from "../live/overview";
 import { ALIAS_API_PATH, isAliasKind, type AliasKind, type AliasResponse } from "../aliases";
@@ -382,6 +383,14 @@ function cacheKey(resource: string, parameters: string, options: StatusServerOpt
   return JSON.stringify([resource, parameters, reader]);
 }
 
+function diagnosticCacheKey(resource: string, options: StatusServerOptions): string {
+  const visible =
+    options.provider === undefined && options.db !== undefined && options.sessionIds !== undefined
+      ? visibleDiagnosticRepositories(options.db, { sessionIds: options.sessionIds })
+      : null;
+  return JSON.stringify([cacheKey(resource, "", options), visible]);
+}
+
 async function issuesResponse(
   request: Request,
   options: StatusServerOptions,
@@ -450,7 +459,7 @@ async function overviewResponse(
   try {
     const built = await cache.get<OverviewResponse>(
       options.provider ?? options.db ?? EMPTY_SOURCE,
-      cacheKey("overview", "", options),
+      diagnosticCacheKey("overview", options),
       async () => {
         const parsed = parseOverviewResponse(await read());
         return parsed.ok ? { value: parsed.response } : { error: parsed.error };
@@ -480,7 +489,7 @@ async function mergeQueueResponse(
   try {
     const built = await cache.get<MergeQueueResponse>(
       options.provider ?? options.db ?? EMPTY_SOURCE,
-      cacheKey("merge-queue", "", options),
+      diagnosticCacheKey("merge-queue", options),
       async () => {
         const parsed = parseMergeQueueResponse(await read());
         return parsed.ok ? { value: parsed.response } : { error: parsed.error };

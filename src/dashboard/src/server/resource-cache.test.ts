@@ -130,6 +130,8 @@ describe("dashboard resource cache", () => {
       expect(await read(["s-a"])).toEqual(["fixture/team-a"]);
     }
     expect(await read([])).toEqual([]);
+    db.run("UPDATE workspace_repository SET repository='fixture/other' WHERE team_id='b'");
+    expect(await read(["s-a", "s-b"])).toEqual(["fixture/team-a"]);
     db.close();
   });
 });
