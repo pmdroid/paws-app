@@ -369,7 +369,7 @@ describe("host suspension and clock gaps", () => {
     expect(listJobs(db).some((job) => job.queue === "item.ask")).toBe(true);
   });
 
-  test("the default budget allows a 45-minute task and stops at three hours", () => {
+  test("the default budget counts implementation only: Closeout time never stops the task", () => {
     const { clock, db, host } = boot();
     try {
       startRun(db, clock);
@@ -379,17 +379,14 @@ describe("host suspension and clock gaps", () => {
       expect(getWorkItem(db, "eng-9")?.state).toBe("running");
       applyWorkItemEvent(db, "eng-9", "turn_ended");
       verifyingJob(db, clock);
-      clock.advance(135 * 60_000 - 1);
+      clock.advance(4 * 60 * 60_000);
       host.tick();
-      expect(getWorkItem(db, "eng-9")?.state).toBe("verifying");
-      clock.advance(1);
-      host.tick();
-      expect(getWorkItem(db, "eng-9")?.state).toBe("verifying");
-      expect(listJobs(db).find((job) => job.queue === "item.ask")?.payload).toMatchObject({
-        kind: "time-limit",
-        options: ["Continue", "Stop"],
-        body: expect.stringContaining("Counted: agent turns 45 min, Closeout 2 h 15 min."),
+      expect(getWorkItem(db, "eng-9")).toMatchObject({
+        state: "verifying",
+        implementMs: 45 * 60_000,
+        closeoutMs: 4 * 60 * 60_000,
       });
+      expect(listJobs(db).some((job) => job.queue === "item.ask")).toBe(false);
     } finally {
       host.stop();
       db.close();

@@ -227,7 +227,7 @@ describe("live closeout ui", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const id = "ENG-302";
-    insertQueuedItem(db, { id, title: "Capped repair", maxAwakeMs: 1_000, now });
+    insertQueuedItem(db, { id, title: "Capped repair", limits: { closeout: 1_000 }, now });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [id]);
     seedVerifying(db, id, sha("b"), now);
     // Closeout time counts while a job verifies the item.
@@ -238,7 +238,7 @@ describe("live closeout ui", () => {
     const run = snapshotOf(db, now + 1_000).runs.find((entry) => entry.itemId === id);
     expect(run?.state).toBe("stopped");
     expect(run?.summary).toBe(
-      "Run hit the awake time cap (1 min). Counted: agent turns 0 min, Closeout under 1 min.",
+      "Closeout reached its 1 min limit. Counted: implementation 0 min, Closeout under 1 min.",
     );
     expect(run?.activity.at(-1)?.kind).toBe("err");
   });

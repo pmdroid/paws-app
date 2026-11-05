@@ -169,6 +169,8 @@ export {
   markCloseoutAccepted,
   markHandoffsCarried,
   resetAwakeTime,
+  resetStageTime,
+  agentTurnStage,
   runnerCapacityWait,
   type CapOutcome,
   type RunnerCapacityWaitState,

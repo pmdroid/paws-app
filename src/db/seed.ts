@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { Checkpoint } from "../core";
+import type { Checkpoint, StageLimits } from "../core";
 import {
   applyWorkItemEvent,
   configureWorkItem,
@@ -20,6 +20,7 @@ export function insertQueuedItem(
     branchName?: string;
     sessionKey?: string;
     maxAwakeMs?: number;
+    limits?: Partial<StageLimits>;
   } = {},
 ): WorkItemRecord {
   const id = input.id ?? "item-1";
@@ -42,6 +43,7 @@ export function insertQueuedItem(
   configureWorkItem(db, id, {
     sessionKey: input.sessionKey ?? "session",
     maxAwakeMs: input.maxAwakeMs,
+    ...(input.limits ? { limits: input.limits } : {}),
   });
   const item = getWorkItem(db, id);
   if (item === null) throw new Error(`failed to insert ${id}`);

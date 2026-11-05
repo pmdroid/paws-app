@@ -147,6 +147,7 @@ import {
   isResponseTaskMode,
   parentTaskKeySql,
   type Clock,
+  type StageLimits,
   type ResponseTaskMode,
   type TaskMode,
   type LinearCommand,
@@ -707,7 +708,10 @@ export type OrchestratorOptions = {
     signal: AbortSignal,
   ) => Promise<RunnerRebase>;
   clock?: Clock;
-  caps?: { maxAwakeMs: number };
+  caps?: {
+    maxAwakeMs: number;
+    limits?: (projectId: string | null) => StageLimits;
+  };
   retryBaseMs?: number;
   placementPollMs?: number;
   random?: () => number;
@@ -1257,6 +1261,7 @@ export class Orchestrator {
         for (const saved of result.items) {
           configureWorkItem(this.db, saved.id, {
             maxAwakeMs: caps.maxAwakeMs,
+            limits: this.timeLimits(saved.id),
           });
         }
       }
@@ -1510,6 +1515,7 @@ export class Orchestrator {
             for (const child of accepted.items)
               configureWorkItem(this.db, child.id, {
                 maxAwakeMs: this.options.caps.maxAwakeMs,
+                limits: this.timeLimits(child.id),
               });
         });
       },
@@ -5590,6 +5596,12 @@ export class Orchestrator {
     );
   }
 
+  private timeLimits(itemId: string): StageLimits | undefined {
+    const limits = this.options.caps?.limits;
+    if (limits === undefined) return undefined;
+    return limits(getWorkItem(this.db, itemId)?.linearProjectId ?? null);
+  }
+
   private readMergePolicy(): MergeSettings {
     return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
   }
@@ -6027,7 +6039,11 @@ export class Orchestrator {
       const outcome = answerAsked(
         this.db,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
-        questionEffects(this.db, { now: this.now(), maxAwakeMs: this.options.caps?.maxAwakeMs }),
+        questionEffects(this.db, {
+          now: this.now(),
+          maxAwakeMs: this.options.caps?.maxAwakeMs,
+          timeLimits: this.options.caps?.limits,
+        }),
       );
       await this.flush();
       return outcome.status === "answered" ? "answered" : "rejected";
@@ -6041,7 +6057,11 @@ export class Orchestrator {
       const outcome = answerAsked(
         this.db,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
-        questionEffects(this.db, { now: this.now(), maxAwakeMs: this.options.caps?.maxAwakeMs }),
+        questionEffects(this.db, {
+          now: this.now(),
+          maxAwakeMs: this.options.caps?.maxAwakeMs,
+          timeLimits: this.options.caps?.limits,
+        }),
       );
       await this.flush();
       return outcome.status === "answered" ? "answered" : "rejected";
@@ -6081,6 +6101,7 @@ export class Orchestrator {
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },
         questionEffects(this.db, {
           maxAwakeMs: this.options.caps?.maxAwakeMs,
+          timeLimits: this.options.caps?.limits,
           now: this.now(),
           asking: (runId) => this.askedRuns.has(runId),
           redirect,
@@ -7255,6 +7276,7 @@ export class Orchestrator {
         sessionId,
         key: jobKey,
         maxAwakeMs: this.options.caps?.maxAwakeMs,
+        limits: this.timeLimits(item!.id),
         now: this.now(),
       });
       const jobId = restart(this.db, getWorkItem(this.db, item!.id)!, {

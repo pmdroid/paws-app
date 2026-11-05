@@ -594,7 +594,7 @@ describe("hard caps", () => {
     expect(listOutbox(db)[0]?.payload).toEqual({
       sessionId: item.id,
       kind: "error",
-      body: "Run hit the awake time cap (1 min). Counted: agent turns under 1 min, Closeout 0 min.",
+      body: "Implementation reached its 1 min limit. Counted: implementation under 1 min.",
     });
   });
 
@@ -645,7 +645,7 @@ describe("hard caps", () => {
 
   test("an accepted task sent back to the agent counts awake time again", () => {
     const { clock, db } = harness();
-    const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
+    const item = insertQueuedItem(db, { limits: { fixes: 1_000 }, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
     accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "turn_ended");

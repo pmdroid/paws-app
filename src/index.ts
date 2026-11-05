@@ -59,6 +59,7 @@ import {
   resolveAgentProfiles,
   loadEnv,
   loadConfigFile,
+  resolveTimeLimits,
   loadRunnerControl,
   pawsPaths,
   readMergeSettings,
@@ -1542,7 +1543,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         },
         githubForRepository: (selected) =>
           githubBinding(authProvider(runtime, selected, "write", resolveApp)),
-        caps: { maxAwakeMs: runtime.maxAwakeMs },
+        caps: {
+          maxAwakeMs: runtime.maxAwakeMs,
+          limits: (projectId) =>
+            resolveTimeLimits(loadConfigFile(paths.configFile), projectId, runtime.maxAwakeMs),
+        },
       });
       orchestrator = attached;
       executionControls = createExecutionControls({

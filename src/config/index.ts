@@ -95,6 +95,15 @@ export type {
 } from "./merge";
 
 export {
+  MAX_TIME_LIMIT_MINUTES,
+  parseTimeLimitSettings,
+  readTimeLimitSettings,
+  resolveTimeLimits,
+  writeTimeLimits,
+} from "./time-limits";
+export type { StoredTimeLimits, TimeLimitMinutes, TimeLimitSettings } from "./time-limits";
+
+export {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
   MAX_QUEUE_START_TIMEOUT_HOURS,
   parseQueueSettings,

@@ -32,6 +32,7 @@ import {
   type MergeRepositories,
   type MergeRule,
 } from "./merge";
+import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import { assignMemberVmKey, renderMemberVmSettings, type MemberVmSize } from "./member-vm";
 import { renderQueueSettings } from "./queue";
 import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
@@ -131,6 +132,7 @@ export type PawsConfigFile = {
   briefTemplate?: string | null;
   /** `[brief.projects."owner/repo"] template`. */
   briefProjects?: Record<string, string>;
+  timeLimits?: StoredTimeLimits;
 };
 
 /**
@@ -194,7 +196,8 @@ export function parseConfigToml(text: string): PawsConfigFile {
         !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief)$/.test(
           section,
         ) &&
-        !/^(closeout|merge|checkout|agents|skills|brief)\./.test(section) &&
+        !/^(closeout|merge|checkout|agents|skills|brief|time_limits)\./.test(section) &&
+        section !== "time_limits" &&
         section !== "skills" &&
         section !== RETIRED_UPDATE_SECTION
       )
@@ -205,6 +208,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (eq <= 0) throw new Error(`config.toml line ${index + 1} is not a key`);
     if (section === RETIRED_UPDATE_SECTION) continue;
     if (section === "brief" || section.startsWith("brief.")) continue;
+    if (section === "time_limits" || section.startsWith("time_limits.")) continue;
     const key = line.slice(0, eq).trim().toLowerCase();
     const raw = line.slice(eq + 1).trim();
     if (key.length === 0 || raw.length === 0) {
@@ -222,6 +226,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
   if (brief.template !== null) config.briefTemplate = brief.template;
   if (Object.keys(brief.projects).length) config.briefProjects = brief.projects;
   Object.assign(config, parseMergeTables(text));
+  Object.assign(config, parseTimeLimitTables(text));
   return config;
 }
 

@@ -57,7 +57,7 @@ function askedAtTimeLimit() {
   const item = insertQueuedItem(db, {
     id: "eng-7",
     sessionKey: "ses",
-    maxAwakeMs: 30 * MINUTE,
+    limits: { fixes: 30 * MINUTE },
     now: clock.now(),
   });
   beginImplementRun(db, item.id, clock.now());
