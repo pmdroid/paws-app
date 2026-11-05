@@ -5118,7 +5118,7 @@ test("with own_turn, a suggestion turn that changes nothing keeps the accepted h
   ).toEqual([responses[1]!]);
 }, 120_000);
 
-test("with own_turn, a suggestion turn that commits gets a full Closeout; a confirmed fix is dropped and a decline keeps its reason", async () => {
+test("with own_turn, a suggestion turn that commits gets a full Closeout; a fix the next review omits stays pending verification and a decline keeps its reason", async () => {
   const during = { reviews: -1 };
   const result = await runCiFix({
     failRounds: 0,
@@ -5142,12 +5142,14 @@ test("with own_turn, a suggestion turn that commits gets a full Closeout; a conf
   expect(result.prompts[1]).not.toContain("README.md:1");
   expect(result.reviewerLaunches, result.detail).toBeGreaterThan(during.reviews);
   const body = result.pullBodies.at(-1)!;
-  expect(body).not.toContain("ok.txt:1");
+  expect(body).toMatch(
+    /`ok\.txt:1` .* \(adversarial-review, below failOn; fixed in [0-9a-f]{7}, pending verification\)/,
+  );
   expect(body).toContain("(adversarial-review, below failOn; declined: needs a schema change)");
   expect(body).toContain("(adversarial-review, pre-existing)");
 }, 120_000);
 
-test("a fixed claim the next review still reports stays listed, marked still open", async () => {
+test("a fixed claim the next review still reports stays unresolved, pending verification", async () => {
   const result = await runCiFix({
     failRounds: 0,
     config: OWN_TURN,
@@ -5164,6 +5166,6 @@ test("a fixed claim the next review still reports stays listed, marked still ope
   expect(result.state, result.detail).toBe("merged");
   expect(result.implementRuns, result.detail).toBe(2);
   expect(result.pullBodies.at(-1)!).toMatch(
-    /`ok\.txt:1` .* \(adversarial-review, below failOn; fixed in [0-9a-f]{7}, still open\)/,
+    /`ok\.txt:1` .* \(adversarial-review, below failOn; fixed in [0-9a-f]{7}, pending verification\)/,
   );
 }, 120_000);

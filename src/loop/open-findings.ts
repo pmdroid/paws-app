@@ -146,7 +146,7 @@ function decisionNote(decision: OpenFinding["decision"]): string {
   if (!decision) return "";
   if (decision.decision === "declined")
     return `; declined: ${inertMarkdown(oneLine(decision.reason))}`;
-  return `; fixed${decision.head ? ` in ${decision.head.slice(0, 7)}` : ""}, still open`;
+  return `; fixed${decision.head ? ` in ${decision.head.slice(0, 7)}` : ""}, pending verification`;
 }
 
 /**

@@ -53,8 +53,7 @@ export function recordSuggestedFindings(
       `INSERT INTO suggested_finding (item_id, finding_id, review_id, location, severity,
          explanation, handed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(item_id, finding_id) DO UPDATE SET handed_at = excluded.handed_at,
-         decision = NULL, reason = NULL, head = NULL, decided_at = NULL`,
+       ON CONFLICT(item_id, finding_id) DO NOTHING`,
       [
         itemId,
         finding.findingId,

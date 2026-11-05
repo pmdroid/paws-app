@@ -3298,7 +3298,13 @@ export class Orchestrator {
       this.saveCandidate(run.id, executed.run.identity);
       const at = this.itemHead(finished);
       const head = (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
-      recordAgentFindingDecisions(this.db, item.id, activity.resultBody(), head, this.now());
+      recordAgentFindingDecisions(
+        this.db,
+        item.id,
+        activity.resultBody(),
+        await this.fixCommit(at.repo, item.id, head),
+        this.now(),
+      );
       const base = (await git(["-C", at.repo, "merge-base", at.ref, "origin/main"])).trim();
       saveCheckpoint(this.db, item.id, {
         ...getWorkItem(this.db, item.id)?.checkpoint,
@@ -5386,6 +5392,15 @@ export class Orchestrator {
       );
       return "next_turn";
     }
+  }
+
+  private async fixCommit(repo: string, itemId: string, head: string): Promise<string | null> {
+    const accepted = getWorkItem(this.db, itemId)?.acceptedHead ?? null;
+    if (accepted === null || accepted === head) return null;
+    const added = await git(["-C", repo, "rev-list", "--count", `${accepted}..${head}`]).catch(
+      () => "0",
+    );
+    return Number(added.trim()) > 0 ? head : null;
   }
 
   private async suggestionBrief(

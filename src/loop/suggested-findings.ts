@@ -53,7 +53,8 @@ export function withDecisions(
   records: readonly SuggestedFindingRecord[],
 ): OpenFinding[] {
   const decided = records.filter((record) => record.decision !== null);
-  return findings.map((finding) => {
+  const shown = new Set<SuggestedFindingRecord>();
+  const listed = findings.map((finding) => {
     if (finding.why !== "below failOn") return finding;
     const id = findingId(finding);
     const record =
@@ -61,23 +62,29 @@ export function withDecisions(
       decided.findLast(
         (entry) => entry.reviewId === finding.reviewId && entry.location === finding.location,
       );
-    return record
-      ? {
-          ...finding,
-          decision: {
-            decision: record.decision!,
-            reason: record.reason ?? "",
-            head: record.head,
-          },
-        }
-      : finding;
+    if (!record) return finding;
+    shown.add(record);
+    return { ...finding, decision: decisionOf(record) };
   });
+  const pendingFixes = decided
+    .filter((record) => record.decision === "fixed" && !shown.has(record))
+    .map((record): OpenFinding => ({
+      reviewId: record.reviewId,
+      severity: record.severity,
+      location: record.location,
+      explanation: record.explanation,
+      why: "below failOn",
+      decision: decisionOf(record),
+    }));
+  return [...listed, ...pendingFixes];
+}
+
+function decisionOf(record: SuggestedFindingRecord): NonNullable<OpenFinding["decision"]> {
+  return { decision: record.decision!, reason: record.reason ?? "", head: record.head };
 }
 
 export function undecidedSuggestions(findings: readonly OpenFinding[]): OpenFinding[] {
-  return findings.filter(
-    (finding) => finding.why === "below failOn" && finding.decision?.decision !== "declined",
-  );
+  return findings.filter((finding) => finding.why === "below failOn" && !finding.decision);
 }
 
 export function handSuggestions(
@@ -104,7 +111,7 @@ export function recordAgentFindingDecisions(
   db: Database,
   itemId: string,
   finalMessage: string,
-  head: string | null,
+  fixCommit: string | null,
   now: number,
 ): number {
   const waiting = new Set(
@@ -113,13 +120,10 @@ export function recordAgentFindingDecisions(
       .map((record) => record.findingId),
   );
   if (waiting.size === 0) return 0;
-  return decideSuggestedFindings(
-    db,
-    itemId,
-    parseFindingDecisions(finalMessage, waiting),
-    head,
-    now,
-  );
+  const decisions = parseFindingDecisions(finalMessage, waiting);
+  if (fixCommit === null)
+    for (const [id, report] of decisions) if (report.decision === "fixed") decisions.delete(id);
+  return decideSuggestedFindings(db, itemId, decisions, fixCommit, now);
 }
 
 export function waitingSuggestions(db: Database, itemId: string): SuggestedFindingLine[] {
