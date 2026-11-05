@@ -593,7 +593,9 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
           "Save work in progress so far",
         ]);
         // The time cap asks in Linear, and Paws stops the agent.
-        db.run("UPDATE work_item SET awake_ms=max_awake_ms WHERE id=?", [record.id]);
+        db.run("UPDATE work_item SET awake_ms=max_awake_ms, implement_ms=max_awake_ms WHERE id=?", [
+          record.id,
+        ]);
         expect(accrueAwake(db, record.id, 0, Date.now())).toMatchObject({
           asked: true,
           stopAgent: true,

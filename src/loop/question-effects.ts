@@ -7,9 +7,11 @@ import {
   TIME_LIMIT_CONTINUE,
   TIME_LIMIT_MERGE,
   TIME_LIMIT_VERIFYING_REASON,
+  type StageLimits,
 } from "../core";
 import { startFreshBudget } from "./time-budget";
 import {
+  agentTurnStage,
   applyLinearTurns,
   announceLinearTurn,
   applyWorkItemEvent,
@@ -50,7 +52,8 @@ export function questionEffects(
   db: Database,
   input: {
     now: number;
-    maxAwakeMs?: number;
+    maxAwakeMs?: number | undefined;
+    timeLimits?: ((projectId: string | null) => StageLimits) | undefined;
     asking?: (runId: string) => boolean;
     redirect?: boolean;
     marks?: readonly VisualReviewMark[];
@@ -163,11 +166,19 @@ export function questionEffects(
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {
       const plain =
         (question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_CONTINUE.toLowerCase();
+      const item = getWorkItem(db, question.itemId);
       startFreshBudget(db, {
         itemId: question.itemId,
         sessionId: question.sessionId,
         key: question.id,
         maxAwakeMs: input.maxAwakeMs,
+        limits: item ? input.timeLimits?.(item.linearProjectId ?? null) : undefined,
+        stage:
+          question.reason === SLOW_CI_REASON
+            ? undefined
+            : question.reason === TIME_LIMIT_VERIFYING_REASON
+              ? "closeout"
+              : agentTurnStage(db, question.itemId),
         now: input.now,
       });
       // A review or comment restart the time limit cut off reaches the agent with the answer.

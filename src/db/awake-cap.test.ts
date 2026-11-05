@@ -259,7 +259,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
 
   test("a resumed agent at the cap asks in Linear instead of failing", () => {
     const { clock, db, item, run } = acceptedItem(30 * MINUTE);
-    applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
+    applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "follow_up" });
     applyWorkItemEvent(db, item.id, "dispatched");
     saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
     accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
@@ -280,7 +280,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(request).toMatchObject({
       kind: "time-limit",
       options: ["Merge the accepted work", "Continue", "Stop"],
-      body: expect.stringContaining("Time limit reached"),
+      body: expect.stringContaining("Implementation reached its 30 min limit"),
     });
     expect(listOutbox(db).some((row) => (row.payload as { kind?: string }).kind === "error")).toBe(
       false,
@@ -303,7 +303,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).capped).toBe(true);
     expect(listOutbox(db).at(-1)?.payload).toMatchObject({
       kind: "error",
-      body: "Run hit the awake time cap (30 min). Counted: agent turns 30 min, Closeout 0 min. Not counted: waiting 1 h 30 min.",
+      body: "Implementation reached its 30 min limit. Counted: implementation 30 min. Not counted: waiting 1 h 30 min.",
     });
   });
 
@@ -311,7 +311,12 @@ describe("awake-time cap after Closeout accepted the work", () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
     migrate(db);
-    const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 60 * MINUTE, now: 0 });
+    const item = insertQueuedItem(db, {
+      sessionKey: "ses",
+      maxAwakeMs: 60 * MINUTE,
+      limits: { closeout: 19 * MINUTE },
+      now: 0,
+    });
     const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * MINUTE });
     let finish = () => {};
     jobs.register(
@@ -366,7 +371,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(accrue()).toMatchObject({ capped: false, asked: true, stopAgent: true });
     expect(listJobs(db).find((job) => job.queue === "item.ask")?.payload).toMatchObject({
       body: expect.stringContaining(
-        "Counted: agent turns 41 min, Closeout 19 min. Not counted: waiting 4 h.",
+        "Counted: implementation 41 min, Closeout 19 min. Not counted: waiting 4 h.",
       ),
     });
     finish();
@@ -671,7 +676,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("without a Linear session, a resumed agent at the cap pauses instead of failing", () => {
     const { clock, db, item, run } = acceptedItem(30 * MINUTE);
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
-    applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
+    applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "follow_up" });
     applyWorkItemEvent(db, item.id, "dispatched");
     setCurrentRun(db, item.id, run.id);
     saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
@@ -686,7 +691,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(result.item).toMatchObject({
       state: "paused",
       cancelRequested: false,
-      maxAwakeMs: 35 * MINUTE + 60 * MINUTE,
+      maxAwakeMs: 30 * MINUTE + 60 * MINUTE,
     });
     expect(getRun(db, run.id)?.status).toBe("ended");
     expect(listOutbox(db).some((row) => (row.payload as { kind?: string }).kind === "error")).toBe(
@@ -694,7 +699,9 @@ describe("awake-time cap after Closeout accepted the work", () => {
     );
     expect(listOutbox(db).at(-1)?.payload).toMatchObject({
       kind: "thought",
-      body: expect.stringMatching(/^Paused at the time limit\. /),
+      body: expect.stringMatching(
+        /^Paused at the time limit: Implementation reached its 30 min limit\. /,
+      ),
     });
   });
 });

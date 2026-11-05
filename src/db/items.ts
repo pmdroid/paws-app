@@ -5,8 +5,10 @@ import { wakeMergesBehind } from "./merge-queue";
 import { readCheckpoint } from "./checkpoint";
 import {
   awakeCategory,
-  awakeCapReached,
+  agentStage,
   capActivityText,
+  stageLimits,
+  stageReached,
   formatAwakeBreakdown,
   timeLimitQuestion,
   unacceptedTimeLimitQuestion,
@@ -16,6 +18,8 @@ import {
   UNACCEPTED_TIME_LIMIT_OPTIONS,
   type AwakeBreakdown,
   type AwakeCategory,
+  type StageLimits,
+  type TimeStage,
   hasVerificationCandidate,
   IN_FLIGHT_ITEM_STATES,
   isAwakeItemState,
@@ -63,9 +67,14 @@ export type WorkItemRecord = {
   awakeMs: number;
   lastMonoMs: number | null;
   maxAwakeMs: number;
+  maxFixMs: number;
+  maxCloseoutMs: number;
+  linearProjectId?: string | null;
   /** The head Closeout last accepted. Cleared when a later verdict on that work retires it. */
   acceptedHead: string | null;
   agentMs: number;
+  implementMs: number;
+  fixMs: number;
   closeoutMs: number;
   waitingMs: number;
   recheckMs: number;
@@ -94,8 +103,13 @@ type ItemSql = {
   awake_ms: number;
   last_mono_ms: number | null;
   max_awake_ms: number;
+  max_fix_ms?: number;
+  max_closeout_ms?: number;
+  linear_project_id?: string | null;
   accepted_head: string | null;
   agent_ms: number;
+  implement_ms?: number;
+  fix_ms?: number;
   closeout_ms: number;
   waiting_ms: number;
   recheck_ms: number;
@@ -310,14 +324,37 @@ export function listWorkItemEventRows(
 export function configureWorkItem(
   db: Database,
   id: string,
-  patch: { sessionKey?: string; maxAwakeMs?: number },
+  patch: { sessionKey?: string; maxAwakeMs?: number; limits?: Partial<StageLimits> },
 ): void {
   if (patch.sessionKey !== undefined) {
     db.run("UPDATE work_item SET session_key = ? WHERE id = ?", [patch.sessionKey, id]);
   }
-  if (patch.maxAwakeMs !== undefined) {
-    db.run("UPDATE work_item SET max_awake_ms = ? WHERE id = ?", [patch.maxAwakeMs, id]);
+  const limits = { implementation: patch.maxAwakeMs, ...patch.limits };
+  for (const stage of ["implementation", "fixes", "closeout"] as const) {
+    const value = limits[stage];
+    if (value !== undefined)
+      db.run(`UPDATE work_item SET ${LIMIT_COLUMN[stage]} = ? WHERE id = ?`, [value, id]);
   }
+}
+
+const LIMIT_COLUMN: Record<TimeStage, string> = {
+  implementation: "max_awake_ms",
+  fixes: "max_fix_ms",
+  closeout: "max_closeout_ms",
+};
+const STAGE_COLUMN: Record<TimeStage, string> = {
+  implementation: "implement_ms",
+  fixes: "fix_ms",
+  closeout: "closeout_ms",
+};
+
+export function agentTurnStage(db: Database, id: string): "implementation" | "fixes" {
+  const row = db
+    .query<{ reason: string | null }, [string]>(
+      "SELECT reason FROM work_item_event WHERE item_id = ? AND kind = 'restart' ORDER BY id DESC LIMIT 1",
+    )
+    .get(id);
+  return agentStage(row?.reason ?? null);
 }
 
 export function saveCheckpoint(db: Database, id: string, checkpoint: Checkpoint | null): void {
@@ -395,14 +432,20 @@ export function accrueAwake(
       (idle || hold) && (counted === "agent" || counted === "closeout") ? "waiting" : counted;
     const awake = category === "agent" || category === "closeout";
     const awakeMs = current.awakeMs + (awake ? delta : 0);
+    const stage: TimeStage | null =
+      category === "agent" ? agentTurnStage(db, id) : category === "closeout" ? "closeout" : null;
     if (delta > 0 || (current.lastMonoMs === null && sinceMono === undefined)) {
-      const breakdown =
+      const columns =
         category === null
-          ? ""
-          : `, ${BREAKDOWN_COLUMN[category]} = ${BREAKDOWN_COLUMN[category]} + ?`;
+          ? []
+          : category === "agent"
+            ? [BREAKDOWN_COLUMN.agent, STAGE_COLUMN[stage!]]
+            : [BREAKDOWN_COLUMN[category]];
       db.run(
-        `UPDATE work_item SET awake_ms = ?, last_mono_ms = ?${breakdown} WHERE id = ?`,
-        category === null ? [awakeMs, mono, id] : [awakeMs, mono, delta, id],
+        `UPDATE work_item SET awake_ms = ?, last_mono_ms = ?${columns
+          .map((column) => `, ${column} = ${column} + ?`)
+          .join("")} WHERE id = ?`,
+        [awakeMs, mono, ...columns.map(() => delta), id],
       );
     }
     if (!awake) {
@@ -410,7 +453,7 @@ export function accrueAwake(
       if (updated === null) throw new Error(`work item ${id} not found`);
       return { capped: false, item: updated };
     }
-    return enforceCaps(db, id, now);
+    return enforceCaps(db, id, stage!, now);
   });
 }
 
@@ -560,16 +603,16 @@ function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId
  * publishing and merging, and only a resumed agent stops to ask. Before acceptance, a
  * running agent or Closeout run stops to ask. The cap fails an item only when it cannot ask.
  */
-function enforceCaps(db: Database, id: string, now: number): CapOutcome {
+function enforceCaps(db: Database, id: string, stage: TimeStage, now: number): CapOutcome {
   const updated = getWorkItem(db, id);
   if (updated === null) throw new Error(`work item ${id} not found`);
-  if (!awakeCapReached(updated)) return { capped: false, item: updated };
+  if (!stageReached(updated, stage)) return { capped: false, item: updated };
   const accepted = updated.acceptedHead !== null;
   if (
     !accepted &&
     (updated.sessionKey === null || (updated.state !== "running" && updated.state !== "verifying"))
   ) {
-    failForCap(db, updated, now);
+    failForCap(db, updated, stage, now);
     return { capped: true, item: refetch() };
   }
   if (accepted && updated.state !== "running") return { capped: false, item: updated };
@@ -581,9 +624,9 @@ function enforceCaps(db: Database, id: string, now: number): CapOutcome {
       .get(id)
   )
     return { capped: false, item: updated };
-  if (askTimeLimit(db, updated, now))
+  if (askTimeLimit(db, updated, stage, now))
     return { capped: false, asked: true, stopAgent: true, item: refetch() };
-  pauseAtTimeLimit(db, updated, now);
+  pauseAtTimeLimit(db, updated, stage, now);
   return { capped: false, stopAgent: true, item: refetch() };
 
   function refetch(): WorkItemRecord {
@@ -596,6 +639,8 @@ function enforceCaps(db: Database, id: string, now: number): CapOutcome {
 export function awakeBreakdown(item: WorkItemRecord): AwakeBreakdown {
   return {
     agentMs: item.agentMs,
+    implementMs: item.implementMs,
+    fixMs: item.fixMs,
     closeoutMs: item.closeoutMs,
     waitingMs: item.waitingMs,
     recheckMs: item.recheckMs,
@@ -607,9 +652,14 @@ export function markCloseoutAccepted(db: Database, id: string, head: string): vo
   db.run("UPDATE work_item SET accepted_head = ? WHERE id = ?", [head, id]);
 }
 
-/** Resuming accepted work paused at the time limit gives the agent more awake time. */
-function extendAwakeCap(db: Database, id: string, extraMs = TIME_LIMIT_EXTENSION_MS): void {
-  db.run("UPDATE work_item SET max_awake_ms = MAX(max_awake_ms, awake_ms) + ? WHERE id = ?", [
+function extendAwakeCap(
+  db: Database,
+  id: string,
+  stage: TimeStage,
+  extraMs = TIME_LIMIT_EXTENSION_MS,
+): void {
+  const limit = LIMIT_COLUMN[stage];
+  db.run(`UPDATE work_item SET ${limit} = MAX(${limit}, ${STAGE_COLUMN[stage]}) + ? WHERE id = ?`, [
     extraMs,
     id,
   ]);
@@ -619,11 +669,15 @@ function extendAwakeCap(db: Database, id: string, extraMs = TIME_LIMIT_EXTENSION
 export function resetAwakeTime(db: Database, id: string): void {
   db.run(
     `UPDATE work_item
-     SET awake_ms = 0, agent_ms = 0, closeout_ms = 0, waiting_ms = 0, recheck_ms = 0,
-         last_mono_ms = NULL
+     SET awake_ms = 0, agent_ms = 0, implement_ms = 0, fix_ms = 0, closeout_ms = 0,
+         waiting_ms = 0, recheck_ms = 0, last_mono_ms = NULL
      WHERE id = ?`,
     [id],
   );
+}
+
+export function resetStageTime(db: Database, id: string, stage: TimeStage): void {
+  db.run(`UPDATE work_item SET ${STAGE_COLUMN[stage]} = 0 WHERE id = ?`, [id]);
 }
 
 /**
@@ -675,34 +729,35 @@ export function markHandoffsCarried(db: Database, held: readonly HeldHandoff[]):
  * instead of failing. The cap already allows another hour, so resuming it from
  * the run page keeps going.
  */
-function pauseAtTimeLimit(db: Database, item: WorkItemRecord, now: number): void {
+function pauseAtTimeLimit(db: Database, item: WorkItemRecord, stage: TimeStage, now: number): void {
   applyWorkItemEvent(db, item.id, "pause");
   cancelAgentJobs(db, item.id, now);
   if (item.currentRunId !== null) {
     const run = getRun(db, item.currentRunId);
     if (run?.status === "active") markRun(db, run.id, "ended", now);
   }
-  extendAwakeCap(db, item.id);
+  extendAwakeCap(db, item.id, stage);
   journal(`item ${item.linearIdentifier} reached its time cap after acceptance; paused`);
   enqueueOutboxOnce(db, {
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
     orderingKey: item.id,
     idempotencyKey: `time-limit-pause:${item.id}:${item.version}`,
-    payload: { sessionId: item.id, kind: "thought", body: timeLimitPausedNote(item) },
+    payload: { sessionId: item.id, kind: "thought", body: timeLimitPausedNote(item, stage) },
     now,
   });
 }
 
-function timeLimitPausedNote(item: WorkItemRecord): string {
-  return `Paused at the time limit. Closeout already accepted this task's work, so Paws did not fail it. ${formatAwakeBreakdown(awakeBreakdown(item))} Resume it from the run page to give the agent another hour.`;
+function timeLimitPausedNote(item: WorkItemRecord, stage: TimeStage): string {
+  const limits = stageLimits(item);
+  return `Paused at the time limit: ${capActivityText(stage, limits)} Closeout already accepted this task's work, so Paws did not fail it. ${formatAwakeBreakdown(awakeBreakdown(item), limits)} Resume it from the run page to give the agent another hour.`;
 }
 
 /**
  * Stops the agent's or Closeout's run and asks "continue or stop?" in Linear, offering
  * Merge when Closeout accepted a head. Returns false when the task has no Linear session.
  */
-function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean {
+function askTimeLimit(db: Database, item: WorkItemRecord, stage: TimeStage, now: number): boolean {
   const sessionId = item.sessionKey;
   if (sessionId === null) return false;
   const accepted = item.acceptedHead !== null;
@@ -718,8 +773,14 @@ function askTimeLimit(db: Database, item: WorkItemRecord, now: number): boolean 
       kind: "time-limit",
       reason: verifying ? TIME_LIMIT_VERIFYING_REASON : "time_limit",
       body: accepted
-        ? timeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item), held)
-        : unacceptedTimeLimitQuestion(item.maxAwakeMs, awakeBreakdown(item), verifying, held),
+        ? timeLimitQuestion(stage, stageLimits(item), awakeBreakdown(item), held)
+        : unacceptedTimeLimitQuestion(
+            stage,
+            stageLimits(item),
+            awakeBreakdown(item),
+            verifying,
+            held,
+          ),
       options: accepted ? [...TIME_LIMIT_OPTIONS] : [...UNACCEPTED_TIME_LIMIT_OPTIONS],
     },
     now,
@@ -985,12 +1046,12 @@ export function runnerCapacityWait(payload: unknown): RunnerCapacityWaitState | 
     : null;
 }
 
-function failForCap(db: Database, item: WorkItemRecord, now: number): void {
+function failForCap(db: Database, item: WorkItemRecord, stage: TimeStage, now: number): void {
   commitFailure(
     db,
     item,
     "cap:time",
-    capActivityText(item.maxAwakeMs, awakeBreakdown(item)),
+    capActivityText(stage, stageLimits(item), awakeBreakdown(item)),
     now,
     (version) => `cap:${item.id}:${version}:time`,
   );
@@ -1079,8 +1140,13 @@ function mapItem(row: ItemSql): WorkItemRecord {
     awakeMs: row.awake_ms,
     lastMonoMs: row.last_mono_ms,
     maxAwakeMs: row.max_awake_ms,
+    maxFixMs: row.max_fix_ms ?? 0,
+    maxCloseoutMs: row.max_closeout_ms ?? 0,
+    linearProjectId: row.linear_project_id ?? null,
     acceptedHead: row.accepted_head ?? null,
     agentMs: row.agent_ms ?? 0,
+    implementMs: row.implement_ms ?? 0,
+    fixMs: row.fix_ms ?? 0,
     closeoutMs: row.closeout_ms ?? 0,
     waitingMs: row.waiting_ms ?? 0,
     recheckMs: row.recheck_ms ?? 0,

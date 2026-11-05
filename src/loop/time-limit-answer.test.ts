@@ -28,7 +28,7 @@ function askedAtTimeLimit(pendingHandoff?: string) {
   const item = insertQueuedItem(db, {
     id: "eng-7",
     sessionKey: "ses",
-    maxAwakeMs: 30 * MINUTE,
+    limits: { fixes: 30 * MINUTE },
     now: clock.now(),
   });
   beginImplementRun(db, item.id, clock.now());
@@ -69,6 +69,7 @@ function askedBeforeAcceptance(state: "running" | "verifying") {
     id: "eng-8",
     sessionKey: "ses",
     maxAwakeMs: 30 * MINUTE,
+    limits: { closeout: 30 * MINUTE },
     now: clock.now(),
   });
   beginImplementRun(db, item.id, clock.now());
@@ -122,7 +123,7 @@ test("Continue at the time limit starts a fresh budget and resumes it", () => {
   expect(reply(db, "Continue", clock.now()).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "queued",
-    awakeMs: 0,
+    fixMs: 0,
     maxAwakeMs: 3 * 60 * MINUTE,
   });
   const fresh = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("fresh-budget:"));
@@ -130,7 +131,7 @@ test("Continue at the time limit starts a fresh budget and resumes it", () => {
     {
       sessionId: "ses",
       kind: "thought",
-      body: "Starting on your request with a fresh 3-hour time limit.",
+      body: "Starting on your request with a fresh 30-minute fixes time limit.",
     },
   ]);
   expect(listJobs(db).find((job) => job.queue === "run.resume")?.payload).toMatchObject({
@@ -178,7 +179,7 @@ test("Continue while the stopped run is still finishing queues one fenced restar
   expect(reply(db, "Continue", clock.now(), (id) => id === runId).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "queued",
-    awakeMs: 0,
+    fixMs: 0,
     maxAwakeMs: 3 * 60 * MINUTE,
   });
   expect(listJobs(db).some((job) => job.queue === "run.resume")).toBe(true);
@@ -194,7 +195,7 @@ test("the time-limit question for accepted work offers Merge, Continue and Stop"
   expect(JSON.parse(question.options)).toEqual(["Merge the accepted work", "Continue", "Stop"]);
   expect(question.body).toContain("Stop ends the task without merging");
   expect(question.body).toContain("its pull request is not closed");
-  expect(question.body).toContain("Continue starts the agent on a fresh time limit");
+  expect(question.body).toContain("Continue starts the agent on a fresh fixes limit");
 });
 
 test("Merge the accepted work at the time limit goes to the merge queue without a turn", () => {
@@ -218,7 +219,7 @@ test("Merge the accepted work at the time limit goes to the merge queue without 
 test("Continue with new instructions at the time limit starts a fresh budget", () => {
   const { clock, db, item } = askedAtTimeLimit();
   expect(reply(db, "Continue, but fix the acme lint first", clock.now()).status).toBe("answered");
-  expect(getWorkItem(db, item.id)).toMatchObject({ awakeMs: 0, maxAwakeMs: 3 * 60 * MINUTE });
+  expect(getWorkItem(db, item.id)).toMatchObject({ fixMs: 0, maxAwakeMs: 3 * 60 * MINUTE });
   expect(listOutbox(db).some((row) => row.idempotencyKey.startsWith("fresh-budget:"))).toBe(true);
 });
 
@@ -235,7 +236,9 @@ for (const state of ["running", "verifying"] as const) {
       )
       .get()!;
     expect(JSON.parse(question.options)).toEqual(["Continue", "Stop"]);
-    expect(question.body).toStartWith("Time limit reached (30 min awake); continue or stop?");
+    expect(question.body).toStartWith(
+      `${state === "running" ? "Implementation" : "Closeout"} reached its 30 min limit; continue or stop?`,
+    );
     expect(question.body).not.toContain("accepted");
     expect(listOutbox(db).some((row) => (row.payload as { kind?: string }).kind === "error")).toBe(
       false,
@@ -248,7 +251,7 @@ test("Continue after the time limit stopped Closeout checks the same head again 
   expect(reply(db, "Continue", clock.now()).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "verifying",
-    awakeMs: 0,
+    closeoutMs: 0,
     maxAwakeMs: 3 * 60 * MINUTE,
     checkpoint: { phase: "verifying", wipCommit: "head" },
   });
@@ -267,7 +270,7 @@ test("Continue after the time limit stopped an agent without an accepted head re
   expect(reply(db, "Continue", clock.now()).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({
     state: "queued",
-    awakeMs: 0,
+    implementMs: 0,
     maxAwakeMs: 3 * 60 * MINUTE,
   });
   expect(

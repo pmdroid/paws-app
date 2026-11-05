@@ -63,7 +63,10 @@ export {
 } from "./backoff";
 export {
   DEFAULT_MAX_AWAKE_MS,
+  agentStage,
   awakeCapReached,
+  stageLimits,
+  stageReached,
   capActivityText,
   formatAwakeBreakdown,
   timeLimitQuestion,
@@ -75,6 +78,8 @@ export {
   TIME_LIMIT_VERIFYING_REASON,
   UNACCEPTED_TIME_LIMIT_OPTIONS,
   type AwakeBreakdown,
+  type StageLimits,
+  type TimeStage,
 } from "./caps";
 export {
   CommandBus,
