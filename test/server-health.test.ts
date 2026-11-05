@@ -9,13 +9,34 @@ import {
   setJournalSink,
   type JobLoopLiveness,
 } from "../src/db";
+import type { LinearUsage } from "../src/linear";
 import { RUNNER_ONLINE_MS } from "../src/runner-placement";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { startServer, type HealthReport } from "../src/server";
+import { startDashboardFixture } from "./dashboard-fixture";
 
 const NOW = 10 * 60 * 60_000;
 const HOUR = 60 * 60_000;
 const RUNNER_MAX_AGE = RUNNER_ONLINE_MS + RUNNER_LEASE_GRACE_MS;
+const USAGE: LinearUsage = {
+  budget: {
+    requestsRemaining: 1200,
+    requestsLimit: 1500,
+    requestsResetMs: NOW + HOUR,
+    complexityRemaining: null,
+    complexityLimit: null,
+    complexityResetMs: null,
+    complexity: null,
+  },
+  holdUntilMs: null,
+  windowMs: HOUR,
+  callers: { "private-caller": { requests: 7, complexity: 3, rateLimited: 0, held: 0 } },
+  items: [{ item: "PRIVATE-42", requests: 7 }],
+  endpoints: [
+    { name: "privateEndpoint", requestsRemaining: 1, requestsLimit: 2, requestsResetMs: NOW },
+  ],
+};
+const PRIVATE = ["PRIVATE-42", "private-caller", "privateEndpoint"];
 
 /** Minimal fake persistence with the same health columns as the migrated database. */
 function fakeDatabase() {
@@ -73,6 +94,71 @@ function fakeDisk(free: Record<string, number>) {
 }
 
 describe("server health", () => {
+  test.each([
+    [200, null],
+    [503, "deadJobs"],
+  ])(
+    "anonymous health answers %i without Linear usage while workspace access starts",
+    async (status, failed) => {
+      const db = fakeDatabase();
+      if (failed) db.run("INSERT INTO job VALUES('dead', ?)", [NOW]);
+      let calls = 0;
+      const server = startServer({
+        db,
+        port: 0,
+        hostname: "127.0.0.1",
+        webhooks: false,
+        healthNow: () => NOW,
+        linearUsage: () => (calls++, USAGE),
+        workspaceAccess: new Promise(() => {}),
+      });
+      const base = `http://127.0.0.1:${server.port}`;
+      try {
+        const response = await fetch(`${base}/health`);
+        const text = await response.text();
+        const body = JSON.parse(text) as HealthReport;
+        expect(response.status).toBe(status);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(Object.keys(body)).toEqual(["ok", "service", "checks", "failedChecks"]);
+        expect(body).toMatchObject({ ok: !failed, service: "paws" });
+        expect(body.failedChecks).toEqual(failed ? [failed] : []);
+        expect(Object.keys(body.checks)).toHaveLength(9);
+        for (const value of PRIVATE) expect(text).not.toContain(value);
+        expect(calls).toBe(0);
+        expect((await fetch(`${base}/api/issues`)).status).toBe(503);
+      } finally {
+        await server.stop(true);
+        db.close();
+      }
+    },
+  );
+
+  test("the signed-in overview keeps the aggregate Linear budget that health leaves out", async () => {
+    let calls = 0;
+    const fixture = await startDashboardFixture({ linearUsage: () => (calls++, USAGE) });
+    try {
+      const health = await fetch(`${fixture.origin}/health`);
+      expect(await health.json()).not.toHaveProperty("linear");
+      expect((await fetch(`${fixture.origin}/api/overview`)).status).toBe(401);
+      expect((await fetch(`${fixture.origin}/api/issues`)).status).toBe(401);
+      expect(calls).toBe(0);
+      const overview = await fetch(`${fixture.origin}/api/overview`, {
+        headers: { cookie: fixture.cookie },
+      });
+      const text = await overview.text();
+      expect(JSON.parse(text).linearBudget).toEqual({
+        requestsRemaining: 1200,
+        requestsLimit: 1500,
+        resetAt: new Date(NOW + HOUR).toISOString(),
+        holdUntil: null,
+      });
+      for (const value of PRIVATE) expect(text).not.toContain(value);
+      expect(calls).toBeGreaterThan(0);
+    } finally {
+      await fixture.close();
+    }
+  });
+
   test("reports every check, without caching a healthy result", async () => {
     const db = fakeDatabase();
     try {
