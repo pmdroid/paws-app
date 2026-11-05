@@ -37,7 +37,10 @@ function fakeDatabase() {
   return db;
 }
 
-async function probe(db: Database, options: { webhooks?: boolean; now?: number } = {}) {
+async function probe(
+  db: Database,
+  options: { webhooks?: boolean; now?: number; disk?: Record<string, number> } = {},
+) {
   const server = startServer({
     db,
     port: 0,
@@ -46,6 +49,7 @@ async function probe(db: Database, options: { webhooks?: boolean; now?: number }
     linearWebhookSecret: "test-linear",
     githubWebhookSecret: "test-github",
     healthNow: () => options.now ?? NOW,
+    ...(options.disk ? { healthDisk: fakeDisk(options.disk) } : {}),
   });
   try {
     const response = await fetch(`http://127.0.0.1:${server.port}/health`);
@@ -57,6 +61,15 @@ async function probe(db: Database, options: { webhooks?: boolean; now?: number }
   } finally {
     await server.stop(true);
   }
+}
+
+const GB = 1024 ** 3;
+
+function fakeDisk(free: Record<string, number>) {
+  return {
+    paths: { tmpdir: "/tmp", pawsHome: "/home/paws/.paws" },
+    statfs: (path: string) => ({ bavail: free[path]!, blocks: 100 * GB, bsize: 1 }),
+  };
 }
 
 describe("server health", () => {
@@ -76,10 +89,12 @@ describe("server health", () => {
         "runnerHeartbeats",
         "linearWebhook",
         "githubWebhook",
+        "diskSpace",
       ]);
       expect(body.checks.jobProgress).toEqual({ status: "skipped", reason: "not_observed" });
+      expect(body.checks.diskSpace).toEqual({ status: "skipped", reason: "not_configured" });
       for (const [name, check] of Object.entries(body.checks)) {
-        if (name === "jobProgress") continue;
+        if (name === "jobProgress" || name === "diskSpace") continue;
         expect(check).toMatchObject({ status: "ok" });
       }
     } finally {
@@ -112,6 +127,64 @@ describe("server health", () => {
       expect(body.ok).toBe(false);
       expect(body.failedChecks).toEqual([name]);
       expect(body.checks[name]!.status).toBe("failed");
+    } finally {
+      db.close();
+    }
+  });
+
+  test.each(["/tmp", "/home/paws/.paws"])(
+    "diskSpace fails below 5 GB free on a 100 GB disk at %s and passes above it",
+    async (low) => {
+      const db = fakeDatabase();
+      try {
+        const free = { "/tmp": 6 * GB, "/home/paws/.paws": 6 * GB };
+        const healthy = await probe(db, { disk: free });
+        expect(healthy.status).toBe(200);
+        expect(healthy.body.checks.diskSpace).toEqual({
+          status: "ok",
+          paths: {
+            tmpdir: { freeBytes: 6 * GB, minFreeBytes: 5 * GB },
+            pawsHome: { freeBytes: 6 * GB, minFreeBytes: 5 * GB },
+          },
+        });
+        const full = await probe(db, { disk: { ...free, [low]: 5 * GB - 1 } });
+        expect(full.status).toBe(503);
+        expect(full.body.failedChecks).toEqual(["diskSpace"]);
+        expect(JSON.stringify(full.body)).not.toContain(low);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  test("diskSpace keeps a 1 GB floor on a small disk", async () => {
+    const db = fakeDatabase();
+    try {
+      const small = (free: number) => ({
+        paths: { tmpdir: "/tmp" },
+        statfs: () => ({ bavail: free, blocks: 4 * GB, bsize: 1 }),
+      });
+      const probeSmall = async (free: number) => {
+        const server = startServer({
+          db,
+          port: 0,
+          hostname: "127.0.0.1",
+          webhooks: false,
+          healthNow: () => NOW,
+          healthDisk: small(free),
+        });
+        try {
+          const response = await fetch(`http://127.0.0.1:${server.port}/health`);
+          return ((await response.json()) as HealthReport).checks.diskSpace;
+        } finally {
+          await server.stop(true);
+        }
+      };
+      expect(await probeSmall(GB - 1)).toMatchObject({ status: "failed" });
+      expect(await probeSmall(GB)).toEqual({
+        status: "ok",
+        paths: { tmpdir: { freeBytes: GB, minFreeBytes: GB } },
+      });
     } finally {
       db.close();
     }

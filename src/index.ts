@@ -11,6 +11,7 @@ import { runRunnerCli } from "./runner-cli";
 import { createAccountManagement } from "./account-management";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createOnboardingReadiness } from "./onboarding-readiness";
 import {
   createMemberVmHttp,
@@ -1086,6 +1087,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       webhooks: webhooks || env.githubWebhookSecret !== null,
       db,
       jobLoop: () => jobLoop?.liveness() ?? null,
+      healthDisk: { paths: { tmpdir: tmpdir(), pawsHome: paths.home } },
       statusEnv: envSource,
       closeoutHome: paths.home,
       evidenceDir: paths.evidenceDir,

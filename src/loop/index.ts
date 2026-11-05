@@ -131,3 +131,4 @@ export {
 } from "./risk-approval";
 
 export { RiskDisplayReader } from "./risk-display";
+export { HOST_DISK_FULL_THOUGHT } from "./disk-full";

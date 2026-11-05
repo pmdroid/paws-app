@@ -225,6 +225,16 @@ describe("issue page", () => {
     expect(other).not.toContain("issue-page");
   });
 
+  test("an item whose job failed on a full disk names the disk at the top of the page", () => {
+    const snapshot = fullStatusFixture();
+    const item = snapshot.items.find((entry) => entry.id === "ENG-101")!;
+    item.hostDiskFull = "Paws's host is out of disk space (/tmp, 12 MB left)";
+    const html = page(snapshot);
+    expect(html).toContain("data-host-disk-full");
+    expect(html).toContain("Paws&#39;s host is out of disk space (/tmp, 12 MB left)");
+    expect(page(fullStatusFixture())).not.toContain("data-host-disk-full");
+  });
+
   test("an internal path id reads as the issue identifier", () => {
     expect(plainTask("Task: PAS-367-01M5NDWPQZ0JQ91E1MFMVEY6EP")).toBe("Task: PAS-367");
     expect(plainTask("PAS-367 and PAS-3670")).toBe("PAS-367 and PAS-3670");

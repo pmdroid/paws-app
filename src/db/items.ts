@@ -912,6 +912,7 @@ export function deferWorkItem(
     handoff: string | null;
     message: string | null;
     now: number;
+    lastError?: string;
     capacityWait?: RunnerCapacityWaitState;
     closeoutFault?: CloseoutFaults & { jobId: number; reviewer?: string };
   },
@@ -931,6 +932,7 @@ export function deferWorkItem(
         markRun(db, run.id, "lost", input.now);
     }
     const capacityWait = input.capacityWait ? { capacityWait: input.capacityWait } : {};
+    const lastError = input.lastError === undefined ? {} : { lastError: input.lastError };
     const fault = input.closeoutFault;
     if (reverify && fault)
       enqueueJobOnce(db, {
@@ -962,6 +964,7 @@ export function deferWorkItem(
           recheckHead: true,
           failClosed: true,
           ...capacityWait,
+          ...lastError,
         },
         now: input.now,
       });
@@ -978,6 +981,7 @@ export function deferWorkItem(
           ...pendingRestartHandoff(db, item.id),
           ...(input.handoff === null ? {} : { handoff: input.handoff }),
           ...capacityWait,
+          ...lastError,
         },
         now: input.now,
       });

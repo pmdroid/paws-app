@@ -16,6 +16,7 @@ const TRANSIENT_ERROR_NAMES = new Set([
   "GitTransportError",
   "PolicyFetchError",
   "RemoteStartUnverified",
+  "HostDiskFullError",
 ]);
 
 const TRANSIENT_CODES = new Set([
@@ -41,6 +42,49 @@ const TRANSIENT_GIT =
 
 export function isTransientGitError(stderr: string): boolean {
   return TRANSIENT_GIT.test(stderr);
+}
+
+const DISK_FULL = /Out of diskspace|No space left on device|\bENOSPC\b/i;
+const DISK_FULL_REASON = "Paws's host is out of disk space";
+
+export function isDiskFullText(text: string): boolean {
+  return DISK_FULL.test(text);
+}
+
+export class HostDiskFullError extends Error {
+  override readonly name = "HostDiskFullError";
+  constructor(
+    readonly path: string | null,
+    readonly freeBytes: number | null,
+    detail: string,
+    options?: ErrorOptions,
+  ) {
+    super(
+      `${path === null || freeBytes === null ? DISK_FULL_REASON : `${DISK_FULL_REASON} (${path}, ${formatBytes(freeBytes)} left)`}: ${detail.trim()}`,
+      options,
+    );
+  }
+}
+
+export function hostDiskFullReason(text: string | null): string | null {
+  if (!text) return null;
+  const named = /Paws's host is out of disk space(?: \([^)]*\))?/.exec(text);
+  return named ? named[0] : isDiskFullText(text) ? DISK_FULL_REASON : null;
+}
+
+export function isHostDiskFull(error: unknown, depth = 0): boolean {
+  if (typeof error !== "object" || error === null || depth > 3) return false;
+  const { name, code, message, stderr, cause } = error as Record<string, unknown>;
+  if (name === "HostDiskFullError" || code === "ENOSPC") return true;
+  if ([message, stderr].some((text) => typeof text === "string" && isDiskFullText(text)))
+    return true;
+  return isHostDiskFull(cause, depth + 1);
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
 }
 
 export const MAX_TRANSIENT_RETRIES = 5;
@@ -156,6 +200,7 @@ export function isTransient(error: unknown, depth = 0): boolean {
   if (typeof status === "number" && (status === 429 || (status >= 500 && status < 600)))
     return true;
   if (typeof stderr === "string" && isTransientGitError(stderr)) return true;
+  if (depth === 0 && isHostDiskFull(error)) return true;
   if (
     (name === "GitHubHttpError" || name === "GitHubTokenError" || name === "LinearHttpError") &&
     ((status === 403 && rateLimitedBody(body)) ||

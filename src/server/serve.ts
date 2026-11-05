@@ -1,4 +1,4 @@
-import { createHealthReport } from "./health";
+import { createHealthReport, type HealthOptions } from "./health";
 import type { JobLoopLiveness } from "../db";
 import { journalCaught } from "../journal";
 import { createGitHubRepositorySetup } from "./github-repository-setup";
@@ -154,6 +154,7 @@ export type ServerOptions = {
   healthNow?: () => number;
   /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
   jobLoop?: () => JobLoopLiveness | null;
+  healthDisk?: HealthOptions["disk"];
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
@@ -200,6 +201,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     githubWebhook: webhooks && Boolean(githubWebhookSecret),
     now: options.healthNow,
     ...(options.jobLoop === undefined ? {} : { jobLoop: options.jobLoop }),
+    ...(options.healthDisk === undefined ? {} : { disk: options.healthDisk }),
   });
   const statusEnv = options.statusEnv;
   const closeoutHome = options.closeoutHome;

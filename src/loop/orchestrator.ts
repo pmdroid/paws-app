@@ -160,6 +160,7 @@ import {
   queueLine,
   systemClock,
   parseLinearCommand,
+  isHostDiskFull,
   isTransient,
   isTransientGitError,
   MAX_TRANSIENT_RETRIES,
@@ -585,6 +586,7 @@ import {
 import type { RuntimeList } from "../runtimes";
 import { createRuntimeLists } from "./runtime-lists";
 import { startFreshBudget } from "./time-budget";
+import { HOST_DISK_FULL_THOUGHT, hostDiskFullThoughtKey } from "./disk-full";
 import { questionEffects } from "./question-effects";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
 import {
@@ -1872,6 +1874,7 @@ export class Orchestrator {
         const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
 
         if (!retryMergeLater(this.db, job, this.now(), delayMs, error)) throw error;
+        this.noteHostDiskFull(readString(job.payload, "itemId"), error);
         journalCaught(
           error,
           "orchestrator.register.mergeAttempt",
@@ -2376,13 +2379,16 @@ export class Orchestrator {
         }
         const delayMs = transientRetryDelayMs(retry, error, this.options.retryBaseMs);
 
+        const diskFull = isHostDiskFull(error);
+        if (diskFull) this.noteHostDiskFull(item.id, error);
         this.settleItemAwake(item.id);
         deferWorkItem(this.db, item, {
           retry,
           delayMs,
           handoff: readString(job.payload, "handoff"),
-          message: retryNote(message, delayMs),
+          message: diskFull ? null : retryNote(message, delayMs),
           now: this.now(),
+          ...(diskFull ? { lastError: message } : {}),
         });
 
         journalCaught(
@@ -2697,6 +2703,13 @@ export class Orchestrator {
     if (parkForPushOutage(this.db, job, outage, this.now()) === "lost") throw error;
     if (asked) await this.flush();
     return true;
+  }
+
+  private noteHostDiskFull(itemId: string | null, error: unknown): void {
+    if (itemId === null || !isHostDiskFull(error)) return;
+    const item = getWorkItem(this.db, itemId);
+    const key = item && hostDiskFullThoughtKey(this.db, item.id, this.now());
+    if (item && key) this.post(item, "thought", HOST_DISK_FULL_THOUGHT, key);
   }
 
   private pushWorked(repository: string): void {

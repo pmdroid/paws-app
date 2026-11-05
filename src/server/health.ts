@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { statfsSync } from "node:fs";
 import {
   actionableDue,
   JOB_PROGRESS_STALE_MS,
@@ -15,6 +16,7 @@ type Check = {
   count?: number;
   ageMs?: number | null;
   maxAgeMs?: number;
+  paths?: Record<string, { freeBytes: number; minFreeBytes: number }>;
 };
 
 export type HealthOptions = {
@@ -27,7 +29,20 @@ export type HealthOptions = {
    * or not-yet-polling result means startup, not a stall.
    */
   jobLoop?: () => JobLoopLiveness | null;
+  disk?: { paths: Readonly<Record<string, string>>; statfs?: StatFs };
 };
+
+type StatFs = (path: string) => { bavail: number; blocks: number; bsize: number };
+
+function diskSpace(path: string, statfs: StatFs = statfsSync) {
+  const stats = statfs(path);
+  const freeBytes = Number(stats.bavail) * Number(stats.bsize);
+  const minFreeBytes = Math.max(
+    1024 ** 3,
+    Math.ceil(Number(stats.blocks) * Number(stats.bsize) * 0.05),
+  );
+  return { freeBytes, minFreeBytes, low: freeBytes < minFreeBytes };
+}
 
 /** Local reads only. Log changes so a failed probe and recovery appear in the journal. */
 export function createHealthReport(options: HealthOptions) {
@@ -137,6 +152,26 @@ export function createHealthReport(options: HealthOptions) {
       options.githubWebhook,
       "SELECT max(received_at) AS at FROM github_delivery",
     );
+    if (options.disk === undefined) {
+      checks.diskSpace = { status: "skipped", reason: "not_configured" };
+    } else {
+      try {
+        const spaces = Object.entries(options.disk.paths).map(
+          ([label, path]) => [label, diskSpace(path, options.disk!.statfs)] as const,
+        );
+        checks.diskSpace = {
+          status: spaces.some(([, space]) => space.low) ? "failed" : "ok",
+          paths: Object.fromEntries(
+            spaces.map(([label, { freeBytes, minFreeBytes }]) => [
+              label,
+              { freeBytes, minFreeBytes },
+            ]),
+          ),
+        };
+      } catch {
+        checks.diskSpace = { status: "failed", reason: "read_failed" };
+      }
+    }
     const failedChecks = Object.keys(checks).filter((name) => checks[name]!.status === "failed");
     const state = failedChecks.join(",");
     if (state !== previous) {
