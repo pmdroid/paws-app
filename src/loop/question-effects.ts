@@ -2,7 +2,12 @@ import { mergeAcceptedWork } from "./accepted-work";
 import { SLOW_CI_REASON } from "./merge-jobs";
 import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
+import {
+  JOB_KIND,
+  TIME_LIMIT_CONTINUE,
+  TIME_LIMIT_MERGE,
+  TIME_LIMIT_VERIFYING_REASON,
+} from "../core";
 import { startFreshBudget } from "./time-budget";
 import {
   applyLinearTurns,
@@ -17,6 +22,7 @@ import {
   heldHandoffs,
   listCloseoutRecoveries,
   markHandoffsCarried,
+  saveCheckpoint,
   savePlanProposal,
   saveVisualReviewMarks,
   type HeldHandoff,
@@ -128,9 +134,24 @@ export function questionEffects(
       `closeout-guidance:${question.id}`,
     );
   };
+  const verifyAgain = (question: StoredQuestion) => {
+    consumeTurn(question);
+    if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
+    const item = getWorkItem(db, question.itemId);
+    if (item?.state !== "awaiting_input") return;
+    applyWorkItemEvent(db, item.id, "reverify_requested", { now: input.now });
+    if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.reverify,
+      jobKey: `time-limit:${question.id}`,
+      payload: { itemId: item.id },
+      now: input.now,
+    });
+  };
   /**
    * Merge sends the accepted head to the merge queue without another turn. Continue, or a typed
-   * reply, resumes the agent with a fresh budget. Stop ends the task; the accepted work stays.
+   * reply, resumes the agent, or a stopped Closeout run, with a fresh budget. Stop ends the task;
+   * the work stays.
    */
   const timeLimit = (question: StoredQuestion) => {
     if ((question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_MERGE.toLowerCase()) {
@@ -139,6 +160,8 @@ export function questionEffects(
       return;
     }
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {
+      const plain =
+        (question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_CONTINUE.toLowerCase();
       startFreshBudget(db, {
         itemId: question.itemId,
         sessionId: question.sessionId,
@@ -147,7 +170,10 @@ export function questionEffects(
         now: input.now,
       });
       // A review or comment restart the time limit cut off reaches the agent with the answer.
-      resume(question, heldHandoffs(db, question.itemId));
+      const held = heldHandoffs(db, question.itemId);
+      if (plain && held.length === 0 && question.reason === TIME_LIMIT_VERIFYING_REASON)
+        verifyAgain(question);
+      else resume(question, held);
       return;
     }
     consumeTurn(question);
@@ -157,7 +183,7 @@ export function questionEffects(
       db,
       item,
       question.reason === SLOW_CI_REASON ? "merge" : "cap:time",
-      `${question.reason === SLOW_CI_REASON ? "Stopped while GitHub CI was pending" : "Stopped at the time limit"}, as asked in Linear. The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
+      `${question.reason === SLOW_CI_REASON ? "Stopped while GitHub CI was pending" : "Stopped at the time limit"}, as asked in Linear. The ${item.acceptedHead === null ? "work" : "accepted work"} is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
       input.now,
       { stoppedByAnswer: true },
     );

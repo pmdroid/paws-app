@@ -1,10 +1,11 @@
 import { ask } from "./operations";
 import { expect, test } from "bun:test";
-import { FakeClock } from "../core";
+import { FakeClock, JOB_KIND } from "../core";
 import {
   accrueAwake,
   applyWorkItemEvent,
   beginImplementRun,
+  claimNextJob,
   enqueueJob,
   getWorkItem,
   insertQueuedItem,
@@ -56,6 +57,49 @@ function askedAtTimeLimit(pendingHandoff?: string) {
     "time-limit",
     request.body,
     { options: request.options, now: clock.now() },
+  );
+  return { clock, db, item };
+}
+
+function askedBeforeAcceptance(state: "running" | "verifying") {
+  const clock = new FakeClock(20_000);
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const item = insertQueuedItem(db, {
+    id: "eng-8",
+    sessionKey: "ses",
+    maxAwakeMs: 30 * MINUTE,
+    now: clock.now(),
+  });
+  beginImplementRun(db, item.id, clock.now());
+  saveCheckpoint(db, item.id, { phase: state, baseSha: "base", wipCommit: "head" });
+  const queue = state === "verifying" ? JOB_KIND.reverify : JOB_KIND.resume;
+  if (state === "verifying") applyWorkItemEvent(db, item.id, "turn_ended");
+  enqueueJob(db, { queue, payload: { itemId: item.id }, now: clock.now() });
+  claimNextJob(db, { now: clock.now(), leaseMs: 24 * 60 * MINUTE, queues: [queue] });
+  accrueAwake(db, item.id, clock.mono(), clock.now());
+  clock.advance(31 * MINUTE);
+  expect(accrueAwake(db, item.id, clock.mono(), clock.now())).toMatchObject({
+    capped: false,
+    asked: true,
+    stopAgent: true,
+    item: { state },
+  });
+  expect(listJobs(db).find((job) => job.queue === queue)).toMatchObject({
+    status: "cancelled",
+    lastError: "time_limit",
+  });
+  const request = listJobs(db).find((job) => job.queue === "item.ask")!.payload as {
+    body: string;
+    options: string[];
+    reason: string;
+  };
+  ask(
+    db,
+    { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
+    "time-limit",
+    request.body,
+    { options: request.options, reason: request.reason, now: clock.now() },
   );
   return { clock, db, item };
 }
@@ -176,4 +220,69 @@ test("Continue with new instructions at the time limit starts a fresh budget", (
   expect(reply(db, "Continue, but fix the acme lint first", clock.now()).status).toBe("answered");
   expect(getWorkItem(db, item.id)).toMatchObject({ awakeMs: 0, maxAwakeMs: 3 * 60 * MINUTE });
   expect(listOutbox(db).some((row) => row.idempotencyKey.startsWith("fresh-budget:"))).toBe(true);
+});
+
+for (const state of ["running", "verifying"] as const) {
+  test(`a ${state} item without an accepted head asks Continue or Stop at the time limit`, () => {
+    const { db, item } = askedBeforeAcceptance(state);
+    expect(getWorkItem(db, item.id)).toMatchObject({
+      state: "awaiting_input",
+      cancelRequested: false,
+    });
+    const question = db
+      .query<{ body: string; options: string }, []>(
+        "SELECT body, options FROM question WHERE kind = 'time-limit'",
+      )
+      .get()!;
+    expect(JSON.parse(question.options)).toEqual(["Continue", "Stop"]);
+    expect(question.body).toStartWith("Time limit reached (30 min awake); continue or stop?");
+    expect(question.body).not.toContain("accepted");
+    expect(listOutbox(db).some((row) => (row.payload as { kind?: string }).kind === "error")).toBe(
+      false,
+    );
+  });
+}
+
+test("Continue after the time limit stopped Closeout checks the same head again with a fresh budget", () => {
+  const { clock, db, item } = askedBeforeAcceptance("verifying");
+  expect(reply(db, "Continue", clock.now()).status).toBe("answered");
+  expect(getWorkItem(db, item.id)).toMatchObject({
+    state: "verifying",
+    awakeMs: 0,
+    maxAwakeMs: 3 * 60 * MINUTE,
+    checkpoint: { phase: "verifying", wipCommit: "head" },
+  });
+  expect(
+    listJobs(db)
+      .filter((job) => job.queue.startsWith("run.") || job.queue === "item.start")
+      .map((job) => [job.queue, job.status]),
+  ).toEqual([
+    ["run.reverify", "cancelled"],
+    ["run.reverify", "pending"],
+  ]);
+});
+
+test("Continue after the time limit stopped an agent without an accepted head resumes it", () => {
+  const { clock, db, item } = askedBeforeAcceptance("running");
+  expect(reply(db, "Continue", clock.now()).status).toBe("answered");
+  expect(getWorkItem(db, item.id)).toMatchObject({
+    state: "queued",
+    awakeMs: 0,
+    maxAwakeMs: 3 * 60 * MINUTE,
+  });
+  expect(
+    listJobs(db).find((job) => job.queue === "run.resume" && job.status === "pending"),
+  ).toMatchObject({ payload: { reason: "answer" } });
+});
+
+test("Stop at the time limit without an accepted head names the branch with the work", () => {
+  const { clock, db, item } = askedBeforeAcceptance("verifying");
+  expect(reply(db, "Stop", clock.now()).status).toBe("answered");
+  expect(getWorkItem(db, item.id)?.state).toBe("failed");
+  expect(listOutbox(db).at(-1)?.payload).toMatchObject({
+    kind: "error",
+    body: expect.stringMatching(
+      /^Stopped at the time limit, as asked in Linear\. The work is on branch `.+`\.$/,
+    ),
+  });
 });

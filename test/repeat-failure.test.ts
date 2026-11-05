@@ -39,7 +39,8 @@ test("a retried task that fails again with the same reason posts a second error"
 test("a retried task that hits the same cap again posts a second error", () => {
   const db = tempDb();
   databases.push(db);
-  const { id } = insertQueuedItem(db, { sessionKey: "session", maxAwakeMs: 10 });
+  const { id } = insertQueuedItem(db, { maxAwakeMs: 10 });
+  db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [id]);
   applyWorkItemEvent(db, id, "dispatched");
   accrueAwake(db, id, 0, 1, undefined, true);
   expect(accrueAwake(db, id, 10, 2, undefined, true).capped).toBe(true);

@@ -23,6 +23,10 @@ export const TIME_LIMIT_CONTINUE = "Continue";
 
 export const TIME_LIMIT_OPTIONS = [TIME_LIMIT_MERGE, TIME_LIMIT_CONTINUE, "Stop"] as const;
 
+export const UNACCEPTED_TIME_LIMIT_OPTIONS = [TIME_LIMIT_CONTINUE, "Stop"] as const;
+
+export const TIME_LIMIT_VERIFYING_REASON = "time_limit_verifying";
+
 /** How much more awake time resuming accepted work paused at the time limit gives the agent. */
 export const TIME_LIMIT_EXTENSION_MS = 60 * 60 * 1000;
 
@@ -58,6 +62,27 @@ export function timeLimitQuestion(
       ? "The agent had not started on the latest feedback yet: Continue hands it over, Merge and Stop leave it unaddressed."
       : null,
     `${TIME_LIMIT_MERGE} sends the accepted head to the merge queue without another agent turn. Continue starts the agent on a fresh time limit of the configured length. Stop ends the task without merging: the accepted work stays on its branch and its pull request is not closed.`,
+  ]
+    .filter((part) => part !== null)
+    .join(" ");
+}
+
+export function unacceptedTimeLimitQuestion(
+  maxAwakeMs: number,
+  breakdown: AwakeBreakdown,
+  verifying: boolean,
+  heldHandoff = false,
+): string {
+  return [
+    `Time limit reached (${Math.max(1, Math.round(maxAwakeMs / 60_000))} min awake); continue or stop?`,
+    verifying
+      ? "Paws stopped Closeout while it was checking the latest head."
+      : "Paws stopped the agent's run.",
+    formatAwakeBreakdown(breakdown),
+    heldHandoff
+      ? "The agent had not started on the latest feedback yet: Continue hands it over, Stop leaves it unaddressed."
+      : null,
+    `Continue starts ${verifying ? "Closeout on the same head again" : "the agent"} on a fresh time limit of the configured length. Stop ends the task: the work stays on its branch.`,
   ]
     .filter((part) => part !== null)
     .join(" ");

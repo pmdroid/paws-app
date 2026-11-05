@@ -285,11 +285,12 @@ describe("awake-time cap after Closeout accepted the work", () => {
     );
   });
 
-  test("without an accepted candidate the cap still fails and says how the time was spent", () => {
+  test("without an accepted candidate or a session the cap fails and says how the time was spent", () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
     migrate(db);
-    const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 30 * MINUTE, now: 0 });
+    const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: 0 });
+    db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
     beginImplementRun(db, item.id, clock.now());
     accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "blocking_question");
@@ -360,10 +361,11 @@ describe("awake-time cap after Closeout accepted the work", () => {
 
     running = verify();
     clock.advance(4 * MINUTE);
-    expect(accrue().capped).toBe(true);
-    expect(listOutbox(db).at(-1)?.payload).toMatchObject({
-      kind: "error",
-      body: "Run hit the awake time cap (60 min). Counted: agent turns 41 min, Closeout 19 min. Not counted: waiting 4 h.",
+    expect(accrue()).toMatchObject({ capped: false, asked: true, stopAgent: true });
+    expect(listJobs(db).find((job) => job.queue === "item.ask")?.payload).toMatchObject({
+      body: expect.stringContaining(
+        "Counted: agent turns 41 min, Closeout 19 min. Not counted: waiting 4 h.",
+      ),
     });
     finish();
     await running;
