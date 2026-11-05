@@ -200,6 +200,7 @@ export async function advanceMerge(
       url: pull.url,
       head: published.head,
     });
+    if (wait && "kind" in wait) return wait;
     if (wait?.reason === "ahead" && recheckChanged(db, item, caps, published.worktree)) {
       // A change to a check marked `recheck: true` spent every waiting acceptance; each
       // re-verifies now, in parallel up to the free slots, and keeps its place instead of

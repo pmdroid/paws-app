@@ -10,7 +10,6 @@ import {
   recordRebaseReturn,
   type WorkItemRecord,
 } from "../db";
-import type { PullMergeable } from "../github";
 import type { RebaseConflict } from "./budget";
 import {
   REBASE_CONFLICT_INSTRUCTION,
@@ -21,11 +20,9 @@ import { askMergeHelp, rebaseBudgetFor, returnToAgent } from "./returns";
 
 export type QueueConflictCapabilities = Pick<
   OrderCapabilities,
-  "ask" | "now" | "session" | "restart"
+  "ask" | "now" | "session" | "restart" | "readPull"
 > & {
   voice: Pick<OrderCapabilities["voice"], "thought" | "flush">;
-  /** GitHub's `mergeable` for the item's pull request, read again while GitHub computes it. */
-  readPull(item: WorkItemRecord, pullNumber: number): Promise<PullMergeable | null>;
 };
 
 /** The sweep's payload: the repository as the merge queue names it, and main's new commit. */

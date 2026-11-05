@@ -12,9 +12,12 @@ import {
   listCiRounds,
   listJobs,
   listMergeQueues,
+  listRebaseReturns,
   listReviewEscapes,
   pendingPullCiFailures,
+  rebaseReturnedFor,
   recordCiRerun,
+  recordRebaseReturn,
   saveWorkItemLinearProject,
 } from "../db";
 import { createFakeMergeQueue } from "../github";
@@ -26,6 +29,7 @@ import {
   pendingCi,
   type MergeHarness,
 } from "./advance-harness";
+import { REBASE_CONFLICT_INSTRUCTION } from "./orders";
 
 let harness: MergeHarness | undefined;
 
@@ -722,5 +726,75 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     expect(h.bodies("status")).toContain(
       "main in acme/app has no GitHub merge queue. Paws merges the pull request itself when its CI is green.",
     );
+  });
+});
+
+describe("advanceMerge while the pull request waits for a review", () => {
+  const NOTICE =
+    "Waiting for an approving review on [pull request #1](https://github.com/acme/app/pull/1). It joins the acme/app merge queue once approved.";
+
+  async function waiting() {
+    const h = await start({ settings: { order: "queue" } });
+    await h.addItem("ENG-1", { file: "ok.txt", content: "agent\n" });
+    h.state.reviews.set(1, "REVIEW_REQUIRED");
+    return h;
+  }
+
+  test("a conflicting pull request goes back to rebase without waiting for the approval", async () => {
+    const h = await waiting();
+    const main = await h.moveMain("ok.txt", "from-main\n");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(resumes(h).map((payload) => [payload.reason, payload.handoff])).toEqual([
+      ["conflict", REBASE_CONFLICT_INSTRUCTION],
+    ]);
+    expect(listRebaseReturns(h.db, "ENG-1", 0)).toMatchObject([{ base: main, reason: "merge" }]);
+    expect(rebaseReturnedFor(h.db, "ENG-1", await h.remoteHead("ENG-1"))).toBe(true);
+    expect(h.bodies("afterPullRequest")).toEqual([]);
+  });
+
+  test("a clean pull request keeps waiting for the review", async () => {
+    const h = await waiting();
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(resumes(h)).toEqual([]);
+    expect(h.bodies("afterPullRequest")).toEqual([NOTICE]);
+  });
+
+  test("a mergeable GitHub never computes keeps waiting for the review", async () => {
+    const h = await waiting();
+    await h.moveMain("ok.txt", "from-main\n");
+    h.state.lazyMergeable.set(1, 100);
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
+    expect(h.state.pullReads.get(1)).toBe(4);
+    expect(resumes(h)).toEqual([]);
+    expect(h.bodies("afterPullRequest")).toEqual([NOTICE]);
+  });
+
+  test("with the rebase budget spent Paws asks instead of sending it back", async () => {
+    const h = await waiting();
+    const main = await h.moveMain("ok.txt", "from-main\n");
+    for (let spent = 0; spent < 3; spent++)
+      recordRebaseReturn(h.db, {
+        itemId: "ENG-1",
+        jobId: 900 + spent,
+        candidate: `earlier-${spent}`,
+        reason: "merge",
+        base: main,
+        files: null,
+        recordedAt: h.clock.now(),
+      });
+    expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
+    expect(findOpenQuestion(h.db, "ses-ENG-1")).toMatchObject({ reason: "rebase_budget_spent" });
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
+    expect(resumes(h)).toEqual([]);
+    expect(h.bodies("afterPullRequest")).toEqual([]);
+  });
+
+  test("a pull request that starts conflicting while it waits goes back on the next turn", async () => {
+    const h = await waiting();
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
+    await h.moveMain("ok.txt", "from-main\n");
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(resumes(h).map((payload) => payload.handoff)).toEqual([REBASE_CONFLICT_INSTRUCTION]);
+    expect(h.bodies("afterPullRequest")).toEqual([NOTICE]);
   });
 });
