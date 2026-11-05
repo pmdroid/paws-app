@@ -64,6 +64,7 @@ export type { EvaluateInput, Evaluation, GateInput } from "./run";
 export type {
   CiResult,
   TurnPass,
+  CloseoutFocus,
   CloseoutOutputStream,
   CloseoutProgress,
   CloseoutProgressIdentity,

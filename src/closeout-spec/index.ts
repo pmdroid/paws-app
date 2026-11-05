@@ -197,4 +197,5 @@ export {
   type CloseoutSessionOptions,
   type CloseoutSessionEvent,
   type CloseoutSessionCheck,
+  type CloseoutFocus,
 } from "./session";

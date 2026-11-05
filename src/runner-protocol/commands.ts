@@ -233,6 +233,14 @@ export const RunnerCommandSchema = z
         })
         .optional(),
       closeoutRulesFirst: z.literal(true).optional(),
+      closeoutFocus: z
+        .strictObject({
+          scope: z.enum(["failed", "changed"]),
+          head: z.string().regex(/^[0-9a-f]{40,64}$/),
+          policyDigest: z.string().min(1).max(200),
+          passed: z.array(z.string().min(1).max(200)).max(200),
+        })
+        .optional(),
       suggestedFindings: z
         .array(
           z.strictObject({

@@ -50,6 +50,8 @@ Each check has its own retry limit, `retry.attempts_per_check`, which is 3 in th
 
 The agent cannot end its turn while a check is still pending. When the agent tries to finish, the Stop hook checks the Closeout status and sends the agent back with the pending check ids. A check that is exhausted does not hold the agent back.
 
+A fix round narrows what is pending. After a `findings` restart, `get_closeout` lists as pending only the command checks and setup steps that did not pass in the last Closeout run, and lists the others with status `deferred` and the note "passed on <head>; Closeout reruns it at the end". After a `review` restart, a check that passed there is pending again only when a file changed since that head matches its paths; a check without `paths` matches every file. The focus holds only while the policy digest is the one that run used. Running a deferred check in the turn is still allowed. The Closeout after the turn runs every check, reusing the agent's passes on the final head, and runs the review again (`closeoutFocus` in `src/loop/closeout-focus.ts`).
+
 ## Evidence checks
 
 An `evidence` check asks the agent for screenshots or videos instead of running a command. This repository requires one when a change touches the status dashboard or the landing page:

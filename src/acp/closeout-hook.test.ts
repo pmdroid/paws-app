@@ -55,6 +55,18 @@ test("finish is allowed when nothing is pending and only exhausted checks block 
   ).toBe("{}");
   expect(
     closeoutFinishLine(
+      JSON.stringify({
+        required: [
+          { id: "engine-test", status: "exhausted" },
+          { id: "lint", status: "deferred" },
+        ],
+        pending: [],
+        blocked: "Cannot finish yet. Check engine-test is exhausted.",
+      }),
+    ),
+  ).toBe("{}");
+  expect(
+    closeoutFinishLine(
       JSON.stringify({ required: [], pending: [], blocked: "The Closeout policy is invalid." }),
     ),
   ).toContain("The Closeout policy is invalid.");

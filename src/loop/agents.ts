@@ -12,7 +12,14 @@ import type {
 } from "../acp";
 import type { AgentProfile, AgentProfiles } from "../config";
 import { git, runAgent } from "../acp";
-import type { Finding, FixRequest, FixResult, FixRunner, ReviewResult } from "../closeout";
+import type {
+  CloseoutFocus,
+  Finding,
+  FixRequest,
+  FixResult,
+  FixRunner,
+  ReviewResult,
+} from "../closeout";
 import type { CodexReviewer } from "../closeout";
 import { evidenceOnly, FINDING_FORMAT, parseFindings as parseReviewFindings } from "../closeout";
 
@@ -68,7 +75,7 @@ export function closeoutPrompt(): string {
     "After changes and before finishing, call get_closeout.",
     "It returns the required checks, matched paths, statuses, and the pending ids to run with run_closeout.",
     "It does not run checks.",
-    "Run each pending id in order with run_closeout, then call get_closeout again.",
+    "Run only the pending ids listed, in order, with run_closeout, then call get_closeout again. Closeout reruns every check after the turn.",
     "run_closeout runs matching setup steps first.",
     "Further edits can make passed checks stale.",
     "If blocked is non-null, stop retrying. When the blocker is an exhausted check, finish with a short note on why, and Paws asks the team how to continue. Otherwise report the blocker.",
@@ -85,7 +92,7 @@ export function closeoutChecksPrompt(head: string, fromCi: readonly string[] = [
   return [
     `Run Paws Closeout on commit ${head}. Main moved or the commit is new, so its checks have not run yet.`,
     "Do not edit, create, or delete files, and do not commit. Do not try to fix anything.",
-    "Call get_closeout, run each pending id in order with run_closeout, then call get_closeout again.",
+    "Call get_closeout, run only the pending ids listed, in order, with run_closeout, then call get_closeout again. Closeout reruns every check after this run.",
     ...(fromCi.length > 0
       ? [
           `Skip these pending ids: ${fromCi.join(", ")}. Paws took their results from green CI on this commit.`,
@@ -99,6 +106,13 @@ export function closeoutChecksPrompt(head: string, fromCi: readonly string[] = [
 
 export const GITHUB_READ_PROMPT =
   "`gh` is signed in with read-only access to this task's repositories. Use it to read pull requests, issues, Actions runs and logs. It can't write, and it can't read other repositories.";
+
+export function closeoutFocusPrompt(focus: CloseoutFocus): string {
+  const head = focus.head.slice(0, 12);
+  return focus.scope === "failed"
+    ? `Closeout failed on ${head}. get_closeout lists only the checks that did not pass there as pending; fix them and rerun only those. The others passed on ${head}, and Closeout reruns them at the end.`
+    : `get_closeout lists as pending only the checks whose paths include files you change after ${head}. The others passed on ${head}, and Closeout reruns them at the end.`;
+}
 
 export const POST_UPDATE_PROMPT =
   "Call post_update when something meaningful happens, such as finding the cause, a plan change, tests passing, or being blocked. Don't narrate each step.";
@@ -117,6 +131,7 @@ export function implementPrompt(input: {
   hiddenPaths?: readonly string[];
   /** The earlier attempt's branch this run continues. */
   continuesBranch?: string;
+  closeoutFocus?: CloseoutFocus;
 }): string {
   const brief = [
     `Implement ${input.identifier}: ${input.title}.`,
@@ -130,6 +145,7 @@ export function implementPrompt(input: {
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
     POST_UPDATE_PROMPT,
     closeoutPrompt(),
+    ...(input.closeoutFocus ? [closeoutFocusPrompt(input.closeoutFocus)] : []),
     "When the code change is ready, call open_pull_request with a title and a description of what changed, why, and how you verified it.",
     "Commit your work yourself in reviewable steps, each with a message that says what changed and why. Paws commits anything you leave uncommitted when you finish.",
   ].join("\n");
