@@ -355,31 +355,32 @@ async function deliverOne(
   // The reviewer was authorized for this team when they accepted; delivery never follows
   // the issue anywhere else, and a target that closed since then needs a new review choice.
   const frozenTeam = claimed.targetTeamId ?? content.issue?.teamId ?? null;
+  const remedy =
+    claimed.operation === "link_issue"
+      ? "Reopen the improvement to choose again."
+      : "Cancel the evidence comment; the link stays.";
   const linkRefusal = (issue: DeliveryIssue | null): (() => void) | null => {
     if (!issue)
       return () =>
-        block("unavailable", "The linked issue no longer exists or Paws cannot read it.");
+        block("unavailable", `The linked issue no longer exists or Paws cannot read it. ${remedy}`);
     if (frozenTeam === null)
       return () =>
-        block(
-          "destination",
-          "This link was accepted before Paws recorded its team. Reopen the improvement and link the issue again.",
-        );
+        block("destination", `This link was accepted before Paws recorded its team. ${remedy}`);
     if (issue.teamId !== frozenTeam)
       return () =>
         block(
           "destination",
-          "The linked issue moved to another team after it was accepted. Reopen the improvement to choose again.",
+          `The linked issue moved to another team after it was accepted. ${remedy}`,
         );
     if (!mapped(db, improvement, issue.teamId))
       return () =>
-        block("destination", "The linked issue's team is no longer mapped to this repository.");
+        block(
+          "destination",
+          `The linked issue's team is no longer mapped to this repository. ${remedy}`,
+        );
     if (issue.state === "closed" && content.issue?.state !== "closed")
       return () =>
-        block(
-          "conflict",
-          "The linked issue was closed after it was accepted. Reopen the improvement to confirm the link or create an issue.",
-        );
+        block("conflict", `The linked issue was closed after it was accepted. ${remedy}`);
     return null;
   };
   if (claimed.operation === "link_issue") {

@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  cancelImprovementEvidenceComment,
   claimImprovementDelivery,
   decideImprovement,
   getImprovement,
@@ -185,6 +186,18 @@ const view = (w: World, id: string) =>
 
 const delivery = (w: World, improvementId: string, operation = "create_issue") =>
   listImprovementDeliveries(w.db, improvementId).find((d) => d.operation === operation)!;
+
+const recovery = (w: World, improvementId: string, operation: string) =>
+  view(w, improvementId).deliveries.find((d) => d.operation === operation)!.recovery;
+
+const reopen = (w: World, improvementId: string) =>
+  decideImprovement(w.db, {
+    improvementId,
+    expectedVersion: getImprovement(w.db, improvementId)!.version,
+    review: { kind: "reopen" },
+    actor: "user-ada",
+    now: w.now(),
+  });
 
 describe("improvement delivery", () => {
   test("every action step creates one undelegated issue with its frozen evidence", async () => {
@@ -568,6 +581,64 @@ describe("improvement delivery", () => {
     });
     expect(w.linear.comments.size).toBe(0);
     expect(getImprovement(w.db, id)!.issue).toBeNull();
+    expect(recovery(w, id, "link_issue")).toBe("reopen");
+
+    expect(reopen(w, id).ok).toBe(true);
+    expect(getImprovement(w.db, id)).toMatchObject({ reviewState: "needs_review", intent: null });
+    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    const relinked = decideImprovement(w.db, {
+      improvementId: id,
+      expectedVersion: getImprovement(w.db, id)!.version,
+      review: {
+        kind: "accept",
+        proposalVersion: 1,
+        intent: { kind: "link", issueId: "issue-open", teamId: "team-b" },
+      },
+      actor: "user-ada",
+      now: w.now(),
+      content: { issue: { id: "issue-open", teamId: "team-b", state: "open" } },
+    });
+    expect(relinked.ok).toBe(true);
+    await w.run();
+    expect(delivery(w, id, "link_issue").state).toBe("succeeded");
+    expect(getImprovement(w.db, id)!.issue!.id).toBe("issue-open");
+  });
+
+  test("a legacy link without a frozen team can be reopened and linked again", async () => {
+    const w = world();
+    const id = acceptRetro(w, { intent: { kind: "link", issueId: "issue-open" } });
+    w.db.run("DROP TRIGGER improvement_delivery_intent_frozen");
+    w.db.run("UPDATE improvement_delivery SET target_team_id = NULL, content = '{}'");
+    await w.run();
+    expect(delivery(w, id, "link_issue")).toMatchObject({
+      state: "failed",
+      blocked: "destination",
+    });
+    expect(recovery(w, id, "link_issue")).toBe("reopen");
+    expect(reopen(w, id).ok).toBe(true);
+    expect(getImprovement(w.db, id)!.reviewState).toBe("needs_review");
+  });
+
+  test("reopen is refused once anything may have reached Linear", async () => {
+    const w = world();
+    const created = acceptRetro(w, { key: "r1/create" });
+    w.linear.fail("createIssue", { ok: false, failure: "unauthorized", message: "401" });
+    await w.run();
+    expect(delivery(w, created).blocked).toBe("unauthorized");
+    expect(reopen(w, created)).toMatchObject({ ok: false, reason: "accepted" });
+
+    const linked = acceptRetro(w, {
+      key: "r1/link",
+      intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
+    });
+    w.linear.fail("createComment", "lose");
+    await w.run();
+    expect(delivery(w, linked, "evidence_comment").state).toBe("unknown");
+    expect(reopen(w, linked)).toMatchObject({ ok: false, reason: "accepted" });
+    expect(
+      cancelImprovementEvidenceComment(w.db, delivery(w, linked, "evidence_comment").id),
+    ).toBeNull();
+    expect(listImprovementDeliveries(w.db, linked)).toHaveLength(2);
   });
 
   test("a target closed after acceptance needs a new review choice before link or evidence", async () => {
@@ -603,6 +674,20 @@ describe("improvement delivery", () => {
     expect(delivery(w, confirmed, "link_issue").state).toBe("succeeded");
     expect(w.linear.comments.size).toBe(0);
     expect(w.linear.calls.some((c) => c.method === "createComment")).toBe(false);
+
+    expect(recovery(w, pending, "link_issue")).toBe("reopen");
+    expect(reopen(w, pending).ok).toBe(true);
+    expect(recovery(w, withComment, "evidence_comment")).toBe("cancel_comment");
+    expect(reopen(w, withComment)).toMatchObject({ ok: false, reason: "accepted" });
+    const comment = delivery(w, withComment, "evidence_comment");
+    expect(cancelImprovementEvidenceComment(w.db, comment.id)).toMatchObject({
+      reviewState: "accepted",
+      evidenceComment: false,
+    });
+    expect(listImprovementDeliveries(w.db, withComment).map((d) => d.operation)).toEqual([
+      "link_issue",
+    ]);
+    expect(getImprovement(w.db, withComment)!.issue!.id).toBe("issue-open");
   });
 
   test("link and add evidence posts one comment, reconciling an uncertain post", async () => {

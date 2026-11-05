@@ -4,6 +4,7 @@ import { auditWorkspaceAccess, workspaceMember, workspaceMemberUsable } from "..
 import { journalCaught } from "../journal";
 import type { WorkspacePrincipal } from "../workspace";
 import {
+  cancelInboxEvidenceComment,
   decideInboxItem,
   improvementDetail,
   IMPROVEMENT_REVIEW_LIMITS,
@@ -20,6 +21,7 @@ const BODY_LIMIT = 16 * 1024;
 const ITEM = /^\/api\/improvements\/([0-9A-Za-z]{1,64})$/;
 const DECISION = /^\/api\/improvements\/([0-9A-Za-z]{1,64})\/decision$/;
 const RETRY = /^\/api\/improvements\/([0-9A-Za-z]{1,64})\/deliveries\/([0-9a-f-]{36})\/retry$/;
+const CANCEL = /^\/api\/improvements\/([0-9A-Za-z]{1,64})\/deliveries\/([0-9a-f-]{36})\/cancel$/;
 const DESTINATION =
   /^\/api\/improvements\/([0-9A-Za-z]{1,64})\/deliveries\/([0-9a-f-]{36})\/destination$/;
 
@@ -74,6 +76,7 @@ const OUTCOME_STATUS = {
   requeued: 202,
   in_progress: 200,
   succeeded: 200,
+  cancelled: 200,
 } as const;
 
 export function createImprovementsHttp(options: {
@@ -153,8 +156,9 @@ export function createImprovementsHttp(options: {
     }
     const decision = DECISION.exec(path);
     const retry = RETRY.exec(path);
+    const cancel = CANCEL.exec(path);
     const destination = DESTINATION.exec(path);
-    if (!decision && !retry && !destination)
+    if (!decision && !retry && !cancel && !destination)
       return json({ error: "Not found.", reason: "not_found" }, 404);
     if (request.method !== "POST") return json({ error: "Use POST." }, 405);
     if (retry) {
@@ -165,6 +169,16 @@ export function createImprovementsHttp(options: {
         now: now(),
       });
       if (outcome.status === "requeued") audit(principal, "improvement.delivery.retry", retry[2]!);
+      return json(outcome, OUTCOME_STATUS[outcome.status]);
+    }
+    if (cancel) {
+      const outcome = cancelInboxEvidenceComment(db, {
+        access: reviewer,
+        improvementId: cancel[1]!,
+        deliveryId: cancel[2]!,
+      });
+      if (outcome.status === "cancelled")
+        audit(principal, "improvement.delivery.cancel", cancel[2]!);
       return json(outcome, OUTCOME_STATUS[outcome.status]);
     }
     let body: unknown;

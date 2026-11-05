@@ -1008,6 +1008,7 @@ export {
 } from "./retro-dispatch";
 export {
   acceptedImprovementsForFindings,
+  cancelImprovementEvidenceComment,
   claimableImprovementDeliveries,
   claimImprovementDelivery,
   decideImprovement,
@@ -1016,6 +1017,7 @@ export {
   improvementDeliveryId,
   improvementDeliveryWorkspaces,
   improvementsForIssue,
+  improvementWithdrawable,
   listImprovementCriteria,
   listImprovementDecisions,
   listImprovementDeliveries,

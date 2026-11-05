@@ -410,9 +410,17 @@ export function decideImprovement(
     if (current === null) return { ok: false, reason: "not_found", improvement: null };
     if (current.version !== input.expectedVersion)
       return { ok: false, reason: "stale", improvement: current };
-    if (current.reviewState === "accepted")
-      return { ok: false, reason: "accepted", improvement: current };
     const review = input.review;
+    if (current.reviewState === "accepted") {
+      if (review.kind !== "reopen" || !improvementWithdrawable(db, input.improvementId))
+        return { ok: false, reason: "accepted", improvement: current };
+      db.run(
+        `DELETE FROM improvement_delivery_attempt WHERE delivery_id IN
+           (SELECT id FROM improvement_delivery WHERE improvement_id = ?)`,
+        [input.improvementId],
+      );
+      db.run("DELETE FROM improvement_delivery WHERE improvement_id = ?", [input.improvementId]);
+    }
     if (review.kind === "reopen" && current.reviewState === "needs_review")
       return { ok: false, reason: "unchanged", improvement: current };
     if (
@@ -504,6 +512,53 @@ export function decideImprovement(
         );
     }
     return { ok: true, improvement: getImprovement(db, input.improvementId)! };
+  });
+}
+
+export function improvementWithdrawable(db: Database, improvementId: string): boolean {
+  const rows = db
+    .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE improvement_id = ?")
+    .all(improvementId);
+  const link = rows.find((row) => row.operation === "link_issue");
+  return (
+    link !== undefined &&
+    link.state === "failed" &&
+    link.blocked !== null &&
+    rows.every(
+      (row) =>
+        row.operation !== "create_issue" &&
+        row.remote_id === null &&
+        (row.state === "pending" || row.state === "failed"),
+    )
+  );
+}
+
+export function cancelImprovementEvidenceComment(
+  db: Database,
+  deliveryId: string,
+): Improvement | null {
+  return immediate(db, () => {
+    const current = db
+      .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE id = ?")
+      .get(deliveryId);
+    if (
+      current === null ||
+      current.operation !== "evidence_comment" ||
+      current.state !== "failed" ||
+      current.blocked === null ||
+      current.remote_id !== null
+    )
+      return null;
+    const link = db
+      .query<{ state: ImprovementDeliveryState }, [string]>(
+        `SELECT state FROM improvement_delivery WHERE improvement_id = ? AND operation = 'link_issue'`,
+      )
+      .get(current.improvement_id);
+    if (link?.state !== "succeeded") return null;
+    db.run("DELETE FROM improvement_delivery_attempt WHERE delivery_id = ?", [current.id]);
+    db.run("DELETE FROM improvement_delivery WHERE id = ?", [current.id]);
+    db.run("UPDATE improvement SET evidence_comment = 0 WHERE id = ?", [current.improvement_id]);
+    return getImprovement(db, current.improvement_id);
   });
 }
 
