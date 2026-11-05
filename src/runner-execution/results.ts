@@ -1,16 +1,25 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { ExecutionIdSchema } from "./jobs";
+import { openSharedDirectory, sharedDirectoryAllowed, type SharedDirectoryRule } from "./shared";
 import { RUNNER_ARTIFACT_LIMITS, RunnerArtifactSchema } from "../runner-protocol";
 
 export interface RunnerResults {
   root: string;
+  runnerUid?: number;
   agentUid: number;
   resultsGid: number;
 }
 
-function openResults(options: RunnerResults, executionId: string): number {
-  ExecutionIdSchema.parse(executionId);
+export function runnerResultsRootRule(options: RunnerResults): SharedDirectoryRule {
+  return { owners: [options.runnerUid ?? options.agentUid], gid: options.resultsGid, mode: 0o770 };
+}
+
+export function runnerResultDirectoryRule(options: RunnerResults): SharedDirectoryRule {
+  return { owners: [options.agentUid], gid: options.resultsGid, mode: 0o750 };
+}
+
+function openResultsRoot(options: RunnerResults): number {
   if (
     process.platform !== "linux" ||
     !isAbsolute(options.root) ||
@@ -31,31 +40,49 @@ function openResults(options: RunnerResults, executionId: string): number {
       closeSync(fd);
       fd = next;
     }
-    const root = fstatSync(fd);
-    if (
-      (root.uid !== 0 && root.uid !== options.agentUid) ||
-      root.gid !== options.resultsGid ||
-      (root.mode & 0o7777) !== 0o750
-    )
+    if (!sharedDirectoryAllowed(fstatSync(fd), runnerResultsRootRule(options)))
       throw new Error("Unsafe runner results root");
-    const directory = openSync(
-      `/proc/self/fd/${fd}/${executionId}`,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
-    closeSync(fd);
-    fd = directory;
-    const job = fstatSync(fd);
-    if (
-      job.uid !== options.agentUid ||
-      job.gid !== options.resultsGid ||
-      (job.mode & 0o7777) !== 0o750
-    )
-      throw new Error("Unsafe runner results directory");
     return fd;
   } catch (error) {
     closeSync(fd);
     throw error;
   }
+}
+
+function checkResults(options: RunnerResults, directory: number): number {
+  if (!sharedDirectoryAllowed(fstatSync(directory), runnerResultDirectoryRule(options))) {
+    closeSync(directory);
+    throw new Error("Unsafe runner results directory");
+  }
+  return directory;
+}
+
+function openResults(options: RunnerResults, executionId: string): number {
+  ExecutionIdSchema.parse(executionId);
+  const root = openResultsRoot(options);
+  let directory: number;
+  try {
+    directory = openSync(
+      `/proc/self/fd/${root}/${executionId}`,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+  } finally {
+    closeSync(root);
+  }
+  return checkResults(options, directory);
+}
+
+export function createRunnerResultDirectory(options: RunnerResults, executionId: string): string {
+  ExecutionIdSchema.parse(executionId);
+  const root = openResultsRoot(options);
+  let directory: number;
+  try {
+    directory = openSharedDirectory(root, executionId, options.resultsGid, 0o750);
+  } finally {
+    closeSync(root);
+  }
+  closeSync(checkResults(options, directory));
+  return join(options.root, executionId);
 }
 
 export function runnerResultDirectory(options: RunnerResults, executionId: string): string {

@@ -1,5 +1,13 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +67,7 @@ function fixture(final: "end" | "hang") {
   const executionId = "01K00000000000000000000001";
   for (const path of ["output", "home", join("work", executionId)])
     mkdirSync(join(root, path), { recursive: true, mode: 0o700 });
+  chmodSync(join(root, "work", executionId), 0o770);
   const sandboxes = { tagged: join(root, "tagged.pid"), orphan: join(root, "orphan.pid") };
   writeFileSync(
     join(root, "script.json"),

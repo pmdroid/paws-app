@@ -26,6 +26,7 @@ import {
 } from "../runner-protocol";
 import { ExecutionIdSchema } from "./jobs";
 import { listExecutionProcesses, startTime } from "./processes";
+import { SETGID, sharedDirectoryAllowed } from "./shared";
 
 export const RUNNER_ACCOUNT_HOMES = ".paws-accounts";
 const MANIFEST = "account.json";
@@ -58,6 +59,12 @@ const ReceiptSchema = z.union([
   z.strictObject({ pid: z.number().int().min(2), born: z.string().min(1).max(64) }),
 ]);
 
+export type RunnerAccountOwners = { runnerUid: number; agentGid: number };
+
+function processOwners(): RunnerAccountOwners {
+  return { runnerUid: process.getuid?.() ?? -1, agentGid: process.getgid?.() ?? -1 };
+}
+
 export class RunnerAccountHomeError extends Error {
   override readonly name = "RunnerAccountHomeError";
 }
@@ -71,18 +78,19 @@ export function openRunnerAccountHome(
   agentHome: string,
   account: RunnerAccount | undefined,
   agent: RunnerCodingAgent,
-  options: { signIn?: boolean } = {},
+  options: { signIn?: boolean; owners?: RunnerAccountOwners } = {},
 ): string {
   if (!account) return agentHome;
+  const owners = options.owners ?? processOwners();
   const { accountId, bindingId } = RunnerAccountSchema.parse(account);
   const unsupported = runnerAccountAgentUnsupported(agent);
   if (unsupported) throw new RunnerAccountHomeError(unsupported);
   if (!isAbsolute(agentHome)) throw new RunnerAccountHomeError("Runner agent home is invalid");
-  privateDirectory(agentHome, false);
+  privateDirectory(agentHome, false, owners);
   const root = join(agentHome, RUNNER_ACCOUNT_HOMES);
-  privateDirectory(root, true);
+  privateDirectory(root, true, owners);
   const home = join(root, bindingId);
-  const manifest = readManifest(home, options.signIn === true);
+  const manifest = readManifest(home, options.signIn === true, owners);
   if (manifest === null) {
     if (!options.signIn)
       throw new RunnerAccountHomeError("Agent account binding is not signed in on this runner");
@@ -92,7 +100,7 @@ export function openRunnerAccountHome(
     manifest.agent !== agent
   )
     throw new RunnerAccountHomeError("Agent account binding belongs to another account");
-  for (const folder of HOME_FOLDERS) privateDirectory(join(home, folder), true);
+  for (const folder of HOME_FOLDERS) privateDirectory(join(home, folder), true, owners);
   return home;
 }
 
@@ -100,9 +108,10 @@ export function markRunnerAccountSignedIn(
   home: string,
   account: RunnerAccount,
   agent: RunnerCodingAgent,
+  owners: RunnerAccountOwners = processOwners(),
 ): void {
   const manifest = ManifestSchema.parse({ ...RunnerAccountSchema.parse(account), agent });
-  const current = readManifest(home, false);
+  const current = readManifest(home, false, owners);
   if (current) {
     if (current.accountId !== manifest.accountId || current.agent !== manifest.agent)
       throw new RunnerAccountHomeError("Agent account binding belongs to another account");
@@ -113,11 +122,12 @@ export function markRunnerAccountSignedIn(
 
 export function runnerAccountBindings(
   agentHome: string,
+  owners: RunnerAccountOwners = processOwners(),
 ): { bindingId: string; agent: RunnerCodingAgent }[] {
   const root = join(agentHome, RUNNER_ACCOUNT_HOMES);
   let names: string[];
   try {
-    privateDirectory(root, false);
+    privateDirectory(root, false, owners);
     names = readdirSync(root).sort();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -132,8 +142,8 @@ export function runnerAccountBindings(
     if (!RunnerAccountSchema.shape.bindingId.safeParse(name).success) continue;
     try {
       const home = join(root, name);
-      privateDirectory(home, false);
-      const manifest = readManifest(home, false);
+      privateDirectory(home, false, owners);
+      const manifest = readManifest(home, false, owners);
       if (manifest?.bindingId === name && !runnerAccountAgentUnsupported(manifest.agent))
         held.push({ bindingId: name, agent: manifest.agent });
     } catch (error) {
@@ -147,9 +157,10 @@ export function holdRunnerAccountHome(
   home: string,
   executionId: string,
   holder: { receipt: string; scope: string },
+  owners: RunnerAccountOwners = processOwners(),
 ): void {
   const active = join(home, ACTIVE);
-  privateDirectory(active, true);
+  privateDirectory(active, true, owners);
   writePrivateFile(
     join(active, ExecutionIdSchema.parse(executionId)),
     JSON.stringify(ReceiptSchema.parse({ receipt: holder.receipt, scope: holder.scope })),
@@ -271,9 +282,13 @@ function readReceipt(path: string, executionId?: string): "live" | "stale" | nul
   return startTime(pid) === born ? "live" : "stale";
 }
 
-function readManifest(home: string, create: boolean): z.infer<typeof ManifestSchema> | null {
+function readManifest(
+  home: string,
+  create: boolean,
+  owners: RunnerAccountOwners,
+): z.infer<typeof ManifestSchema> | null {
   try {
-    privateDirectory(home, create);
+    privateDirectory(home, create, owners);
   } catch (error) {
     if (!create && (error as NodeJS.ErrnoException).code === "ENOENT") {
       journalCaught(error, "accounts.readManifest", null, "optional file may be absent");
@@ -304,7 +319,7 @@ function readManifest(home: string, create: boolean): z.infer<typeof ManifestSch
   return ManifestSchema.parse(JSON.parse(text));
 }
 
-function privateDirectory(path: string, create: boolean): void {
+function privateDirectory(path: string, create: boolean, owners: RunnerAccountOwners): void {
   let info;
   try {
     info = lstatSync(path);
@@ -312,7 +327,7 @@ function privateDirectory(path: string, create: boolean): void {
     if (!create || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     journalCaught(error, "accounts.privateDirectory", null, "path may not exist yet");
     try {
-      mkdirSync(path, { mode: 0o700 });
+      mkdirSync(path, { mode: 0o770 });
     } catch (made) {
       if ((made as NodeJS.ErrnoException).code !== "EEXIST") throw made;
       journalCaught(made, "accounts.privateDirectory.mkdirSync", null, "path may already exist");
@@ -321,9 +336,25 @@ function privateDirectory(path: string, create: boolean): void {
   }
   if (info.isSymbolicLink() || !info.isDirectory())
     throw new RunnerAccountHomeError("Agent account home path is not a private directory");
-  if (process.getuid && info.uid !== process.getuid())
-    throw new RunnerAccountHomeError("Agent account home belongs to another user");
-  if ((info.mode & 0o077) !== 0) chmodSync(path, info.mode & 0o700);
+  const verdict = accountHomeVerdict(info, owners, process.getuid?.() ?? info.uid);
+  if (verdict === "repair") chmodSync(path, 0o770);
+  else if (verdict !== "shared") throw new RunnerAccountHomeError(verdict);
+}
+
+export function accountHomeVerdict(
+  info: { uid: number; gid: number; mode: number },
+  owners: RunnerAccountOwners,
+  self: number,
+): "shared" | "repair" | string {
+  if (info.uid !== self && info.uid !== owners.runnerUid)
+    return "Agent account home belongs to another user";
+  if (info.gid !== owners.agentGid) return "Agent account home is not in the agent group";
+  if ((info.mode & 0o007) !== 0) return "Agent account home is open to other users";
+  const rule = { owners: [self, owners.runnerUid], gid: owners.agentGid, mode: 0o770 };
+  if (sharedDirectoryAllowed(info, rule)) return "shared";
+  if (info.uid !== self || (info.mode & SETGID) !== 0)
+    return "Agent account home is not shared with the agent group";
+  return "repair";
 }
 
 function writePrivateFile(path: string, text: string): void {

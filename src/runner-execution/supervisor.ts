@@ -3,8 +3,6 @@ import { spawn } from "node:child_process";
 import {
   closeSync,
   constants,
-  fchmodSync,
-  fchownSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -21,6 +19,7 @@ import { readRunnerJob, type RunnerSpool } from "./spool";
 import type { RunnerResults } from "./results";
 import type { RunnerBrokerClient } from "./broker";
 import type { RunnerSkillInstaller } from "./skills";
+import { openSharedDirectory } from "./shared";
 import {
   holdRunnerAccountHome,
   openRunnerAccountHome,
@@ -50,23 +49,11 @@ function openDirectory(path: string): number {
   }
 }
 
-function ensureDirectory(path: string, uid: number, gid: number, mode: number): void {
+function ensureDirectory(path: string, gid: number, mode: number): void {
   const parent = openDirectory(dirname(path));
   try {
-    const name = basename(path);
+    const directory = openSharedDirectory(parent, basename(path), gid, mode);
     try {
-      mkdirSync(`/proc/self/fd/${parent}/${name}`, { mode });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      journalCaught(error, "supervisor.ensureDirectory.mkdirSync", null, "path may already exist");
-    }
-    const directory = openSync(
-      `/proc/self/fd/${parent}/${name}`,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
-    try {
-      fchmodSync(directory, mode);
-      fchownSync(directory, uid, gid);
       fsyncSync(directory);
     } finally {
       closeSync(directory);
@@ -189,18 +176,12 @@ export function createDirectWorkerSupervisor(options: {
     if (!options.spool || !options.results) return process.env.HOME ?? "/var/lib/paws-agent";
     const job = readRunnerJob(options.spool, executionId);
     const named = runnerCommandAccount(job.command);
-    ensureDirectory(
-      join(options.results.root, executionId),
-      options.results.agentUid,
-      options.results.resultsGid,
-      0o750,
-    );
-    const gid = process.getgid?.() ?? options.results.agentUid;
     if (job.command.type === "task")
-      ensureDirectory(join(taskRoot, executionId), options.results.agentUid, gid, 0o700);
+      ensureDirectory(join(taskRoot, executionId), options.spool.agentGid, 0o770);
     if (!named) return agentHome;
     return openRunnerAccountHome(agentHome, named.account, named.agent, {
       signIn: job.command.type === "login",
+      owners: { runnerUid: options.spool.runnerUid, agentGid: options.spool.agentGid },
     });
   }
   function recordedHome(executionId: string): string | undefined {
@@ -308,7 +289,15 @@ export function createDirectWorkerSupervisor(options: {
     );
     try {
       if (home !== agentHome && options.spool && options.results) {
-        holdRunnerAccountHome(home, executionId, { receipt: path, scope });
+        holdRunnerAccountHome(
+          home,
+          executionId,
+          { receipt: path, scope },
+          {
+            runnerUid: options.spool.runnerUid,
+            agentGid: options.spool.agentGid,
+          },
+        );
         held.set(executionId, home);
       }
       options.skills?.prepareHome(home);

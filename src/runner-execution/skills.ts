@@ -5,7 +5,6 @@ import {
   constants,
   copyFileSync,
   existsSync,
-  lchownSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -48,8 +47,6 @@ export type RunnerSkillInstallerOptions = {
   root: string;
   /** Homes agents run from. Every run uses the runner's one agent home today. */
   homes?: readonly string[];
-  /** Owner of every installed file: the agent user, as the agent home is. */
-  owner: { uid: number; gid: number };
   download(skill: RunnerSkill): Promise<Uint8Array>;
   onError?(error: Error): void;
   now?: () => number;
@@ -112,12 +109,13 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
           throw new Error(`Skill ${skill.name} is over the bundle limit.`);
         mkdirSync(dirname(join(partial, safe)), { recursive: true, mode: 0o700 });
         writeFileSync(join(partial, safe), new Uint8Array(await file.arrayBuffer()), {
-          mode: privateMode(modes.get(path) ?? 0),
+          mode: sharedMode(modes.get(path) ?? 0),
           flag: "wx",
         });
       }
       if (!existsSync(join(partial, "SKILL.md")))
         throw new Error(`Skill ${skill.name} has no SKILL.md.`);
+      shareTree(partial);
       renameSync(partial, bundlePath(skill.sha256));
     } catch (error) {
       rmSync(partial, { recursive: true, force: true });
@@ -131,8 +129,7 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
     for (const part of relative.split("/")) {
       path = join(path, part);
       try {
-        mkdirSync(path, { mode: 0o700 });
-        lchownSync(path, options.owner.uid, options.owner.gid);
+        mkdirSync(path, { mode: 0o770 });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         journalCaught(error, "skills.ownedDirectory.mkdirSync", null, "path may already exist");
@@ -142,17 +139,14 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
     return path;
   }
   function copyTree(from: string, to: string) {
-    mkdirSync(to, { mode: 0o755 });
-    chmodSync(to, 0o755);
-    lchownSync(to, options.owner.uid, options.owner.gid);
+    mkdirSync(to, { mode: 0o750 });
     for (const entry of readdirSync(from)) {
       const source = join(from, entry);
       const target = join(to, entry);
       if (lstatSync(source).isDirectory()) copyTree(source, target);
       else {
         copyFileSync(source, target, constants.COPYFILE_EXCL);
-        chmodSync(target, privateMode(lstatSync(source).mode));
-        lchownSync(target, options.owner.uid, options.owner.gid);
+        chmodSync(target, sharedMode(lstatSync(source).mode));
       }
     }
   }
@@ -403,8 +397,15 @@ function versionedAgents(skill: RunnerSkill): RunnerSkillAgent[] {
   return skill.agents.filter((agent) => VERSIONED.includes(agent));
 }
 
-function privateMode(mode: number): number {
-  return mode & 0o111 ? 0o700 : 0o600;
+function sharedMode(mode: number): number {
+  return mode & 0o111 ? 0o750 : 0o640;
+}
+
+function shareTree(path: string): void {
+  const info = lstatSync(path);
+  if (!info.isDirectory()) return chmodSync(path, sharedMode(info.mode));
+  chmodSync(path, 0o750);
+  for (const entry of readdirSync(path)) shareTree(join(path, entry));
 }
 
 function installError(error: unknown): string {

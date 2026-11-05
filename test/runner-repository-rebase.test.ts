@@ -223,7 +223,7 @@ test("the runtime runs a delivered rebase command with its grant, posts the resu
   };
   for (const directory of [spool.root, results.root]) {
     mkdirSync(directory);
-    chmodSync(directory, 0o750);
+    chmodSync(directory, directory === results.root ? 0o770 : 0o750);
   }
   const paired = {
     phase: "paired" as const,

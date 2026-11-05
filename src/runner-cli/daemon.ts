@@ -34,6 +34,7 @@ export async function runPairedDaemon(
     spool: { root: "/var/lib/paws-runner-spool", runnerUid: ids.runnerUid, agentGid: ids.agentGid },
     results: {
       root: "/var/lib/paws-agent-results",
+      runnerUid: ids.runnerUid,
       agentUid: ids.agentUid,
       resultsGid: ids.resultsGid,
     },
@@ -41,7 +42,6 @@ export async function runPairedDaemon(
   };
   const skills = createRunnerSkillInstaller({
     root: join(root, "skills"),
-    owner: { uid: ids.agentUid, gid: process.getgid?.() ?? ids.agentUid },
     download: (skill) => daemon.downloadSkill(skill),
     onError: report,
   });

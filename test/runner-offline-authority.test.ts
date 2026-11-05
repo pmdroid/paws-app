@@ -167,7 +167,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   };
   for (const directory of [spool.root, resultsDir.root]) {
     mkdirSync(directory);
-    chmodSync(directory, 0o750);
+    chmodSync(directory, directory === resultsDir.root ? 0o770 : 0o750);
   }
   const task: RunnerCommand = {
     id: first.id,

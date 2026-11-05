@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import {
   chmodSync,
   existsSync,
@@ -62,7 +63,6 @@ function setup(homes: string[] = [homeA, homeB], created: string[] = homes) {
     createRunnerSkillInstaller({
       root: state,
       homes: homes.map((home) => join(base, home)),
-      owner,
       async download(skill) {
         downloads.push(`${skill.name}@${skill.version}`);
         const bytes = served.get(`${skill.name}@${skill.version}`);
@@ -84,11 +84,17 @@ function setup(homes: string[] = [homeA, homeB], created: string[] = homes) {
 }
 
 describe("runner skill installer", () => {
-  test("installs a new skill into every agent home with the agent owner", async () => {
+  test("installs a new skill into every agent home without changing its owner", async () => {
     const { installer, served, home } = setup();
     const { skill, bytes } = await bundle("impeccable", "2.4.1", "v1");
     served.set("impeccable@2.4.1", bytes);
-    await installer.sync([skill]);
+    const lchown = spyOn(fs, "lchownSync");
+    try {
+      await installer.sync([skill]);
+      expect(lchown).not.toHaveBeenCalled();
+    } finally {
+      lchown.mockRestore();
+    }
     for (const base of [home(homeA), home(homeB)]) {
       const set = installer.hold(base, `run-${base}`)!;
       for (const folder of [".claude/skills", ".codex/skills"]) {
@@ -294,7 +300,7 @@ describe("runner skill installer", () => {
     expect(errors).toEqual(["Skill escape has a file outside its folder."]);
   });
 
-  test("keeps a script executable and every other file private, in bundles and the agent home", async () => {
+  test("keeps a script executable and every file group-readable, in bundles and the agent home", async () => {
     const { installer, served, home, skills, state } = setup([homeA]);
     const { skill, bytes } = await bundle(
       "impeccable",
@@ -309,17 +315,19 @@ describe("runner skill installer", () => {
       join(state, "bundles", entry),
     );
     expect(unpacked).toHaveLength(1);
+    expect(mode(unpacked[0]!)).toBe(0o750);
+    expect(mode(join(unpacked[0]!, "scripts"))).toBe(0o750);
     for (const dir of [
       ...unpacked,
       join(home(homeA), ".grok/skills/impeccable"),
       join(skills(home(homeA)), ".claude/skills/impeccable"),
     ]) {
-      expect(mode(join(dir, "scripts/run.sh"))).toBe(0o700);
-      expect(mode(join(dir, "SKILL.md"))).toBe(0o600);
+      expect(mode(join(dir, "scripts/run.sh"))).toBe(0o750);
+      expect(mode(join(dir, "SKILL.md"))).toBe(0o640);
     }
   });
 
-  test("drops group, world, setuid and setgid bits", async () => {
+  test("drops group write, world, setuid and setgid bits", async () => {
     const { installer, served, home } = setup([homeA]);
     const { skill, bytes } = await bundle(
       "impeccable",
@@ -334,8 +342,8 @@ describe("runner skill installer", () => {
     served.set("impeccable@2.4.1", bytes);
     await installer.sync([skill]);
     const dir = join(home(homeA), ".grok/skills/impeccable");
-    expect(mode(join(dir, "scripts/run.sh"))).toBe(0o700);
-    expect(mode(join(dir, "SKILL.md"))).toBe(0o600);
+    expect(mode(join(dir, "scripts/run.sh"))).toBe(0o750);
+    expect(mode(join(dir, "SKILL.md"))).toBe(0o640);
   });
 
   test("an install that lost a script's executable bit is fixed on the next sync", async () => {
@@ -368,6 +376,6 @@ describe("runner skill installer", () => {
       }),
     );
     await open().sync([skill]);
-    expect(mode(join(installed, "scripts/run.sh"))).toBe(0o700);
+    expect(mode(join(installed, "scripts/run.sh"))).toBe(0o750);
   });
 });
