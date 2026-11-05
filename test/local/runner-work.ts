@@ -178,7 +178,7 @@ export async function probeRunnerWork(
       now,
     );
     assert.equal(
-      control.list(principal).find((runner) => runner.id === firstRunner)?.hasRunWork,
+      control.list(principal, []).find((runner) => runner.id === firstRunner)?.hasRunWork,
       false,
     );
     const assigned = work.assign({
@@ -196,7 +196,7 @@ export async function probeRunnerWork(
       ],
     });
     assert.equal(
-      control.list(principal).find((runner) => runner.id === firstRunner)?.hasRunWork,
+      control.list(principal, []).find((runner) => runner.id === firstRunner)?.hasRunWork,
       true,
     );
     assert.equal(assigned.leaseUntil, now + 60_000);

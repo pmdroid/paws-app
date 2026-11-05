@@ -147,6 +147,7 @@ async function fixture() {
         body: JSON.stringify(body ?? {}),
       }),
       principal,
+      [],
     ))!;
     return { status: response.status, body: (await response.json()) as Record<string, unknown> };
   };
@@ -174,6 +175,7 @@ async function fixture() {
       (await (await browser.browser(
         new Request("https://paws.invalid/api/runners"),
         principal,
+        [],
       ))!.json()) as { runners: { id: string; codingAgents: RunnerAgentView[] }[] },
     update: (agent: string, version: string, id = runnerId) =>
       post(`/api/runners/${id}/coding-agents/${agent}/update`, { version }),

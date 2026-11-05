@@ -123,7 +123,7 @@ export async function probeRunnerHttp(
         input.headers.get("x-fixture-user") === "member"
           ? { ...principal, userId: memberId }
           : principal;
-      return (await routes.browser(input, selected)) ?? new Response(null, { status: 404 });
+      return (await routes.browser(input, selected, [])) ?? new Response(null, { status: 404 });
     },
   });
   try {

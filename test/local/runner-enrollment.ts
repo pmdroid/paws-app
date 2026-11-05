@@ -146,6 +146,7 @@ export async function probeRunnerEnrollment(
     const minted = await http.browser(
       post("/api/runners/enrollments", { name: "member-host" }),
       member,
+      [],
     );
     assert.equal(minted?.status, 200);
     const issued = (await minted!.json()) as {
