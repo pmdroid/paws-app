@@ -37,13 +37,23 @@ export function openSharedDirectory(
   try {
     const info = fstatSync(directory);
     if (info.gid !== gid) throw new Error("Shared runner directory is not in the shared group");
-    if ((info.mode & SHARED_MODE_MASK) !== mode) {
-      if (info.mode & SETGID) throw new Error("Shared runner directory has the wrong mode");
-      fchmodSync(directory, mode);
-    }
+    if ((info.mode & 0o7777) !== mode) fchmodSync(directory, mode);
     return directory;
   } catch (error) {
     closeSync(directory);
     throw error;
+  }
+}
+
+export function clearInheritedSetgid(path: string): void {
+  const directory = openSync(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    const mode = fstatSync(directory).mode & 0o7777;
+    if (mode & SETGID) fchmodSync(directory, mode & ~SETGID);
+  } finally {
+    closeSync(directory);
   }
 }

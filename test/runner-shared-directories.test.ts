@@ -18,6 +18,7 @@ import {
   publishRunnerJob,
   runnerResultDirectoryRule,
   runnerResultsRootRule,
+  clearInheritedSetgid,
   sharedDirectoryAllowed,
 } from "../src/runner-execution";
 
@@ -101,6 +102,69 @@ test("the supervisor makes a task directory the agent group can write, without a
   const task = statSync(join(taskRoot, executionId));
   expect([task.uid, task.gid, task.mode & 0o777]).toEqual([spool.runnerUid, spool.agentGid, 0o770]);
   expect(existsSync(join(results.root, executionId))).toBe(false);
+});
+
+test("a task directory under a setgid root carries no setgid bit, so copying its checkout keeps working", async () => {
+  const root = temporary();
+  const spool = {
+    root: join(root, "spool"),
+    runnerUid: process.getuid!(),
+    agentGid: process.getgid!(),
+  };
+  mkdirSync(spool.root, { mode: 0o750 });
+  chmodSync(spool.root, 0o750);
+  const results = {
+    root: join(root, "results"),
+    agentUid: process.getuid!(),
+    resultsGid: process.getgid!(),
+  };
+  mkdirSync(results.root, { mode: 0o770 });
+  chmodSync(results.root, 0o770);
+  const taskRoot = join(root, "tasks");
+  mkdirSync(taskRoot, { mode: 0o770 });
+  chmodSync(taskRoot, 0o2770);
+  publishRunnerJob(spool, {
+    executionId,
+    command: {
+      id: "command",
+      type: "task",
+      runnerId: "runner",
+      workspaceId: "workspace",
+      runId: "run",
+      itemId: "item",
+      generation: 1,
+      sessionId: "session",
+      sessionGeneration: 1,
+      taskModeGeneration: 1,
+      purpose: "answer",
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      profile: { agent: "claude", model: "fixture-model" },
+      prompt: "Answer",
+    },
+  });
+  const supervisor = createDirectWorkerSupervisor({
+    stateRoot: join(root, "workers"),
+    spool,
+    results,
+    taskRoot,
+    agentHome: join(root, "agent"),
+    launch: () => ({ pid: process.pid, unref() {} }),
+  });
+  await supervisor.start(executionId);
+  expect(statSync(join(taskRoot, executionId)).mode & 0o7777).toBe(0o770);
+});
+
+test("a work root created under a setgid home loses the inherited setgid bit, and keeps its other bits", () => {
+  const home = temporary();
+  chmodSync(home, 0o2770);
+  const work = join(home, "work");
+  mkdirSync(work, { mode: 0o700 });
+  expect(statSync(work).mode & 0o2000).toBe(0o2000);
+  clearInheritedSetgid(work);
+  expect(statSync(work).mode & 0o7777).toBe(0o700);
+  clearInheritedSetgid(work);
+  expect(statSync(work).mode & 0o7777).toBe(0o700);
 });
 
 test("the worker makes its own result directory, and a symlink in its place is refused", () => {

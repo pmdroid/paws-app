@@ -43,4 +43,4 @@ export {
   runnerAccountBindings,
   runnerAccountHome,
 } from "./accounts";
-export { sharedDirectoryAllowed } from "./shared";
+export { clearInheritedSetgid, sharedDirectoryAllowed } from "./shared";
