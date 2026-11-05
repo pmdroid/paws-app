@@ -69,6 +69,7 @@ import {
   loadConfigFile,
   readMergeSettings,
   repositoryPackages,
+  reviewApps,
   readQueueSettings,
   resolveAccountPolicy,
   resolveAgentProfiles,
@@ -269,8 +270,10 @@ import {
   type OutboxDispatcher,
   type OutboxRow,
   type PullFeedbackWait,
+  type ReviewCheckWait,
   type WorkItemRecord,
   type RunnerCapacityWaitState,
+  PULL_REVIEW_CHECK_MAX_WAIT_MS,
   type CloseoutFaults,
   deferWorkItem,
   releaseReviewerFaultHolds,
@@ -309,6 +312,7 @@ import {
   fetchUpstreamMain,
   leaveGitHubMergeQueue,
   readPullMergeable,
+  readHeadCheckRuns,
   readReviewThreads,
   readPullCi,
   readCiLog,
@@ -429,6 +433,7 @@ import {
   waitForRunnerSlot,
 } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
+import { readReviewChecks, withReviewWait } from "./review-checks";
 import {
   authorizeLinearComment,
   commitLinearCommentRoute,
@@ -1894,13 +1899,15 @@ export class Orchestrator {
     jobs.register(JOB_KIND.pullReview, async (job, context) => {
       const reviewId = (job.payload as { reviewId?: unknown }).reviewId;
       if (typeof reviewId !== "number" || !context.isCurrent()) return;
-      const step = await handlePullReview(
-        this.db,
-        reviewId,
-        this.pullFeedbackCapabilities(context),
-      );
+      let reviewWait: ReviewCheckWait | null | undefined;
+      const step = await handlePullReview(this.db, reviewId, {
+        ...this.pullFeedbackCapabilities(context),
+        noteReviewWait: (wait) => {
+          reviewWait = wait;
+        },
+      });
       if (step === "wait" && context.isCurrent())
-        waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+        waitForMergeTurn(this.db, withReviewWait(job, reviewWait), this.now(), PULL_REVIEW_POLL_MS);
     });
     jobs.register(JOB_KIND.linearComments, async (job, context) => {
       const itemId = (job.payload as { linearCommentsFor?: unknown }).linearCommentsFor;
@@ -1917,13 +1924,15 @@ export class Orchestrator {
     jobs.register(JOB_KIND.pullComments, async (job, context) => {
       const itemId = (job.payload as { pullCommentsFor?: unknown }).pullCommentsFor;
       if (typeof itemId !== "string" || !context.isCurrent()) return;
-      const step = await handlePullComments(
-        this.db,
-        itemId,
-        this.pullFeedbackCapabilities(context),
-      );
+      let reviewWait: ReviewCheckWait | null | undefined;
+      const step = await handlePullComments(this.db, itemId, {
+        ...this.pullFeedbackCapabilities(context),
+        noteReviewWait: (wait) => {
+          reviewWait = wait;
+        },
+      });
       if (step === "wait" && context.isCurrent())
-        waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+        waitForMergeTurn(this.db, withReviewWait(job, reviewWait), this.now(), PULL_REVIEW_POLL_MS);
     });
     this.options.outbox.setHandler((message, context) =>
       linearCaller(
@@ -2012,6 +2021,51 @@ export class Orchestrator {
       },
       session: (item) => this.activitySession(item),
       flush: () => this.flush(),
+      reviewChecks: async (item, pullNumber, since) => {
+        const repository = this.repositoryForItem(item);
+        const github = repository ? this.githubForRepository(repository) : null;
+        if (!repository || !github) return null;
+        const pull = await readPullMergeable({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pullNumber,
+          reads: 1,
+          ...this.gitHubCredentials(github),
+          signal: context.signal,
+        });
+        const maxMs = this.feedbackWait().reviewMaxMs ?? PULL_REVIEW_CHECK_MAX_WAIT_MS;
+        if (!pull) return { head: null, pending: null, until: since + maxMs };
+        let configured: string[] = [];
+        try {
+          configured = reviewApps(this.readMergePolicy(), `${repository.owner}/${repository.repo}`);
+        } catch (error) {
+          journalCaught(
+            error,
+            "orchestrator.pullFeedbackCapabilities.reviewApps",
+            item.id,
+            undefined,
+            this.options.journal,
+          );
+        }
+        return readReviewChecks(this.db, {
+          owner: repository.owner,
+          repo: repository.repo,
+          head: pull.head,
+          configured,
+          maxMs,
+          since,
+          checkRuns: (head) =>
+            readHeadCheckRuns({
+              client: github.client,
+              owner: repository.owner,
+              repo: repository.repo,
+              head,
+              ...this.gitHubCredentials(github),
+              signal: context.signal,
+            }),
+        });
+      },
     };
   }
 
@@ -5162,7 +5216,11 @@ export class Orchestrator {
         this.options.journal,
       );
     }
-    return { quietMs: wait.quietSeconds * 1000, maxMs: wait.maxWaitSeconds * 1000 };
+    return {
+      quietMs: wait.quietSeconds * 1000,
+      maxMs: wait.maxWaitSeconds * 1000,
+      reviewMaxMs: wait.reviewWaitMaxSeconds * 1000,
+    };
   }
 
   private readMergePolicy(): MergeSettings {
