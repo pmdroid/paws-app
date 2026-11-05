@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +10,15 @@ import {
 } from "../src/closeout-spec";
 
 const roots: string[] = [];
+const inheritedBail = process.env.PAWS_TEST_BAIL;
+
+beforeAll(() => {
+  delete process.env.PAWS_TEST_BAIL;
+});
+
+afterAll(() => {
+  if (inheritedBail !== undefined) process.env.PAWS_TEST_BAIL = inheritedBail;
+});
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
