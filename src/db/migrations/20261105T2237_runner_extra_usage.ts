@@ -28,6 +28,7 @@ export const migration: Migration = {
       db.run("INSERT INTO extra_usage_import VALUES(?)", [agent]);
   },
   sql: `
+CREATE TEMP TABLE IF NOT EXISTS extra_usage_import(agent TEXT NOT NULL);
 CREATE TABLE runner_agent_policy_extra (
  runner_id TEXT NOT NULL REFERENCES runner(id),
  agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok','opencode')),
