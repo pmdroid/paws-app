@@ -117,6 +117,7 @@ async function fixture() {
           metrics: unknown;
           os: unknown;
           version: unknown;
+          agentUser?: string | null;
           idle: boolean;
         }[];
         serverVersion: string | null;
@@ -191,15 +192,15 @@ test("a heartbeat stores host metrics and the runner list returns them", async (
 
 test("the runner list says who a runner starts agents as", async () => {
   const runner = await fixture();
-  expect((await runner.heartbeat({ runnerVersion: "0.1.66" }))!.status).toBe(200);
+  expect((await runner.heartbeat({ runnerVersion: "0.1.68" }))!.status).toBe(200);
   expect((await runner.list()).runners[0]!.agentUser).toBe("runner");
-  expect((await runner.heartbeat({ runnerVersion: "0.1.67" }))!.status).toBe(200);
+  expect((await runner.heartbeat({ runnerVersion: "0.1.69" }))!.status).toBe(200);
   expect((await runner.list()).runners[0]!.agentUser).toBeNull();
   expect(
-    (await runner.heartbeat({ runnerVersion: "0.1.67", agentUser: "paws-agent" }))!.status,
+    (await runner.heartbeat({ runnerVersion: "0.1.69", agentUser: "paws-agent" }))!.status,
   ).toBe(200);
   expect((await runner.list()).runners[0]!.agentUser).toBe("paws-agent");
-  expect((await runner.heartbeat({ runnerVersion: "0.1.67", agentUser: "root" }))!.status).toBe(
+  expect((await runner.heartbeat({ runnerVersion: "0.1.69", agentUser: "root" }))!.status).toBe(
     403,
   );
 });
