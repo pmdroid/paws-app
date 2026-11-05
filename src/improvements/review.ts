@@ -9,6 +9,7 @@ import {
   listRetroEvidence,
   listWorkspaceRepositories,
   listWorkspaceRepositoryNames,
+  repairImprovementDestination,
   requeueImprovementDelivery,
   workspaceMember,
   workspaceMemberUsable,
@@ -80,6 +81,9 @@ export type DeliveryView = {
   targetTeamId: string | null;
   issue: { id: string | null; identifier: string | null; url: string | null } | null;
   error: string | null;
+  blocked: ImprovementDelivery["blocked"];
+  nextAttemptAt: number | null;
+  recovery: "retry" | "choose_destination" | null;
   updatedAt: number;
 };
 
@@ -119,6 +123,19 @@ const deliveryStatus = (state: ImprovementDelivery["state"]): DeliveryView["stat
 
 function effectiveCriterion(db: Database, item: InboxItem): string | null {
   return listImprovementCriteria(db, item.improvement.id).at(-1)?.criterion ?? item.criterion;
+}
+
+function deliveryRecovery(delivery: ImprovementDelivery): DeliveryView["recovery"] {
+  if (
+    delivery.operation === "create_issue" &&
+    delivery.state === "failed" &&
+    delivery.blocked === "destination" &&
+    delivery.remoteId === null
+  )
+    return "choose_destination";
+  if (delivery.state === "failed" || (delivery.state === "unknown" && delivery.blocked !== null))
+    return "retry";
+  return null;
 }
 
 export function improvementView(db: Database, item: InboxItem): ImprovementView {
@@ -161,6 +178,9 @@ export function improvementView(db: Database, item: InboxItem): ImprovementView 
             }
           : null,
       error: delivery.state === "failed" || delivery.state === "unknown" ? delivery.error : null,
+      blocked: delivery.blocked,
+      nextAttemptAt: delivery.nextAttemptAt,
+      recovery: deliveryRecovery(delivery),
       updatedAt: delivery.updatedAt,
     })),
     implementation: improvement.implementationState,
@@ -594,7 +614,7 @@ export function retryInboxDelivery(
       };
     if (delivery.state === "succeeded")
       return { status: "succeeded", item: improvementView(db, item) };
-    if (delivery.state === "unknown")
+    if (delivery.state === "unknown" && delivery.blocked === null)
       return {
         status: "conflict",
         reason: "reconciling",
@@ -602,11 +622,51 @@ export function retryInboxDelivery(
           "Paws does not know whether this write reached Linear. It checks the same operation before trying again.",
         item: improvementView(db, item),
       };
-    if (delivery.state === "failed")
-      requeueImprovementDelivery(db, { deliveryId: delivery.id, now: input.now });
+    const requeued =
+      requeueImprovementDelivery(db, { deliveryId: delivery.id, now: input.now }) !== null;
     return {
-      status: delivery.state === "failed" ? "requeued" : "in_progress",
+      status: requeued ? "requeued" : "in_progress",
       item: improvementView(db, item),
     };
+  });
+}
+
+export function repairInboxDestination(
+  db: Database,
+  input: {
+    reviewer: ImprovementReviewer;
+    improvementId: string;
+    deliveryId: string;
+    teamId: string;
+    now: number;
+  },
+): DeliveryRetryOutcome | ImprovementDecisionOutcome {
+  return immediate(db, (): DeliveryRetryOutcome | ImprovementDecisionOutcome => {
+    const item = findInboxItem(db, input.reviewer, input.improvementId);
+    const delivery = item
+      ? listImprovementDeliveries(db, item.improvement.id).find((d) => d.id === input.deliveryId)
+      : undefined;
+    if (!item || !delivery)
+      return {
+        status: "not_found",
+        reason: "not_found",
+        message: "This delivery is not in your inbox. Refresh the item.",
+      };
+    const refused = destinationRefusal(db, input.reviewer, item, input.teamId);
+    if (refused) return refused;
+    if (deliveryRecovery(delivery) !== "choose_destination")
+      return {
+        status: "conflict",
+        reason: "destination_frozen",
+        message:
+          "Paws may already have sent this issue to Linear, so its team cannot change. Retry to reconcile it.",
+        item: improvementView(db, item),
+      };
+    repairImprovementDestination(db, {
+      deliveryId: delivery.id,
+      teamId: input.teamId,
+      now: input.now,
+    });
+    return { status: "requeued", item: improvementView(db, item) };
   });
 }

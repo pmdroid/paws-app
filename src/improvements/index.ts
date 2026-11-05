@@ -32,4 +32,10 @@ export {
   type IssueLookup,
   type LinkableIssue,
 } from "./review";
+export {
+  deliverImprovements,
+  improvementCommentUuid,
+  improvementIssueUuid,
+  startImprovementDeliveries,
+} from "./delivery";
 export { createImprovementsHttp, IMPROVEMENTS_PATH, type RetroEvidenceReader } from "./http";

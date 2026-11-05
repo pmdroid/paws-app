@@ -21,6 +21,7 @@ import {
   putWorkspaceUser,
   recordRetroEvidence,
   recordReviewFindings,
+  reserveImprovementDeliveryRemote,
   saveRetroSettingsRevision,
   settleImprovementDelivery,
   startRetroAttempt,
@@ -481,6 +482,77 @@ describe("improvement decisions", () => {
     const unknown = await w.api("bea", path, {});
     expect(unknown.status).toBe(409);
     expect(unknown.body.reason).toBe("reconciling");
+  });
+
+  test("an unfiled create chooses another mapped team; an uncertain one only reconciles", async () => {
+    const w = world();
+    const id = w.retro.a;
+    await w.api("ada", `/api/improvements/${id}/decision`, accept());
+    const [delivery] = listImprovementDeliveries(w.db, id);
+    const base = `/api/improvements/${id}/deliveries/${delivery!.id}`;
+    w.db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-b')", [A]);
+    w.db.run("DELETE FROM workspace_repository WHERE repository = ? AND team_id = 'team-a'", [A]);
+    claimImprovementDelivery(w.db, {
+      deliveryId: delivery!.id,
+      owner: "outbox",
+      now: END + 5_000,
+      leaseMs: 60_000,
+    });
+    settleImprovementDelivery(w.db, {
+      deliveryId: delivery!.id,
+      attempt: 1,
+      owner: "outbox",
+      outcome: "failed",
+      blocked: "destination",
+      error: "The chosen Linear team is no longer mapped to this repository.",
+      now: END + 6_000,
+    });
+    const blocked = await w.api("admin", `/api/improvements/${id}`);
+    expect(blocked.body.item.deliveries[0]).toMatchObject({
+      status: "retryable",
+      blocked: "destination",
+      recovery: "choose_destination",
+    });
+    expect(blocked.body.destinations).toEqual(["team-b"]);
+    expect((await w.api("admin", `${base}/destination`, { teamId: "team-a" })).status).toBe(403);
+    const moved = await w.api("admin", `${base}/destination`, { teamId: "team-b" });
+    expect(moved.status).toBe(202);
+    expect(moved.body.item.deliveries[0]).toMatchObject({
+      status: "pending",
+      targetTeamId: "team-b",
+      blocked: null,
+    });
+
+    claimImprovementDelivery(w.db, {
+      deliveryId: delivery!.id,
+      owner: "outbox",
+      now: END + 7_000,
+      leaseMs: 60_000,
+    });
+    reserveImprovementDeliveryRemote(w.db, {
+      deliveryId: delivery!.id,
+      owner: "outbox",
+      attempt: 2,
+      remoteId: randomUUID(),
+    });
+    settleImprovementDelivery(w.db, {
+      deliveryId: delivery!.id,
+      attempt: 2,
+      owner: "outbox",
+      outcome: "unknown",
+      blocked: "destination",
+      now: END + 8_000,
+    });
+    const frozen = await w.api("admin", `${base}/destination`, { teamId: "team-b" });
+    expect(frozen.status).toBe(409);
+    expect(frozen.body.reason).toBe("destination_frozen");
+    const retried = await w.api("admin", `${base}/retry`, {});
+    expect(retried.status).toBe(202);
+    expect(listImprovementDeliveries(w.db, id)[0]).toMatchObject({
+      state: "unknown",
+      blocked: null,
+      targetTeamId: "team-b",
+    });
   });
 
   test("link revalidates the issue; a link alone posts no comment", async () => {

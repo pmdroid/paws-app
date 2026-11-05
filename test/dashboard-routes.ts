@@ -259,6 +259,12 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     sample: "/api/improvements/{run}/decision",
   }),
   api("POST", "/api/improvements/:id/deliveries/:delivery/retry", "delegated", "src/improvements"),
+  api(
+    "POST",
+    "/api/improvements/:id/deliveries/:delivery/destination",
+    "delegated",
+    "src/improvements",
+  ),
   api("GET", "/api/runners", "delegated", "src/runner-control", { sample: "/api/runners" }),
   ...[
     ["POST", "/api/runners/enrollments"],

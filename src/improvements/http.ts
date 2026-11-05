@@ -9,6 +9,7 @@ import {
   IMPROVEMENT_REVIEW_LIMITS,
   listImprovementPage,
   memberRepositories,
+  repairInboxDestination,
   retryInboxDelivery,
   type ImprovementReviewer,
   type IssueLookup,
@@ -19,6 +20,8 @@ const BODY_LIMIT = 16 * 1024;
 const ITEM = /^\/api\/improvements\/([0-9A-Za-z]{1,64})$/;
 const DECISION = /^\/api\/improvements\/([0-9A-Za-z]{1,64})\/decision$/;
 const RETRY = /^\/api\/improvements\/([0-9A-Za-z]{1,64})\/deliveries\/([0-9a-f-]{36})\/retry$/;
+const DESTINATION =
+  /^\/api\/improvements\/([0-9A-Za-z]{1,64})\/deliveries\/([0-9a-f-]{36})\/destination$/;
 
 export type RetroEvidenceReader = (
   principal: WorkspacePrincipal,
@@ -150,7 +153,9 @@ export function createImprovementsHttp(options: {
     }
     const decision = DECISION.exec(path);
     const retry = RETRY.exec(path);
-    if (!decision && !retry) return json({ error: "Not found.", reason: "not_found" }, 404);
+    const destination = DESTINATION.exec(path);
+    if (!decision && !retry && !destination)
+      return json({ error: "Not found.", reason: "not_found" }, 404);
     if (request.method !== "POST") return json({ error: "Use POST." }, 405);
     if (retry) {
       const outcome = retryInboxDelivery(db, {
@@ -169,6 +174,21 @@ export function createImprovementsHttp(options: {
       if (error instanceof RangeError) return json({ error: "Send at most 16 KiB." }, 413);
       journalCaught(error, "improvements.http.readJson", null);
       return json({ error: "Expected a JSON body." }, 400);
+    }
+    if (destination) {
+      const team = z.strictObject({ teamId: text(200) }).safeParse(body);
+      if (!team.success) return json({ error: "Send the Linear teamId to file to." }, 400);
+      const outcome = repairInboxDestination(db, {
+        reviewer,
+        improvementId: destination[1]!,
+        deliveryId: destination[2]!,
+        teamId: team.data.teamId,
+        now: now(),
+      });
+      if (outcome.status === "requeued")
+        audit(principal, "improvement.delivery.destination", destination[2]!);
+      if (outcome.status === "forbidden") audit(principal, "access.denied", path);
+      return json(outcome, OUTCOME_STATUS[outcome.status]);
     }
     const parsed = decisionSchema.safeParse(body);
     if (!parsed.success)
