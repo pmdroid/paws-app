@@ -167,7 +167,7 @@ test("review and task commands keep their execution checkout paths", async () =>
   const reviewed = await execute(FIRST, review());
   expect(reviewed.trace.sessionCwd).toBe(join(workRoot, FIRST));
   mkdirSync(join(workRoot, SECOND), { mode: 0o700 });
-  chmodSync(join(workRoot, SECOND), 0o700);
+  chmodSync(join(workRoot, SECOND), 0o770);
   output(SECOND);
   const answered = await execute(SECOND, task());
   expect(answered.trace.sessionCwd).toBe(join(workRoot, SECOND));

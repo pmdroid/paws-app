@@ -76,6 +76,7 @@ import {
   type PolicyFilesLoad,
 } from "../acp";
 import {
+  createRunnerResultDirectory,
   markRunnerAccountSignedIn,
   openRunnerAccountHome,
   publishRunnerAccountHome,
@@ -86,8 +87,9 @@ import {
   runnerRepositoryBundlePath,
   runnerSessionBundlePath,
   runnerTaskRepositoryPath,
-  runnerResultDirectory,
   RunnerJobSchema,
+  sharedDirectoryAllowed,
+  type RunnerAccountOwners,
   type RunnerJob,
   type RunnerResults,
   type RunnerSpool,
@@ -181,6 +183,7 @@ export interface RunnerWorkerOptions {
   workRoot: string;
   home: string;
   resultsGid: number;
+  owners?: RunnerAccountOwners;
   signal?: AbortSignal;
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
@@ -758,6 +761,7 @@ export async function executeRunnerCommand(
   const home = binding
     ? openRunnerAccountHome(options.home, binding.account, binding.agent, {
         signIn: command.type === "login",
+        ...(options.owners ? { owners: options.owners } : {}),
       })
     : options.home;
   const homeEnv = binding
@@ -844,7 +848,7 @@ export async function executeRunnerCommand(
                 publish: (write: () => void) =>
                   publishRunnerAccountHome(home, job.executionId, () => {
                     write();
-                    markRunnerAccountSignedIn(home, binding.account, binding.agent);
+                    markRunnerAccountSignedIn(home, binding.account, binding.agent, options.owners);
                   }),
               },
             }
@@ -876,12 +880,12 @@ export async function executeRunnerCommand(
         constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
       );
       try {
-        const info = fstatSync(directory);
-        if (
-          info.uid !== process.getuid!() ||
-          info.gid !== process.getgid!() ||
-          (info.mode & 0o7777) !== 0o700
-        )
+        const owners = options.owners ?? {
+          runnerUid: process.getuid!(),
+          agentGid: process.getgid!(),
+        };
+        const rule = { owners: [owners.runnerUid], gid: owners.agentGid, mode: 0o770 };
+        if (!sharedDirectoryAllowed(fstatSync(directory), rule))
           throw new Error("Unsafe runner task workspace");
       } finally {
         closeSync(directory);
@@ -2140,6 +2144,7 @@ export async function runRunnerWorker(options: {
   if (process.getuid?.() === 0 || process.getuid?.() !== options.results.agentUid)
     throw new Error("Runner worker identity is invalid");
   const spool = options.spool;
+  const owners = { runnerUid: spool.runnerUid, agentGid: spool.agentGid };
   const job = readRunnerJob(spool, options.executionId);
   if (job.command.type === "retro") {
     const command = job.command;
@@ -2167,10 +2172,11 @@ export async function runRunnerWorker(options: {
           data: bytes.toString("base64"),
         };
       },
-      outputDirectory: runnerResultDirectory(options.results, options.executionId),
+      outputDirectory: createRunnerResultDirectory(options.results, options.executionId),
       workRoot: options.workRoot,
       home: options.home,
       resultsGid: options.results.resultsGid,
+      owners,
       signal: options.signal,
     });
   }
@@ -2186,10 +2192,11 @@ export async function runRunnerWorker(options: {
       : job.command.type === "task" && job.command.repository
         ? { repositorySnapshot: runnerTaskRepositoryPath(spool, options.executionId) }
         : {}),
-    outputDirectory: runnerResultDirectory(options.results, options.executionId),
+    outputDirectory: createRunnerResultDirectory(options.results, options.executionId),
     workRoot: job.command.type === "task" ? "/var/lib/paws-agent-tasks" : options.workRoot,
     home: options.home,
     resultsGid: options.results.resultsGid,
+    owners,
     signal: options.signal,
     resume: options.resume,
     ...(options.skills ? { skills: options.skills } : {}),

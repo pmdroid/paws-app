@@ -1,17 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
@@ -141,8 +130,8 @@ function prepared(root: string) {
   mkdirSync(spoolRoot, { mode: 0o750 });
   chmodSync(spoolRoot, 0o750);
   const resultsRoot = join(root, "results");
-  mkdirSync(resultsRoot, { mode: 0o750 });
-  chmodSync(resultsRoot, 0o750);
+  mkdirSync(resultsRoot, { mode: 0o770 });
+  chmodSync(resultsRoot, 0o770);
   const spool = { root: spoolRoot, runnerUid: process.getuid!(), agentGid: process.getgid!() };
   publishRunnerJob(spool, probe);
   return {
@@ -151,7 +140,7 @@ function prepared(root: string) {
   };
 }
 
-test("a failed launch removes the admission receipt and creates the result directory", async () => {
+test("a failed launch removes the admission receipt and leaves the result directory to the worker", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-worker-supervisor-"));
   roots.push(root);
   const { spool, results } = prepared(root);
@@ -171,31 +160,10 @@ test("a failed launch removes the admission receipt and creates the result direc
     },
   });
   await expect(supervisor.start(id)).rejects.toThrow("Runner worker did not start");
-  expect(statSync(join(results.root, id)).mode & 0o777).toBe(0o750);
+  expect(existsSync(join(results.root, id))).toBe(false);
   fail = false;
   expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: false });
   await supervisor.stop(id);
-});
-
-test("a symlinked result directory is not retargeted", async () => {
-  const root = mkdtempSync(join(tmpdir(), "paws-worker-supervisor-"));
-  roots.push(root);
-  const { spool, results } = prepared(root);
-  const secret = join(root, "secret");
-  writeFileSync(secret, "nope", { mode: 0o600 });
-  chmodSync(secret, 0o600);
-  symlinkSync(secret, join(results.root, id));
-  const supervisor = createDirectWorkerSupervisor({
-    stateRoot: join(root, "workers"),
-    spool,
-    results,
-    launch() {
-      throw new Error("launch must not run");
-    },
-  });
-  await expect(supervisor.start(id)).rejects.toThrow();
-  expect(statSync(secret).mode & 0o777).toBe(0o600);
-  expect(lstatSync(join(results.root, id)).isSymbolicLink()).toBe(true);
 });
 
 test("a new agent home has the current skills when its first worker starts, pinned until stop", async () => {
@@ -211,7 +179,6 @@ test("a new agent home has the current skills when its first worker starts, pinn
   const skills = createRunnerSkillInstaller({
     root: join(root, "skills"),
     homes: [agentHome],
-    owner: { uid: process.getuid!(), gid: process.getgid!() },
     download: async () => bytes,
   });
   await skills.sync([
@@ -286,7 +253,6 @@ test("a crashed worker resumes on the skills folder it started with, after an up
   const skills = createRunnerSkillInstaller({
     root: join(root, "skills"),
     homes: [agentHome],
-    owner: { uid: process.getuid!(), gid: process.getgid!() },
     download: async (wanted) => bundles.get(wanted.version)!,
   });
   await skills.sync([await skill("2.4.1")]);

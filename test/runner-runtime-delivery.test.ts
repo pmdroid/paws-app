@@ -23,7 +23,7 @@ test.skipIf(process.platform !== "linux" || process.getuid!() === 0 || process.g
     };
     for (const directory of [spool.root, results.root]) {
       mkdirSync(directory);
-      chmodSync(directory, 0o750);
+      chmodSync(directory, directory === results.root ? 0o770 : 0o750);
     }
     const task = (runId: string): RunnerCommand => ({
       id: `command-${runId}`,

@@ -79,7 +79,7 @@ async function fixture(input: { pushMs?: number; chunkMs?: number; refuse?: Refu
   };
   for (const directory of [spool.root, results.root]) {
     mkdirSync(directory);
-    chmodSync(directory, 0o750);
+    chmodSync(directory, directory === results.root ? 0o770 : 0o750);
   }
   const command: RunnerCommand = {
     id: "command",

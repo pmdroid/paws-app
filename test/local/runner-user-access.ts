@@ -24,6 +24,7 @@ export async function probeRunnerUserAccess(root: string) {
     const workspace = join(workRoot, executionId);
     const outputDirectory = join(root, "output-" + index);
     mkdirSync(workspace, { mode: 0o700 });
+    chmodSync(workspace, 0o770);
     mkdirSync(outputDirectory, { mode: 0o750 });
     const external = join(cache, "host-file-" + index);
     writeFileSync(external, "host-readable");

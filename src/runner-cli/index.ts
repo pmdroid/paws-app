@@ -18,6 +18,8 @@ export {
   journalRunnerFailure,
 } from "./cause";
 
+const SHARED_UMASK = 0o007;
+
 const configuration = z.strictObject({
   controlPlaneUrl: z.string().max(2048),
   runnerApiUrl: z.string().max(2048),
@@ -221,6 +223,7 @@ export async function runRunnerCli(
     const [operation, ...args] = argv;
     const ids = accounts();
     abort.signal.throwIfAborted();
+    if (operation === "worker" || operation === "daemon") process.umask(SHARED_UMASK);
     if (operation === "worker") {
       if (
         args[0] !== "--execution-id" ||
@@ -239,6 +242,7 @@ export async function runRunnerCli(
         },
         results: {
           root: "/var/lib/paws-agent-results",
+          runnerUid: ids.runnerUid,
           agentUid: ids.agentUid,
           resultsGid: ids.resultsGid,
         },
@@ -300,7 +304,11 @@ export async function runRunnerCli(
       root: "/var/lib/paws-runner",
       ...loadConfig(args[1]!, ids.runnerUid),
       sampleHost: createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" }),
-      accountBindings: () => runnerAccountBindings("/var/lib/paws-agent"),
+      accountBindings: () =>
+        runnerAccountBindings("/var/lib/paws-agent", {
+          runnerUid: ids.runnerUid,
+          agentGid: ids.agentGid,
+        }),
     });
     try {
       await runPairedDaemon(daemon, ids, abort.signal, (failure) =>

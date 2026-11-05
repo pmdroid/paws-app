@@ -269,7 +269,7 @@ const resultFiles = {
 };
 for (const directory of [spool.root, resultFiles.root]) {
   mkdirSync(directory);
-  chmodSync(directory, 0o750);
+  chmodSync(directory, directory === resultFiles.root ? 0o770 : 0o750);
 }
 const paired = {
   phase: "paired" as const,

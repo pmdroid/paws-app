@@ -53,7 +53,7 @@ test("a command without an account keeps the default home", () => {
   expect(runnerAccountBindings(root)).toEqual([]);
 });
 
-test("two bindings get separate private homes, held only after a published sign-in", () => {
+test("two bindings get separate group-shared homes, held only after a published sign-in", () => {
   const root = agentHome();
   expect(() => openRunnerAccountHome(root, a, "codex")).toThrow(/not signed in/);
   const homeA = openRunnerAccountHome(root, a, "codex", { signIn: true });
@@ -61,7 +61,7 @@ test("two bindings get separate private homes, held only after a published sign-
   expect(homeA).toBe(join(root, ".paws-accounts", a.bindingId));
   expect(homeB).not.toBe(homeA);
   for (const folder of [".", ".claude", ".codex/sessions", ".grok", ".local/share", ".config"])
-    expect(statSync(join(homeA, folder)).mode & 0o777).toBe(0o700);
+    expect(statSync(join(homeA, folder)).mode & 0o777).toBe(0o770);
   expect(runnerAccountBindings(root)).toEqual([]);
   expect(() => openRunnerAccountHome(root, a, "codex")).toThrow(/not signed in/);
 
@@ -109,12 +109,16 @@ test("generated paths reject traversal, symlinks and foreign permissions", () =>
 
   mkdirSync(join(root, ".paws-accounts"), { mode: 0o755 });
   chmodSync(join(root, ".paws-accounts"), 0o755);
+  expect(() => openRunnerAccountHome(root, b, "claude", { signIn: true })).toThrow(
+    /open to other users/,
+  );
+  chmodSync(join(root, ".paws-accounts"), 0o700);
   const victim = openRunnerAccountHome(root, b, "claude", { signIn: true });
   symlinkSync(victim, join(root, ".paws-accounts", a.bindingId));
   expect(() => openRunnerAccountHome(root, a, "claude", { signIn: true })).toThrow(
     /not a private directory/,
   );
-  expect(statSync(join(root, ".paws-accounts")).mode & 0o777).toBe(0o700);
+  expect(statSync(join(root, ".paws-accounts")).mode & 0o777).toBe(0o770);
 
   const loose = openRunnerAccountHome(
     root,
@@ -125,10 +129,14 @@ test("generated paths reject traversal, symlinks and foreign permissions", () =>
     },
   );
   chmodSync(join(loose, ".grok"), 0o755);
-  openRunnerAccountHome(root, { ...b, bindingId: "01JLOOSE000000000000000000" }, "grok", {
-    signIn: true,
-  });
-  expect(statSync(join(loose, ".grok")).mode & 0o777).toBe(0o700);
+  const reopen = () =>
+    openRunnerAccountHome(root, { ...b, bindingId: "01JLOOSE000000000000000000" }, "grok", {
+      signIn: true,
+    });
+  expect(reopen).toThrow(/open to other users/);
+  chmodSync(join(loose, ".grok"), 0o700);
+  reopen();
+  expect(statSync(join(loose, ".grok")).mode & 0o777).toBe(0o770);
 });
 
 test("a sign-in waits for live work on its binding and keeps new work out while it publishes", () => {
