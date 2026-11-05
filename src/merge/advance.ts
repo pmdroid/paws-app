@@ -11,6 +11,7 @@ import {
   enqueueJobOnce,
   getConfirmedRemoteMerge,
   getWorkItem,
+  hasCiRerun,
   immediate,
   leaveMergeQueue,
   mergeCallInFlight,
@@ -33,7 +34,7 @@ import {
   type RebaseResult,
   type SerialMergeInput,
 } from "../github";
-import { journal } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import type { MergeFacts, RiskApproval } from "./mergeable";
 import {
@@ -110,8 +111,33 @@ export type MergeCapabilities = OrderCapabilities & {
   mergedOutsideLane(
     item: WorkItemRecord,
   ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null | "unknown">;
+  rerunCi?(item: WorkItemRecord, pullNumber: number, reason: string): Promise<string>;
   completed(): void;
 };
+
+const CANCELLED_CI_RERUN = "cancelled or timed-out CI job";
+
+async function rerunCancelledCi(
+  db: Database,
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+  turn: LaneTurn,
+  pullNumber: number,
+): Promise<MergeStep | null> {
+  if (turn.kind !== "blocked" || turn.block !== "ci_failed") return null;
+  const { readiness, head, base } = turn.pull;
+  if (!caps.rerunCi || readiness.onlyCancelled !== true || hasCiRerun(db, item.id, head))
+    return null;
+  await caps.rerunCi(item, pullNumber, CANCELLED_CI_RERUN).catch((error: unknown) => {
+    journalCaught(error, "advance.rerunCancelledCi", item.id);
+  });
+  if (caps.stopped()) return { kind: "obsolete" };
+  if (!hasCiRerun(db, item.id, head)) return null;
+  const message = `Re-ran cancelled CI jobs on ${head.slice(0, 7)}.`;
+  caps.voice.status(item, message, `${item.id}:ci-rerun:${head}`);
+  await caps.voice.flush();
+  return { kind: "wait", reason: "ci", message, base, head };
+}
 
 /**
  * One merge lane turn for an item in `merge_queue`. The lane squashes head S only when
@@ -248,6 +274,8 @@ export async function advanceMerge(
     const late = reviewHold(db, item.id, caps.now(), caps.feedbackWait());
     if (late) return late;
   }
+  const rerun = await rerunCancelledCi(db, item, caps, turn, pull.number);
+  if (rerun) return rerun;
   const ciFixLimit = caps.ciFixAttempts(item);
   const result = turn.kind === "merged" || turn.kind === "stopped" ? turn.result : null;
   const conflict: RebaseConflict = {

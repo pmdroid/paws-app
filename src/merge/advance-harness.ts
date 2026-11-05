@@ -13,11 +13,13 @@ import {
   finishCloseoutProgress,
   getConfirmedRemoteMerge,
   getWorkItem,
+  hasCiRerun,
   insertQueuedItem,
   markCloseoutAccepted,
   markRun,
   migrate,
   openDatabase,
+  recordCiRerun,
   recordItemPullRequest,
   saveCheckpoint,
   DEFAULT_PULL_FEEDBACK_WAIT,
@@ -31,6 +33,7 @@ import {
   fakeRequiredChecks,
   readPullCi,
   readPullMergeable,
+  rerunFailedCi,
   type FakeMergeQueue,
   type GitHubClient,
   type GitHubResponse,
@@ -156,6 +159,7 @@ export async function mergeHarness(
     ciFixAttempts: 3,
     feedbackWait: DEFAULT_PULL_FEEDBACK_WAIT as PullFeedbackWait,
     ciReads: [] as string[],
+    ciReruns: [] as string[],
     stopped: false,
     orders: new Map<string, TaskMergeSettings["order"]>(),
     /** GitHub's "Require branches to be up to date before merging" on main. */
@@ -242,6 +246,25 @@ export async function mergeHarness(
             },
           ],
         };
+      const checkRuns = /^\/repos\/acme\/app\/commits\/([0-9a-f]+)\/check-runs/.exec(req.path);
+      if (req.method === "GET" && checkRuns) {
+        const nodes = state.ci(checkRuns[1]!) ?? [];
+        return {
+          status: 200,
+          body: {
+            check_runs: nodes.map((node) => ({
+              status: node?.conclusion ? "completed" : "in_progress",
+              conclusion: node?.conclusion?.toLowerCase() ?? null,
+              html_url: node?.detailsUrl ?? null,
+              app: node?.checkSuite?.app ?? null,
+            })),
+          },
+        };
+      }
+      if (req.method === "POST" && req.path.endsWith("/rerun-failed-jobs")) {
+        state.ciReruns.push(req.path);
+        return { status: 201, body: {} };
+      }
       const required = fakeRequiredChecks(req);
       if (required) return required;
       const pull = /^\/repos\/acme\/app\/pulls\/(\d+)$/.exec(req.path);
@@ -510,6 +533,19 @@ export async function mergeHarness(
           pullUrl: `https://github.com/acme/app/pull/${item.pull}`,
           mergeSha: sha,
         };
+      },
+      rerunCi: async (current, prNumber, reason) => {
+        const result = await rerunFailedCi({
+          client,
+          owner: "acme",
+          repo: "app",
+          prNumber,
+          alreadyRerun: (head) => hasCiRerun(db, current.id, head),
+          tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
+        });
+        if (result.rerun)
+          recordCiRerun(db, { itemId: current.id, ...result.rerun, reason, at: clock.now() });
+        return result.answer;
       },
       completed: () => completed.push(id),
       ...(state.runnerRebase

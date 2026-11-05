@@ -49,7 +49,13 @@ function fakeGitHub(rerunStatus = 201) {
   return { client, posts };
 }
 
-function rerun(db: Database, client: GitHubClient, journal: string[], reason: string) {
+function rerun(
+  db: Database,
+  client: GitHubClient,
+  journal: string[],
+  reason: string,
+  requestedBy?: string,
+) {
   return rerunItemCi({
     db,
     itemId: "item",
@@ -64,6 +70,7 @@ function rerun(db: Database, client: GitHubClient, journal: string[], reason: st
     },
     now: () => 1_000,
     journal: (line) => journal.push(line),
+    ...(requestedBy ? { requestedBy } : {}),
   });
 }
 
@@ -96,4 +103,14 @@ test("a 403 from GitHub answers with the permission message and leaves the item 
   const after = getWorkItem(db, "item");
   expect(after?.state).toBe(before.state);
   expect(after?.version).toBe(before.version);
+});
+
+test("Paws's own re-run names Paws in the journal", async () => {
+  const db = database();
+  insertQueuedItem(db, { id: "item" });
+  const journal: string[] = [];
+  await rerun(db, fakeGitHub().client, journal, "cancelled or timed-out CI job", "Paws");
+  expect(journal).toEqual([
+    'item PAS-1 CI re-run requested by Paws on ccccccc, workflow run 41545628595: "cancelled or timed-out CI job"',
+  ]);
 });

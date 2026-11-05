@@ -10,6 +10,7 @@ export async function rerunItemCi(options: {
   github: Omit<CiRerunInput, "alreadyRerun">;
   now: () => number;
   journal?: ((line: string) => void) | undefined;
+  requestedBy?: string;
 }): Promise<string> {
   const result = await rerunFailedCi({
     ...options.github,
@@ -25,7 +26,7 @@ export async function rerunItemCi(options: {
   });
   if (!recorded) return CI_ALREADY_RERUN;
   options.journal?.(
-    `item ${options.label} CI re-run requested by the agent on ${result.rerun.head.slice(0, 7)}, workflow run ${result.rerun.runIds.join(", ")}: ${JSON.stringify(options.reason)}`,
+    `item ${options.label} CI re-run requested by ${options.requestedBy ?? "the agent"} on ${result.rerun.head.slice(0, 7)}, workflow run ${result.rerun.runIds.join(", ")}: ${JSON.stringify(options.reason)}`,
   );
   return result.answer;
 }
