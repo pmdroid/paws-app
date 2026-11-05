@@ -188,7 +188,8 @@ type Prepared =
       deferred: Deferred;
     };
 
-type Deferred = { head: string; ids: ReadonlySet<string> } | undefined;
+/** `failed` are the command checks that did not pass on the focus head; they run first. */
+type Deferred = { head: string; ids: ReadonlySet<string>; failed: ReadonlySet<string> } | undefined;
 
 /** A rule the change must keep. `result` is set when the report asked for probes. */
 type ListedRule = {
@@ -210,6 +211,7 @@ export function createCloseoutSession(
   let chain: Promise<unknown> = Promise.resolve();
   let listed: Prepared | undefined;
   let last: { report: string; head: string | undefined } | undefined;
+  const halt: Halt = { controller: new AbortController(), finished: 0, last: new Map() };
   const running = new Map<string, Promise<{ ok: boolean; text: string }>>();
   const once: Once = (id, work) => {
     let run = running.get(id);
@@ -277,6 +279,7 @@ export function createCloseoutSession(
 
   const judgeRules = async (prepared: Prepared): Promise<void> => {
     if (prepared.kind !== "ready") return;
+    if (!options.rulesFirst && !commandsPassed(prepared, memory)) return;
     if (probedFingerprint !== fingerprint) {
       probed = new Map();
       probedFingerprint = fingerprint;
@@ -317,6 +320,7 @@ export function createCloseoutSession(
         return last.report;
       }),
     run: async (id) => {
+      const since = halt.finished;
       const ready = await exclusive(async () => {
         const prepared = await prepare();
         listed = prepared;
@@ -326,7 +330,7 @@ export function createCloseoutSession(
         return ruleBreak(prepared) ?? prepared;
       });
       if (typeof ready === "string") return ready;
-      return runId(workspace, ready, memory, id, options, once);
+      return runId(workspace, ready, memory, id, options, once, { halt, since });
     },
     recorded: async () => {
       let prepared = listed;
@@ -477,6 +481,16 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
         : deferredNow(item)
           ? "deferred"
           : statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max);
+  const order = runOrder(prepared, memory);
+  const blocker = failingCheck(prepared, memory);
+  const blockerExhausted =
+    blocker !== undefined && statusOf(memory.get(blocker), max) === "exhausted";
+  // A check that waits on an exhausted one cannot run this turn; Closeout runs it at the end.
+  const waiting = (item: Listed) =>
+    blocker !== undefined &&
+    item.id !== blocker &&
+    (item.kind === "command" || item.kind === "setup") &&
+    ["missing", "stale"].includes(status(item));
   const required = prepared.required.map((item) => {
     const state = memory.get(item.id);
     const failures = state?.failures ?? 0;
@@ -487,7 +501,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
       kind: item.kind,
       hint: item.hint,
       matched_paths: item.matched,
-      status: status(item),
+      status: blockerExhausted && waiting(item) ? "deferred" : status(item),
       failed_attempts: failures,
       remaining_attempts:
         reviewCap !== undefined || max === null
@@ -506,6 +520,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
       ...(deferred && deferredNow(item)
         ? { note: `passed on ${deferred.head.slice(0, 12)}; Closeout reruns it at the end` }
         : {}),
+      ...(waiting(item) ? { detail: `not run: fix ${blocker} first` } : {}),
       ...(state?.result && !state.stale ? { result: state.result } : {}),
     };
   });
@@ -515,11 +530,13 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
         item.kind !== "review" &&
         item.kind !== "preview" &&
         !deferredNow(item) &&
+        !(blockerExhausted && waiting(item)) &&
         (item.evidence
           ? status(item) === "missing"
           : runnable(memory.get(item.id), item.kind === "setup" ? 2 : max)),
     )
-    .map((item) => item.id);
+    .map((item) => item.id)
+    .sort((left, right) => rank(order, left) - rank(order, right));
   const exhausted = prepared.required.filter(
     (item) => statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max) === "exhausted",
   );
@@ -652,6 +669,85 @@ type Once = (
   work: () => Promise<{ ok: boolean; text: string }>,
 ) => Promise<{ ok: boolean; text: string }>;
 
+type Halt = {
+  controller: AbortController;
+  finished: number;
+  last: Map<string, { at: number; result: { ok: boolean; text: string } }>;
+};
+
+function commandsPassed(
+  prepared: Extract<Prepared, { kind: "ready" }>,
+  memory: Map<string, ItemMemory>,
+): boolean {
+  return prepared.required
+    .filter((item) => item.kind === "setup" || item.kind === "command")
+    .every((item) => memory.get(item.id)?.passed === true || isDeferred(prepared, memory, item));
+}
+
+function commandPhases(
+  prepared: Extract<Prepared, { kind: "ready" }>,
+  memory: Map<string, ItemMemory>,
+): Listed[][] {
+  const max = maxAttempts(prepared.policy);
+  const commands = prepared.required.filter(
+    (item) => item.kind === "command" && item.exec && !isDeferred(prepared, memory, item),
+  );
+  const timeout = (item: Listed) => item.timeoutSeconds ?? 30;
+  const longest = Math.max(...commands.map(timeout));
+  const failed = commands.filter((item) => {
+    const status = statusOf(memory.get(item.id), max);
+    return (
+      status === "failed" ||
+      status === "exhausted" ||
+      (prepared.deferred?.failed.has(item.id) === true && status !== "passed")
+    );
+  });
+  const rest = commands.filter((item) => !failed.includes(item));
+  const slow = commands.some((item) => timeout(item) < longest)
+    ? rest.filter((item) => timeout(item) === longest)
+    : [];
+  return [failed, rest.filter((item) => !slow.includes(item)), slow].filter(
+    (phase) => phase.length > 0,
+  );
+}
+
+function runOrder(
+  prepared: Extract<Prepared, { kind: "ready" }>,
+  memory: Map<string, ItemMemory>,
+): string[] {
+  return [
+    ...prepared.required.filter((item) => item.kind === "setup"),
+    ...commandPhases(prepared, memory).flat(),
+  ].map((item) => item.id);
+}
+
+function rank(order: readonly string[], id: string): number {
+  const index = order.indexOf(id);
+  return index === -1 ? order.length : index;
+}
+
+function failingCheck(
+  prepared: Extract<Prepared, { kind: "ready" }>,
+  memory: Map<string, ItemMemory>,
+): string | undefined {
+  const max = maxAttempts(prepared.policy);
+  return runOrder(prepared, memory).find((id) => {
+    const item = prepared.required.find((entry) => entry.id === id);
+    const status = statusOf(memory.get(id), item?.kind === "setup" ? 2 : max);
+    return status === "failed" || status === "exhausted";
+  });
+}
+
+function isDeferred(
+  prepared: Extract<Prepared, { kind: "ready" }>,
+  memory: Map<string, ItemMemory>,
+  item: Listed,
+): boolean {
+  if (!prepared.deferred?.ids.has(item.id)) return false;
+  const now = statusOf(memory.get(item.id), maxAttempts(prepared.policy));
+  return now === "missing" || now === "stale";
+}
+
 async function runId(
   workspace: string,
   prepared: Extract<Prepared, { kind: "ready" }>,
@@ -659,6 +755,7 @@ async function runId(
   id: string,
   options: CloseoutSessionOptions,
   once: Once,
+  { halt, since }: { halt: Halt; since: number },
 ): Promise<string> {
   const { policy, required } = prepared;
   if (policy.rules.some((rule) => rule.id === id)) {
@@ -697,9 +794,36 @@ async function runId(
       if (!setup.ok) return setup.text;
     }
   }
-  const result = await once(item.id, () =>
-    execute(workspace, item, memory, options, item.kind === "setup" ? 2 : max, digest),
-  );
+  const command = async (step: Listed) => {
+    const recent = halt.last.get(step.id);
+    if (recent !== undefined && recent.at > since) return recent.result;
+    const result = await once(step.id, () =>
+      execute(workspace, step, memory, options, max, digest, halt),
+    );
+    halt.last.set(step.id, { at: ++halt.finished, result });
+    return result;
+  };
+  if (item.kind === "command") {
+    for (const phase of commandPhases(prepared, memory)) {
+      if (phase.includes(item)) break;
+      const stuck = phase.find((step) => statusOf(memory.get(step.id), max) === "exhausted");
+      if (stuck)
+        return `${id} not run: fix ${stuck.id} first. Check ${stuck.id} is exhausted. Stop retrying and report the blocker.`;
+      const results = await Promise.all(
+        phase
+          .filter((step) => runnable(memory.get(step.id), max))
+          .map(async (step) => ({ step, result: await command(step) })),
+      );
+      const failed =
+        results.find(
+          ({ step, result }) =>
+            !result.ok && ["failed", "exhausted"].includes(statusOf(memory.get(step.id), max)),
+        ) ?? results.find(({ result }) => !result.ok);
+      if (failed) return `${id} not run: fix ${failed.step.id} first.\n${failed.result.text}`;
+    }
+    return (await command(item)).text;
+  }
+  const result = await once(item.id, () => execute(workspace, item, memory, options, 2, digest));
   return result.text;
 }
 
@@ -710,8 +834,10 @@ async function execute(
   options: CloseoutSessionOptions,
   max: number | null,
   policyDigest: string,
+  halt?: Halt,
 ): Promise<{ ok: boolean; text: string }> {
   const argv = item.exec ?? [];
+  const stop = halt?.controller.signal;
   try {
     options.allowCommand?.(argv);
   } catch (error) {
@@ -733,10 +859,18 @@ async function execute(
   notify(options, { type: "started", ...progress });
   const started = Date.now();
   const timeoutSeconds = item.timeoutSeconds ?? 30;
-  const result = await runCommand(workspace, argv, timeoutSeconds, options.signal, {
-    runtimeBinPaths: options.runtimeBinPaths,
-    basePath: options.basePath,
-  });
+  const signals = [options.signal, stop].filter((signal) => signal !== undefined);
+  const result = await runCommand(
+    workspace,
+    argv,
+    timeoutSeconds,
+    signals.length > 0 ? AbortSignal.any(signals) : undefined,
+    {
+      runtimeBinPaths: options.runtimeBinPaths,
+      basePath: options.basePath,
+      bail: item.kind === "command",
+    },
+  );
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   const cleanAfter = await clean(workspace);
   if (result.cancelled) {
@@ -751,6 +885,8 @@ async function execute(
       stderr: "",
       truncated: false,
     });
+    if (stop?.aborted && !options.signal?.aborted)
+      return { ok: false, text: `${item.id} not run: fix ${String(stop.reason)} first.` };
     return { ok: false, text: `${item.id} was cancelled.` };
   }
   const state = memory.get(item.id) ?? {
@@ -803,6 +939,11 @@ async function execute(
   state.passed = false;
   state.stale = false;
   memory.set(item.id, state);
+  if (halt) {
+    const running = halt.controller;
+    halt.controller = new AbortController();
+    running.abort(item.id);
+  }
   finished(max !== null && state.failures >= max ? "exhausted" : "failed");
   const why = result.timedOut ? "timed out" : `exit ${result.code}`;
   const log = writeLog(workspace, item.id, scrubText(result.full, credentialSecrets()));
@@ -833,7 +974,10 @@ async function deferredOf(
         matchedPaths(item, since).length === 0,
     )
     .map((item) => item.id);
-  return { head: focus.head, ids: new Set(ids) };
+  const failed = required
+    .filter((item) => item.kind === "command" && !focus.passed.includes(item.id))
+    .map((item) => item.id);
+  return { head: focus.head, ids: new Set(ids), failed: new Set(failed) };
 }
 
 function select(policy: TreePolicy, paths: readonly string[]): Listed[] {
@@ -1029,9 +1173,12 @@ function killCommand(pid: number | undefined): void {
   }
 }
 
-type CheckPath = { runtimeBinPaths?: readonly string[]; basePath?: string };
+type CheckPath = { runtimeBinPaths?: readonly string[]; basePath?: string; bail?: boolean };
 
-function commandEnv({ runtimeBinPaths = [], basePath }: CheckPath = {}): Record<string, string> {
+function commandEnv({ runtimeBinPaths = [], basePath, bail }: CheckPath = {}): Record<
+  string,
+  string
+> {
   const env: Record<string, string> = {
     ...scrubCommandEnv(),
     GIT_CONFIG_COUNT: "0",
@@ -1041,6 +1188,7 @@ function commandEnv({ runtimeBinPaths = [], basePath }: CheckPath = {}): Record<
   if (basePath !== undefined) env.PATH = basePath;
   if (runtimeBinPaths.length)
     env.PATH = [...runtimeBinPaths, ...(env.PATH ? [env.PATH] : [])].join(delimiter);
+  if (bail) env.PAWS_TEST_BAIL = "1";
   return env;
 }
 

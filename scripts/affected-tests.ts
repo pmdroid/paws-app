@@ -1,7 +1,7 @@
 /**
  * Closeout's `test` check: run the tests a change between `<base>` and `<head>` affects.
  *
- *   bun scripts/affected-tests.ts [--list] [<base> [<head>]]
+ *   bun scripts/affected-tests.ts [--list] [--bail] [<base> [<head>]]
  *
  * Without a base it uses `git merge-base origin/main HEAD`; on a runner, Closeout's worktree
  * points `origin/main` at the run's base. Test files are read from the working tree, which
@@ -20,6 +20,10 @@ import { dirname, join, normalize, relative } from "node:path";
 export const ALWAYS = ["test/boundaries.test.ts", "test/empty-catches.test.ts"] as const;
 
 export const TEST_COMMAND = ["bun", "test", "--parallel=4", "--timeout=20000", "--no-orphans"];
+
+export function testCommand(bail: boolean): string[] {
+  return bail ? [...TEST_COMMAND, "--bail=1"] : TEST_COMMAND;
+}
 
 const TEST_FILE = /(\.|_)(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/;
 const SKIPPED = /(^|\/)(node_modules|dist|\.git)\//;
@@ -278,7 +282,8 @@ function git(root: string, args: string[]): string | null {
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const list = args.includes("--list");
-  const [base, head = "HEAD"] = args.filter((arg) => arg !== "--list");
+  const bail = args.includes("--bail") || process.env.PAWS_TEST_BAIL === "1";
+  const [base, head = "HEAD"] = args.filter((arg) => arg !== "--list" && arg !== "--bail");
   const root = process.cwd();
   const from = base ?? git(root, ["merge-base", "origin/main", "HEAD"]);
   const tests = testFiles(root);
@@ -289,9 +294,10 @@ if (import.meta.main) {
   if (from !== null) console.log(`affected-tests: base ${from}, head ${head}`);
   console.log(describeSelection(selection, tests.length));
   if (!list && (selection.full || selection.files.length > 0)) {
+    const command = testCommand(bail);
     const argv = selection.full
-      ? TEST_COMMAND
-      : [...TEST_COMMAND, ...selection.files.map((file) => `./${file.path}`)];
+      ? command
+      : [...command, ...selection.files.map((file) => `./${file.path}`)];
     const run = spawnSync(argv[0]!, argv.slice(1), { cwd: root, stdio: "inherit" });
     process.exit(run.status ?? 1);
   }
