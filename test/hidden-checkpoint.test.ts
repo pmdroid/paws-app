@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { git } from "../src/acp";
+import { runGitHubGit } from "../src/github";
 import type { FakeScript } from "../src/acp/testing/script";
 import type { RunnerJob } from "../src/runner-execution";
 import { checkpointRef, createRunnerRepositories } from "../src/runner-repositories";
@@ -53,35 +54,12 @@ async function fixture() {
     home: join(root, "home"),
     credential: async () => "synthetic",
     networkGit: async (input) => {
-      if (input.operation === "clone")
-        await git(["clone", "-q", "--bare", remote, input.dest!], { env });
-      else if (input.operation === "fetch")
-        await git(
-          [
-            "--git-dir",
-            input.dest!,
-            "fetch",
-            "-q",
-            remote,
-            input.refspec ?? "+refs/heads/*:refs/heads/*",
-          ],
-          { env },
-        );
-      else {
-        const target = input.refspec!.split(":")[1]!;
-        await git(
-          [
-            "--git-dir",
-            input.cwd,
-            "push",
-            "-q",
-            ...(input.lease ? [`--force-with-lease=${target}:${input.lease}`] : []),
-            remote,
-            input.refspec!,
-          ],
-          { env },
-        );
+      if (input.operation !== "clone") {
+        await runGitHubGit({ ...input, remoteUrl: remote, env });
+        return;
       }
+      const filter = input.filter ? [`--filter=${input.filter}`] : [];
+      await git(["clone", "-q", "--bare", ...filter, `file://${remote}`, input.dest!], { env });
     },
   });
   let executions = 0;
@@ -116,7 +94,7 @@ async function fixture() {
     steps: FakeScript["steps"],
     extra: Partial<Parameters<typeof executeRunnerCommand>[0]> = {},
   ) {
-    const { bundle } = await repositories.prepare(run);
+    const { bundle, blobs } = await repositories.prepare(run);
     chmodSync(bundle, 0o600);
     const output = join(root, "output", run.id);
     mkdirSync(output, { recursive: true });
@@ -132,6 +110,7 @@ async function fixture() {
     const running = executeRunnerCommand({
       job: { executionId: `01J0000000000000000000EXE${run.id.slice(3)}`, command: run },
       repositoryBundle: bundle,
+      ...(blobs ? { repositoryBlobs: blobs } : {}),
       outputDirectory: output,
       workRoot: join(root, "work"),
       home: join(root, "home"),

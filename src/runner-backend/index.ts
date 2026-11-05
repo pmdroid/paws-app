@@ -1111,7 +1111,7 @@ export function createRemoteAgentRunner(options: {
             const hidden =
               scoped.item.branchName &&
               (await hiddenCheckpoint(
-                input.worktreePath,
+                mirror,
                 scoped.item.branchName,
                 scoped.repository.remoteUrl,
                 networkGit,
@@ -1395,7 +1395,7 @@ export function createRemoteAgentRunner(options: {
                 const savedMain = savedOn?.sha === saved ? savedOn.main : undefined;
                 const startsOn = (bases: string[]) =>
                   checkpointStart(
-                    (args) => git(["-C", input.worktreePath, ...args]),
+                    (args) => git(["--git-dir", mirror!, ...args]),
                     saved,
                     bases,
                   ).then(
@@ -2656,7 +2656,7 @@ export { AccountPolicyUnavailable, UsageLimitExhaustedError, UsageLimitPause } f
 export { createFindingGroupHelper } from "./finding-groups";
 
 async function hiddenCheckpoint(
-  worktree: string,
+  mirror: string,
   branch: string,
   remoteUrl: string,
   networkGit: (args: string[]) => Promise<string>,
@@ -2666,7 +2666,7 @@ async function hiddenCheckpoint(
     try {
       await networkGit([
         "-C",
-        worktree,
+        mirror,
         "fetch",
         "--no-tags",
         "--no-write-fetch-head",
@@ -2686,11 +2686,18 @@ async function hiddenCheckpoint(
       );
       return null;
     }
-    return await git(["-C", worktree, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).then(
+    return await git([
+      "--git-dir",
+      mirror,
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `${ref}^{commit}`,
+    ]).then(
       (sha) => sha.trim() || null,
       () => null,
     );
   } finally {
-    await git(["-C", worktree, "update-ref", "-d", ref]).catch(() => undefined);
+    await git(["--git-dir", mirror, "update-ref", "-d", ref]).catch(() => undefined);
   }
 }

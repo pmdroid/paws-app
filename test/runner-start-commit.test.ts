@@ -259,7 +259,7 @@ test("a hidden-ref checkpoint goes to a current runner to restore, leaving the P
   const result = await startScenario({
     local: [],
     push: "fails",
-    hiddenCheckpoint: { runnerVersion: "0.1.63" },
+    hiddenCheckpoint: { runnerVersion: "0.1.67" },
   });
   expect(result.error, result.detail).toBeUndefined();
   expect(result.restoreCheckpoint).toEqual({ sha: result.hiddenWip!, branch: "paws/item" });
@@ -273,7 +273,7 @@ test("a checkpoint rebased onto an earlier main restores against that main after
   const result = await startScenario({
     local: [],
     push: "fails",
-    hiddenCheckpoint: { runnerVersion: "0.1.63", rebasedOnEarlierMain: true },
+    hiddenCheckpoint: { runnerVersion: "0.1.67", rebasedOnEarlierMain: true },
   });
   expect(result.error, result.detail).toBeUndefined();
   expect(result.restoreCheckpoint).toEqual({ sha: result.hiddenWip!, branch: "paws/item" });
@@ -285,7 +285,7 @@ test("a checkpoint rebased onto an earlier main restores against that main after
 });
 
 test("a runner older than the hidden checkpoint release gets a run command without restoreCheckpoint", async () => {
-  const result = await startScenario({ local: [], push: "works", runnerVersion: "0.1.62" });
+  const result = await startScenario({ local: [], push: "works", runnerVersion: "0.1.66" });
   expect(result.error, result.detail).toBeUndefined();
   expect(result.offersRestore).toBe(false);
   expect(result.baseSha).toBe(result.prHead);
@@ -295,7 +295,7 @@ test("a hidden checkpoint lookup that fails retries instead of starting without 
   const result = await startScenario({
     local: [],
     push: "works",
-    hiddenCheckpoint: { runnerVersion: "0.1.63", lookup: "fails" },
+    hiddenCheckpoint: { runnerVersion: "0.1.67", lookup: "fails" },
   });
   expect((result.error as Error | undefined)?.name, result.detail).toBe("CheckpointLookupFailed");
   expect(isTransient(result.error)).toBe(true);
@@ -308,7 +308,7 @@ test("a runner too old to restore a hidden-ref checkpoint is refused before Paws
   const result = await startScenario({
     local: [],
     push: "works",
-    hiddenCheckpoint: { runnerVersion: "0.1.62" },
+    hiddenCheckpoint: { runnerVersion: "0.1.66" },
   });
   expect(String(result.error)).toContain("fixture: excluded after failed attempt");
   expect(result.baseSha).toBeUndefined();
@@ -410,8 +410,8 @@ async function startScenario(input: {
       await commit(other, "Moved main");
       movedMain = await git(["-C", other, "rev-parse", "HEAD"]);
       await git(["-C", other, "push", origin, "HEAD:refs/heads/main"]);
-      await git(["-C", worktree, "fetch", origin, "main"]);
-      await git(["-C", worktree, "update-ref", "refs/paws/upstream-main", movedMain]);
+      await git(["--git-dir", mirror, "fetch", origin, "+refs/heads/main:refs/heads/main"]);
+      await git(["--git-dir", mirror, "update-ref", "refs/paws/upstream-main", movedMain]);
     }
   }
 
