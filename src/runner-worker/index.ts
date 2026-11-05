@@ -261,19 +261,28 @@ export function remoteCloseoutPolicy(
   answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
   signal: AbortSignal,
   now: () => number = Date.now,
-): () => Promise<PolicyFilesLoad> {
+): RemoteCloseoutPolicy {
   let cached: { at: number; value: PolicyFilesLoad } | undefined;
   let inflight: Promise<PolicyFilesLoad> | undefined;
-  return async () => {
+  let generation = 0;
+  const load = async () => {
     if (cached && now() - cached.at <= REMOTE_POLICY_REUSE_MS) return cached.value;
     if (inflight) return inflight;
+    const started = generation;
     inflight = fetchRemotePolicy().finally(() => {
       inflight = undefined;
     });
     const value = await inflight;
-    if (value.ok) cached = { at: now(), value };
+    if (value.ok && started === generation) cached = { at: now(), value };
     return value;
   };
+  return Object.assign(load, {
+    invalidate() {
+      generation++;
+      cached = undefined;
+      inflight = undefined;
+    },
+  });
 
   async function fetchRemotePolicy(): Promise<PolicyFilesLoad> {
     try {
@@ -322,6 +331,8 @@ export function remoteCloseoutPolicy(
 }
 
 const REMOTE_POLICY_REUSE_MS = 5 * 60_000;
+
+export type RemoteCloseoutPolicy = (() => Promise<PolicyFilesLoad>) & { invalidate(): void };
 
 export function remoteCiLog(
   emit: (event: { type: "ci_log"; requestId: string; job?: string }) => void,
@@ -1033,6 +1044,10 @@ export async function executeRunnerCommand(
     let tokens = 0;
     let eventFailure: Error | undefined;
     let artifactsPublished = 0;
+    const remotePolicy =
+      command.type === "run" && options.answer
+        ? remoteCloseoutPolicy(emit, options.answer, options.signal ?? new AbortController().signal)
+        : undefined;
     const mise = runnerMiseDirectories(options.home);
     const providerCli = options.providerCli ?? ((cli: "claude" | "codex") => providerCliPath(cli));
     // The runner's own bin folder (its Bun, mise, launchers) never reaches the task. Paws starts
@@ -1139,15 +1154,7 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.repository.mainSha
         ? { mainSha: command.repository.mainSha }
         : {}),
-      ...(command.type === "run" && options.answer
-        ? {
-            closeoutPolicy: remoteCloseoutPolicy(
-              emit,
-              options.answer,
-              options.signal ?? new AbortController().signal,
-            ),
-          }
-        : {}),
+      ...(remotePolicy ? { closeoutPolicy: remotePolicy } : {}),
       checkpointIdentity:
         command.type === "run" && command.checkpointBot
           ? appBotCommitIdentity(command.checkpointBot)
@@ -1313,6 +1320,7 @@ export async function executeRunnerCommand(
                 throw new ArtifactRejectedError(publication.error);
               if (typeof publication.url !== "string")
                 throw new Error("Runner artifact publication response is invalid");
+              remotePolicy?.invalidate();
               const slots = `${RUNNER_ARTIFACT_COUNT_LIMIT - artifactsPublished} of ${RUNNER_ARTIFACT_COUNT_LIMIT} artifact slots are left in this run.`;
               return {
                 url: publication.url,
