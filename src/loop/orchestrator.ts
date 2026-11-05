@@ -80,6 +80,7 @@ import {
   resolveAgentProfiles,
   resolveBriefTemplate,
   resolveMergeSettings,
+  suggestedFindingsMode,
   type AccountPolicy,
   type AgentProfile,
   type AgentProfiles,
@@ -223,6 +224,7 @@ import {
   isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
   getWorkItem,
+  suggestedFindings,
   closeoutHeadsStarted,
   getLinkAsk,
   getPullRequestDraft,
@@ -458,6 +460,18 @@ import {
   type LinearCommentPolicy,
 } from "./linear-comments";
 import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
+import { suggestedFindingsSection } from "./pull-comments";
+import {
+  acceptedSuggestions,
+  findingId,
+  handSuggestions,
+  recordAgentFindingDecisions,
+  startSuggestionTurn,
+  suggestionTurnRunning,
+  undecidedSuggestions,
+  waitingSuggestions,
+  withDecisions,
+} from "./suggested-findings";
 import { ciForRecheck, conflictsAt, type CiRecheck } from "./ci-recheck";
 import { followUpCi, unavailableCi, type FollowUpCi } from "./follow-up-ci";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
@@ -3146,7 +3160,10 @@ export class Orchestrator {
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const checkout = this.runCheckout(item);
       const comments = this.linearCommentBrief(item);
-      const turnHandoff = [handoff, comments?.text].filter((part) => part).join("\n\n");
+      const suggestions = returned === null ? "" : await this.suggestionBrief(item, repository);
+      const turnHandoff = [handoff, comments?.text, suggestions]
+        .filter((part) => part)
+        .join("\n\n");
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
@@ -3281,6 +3298,13 @@ export class Orchestrator {
       this.saveCandidate(run.id, executed.run.identity);
       const at = this.itemHead(finished);
       const head = (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
+      recordAgentFindingDecisions(
+        this.db,
+        item.id,
+        activity.resultBody(),
+        await this.fixCommit(at.repo, item.id, head),
+        this.now(),
+      );
       const base = (await git(["-C", at.repo, "merge-base", at.ref, "origin/main"])).trim();
       saveCheckpoint(this.db, item.id, {
         ...getWorkItem(this.db, item.id)?.checkpoint,
@@ -3306,6 +3330,15 @@ export class Orchestrator {
           executed.run.closeoutReport,
         );
       else closeActiveRun(this.db, run.id, this.now());
+      const suggestionJob = suggestionTurnRunning(this.db, item.id);
+      if (
+        suggestionJob !== null &&
+        head === getWorkItem(this.db, item.id)?.acceptedHead &&
+        mergeAcceptedWork(this.db, item.id, { now: this.now(), exceptJobId: suggestionJob })
+      ) {
+        await this.flush();
+        return;
+      }
       await this.verify(finished, at.repo, base, head, this.candidateFor(run.id));
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
@@ -4922,16 +4955,18 @@ export class Orchestrator {
         item,
         run.publicationCandidate?.sha ?? null,
         this.options.pawsRoot,
-      ).catch((error: unknown) => {
-        journalCaught(
-          error,
-          "orchestrator.publishForMerge.openFindings",
-          item.id,
-          undefined,
-          this.options.journal,
-        );
-        return [];
-      }),
+      )
+        .then((findings) => withDecisions(findings, suggestedFindings(this.db, item.id)))
+        .catch((error: unknown) => {
+          journalCaught(
+            error,
+            "orchestrator.publishForMerge.openFindings",
+            item.id,
+            undefined,
+            this.options.journal,
+          );
+          return [];
+        }),
       risk,
       link: pawsIssueUrl(publicUrl, item),
     };
@@ -5036,6 +5071,16 @@ export class Orchestrator {
     if (newPublication || published.head !== candidateHead) sessionProgress?.phase("merging");
     else sessionProgress?.reach("merging");
     await this.flush(live.controller.signal);
+    if (
+      this.suggestedFindingsMode(repositoryName) === "own_turn" &&
+      startSuggestionTurn(this.db, {
+        itemId: item.id,
+        head: published.head,
+        suggestions: undecidedSuggestions(open.findings).length,
+        now: this.now(),
+      }) === "started"
+    )
+      return { kind: "returned" };
     run.signal = live.controller.signal;
     return {
       github,
@@ -5332,6 +5377,54 @@ export class Orchestrator {
       maxMs: wait.maxWaitSeconds * 1000,
       reviewMaxMs: wait.reviewWaitMaxSeconds * 1000,
     };
+  }
+
+  private suggestedFindingsMode(repository: string) {
+    try {
+      return suggestedFindingsMode(this.readMergePolicy(), repository);
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.suggestedFindingsMode",
+        null,
+        undefined,
+        this.options.journal,
+      );
+      return "next_turn";
+    }
+  }
+
+  private async fixCommit(repo: string, itemId: string, head: string): Promise<string | null> {
+    const accepted = getWorkItem(this.db, itemId)?.acceptedHead ?? null;
+    if (accepted === null || accepted === head) return null;
+    const added = await git(["-C", repo, "rev-list", "--count", `${accepted}..${head}`]).catch(
+      () => "0",
+    );
+    return Number(added.trim()) > 0 ? head : null;
+  }
+
+  private async suggestionBrief(
+    item: WorkItemRecord,
+    repository: RepositoryBinding,
+  ): Promise<string> {
+    if (this.suggestedFindingsMode(`${repository.owner}/${repository.repo}`) === "off") return "";
+    const findings = undecidedSuggestions(
+      await acceptedSuggestions(this.db, item, this.options.pawsRoot).catch((error: unknown) => {
+        journalCaught(
+          error,
+          "orchestrator.suggestionBrief",
+          item.id,
+          undefined,
+          this.options.journal,
+        );
+        return [];
+      }),
+    );
+    handSuggestions(this.db, item.id, findings, this.now());
+    if (findings.length === 0) return "";
+    return suggestedFindingsSection(
+      findings.map((finding) => ({ ...finding, id: findingId(finding) })),
+    );
   }
 
   private readMergePolicy(): MergeSettings {
@@ -8419,7 +8512,10 @@ export class Orchestrator {
   private trustedRunInputs(
     item: WorkItemRecord,
     input: RunAgentOptions,
-  ): Pick<RunAgentOptions, "closeoutPolicy" | "runtimes" | "ciLog" | "ciRerun"> {
+  ): Pick<
+    RunAgentOptions,
+    "closeoutPolicy" | "runtimes" | "ciLog" | "ciRerun" | "suggestedFindings"
+  > {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
     // A runner-backed code item has no worktree; origin/main is read in the bare mirror.
@@ -8432,8 +8528,10 @@ export class Orchestrator {
     const { home, policyRoot } = this.closeoutHome(item);
     const pull = getItemPullRequest(this.db, item.id);
     const github = pull ? this.githubForRepository(repository) : null;
+    const suggested = input.readOnly ? [] : waitingSuggestions(this.db, item.id);
     return {
       ...runtimes,
+      ...(suggested.length ? { suggestedFindings: suggested } : {}),
       ...(pull && github && !input.readOnly
         ? {
             ciLog: (job?: string) =>

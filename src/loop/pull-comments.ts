@@ -45,6 +45,36 @@ const DIGEST_CHARS = 12_000;
 
 export const COMMENT_FIX_INSTRUCTION = `A comment can be a question, a note or a status line rather than a request; change nothing for those and answer them in the reply list. ${REVIEW_FIX_INSTRUCTION}`;
 
+export const SUGGESTED_FINDINGS_INSTRUCTION =
+  "These review findings didn't block. For each one, decide whether to fix it in this pull request. Fix it if it's a real bug in code you changed and the fix is small and safe. Otherwise leave it and say why in one sentence.";
+
+export const SUGGESTION_TURN_HANDOFF =
+  "Closeout accepted this head. Its review reported findings below the blocking level; this turn is for them.";
+
+export function suggestedFindingsSection(
+  findings: readonly {
+    id: string;
+    severity: string;
+    location: string;
+    explanation: string;
+    reviewId: string;
+  }[],
+): string {
+  if (findings.length === 0) return "";
+  return [
+    "Suggested review findings:",
+    ...findings.map(
+      (finding) =>
+        `${finding.id}. ${finding.severity} ${finding.location} (${finding.reviewId}): ${clip(finding.explanation.replace(/\s+/g, " ").trim(), 600)}`,
+    ),
+    "",
+    SUGGESTED_FINDINGS_INSTRUCTION,
+    "Paws records your decision, not GitHub. End your final message with a `Finding decisions` section that has one line for every finding above, in this form:",
+    `${findings[0]!.id} fixed: what you changed`,
+    `${findings[0]!.id} declined: why you left it, in one sentence`,
+  ].join("\n");
+}
+
 /** Which comments never reach the agent. */
 export type PullCommentFilter = {
   /** The Paws GitHub App id for `owner/repo`; comments made through it are its own. */

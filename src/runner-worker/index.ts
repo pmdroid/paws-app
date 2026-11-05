@@ -1166,6 +1166,9 @@ export async function executeRunnerCommand(
       readOnly: command.type === "task" ? command.purpose !== "artifact" : command.type !== "run",
       checkpoint: command.type === "run" && command.checkpoint !== false,
       ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
+      ...(command.type === "run" && command.suggestedFindings?.length
+        ? { suggestedFindings: command.suggestedFindings }
+        : {}),
       ...(command.type === "run" && command.ciLog && options.answer
         ? {
             ciLog: remoteCiLog(

@@ -112,6 +112,7 @@ export interface RunAgentOptions {
   };
   readOnly?: boolean;
   closeoutRulesFirst?: boolean;
+  suggestedFindings?: readonly SuggestedFindingLine[];
   hostAccess?: boolean;
   prepareOnly?: boolean;
   role: AgentRole;
@@ -225,3 +226,11 @@ export interface ExecuteItemResult {
   branch: string;
   run: RunAgentResult;
 }
+
+export type SuggestedFindingLine = {
+  id: string;
+  severity: string;
+  location: string;
+  explanation: string;
+  reviewId: string;
+};

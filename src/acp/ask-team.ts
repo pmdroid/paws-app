@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { McpServerStdio } from "@agentclientprotocol/sdk";
 import type { AgentRole } from "./adapters";
-import type { AcpEventOrigin } from "./types";
+import type { AcpEventOrigin, SuggestedFindingLine } from "./types";
 import {
   artifactMimeType,
   ArtifactRejectedError,
@@ -180,6 +180,7 @@ interface HostToolBridgeOptions {
   commandGuard?: GuardContext;
   allowCloseoutRun?: boolean;
   closeoutRulesFirst?: boolean;
+  suggestedFindings?: readonly SuggestedFindingLine[];
   signal: AbortSignal;
   onAsk?: (question: string) => void | Promise<void>;
   onAnswer?: (question: string, answer: string) => void | Promise<void>;
@@ -188,6 +189,33 @@ interface HostToolBridgeOptions {
 }
 
 const CI_LOG_CALLS_PER_TURN = 20;
+
+function withSuggested(
+  report: string,
+  suggested: readonly SuggestedFindingLine[] | undefined,
+): string {
+  if (!suggested?.length) return report;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(report);
+  } catch (error) {
+    journalCaught(error, "ask-team.withSuggested.parse", null);
+    return report;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return report;
+  return JSON.stringify({
+    ...parsed,
+    suggested: suggested.map((finding) => ({
+      id: finding.id,
+      severity: finding.severity,
+      location: finding.location,
+      explanation: finding.explanation,
+      review: finding.reviewId,
+    })),
+    suggested_note:
+      "Suggested findings did not block and are not checks. Decide on each one in your final message's Finding decisions section.",
+  });
+}
 
 export async function startAskTeamBridge(options: HostToolBridgeOptions): Promise<AskTeamBridge> {
   options.signal.throwIfAborted();
@@ -360,6 +388,8 @@ async function handleConnection(
                 closeoutId(parsed.arguments ?? {}),
                 closeoutModel(parsed.arguments),
               );
+        if (parsed.tool === "get_closeout")
+          answer = withSuggested(answer, options.suggestedFindings);
       } finally {
         options.onHookEnd?.();
       }

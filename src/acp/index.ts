@@ -141,6 +141,7 @@ export {
   type RunAgentOptions,
   type RunAgentResult,
   type RunOutcome,
+  type SuggestedFindingLine,
 } from "./types";
 export {
   adoptLegacyCandidate,

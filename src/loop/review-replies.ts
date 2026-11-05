@@ -147,6 +147,33 @@ export function parseReviewReplies(
   return reports;
 }
 
+const DECISION_LINE =
+  /^[*_-]*\s*\**(F[0-9a-f]{6})\**[.:)]?\s*\**(fixed|declined|not[\s_-]?changed|won't fix|wont fix)\**\s*[:.–—-]\s*(.+)$/i;
+const DECISION_HEADING = /^(#{1,6}\s*)?[*_]*finding decisions[*_]*:?[*_]*$/i;
+
+export function parseFindingDecisions(
+  text: string,
+  ids: ReadonlySet<string>,
+): Map<string, { decision: "fixed" | "declined"; reason: string }> {
+  const decisions = new Map<string, { decision: "fixed" | "declined"; reason: string }>();
+  const lines = text.split("\n").map((line) => line.trim());
+  const heading = lines.findLastIndex((line) => DECISION_HEADING.test(line));
+  if (heading === -1) return decisions;
+  for (const line of lines.slice(heading + 1)) {
+    if (line === "") continue;
+    const match = DECISION_LINE.exec(line);
+    if (!match) break;
+    const id = `F${match[1]!.slice(1).toLowerCase()}`;
+    const reason = match[3]!.trim();
+    if (!ids.has(id) || reason === "") continue;
+    decisions.set(id, {
+      decision: match[2]!.toLowerCase() === "fixed" ? "fixed" : "declined",
+      reason,
+    });
+  }
+  return decisions;
+}
+
 /**
  * Store the fix turn's replies for the item's handed-off comments. Does nothing when no comments
  * wait for a report. The number stored.
