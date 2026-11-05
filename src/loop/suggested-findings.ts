@@ -22,6 +22,8 @@ import { restart } from "./operations";
 import { SUGGESTION_TURN_HANDOFF } from "./pull-comments";
 import { parseFindingDecisions } from "./review-replies";
 
+const SEVERITIES: readonly OpenFinding["severity"][] = ["P0", "P1", "P2", "P3"];
+
 export const SUGGESTION_TURN_MIN_AWAKE_MS = 45 * 60_000;
 
 export function findingId(finding: Pick<OpenFinding, "reviewId" | "location" | "explanation">) {
@@ -68,14 +70,21 @@ export function withDecisions(
   });
   const pendingFixes = decided
     .filter((record) => record.decision === "fixed" && !shown.has(record))
-    .map((record): OpenFinding => ({
-      reviewId: record.reviewId,
-      severity: record.severity,
-      location: record.location,
-      explanation: record.explanation,
-      why: "below failOn",
-      decision: decisionOf(record),
-    }));
+    .flatMap((record): OpenFinding[] => {
+      const severity = SEVERITIES.find((level) => level === record.severity);
+      return severity
+        ? [
+            {
+              reviewId: record.reviewId,
+              severity,
+              location: record.location,
+              explanation: record.explanation,
+              why: "below failOn",
+              decision: decisionOf(record),
+            },
+          ]
+        : [];
+    });
   return [...listed, ...pendingFixes];
 }
 
