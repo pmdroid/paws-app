@@ -15,7 +15,6 @@ import {
   readdirSync,
   renameSync,
   rmSync,
-  rmdirSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
@@ -463,7 +462,7 @@ function removeRunnerTree(path: string): void {
   if (!info.isDirectory()) return unlinkSync(path);
   chmodSync(path, 0o700);
   for (const name of readdirSync(path)) removeRunnerTree(join(path, name));
-  rmdirSync(path);
+  rmSync(path, { recursive: true });
 }
 
 function shareRunnerPaths(
