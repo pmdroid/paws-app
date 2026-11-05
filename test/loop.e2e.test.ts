@@ -5158,7 +5158,9 @@ test("a fixed claim the next review still reports stays unresolved, pending veri
       if (run === 1) return [writeOk(worktree, "grant\nmetadata\n"), { type: "end" }];
       return [
         writeOk(worktree, "fixed grant\nmetadata\n"),
-        finalMessage(`${idOf(seen.prompt, "ok.txt:1")} fixed: keep the grant's resource`),
+        finalMessage(
+          `## Finding decisions\n${idOf(seen.prompt, "ok.txt:1")} fixed: keep the grant's resource`,
+        ),
         { type: "end" },
       ];
     },

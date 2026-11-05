@@ -148,16 +148,21 @@ export function parseReviewReplies(
 }
 
 const DECISION_LINE =
-  /^[\s>*_-]*\**(F[0-9a-f]{6})\**[.:)]?\s*\**(fixed|declined|not[\s_-]?changed|won't fix|wont fix)\**\s*[:.–—-]\s*(.+)$/i;
+  /^[*_-]*\s*\**(F[0-9a-f]{6})\**[.:)]?\s*\**(fixed|declined|not[\s_-]?changed|won't fix|wont fix)\**\s*[:.–—-]\s*(.+)$/i;
+const DECISION_HEADING = /^(#{1,6}\s*)?[*_]*finding decisions[*_]*:?[*_]*$/i;
 
 export function parseFindingDecisions(
   text: string,
   ids: ReadonlySet<string>,
 ): Map<string, { decision: "fixed" | "declined"; reason: string }> {
   const decisions = new Map<string, { decision: "fixed" | "declined"; reason: string }>();
-  for (const line of text.split("\n")) {
-    const match = DECISION_LINE.exec(line.trim());
-    if (!match) continue;
+  const lines = text.split("\n").map((line) => line.trim());
+  const heading = lines.findLastIndex((line) => DECISION_HEADING.test(line));
+  if (heading === -1) return decisions;
+  for (const line of lines.slice(heading + 1)) {
+    if (line === "") continue;
+    const match = DECISION_LINE.exec(line);
+    if (!match) break;
     const id = `F${match[1]!.slice(1).toLowerCase()}`;
     const reason = match[3]!.trim();
     if (!ids.has(id) || reason === "") continue;

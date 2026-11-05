@@ -111,10 +111,15 @@ test("decisions are read only from the Finding decisions lines of handed ids", (
     parseFindingDecisions(
       [
         "I looked at both.",
+        "F4d5e6f fixed: before the section, so ignored",
+        "",
+        "**Finding decisions**",
         "- **F1a2b3c** fixed: kept the grant's resource",
         "F4d5e6f declined: needs a schema change",
         "F999999 declined: not handed",
+        "",
         "F1a2b3c is fine, I think",
+        "F4d5e6f fixed: after the section, so ignored",
       ].join("\n"),
       handed,
     ),
@@ -191,12 +196,19 @@ test("a fixed claim stays listed, pending verification, when the next review omi
       9,
     );
     const open = withDecisions([], suggestedFindings(db, "acme-4"));
-    expect(open).toEqual([
+    expect(open).toHaveLength(2);
+    expect(open).toContainEqual(
+      expect.objectContaining({
+        location: "src/grant.ts:40",
+        decision: { decision: "declined", reason: "needs a schema change", head: "c".repeat(40) },
+      }),
+    );
+    expect(open).toContainEqual(
       expect.objectContaining({
         location: "src/meta.ts:9",
         decision: { decision: "fixed", reason: "kept the location", head: "c".repeat(40) },
       }),
-    ]);
+    );
     const section = openFindingsSection({ findings: open, risk: null, link: null });
     expect(section).toContain(
       "(independent-review, below failOn; fixed in ccccccc, pending verification)",
@@ -225,6 +237,62 @@ test("a fixed claim without a commit Paws confirmed, or in prose only, records n
     ).toBe(0);
     expect(suggestedFindings(db, "acme-5").every((record) => record.decision === null)).toBe(true);
     expect(withDecisions([GRANT, META], suggestedFindings(db, "acme-5"))).toEqual([GRANT, META]);
+  } finally {
+    db.close();
+  }
+});
+
+test("quoted or unsectioned decision lines record nothing", () => {
+  const handed = new Set(["F1a2b3c"]);
+  expect(parseFindingDecisions("> F1a2b3c declined: needs a schema change", handed).size).toBe(0);
+  expect(parseFindingDecisions("F1a2b3c declined: needs a schema change", handed).size).toBe(0);
+  expect(
+    parseFindingDecisions("Finding decisions\n> F1a2b3c declined: needs a schema change", handed)
+      .size,
+  ).toBe(0);
+});
+
+test("a decision belongs to its finding id, not to another finding at the same location", () => {
+  const { db, grant } = handedItem("acme-6");
+  try {
+    recordAgentFindingDecisions(
+      db,
+      "acme-6",
+      `Finding decisions\n${grant} declined: needs a schema change`,
+      null,
+      9,
+    );
+    const other: OpenFinding = { ...GRANT, explanation: "Drops the refresh token." };
+    const open = withDecisions([other], suggestedFindings(db, "acme-6"));
+    expect(open[0]).toEqual(other);
+    expect(open[1]).toMatchObject({
+      location: GRANT.location,
+      explanation: GRANT.explanation,
+      decision: { decision: "declined", reason: "needs a schema change" },
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test("a declined finding keeps its line and reason when the next review omits it", () => {
+  const { db, grant } = handedItem("acme-7");
+  try {
+    recordAgentFindingDecisions(
+      db,
+      "acme-7",
+      `Finding decisions\n${grant} declined: needs a schema change`,
+      null,
+      9,
+    );
+    const section = openFindingsSection({
+      findings: withDecisions([], suggestedFindings(db, "acme-7")),
+      risk: null,
+      link: null,
+    });
+    expect(section).toContain(
+      "`src/grant.ts:40` Swaps the stored resource. (independent-review, below failOn; declined: needs a schema change)",
+    );
   } finally {
     db.close();
   }

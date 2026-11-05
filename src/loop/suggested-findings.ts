@@ -59,17 +59,13 @@ export function withDecisions(
   const listed = findings.map((finding) => {
     if (finding.why !== "below failOn") return finding;
     const id = findingId(finding);
-    const record =
-      decided.find((entry) => entry.findingId === id) ??
-      decided.findLast(
-        (entry) => entry.reviewId === finding.reviewId && entry.location === finding.location,
-      );
+    const record = decided.find((entry) => entry.findingId === id);
     if (!record) return finding;
     shown.add(record);
     return { ...finding, decision: decisionOf(record) };
   });
-  const pendingFixes = decided
-    .filter((record) => record.decision === "fixed" && !shown.has(record))
+  const omitted = decided
+    .filter((record) => !shown.has(record))
     .flatMap((record): OpenFinding[] => {
       const severity = SEVERITIES.find((level) => level === record.severity);
       return severity
@@ -85,7 +81,7 @@ export function withDecisions(
           ]
         : [];
     });
-  return [...listed, ...pendingFixes];
+  return [...listed, ...omitted];
 }
 
 function decisionOf(record: SuggestedFindingRecord): NonNullable<OpenFinding["decision"]> {
