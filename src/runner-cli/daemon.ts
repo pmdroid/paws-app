@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { RunnerDaemon } from "../runner-daemon";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
 import { openRunnerRetroRuntime } from "../runner-retro-runtime";
-import { createRunnerCachePruner, createRunnerSkillInstaller } from "../runner-execution";
+import { createRunnerSkillInstaller } from "../runner-execution";
 import { openRunnerAgents, openRunnerRuntime } from "../runner-runtime";
 
 export async function runPairedDaemon(
@@ -54,18 +54,12 @@ export async function runPairedDaemon(
     agents: openRunnerAgents({ onError: report }),
     concurrency: () => daemon.capacity(),
   });
-  const caches = createRunnerCachePruner({ onError: report });
   let health: Awaited<ReturnType<typeof openRunnerHealthRuntime>> | undefined;
   let retro: Awaited<ReturnType<typeof openRunnerRetroRuntime>> | undefined;
   let stopping: Promise<void> | undefined;
   const stop = () =>
     (stopping ??= (async () => {
-      const results = await Promise.allSettled([
-        runtime.stop(),
-        health?.stop(),
-        retro?.stop(),
-        caches.stop(),
-      ]);
+      const results = await Promise.allSettled([runtime.stop(), health?.stop(), retro?.stop()]);
       if (results.some((result) => result.status === "rejected"))
         throw new Error("Runner shutdown failed");
     })());
@@ -84,7 +78,6 @@ export async function runPairedDaemon(
         if (!signal.aborted) await runtime.tick();
         if (!signal.aborted) await health.tick();
         if (!signal.aborted) await retro.tick();
-        if (!signal.aborted) caches.tick();
       } catch (error) {
         journalCaught(error, "daemon.runPairedDaemon.tick", null);
         if (!signal.aborted)

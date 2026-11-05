@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -12,8 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { minimalAgentEnv } from "../src/acp";
 import {
-  createRunnerCachePruner,
   holdRunnerCache,
+  maintainRunnerCaches,
   pruneRunnerCaches,
   runnerCacheDirectory,
   runnerCacheEnv,
@@ -78,36 +79,46 @@ test("the cache environment points the common tool caches into PAWS_CACHE_DIR an
   expect(minimalAgentEnv({ ...env, GITHUB_TOKEN: "secret" })).toEqual(env);
 });
 
-function fakeFs(entries: Record<string, number>, holds: Record<string, string> = {}) {
+function fakeFs(entries: Record<string, number>, files: Record<string, string> = {}) {
   const removed: string[] = [];
+  const renamed: string[] = [];
   const fs: RunnerCacheFs = {
     list(path) {
       const prefix = `${path}/`;
       return [
         ...new Set(
-          [...Object.keys(entries), ...Object.keys(holds)]
+          [...Object.keys(entries), ...Object.keys(files)]
             .filter((key) => key.startsWith(prefix))
             .map((key) => key.slice(prefix.length).split("/")[0]!),
         ),
       ];
     },
-    read: (path) => holds[path],
+    read: (path) => files[path],
     modifiedMs: (path) => entries[path],
+    create(path, text) {
+      if (path in files) return false;
+      files[path] = text;
+      return true;
+    },
+    rename(from) {
+      renamed.push(from);
+      delete entries[from];
+    },
     remove(path) {
       removed.push(path);
-      for (const key of Object.keys(entries)) if (key === path) delete entries[key];
+      delete entries[path];
+      delete files[path];
     },
   };
-  return { fs, removed };
+  return { fs, removed, renamed, files };
 }
 
 test("pruning deletes a tree unused for 7 days and keeps one in use", () => {
   const now = Date.UTC(2026, 10, 12);
-  const stale = "a".repeat(32);
-  const held = "b".repeat(32);
-  const recent = "c".repeat(32);
-  const crashed = "d".repeat(32);
-  const { fs, removed } = fakeFs(
+  const [stale, held, recent, crashed, locked, abandoned] = ["a", "b", "c", "d", "e", "f"].map(
+    (letter) => letter.repeat(32),
+  );
+  const { fs, removed, renamed, files } = fakeFs(
     {
       [`/cache/${stale}`]: now - 9 * DAY,
       [`/cache/.holds/${stale}`]: now - 7 * DAY,
@@ -117,25 +128,63 @@ test("pruning deletes a tree unused for 7 days and keeps one in use", () => {
       [`/cache/.holds/${recent}`]: now - 6 * DAY,
       [`/cache/${crashed}`]: now - 8 * DAY,
       [`/cache/.holds/${crashed}`]: now - 8 * DAY,
+      [`/cache/${locked}`]: now - 8 * DAY,
+      [`/cache/${abandoned}`]: now - 8 * DAY,
     },
     {
       [`/cache/.holds/${held}/01J00000000000000000000001`]: "live",
       [`/cache/.holds/${crashed}/01J00000000000000000000002`]: "dead",
+      [`/cache/.holds/${locked}.lock`]: "live",
+      [`/cache/.holds/${abandoned}.lock`]: "dead",
     },
   );
   const deleted = pruneRunnerCaches({
     root: "/cache",
     now,
     fs,
-    alive: (holder) => holder === "live",
+    holder: "pruner",
+    alive: (holder) => holder === "live" || holder === "pruner",
   });
-  expect(deleted.sort()).toEqual([`/cache/${stale}`, `/cache/${crashed}`]);
+  expect(deleted.sort()).toEqual(
+    [stale, crashed, abandoned].map((name) => `/cache/${name}`).sort(),
+  );
+  expect(renamed.sort()).toEqual(deleted.sort());
   expect(removed).toContain(`/cache/.holds/${stale}`);
-  expect(removed).not.toContain(`/cache/${held}`);
-  expect(removed).not.toContain(`/cache/${recent}`);
+  expect(renamed).not.toContain(`/cache/${held}`);
+  expect(renamed).not.toContain(`/cache/${recent}`);
+  expect(renamed).not.toContain(`/cache/${locked}`);
+  expect(files[`/cache/.holds/${locked}.lock`]).toBe("live");
+  expect(Object.keys(files).filter((path) => files[path] === "pruner")).toEqual([]);
 });
 
-test("pruning removes a real tree with read-only Go module folders and keeps a held one", () => {
+test("a hold waits for the tree's lock and breaks one a dead process left", () => {
+  const root = cacheRoot();
+  const repository = { owner: "pmdroid", repo: "paws-app" };
+  const name = runnerCacheDirectory(root, repository).slice(root.length + 1);
+  mkdirSync(join(root, ".holds"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(root, ".holds", `${name}.lock`), "pruner");
+  const alive = (holder: string | undefined) => holder === "pruner";
+  expect(() =>
+    holdRunnerCache({
+      root,
+      repository,
+      executionId: "01J00000000000000000000001",
+      alive,
+      lockWaitMs: 100,
+    }),
+  ).toThrow("Runner cache is locked");
+  writeFileSync(join(root, ".holds", `${name}.lock`), "gone");
+  const hold = holdRunnerCache({
+    root,
+    repository,
+    executionId: "01J00000000000000000000001",
+    alive,
+  });
+  expect(existsSync(join(root, ".holds", `${name}.lock`))).toBe(false);
+  hold.release();
+});
+
+test("daily maintenance in the worker deletes old trees, read-only Go folders too, and keeps a held one", async () => {
   const root = cacheRoot();
   const old = holdRunnerCache({
     root,
@@ -152,55 +201,31 @@ test("pruning removes a real tree with read-only Go module folders and keeps a h
     repository: { owner: "pmdroid", repo: "held" },
     executionId: "01J00000000000000000000002",
   });
-  const deleted = pruneRunnerCaches({ root, now: Date.now() + 8 * DAY });
-  expect(deleted).toEqual([old.directory]);
+  let docker = 0;
+  const errors: unknown[] = [];
+  const maintain = (now: number) =>
+    maintainRunnerCaches({
+      root,
+      now,
+      pruneDocker: async () => {
+        docker += 1;
+        throw new Error("docker builder prune exited with 1");
+      },
+      onError: (error) => errors.push(error),
+    });
+  const start = Date.now() + 8 * DAY;
+  expect(await maintain(start)).toBe(true);
   expect(existsSync(old.directory)).toBe(false);
   expect(existsSync(held.directory)).toBe(true);
-  held.release();
-  expect(pruneRunnerCaches({ root, now: Date.now() + 8 * DAY })).toEqual([held.directory]);
-});
-
-test("the daily prune runs both limits once a day", async () => {
-  const now = Date.UTC(2026, 10, 12);
-  const trees: number[] = [];
-  let docker = 0;
-  const errors: Error[] = [];
-  const pruner = createRunnerCachePruner({
-    now: () => now,
-    pruneTrees: (at) => trees.push(at),
-    pruneDocker: async () => {
-      docker += 1;
-      throw new Error("docker builder prune exited with 1");
-    },
-    onError: (error) => errors.push(error),
-  });
-  pruner.tick();
-  await Bun.sleep(0);
-  await pruner.stop();
-  expect(trees).toEqual([now]);
+  expect(readdirSync(join(root, ".trash"))).toEqual([]);
   expect(docker).toBe(1);
-  expect(errors.map((error) => error.message)).toEqual(["docker builder prune exited with 1"]);
-});
-
-test("the daily prune waits a day between runs", async () => {
-  let now = Date.UTC(2026, 10, 12);
-  const trees: number[] = [];
-  const pruner = createRunnerCachePruner({
-    now: () => now,
-    pruneTrees: (at) => trees.push(at),
-    pruneDocker: async () => {},
-    onError: (error) => {
-      throw error;
-    },
-  });
-  pruner.tick();
-  await Bun.sleep(0);
-  now += DAY - 1;
-  pruner.tick();
-  await Bun.sleep(0);
-  now += 1;
-  pruner.tick();
-  await Bun.sleep(0);
-  expect(trees).toEqual([Date.UTC(2026, 10, 12), Date.UTC(2026, 10, 13)]);
-  await pruner.stop();
+  expect(errors.map((error) => (error as Error).message)).toEqual([
+    "docker builder prune exited with 1",
+  ]);
+  held.release();
+  expect(await maintain(start + DAY - 1)).toBe(false);
+  expect(existsSync(held.directory)).toBe(true);
+  expect(await maintain(start + 8 * DAY)).toBe(true);
+  expect(existsSync(held.directory)).toBe(false);
+  expect(docker).toBe(2);
 });

@@ -45,8 +45,8 @@ export {
 } from "./accounts";
 export { sharedDirectoryAllowed } from "./shared";
 export {
-  createRunnerCachePruner,
   holdRunnerCache,
+  maintainRunnerCaches,
   pruneRunnerCaches,
   RUNNER_CACHE_ROOT,
   runnerCacheDirectory,

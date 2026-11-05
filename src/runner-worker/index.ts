@@ -85,6 +85,7 @@ import {
   runnerTaskRepositoryPath,
   RunnerJobSchema,
   holdRunnerCache,
+  maintainRunnerCaches,
   RUNNER_CACHE_ROOT,
   sharedDirectoryAllowed,
   type RunnerAccountOwners,
@@ -2188,9 +2189,19 @@ export async function runRunnerWorker(options: {
       })
     : undefined;
   if (cache) Object.assign(process.env, cache.env);
+  const maintenanceStop = new AbortController();
+  const maintenance = cache
+    ? maintainRunnerCaches({
+        signal: maintenanceStop.signal,
+        onError: (error) =>
+          journalCaught(error, "runner-worker.runRunnerWorker.maintainRunnerCaches", null),
+      })
+    : undefined;
   try {
     return await workerCommand(options, job, cache?.env);
   } finally {
+    maintenanceStop.abort();
+    await maintenance;
     cache?.release();
   }
 }
