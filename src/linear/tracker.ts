@@ -269,7 +269,10 @@ function createUnlabelledTracker(client: LinearClient, starts?: IssueStartReads)
       for (let start = 0; start < linearIssueIds.length; start += 50) {
         const ids = linearIssueIds.slice(start, start + 50);
         const data = await client.query(BLOCKERS_QUERY, { ids });
-        for (const node of readGraphConnection(dig(data, ["issues"])).nodes) {
+        const nodes = dig(data, ["issues"])?.["nodes"];
+        if (!Array.isArray(nodes) || !nodes.every(isRecord))
+          throw new Error("Linear returned an invalid graph connection");
+        for (const node of nodes) {
           const id = readString(node, "id");
           if (id === null || !ids.includes(id)) throw new Error("Linear returned another issue");
           const relations = readGraphConnection(node["inverseRelations"]);

@@ -41,7 +41,6 @@ describe("linear tracker", () => {
                   },
                 },
               ],
-              pageInfo: { hasNextPage: false, endCursor: null },
             },
           };
         return {
