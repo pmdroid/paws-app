@@ -1466,6 +1466,8 @@ class RunnerUpgrade(unittest.TestCase):
             mock.patch.object(installer, "finish_agents", self.record("finish_agents", {})),
             mock.patch.object(installer, "configure_docker_access", self.record("docker", {"status": "absent"})),
             mock.patch.object(installer.shutil, "rmtree", self.contained(installer.shutil.rmtree)),
+            # The package step's own temporary folder stays under the test root, where rmtree may remove it.
+            mock.patch.object(tempfile, "tempdir", str(self.root)),
         ]
 
     def contained(self, rmtree):
