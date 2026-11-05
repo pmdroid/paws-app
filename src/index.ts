@@ -89,6 +89,7 @@ import {
   workItemForSession,
   getItemRunCommitPolicy,
   workspaceLinearMember,
+  getWorkspace,
   workspaceForOrganization,
   applyLinearUserChange,
   listWorkspaceMembers,
@@ -247,7 +248,7 @@ import {
   RETRO_SCHEDULE_TICK_MS,
   type RetroDispatcher,
 } from "./retros";
-import { createImprovementsHttp } from "./improvements";
+import { createImprovementsHttp, startImprovementDeliveries } from "./improvements";
 import { itemReviews } from "./dashboard";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
@@ -1231,6 +1232,24 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     .catch((caughtError) => {
       journalCaught(caughtError, "index.commentAccess", null);
     });
+  const improvementDelivery = linear?.improvementDelivery;
+  if (improvementDelivery && workspace) {
+    const access = workspace.access;
+    startImprovementDeliveries({
+      db,
+      owner: `paws:${process.pid}:${crypto.randomUUID()}`,
+      signal: abort.signal,
+      linearFor: async (workspaceId) =>
+        getWorkspace(db, workspaceId)?.organizationId === (await access).organizationId
+          ? improvementDelivery
+          : null,
+      sourceUrl: (improvementId) =>
+        dashboardUrl(
+          runtime.publicUrl ?? "http://127.0.0.1:8787",
+          `/improvements/${encodeURIComponent(improvementId)}`,
+        ),
+    });
+  }
   const loops = startLoops({
     db,
     signal: abort.signal,

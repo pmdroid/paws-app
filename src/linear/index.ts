@@ -202,3 +202,12 @@ export type { LinearMemberIdentity, LinearMembershipReads } from "./membership";
 export { isPawsStop } from "./event-dispatch";
 export { createFindingIssueAdapter, createFakeFindingIssueAdapter } from "./finding-group-issues";
 export type { FindingIssueAdapter, FindingIssueTitle } from "./finding-group-issues";
+export {
+  createFakeImprovementLinear,
+  createLinearImprovementDelivery,
+  type ImprovementLinear,
+  type ImprovementLinearComment,
+  type ImprovementLinearFailure,
+  type ImprovementLinearIssue,
+  type ImprovementLinearResult,
+} from "./improvement-issues";

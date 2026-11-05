@@ -19,6 +19,13 @@ export type ImprovementImplementationState =
 export type ImprovementVerificationState = "unknown" | "due" | "verified" | "contradicted";
 export type ImprovementDeliveryOperation = "create_issue" | "link_issue" | "evidence_comment";
 export type ImprovementDeliveryState = "pending" | "claimed" | "succeeded" | "failed" | "unknown";
+export type ImprovementDeliveryBlock =
+  | "destination"
+  | "unauthorized"
+  | "unavailable"
+  | "conflict"
+  | "attempts"
+  | "workspace";
 
 export type ImprovementProposalInput = {
   title: string;
@@ -86,6 +93,9 @@ export type ImprovementDelivery = {
   remoteIdentifier: string | null;
   remoteUrl: string | null;
   error: string | null;
+  nextAttemptAt: number | null;
+  blocked: ImprovementDeliveryBlock | null;
+  retryBase: number;
   createdAt: number;
   updatedAt: number;
 };
@@ -106,7 +116,7 @@ export type ImprovementOutcomeRecord = ImprovementOutcome & {
 
 export type ImprovementIntent =
   | { kind: "create"; teamId?: string }
-  | { kind: "link"; issueId: string; addEvidenceComment?: boolean };
+  | { kind: "link"; issueId: string; teamId?: string; addEvidenceComment?: boolean };
 
 export type ImprovementReview =
   | { kind: "accept"; proposalVersion: number; intent: ImprovementIntent }
@@ -400,9 +410,17 @@ export function decideImprovement(
     if (current === null) return { ok: false, reason: "not_found", improvement: null };
     if (current.version !== input.expectedVersion)
       return { ok: false, reason: "stale", improvement: current };
-    if (current.reviewState === "accepted")
-      return { ok: false, reason: "accepted", improvement: current };
     const review = input.review;
+    if (current.reviewState === "accepted") {
+      if (review.kind !== "reopen" || !improvementWithdrawable(db, input.improvementId))
+        return { ok: false, reason: "accepted", improvement: current };
+      db.run(
+        `DELETE FROM improvement_delivery_attempt WHERE delivery_id IN
+           (SELECT id FROM improvement_delivery WHERE improvement_id = ?)`,
+        [input.improvementId],
+      );
+      db.run("DELETE FROM improvement_delivery WHERE improvement_id = ?", [input.improvementId]);
+    }
     if (review.kind === "reopen" && current.reviewState === "needs_review")
       return { ok: false, reason: "unchanged", improvement: current };
     if (
@@ -465,7 +483,7 @@ export function decideImprovement(
     );
     if (review.kind === "accept") {
       const operation = review.intent.kind === "create" ? "create_issue" : "link_issue";
-      const team = review.intent.kind === "create" ? (review.intent.teamId ?? null) : null;
+      const team = review.intent.teamId ?? null;
       const content = input.content === undefined ? null : JSON.stringify(input.content);
       insertDelivery(db, input.improvementId, operation, intentIssue, team, content, input.now);
       if (comment === 1)
@@ -474,7 +492,7 @@ export function decideImprovement(
           input.improvementId,
           "evidence_comment",
           intentIssue,
-          null,
+          team,
           content,
           input.now,
         );
@@ -494,6 +512,53 @@ export function decideImprovement(
         );
     }
     return { ok: true, improvement: getImprovement(db, input.improvementId)! };
+  });
+}
+
+export function improvementWithdrawable(db: Database, improvementId: string): boolean {
+  const rows = db
+    .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE improvement_id = ?")
+    .all(improvementId);
+  const link = rows.find((row) => row.operation === "link_issue");
+  return (
+    link !== undefined &&
+    link.state === "failed" &&
+    link.blocked !== null &&
+    rows.every(
+      (row) =>
+        row.operation !== "create_issue" &&
+        row.remote_id === null &&
+        (row.state === "pending" || row.state === "failed"),
+    )
+  );
+}
+
+export function cancelImprovementEvidenceComment(
+  db: Database,
+  deliveryId: string,
+): Improvement | null {
+  return immediate(db, () => {
+    const current = db
+      .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE id = ?")
+      .get(deliveryId);
+    if (
+      current === null ||
+      current.operation !== "evidence_comment" ||
+      current.state !== "failed" ||
+      current.blocked === null ||
+      current.remote_id !== null
+    )
+      return null;
+    const link = db
+      .query<{ state: ImprovementDeliveryState }, [string]>(
+        `SELECT state FROM improvement_delivery WHERE improvement_id = ? AND operation = 'link_issue'`,
+      )
+      .get(current.improvement_id);
+    if (link?.state !== "succeeded") return null;
+    db.run("DELETE FROM improvement_delivery_attempt WHERE delivery_id = ?", [current.id]);
+    db.run("DELETE FROM improvement_delivery WHERE id = ?", [current.id]);
+    db.run("UPDATE improvement SET evidence_comment = 0 WHERE id = ?", [current.improvement_id]);
+    return getImprovement(db, current.improvement_id);
   });
 }
 
@@ -549,11 +614,68 @@ export function requeueImprovementDelivery(
 ): ImprovementDelivery | null {
   const row = db
     .query<DeliveryRow, [number, string]>(
-      `UPDATE improvement_delivery SET state = 'pending', updated_at = ?
-       WHERE id = ? AND state = 'failed' RETURNING *`,
+      `UPDATE improvement_delivery SET state = CASE state WHEN 'unknown' THEN 'unknown' ELSE 'pending' END,
+         blocked = NULL, next_attempt_at = NULL, retry_base = attempts, updated_at = ?
+       WHERE id = ? AND (state = 'failed' OR (state = 'unknown' AND blocked IS NOT NULL))
+       RETURNING *`,
     )
     .get(input.now, input.deliveryId);
   return row === null ? null : deliveryFromRow(row);
+}
+
+export function repairImprovementDestination(
+  db: Database,
+  input: { deliveryId: string; teamId: string; now: number },
+): ImprovementDelivery | null {
+  return immediate(db, () => {
+    const current = db
+      .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE id = ?")
+      .get(input.deliveryId);
+    if (
+      current === null ||
+      current.operation !== "create_issue" ||
+      current.state !== "failed" ||
+      current.blocked !== "destination" ||
+      current.remote_id !== null
+    )
+      return null;
+    const row = db
+      .query<DeliveryRow, [string, number, string]>(
+        `UPDATE improvement_delivery SET target_team_id = ?, state = 'pending', blocked = NULL,
+           next_attempt_at = NULL, retry_base = attempts, error = NULL, updated_at = ?
+         WHERE id = ? RETURNING *`,
+      )
+      .get(input.teamId, input.now, input.deliveryId);
+    return row === null ? null : deliveryFromRow(row);
+  });
+}
+
+export function reserveImprovementDeliveryRemote(
+  db: Database,
+  input: { deliveryId: string; owner: string; attempt: number; remoteId: string },
+): boolean {
+  return (
+    db.run(
+      `UPDATE improvement_delivery SET remote_id = ?
+       WHERE id = ? AND state = 'claimed' AND claim_owner = ? AND attempts = ?
+         AND (remote_id IS NULL OR remote_id = ?)`,
+      [input.remoteId, input.deliveryId, input.owner, input.attempt, input.remoteId],
+    ).changes === 1
+  );
+}
+
+export function improvementDeliveryWorkspaces(db: Database, now: number): string[] {
+  return db
+    .query<{ workspace_id: string }, [number, number]>(
+      `SELECT DISTINCT improvement.workspace_id FROM improvement_delivery AS delivery
+       JOIN improvement ON improvement.id = delivery.improvement_id
+       WHERE (delivery.state IN ('pending','failed','unknown') AND delivery.blocked IS NULL
+           AND (delivery.next_attempt_at IS NULL OR delivery.next_attempt_at <= ?))
+         OR (delivery.state = 'claimed' AND delivery.claim_expires_at <= ?)
+       ORDER BY improvement.workspace_id`,
+    )
+    .all(now, now)
+    .map((row) => row.workspace_id);
 }
 
 export function acceptedImprovementsForFindings(
@@ -626,6 +748,9 @@ type DeliveryRow = {
   remote_identifier: string | null;
   remote_url: string | null;
   error: string | null;
+  next_attempt_at: number | null;
+  blocked: ImprovementDeliveryBlock | null;
+  retry_base: number;
   created_at: number;
   updated_at: number;
 };
@@ -646,6 +771,9 @@ function deliveryFromRow(row: DeliveryRow): ImprovementDelivery {
     remoteIdentifier: row.remote_identifier,
     remoteUrl: row.remote_url,
     error: row.error,
+    nextAttemptAt: row.next_attempt_at,
+    blocked: row.blocked,
+    retryBase: row.retry_base,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -669,14 +797,16 @@ export function claimableImprovementDeliveries(
   now: number,
 ): ImprovementDelivery[] {
   return db
-    .query<DeliveryRow, [string, number]>(
+    .query<DeliveryRow, [string, number, number]>(
       `SELECT delivery.* FROM improvement_delivery AS delivery
        JOIN improvement ON improvement.id = delivery.improvement_id
-       WHERE improvement.workspace_id = ? AND (delivery.state IN ('pending','failed','unknown')
+       WHERE improvement.workspace_id = ? AND ((delivery.state IN ('pending','failed','unknown')
+           AND delivery.blocked IS NULL
+           AND (delivery.next_attempt_at IS NULL OR delivery.next_attempt_at <= ?))
          OR (delivery.state = 'claimed' AND delivery.claim_expires_at <= ?))
        ORDER BY delivery.created_at, delivery.id`,
     )
-    .all(workspaceId, now)
+    .all(workspaceId, now, now)
     .map(deliveryFromRow);
 }
 
@@ -686,14 +816,22 @@ export function claimImprovementDelivery(
 ): ImprovementDelivery | null {
   return immediate(db, () => {
     const row = db
-      .query<DeliveryRow, [string, number, number, string, number]>(
+      .query<DeliveryRow, [string, number, number, string, number, number]>(
         `UPDATE improvement_delivery SET state = 'claimed', claim_owner = ?, claim_expires_at = ?,
            attempts = attempts + 1, updated_at = ?
-         WHERE id = ? AND (state IN ('pending','failed','unknown')
+         WHERE id = ? AND ((state IN ('pending','failed','unknown') AND blocked IS NULL
+             AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
            OR (state = 'claimed' AND claim_expires_at <= ?))
          RETURNING *`,
       )
-      .get(input.owner, input.now + input.leaseMs, input.now, input.deliveryId, input.now);
+      .get(
+        input.owner,
+        input.now + input.leaseMs,
+        input.now,
+        input.deliveryId,
+        input.now,
+        input.now,
+      );
     if (row === null) return null;
     db.run(
       `UPDATE improvement_delivery_attempt SET outcome = 'expired', settled_at = ?
@@ -718,6 +856,8 @@ export function settleImprovementDelivery(
     outcome: "succeeded" | "failed" | "unknown";
     remote?: { id: string; identifier?: string; url?: string };
     error?: string;
+    retryAt?: number;
+    blocked?: ImprovementDeliveryBlock;
     now: number;
   },
 ): boolean {
@@ -734,6 +874,8 @@ export function settleImprovementDelivery(
           string | null,
           string | null,
           string | null,
+          number | null,
+          string | null,
           number,
           string,
           string,
@@ -742,7 +884,8 @@ export function settleImprovementDelivery(
       >(
         `UPDATE improvement_delivery SET state = ?, remote_id = coalesce(?, remote_id),
            remote_identifier = coalesce(?, remote_identifier), remote_url = coalesce(?, remote_url),
-           error = ?, claim_owner = NULL, claim_expires_at = NULL, updated_at = ?
+           error = ?, next_attempt_at = ?, blocked = ?, claim_owner = NULL,
+           claim_expires_at = NULL, updated_at = ?
          WHERE id = ? AND state = 'claimed' AND claim_owner = ? AND attempts = ?
          RETURNING *`,
       )
@@ -752,6 +895,8 @@ export function settleImprovementDelivery(
         input.remote?.identifier ?? null,
         input.remote?.url ?? null,
         error,
+        input.outcome === "succeeded" ? null : (input.retryAt ?? null),
+        input.outcome === "succeeded" ? null : (input.blocked ?? null),
         input.now,
         input.deliveryId,
         input.owner,

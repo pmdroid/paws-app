@@ -21,7 +21,9 @@ import {
   putWorkspaceUser,
   recordRetroEvidence,
   recordReviewFindings,
+  reserveImprovementDeliveryRemote,
   saveRetroSettingsRevision,
+  requeueImprovementDelivery,
   settleImprovementDelivery,
   startRetroAttempt,
   syncWorkspaceMember,
@@ -481,6 +483,150 @@ describe("improvement decisions", () => {
     const unknown = await w.api("bea", path, {});
     expect(unknown.status).toBe(409);
     expect(unknown.body.reason).toBe("reconciling");
+  });
+
+  test("an unfiled create chooses another mapped team; an uncertain one only reconciles", async () => {
+    const w = world();
+    const id = w.retro.a;
+    await w.api("ada", `/api/improvements/${id}/decision`, accept());
+    const [delivery] = listImprovementDeliveries(w.db, id);
+    const base = `/api/improvements/${id}/deliveries/${delivery!.id}`;
+    w.db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-b')", [A]);
+    w.db.run("DELETE FROM workspace_repository WHERE repository = ? AND team_id = 'team-a'", [A]);
+    claimImprovementDelivery(w.db, {
+      deliveryId: delivery!.id,
+      owner: "outbox",
+      now: END + 5_000,
+      leaseMs: 60_000,
+    });
+    settleImprovementDelivery(w.db, {
+      deliveryId: delivery!.id,
+      attempt: 1,
+      owner: "outbox",
+      outcome: "failed",
+      blocked: "destination",
+      error: "The chosen Linear team is no longer mapped to this repository.",
+      now: END + 6_000,
+    });
+    const blocked = await w.api("admin", `/api/improvements/${id}`);
+    expect(blocked.body.item.deliveries[0]).toMatchObject({
+      status: "retryable",
+      blocked: "destination",
+      recovery: "choose_destination",
+    });
+    expect(blocked.body.destinations).toEqual(["team-b"]);
+    expect((await w.api("admin", `${base}/destination`, { teamId: "team-a" })).status).toBe(403);
+    const moved = await w.api("admin", `${base}/destination`, { teamId: "team-b" });
+    expect(moved.status).toBe(202);
+    expect(moved.body.item.deliveries[0]).toMatchObject({
+      status: "pending",
+      targetTeamId: "team-b",
+      blocked: null,
+    });
+
+    claimImprovementDelivery(w.db, {
+      deliveryId: delivery!.id,
+      owner: "outbox",
+      now: END + 7_000,
+      leaseMs: 60_000,
+    });
+    reserveImprovementDeliveryRemote(w.db, {
+      deliveryId: delivery!.id,
+      owner: "outbox",
+      attempt: 2,
+      remoteId: randomUUID(),
+    });
+    settleImprovementDelivery(w.db, {
+      deliveryId: delivery!.id,
+      attempt: 2,
+      owner: "outbox",
+      outcome: "unknown",
+      blocked: "destination",
+      now: END + 8_000,
+    });
+    const frozen = await w.api("admin", `${base}/destination`, { teamId: "team-b" });
+    expect(frozen.status).toBe(409);
+    expect(frozen.body.reason).toBe("destination_frozen");
+    const retried = await w.api("admin", `${base}/retry`, {});
+    expect(retried.status).toBe(202);
+    expect(listImprovementDeliveries(w.db, id)[0]).toMatchObject({
+      state: "unknown",
+      blocked: null,
+      targetTeamId: "team-b",
+    });
+  });
+
+  test("a blocked link reopens for a new choice; a stranded evidence comment can be cancelled", async () => {
+    const w = world();
+    const id = w.retro.a;
+    const decision = `/api/improvements/${id}/decision`;
+    const settle = (
+      operation: string,
+      attempt: number,
+      outcome: "succeeded" | "failed",
+      blocked?: "conflict",
+    ) => {
+      const target = listImprovementDeliveries(w.db, id).find((d) => d.operation === operation)!;
+      claimImprovementDelivery(w.db, {
+        deliveryId: target.id,
+        owner: "outbox",
+        now: END + attempt * 1_000,
+        leaseMs: 60_000,
+      });
+      settleImprovementDelivery(w.db, {
+        deliveryId: target.id,
+        attempt,
+        owner: "outbox",
+        outcome,
+        ...(outcome === "succeeded" ? { remote: { id: "issue-open" } } : {}),
+        ...(blocked
+          ? { blocked, error: "The linked issue was closed after it was accepted." }
+          : {}),
+        now: END + attempt * 1_000 + 500,
+      });
+      return target;
+    };
+    const recoveries = (body: {
+      item: { deliveries: { operation: string; recovery: string | null }[] };
+    }) => Object.fromEntries(body.item.deliveries.map((d) => [d.operation, d.recovery]));
+    const linkWithComment = { kind: "link", issue: "PAS-60", addEvidenceComment: true };
+    expect((await w.api("ada", decision, accept(1, linkWithComment))).body.status).toBe("decided");
+    settle("link_issue", 1, "failed", "conflict");
+    const blocked = await w.api("ada", `/api/improvements/${id}`);
+    expect(recoveries(blocked.body)).toEqual({ link_issue: "reopen", evidence_comment: null });
+    const reopened = await w.api("bea", decision, {
+      expectedVersion: 2,
+      decision: { kind: "reopen" },
+    });
+    expect([reopened.status, reopened.body.status]).toEqual([200, "decided"]);
+    expect(reopened.body.item).toMatchObject({ reviewState: "needs_review", deliveries: [] });
+
+    expect((await w.api("ada", decision, accept(3, linkWithComment))).body.status).toBe("decided");
+    settle("link_issue", 1, "succeeded");
+    const transient = settle("evidence_comment", 1, "failed");
+    const cancel = `/api/improvements/${id}/deliveries/${transient.id}/cancel`;
+    const early = await w.api("ada", cancel, {});
+    expect([early.status, early.body.reason]).toEqual([409, "cancel_comment"]);
+    requeueImprovementDelivery(w.db, { deliveryId: transient.id, now: END + 3_000 });
+    settle("evidence_comment", 2, "failed", "conflict");
+    const stranded = await w.api("ada", `/api/improvements/${id}`);
+    expect(recoveries(stranded.body)).toEqual({
+      link_issue: null,
+      evidence_comment: "cancel_comment",
+    });
+    const refused = await w.api("bea", decision, {
+      expectedVersion: 4,
+      decision: { kind: "reopen" },
+    });
+    expect([refused.status, refused.body.reason]).toEqual([409, "accepted"]);
+    const cancelled = await w.api("ada", cancel, {});
+    expect([cancelled.status, cancelled.body.status]).toEqual([200, "cancelled"]);
+    expect(cancelled.body.item).toMatchObject({
+      reviewState: "accepted",
+      decision: { evidenceComment: false },
+    });
+    expect(listImprovementDeliveries(w.db, id).map((d) => d.operation)).toEqual(["link_issue"]);
+    expect((await w.api("ada", cancel, {})).status).toBe(404);
   });
 
   test("link revalidates the issue; a link alone posts no comment", async () => {
