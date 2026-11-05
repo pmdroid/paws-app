@@ -197,11 +197,8 @@ test("an App task with a selected repository starts without an attribution wait"
   }
 });
 
-for (const [later, outcome] of [
-  [60_000, "running"],
-  [11 * 60_000, "awaiting_input"],
-] as const) {
-  test(`a GitHub check that fails ${later / 60_000} min after it passed leaves the task ${outcome}`, async () => {
+for (const later of [60_000, 11 * 60_000]) {
+  test(`a GitHub 502 ${later / 60_000} min after a pass keeps the task running without a question`, async () => {
     const db = openDatabase(":memory:");
     migrate(db);
     const env = { GITHUB_AUTH: "app" };
@@ -225,14 +222,16 @@ for (const [later, outcome] of [
     const signal = new AbortController().signal;
     try {
       expect(await auth.ensure(getWorkItem(db, "cached")!, "initial", signal)).toBe(true);
+      let failures = 2;
+      host.unavailableRetryMs = [0];
       host.check = async () => {
-        throw new Error("GitHub API request failed with 502");
+        if (failures-- > 0) throw new Error("GitHub API request failed with 502");
+        return true;
       };
       now += later;
-      expect(await auth.ensure(getWorkItem(db, "cached")!, "initial", signal)).toBe(
-        outcome === "running",
-      );
-      expect(getWorkItem(db, "cached")?.state).toBe(outcome);
+      expect(await auth.ensure(getWorkItem(db, "cached")!, "initial", signal)).toBe(true);
+      expect(getWorkItem(db, "cached")?.state).toBe("running");
+      expect(db.query("SELECT * FROM question").all()).toHaveLength(0);
     } finally {
       auth.close();
       db.close();
