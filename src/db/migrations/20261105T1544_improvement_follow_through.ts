@@ -28,11 +28,19 @@ CREATE TABLE improvement_delegation (
   CHECK(state <> 'requested' OR lease_expires_at IS NOT NULL)
 ) STRICT;
 
+CREATE TABLE improvement_work (
+  improvement_id TEXT PRIMARY KEY REFERENCES improvement(id),
+  issue_id TEXT NOT NULL,
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  bound_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE improvement_action (
   id INTEGER PRIMARY KEY,
   improvement_id TEXT NOT NULL REFERENCES improvement(id),
   action TEXT NOT NULL CHECK(action IN
-    ('delegate','verify','contradict','criterion','acknowledge','redelegate','return_to_review')),
+    ('delegate','verify','contradict','criterion','acknowledge','redelegate','return_to_review',
+     'follow_work')),
   version INTEGER NOT NULL,
   prior TEXT NOT NULL CHECK(json_valid(prior)),
   detail TEXT NOT NULL CHECK(json_valid(detail)),

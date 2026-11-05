@@ -176,6 +176,7 @@ describe("follow-through from create to verified", () => {
     const audit = listImprovementActions(t.w.db, t.id).map((a) => [a.action, a.prior]);
     expect(audit).toEqual([
       ["delegate", { delegation: null, implementation: "not_started", work: null }],
+      ["follow_work", { work: null, state: null }],
       ["verify", { verification: "due", verificationAt: expect.any(Number) }],
     ]);
 
@@ -604,6 +605,71 @@ describe("second review fixes", () => {
       attention: "unavailable",
       issue: { sync: { status: "unavailable" } },
     });
+  });
+});
+
+describe("one bound work item", () => {
+  const second = (t: Awaited<ReturnType<typeof linked>>, state: string, repo?: string) => {
+    insertQueuedItem(t.w.db, { id: "work-y", sessionKey: "session-a", now: END + 10 });
+    t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = ? WHERE id = 'work-y'", [
+      ISSUE,
+      state,
+    ]);
+    if (repo)
+      t.w.db.run("INSERT INTO work_item_repository VALUES ('work-y', 'acme', ?, 'x')", [repo]);
+  };
+
+  test("verified merged work stays the evidence when a newer run starts on the issue", async () => {
+    const t = await linked();
+    t.merge();
+    await t.sync();
+    await t.post("verification", verify(t.version(), { revision: MERGE }));
+    second(t, "running");
+    await t.sync();
+    expect(await t.follow()).toMatchObject({
+      attention: "verified",
+      work: { itemId: "work-x", state: "merged" },
+    });
+  });
+
+  test("replacement work is adopted once, audited, and stales an open form", async () => {
+    const t = await linked();
+    t.work("cancelled");
+    await t.sync();
+    const form = t.version();
+    second(t, "merged");
+    await t.sync();
+    await t.sync();
+    expect(await t.follow()).toMatchObject({ work: { itemId: "work-y" } });
+    const follows = listImprovementActions(t.w.db, t.id).filter((a) => a.action === "follow_work");
+    expect(follows.map((a) => [a.prior["work"], a.detail["work"]])).toEqual([
+      [null, "work-x"],
+      ["work-x", "work-y"],
+    ]);
+    const replayed = await t.post("verification", verify(form, { deployment: "v1" }));
+    expect([replayed.status, replayed.body.reason]).toEqual([409, "stale"]);
+  });
+
+  test("work for the same issue in another repository is never followed", async () => {
+    const t = await linked();
+    second(t, "merged", "b");
+    await t.sync();
+    expect(await t.follow()).toMatchObject({ work: null, attention: "ready_to_delegate" });
+  });
+
+  test("an expired redelegation is not settled by the work it replaced", async () => {
+    const t = await linked();
+    t.work("cancelled");
+    await t.sync();
+    claimImprovementDelegation(t.w.db, {
+      improvementId: t.id,
+      issueId: ISSUE,
+      actor: "user-ada",
+      now: t.w.now(),
+      leaseMs: 1,
+    });
+    await t.sync();
+    expect((await t.follow()).delegation).toMatchObject({ state: "failed" });
   });
 });
 

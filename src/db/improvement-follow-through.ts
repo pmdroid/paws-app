@@ -250,7 +250,8 @@ export type ImprovementActionKind =
   | "criterion"
   | "acknowledge"
   | "redelegate"
-  | "return_to_review";
+  | "return_to_review"
+  | "follow_work";
 
 export type ImprovementAction = {
   id: number;
@@ -361,6 +362,7 @@ export function returnImprovementToReview(
     db.run("DELETE FROM improvement_delivery WHERE improvement_id = ?", [input.improvementId]);
     db.run("DELETE FROM improvement_issue_sync WHERE improvement_id = ?", [input.improvementId]);
     db.run("DELETE FROM improvement_delegation WHERE improvement_id = ?", [input.improvementId]);
+    db.run("DELETE FROM improvement_work WHERE improvement_id = ?", [input.improvementId]);
     db.run(
       `UPDATE improvement SET review_state = 'needs_review', reviewed_proposal = NULL,
          reviewed_by = ?, reviewed_at = ?, review_reason = NULL, intent = NULL,
@@ -383,69 +385,132 @@ export type IssueWork = {
   state: string;
   identifier: string;
   repository: string | null;
+  createdAt: number;
   updatedAt: number;
   acceptedHead: string | null;
   pull: { number: number; url: string | null; openedAt: number } | null;
   merge: { number: number; url: string | null; sha: string | null; confirmedAt: number } | null;
 };
 
-export function workForLinearIssue(db: Database, issueId: string): IssueWork | null {
-  const row = db
-    .query<
-      {
-        id: string;
-        state: string;
-        linear_identifier: string;
-        created_at: number;
-        accepted_head: string | null;
-        owner: string | null;
-        repo: string | null;
-        updated_at: number | null;
-        pull_number: number | null;
-        pull_url: string | null;
-        opened_at: number | null;
-        merge_number: number | null;
-        merge_url: string | null;
-        merge_sha: string | null;
-        confirmed_at: number | null;
-      },
-      [string]
-    >(
-      `SELECT w.id, w.state, w.linear_identifier, w.created_at, w.accepted_head, r.owner, r.repo,
-         (SELECT max(at) FROM work_item_event e WHERE e.item_id = w.id) AS updated_at,
-         p.pull_number, p.pull_url, p.opened_at, m.pull_number AS merge_number,
-         m.pull_url AS merge_url, m.merge_sha, m.confirmed_at
-       FROM work_item w
-       LEFT JOIN work_item_repository r ON r.item_id = w.id
-       LEFT JOIN item_pull_request p ON p.item_id = w.id
-       LEFT JOIN remote_merge_fact m ON m.item_id = w.id
-       WHERE w.linear_issue_id = ?
-       ORDER BY w.state NOT IN ('completed','merged','cancelled') DESC, w.created_at DESC,
-         w.rowid DESC LIMIT 1`,
+type WorkRow = {
+  id: string;
+  state: string;
+  linear_identifier: string;
+  created_at: number;
+  accepted_head: string | null;
+  owner: string | null;
+  repo: string | null;
+  updated_at: number | null;
+  pull_number: number | null;
+  pull_url: string | null;
+  opened_at: number | null;
+  merge_number: number | null;
+  merge_url: string | null;
+  merge_sha: string | null;
+  confirmed_at: number | null;
+};
+
+const WORK_SELECT = `SELECT w.id, w.state, w.linear_identifier, w.created_at, w.accepted_head,
+    r.owner, r.repo, (SELECT max(at) FROM work_item_event e WHERE e.item_id = w.id) AS updated_at,
+    p.pull_number, p.pull_url, p.opened_at, m.pull_number AS merge_number,
+    m.pull_url AS merge_url, m.merge_sha, m.confirmed_at
+  FROM work_item w
+  LEFT JOIN work_item_repository r ON r.item_id = w.id
+  LEFT JOIN item_pull_request p ON p.item_id = w.id
+  LEFT JOIN remote_merge_fact m ON m.item_id = w.id`;
+
+const IN_REPOSITORY = "(r.item_id IS NULL OR r.owner || '/' || r.repo = ?)";
+
+const workFromRow = (row: WorkRow): IssueWork => ({
+  itemId: row.id,
+  state: row.state,
+  identifier: row.linear_identifier,
+  repository: row.owner && row.repo ? `${row.owner}/${row.repo}` : null,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at ?? row.created_at,
+  acceptedHead: row.accepted_head,
+  pull:
+    row.pull_number === null
+      ? null
+      : { number: row.pull_number, url: row.pull_url, openedAt: row.opened_at ?? 0 },
+  merge:
+    row.merge_number === null
+      ? null
+      : {
+          number: row.merge_number,
+          url: row.merge_url,
+          sha: row.merge_sha,
+          confirmedAt: row.confirmed_at ?? 0,
+        },
+});
+
+export type ImprovementWorkBinding = { issueId: string; itemId: string; boundAt: number };
+
+export function improvementWorkBinding(
+  db: Database,
+  improvementId: string,
+): ImprovementWorkBinding | null {
+  return db
+    .query<ImprovementWorkBinding, [string]>(
+      `SELECT issue_id AS issueId, item_id AS itemId, bound_at AS boundAt FROM improvement_work
+       WHERE improvement_id = ?`,
     )
-    .get(issueId);
-  if (!row) return null;
-  return {
-    itemId: row.id,
-    state: row.state,
-    identifier: row.linear_identifier,
-    repository: row.owner && row.repo ? `${row.owner}/${row.repo}` : null,
-    updatedAt: row.updated_at ?? row.created_at,
-    acceptedHead: row.accepted_head,
-    pull:
-      row.pull_number === null
-        ? null
-        : { number: row.pull_number, url: row.pull_url, openedAt: row.opened_at ?? 0 },
-    merge:
-      row.merge_number === null
-        ? null
-        : {
-            number: row.merge_number,
-            url: row.merge_url,
-            sha: row.merge_sha,
-            confirmedAt: row.confirmed_at ?? 0,
-          },
-  };
+    .get(improvementId);
+}
+
+export function boundImprovementWork(
+  db: Database,
+  improvement: { id: string; issueId: string; repository: string },
+): IssueWork | null {
+  const row = db
+    .query<WorkRow, [string, string, string]>(
+      `${WORK_SELECT} JOIN improvement_work b ON b.item_id = w.id
+       WHERE b.improvement_id = ? AND b.issue_id = ? AND w.linear_issue_id = b.issue_id
+         AND ${IN_REPOSITORY}`,
+    )
+    .get(improvement.id, improvement.issueId, improvement.repository);
+  return row ? workFromRow(row) : null;
+}
+
+export function newestIssueWork(
+  db: Database,
+  input: {
+    issueId: string;
+    repository: string;
+    createdSince: number;
+    exceptItemId?: string;
+  },
+): IssueWork | null {
+  const row = db
+    .query<WorkRow, [string, string, number, string]>(
+      `${WORK_SELECT} WHERE w.linear_issue_id = ? AND ${IN_REPOSITORY} AND w.created_at >= ?
+         AND w.id <> ? ORDER BY w.created_at DESC, w.rowid DESC LIMIT 1`,
+    )
+    .get(input.issueId, input.repository, input.createdSince, input.exceptItemId ?? "");
+  return row ? workFromRow(row) : null;
+}
+
+export function bindImprovementWork(
+  db: Database,
+  input: {
+    improvementId: string;
+    issueId: string;
+    itemId: string;
+    expectedItemId: string | null;
+    now: number;
+  },
+): boolean {
+  return (
+    db.run(
+      `INSERT INTO improvement_work (improvement_id, issue_id, item_id, bound_at)
+       SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM improvement WHERE id = ?1 AND issue_id = ?2)
+         AND (?5 IS NULL OR EXISTS (SELECT 1 FROM improvement_work WHERE improvement_id = ?1))
+       ON CONFLICT(improvement_id) DO UPDATE SET issue_id = excluded.issue_id,
+         item_id = excluded.item_id, bound_at = excluded.bound_at
+       WHERE improvement_work.item_id = ?5`,
+      [input.improvementId, input.issueId, input.itemId, input.now, input.expectedItemId],
+    ).changes === 1
+  );
 }
 
 export type CloseoutStepResult = {
