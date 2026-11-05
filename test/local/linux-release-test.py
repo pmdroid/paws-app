@@ -1466,6 +1466,9 @@ class RunnerUpgrade(unittest.TestCase):
             mock.patch.object(installer, "finish_agents", self.record("finish_agents", {})),
             mock.patch.object(installer, "configure_docker_access", self.record("docker", {"status": "absent"})),
             mock.patch.object(installer.shutil, "rmtree", self.contained(installer.shutil.rmtree)),
+            # Python 3.14 cleans temporary directories through shutil.rmtree, so configure's own
+            # temporary directory must live under the test root too.
+            mock.patch.object(tempfile, "tempdir", str(self.root)),
         ]
 
     def contained(self, rmtree):
