@@ -1,7 +1,13 @@
 import { journalCaught } from "../journal";
 import { loadGitHubAppCredentials } from "../config";
+import { isTransient } from "../core";
 import { readSecretFile } from "../credentials";
-import { createFetchGitHubClient, mintInstallationToken, signAppJwt } from "../github";
+import {
+  createFetchGitHubClient,
+  GitHubTokenError,
+  mintInstallationToken,
+  signAppJwt,
+} from "../github";
 import type { ActiveGitHubApp } from "./workspace-app";
 import type { GitHubFetch } from "./provider";
 
@@ -69,6 +75,8 @@ export function createGitHubInstallationCheck(options: {
       return true;
     } catch (caughtError1) {
       signal.throwIfAborted();
+      if (!(caughtError1 instanceof GitHubTokenError) || isTransient(caughtError1))
+        throw caughtError1;
       journalCaught(caughtError1, "installation.createGitHubInstallationCheck.resolve", null);
       return false;
     }

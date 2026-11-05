@@ -1,7 +1,7 @@
 import { ask } from "./operations";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, sleep } from "../core";
+import { isTransient, JOB_KIND, sleep } from "../core";
 import { LinearRateLimitError } from "../linear";
 import {
   applyWorkItemEvent,
@@ -79,8 +79,11 @@ type Hold = {
 };
 
 const RECENT_READY_MS = 10 * 60_000;
+const UNREACHABLE_STATUS_MS = 10 * 60_000;
 const TRANSIENT_CHECK_ERROR =
-  /fetch failed|timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket|network|rate.?limit|\b429\b|\b5\d\d\b|temporarily unavailable/i;
+  /fetch failed|timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|getaddrinfo|EHOSTUNREACH|ENETUNREACH|socket|network|rate.?limit|\b429\b|\b5\d\d\b|temporarily unavailable/i;
+
+type Unreachable = { unreachable: string };
 
 /**
  * Holds an item until the workspace GitHub App installation covers its repository.
@@ -92,6 +95,7 @@ const TRANSIENT_CHECK_ERROR =
  */
 export class GitHubInstallationCheck {
   private closed = false;
+  private readonly outages = new Map<string, { since: number; posted: boolean }>();
   private readonly lastReady = new Map<
     string,
     {
@@ -164,8 +168,8 @@ export class GitHubInstallationCheck {
     const result =
       !options.fresh && this.reusable(item, authority, generation)
         ? "ready"
-        : await this.probe(item, signal);
-    if (this.closed || signal.aborted) return false;
+        : await this.reachable(item, signal);
+    if (this.closed || signal.aborted || isUnreachable(result)) return false;
     const current = getWorkItem(this.db, item.id);
     if (
       this.closed ||
@@ -256,6 +260,7 @@ export class GitHubInstallationCheck {
       const item = getWorkItem(this.db, hold.item_id)!;
       const result = await this.probe(item, signal, []);
       if (this.closed || signal.aborted) return;
+      if (isUnreachable(result)) continue;
       if (typeof result === "object") {
         if (this.current(hold)) this.deny(item.id, result.reason);
         continue;
@@ -336,11 +341,50 @@ export class GitHubInstallationCheck {
     });
   }
 
+  private async reachable(
+    item: WorkItemRecord,
+    signal: AbortSignal,
+  ): Promise<"ready" | "installation" | "unavailable" | Denied | Unreachable> {
+    for (;;) {
+      const result = await this.probe(item, signal);
+      if (!isUnreachable(result) || this.closed || signal.aborted) {
+        this.outages.delete(item.id);
+        return result;
+      }
+      const outage = this.outages.get(item.id) ?? { since: this.now(), posted: false };
+      if (!this.outages.has(item.id)) {
+        this.outages.set(item.id, outage);
+        journalCaught(
+          new Error(result.unreachable),
+          "github-integration.reachable.outage",
+          item.id,
+          "retrying quietly until GitHub answers",
+        );
+      }
+      if (!outage.posted && item.sessionKey && this.now() - outage.since > UNREACHABLE_STATUS_MS) {
+        outage.posted = true;
+        enqueueOutboxOnce(this.db, {
+          target: "linear",
+          op: "activity",
+          orderingKey: item.sessionKey,
+          idempotencyKey: `github-integration:unreachable:${item.id}:${outage.since}`,
+          payload: {
+            sessionId: item.sessionKey,
+            kind: "thought",
+            body: `Can't reach GitHub: ${result.unreachable}. Paws keeps retrying before continuing.`,
+          },
+          now: this.now(),
+        });
+      }
+      await sleep(this.integration.unavailableRetryMs?.at(-1) ?? 60_000, signal);
+    }
+  }
+
   private async probe(
     item: WorkItemRecord,
     signal: AbortSignal,
     retryMs: readonly number[] = this.integration.unavailableRetryMs ?? [],
-  ): Promise<"ready" | "installation" | "unavailable" | Denied> {
+  ): Promise<"ready" | "installation" | "unavailable" | Denied | Unreachable> {
     try {
       const result = await this.check(item, signal);
       if (result === "ready")
@@ -378,12 +422,12 @@ export class GitHubInstallationCheck {
       }
       const last = this.lastReady.get(item.id);
       const message = error instanceof Error ? error.message : String(error);
-      return TRANSIENT_CHECK_ERROR.test(message) &&
-        last !== undefined &&
+      if (!TRANSIENT_CHECK_ERROR.test(message) && !isTransient(error)) return "unavailable";
+      return last !== undefined &&
         last.authority === this.integration.identity(item) &&
         this.now() - last.at <= RECENT_READY_MS
         ? "ready"
-        : "unavailable";
+        : { unreachable: message };
     }
   }
 
@@ -499,6 +543,10 @@ export class GitHubInstallationCheck {
         .get(hold.question_id)?.status === "pending"
     );
   }
+}
+
+function isUnreachable(result: unknown): result is Unreachable {
+  return typeof result === "object" && result !== null && "unreachable" in result;
 }
 
 function denial(result: boolean | GitHubDenial): true | Denied {
