@@ -27,6 +27,7 @@ import {
   openRunnerAccountHome,
   releaseRunnerAccountHome,
   runnerAccountHome,
+  prepareRunnerWorkRoot,
   shareRunnerAgentState,
 } from "./accounts";
 import {
@@ -168,6 +169,8 @@ export function createDirectWorkerSupervisor(options: {
   agentEnvRoot?: string;
   /** The home every agent runs from. */
   agentHome?: string;
+  /** Where run and review checkouts live, under the agent home. */
+  workRoot?: string;
   /** Installs current skills into a home before its worker starts, and pins them for the run. */
   skills?: Pick<RunnerSkillInstaller, "prepareHome" | "hold" | "release">;
   launch?: (
@@ -186,6 +189,7 @@ export function createDirectWorkerSupervisor(options: {
 }): RunnerBrokerClient {
   const taskRoot = options.taskRoot ?? "/var/lib/paws-agent-tasks";
   const agentHome = options.agentHome ?? "/var/lib/paws-agent";
+  const workRoot = options.workRoot ?? join(agentHome, "work");
   const launch = options.launch ?? workerLaunch;
   const asAgent = options.agentUser === "paws-agent";
   const systemctl = options.systemctl ?? runnerSystemctl;
@@ -364,6 +368,15 @@ export function createDirectWorkerSupervisor(options: {
           },
         );
         held.set(executionId, home);
+      }
+      if (asAgent && options.spool) {
+        const { command } = readRunnerJob(options.spool, executionId);
+        if (command.type === "run" || command.type === "review" || command.type === "retro")
+          prepareRunnerWorkRoot(
+            workRoot,
+            { runnerUid: options.spool.runnerUid, agentGid: options.spool.agentGid },
+            command.type === "run" ? { name: command.runId, resume } : undefined,
+          );
       }
       if (asAgent && options.spool && !shared.has(home)) {
         shareRunnerAgentState(home, {

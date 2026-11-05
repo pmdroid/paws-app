@@ -20,6 +20,7 @@ import {
   holdRunnerAccountHome,
   markRunnerAccountSignedIn,
   openRunnerAccountHome,
+  prepareRunnerWorkRoot,
   publishRunnerAccountHome,
   releaseRunnerAccountHome,
   runnerAccountBindings,
@@ -295,4 +296,26 @@ test("sharing agent state skips folders the runner cannot list", () => {
     chmodSync(join(root, ".codex/sessions/private"), 0o700);
   }
   expect(statSync(join(root, ".codex/auth.json")).mode & 0o777).toBe(0o660);
+});
+
+test("a work root the runner made 0700 is shared with the agent group before paws-agent runs", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  const work = join(root, "work");
+  const mode = (path: string) => statSync(join(work, path)).mode & 0o777;
+  for (const path of ["", ".paws/runs", "resumed/src", "restarted/src", "other"])
+    mkdirSync(join(work, path), { recursive: true, mode: 0o700 });
+  for (const path of ["", ".paws", ".paws/runs", "resumed", "resumed/src", "other"])
+    chmodSync(join(work, path), 0o700);
+  writeFileSync(join(work, "resumed/src/a.ts"), "", { mode: 0o600 });
+  chmodSync(join(work, "resumed/src/a.ts"), 0o600);
+  prepareRunnerWorkRoot(work, owners, { name: "resumed", resume: true });
+  expect([mode(""), mode(".paws/runs"), mode("resumed/src")]).toEqual([0o770, 0o770, 0o770]);
+  expect(mode("resumed/src/a.ts")).toBe(0o660);
+  expect(mode("other")).toBe(0o700);
+  prepareRunnerWorkRoot(work, owners, { name: "restarted", resume: false });
+  expect(readdirSync(work).sort()).toEqual([".paws", "other", "resumed"]);
+  const fresh = join(root, "fresh");
+  prepareRunnerWorkRoot(fresh, owners);
+  expect(statSync(fresh).isDirectory()).toBe(true);
 });

@@ -15,6 +15,8 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  rmdirSync,
+  unlinkSync,
   writeSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -404,10 +406,76 @@ export function accountHomeVerdict(
 }
 
 export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners): void {
+  shareRunnerPaths(
+    AGENT_STATE.map((folder) => join(home, folder)),
+    owners,
+  );
+}
+
+/**
+ * Gives the agent group the access paws-runner has to the work root it may have created while
+ * agents ran as paws-runner: the root itself, its runner-wide `.paws` state, and the checkout
+ * this run resumes. A leftover checkout of a run that starts over is removed, as the worker
+ * would remove it. Other runs' checkouts are left for their own admission.
+ */
+export function prepareRunnerWorkRoot(
+  workRoot: string,
+  owners: RunnerAccountOwners,
+  checkout?: { name: string; resume: boolean },
+): void {
+  try {
+    mkdirSync(workRoot, { mode: 0o770 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    journalCaught(
+      error,
+      "accounts.prepareRunnerWorkRoot.mkdirSync",
+      null,
+      "path may already exist",
+    );
+  }
+  const root = lstatSync(workRoot);
+  if (root.isSymbolicLink() || !root.isDirectory())
+    throw new RunnerAccountHomeError("Runner work root is not a directory");
+  shareRunnerPaths([workRoot], owners, { depth: 0 });
+  shareRunnerPaths(
+    readdirSync(workRoot)
+      .filter((name) => name.startsWith(".paws") && !name.startsWith(".paws-skills-"))
+      .map((name) => join(workRoot, name)),
+    owners,
+  );
+  if (!checkout) return;
+  const path = join(workRoot, checkout.name);
+  let info;
+  try {
+    info = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (info.isSymbolicLink() || !info.isDirectory() || info.uid !== process.getuid?.()) return;
+  if (checkout.resume) shareRunnerPaths([path], owners, { limit: 1_000_000 });
+  else removeRunnerTree(path);
+}
+
+function removeRunnerTree(path: string): void {
+  const info = lstatSync(path);
+  if (!info.isDirectory()) return unlinkSync(path);
+  chmodSync(path, 0o700);
+  for (const name of readdirSync(path)) removeRunnerTree(join(path, name));
+  rmdirSync(path);
+}
+
+function shareRunnerPaths(
+  roots: readonly string[],
+  owners: RunnerAccountOwners,
+  bounds: { depth?: number; limit?: number } = {},
+): void {
   const self = process.getuid?.();
+  const limit = bounds.limit ?? SHARE_LIMIT;
   let seen = 0;
-  const visit = (path: string) => {
-    if (++seen > SHARE_LIMIT) throw new RunnerAccountHomeError("Agent state has too many files");
+  const visit = (path: string, depth: number) => {
+    if (++seen > limit) throw new RunnerAccountHomeError("Agent state has too many files");
     let info;
     try {
       info = lstatSync(path);
@@ -435,7 +503,7 @@ export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners)
         }
       }
     }
-    if (!info.isDirectory()) return;
+    if (!info.isDirectory() || depth === bounds.depth) return;
     let names: string[];
     try {
       names = readdirSync(path);
@@ -443,9 +511,9 @@ export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners)
       if ((error as NodeJS.ErrnoException).code === "EACCES") return;
       throw error;
     }
-    for (const name of names) visit(join(path, name));
+    for (const name of names) visit(join(path, name), depth + 1);
   };
-  for (const folder of AGENT_STATE) visit(join(home, folder));
+  for (const root of roots) visit(root, 0);
 }
 
 function shareWithAgents(descriptor: number, owners: RunnerAccountOwners): void {
