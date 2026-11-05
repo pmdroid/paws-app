@@ -137,7 +137,7 @@ export function renderTimeLimitSettings(view: TimeLimitView): string {
         .join("")
     : '<p class="sub">No project overrides.</p>';
   const projectError = view.fieldErrors["new-project"];
-  return `<section class="settings-section">${intro}<form id="time-limit-form" class="col">
+  return `<section class="settings-section">${intro}<form id="time-limit-form" class="col" novalidate>
     ${fields("default", draft.default)}
     <h3>Projects</h3><p class="sub">Override a stage for one Linear project.</p>${projects}
     <div class="settings-add"><label for="time-new-project">Project</label><input id="time-new-project" name="time-new-project" value="${esc(view.projectDraft ?? "")}" placeholder="Linear project id" autocapitalize="none" spellcheck="false"${projectError ? ' aria-invalid="true" aria-describedby="time-new-project-error"' : ""}>${projectError ? `<p class="time-limit-error" id="time-new-project-error" role="alert">${esc(projectError)}</p>` : ""}<div class="row"><button class="btn" type="button" data-time-limits="add-project">Add project</button></div></div>
