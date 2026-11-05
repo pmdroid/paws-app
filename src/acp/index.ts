@@ -149,6 +149,7 @@ export {
   ensureBareMirror,
   ensureCandidateRef,
   mirrorFiles,
+  mirrorMain,
   removeCandidateRef,
   removeWorktree,
   resolveStartRef,
