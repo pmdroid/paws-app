@@ -302,6 +302,7 @@ function FILTER(wait: PullFeedbackWait): PullCommentFilter {
     appId: () => "42",
     appLogin: () => "paws-test[bot]",
     ignoredBots: () => [],
+    ignoredMarkers: () => [],
     commentWait: () => wait,
   };
 }

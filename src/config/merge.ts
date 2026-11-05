@@ -68,6 +68,7 @@ export type MergeRepositories = Record<
   {
     packages: string[];
     ignoreCommentBots?: string[];
+    ignoreCommentMarkers?: string[];
     reviewApps?: string[];
     highRiskPaths?: string[];
     suggestedFindings?: SuggestedFindingsMode;
@@ -124,6 +125,28 @@ const PACKAGE_ROOT = /^(?:[^/*\s\\]+|\*)(?:\/(?:[^/*\s\\]+|\*))*\/?$/;
 const LABEL_MAX = 200;
 const BOT_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$/;
 const APP_SLUG = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+const IGNORED_COMMENTS_MAX = 100;
+const MARKER_MAX = 200;
+const ignoreCommentBots = z
+  .array(z.string().regex(BOT_LOGIN, "must be a GitHub login such as codecov[bot]"))
+  .max(IGNORED_COMMENTS_MAX, `lists more than ${IGNORED_COMMENTS_MAX} accounts`)
+  .refine(
+    (list) => new Set(list.map((login) => login.toLowerCase())).size === list.length,
+    "lists an account twice",
+  );
+const ignoreCommentMarkers = z
+  .array(
+    z
+      .string()
+      .refine((marker) => marker.trim() !== "", "must not be empty")
+      .refine((marker) => marker.length <= MARKER_MAX, `must be at most ${MARKER_MAX} characters`)
+      .refine(
+        (marker) => [...marker].every((char) => char.charCodeAt(0) > 31),
+        "must be one line without control characters",
+      ),
+  )
+  .max(IGNORED_COMMENTS_MAX, `lists more than ${IGNORED_COMMENTS_MAX} markers`)
+  .refine((list) => new Set(list).size === list.length, "lists a marker twice");
 const highRiskGlob = z.string().superRefine((glob, context) => {
   const error = highRiskGlobError(glob);
   if (error) context.addIssue({ code: "custom", message: error });
@@ -191,10 +214,8 @@ const tomlSchema = z.object({
               )
               .max(100)
               .default([]),
-            ignore_comment_bots: z
-              .array(z.string().regex(BOT_LOGIN, "must be a GitHub login such as codecov[bot]"))
-              .max(100)
-              .optional(),
+            ignore_comment_bots: ignoreCommentBots.optional(),
+            ignore_comment_markers: ignoreCommentMarkers.optional(),
             review_apps: z
               .array(z.string().regex(APP_SLUG, "must be a GitHub App slug such as acme-review"))
               .max(100)
@@ -383,6 +404,84 @@ export function reviewApps(settings: MergeSettings, repository: string): string[
   ).map((slug) => slug.toLowerCase());
 }
 
+export function ignoredCommentMarkers(settings: MergeSettings, repository: string): string[] {
+  const wanted = repository.toLowerCase();
+  return (
+    Object.entries(settings.repositories).find(([name]) => name.toLowerCase() === wanted)?.[1]
+      .ignoreCommentMarkers ?? []
+  );
+}
+
+export type IgnoredComments = { ignoreCommentBots: string[]; ignoreCommentMarkers: string[] };
+
+export function parseIgnoredCommentSettings(value: unknown): Record<string, IgnoredComments> {
+  const result = z
+    .array(
+      z.strictObject({
+        repository: z.string().regex(REPOSITORY, "must be owner/repo"),
+        ignoreCommentBots: z.array(z.string().trim()).pipe(ignoreCommentBots),
+        ignoreCommentMarkers: ignoreCommentMarkers,
+      }),
+    )
+    .max(100)
+    .refine(
+      (list) => new Set(list.map((entry) => entry.repository.toLowerCase())).size === list.length,
+      { message: "lists a repository twice" },
+    )
+    .safeParse(value);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    const field = ["ignoredComments", ...(issue?.path.slice(0, 2) ?? [])].join(".");
+    throw Object.assign(
+      new Error(
+        `ignoredComments${issue?.path.length ? `.${issue.path.join(".")}` : ""} ${issue?.message ?? "is invalid"}`,
+      ),
+      { field },
+    );
+  }
+  return Object.fromEntries(
+    result.data.map((entry) => [
+      entry.repository,
+      {
+        ignoreCommentBots: entry.ignoreCommentBots,
+        ignoreCommentMarkers: entry.ignoreCommentMarkers,
+      },
+    ]),
+  );
+}
+
+export function withIgnoredComments(
+  repositories: MergeRepositories,
+  ignored: Record<string, IgnoredComments>,
+): MergeRepositories {
+  const defaults = [...DEFAULT_IGNORED_COMMENT_BOTS].sort().join("\n");
+  const next: MergeRepositories = {};
+  for (const [name, value] of Object.entries(repositories)) {
+    const { ignoreCommentBots: _bots, ignoreCommentMarkers: _markers, ...rest } = value;
+    next[name] = rest;
+  }
+  for (const [repository, lists] of Object.entries(ignored)) {
+    const bots =
+      lists.ignoreCommentBots
+        .map((login) => login.toLowerCase())
+        .sort()
+        .join("\n") === defaults
+        ? undefined
+        : lists.ignoreCommentBots;
+    const markers = lists.ignoreCommentMarkers.length ? lists.ignoreCommentMarkers : undefined;
+    if (bots === undefined && markers === undefined) continue;
+    const name =
+      Object.keys(next).find((key) => key.toLowerCase() === repository.toLowerCase()) ?? repository;
+    next[name] = {
+      packages: [],
+      ...next[name],
+      ...(bots === undefined ? {} : { ignoreCommentBots: bots }),
+      ...(markers === undefined ? {} : { ignoreCommentMarkers: markers }),
+    };
+  }
+  return next;
+}
+
 /** The high-risk globs Paws settings give this repository. */
 export function highRiskPaths(settings: MergeSettings, repository: string): string[] {
   const wanted = repository.toLowerCase();
@@ -491,6 +590,9 @@ export function parseMergeTables(
                 ...(value.ignore_comment_bots === undefined
                   ? {}
                   : { ignoreCommentBots: value.ignore_comment_bots }),
+                ...(value.ignore_comment_markers === undefined
+                  ? {}
+                  : { ignoreCommentMarkers: value.ignore_comment_markers }),
                 ...(value.review_apps === undefined ? {} : { reviewApps: value.review_apps }),
                 ...(value.high_risk_paths === undefined
                   ? {}
@@ -618,6 +720,10 @@ export function renderMergeSettings(settings: StoredMerge): string {
             ? ""
             : `ignore_comment_bots = [${value.ignoreCommentBots.map((login) => JSON.stringify(login)).join(", ")}]\n`
         }${
+          value.ignoreCommentMarkers === undefined
+            ? ""
+            : `ignore_comment_markers = [${value.ignoreCommentMarkers.map((marker) => JSON.stringify(marker)).join(", ")}]\n`
+        }${
           value.reviewApps === undefined
             ? ""
             : `review_apps = [${value.reviewApps.map((slug) => JSON.stringify(slug)).join(", ")}]\n`
@@ -661,12 +767,15 @@ export function writeMergePolicy(
   current: StoredMerge,
   riskPaths?: Record<string, string[]>,
   wait?: CommentWaitInput,
+  ignored?: Record<string, IgnoredComments>,
 ): void {
   const text = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const repositories =
+  const withPaths =
     riskPaths === undefined
       ? current.repositories
       : withHighRiskPaths(current.repositories ?? {}, riskPaths);
+  const repositories =
+    ignored === undefined ? withPaths : withIgnoredComments(withPaths ?? {}, ignored);
   replaceConfigText(
     path,
     setMergeSettingsText(text, {

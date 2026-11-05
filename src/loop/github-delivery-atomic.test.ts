@@ -232,6 +232,10 @@ test("filter and identity refresh callbacks run outside the write transaction, n
       check("ignored");
       return [];
     },
+    ignoredMarkers: () => {
+      check("markers");
+      return [];
+    },
     commentWait: () => {
       check("wait");
       return { quietMs: 20, maxMs: 100 };

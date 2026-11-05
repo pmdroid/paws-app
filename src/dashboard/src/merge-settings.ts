@@ -17,6 +17,12 @@ export type MergeSettings = {
    * it alone.
    */
   commentWait?: CommentWait;
+  ignoredComments?: IgnoredComments[];
+};
+export type IgnoredComments = {
+  repository: string;
+  ignoreCommentBots: string[];
+  ignoreCommentMarkers: string[];
 };
 export type CommentWait = { quietSeconds: number; maxWaitSeconds: number };
 

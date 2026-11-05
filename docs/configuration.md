@@ -78,6 +78,15 @@ order = "ci-green"
 - **`[merge.repositories."owner/repo"] packages`**: package roots such as `apps/*`. With `main_moved = "overlap"`, a change anywhere under the same root on main counts as an overlap.
 - **`[merge.repositories."owner/repo"] review_apps`**: GitHub App slugs such as `acme-review` whose check runs comments wait for. Bots whose comments Paws has recorded on the repository's pull requests count as review apps without being listed.
 - **`[merge.repositories."owner/repo"] ignore_comment_bots`**: bot logins such as `codecov[bot]` whose pull request comments only report status, so they never restart the item. Replaces the default list (Cloudflare Pages, Linear, Codecov, Netlify, Vercel, changesets) for that repository; `[]` ignores no bot.
+- **`[merge.repositories."owner/repo"] ignore_comment_markers`**: literal strings; a pull request comment whose body contains one never restarts the item. Use it for a bot such as `github-actions[bot]` that posts status comments and real failures under the same login. At most 100 markers of at most 200 characters, none empty or repeated. Edits and deletions of a comment never restart the item either, so an updated sticky comment needs no marker of its own.
+
+  ```toml
+  [merge.repositories."acme/monorepo"]
+  ignore_comment_markers = ["<!-- add-pr-comment:todo-count -->", "<!-- deploy-security-proof -->"]
+  ```
+
+  Settings › Merging › Ignored PR comments edits both lists for each repository, one entry per line: **Bot accounts** (`ignore_comment_bots`) and **Comment markers** (`ignore_comment_markers`). An invalid entry is shown next to its field and nothing is saved. A saved change applies to the next comment, without a restart.
+
 - **`[merge.repositories."owner/repo"] suggested_findings`**: what Paws does with review findings below the review's `failOn` in code the pull request changed. `"off"` only lists them under the pull request's Open findings. `"next_turn"` (default) also hands them to the agent as suggestions in the next restart the item gets for any other reason. `"own_turn"` also starts one restart for them right after acceptance, once per item. A change applies to the next publication or restart, without a restart of Paws. [Suggested findings](closeout.md#suggested-findings) has the details.
 
 The merge lane squashes head S only when `mergeable(S)` holds: the pull request head is S, S contains the current `main`, Closeout accepted S under the current policy digest, CI is green for S, no review thread is unresolved and branch protection is satisfied. [After acceptance](closeout.md#after-acceptance) has the details.

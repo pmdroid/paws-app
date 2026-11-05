@@ -1,15 +1,19 @@
 import { journalCaught } from "../journal";
 import {
   DEFAULT_COMMENT_WAIT,
+  DEFAULT_IGNORED_COMMENT_BOTS,
+  ignoredCommentMarkers,
   loadConfigFile,
   parseCommentWait,
   parseHighRiskPathSettings,
+  parseIgnoredCommentSettings,
   parseMergePolicy,
   readMergeSettings,
   storedMerge,
   writeMergePolicy,
   type CommentWait,
   type CommentWaitInput,
+  type IgnoredComments,
   type MergeChoice,
   type MergeOverride,
   type MergePolicy,
@@ -80,6 +84,8 @@ export type HighRiskRepositoryView = {
     | { state: "unavailable"; reason: string };
 };
 
+type IgnoredCommentsView = IgnoredComments & { repository: string };
+
 export const MERGE_SETTINGS_PATH = "/api/settings/merging";
 
 const ORDER_NAMES: Record<MergeChoice["order"], string> = {
@@ -130,6 +136,7 @@ export async function handleMergeSettingsRequest(
         pathsByRepository(highRiskPathsView(policy)),
         options,
       ),
+      ignoredComments: ignoredCommentsView(policy, options),
       choices,
       ...(choicesError ? { choicesError } : {}),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
@@ -152,7 +159,25 @@ export async function handleMergeSettingsRequest(
   let highRiskPaths: Record<string, string[]> | undefined;
   let commentWait: CommentWaitInput | undefined;
   let autoApproveHighRisk: boolean | undefined;
+  let ignoredComments: Record<string, IgnoredComments> | undefined;
   try {
+    if (isRecord(body) && "ignoredComments" in body) {
+      const { ignoredComments: lists, ...rest } = body;
+      try {
+        ignoredComments = parseIgnoredCommentSettings(lists);
+      } catch (error) {
+        journalCaught(error, "merging.handleMergeSettingsRequest.parseIgnoredComments", null);
+        const field = (error as { field?: unknown }).field;
+        return json(
+          {
+            error: error instanceof Error ? error.message : "Invalid ignored PR comments",
+            ...(typeof field === "string" ? { field } : {}),
+          },
+          400,
+        );
+      }
+      body = rest;
+    }
     if (isRecord(body) && "highRiskPaths" in body) {
       const { highRiskPaths: paths, ...rest } = body;
       highRiskPaths = parseHighRiskPathSettings(paths);
@@ -218,6 +243,7 @@ export async function handleMergeSettingsRequest(
       },
       highRiskPaths,
       commentWait,
+      ignoredComments,
     );
   } catch (caughtError6) {
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
@@ -257,6 +283,19 @@ export async function handleMergeSettingsRequest(
     Object.fromEntries(highRiskPathsView(before).map((entry) => [entry.repository, entry.paths]));
   for (const change of highRiskPathChanges(before, saved))
     options.audit?.("settings.merging", change);
+  let after: MergeSettings | null = null;
+  try {
+    after = readMergeSettings(loadConfigFile(options.configPath));
+  } catch (caughtError) {
+    journalCaught(caughtError, "merging.handleMergeSettingsRequest.readSaved", null);
+  }
+  const ignoredAfter = after ? ignoredCommentsView(after, options) : [];
+  if (ignoredComments !== undefined)
+    for (const change of ignoredCommentChanges(
+      before ? ignoredCommentsView(before, options) : [],
+      ignoredAfter,
+    ))
+      options.audit?.("settings.merging", change);
   return json({
     ...view(policy),
     autoApproveHighRisk: autoApproveHighRisk ?? before?.autoApproveHighRisk ?? false,
@@ -265,6 +304,7 @@ export async function handleMergeSettingsRequest(
       .filter(([, paths]) => paths.length > 0)
       .map(([repository, paths]) => ({ repository, paths })),
     highRiskRepositories: await highRiskRepositoriesView(saved, options),
+    ignoredComments: ignoredAfter,
   });
 }
 
@@ -282,28 +322,71 @@ async function highRiskRepositoriesView(
   settings: Record<string, string[]>,
   options: MergeSettingsOptions,
 ): Promise<HighRiskRepositoryView[]> {
+  const paths = new Map(
+    Object.entries(settings).map(([repository, globs]) => [repository.toLowerCase(), globs]),
+  );
+  return Promise.all(
+    repositoryNames(Object.keys(settings), options).map(async (repository) => ({
+      repository,
+      paths: paths.get(repository.toLowerCase()) ?? [],
+      file: await highRiskFileView(repository, options.highRiskFile),
+    })),
+  );
+}
+
+function repositoryNames(withSettings: readonly string[], options: MergeSettingsOptions): string[] {
   let configured: string[] = [];
   try {
     const config = loadConfigFile(options.configPath);
     configured = [config.repo, ...config.githubRepos].flatMap((repo) => (repo ? [repo] : []));
   } catch (caughtError) {
-    journalCaught(caughtError, "merging.highRiskRepositoriesView.loadConfigFile", null);
+    journalCaught(caughtError, "merging.repositoryNames.loadConfigFile", null);
   }
   const names = new Map<string, string>();
-  for (const repository of [...Object.keys(settings), ...configured, ...(options.repos ?? [])])
+  for (const repository of [...withSettings, ...configured, ...(options.repos ?? [])])
     if (!names.has(repository.toLowerCase())) names.set(repository.toLowerCase(), repository);
-  const paths = new Map(
-    Object.entries(settings).map(([repository, globs]) => [repository.toLowerCase(), globs]),
+  return [...names.values()].sort((left, right) => left.localeCompare(right));
+}
+
+function ignoredCommentsView(
+  settings: MergeSettings,
+  options: MergeSettingsOptions,
+): IgnoredCommentsView[] {
+  const configured = new Map(
+    Object.entries(settings.repositories).map(([name, value]) => [name.toLowerCase(), value]),
   );
-  return Promise.all(
-    [...names.values()]
-      .sort((left, right) => left.localeCompare(right))
-      .map(async (repository) => ({
-        repository,
-        paths: paths.get(repository.toLowerCase()) ?? [],
-        file: await highRiskFileView(repository, options.highRiskFile),
-      })),
-  );
+  const withLists = Object.entries(settings.repositories)
+    .filter(([, value]) => value.ignoreCommentBots || value.ignoreCommentMarkers)
+    .map(([name]) => name);
+  return repositoryNames(withLists, options).map((repository) => ({
+    repository,
+    ignoreCommentBots: configured.get(repository.toLowerCase())?.ignoreCommentBots ?? [
+      ...DEFAULT_IGNORED_COMMENT_BOTS,
+    ],
+    ignoreCommentMarkers: ignoredCommentMarkers(settings, repository),
+  }));
+}
+
+function ignoredCommentChanges(
+  before: readonly IgnoredCommentsView[],
+  after: readonly IgnoredCommentsView[],
+): string[] {
+  const old = new Map(before.map((entry) => [entry.repository.toLowerCase(), entry]));
+  const changes: string[] = [];
+  for (const entry of after) {
+    const previous = old.get(entry.repository.toLowerCase());
+    for (const [key, title] of [
+      ["ignoreCommentBots", "Ignored comment bots"],
+      ["ignoreCommentMarkers", "Ignored comment markers"],
+    ] as const) {
+      const from = previous?.[key] ?? [];
+      if (from.join("\n") === entry[key].join("\n")) continue;
+      changes.push(
+        `${title} for ${entry.repository}: ${from.join(", ") || "none"} → ${entry[key].join(", ") || "none"}`,
+      );
+    }
+  }
+  return changes;
 }
 
 async function highRiskFileView(

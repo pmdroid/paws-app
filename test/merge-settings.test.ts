@@ -352,6 +352,7 @@ describe("Merging settings API", () => {
       rules: [],
       highRiskPaths: [],
       highRiskRepositories: [],
+      ignoredComments: [],
       choices: {
         projects: [
           { id: PAWS, name: "Paws" },
@@ -432,6 +433,7 @@ describe("Merging settings API", () => {
       commentWait: { quietSeconds: 60, maxWaitSeconds: 300, reviewWaitMaxSeconds: 900 },
       highRiskPaths: [],
       highRiskRepositories: [],
+      ignoredComments: [],
     });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");

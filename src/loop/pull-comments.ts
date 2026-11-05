@@ -83,6 +83,7 @@ export type PullCommentFilter = {
   appLogin(repository: string): string | null;
   /** Lowercased bot logins whose comments only report status on `owner/repo`. */
   ignoredBots(repository: string): readonly string[];
+  ignoredMarkers(repository: string): readonly string[];
   /** How long comments and reviews are collected before one restart; the defaults when missing. */
   commentWait?(): PullFeedbackWait;
 };
@@ -91,6 +92,7 @@ const NO_FILTER: PullCommentFilter = {
   appId: () => null,
   appLogin: () => null,
   ignoredBots: () => [],
+  ignoredMarkers: () => [],
 };
 
 /**
@@ -150,8 +152,10 @@ export function prepareCommentDelivery(
     if (appLogin !== null && login === appLogin.toLowerCase()) return null;
     if (filter.ignoredBots(name).includes(login)) return null;
   }
-  const wait = filter.commentWait?.();
   const text = typeof comment.body === "string" ? comment.body : "";
+  if (filter.ignoredMarkers(name).some((marker) => marker !== "" && text.includes(marker)))
+    return null;
+  const wait = filter.commentWait?.();
   // Paws' own replies to handed-off comments, posted with a token that is not the App's.
   if (text.includes(REVIEW_REPLY_MARKER)) return null;
   if (event === "issue_comment") {

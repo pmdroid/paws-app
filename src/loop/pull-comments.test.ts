@@ -89,6 +89,10 @@ const FILTER: PullCommentFilter = {
   appId: () => "42",
   appLogin: () => "paws-test[bot]",
   ignoredBots: () => DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase()),
+  ignoredMarkers: (repository) =>
+    repository === "acme/one"
+      ? ["<!-- add-pr-comment:todo-count -->", "<!-- deploy-security-proof -->"]
+      : [],
 };
 
 function setup(threads = THREADS) {
@@ -427,6 +431,62 @@ describe("comments that do not restart", () => {
     inline({ id: 7, review: 70, author: "pascal", body: "Edited inline.", action: "edited" });
     expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
     expect(commentJobs(db)).toHaveLength(0);
+  });
+
+  test("a status comment with an ignored marker records nothing; the same bot's failure restarts", async () => {
+    const { db, caps, conversation } = setup();
+    expect(
+      conversation({
+        id: 11,
+        author: "github-actions[bot]",
+        body: "<!-- deploy-security-proof -->\n## Deploy security proof\nResult: **PASS**",
+      }),
+    ).toBe(true);
+    expect(getPullComment(db, "conversation", 11)).toBeNull();
+    expect(commentJobs(db)).toHaveLength(0);
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
+    expect(resumeJobs(db)).toHaveLength(0);
+
+    conversation({
+      id: 12,
+      author: "github-actions[bot]",
+      body: "## Deploy security proof\nResult: **FAIL**: the staging token is readable.",
+    });
+    expect(pendingPullComments(db, "eng-1").map((comment) => comment.commentId)).toEqual([12]);
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(handoff(db)?.handoff).toContain("the staging token is readable");
+  });
+
+  test("an inline comment from a review bot without a marker still restarts", async () => {
+    const { db, caps, inline } = setup();
+    inline({ id: 13, review: 130, author: "cursor[bot]", body: "Bug: the retry never stops." });
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
+    expect(handoff(db)?.handoff).toContain("Bug: the retry never stops.");
+  });
+
+  test("an edited sticky comment does not restart the item, with or without a marker", async () => {
+    const { db, caps, conversation } = setup();
+    conversation({
+      id: 14,
+      author: "github-actions[bot]",
+      body: "<!-- add-pr-comment:todo-count -->\nTODO count changed from 235 to 234 (-1)",
+    });
+    conversation({
+      id: 14,
+      author: "github-actions[bot]",
+      body: "<!-- add-pr-comment:todo-count -->\nTODO count changed from 234 to 233 (-1)",
+      action: "edited",
+    });
+    conversation({
+      id: 15,
+      author: "github-actions[bot]",
+      body: "Bundle size changed by +2 KB",
+      action: "edited",
+    });
+    expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
+    expect(commentJobs(db)).toHaveLength(0);
+    expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
+    expect(resumeJobs(db)).toHaveLength(0);
   });
 
   test("a fork's pull request, another pull request and an ended item record nothing", () => {

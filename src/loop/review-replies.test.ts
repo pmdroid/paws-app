@@ -77,6 +77,7 @@ const FILTER: PullCommentFilter = {
   appId: () => "42",
   appLogin: () => "paws-test[bot]",
   ignoredBots: () => [],
+  ignoredMarkers: () => [],
 };
 
 function setup() {
