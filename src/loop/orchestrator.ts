@@ -317,6 +317,7 @@ import {
 } from "../db";
 import {
   publishAccepted,
+  storeEvidenceFiles,
   closeStoppedPull,
   fetchUpstreamMain,
   leaveGitHubMergeQueue,
@@ -442,6 +443,7 @@ import {
   waitForRunnerSlot,
 } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
+import { pullRequestScreenshots } from "./pull-screenshots";
 import { readReviewChecks, withReviewWait } from "./review-checks";
 import {
   readPendingFeedback,
@@ -4995,6 +4997,25 @@ export class Orchestrator {
       getPublishedHead(this.db, item.id) !== candidateHead;
     if (newPublication) this.sessionProgress(item)?.phase("publishing");
     const draft = getPullRequestDraft(this.db, item.id);
+    const screenshots = await pullRequestScreenshots({
+      db: this.db,
+      itemId: item.id,
+      root: this.options.evidence?.root,
+      owner: repository.owner,
+      repo: repository.repo,
+      store: (files) =>
+        storeEvidenceFiles({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          issue: item.linearIdentifier,
+          files,
+          signal: live.controller.signal,
+          ...this.gitHubCredentials(github),
+        }),
+      ...(this.options.journal ? { journal: this.options.journal } : {}),
+    });
+    if (this.stopped(item.id)) return { kind: "obsolete" };
     const published = await publishAccepted({
       accepted: true,
       evidence: [
@@ -5006,6 +5027,7 @@ export class Orchestrator {
           this.options.evidence?.publicUrl ?? null,
           this.now(),
         ),
+        screenshots,
         policy ? policyPullRequestCredit(policy) : "",
         openFindingsSection(open),
       ]
