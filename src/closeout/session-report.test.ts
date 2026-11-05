@@ -53,7 +53,9 @@ test("a clear closeout session report accepts command checks for that commit", (
   roots.push(root);
   const path = join(root, "closeout-session.json");
   writeSessionCloseout(path, head, clear);
-  expect(readSessionCloseout(path)).toEqual({ head, report: clear });
+  expect(readSessionCloseout(path)).toEqual({ head, report: clear, draft: "" });
+  writeSessionCloseout(path, head, clear, "a".repeat(64));
+  expect(readSessionCloseout(path)?.draft).toBe("a".repeat(64));
   const log = join(root, "command.log");
   const passed = loggedSessionCloseout(readSessionCloseout(path)?.report, {
     cwd: root,

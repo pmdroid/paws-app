@@ -1,7 +1,10 @@
-import type { TurnPass } from "../closeout";
+import { usesPullRequestDraft, type TurnPass } from "../closeout";
 import type { AgentCloseoutEvent } from "../db";
 
-export function turnPasses(events: readonly AgentCloseoutEvent[]): TurnPass[] {
+export function turnPasses(
+  events: readonly AgentCloseoutEvent[],
+  draftSavedAt: number | null = null,
+): TurnPass[] {
   const last = new Map<string, AgentCloseoutEvent>();
   for (const event of events)
     if (event.progress.type === "finished") last.set(event.progress.id, event);
@@ -15,7 +18,8 @@ export function turnPasses(events: readonly AgentCloseoutEvent[]): TurnPass[] {
       progress.clean !== true ||
       !progress.base ||
       !progress.policyDigest ||
-      !progress.head
+      !progress.head ||
+      (draftSavedAt !== null && at < draftSavedAt && usesPullRequestDraft([progress.command]))
     )
       continue;
     passes.push({

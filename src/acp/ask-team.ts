@@ -31,6 +31,7 @@ import {
   type CloseoutSession,
   type CloseoutSessionEvent,
   type PolicyFilesLoad,
+  type PullRequestDraft,
 } from "../closeout-spec";
 import { CLOSEOUT_FINISH_UNAVAILABLE, closeoutFinishLine } from "./closeout-hook";
 import { git } from "./git";
@@ -168,6 +169,8 @@ export function askTeamMcpEntry(): { command: string; args: string[] } {
  * Local socket the MCP stdio process calls back into.
  * The run timeout is paused around `hook.ask` so a human answer is not cut off.
  */
+type BridgeFinish = { pullRequestOpened: boolean; nudged: boolean; draft?: PullRequestDraft };
+
 interface HostToolBridgeOptions {
   socketPath: string;
   hook?: AskTeamHook;
@@ -190,6 +193,7 @@ interface HostToolBridgeOptions {
   allowCloseoutRun?: boolean;
   closeoutRulesFirst?: boolean;
   closeoutFocus?: CloseoutFocus;
+  pullRequestDraft?: PullRequestDraft;
   suggestedFindings?: readonly SuggestedFindingLine[];
   signal: AbortSignal;
   onAsk?: (question: string) => void | Promise<void>;
@@ -238,7 +242,11 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     return undefined;
   });
   const lifetime = new AbortController();
-  const finish = { pullRequestOpened: false, nudged: false };
+  const finish: BridgeFinish = {
+    pullRequestOpened: false,
+    nudged: false,
+    ...(options.pullRequestDraft ? { draft: options.pullRequestDraft } : {}),
+  };
   const sockets = new Set<Socket>();
   const onAbort = () => {
     lifetime.abort();
@@ -256,6 +264,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
         ...(options.closeoutBasePath !== undefined ? { basePath: options.closeoutBasePath } : {}),
         ...(options.closeoutRulesFirst ? { rulesFirst: true } : {}),
         ...(options.closeoutFocus ? { focus: options.closeoutFocus } : {}),
+        pullRequest: () => finish.draft,
         allowCommand(argv) {
           authorizeCloseout(argv, worktreePath, options.commandGuard);
         },
@@ -337,7 +346,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
 async function handleConnection(
   socket: Socket,
   options: HostToolBridgeOptions,
-  finish: { pullRequestOpened: boolean; nudged: boolean },
+  finish: BridgeFinish,
 ): Promise<void> {
   socket.setEncoding("utf8");
   let buffer = "";
@@ -451,8 +460,10 @@ async function handleConnection(
     }
     if (parsed.tool === "open_pull_request") {
       if (!options.pullRequest) throw new Error("open_pull_request is unavailable");
-      await options.pullRequest.update(parsePullRequest(parsed.arguments ?? {}));
+      const draft = parsePullRequest(parsed.arguments ?? {});
+      await options.pullRequest.update(draft);
       finish.pullRequestOpened = true;
+      finish.draft = draft;
       socket.end(
         `${JSON.stringify({ id, answer: "Saved. Paws opens or updates the pull request with this title and description after Closeout accepts the work." })}\n`,
       );

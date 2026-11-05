@@ -7,6 +7,11 @@
  * cloud keys stay out of the command.
  */
 
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 const DENY = new Set([
   "GH_TOKEN",
   "GITHUB_TOKEN",
@@ -48,4 +53,33 @@ function isScrubbed(key: string): boolean {
   if (PREFIXES.some((prefix) => key.startsWith(prefix))) return true;
   if (key.includes("OAUTH") && key.includes("TOKEN")) return true;
   return /API_KEY|PASSWORD|SECRET|TOKEN/i.test(key);
+}
+
+export type PullRequestDraft = { title: string; body: string };
+
+const DRAFT_VARIABLES = ["PAWS_PR_TITLE", "PAWS_PR_BODY_FILE"];
+
+export function usesPullRequestDraft(argv: readonly string[]): boolean {
+  return argv.some((arg) => DRAFT_VARIABLES.some((name) => arg.includes(name)));
+}
+
+export function pullRequestDraftKey(draft: PullRequestDraft | undefined): string {
+  if (draft === undefined) return "";
+  return createHash("sha256").update(`${draft.title}\0${draft.body}`).digest("hex");
+}
+
+export async function withPullRequestDraft<T>(
+  env: Record<string, string>,
+  draft: PullRequestDraft | undefined,
+  work: (env: Record<string, string>) => Promise<T>,
+): Promise<T> {
+  if (draft === undefined) return work(env);
+  const folder = mkdtempSync(join(tmpdir(), "paws-pr-"));
+  try {
+    const body = join(folder, "body.md");
+    writeFileSync(body, draft.body, { mode: 0o600 });
+    return await work({ ...env, PAWS_PR_TITLE: draft.title, PAWS_PR_BODY_FILE: body });
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
 }

@@ -60,6 +60,7 @@ export type CloseoutGateOptions = {
   approvals?: GateInput["approvals"];
   fromCi?: GateInput["fromCi"];
   fromTurn?: GateInput["fromTurn"];
+  pullRequest?: GateInput["pullRequest"];
 };
 
 /**
@@ -102,6 +103,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         ...(options.approvals ? { approvals: options.approvals } : {}),
         ...(options.fromCi ? { fromCi: options.fromCi } : {}),
         ...(options.fromTurn ? { fromTurn: options.fromTurn } : {}),
+        ...(options.pullRequest ? { pullRequest: options.pullRequest } : {}),
       });
       return toVerdict(result, input.attempt);
     };

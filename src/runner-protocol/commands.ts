@@ -241,6 +241,9 @@ export const RunnerCommandSchema = z
           passed: z.array(z.string().min(1).max(200)).max(200),
         })
         .optional(),
+      pullRequestDraft: z
+        .strictObject({ title: oneLine(256), body: z.string().min(1).max(12_000) })
+        .optional(),
       suggestedFindings: z
         .array(
           z.strictObject({

@@ -41,7 +41,7 @@ import { changesPolicyInput } from "./policy/inputs";
 import { isPreExisting, type ChangedLines } from "./review/changed";
 import { earlierFindings } from "./review/earlier";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
-import { scrubCommandEnv } from "./run/env";
+import { scrubCommandEnv, type PullRequestDraft } from "./run/env";
 import {
   changedLineRanges,
   changedLines,
@@ -150,6 +150,7 @@ export type RunRequest = {
   /** Command checks whose result comes from green CI at `head`. See {@link ciMappings}. */
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
+  pullRequest?: PullRequestDraft;
 };
 
 export type ReviewIntake =
@@ -663,6 +664,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
     ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
     ...(input.fromCi !== undefined ? { fromCi: input.fromCi } : {}),
     ...(input.fromTurn !== undefined ? { fromTurn: input.fromTurn } : {}),
+    ...(input.pullRequest !== undefined ? { pullRequest: input.pullRequest } : {}),
   });
   if (ran.blocked !== undefined) {
     return evaluate(

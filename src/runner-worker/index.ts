@@ -1242,6 +1242,9 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.closeoutFocus
         ? { closeoutFocus: command.closeoutFocus }
         : {}),
+      ...(command.type === "run" && command.pullRequestDraft
+        ? { pullRequestDraft: command.pullRequestDraft }
+        : {}),
       ...(command.type === "run" && command.suggestedFindings?.length
         ? { suggestedFindings: command.suggestedFindings }
         : {}),

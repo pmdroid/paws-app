@@ -15,6 +15,16 @@ export function savePullRequestDraft(
   );
 }
 
+export function pullRequestDraftSavedAt(db: Database, itemId: string): number | null {
+  return (
+    db
+      .query<{ updated_at: number }, [string]>(
+        "SELECT updated_at FROM pull_request_draft WHERE item_id = ?",
+      )
+      .get(itemId)?.updated_at ?? null
+  );
+}
+
 export function getPullRequestDraft(db: Database, itemId: string): PullRequestDraft | null {
   return (
     db

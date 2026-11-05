@@ -247,6 +247,7 @@ export type { CatalogEntry } from "./repository-catalog";
 export {
   getPullRequestDraft,
   getPullRequestText,
+  pullRequestDraftSavedAt,
   savePullRequestDraft,
   savePullRequestText,
   type PullRequestDraft,

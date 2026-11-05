@@ -7,7 +7,12 @@ import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { changedLinesDiffArgs, parseChangedLines, type ChangedLines } from "../review/changed";
 import type { CommandRunRequest, CommandRunResult, CommandRunner } from "../types";
-import { credentialSecrets, scrubCommandEnv } from "./env";
+import {
+  credentialSecrets,
+  scrubCommandEnv,
+  withPullRequestDraft,
+  type PullRequestDraft,
+} from "./env";
 import type { CloseoutOutputStream } from "./progress";
 import { createStreamScrubber, scrubText } from "./scrub";
 
@@ -38,6 +43,7 @@ export type LoggedCommandRequest = CommandRunRequest & {
   artifactPath: string;
   expectedHead: string;
   onOutput?: (stream: CloseoutOutputStream, text: string, truncated: boolean) => void;
+  pullRequest?: PullRequestDraft;
 };
 
 export type PawsCommandRunner = CommandRunner & {
@@ -79,6 +85,7 @@ export function createCommandRunner(options: CommandRunnerOptions = {}): PawsCom
         logFile: request.logFile,
         artifactPath: request.artifactPath,
         ...(request.onOutput ? { onOutput: request.onOutput } : {}),
+        ...(request.pullRequest ? { pullRequest: request.pullRequest } : {}),
       });
     },
   };
@@ -93,16 +100,19 @@ export async function executeCommand(input: {
   logFile: string;
   artifactPath: string;
   onOutput?: (stream: CloseoutOutputStream, text: string, truncated: boolean) => void;
+  pullRequest?: PullRequestDraft;
 }): Promise<CommandRunResult> {
   const secrets = credentialSecrets(input.env);
   const env = scrubCommandEnv(input.env);
   const before = await porcelain(input.cwd, env);
   const expected = input.expectedHead ?? (await readHead(input.cwd, env)) ?? "";
   const started = Date.now();
-  const spawned = await spawnArgv(input.argv, input.cwd, env, input.timeoutSeconds, {
-    secrets,
-    ...(input.onOutput ? { onText: input.onOutput } : {}),
-  });
+  const spawned = await withPullRequestDraft(env, input.pullRequest, (childEnv) =>
+    spawnArgv(input.argv, input.cwd, childEnv, input.timeoutSeconds, {
+      secrets,
+      ...(input.onOutput ? { onText: input.onOutput } : {}),
+    }),
+  );
   const durationMs = Math.max(0, Date.now() - started);
   const after = await porcelain(input.cwd, env);
   const head = await readHead(input.cwd, env);

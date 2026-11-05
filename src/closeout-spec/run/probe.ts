@@ -16,7 +16,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { CommandRunResult, ResolvedRule } from "../types";
-import { credentialSecrets, scrubCommandEnv } from "./env";
+import {
+  credentialSecrets,
+  scrubCommandEnv,
+  withPullRequestDraft,
+  type PullRequestDraft,
+} from "./env";
 import { porcelain, readHead, spawnArgv } from "./exec";
 import type { CloseoutOutputStream } from "./progress";
 import { scrubText } from "./scrub";
@@ -52,6 +57,7 @@ export async function executeProbe(input: {
   /** Parent environment. Credentials and `PAWS_HOME` are removed; `HOME` and `TMPDIR` replaced. */
   env?: NodeJS.ProcessEnv;
   onOutput?: (stream: CloseoutOutputStream, text: string, truncated: boolean) => void;
+  pullRequest?: PullRequestDraft;
 }): Promise<ProbeExecution> {
   const secrets = credentialSecrets(input.env);
   const gitEnv = scrubCommandEnv(input.env);
@@ -75,10 +81,12 @@ export async function executeProbe(input: {
     ];
     const before = await porcelain(input.checkout, gitEnv);
     const started = Date.now();
-    const spawned = await spawnArgv(argv, scratch, env, input.timeoutSeconds, {
-      secrets,
-      ...(input.onOutput ? { onText: input.onOutput } : {}),
-    });
+    const spawned = await withPullRequestDraft(env, input.pullRequest, (childEnv) =>
+      spawnArgv(argv, scratch, childEnv, input.timeoutSeconds, {
+        secrets,
+        ...(input.onOutput ? { onText: input.onOutput } : {}),
+      }),
+    );
     const durationMs = Math.max(0, Date.now() - started);
     const after = await porcelain(input.checkout, gitEnv);
     const head = await readHead(input.checkout, gitEnv);
@@ -132,6 +140,7 @@ export type ProbeRunRequest = {
   logFile: string;
   artifactPath: string;
   onOutput?: (stream: CloseoutOutputStream, text: string, truncated: boolean) => void;
+  pullRequest?: PullRequestDraft;
 };
 
 export type ProbeRunResult = CommandRunResult & { probeSha256: string };
@@ -158,6 +167,7 @@ export function createProbeRunner(options: { env?: NodeJS.ProcessEnv } = {}): Pr
         timeoutSeconds: request.timeoutSeconds,
         ...(options.env !== undefined ? { env: options.env } : {}),
         ...(request.onOutput ? { onOutput: request.onOutput } : {}),
+        ...(request.pullRequest ? { pullRequest: request.pullRequest } : {}),
       });
       const { stdout, stderr, ...result } = ran;
       return { ...result, artifacts: [writeProbeLog(request, stdout, stderr)] };
