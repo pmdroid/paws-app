@@ -88,11 +88,11 @@ def adopt_tree(path, uid, gid, mode, directory_mode=None):
 
 
 def group_shared(mode):
-    return stat.S_ISGID | (mode & 0o700) | (mode & 0o700) >> 3
+    return (mode & 0o700) | (mode & 0o700) >> 3
 
 
 def group_inherited(mode):
-    return stat.S_ISGID | mode
+    return mode & ~stat.S_ISGID
 
 
 def root_directory(path, mode=0o755):
