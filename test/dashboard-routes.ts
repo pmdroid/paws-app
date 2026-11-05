@@ -208,17 +208,26 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   }),
   api("*", "/api/*", "preserved", "src/server", { sample: "/api/unknown" }),
   api("*", "/api/settings/*", "preserved", "src/settings"),
-  ...["agents", "brief", "brief/preview", "checkout", "findings", "hooks", "merging", "skills"].map(
-    (page) =>
-      api(
-        page === "brief/preview" ? "POST" : "GET PUT",
-        `/api/settings/${page}`,
-        "preserved",
-        "src/settings",
-        {
-          sample: `/api/settings/${page}`,
-        },
-      ),
+  ...[
+    "agents",
+    "brief",
+    "brief/preview",
+    "checkout",
+    "findings",
+    "hooks",
+    "merging",
+    "skills",
+    "time-limits",
+  ].map((page) =>
+    api(
+      page === "brief/preview" ? "POST" : "GET PUT",
+      `/api/settings/${page}`,
+      "preserved",
+      "src/settings",
+      {
+        sample: `/api/settings/${page}`,
+      },
+    ),
   ),
   api("*", "/api/retros/*", "delegated", "src/retros"),
   api("GET PUT", "/api/retros/settings", "delegated", "src/retros", {

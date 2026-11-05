@@ -28,3 +28,5 @@ export type {
 } from "./checkout";
 export { FINDING_SETTINGS_PATH, handleFindingSettingsRequest } from "./findings";
 export type { FindingSettingsOptions } from "./findings";
+export { TIME_LIMIT_SETTINGS_PATH, handleTimeLimitSettingsRequest } from "./time-limits";
+export type { TimeLimitSettingsOptions } from "./time-limits";
