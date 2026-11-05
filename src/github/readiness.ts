@@ -201,7 +201,7 @@ export async function waitForMergeReadiness(input: ReadinessInput): Promise<Read
 export async function readMergeReadiness(input: ReadinessInput): Promise<Readiness> {
   try {
     const token = await input.token();
-    const checks: Check[] = [];
+    const allChecks: Check[] = [];
     const baseChecks: Check[] = [];
     let baseBranch = "";
     let unresolved = 0;
@@ -281,7 +281,7 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
           continue;
         }
         if (!rollup.contexts) return unreadable();
-        (key === "checks" ? checks : baseChecks).push(...toChecks(rollup.contexts.nodes));
+        (key === "checks" ? allChecks : baseChecks).push(...toChecks(rollup.contexts.nodes));
         if (!advance(key, rollup.contexts.pageInfo)) return unreadable();
       }
       if (more.threads) {
@@ -292,7 +292,12 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
     }
     const required = await readRequiredChecks(input, token, baseBranch);
     if (required === null) return unreadable();
-    const ci = judgeChecks(checks, baseChecks, required);
+    const checks = latestPerName(allChecks, (check) => check);
+    const ci = judgeChecks(
+      checks,
+      latestPerName(baseChecks, (check) => check),
+      required,
+    );
     if (ci.outcome === "ci_failed") return await withLogTails(input, token, ci, checks);
     if (ci.outcome !== "ready") return ci;
     const passed = checks.map((check) => ({
@@ -359,6 +364,29 @@ function toChecks(nodes: z.infer<typeof contextsSchema>["nodes"]): Check[] {
       },
     ];
   });
+}
+
+export function latestPerName<T extends { name: string }>(
+  runs: T[],
+  times: (run: T) => { startedAt: string | null; completedAt: string | null },
+): T[] {
+  const latest = new Map<string, T>();
+  for (const run of runs) {
+    const kept = latest.get(run.name);
+    if (kept === undefined || !startedLater(times(kept), times(run))) latest.set(run.name, run);
+  }
+  return [...latest.values()];
+}
+
+function startedLater(
+  a: { startedAt: string | null; completedAt: string | null },
+  b: { startedAt: string | null; completedAt: string | null },
+): boolean {
+  for (const key of ["startedAt", "completedAt"] as const) {
+    const [left, right] = [Date.parse(a[key] ?? ""), Date.parse(b[key] ?? "")];
+    if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left > right;
+  }
+  return false;
 }
 
 function judgeChecks(checks: Check[], baseChecks: Check[], required: Set<string>): Readiness {

@@ -320,6 +320,117 @@ test("a failing check that also fails on the base head is marked so", async () =
   ]);
 });
 
+const acmeRun = (
+  name: string,
+  conclusion: string,
+  runId: number,
+  startedAt: string | null,
+  completedAt: string | null = null,
+): FakeCheckContext => ({
+  name,
+  conclusion,
+  detailsUrl: `https://github.com/acme/monorepo/actions/runs/${runId}/job/${runId + 1}`,
+  startedAt,
+  completedAt,
+});
+
+test("a run cancelled by a later run of the same check does not fail CI", async () => {
+  const result = await readOnce(() =>
+    withChecks([
+      acmeRun("Linear task linked", "SUCCESS", 42077223298, "2026-11-05T17:30:00Z"),
+      acmeRun("PR title type", "SUCCESS", 42077223434, "2026-11-05T17:30:00Z"),
+      acmeRun("Linear task linked", "CANCELLED", 42077289619, "2026-11-05T17:31:00Z"),
+      acmeRun("PR title type", "CANCELLED", 42077289831, "2026-11-05T17:31:00Z"),
+      acmeRun("Linear task linked", "SUCCESS", 42077318675, "2026-11-05T17:32:00Z"),
+      acmeRun("PR title type", "SUCCESS", 42077318471, "2026-11-05T17:32:00Z"),
+    ]),
+  );
+  expect(result.outcome).toBe("ready");
+  expect(result.passed?.map((check) => check.url)).toEqual([
+    "https://github.com/acme/monorepo/actions/runs/42077318675/job/42077318676",
+    "https://github.com/acme/monorepo/actions/runs/42077318471/job/42077318472",
+  ]);
+});
+
+test("a later failure of a check that passed fails CI with its name", async () => {
+  const result = await readOnce(() =>
+    withChecks([
+      acmeRun("PR title type", "SUCCESS", 1, "2026-11-05T17:30:00Z"),
+      acmeRun("PR title type", "FAILURE", 2, "2026-11-05T17:31:00Z"),
+    ]),
+  );
+  expect(result.outcome).toBe("ci_failed");
+  expect(result.failedChecks?.map((check) => [check.name, check.url])).toEqual([
+    ["PR title type", "https://github.com/acme/monorepo/actions/runs/2/job/3"],
+  ]);
+  expect(result.checks).toHaveLength(1);
+});
+
+test("a failure followed by a later success of the same check is ready, by start, completion or list order", async () => {
+  for (const [failed, passed] of [
+    [
+      ["2026-11-05T17:32:00Z", null],
+      ["2026-11-05T17:33:00Z", null],
+    ],
+    [
+      [null, "2026-11-05T17:32:00Z"],
+      [null, "2026-11-05T17:33:00Z"],
+    ],
+    [
+      [null, null],
+      [null, null],
+    ],
+  ] as const) {
+    const result = await readOnce(() =>
+      withChecks([
+        acmeRun("Linear task linked", "FAILURE", 1, failed[0], failed[1]),
+        acmeRun("Linear task linked", "SUCCESS", 2, passed[0], passed[1]),
+      ]),
+    );
+    expect(result.outcome).toBe("ready");
+  }
+  const reversed = await readOnce(() =>
+    withChecks([
+      acmeRun("Linear task linked", "SUCCESS", 2, "2026-11-05T17:33:00Z"),
+      acmeRun("Linear task linked", "FAILURE", 1, "2026-11-05T17:32:00Z"),
+    ]),
+  );
+  expect(reversed.outcome).toBe("ready");
+});
+
+test("a cancelled run that is the only and latest run of its check still fails CI as only cancelled", async () => {
+  const result = await readOnce(() =>
+    withChecks([
+      acmeRun("PR title type", "SUCCESS", 1, "2026-11-05T19:00:00Z"),
+      acmeRun("PR title type", "CANCELLED", 2, "2026-11-05T19:01:00Z"),
+      acmeRun("Linear task linked", "CANCELLED", 3, "2026-11-05T19:01:00Z"),
+    ]),
+  );
+  expect(result).toMatchObject({ outcome: "ci_failed", onlyCancelled: true });
+  expect(result.failedChecks?.map((check) => check.name)).toEqual([
+    "PR title type",
+    "Linear task linked",
+  ]);
+});
+
+test("failsOnBase reads the latest run of each check on the base head", async () => {
+  const result = await readOnce(() =>
+    withChecks(
+      [run("build", "FAILURE"), run("lint", "FAILURE")],
+      [
+        acmeRun("build", "FAILURE", 1, "2026-11-05T17:30:00Z"),
+        acmeRun("build", "SUCCESS", 2, "2026-11-05T17:31:00Z"),
+        acmeRun("lint", "SUCCESS", 3, "2026-11-05T17:30:00Z"),
+        acmeRun("lint", "FAILURE", 4, "2026-11-05T17:31:00Z"),
+      ],
+    ),
+  );
+  expect(result.failedChecks?.map((check) => [check.name, check.failsOnBase])).toEqual([
+    ["build", false],
+    ["lint", true],
+  ]);
+});
+
 test("unreadable required checks block instead of merging", async () => {
   const f = fixture(() => withChecks([run("build", "SUCCESS")]));
   const result = await waitForMergeReadiness({
