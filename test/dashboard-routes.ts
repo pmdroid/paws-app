@@ -258,6 +258,15 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   api("POST", "/api/improvements/:id/decision", "delegated", "src/improvements", {
     sample: "/api/improvements/{run}/decision",
   }),
+  api("GET", "/api/improvements/attention", "delegated", "src/improvements", {
+    sample: "/api/improvements/attention",
+  }),
+  api("GET", "/api/improvements/:id/follow-through", "delegated", "src/improvements", {
+    sample: "/api/improvements/{run}/follow-through",
+  }),
+  ...["delegate", "verification", "criterion", "recovery"].map((action) =>
+    api("POST", `/api/improvements/:id/${action}`, "delegated", "src/improvements"),
+  ),
   api("POST", "/api/improvements/:id/deliveries/:delivery/retry", "delegated", "src/improvements"),
   api("POST", "/api/improvements/:id/deliveries/:delivery/cancel", "delegated", "src/improvements"),
   api(

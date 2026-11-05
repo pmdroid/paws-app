@@ -57,6 +57,7 @@ describe("Linear improvement delivery", () => {
         url: ISSUE.url,
         teamId: "team-a",
         state: "open",
+        stateType: "triage",
         delegated: false,
         description: null,
       },

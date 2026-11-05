@@ -40,3 +40,22 @@ export {
   startImprovementDeliveries,
 } from "./delivery";
 export { createImprovementsHttp, IMPROVEMENTS_PATH, type RetroEvidenceReader } from "./http";
+export {
+  delegateImprovement,
+  followThrough,
+  improvementAttention,
+  improvementFollowThrough,
+  IMPROVEMENT_OUTCOME_LIMITS,
+  reconcileImprovement,
+  recordCriterion,
+  recordVerification,
+  recoverImprovement,
+  startImprovementOutcomeSync,
+  syncImprovementOutcomes,
+  type AttentionState,
+  type FollowThrough,
+  type IssueReader,
+  type RecoveryChoice,
+  type StartIssueSession,
+  type VerificationRequest,
+} from "./outcomes";
