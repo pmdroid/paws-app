@@ -6447,7 +6447,10 @@ export class Orchestrator {
       signal,
       remove: (repository, ref) => {
         const github = this.githubForRepository(repository);
-        if (!github) return Promise.resolve(false);
+        if (!github)
+          return Promise.reject(
+            new Error(`No GitHub App binding for ${repository.owner}/${repository.repo}`),
+          );
         return deleteHiddenRef({
           client: github.client,
           owner: repository.owner,

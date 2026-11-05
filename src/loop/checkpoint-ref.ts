@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { checkpointRef, isTerminalWorkItemState, type RepositoryBinding } from "../core";
-import { getWorkItem, getWorkItemRepository } from "../db";
+import { getWorkItem, getWorkItemRepository, runTeardownOwner } from "../db";
 import { journalCaught } from "../journal";
 
 export async function deleteEndedCheckpointRef(input: {
@@ -17,14 +17,15 @@ export async function deleteEndedCheckpointRef(input: {
     )
     .get(item.branchName, item.id);
   if (owned) return "kept";
-  const publishing = input.db
-    .query(
-      `SELECT 1 FROM runner_work w JOIN run r ON r.id = w.run_id
-       JOIN work_item i ON i.id = r.item_id
-       WHERE i.branch_name = ? AND w.ended_at IS NULL`,
+  const executions = input.db
+    .query<{ runId: string; open: number }, [string]>(
+      `SELECT w.run_id AS runId, w.ended_at IS NULL AS open FROM runner_work w
+       JOIN run r ON r.id = w.run_id JOIN work_item i ON i.id = r.item_id
+       WHERE i.branch_name = ?`,
     )
-    .get(item.branchName);
-  if (publishing) return "deferred";
+    .all(item.branchName);
+  if (executions.some((row) => row.open || runTeardownOwner(input.db, row.runId)))
+    return "deferred";
   const repository = getWorkItemRepository(input.db, item.id);
   if (!repository) return "kept";
   return (await input.remove(repository, checkpointRef(item.branchName))) ? "deleted" : "absent";

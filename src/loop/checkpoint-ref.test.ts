@@ -132,6 +132,20 @@ test("a stop whose runner is still publishing its checkpoint waits for the next 
   expect(ended()).toEqual([item.id]);
   db.run("UPDATE runner_work SET ended_at=20 WHERE run_id=?", [run.id]);
   await sweepCheckpointRefs({ db, remove });
+  expect(removed).toEqual([]);
+  expect(ended()).toEqual([item.id]);
+  db.run("UPDATE runner_work SET teardown_confirmed_at=30 WHERE run_id=?", [run.id]);
+  await sweepCheckpointRefs({ db, remove });
   expect(removed).toHaveLength(1);
   expect(ended()).toEqual([]);
+});
+
+test("a repository without a GitHub binding keeps its cleanup request for a later sweep", async () => {
+  const { db, item, ended } = setup();
+  db.run("UPDATE work_item SET state='merged', version=version+1 WHERE id=?", [item.id]);
+  await sweepCheckpointRefs({
+    db,
+    remove: () => Promise.reject(new Error("No GitHub App binding for acme/repo")),
+  });
+  expect(ended()).toEqual([item.id]);
 });
