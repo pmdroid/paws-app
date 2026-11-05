@@ -98,6 +98,7 @@ export type PawsConfigFile = {
   closeoutProjects?: Record<string, string>;
   agents: AgentsConfig;
   agentSettings?: AgentSettings;
+  extraUsageAgents?: string[];
   /** `[merge] order`. Missing means the merge queue. */
   mergeOrder?: MergeOrder;
   /** `[merge] main_moved`. Missing means `ci`. */
@@ -593,6 +594,7 @@ function assignConfig(
   }
   if (section === "agents") {
     if (key === "implementer") config.agents.implementer = implementerName(value, line);
+    else if (key === "extra_usage") config.extraUsageAgents = asStringArray(value, line);
     return;
   }
   if (section === "agents.grok") {

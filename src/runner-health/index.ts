@@ -57,6 +57,7 @@ export function createRunnerHealth(options: {
   db: Database;
   work: RunnerWork;
   now?: () => number;
+  extraUsage?: (agent: string) => boolean;
 }) {
   const { db, work } = options;
   const now = options.now ?? Date.now;
@@ -353,7 +354,9 @@ export function createRunnerHealth(options: {
             observedAt: at,
           });
         if (assigned.type === "login_check" && result.login?.authenticated && result.agentLimits) {
-          const spent = result.agentLimits.filter((limit) => limit.usedPercent >= 100);
+          const spent = options.extraUsage?.(assigned.agent)
+            ? []
+            : result.agentLimits.filter((limit) => limit.usedPercent >= 100);
           const until = spent.length
             ? Math.max(...spent.map((limit) => limit.resetsAt ?? at + 15 * 60_000))
             : null;
