@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, parentIssueIdSql, type LinearCommand } from "../core";
 import { CLOSED_ISSUE_EVENT } from "./administration";
@@ -44,6 +44,15 @@ export const CATCH_UP_CURSOR = "linear";
 const INITIAL_LOOKBACK_MS = 60 * 60 * 1000;
 const OVERLAP_MS = 5_000;
 const MISSED_DELIVERY_GRACE_MS = 60_000;
+const EMPTY_SIGHTING: IntakeSighting = {
+  sessions: [],
+  issues: [],
+  comments: [],
+  activities: [],
+  budget: null,
+  caughtUp: true,
+  queried: true,
+};
 
 export type PollSignals = {
   now: number;
@@ -154,6 +163,7 @@ export function startCatchUpPoller(options: {
   let active: Promise<void> | null = null;
   let pending = false;
   let latestBudget: LinearRateBudget | null = null;
+  let cycleStartedMs: number | null = null;
 
   function pollOnce(): Promise<void> {
     if (control.stopped) return Promise.resolve();
@@ -181,6 +191,7 @@ export function startCatchUpPoller(options: {
     }
     const saved = options.store.getCursor(CATCH_UP_CURSOR);
     const since = saved === null ? now() - INITIAL_LOOKBACK_MS : Math.max(0, saved - OVERLAP_MS);
+    cycleStartedMs ??= now();
     let sighting: IntakeSighting;
     do {
       sighting = await options.source.poll(since);
@@ -189,7 +200,36 @@ export function startCatchUpPoller(options: {
       await record(sighting, since);
     } while (!sighting.caughtUp && !control.stopped);
     options.intake?.wake();
-    if (sighting.caughtUp) options.store.setCursor(CATCH_UP_CURSOR, now());
+    if (sighting.caughtUp) {
+      options.store.setCursor(CATCH_UP_CURSOR, cycleStartedMs);
+      cycleStartedMs = null;
+      await rereadQuestionThreads();
+    }
+  }
+
+  async function rereadQuestionThreads(): Promise<void> {
+    const read = options.source.questionReplies;
+    if (read === undefined || options.db === undefined) return;
+    const threads = options.db
+      .query<{ session_id: string; created_at: number }, []>(
+        `SELECT q.session_id, MIN(q.created_at) AS created_at FROM question q
+         JOIN work_item w ON w.id = q.item_id
+         WHERE q.status = 'open' AND q.cancelled_at IS NULL AND w.state = 'awaiting_input'
+         GROUP BY q.session_id ORDER BY q.session_id`,
+      )
+      .all();
+    for (const thread of threads) {
+      if (control.stopped) return;
+      const replies = await read(thread.session_id, thread.created_at);
+      for (const reply of replies) {
+        const event = activityEvent(reply);
+        if (event !== null && options.store.get(event.dedupeKey) === null)
+          journal(
+            `poll re-read found reply ${reply.id} in question thread ${thread.session_id} that no webhook delivered`,
+          );
+      }
+      await record({ ...EMPTY_SIGHTING, activities: replies }, thread.created_at);
+    }
   }
 
   async function record(sighting: IntakeSighting, since: number): Promise<void> {
