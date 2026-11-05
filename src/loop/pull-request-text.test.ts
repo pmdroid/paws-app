@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  getPullRequestDraft,
   getPullRequestText,
   migrate,
   openDatabase,
@@ -14,7 +15,9 @@ import { applyPullRequestDraft } from "./pull-request-text";
 
 const EVIDENCE = "## Closeout\n\nAll checks passed at 474f2d1b.";
 
-async function fixture(options: { pull?: boolean; status?: number } = {}) {
+async function fixture(
+  options: { pull?: boolean; stored?: boolean; status?: number; patch?: Promise<void> } = {},
+) {
   const db = openDatabase(":memory:");
   migrate(db);
   const tracker = createFakeTracker([
@@ -30,8 +33,14 @@ async function fixture(options: { pull?: boolean; status?: number } = {}) {
   if (!task.ok) throw new Error("Unexpected dependency cycle");
   const itemId = task.items[0]!.id;
   db.run("UPDATE work_item SET state = 'running' WHERE id = ?", [itemId]);
-  if (options.pull !== false) {
+  const published = publishedPullRequestBody({
+    issue: "DEP-686",
+    description: "Old",
+    evidence: EVIDENCE,
+  });
+  if (options.pull !== false)
     recordItemPullRequest(db, { itemId, pullNumber: 12, pullUrl: null, openedAt: 1 });
+  if (options.pull !== false && options.stored !== false) {
     savePullRequestText(
       db,
       itemId,
@@ -58,6 +67,12 @@ async function fixture(options: { pull?: boolean; status?: number } = {}) {
         requests.push({ method, path, body });
         if (method === "POST" && path.endsWith("/pulls"))
           return { status: 201, body: { number: 13 } };
+        if (method === "GET")
+          return {
+            status: 200,
+            body: { number: 12, state: "open", title: "Grade release races", body: published },
+          };
+        if (options.patch) await options.patch;
         return options.status === 422
           ? { status: 422, body: { message: "Validation Failed" } }
           : { status: 200, body: { number: 12 } };
@@ -66,13 +81,19 @@ async function fixture(options: { pull?: boolean; status?: number } = {}) {
   };
   const status: string[] = [];
   const journal: string[] = [];
+  const controller = new AbortController();
+  if (options.stored === false) savePullRequestDraft(db, itemId, { title: "x", body: "Old" }, 1);
   const apply = (draft: { title: string; body: string }) => {
+    const previous = getPullRequestDraft(db, itemId);
     savePullRequestDraft(db, itemId, draft, 2);
     return applyPullRequestDraft({
       db,
       itemId,
       issue: "DEP-686",
       draft,
+      previous,
+      stopped: () => controller.signal.aborted,
+      signal: controller.signal,
       repository: { owner: "acme", repo: "monorepo" },
       github,
       now: 2,
@@ -80,7 +101,7 @@ async function fixture(options: { pull?: boolean; status?: number } = {}) {
       journal: (line) => journal.push(line),
     });
   };
-  return { db, itemId, github, requests, status, journal, apply };
+  return { db, itemId, github, requests, status, journal, apply, controller };
 }
 
 const draft = {
@@ -141,4 +162,41 @@ test("a refused update keeps the tool's success and records one status line", as
   ]);
   expect(f.journal).toHaveLength(1);
   expect(getPullRequestText(f.db, f.itemId)?.title).toBe("Grade release races");
+});
+
+test("a pull request published before Paws stored its text is updated from GitHub's copy", async () => {
+  const f = await fixture({ stored: false });
+  expect(await f.apply(draft)).toBe("updated");
+  expect(f.requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+    "GET /repos/acme/monorepo/pulls/12",
+    "PATCH /repos/acme/monorepo/pulls/12",
+  ]);
+  expect(f.requests[1]!.body).toEqual({
+    title: draft.title,
+    body: publishedPullRequestBody({
+      issue: "DEP-686",
+      description: draft.body,
+      evidence: EVIDENCE,
+    }),
+  });
+  expect(getPullRequestText(f.db, f.itemId)?.evidence).toBe(EVIDENCE);
+});
+
+test("stopping the run during the update records nothing", async () => {
+  const patch = Promise.withResolvers<void>();
+  const f = await fixture({ patch: patch.promise });
+  const work = f.apply(draft);
+  await Bun.sleep(0);
+  f.controller.abort();
+  patch.resolve();
+  expect(await work).toBe("stopped");
+  expect(f.status).toEqual([]);
+  expect(getPullRequestText(f.db, f.itemId)?.title).toBe("Grade release races");
+});
+
+test("a stopped run sends nothing", async () => {
+  const f = await fixture();
+  f.controller.abort();
+  expect(await f.apply(draft)).toBe("stopped");
+  expect(f.requests).toEqual([]);
 });

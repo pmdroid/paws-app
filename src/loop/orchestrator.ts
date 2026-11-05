@@ -6853,13 +6853,18 @@ export class Orchestrator {
     return {
       update: async (description) => {
         if (this.stopped(item.id)) throw new Error("Pull request updates are closed for this run");
+        const previous = getPullRequestDraft(this.db, item.id);
         savePullRequestDraft(this.db, item.id, description, this.now());
         const repository = this.repositoryForItem(item);
+        const signal = this.signalForItem(item.id);
         await applyPullRequestDraft({
           db: this.db,
           itemId: item.id,
           issue: item.linearIdentifier,
           draft: description,
+          previous,
+          stopped: () => this.stopped(item.id),
+          ...(signal ? { signal } : {}),
           repository,
           github: repository ? this.githubForRepository(repository) : null,
           now: this.now(),

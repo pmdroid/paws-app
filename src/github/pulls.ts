@@ -132,6 +132,7 @@ export async function updatePullRequestText(
   } & GitHubCredentialInput,
 ): Promise<void> {
   const token = await acquireOperationToken(input, "pr");
+  input.signal?.throwIfAborted();
   const patched = await input.client.request({
     method: "PATCH",
     path: repoApiPath(input.owner, input.repo, `/pulls/${input.number}`),
@@ -143,6 +144,32 @@ export async function updatePullRequestText(
   const message =
     isRecord(patched.body) && typeof patched.body.message === "string" ? patched.body.message : "";
   throw new Error(`GitHub answered ${patched.status}${message ? `: ${message}` : ""}`);
+}
+
+export async function readPullRequestText(
+  input: {
+    owner: string;
+    repo: string;
+    number: number;
+    client: GitHubClient;
+    signal?: AbortSignal;
+  } & GitHubCredentialInput,
+): Promise<{ title: string; body: string; open: boolean }> {
+  const token = await acquireOperationToken(input, "pr");
+  input.signal?.throwIfAborted();
+  const read = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, `/pulls/${input.number}`),
+    token,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  if (read.status !== 200 || !isRecord(read.body) || typeof read.body.title !== "string")
+    throw new Error(`GitHub answered ${read.status} reading pull request #${input.number}`);
+  return {
+    title: read.body.title,
+    body: typeof read.body.body === "string" ? read.body.body.replaceAll("\r\n", "\n") : "",
+    open: read.body.state === "open",
+  };
 }
 
 async function findOpenPull(

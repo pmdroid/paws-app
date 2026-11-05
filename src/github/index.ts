@@ -66,6 +66,7 @@ export {
   publishAccepted,
   publishedPullRequestBody,
   pushBranch,
+  readPullRequestText,
   updatePullRequestText,
 } from "./pulls";
 export { EVIDENCE_REF, EVIDENCE_REF_ATTEMPTS, storeEvidenceFiles } from "./evidence-ref";
