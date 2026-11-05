@@ -28,6 +28,7 @@ import {
   type RunnerCommandRejection,
   type RunnerHealthResult,
   type RunnerHelperResult,
+  type RunnerAgentUser,
   type RunnerHostStatus,
   type RunnerRepositoryCommand,
   type RunnerRepositoryCommandResult,
@@ -128,6 +129,7 @@ export type RunnerDaemonOptions = {
   trustedKeys?: ReadonlyMap<string, KeyObject>;
   allowedRepositories?: readonly string[];
   concurrency?: number;
+  agentUser?: RunnerAgentUser;
   now?: () => number;
   /** Host metrics sent with every heartbeat. */
   sampleHost?: () => RunnerHostStatus;
@@ -564,6 +566,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           bindings: heldBindings(),
         }),
       });
+      if (options.agentUser)
+        attempts.unshift({ ...(attempts[0] as object), agentUser: options.agentUser });
       let reply: unknown;
       for (const [index, attempt] of attempts.entries()) {
         try {

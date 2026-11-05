@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { RunnerDaemon } from "../runner-daemon";
+import type { RunnerAgentUser } from "../runner-protocol";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
 import { openRunnerRetroRuntime } from "../runner-retro-runtime";
 import { createRunnerSkillInstaller } from "../runner-execution";
@@ -15,6 +16,7 @@ export async function runPairedDaemon(
     agentUid: number;
     agentGid: number;
     resultsGid: number;
+    agentUser: RunnerAgentUser;
   },
   signal: AbortSignal,
   report: (error: Error) => void,
@@ -38,6 +40,7 @@ export async function runPairedDaemon(
       agentUid: ids.agentUid,
       resultsGid: ids.resultsGid,
     },
+    agentUser: ids.agentUser,
     onError: report,
   };
   const skills = createRunnerSkillInstaller({

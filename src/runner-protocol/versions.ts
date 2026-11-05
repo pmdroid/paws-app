@@ -101,3 +101,4 @@ export const CLOSEOUT_FOCUS_RUNNER_VERSION: RunnerVersion = [0, 1, 69];
 export const CLOSEOUT_FAIL_FAST_RUNNER_VERSION: RunnerVersion = [0, 1, 70];
 /** First runner release that ships `gh` in `/opt/paws-runner/agent-bin`, last on the agent's `PATH`. */
 export const AGENT_GH_RUNNER_VERSION: RunnerVersion = [0, 1, 72];
+export const AGENT_USER_RUNNER_VERSION: RunnerVersion = [0, 1, 67];

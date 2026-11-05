@@ -28,6 +28,7 @@ import {
   type RunnerSpool,
   type RunnerResults,
 } from "../runner-execution";
+import type { RunnerAgentUser } from "../runner-protocol";
 import {
   publishRunnerAnswer,
   runnerFollowUpRequestId,
@@ -229,6 +230,7 @@ export async function openRunnerRuntime(options: {
     >;
   spool: RunnerSpool;
   results: RunnerResults;
+  agentUser?: RunnerAgentUser;
   repositoryRoot: string;
   home: string;
   broker?: RunnerBrokerClient;
@@ -263,6 +265,7 @@ export async function openRunnerRuntime(options: {
       stateRoot: join(options.root, "workers"),
       spool: options.spool,
       results: options.results,
+      agentUser: options.agentUser,
       skills: options.skills,
     });
   const now = options.now ?? Date.now;

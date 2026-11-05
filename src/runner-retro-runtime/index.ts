@@ -12,6 +12,7 @@ import {
   type RunnerResults,
   type RunnerSpool,
 } from "../runner-execution";
+import type { RunnerAgentUser } from "../runner-protocol";
 import {
   RunnerRetroCommandSchema,
   RunnerRetroResultSchema,
@@ -65,6 +66,7 @@ export async function openRunnerRetroRuntime(options: {
   daemon: RunnerRetroDaemon;
   spool: RunnerSpool;
   results: RunnerResults;
+  agentUser?: RunnerAgentUser;
   broker?: RunnerBrokerClient;
   now?: () => number;
   onError?: (error: Error) => void;
@@ -88,6 +90,7 @@ export async function openRunnerRetroRuntime(options: {
       stateRoot: join(options.root, "workers"),
       spool: options.spool,
       results: options.results,
+      agentUser: options.agentUser,
     });
   const now = options.now ?? Date.now;
   const report = (error: unknown) =>

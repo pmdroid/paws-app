@@ -4,7 +4,13 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { createRunnerHostSampler, EnrollmentTokenSchema, openRunnerDaemon } from "../runner-daemon";
-import { ExecutionIdSchema, RUNNER_SKILLS_ENV, runnerAccountBindings } from "../runner-execution";
+import {
+  ExecutionIdSchema,
+  RUNNER_AGENT_USER_ENV,
+  RUNNER_SKILLS_ENV,
+  runnerAccountBindings,
+} from "../runner-execution";
+import { RUNNER_AGENT_USERS, type RunnerAgentUser } from "../runner-protocol";
 import { runRunnerWorker } from "../runner-worker";
 import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "./cause";
 import { runPairedDaemon } from "./daemon";
@@ -29,6 +35,7 @@ const configuration = z.strictObject({
     .optional(),
   serverCa: z.string().max(32768).optional(),
   concurrency: z.number().int().min(1).max(16).default(2),
+  agentUser: z.enum(RUNNER_AGENT_USERS).default("runner"),
 });
 
 function account(kind: "user" | "group", name: string): number {
@@ -50,7 +57,7 @@ function account(kind: "user" | "group", name: string): number {
   return id;
 }
 
-function accounts() {
+function accounts(agentUser: RunnerAgentUser = "runner") {
   if (process.platform !== "linux")
     throw new RunnerCliFailure("identity", "Runner commands require Linux.");
   const runnerUid = account("user", "paws-runner");
@@ -59,11 +66,25 @@ function accounts() {
     throw new RunnerCliFailure("identity", "Runner identities must be non-root.");
   return {
     runnerUid,
-    agentUid: runnerUid,
+    agentUid: agentUser === "paws-agent" ? agentUid : runnerUid,
+    pawsAgentUid: agentUid,
+    agentUser,
     runnerGid: account("group", "paws-runner"),
     agentGid: account("group", "paws-agent"),
     resultsGid: account("group", "paws-results"),
   };
+}
+
+export function workerAgentUser(
+  value: string | undefined,
+  uid: number | undefined,
+  ids: { runnerUid: number; pawsAgentUid: number },
+): RunnerAgentUser {
+  const agentUser = RUNNER_AGENT_USERS.find((user) => user === (value ?? "runner"));
+  const expected = agentUser === "paws-agent" ? ids.pawsAgentUid : ids.runnerUid;
+  if (!agentUser || uid !== expected)
+    throw new RunnerCliFailure("identity", "Worker identity is invalid.");
+  return agentUser;
 }
 
 /** Why an open of a protected file failed, by error code only. */
@@ -231,8 +252,11 @@ export async function runRunnerCli(
       )
         throw new RunnerCliFailure("usage", "Invalid worker command.");
       const executionId = ExecutionIdSchema.parse(args[1]);
-      if (process.getuid?.() !== ids.agentUid)
-        throw new RunnerCliFailure("identity", "Worker identity is invalid.");
+      const agentUser = workerAgentUser(
+        process.env[RUNNER_AGENT_USER_ENV],
+        process.getuid?.(),
+        ids,
+      );
       await runRunnerWorker({
         executionId,
         spool: {
@@ -243,7 +267,7 @@ export async function runRunnerCli(
         results: {
           root: "/var/lib/paws-agent-results",
           runnerUid: ids.runnerUid,
-          agentUid: ids.agentUid,
+          agentUid: agentUser === "paws-agent" ? ids.pawsAgentUid : ids.runnerUid,
           resultsGid: ids.resultsGid,
         },
         workRoot: "/var/lib/paws-agent/work",
@@ -300,9 +324,11 @@ export async function runRunnerCli(
       throw new RunnerCliFailure("usage", "Invalid daemon command.");
     if (process.getuid?.() !== ids.runnerUid)
       throw new RunnerCliFailure("identity", "Runner service identity is invalid.");
+    const config = loadConfig(args[1]!, ids.runnerUid);
+    const daemonIds = accounts(config.agentUser);
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
-      ...loadConfig(args[1]!, ids.runnerUid),
+      ...config,
       sampleHost: createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" }),
       accountBindings: () =>
         runnerAccountBindings("/var/lib/paws-agent", {
@@ -311,7 +337,7 @@ export async function runRunnerCli(
         }),
     });
     try {
-      await runPairedDaemon(daemon, ids, abort.signal, (failure) =>
+      await runPairedDaemon(daemon, daemonIds, abort.signal, (failure) =>
         error(`Runner operation failed: ${describeRunnerFailure(failure)}`),
       );
       abort.signal.throwIfAborted();

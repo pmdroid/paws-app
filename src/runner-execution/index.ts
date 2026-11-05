@@ -17,7 +17,9 @@ export {
   RUNNER_DOCKER_SOCKET,
   RUNNER_SKILLS_ENV,
   runnerDockerEnv,
+  workerSpawn,
 } from "./supervisor";
+export { RUNNER_AGENT_USER_ENV, type RunnerSystemctl } from "./agent-unit";
 export {
   createRunnerResultDirectory,
   runnerResultDirectory,
