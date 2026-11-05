@@ -4,6 +4,7 @@ import {
   mergeSettingsBody,
   mergeSettingsRequest,
   fieldProblem,
+  markerLines,
   renderMergeSettings,
   riskGlobs,
 } from "./merge-settings";
@@ -275,6 +276,13 @@ describe("Settings → Merging", () => {
     const html = renderMergeSettings({ data: data(), busy: null, error: null, saved: false });
     expect(html).not.toContain("High-risk paths");
     expect(mergeSettingsBody(data())).not.toHaveProperty("highRiskPaths");
+  });
+
+  test("Comment markers keep their spaces and drop blank lines", () => {
+    expect(markerLines(" Result: PASS \r\n\n  \n<!-- deploy-security-proof -->\n")).toEqual([
+      " Result: PASS ",
+      "<!-- deploy-security-proof -->",
+    ]);
   });
 
   test("High-risk paths save every listed repository, one glob per line, and reload", async () => {

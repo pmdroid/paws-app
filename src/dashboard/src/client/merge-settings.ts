@@ -121,6 +121,10 @@ export function riskGlobs(text: string): string[] {
     .filter((line) => line !== "");
 }
 
+export function markerLines(text: string): string[] {
+  return text.split(/\r?\n/).filter((line) => line.trim() !== "");
+}
+
 /** The repository's own `.paws/high-risk-paths`, read-only. */
 function riskFile(file: HighRiskRepository["file"]): string {
   if (file.state === "unavailable") return `<p class="sub">${esc(file.reason)}</p>`;
@@ -152,6 +156,7 @@ const IGNORED_LISTS = [
     name: "ignore-bots",
     title: "Bot accounts",
     placeholder: "codecov[bot]",
+    lines: riskGlobs,
     help: "Ignore every comment from this account. Use markers instead when the account also posts real failures.",
   },
   {
@@ -159,6 +164,7 @@ const IGNORED_LISTS = [
     name: "ignore-markers",
     title: "Comment markers",
     placeholder: "<!-- deploy-security-proof -->",
+    lines: markerLines,
     help: "A comment that contains this text is ignored, for example <code>&lt;!-- deploy-security-proof --&gt;</code>.",
   },
 ] as const;
@@ -413,7 +419,7 @@ export function createMergeSettings(invalidate: () => void): {
         const text = form.querySelector<HTMLTextAreaElement>(
           `[name="${list.name}-${index}"]`,
         )?.value;
-        if (text !== undefined) next[list.key] = riskGlobs(text);
+        if (text !== undefined) next[list.key] = list.lines(text);
       }
       return next;
     });
