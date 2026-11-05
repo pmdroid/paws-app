@@ -5,6 +5,7 @@ import { GitError } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
 import {
   FakeClock,
+  HostDiskFullError,
   JOB_KIND,
   MAX_TRANSIENT_RETRIES,
   RUNNER_CAPACITY_WAIT_MS,
@@ -33,7 +34,7 @@ import {
   createFakeTracker,
   parseAgentEvent,
 } from "../src/linear";
-import { LinearTaskAccess, attachOrchestrator } from "../src/loop";
+import { HOST_DISK_FULL_THOUGHT, LinearTaskAccess, attachOrchestrator } from "../src/loop";
 import { UsageLimitPause } from "../src/runner-backend";
 import { emptyReview, repoLayout, stateOf, writeOk } from "./e2e-harness";
 import { workspaceAdmission } from "./fake-workspace";
@@ -75,6 +76,19 @@ test.each([
   },
   90_000,
 );
+
+test("a full disk while a run starts retries, and Linear hears it once within the hour", async () => {
+  const result = await runWithFault({
+    error: () => new HostDiskFullError("/tmp", 0, "fatal: No space left on device"),
+    times: 2,
+  });
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.retries, result.detail).toEqual([1, 2]);
+  expect(
+    result.thoughts.filter((body) => body === HOST_DISK_FULL_THOUGHT),
+    result.detail,
+  ).toEqual([HOST_DISK_FULL_THOUGHT]);
+}, 90_000);
 
 test("a tracker 503 retries without applying run_failed", async () => {
   const result = await runWithFault({
