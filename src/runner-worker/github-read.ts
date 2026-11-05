@@ -16,7 +16,7 @@ export function openGitHubReadConfig(
   read: GitHubReadSource,
   intervalMs = 5_000,
   maxTokens = 64,
-): GitHubReadConfig | undefined {
+): GitHubReadConfig {
   let sequence = 0;
   let first: { token: string } | null = null;
   for (let candidate = 1; candidate <= maxTokens; candidate++) {

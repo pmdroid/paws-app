@@ -171,7 +171,12 @@ test("the agent finds the turn's token in gh's config, never in its environment,
 
 test("a turn without a read token gets no GH_CONFIG_DIR, not even an inherited one, and nothing is written", async () => {
   const inherited = join(temporary(), "operator-gh");
-  const { trace, asked, directory } = await turn(false, { 1: TOKEN }, {}, { GH_CONFIG_DIR: inherited });
+  const { trace, asked, directory } = await turn(
+    false,
+    { 1: TOKEN },
+    {},
+    { GH_CONFIG_DIR: inherited },
+  );
   expect(trace.env?.ghConfig).toBeUndefined();
   expect(asked).toEqual([]);
   expect(existsSync(directory)).toBe(false);
@@ -190,13 +195,13 @@ test("a token minted after the agent started still reaches gh's config", async (
   );
   expect(config?.directory).toBe(directory);
   expect(readdirSync(directory)).toEqual([]);
-  expect(config!.tokens()).toEqual([]);
+  expect(config.tokens()).toEqual([]);
   published[1] = TOKEN;
   const hosts = join(directory, "hosts.yml");
   for (let i = 0; i < 200 && !existsSync(hosts); i++) await Bun.sleep(10);
   expect(readFileSync(hosts, "utf8")).toContain(`oauth_token: ${TOKEN}`);
-  expect(config!.tokens()).toEqual([TOKEN]);
-  config!.close();
+  expect(config.tokens()).toEqual([TOKEN]);
+  config.close();
   expect(existsSync(directory)).toBe(false);
 });
 
@@ -228,7 +233,7 @@ test("a restarted worker starts from the newest token the runner kept", async ()
   const directory = join(temporary(), ".gh-run");
   const config = openGitHubReadConfig(directory, (sequence) =>
     sequence === 3 ? { token: FRESH, expiresAt: Date.now() + 3_600_000 } : null,
-  )!;
+  );
   expect(readFileSync(join(directory, "hosts.yml"), "utf8")).toContain(`oauth_token: ${FRESH}`);
   expect(config.tokens()).toEqual([FRESH]);
   config.close();
