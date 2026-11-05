@@ -98,6 +98,12 @@
               }
             }
           }
+        },
+        "turn": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["at"],
+          "properties": { "at": { "type": "integer", "minimum": 0 } }
         }
       }
     },

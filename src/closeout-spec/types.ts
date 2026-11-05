@@ -554,6 +554,7 @@ export type CommandRecord = {
   artifacts: Artifact[];
   /** Set when the result was taken from green GitHub checks at `head` instead of a run. */
   ci?: CiProvenance;
+  turn?: { at: number };
 };
 
 /** The GitHub checks a command's result was taken from. */
@@ -567,6 +568,19 @@ export type CiCheckConclusion = { name: string; conclusion: string; url: string 
 
 /** A command check whose result Closeout takes from green CI instead of running it. */
 export type CiResult = CiProvenance & { id: string };
+
+export type TurnPass = {
+  id: string;
+  command: string;
+  head: string;
+  base: string;
+  policyDigest: string;
+  at: number;
+  durationMs: number;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+};
 
 /**
  * Review evidence. The record carries findings, not an outcome.

@@ -50,6 +50,7 @@ import {
   SPEC_VERSION,
   type CandidateIdentity,
   type CiResult,
+  type TurnPass,
   type DecisionDocument,
   type DecisionWarning,
   type EarlierFinding,
@@ -142,6 +143,7 @@ export type RunRequest = {
   approvals?: readonly EvidenceApproval[];
   /** Command checks whose result comes from green CI at `head`. See {@link ciMappings}. */
   fromCi?: readonly CiResult[];
+  fromTurn?: readonly TurnPass[];
 };
 
 export type ReviewIntake =
@@ -625,6 +627,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
     ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
     ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
     ...(input.fromCi !== undefined ? { fromCi: input.fromCi } : {}),
+    ...(input.fromTurn !== undefined ? { fromTurn: input.fromTurn } : {}),
   });
   if (ran.blocked !== undefined) {
     return evaluate(

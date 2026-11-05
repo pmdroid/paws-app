@@ -14,6 +14,7 @@ export type {
   CiCheckConclusion,
   CiProvenance,
   CiResult,
+  TurnPass,
   CommandExec,
   CommandRecord,
   CommandRunRequest,

@@ -60,6 +60,9 @@ export const RunnerCloseoutProgressSchema = z.discriminatedUnion("type", [
     stdout: z.string().max(16_000),
     stderr: z.string().max(16_000),
     truncated: z.boolean(),
+    base: closeoutHead.optional(),
+    policyDigest: z.string().max(128).optional(),
+    clean: z.boolean().optional(),
   }),
 ]);
 
