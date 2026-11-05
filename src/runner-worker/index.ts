@@ -124,6 +124,7 @@ import {
 } from "../runner-protocol";
 
 import { AGENT_SESSION_MAX_BYTES } from "../agent-sessions";
+import { agentWaitTracker } from "./agent-wait";
 import { compactAcpEvent } from "./compact";
 import {
   CLAUDE_SESSION_TOO_LARGE,
@@ -396,6 +397,8 @@ export type RunnerWorkerEvent =
           | "session_restore"
           | "handover"
           | "handover_interrupted"
+          | "agent_wait_started"
+          | "agent_wait_ended"
           | "checkpoint"
           | "preview";
       }
@@ -1124,6 +1127,7 @@ export async function executeRunnerCommand(
     // A handover stops the agent only when no tool call runs but ask_team calls waiting for a
     // person. A call is ask_team when the agent names it so; any other must finish first.
     const toolCalls = new Map<string, { askTeam: boolean }>();
+    const waits = agentWaitTracker(emit);
     let waitingForAnswer = 0;
     const safePoint = () =>
       [...toolCalls.values()].every((call) => call.askTeam && waitingForAnswer > 0);
@@ -1256,6 +1260,7 @@ export async function executeRunnerCommand(
             tokens = Math.max(tokens, event.update.used ?? 0);
           }
           emit({ type: "acp", event: compactAcpEvent(event) });
+          waits.observe(event);
           if (event.type === "hook_failed") {
             const parsed = RunnerEventSchema.safeParse(event);
             if (parsed.success && parsed.data.type === "hook_failed") emit(parsed.data);
@@ -1770,6 +1775,7 @@ export async function executeRunnerCommand(
           ? await runWithFollowUps(current, options.followUp, runner).finally(endTurn)
           : await runner(current).finally(endTurn);
     endTurn();
+    waits.stop();
     // A turn halted for a stop leaves its work in the stop checkpoint, never in a candidate.
     if (halt.signal.aborted) run = { ...run, cancelled: true, interrupted: false };
     watch.abort();

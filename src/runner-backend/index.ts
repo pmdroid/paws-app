@@ -29,6 +29,8 @@ import {
   immediate,
   inMergeQueue,
   listHooks,
+  startAgentWait,
+  endAgentWait,
   pinnedSlotsReserved,
   releasePinnedSlot,
   restartedFromMergeQueue,
@@ -1858,6 +1860,10 @@ export function createRemoteAgentRunner(options: {
                 );
               }
               if (event.type === "hook_failed") await emit(event, origin);
+              const waitRun = { itemId, runId: assigned.runId, generation: assigned.generation };
+              if (event.type === "agent_wait_started") startAgentWait(db, waitRun, mono(), now());
+              if (event.type === "agent_wait_ended")
+                endAgentWait(db, waitRun, mono(), now(), event.waitedMs);
               if (event.type === "checkpoint" && assigned.type === "run")
                 recordRunnerCheckpoint(db, {
                   itemId,
@@ -2375,6 +2381,18 @@ export function createRemoteAgentRunner(options: {
                 : ((command.type === "run" && command.checkpoint !== false) ||
                     command.type === "task") &&
                   state === "running");
+            if (!detached)
+              try {
+                if (command)
+                  endAgentWait(
+                    db,
+                    { itemId, runId: command.runId, generation: command.generation },
+                    mono(),
+                    now(),
+                  );
+              } catch (error) {
+                journalCaught(error, "runner-backend.cleanup.agentWait", itemId);
+              }
             // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
             // first, and the next turn starts from it.
             try {

@@ -26,6 +26,8 @@ import {
   recoverOnStartup,
   saveCheckpoint,
   setCurrentRun,
+  startAgentWait,
+  endAgentWait,
 } from "./index";
 
 const MINUTE = 60_000;
@@ -410,6 +412,85 @@ describe("awake-time cap after Closeout accepted the work", () => {
       db.close();
     });
   }
+
+  function remoteTurn() {
+    const clock = new FakeClock(20_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 60 * MINUTE, now: 0 });
+    const enqueued = enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: { itemId: item.id },
+      now: clock.now(),
+    });
+    db.run(
+      "INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,paths,hot,created_at) VALUES(?,?,'*','fixture','[]',0,?)",
+      [item.id, enqueued, clock.now()],
+    );
+    expect(
+      claimNextJob(db, { now: clock.now(), leaseMs: 24 * 60 * MINUTE, queues: [JOB_KIND.start] }),
+    ).not.toBeNull();
+    const { run } = beginImplementRun(db, item.id, clock.now());
+    db.run("PRAGMA foreign_keys=OFF");
+    db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'runner','workspace',1,0,'command',?)",
+      [run.id, clock.now() + 24 * 60 * MINUTE],
+    );
+    db.run("PRAGMA foreign_keys=ON");
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    const wait = { itemId: item.id, runId: run.id, generation: 1 };
+    const accrue = () => accrueAwake(db, item.id, clock.mono(), clock.now());
+    return { clock, db, item, wait, accrue, jobId: enqueued };
+  }
+
+  test("an agent waiting 50 minutes on its own command stays under a 60-minute limit", () => {
+    const { clock, db, wait, accrue, jobId } = remoteTurn();
+    clock.advance(9 * MINUTE);
+    startAgentWait(db, wait, clock.mono(), clock.now());
+    for (let minute = 0; minute < 50; minute++) {
+      clock.advance(MINUTE);
+      if (minute === 20) {
+        db.run("UPDATE job SET locked_by='after-restart', attempts=attempts+1 WHERE id=?", [jobId]);
+      }
+      const outcome = accrue();
+      expect(outcome).toMatchObject({ capped: false });
+      expect(outcome.stopAgent).toBeUndefined();
+    }
+    endAgentWait(db, wait, clock.mono(), clock.now(), 50 * MINUTE);
+    clock.advance(MINUTE);
+    expect(accrue().item).toMatchObject({
+      state: "running",
+      awakeMs: 10 * MINUTE,
+      agentMs: 10 * MINUTE,
+      waitingMs: 50 * MINUTE,
+    });
+    expect(listJobs(db).some((job) => job.queue === "item.ask")).toBe(false);
+    db.close();
+  });
+
+  test("a wait delivered late still counts the time the runner measured", () => {
+    const { clock, db, wait, accrue } = remoteTurn();
+    clock.advance(30 * MINUTE);
+    accrue();
+    startAgentWait(db, wait, clock.mono(), clock.now());
+    endAgentWait(db, wait, clock.mono(), clock.now(), 28 * MINUTE);
+    expect(accrue().item).toMatchObject({
+      awakeMs: 2 * MINUTE,
+      agentMs: 2 * MINUTE,
+      waitingMs: 28 * MINUTE,
+    });
+    db.close();
+  });
+
+  test("a turn that ends without the runner's end clears the wait", () => {
+    const { clock, db, wait, accrue } = remoteTurn();
+    startAgentWait(db, wait, clock.mono(), clock.now());
+    clock.advance(10 * MINUTE);
+    endAgentWait(db, wait, clock.mono(), clock.now());
+    clock.advance(5 * MINUTE);
+    expect(accrue().item).toMatchObject({ agentMs: 5 * MINUTE, waitingMs: 10 * MINUTE });
+    db.close();
+  });
 
   test("a Closeout run waiting on CI does not accrue closeout time", () => {
     const clock = new FakeClock(20_000);

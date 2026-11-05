@@ -472,11 +472,54 @@ export function markJobAwakeWait(
   });
 }
 
+export type AgentWaitRun = { itemId: string; runId: string; generation: number };
+
+export function startAgentWait(db: Database, run: AgentWaitRun, mono: number, now: number): void {
+  immediate(db, () => {
+    if (getWorkItem(db, run.itemId) === null) return;
+    const item = accrueAwake(db, run.itemId, mono, now).item;
+    db.run(
+      `INSERT INTO agent_wait(run_id,generation,started_at,waiting_ms) VALUES(?,?,?,?)
+       ON CONFLICT(run_id) DO UPDATE SET generation=excluded.generation,
+         started_at=excluded.started_at,waiting_ms=excluded.waiting_ms`,
+      [run.runId, run.generation, now, item.waitingMs],
+    );
+  });
+}
+
+export function endAgentWait(
+  db: Database,
+  run: AgentWaitRun,
+  mono: number,
+  now: number,
+  waitedMs?: number,
+): void {
+  immediate(db, () => {
+    const open = db
+      .query<{ waitingMs: number }, [string, number]>(
+        "SELECT waiting_ms AS waitingMs FROM agent_wait WHERE run_id=? AND generation=?",
+      )
+      .get(run.runId, run.generation);
+    if (open === null || getWorkItem(db, run.itemId) === null) return;
+    const item = accrueAwake(db, run.itemId, mono, now).item;
+    db.run("DELETE FROM agent_wait WHERE run_id=?", [run.runId]);
+    if (waitedMs === undefined) return;
+    const counted = Math.max(0, item.waitingMs - open.waitingMs);
+    const moved = Math.min(Math.max(0, waitedMs - counted), item.agentMs);
+    if (moved > 0)
+      db.run(
+        `UPDATE work_item SET awake_ms = awake_ms - ?1, agent_ms = agent_ms - ?1,
+           waiting_ms = waiting_ms + ?1 WHERE id = ?2`,
+        [moved, run.itemId],
+      );
+  });
+}
+
 /** Read ownership and wait flags in one scan for each accrual. Pending CI marks are never live. */
 function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId = -1) {
   const row = db
     .query<
-      { live: number; waiting: number; usage: number },
+      { live: number; waiting: number; usage: number; agent: number },
       [number, string, string, string, string, string, number, number]
     >(
       `SELECT (COALESCE(MAX(status='running' AND locked_until>?1), 0) OR EXISTS(
@@ -487,7 +530,10 @@ function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId
          AND json_extract(payload, '$.awakeWait.worker')=locked_by
          AND json_extract(payload, '$.awakeWait.attempt')=attempts), 0) AS waiting,
        EXISTS(SELECT 1 FROM usage_pause p JOIN work_item i ON i.current_run_id=p.run_id
-         WHERE i.id=?2) AS usage
+         WHERE i.id=?2) AS usage,
+       EXISTS(SELECT 1 FROM agent_wait a JOIN work_item i ON i.current_run_id=a.run_id
+         JOIN runner_work w ON w.run_id=a.run_id AND w.generation=a.generation
+         WHERE i.id=?2 AND w.ended_at IS NULL AND w.lease_until>?8) AS agent
      FROM job WHERE json_extract(payload, '$.itemId')=?2
        AND status IN ('pending', 'running') AND id<>?7
        AND (queue IN (?3, ?4, ?5, ?6) OR queue LIKE (?6 || '.%'))`,
@@ -502,7 +548,11 @@ function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId
       exceptJobId,
       runnerLeaseCutoff(now),
     )!;
-  return { live: row.live === 1, waiting: row.waiting === 1, usage: row.usage === 1 };
+  return {
+    live: row.live === 1,
+    waiting: row.waiting === 1 || row.agent === 1,
+    usage: row.usage === 1,
+  };
 }
 
 /**

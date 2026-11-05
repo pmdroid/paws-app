@@ -63,6 +63,11 @@ export const RunnerCloseoutProgressSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+const agentWaitToolCall = {
+  kind: z.string().max(64).optional(),
+  title: z.string().max(256).optional(),
+};
+
 export function withoutJournalTime<T>(value: T): T {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
   if (!("t" in value) || typeof value.t !== "string") return value;
@@ -102,6 +107,12 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
   }),
   /** The runner stopped the agent at a safe point and is making the WIP commit and snapshot. */
   z.strictObject({ type: z.literal("handover_interrupted") }),
+  z.strictObject({ type: z.literal("agent_wait_started"), ...agentWaitToolCall }),
+  z.strictObject({
+    type: z.literal("agent_wait_ended"),
+    ...agentWaitToolCall,
+    waitedMs: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  }),
   /**
    * A WIP commit of the running worktree, published to the item's branch: before a stop Paws
    * asked for (`stop`), or on the runner's own interval (`interval`). A stop with no `sha` found
