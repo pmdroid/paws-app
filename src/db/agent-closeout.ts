@@ -43,6 +43,9 @@ export type AgentCloseoutProgress =
       stdout: string;
       stderr: string;
       truncated: boolean;
+      base?: string;
+      policyDigest?: string;
+      clean?: boolean;
     };
 
 export type AgentCloseoutEvent = {
@@ -74,6 +77,9 @@ type EventSql = {
   truncated: number;
   checks: string | null;
   blocked: string | null;
+  base: string | null;
+  policy_digest: string | null;
+  clean: number | null;
 };
 
 export function recordAgentCloseout(
@@ -95,8 +101,9 @@ export function recordAgentCloseout(
     db.run(
       `INSERT INTO agent_closeout_event (
          run_id, sequence, item_id, at, type, head, max_attempts, check_id, kind, command, attempt,
-         state, exit_code, timed_out, duration_ms, stdout, stderr, truncated, checks, blocked
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         state, exit_code, timed_out, duration_ms, stdout, stderr, truncated, checks, blocked,
+         base, policy_digest, clean
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         runId,
         sequence + 1,
@@ -118,6 +125,11 @@ export function recordAgentCloseout(
         progress.type === "finished" && (progress.truncated || stdout!.cut || stderr!.cut) ? 1 : 0,
         progress.type === "report" ? JSON.stringify(progress.checks) : null,
         progress.type === "report" ? progress.blocked : null,
+        progress.type === "finished" ? (progress.base ?? null) : null,
+        progress.type === "finished" ? (progress.policyDigest ?? null) : null,
+        progress.type === "finished" && progress.clean !== undefined
+          ? Number(progress.clean)
+          : null,
       ],
     );
   });
@@ -169,6 +181,9 @@ function toEvent(row: EventSql): AgentCloseoutEvent {
       stdout: row.stdout,
       stderr: row.stderr,
       truncated: row.truncated === 1,
+      ...(row.base !== null ? { base: row.base } : {}),
+      ...(row.policy_digest !== null ? { policyDigest: row.policy_digest } : {}),
+      ...(row.clean !== null ? { clean: row.clean === 1 } : {}),
     },
   };
 }

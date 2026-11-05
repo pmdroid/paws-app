@@ -92,3 +92,4 @@ export const REPOSITORY_COMMAND_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
 export const CLOSEOUT_FINISH_RECORDED_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
 export const SUGGESTED_FINDINGS_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
 export const AGENT_WAIT_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
+export const CLOSEOUT_TURN_KEY_RUNNER_VERSION: RunnerVersion = [0, 1, 67];

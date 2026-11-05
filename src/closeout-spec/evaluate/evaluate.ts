@@ -575,9 +575,14 @@ function judgeCommand(
     return row(item, "invalid", "command evidence does not match the policy argv", attempt);
   }
   const judged = applyExec(item, record.exec, allowDirty, attempt);
-  return record.ci && judged.state === "passed"
-    ? row(item, "passed", ciMessage(record.ci), attempt)
-    : judged;
+  if (judged.state !== "passed") return judged;
+  if (record.ci) return row(item, "passed", ciMessage(record.ci), attempt);
+  if (record.turn) return row(item, "passed", turnMessage(record.turn.at), attempt);
+  return judged;
+}
+
+export function turnMessage(at: number): string {
+  return `passed in the agent's turn at ${new Date(at).toISOString()}`;
 }
 
 /** How a result taken from CI reads: "from CI run <url>: `test (0/4)` success, …". */

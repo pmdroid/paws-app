@@ -119,6 +119,7 @@ import {
   type ResolvedEvidence,
   type CandidateIdentity,
   type CiResult,
+  type TurnPass,
   candidatePolicyDigests,
   ciMappings,
 } from "../closeout";
@@ -230,6 +231,7 @@ import {
   getLinkAsk,
   getPullRequestDraft,
   savePullRequestDraft,
+  listAgentCloseout,
   recordAgentCloseout,
   immediate,
   insertRun,
@@ -476,6 +478,7 @@ import {
   withDecisions,
 } from "./suggested-findings";
 import { ciForRecheck, conflictsAt, type CiRecheck } from "./ci-recheck";
+import { turnPasses } from "./turn-passes";
 import { followUpCi, unavailableCi, type FollowUpCi } from "./follow-up-ci";
 import { PULL_REVIEW_POLL_MS, handlePullReview, type PullReviewCapabilities } from "./pull-reviews";
 import {
@@ -3346,7 +3349,14 @@ export class Orchestrator {
         await this.flush();
         return;
       }
-      await this.verify(finished, at.repo, base, head, this.candidateFor(run.id));
+      await this.verify(
+        finished,
+        at.repo,
+        base,
+        head,
+        this.candidateFor(run.id),
+        turnPasses(listAgentCloseout(this.db, [run.id])),
+      );
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
       if (
@@ -3408,6 +3418,7 @@ export class Orchestrator {
     base: string,
     head: string,
     candidate: CandidateIdentity,
+    fromTurn: readonly TurnPass[],
   ): Promise<void> {
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state !== "running") return;
@@ -3416,7 +3427,7 @@ export class Orchestrator {
     const verifying = getWorkItem(this.db, item.id);
     if (verifying === null) return;
     saveCheckpoint(this.db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
-    await this.evaluateHead(verifying, worktree, base, head, candidate);
+    await this.evaluateHead(verifying, worktree, base, head, candidate, { fromTurn });
   }
 
   /**
@@ -3431,7 +3442,12 @@ export class Orchestrator {
     base: string,
     head: string,
     candidate: CandidateIdentity,
-    options: { decide?: boolean; reverifyJobId?: number; onOwned?: () => void } = {},
+    options: {
+      decide?: boolean;
+      reverifyJobId?: number;
+      onOwned?: () => void;
+      fromTurn?: readonly TurnPass[];
+    } = {},
   ): Promise<void> {
     const startRound =
       options.reverifyJobId !== undefined &&
@@ -3462,7 +3478,12 @@ export class Orchestrator {
     base: string,
     head: string,
     candidate: CandidateIdentity,
-    options: { decide?: boolean; reverifyJobId?: number; startRound: boolean },
+    options: {
+      decide?: boolean;
+      reverifyJobId?: number;
+      startRound: boolean;
+      fromTurn?: readonly TurnPass[];
+    },
     assertCurrent: () => void,
     assertOwned: () => void,
   ): Promise<void> {
@@ -3501,6 +3522,7 @@ export class Orchestrator {
         assertCurrent,
         decide,
         fromCi,
+        options.fromTurn,
       );
       // A finished verdict may decide an aborted but still-owned run (PAS-771).
       assertOwned();
@@ -3735,6 +3757,7 @@ export class Orchestrator {
     assertCurrent: () => void = () => {},
     decide = false,
     fromCi: readonly CiResult[] = [],
+    fromTurn: readonly TurnPass[] = [],
   ): Promise<CloseoutVerdict> {
     const repository = this.repositoryForItem(item);
     const mirror =
@@ -3865,6 +3888,7 @@ export class Orchestrator {
       published: () => publishedEvidence(this.db, item.id),
       approvals: () => visualReviewApprovals(this.db, item.id, itemPathId(item)),
       ...(fromCi.length > 0 ? { fromCi } : {}),
+      ...(fromTurn.length > 0 ? { fromTurn } : {}),
       ...(commands ? { commandRunner: commands } : {}),
       reviewer: {
         async review(request) {

@@ -49,6 +49,7 @@ import {
   type EvidenceApproval,
   type PublishedEvidence,
   type CiResult,
+  type TurnPass,
 } from "../closeout-spec";
 
 export type EvaluateInput = {
@@ -76,6 +77,7 @@ export type EvaluateInput = {
   approvals?: () => readonly EvidenceApproval[];
   /** Command checks taken from green CI at `head` instead of running. */
   fromCi?: readonly CiResult[];
+  fromTurn?: readonly TurnPass[];
 };
 
 export type Evaluation = {
@@ -117,6 +119,7 @@ export type GateInput = {
   approvals?: () => readonly EvidenceApproval[];
   /** Command checks taken from green CI at the first head. A fixed head runs them again. */
   fromCi?: readonly CiResult[];
+  fromTurn?: readonly TurnPass[];
 };
 
 /**
@@ -246,6 +249,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(progress !== undefined ? { progress } : {}),
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
       ...(input.fromCi ? { fromCi: input.fromCi } : {}),
+      ...(input.fromTurn ? { fromTurn: input.fromTurn } : {}),
     });
   } catch (error) {
     await early?.done.catch((caughtError1) => {
@@ -379,7 +383,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
     const evaluation = await evaluateCandidate({
       ...input,
       head,
-      ...(head === firstHead ? {} : { fromCi: undefined }),
+      ...(head === firstHead ? {} : { fromCi: undefined, fromTurn: undefined }),
     });
     if (input.reportDir) {
       await appendDecisionHistory(input.reportDir, {

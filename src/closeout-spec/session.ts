@@ -139,6 +139,9 @@ export type CloseoutSessionEvent =
       stdout: string;
       stderr: string;
       truncated: boolean;
+      base?: string;
+      policyDigest?: string;
+      clean?: boolean;
     };
 
 const PROGRESS_OUTPUT_CHARS = 16_000;
@@ -196,6 +199,15 @@ export function createCloseoutSession(
   let chain: Promise<unknown> = Promise.resolve();
   let listed: Prepared | undefined;
   let last: { report: string; head: string | undefined } | undefined;
+  const running = new Map<string, Promise<{ ok: boolean; text: string }>>();
+  const once: Once = (id, work) => {
+    let run = running.get(id);
+    if (!run) {
+      run = work().finally(() => running.delete(id));
+      running.set(id, run);
+    }
+    return run;
+  };
 
   const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
     const run = chain.then(work, work);
@@ -291,17 +303,18 @@ export function createCloseoutSession(
         last = { report: boundedReport(report), head: checkedHead };
         return last.report;
       }),
-    run: (id) =>
-      exclusive(async () => {
+    run: async (id) => {
+      const ready = await exclusive(async () => {
         const prepared = await prepare();
         listed = prepared;
         if (prepared.kind === "blocked") return prepared.message;
         if (prepared.kind === "empty") return `No closeout check ${id}. Call get_closeout.`;
         if (options.rulesFirst) await judgeRules(prepared);
-        const broken = ruleBreak(prepared);
-        if (broken) return broken;
-        return runId(workspace, prepared, memory, id, options);
-      }),
+        return ruleBreak(prepared) ?? prepared;
+      });
+      if (typeof ready === "string") return ready;
+      return runId(workspace, ready, memory, id, options, once);
+    },
     recorded: async () => {
       let prepared = listed;
       // A blocked listing may be a policy load that failed; only a new report can clear it.
@@ -607,12 +620,18 @@ function runnable(state: ItemMemory | undefined, max: number | null): boolean {
   return status !== "passed" && status !== "exhausted";
 }
 
+type Once = (
+  id: string,
+  work: () => Promise<{ ok: boolean; text: string }>,
+) => Promise<{ ok: boolean; text: string }>;
+
 async function runId(
   workspace: string,
   prepared: Extract<Prepared, { kind: "ready" }>,
   memory: Map<string, ItemMemory>,
   id: string,
   options: CloseoutSessionOptions,
+  once: Once,
 ): Promise<string> {
   const { policy, required } = prepared;
   if (policy.rules.some((rule) => rule.id === id)) {
@@ -638,18 +657,22 @@ async function runId(
   if (statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max) === "exhausted") {
     return `Check ${id} is exhausted. Stop retrying and report the blocker.`;
   }
-  if (item.kind === "command") {
-    for (const step of required) {
-      if (step.kind !== "setup" || step.id === item.id) continue;
+  const digest = policy.digest;
+  if (item.kind === "command" || item.kind === "setup") {
+    const before = item.kind === "setup" ? required.indexOf(item) : required.length;
+    for (const step of required.slice(0, before)) {
+      if (step.kind !== "setup") continue;
       if (memory.get(step.id)?.passed) continue;
       if (statusOf(memory.get(step.id), 2) === "exhausted") {
         return `Check ${step.id} is exhausted. Stop retrying and report the blocker.`;
       }
-      const setup = await execute(workspace, step, memory, options, 2);
+      const setup = await once(step.id, () => execute(workspace, step, memory, options, 2, digest));
       if (!setup.ok) return setup.text;
     }
   }
-  const result = await execute(workspace, item, memory, options, item.kind === "setup" ? 2 : max);
+  const result = await once(item.id, () =>
+    execute(workspace, item, memory, options, item.kind === "setup" ? 2 : max, digest),
+  );
   return result.text;
 }
 
@@ -659,6 +682,7 @@ async function execute(
   memory: Map<string, ItemMemory>,
   options: CloseoutSessionOptions,
   max: number | null,
+  policyDigest: string,
 ): Promise<{ ok: boolean; text: string }> {
   const argv = item.exec ?? [];
   try {
@@ -669,6 +693,8 @@ async function execute(
     return { ok: false, text: message };
   }
   const before = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
+  const base = await comparisonBase(workspace);
+  const cleanBefore = await clean(workspace);
   const progress = {
     head: before.ok ? before.stdout.toString("utf8").trim() : "",
     id: item.id,
@@ -685,6 +711,7 @@ async function execute(
     basePath: options.basePath,
   });
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
+  const cleanAfter = await clean(workspace);
   if (result.cancelled) {
     notify(options, {
       type: "finished",
@@ -733,6 +760,9 @@ async function execute(
       stdout: stdout.text,
       stderr: stderr.text,
       truncated: result.truncated || stdout.cut || stderr.cut,
+      base: base ?? "",
+      policyDigest,
+      clean: cleanBefore && cleanAfter && state.result!.head !== "",
     });
   };
   if (result.code === 0 && !result.timedOut) {
@@ -875,6 +905,15 @@ async function listChanges(
   for (const path of names(diff.stdout)) paths.add(path);
   for (const path of names(untracked.stdout)) paths.add(path);
   return { ok: true, paths: [...paths].sort() };
+}
+
+async function clean(workspace: string): Promise<boolean> {
+  const status = await git(
+    workspace,
+    ["status", "--porcelain", "--untracked-files=normal"],
+    commandEnv(),
+  );
+  return status.ok && status.stdout.length === 0;
 }
 
 function names(stdout: Buffer): string[] {
