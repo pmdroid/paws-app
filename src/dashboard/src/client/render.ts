@@ -529,6 +529,7 @@ function issuePage(
         ? { queue: item.mergeQueue.position }
         : {}),
     })}
+    ${hostDiskFullNotice(item)}
     ${queueNotice(item, snapshot.generatedAt)}
     ${deadDeliveriesSection(snapshot, item.id)}
     ${run ? (run.usagePause ? usagePauseSection(item, run, run.usagePause) : executionControls(item, run)) : ""}
@@ -923,6 +924,11 @@ function usagePauseSection(item: StatusItem, run: StatusRun, pause: StatusUsageP
     <div class="between"><h2 id="usage-pause-heading">Paused</h2>${executionControls(item, run)}</div>
     <div class="closeout-result usage-pause-card"><span class="result-icon" aria-hidden="true">II</span><div class="min-w-0"><p><b>${esc(pause.agent)} reached its usage limit. Paws continues at ${esc(at)} UTC.</b></p><p>The work so far is kept: branch, worktree and the agent conversation. At ${esc(at)} Paws continues the item${run.runner ? ` on runner ${esc(run.runner)}` : ""}.</p></div></div>
   </section>`;
+}
+
+function hostDiskFullNotice(item: StatusItem): string {
+  if (!item.hostDiskFull) return "";
+  return `<section class="closeout-result blocked" aria-labelledby="disk-${esc(item.id)}" data-host-disk-full><span class="result-icon" aria-hidden="true">!</span><div><h3 id="disk-${esc(item.id)}">${esc(item.hostDiskFull)}</h3><p>Paws retries when space is free.</p></div></section>`;
 }
 
 /** Where a queued item stands while every runner slot is busy. */

@@ -101,7 +101,7 @@ import {
   type CloseoutRound,
   type CloseoutStepRecord,
 } from "../../../db";
-import { isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
+import { hostDiskFullReason, isTerminalWorkItemState, riskCarryOverReason } from "../../../core";
 import { redactCloseoutText } from "../server/artifact";
 import { agentCloseoutOf } from "./agent-closeout";
 import { doingOf } from "./doing";
@@ -1250,7 +1250,18 @@ function toItem(
     ...(githubQueue ? { githubQueue } : {}),
     ...visualReviewsOf(db, record),
     ...riskCarryOverOf(db, record),
+    ...hostDiskFullOf(record, jobs),
   };
+}
+
+function hostDiskFullOf(
+  record: WorkItemRecord,
+  jobs: readonly Job[],
+): Pick<StatusItem, "hostDiskFull"> {
+  if (isTerminalWorkItemState(record.state)) return {};
+  const last = newest(jobs.filter((job) => readString(job.payload, "itemId") === record.id));
+  const reason = hostDiskFullReason(last?.lastError ?? null);
+  return reason === null ? {} : { hostDiskFull: reason };
 }
 
 export function queueOf(
@@ -2288,15 +2299,17 @@ function mergeQueueFor(
           : enqueuedAt(record.id, jobs, generatedAt),
         acceptedAt: acceptedAt(record.id, jobs, generatedAt),
         waitingFor: reason,
-        detail: waitsForRunnerSlot(record.id, jobs)
-          ? SLOT_WAIT_DETAIL
-          : reason === "ahead"
-            ? ahead
-              ? `Starts when ${aheadLabel(ahead, items)} merges`
-              : null
-            : reason === "closeout"
-              ? "Re-checking, keeps its place."
-              : (wait?.message ?? null),
+        detail:
+          hostDiskFullReason(job?.lastError ?? null) ??
+          (waitsForRunnerSlot(record.id, jobs)
+            ? SLOT_WAIT_DETAIL
+            : reason === "ahead"
+              ? ahead
+                ? `Starts when ${aheadLabel(ahead, items)} merges`
+                : null
+              : reason === "closeout"
+                ? "Re-checking, keeps its place."
+                : (wait?.message ?? null)),
         settings: mergeSettings(db, record.id),
         steps: mergeSteps(job),
       };

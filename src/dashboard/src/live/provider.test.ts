@@ -897,6 +897,32 @@ describe("live status provider", () => {
     expect(items.get("ENG-23")).toMatchObject({ position: 3, ahead: "ENG-22" });
   });
 
+  test("an item whose last job failed on a full disk names the disk on the issue and the merge queue", () => {
+    const db = database();
+    const head = "d".repeat(40);
+    const item = insertQueuedItem(db, { id: "ENG-31", title: "Disk", sessionKey: "ses_d", now: 1 });
+    beginImplementRun(db, item.id, 1);
+    enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
+    joinMergeQueue(db, { itemId: item.id, repository: "acme/platform", now: 10 });
+    const job = enqueueJob(db, { queue: "github.merge", payload: { itemId: item.id }, now: 20 });
+    const reason = "Paws's host is out of disk space (/tmp, 12 MB left)";
+    db.run("UPDATE job SET last_error=? WHERE id=?", [
+      `push failed: ${reason}: fatal: Out of diskspace`,
+      job,
+    ]);
+
+    const provider = createLiveStatusProvider(db);
+    const detail = parseIssueDetailResponse(provider.issue("ENG-31"));
+    if (!detail.ok) throw new Error(detail.error);
+    expect(detail.response.issue.hostDiskFull).toBe(reason);
+    const queue = parseMergeQueueResponse(provider.mergeQueue());
+    if (!queue.ok) throw new Error(queue.error);
+    expect(queue.response.entries[0]?.detail).toBe(reason);
+
+    db.run("UPDATE job SET last_error='push failed: permission denied' WHERE id=?", [job]);
+    expect(provider.issue("ENG-31")?.issue.hostDiskFull).toBeUndefined();
+  });
+
   test("the merge queue names each task's bound repository without a configured repo", () => {
     const db = database();
     const now = 1_700_000_000_000;

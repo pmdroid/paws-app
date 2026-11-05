@@ -136,6 +136,7 @@ export interface StatusItem {
   doing?: StatusDoing;
   activeMs?: number;
   stageTimes?: StatusStageTimes;
+  hostDiskFull?: string;
 }
 
 export const TIME_STAGES = ["implementation", "fixes", "closeout"] as const;
@@ -1791,6 +1792,7 @@ function readItem(input: unknown, index: number): StatusItem {
     ...(body.riskCarryOver === undefined
       ? {}
       : { riskCarryOver: readRiskCarryOver(body.riskCarryOver, `${path}.riskCarryOver`) }),
+    ...(body.hostDiskFull === undefined ? {} : { hostDiskFull: text(body, "hostDiskFull", path) }),
     ...(body.session === undefined
       ? {}
       : { session: readItemSession(body.session, `${path}.session`) }),
