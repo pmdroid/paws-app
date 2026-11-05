@@ -65,7 +65,10 @@ export function closeoutFinishLine(report: string): string {
     required.some((item) => item?.status === "exhausted") &&
     required.every(
       (item) =>
-        item?.status === "exhausted" || item?.status === "passed" || item?.kind === "review",
+        item?.status === "exhausted" ||
+        item?.status === "passed" ||
+        item?.status === "deferred" ||
+        item?.kind === "review",
     );
   if (onlyExhausted) return "{}";
   if (typeof blocked === "string" && blocked.length > 0) {

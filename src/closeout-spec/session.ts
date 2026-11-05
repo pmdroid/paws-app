@@ -97,6 +97,14 @@ export type CloseoutSessionOptions = {
   allowCommand?: (argv: readonly string[]) => void;
   onProgress?: (event: CloseoutSessionEvent) => void;
   rulesFirst?: boolean;
+  focus?: CloseoutFocus;
+};
+
+export type CloseoutFocus = {
+  scope: "failed" | "changed";
+  head: string;
+  policyDigest: string;
+  passed: readonly string[];
 };
 
 export type CloseoutSessionCheck = {
@@ -177,7 +185,10 @@ type Prepared =
       required: Listed[];
       rules: ListedRule[];
       published: PublishedEvidence[];
+      deferred: Deferred;
     };
+
+type Deferred = { head: string; ids: ReadonlySet<string> } | undefined;
 
 /** A rule the change must keep. `result` is set when the report asked for probes. */
 type ListedRule = {
@@ -253,12 +264,14 @@ export function createCloseoutSession(
           await comparisonBase(workspace),
         )
       : [];
+    const required = select(policy, paths);
     return {
       kind: "ready",
       policy,
-      required: select(policy, paths),
+      required,
       rules: selectRules(policy.rules, paths),
       published,
+      deferred: await deferredOf(workspace, policy, required, options.focus),
     };
   };
 
@@ -337,11 +350,13 @@ export function createCloseoutSession(
           );
           // Select again for the files as they are now; published evidence and rule results
           // belong to the old candidate.
+          const required = select(prepared.policy, current.paths);
           prepared = {
             ...prepared,
-            required: select(prepared.policy, current.paths),
+            required,
             rules: selectRules(prepared.policy.rules, current.paths),
             published: [],
+            deferred: await deferredOf(workspace, prepared.policy, required, options.focus),
           };
         }
         recordedHead = current.ok ? current.head : undefined;
@@ -448,12 +463,20 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
   }
   const max = prepared.policy.retry?.maxFailedAttemptsPerItem ?? 3;
   const scope = prepared.policy.retry?.scope ?? null;
+  const { deferred } = prepared;
+  const deferredNow = (item: Listed) => {
+    if (!deferred?.ids.has(item.id)) return false;
+    const now = statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max);
+    return now === "missing" || now === "stale";
+  };
   const status = (item: Listed) =>
     item.kind === "preview"
       ? "pending"
       : item.evidence
         ? evidenceStatus(item.evidence, prepared.published)
-        : statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max);
+        : deferredNow(item)
+          ? "deferred"
+          : statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max);
   const required = prepared.required.map((item) => {
     const state = memory.get(item.id);
     const failures = state?.failures ?? 0;
@@ -480,6 +503,9 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
         : {}),
       retry_scope: scope,
       different_model: item.differentModel,
+      ...(deferred && deferredNow(item)
+        ? { note: `passed on ${deferred.head.slice(0, 12)}; Closeout reruns it at the end` }
+        : {}),
       ...(state?.result && !state.stale ? { result: state.result } : {}),
     };
   });
@@ -488,6 +514,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
       (item) =>
         item.kind !== "review" &&
         item.kind !== "preview" &&
+        !deferredNow(item) &&
         (item.evidence
           ? status(item) === "missing"
           : runnable(memory.get(item.id), item.kind === "setup" ? 2 : max)),
@@ -782,6 +809,31 @@ async function execute(
   const failed = `${item.id} failed (${why}).${log ? ` Full output: ${log}` : ""}`;
   const tail = result.output.trim();
   return { ok: false, text: tail.length > 0 ? `${failed}\n${tail}` : failed };
+}
+
+async function deferredOf(
+  workspace: string,
+  policy: TreePolicy,
+  required: readonly Listed[],
+  focus: CloseoutFocus | undefined,
+): Promise<Deferred> {
+  if (focus === undefined || focus.policyDigest !== policy.digest) return undefined;
+  let since: string[] = [];
+  if (focus.scope === "changed") {
+    const listed = await listChanges(workspace, focus.head);
+    if (listed === undefined) return undefined;
+    since = listed.paths;
+  }
+  const ids = required
+    .filter(
+      (item) =>
+        (item.kind === "command" || item.kind === "setup") &&
+        item.evidence === undefined &&
+        focus.passed.includes(item.id) &&
+        matchedPaths(item, since).length === 0,
+    )
+    .map((item) => item.id);
+  return { head: focus.head, ids: new Set(ids) };
 }
 
 function select(policy: TreePolicy, paths: readonly string[]): Listed[] {

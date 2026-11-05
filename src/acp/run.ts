@@ -405,6 +405,9 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           : {}),
         allowCloseoutRun: options.readOnly !== true,
         ...(options.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
+        ...(options.closeoutFocus && options.readOnly !== true
+          ? { closeoutFocus: options.closeoutFocus }
+          : {}),
         ...(options.suggestedFindings?.length
           ? { suggestedFindings: options.suggestedFindings }
           : {}),
