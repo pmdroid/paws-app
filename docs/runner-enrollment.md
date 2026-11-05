@@ -285,6 +285,27 @@ For daemon errors, inspect its journal on the VM:
 sudo journalctl -u paws-runner.service -n 100 --no-pager
 ```
 
+## The agent's read-only GitHub token
+
+Each implement and fix turn on a runner gets a GitHub App installation token that can only read the task's repository: Contents, Metadata, Actions, Checks, Commit statuses, Pull requests and Issues, all read (`AGENT_READ_PERMISSIONS` in `src/github/types.ts`). With it the agent reads pull requests, issues, Actions runs and their logs with `gh`, such as `gh run view <run-id> --log-failed`. It can't write anything, and it can't read other repositories: the token request names only the item's repository, and Paws refuses to mint one without a repository.
+
+Paws mints the token when it dispatches the turn and sends it over the runner's authenticated channel, the same way repository credentials reach the runner (`POST /v1/runs/<run>/github-read-credential`). The runner writes it only to `hosts.yml` in a per-run `GH_CONFIG_DIR` (`/var/lib/paws-agent/work/.gh-<run>`, folder mode `0700`, file mode `0600`, owned by the agent user) and sets `GH_CONFIG_DIR` for the agent of that turn only; an inherited `GH_CONFIG_DIR` never reaches an agent. It never sets `GH_TOKEN` or `GITHUB_TOKEN`. Git gets no credentials from it: the checkout keeps its fake remote, and pushes still go through Paws.
+
+The runner hands the token to the worker through the spool and keeps only the newest copy there; it removes that copy when the execution is done. A token lasts at most an hour. About 10 minutes before it expires the runner asks for a fresh one and replaces `hosts.yml` atomically. When the turn ends for any reason, an end, an error, a stop or a lost runner, Paws revokes every token it minted for the turn with `DELETE /installation/token`, and the worker deletes the folder. A worker killed mid-turn can leave its folder behind, holding a revoked token, until the run's next turn replaces it. A paused item or one waiting for an answer has no turn running, so it holds no token.
+
+Paws keeps the turn's live tokens in an encrypted file in the runner authority folder (`agent-read-tokens.json`), so after a crash the restarted Paws revokes them. A turn Paws reattaches after a restart gets a fresh token, which the runner picks up within 5 minutes.
+
+The journal records each mint with its repository, each refresh and the revoke, never the token; a mint failure or a revoke failure is one journal line for the turn. A mint failure doesn't stop the turn: it runs without a token. Paws leaves the token out of the stored transcript, the runner's own `acp.jsonl`, `post_update` and `ask_team` text, pull request and Linear text, and the journal, matching both the exact token and the `ghs_` prefix.
+
+The turn's prompt says `gh` is signed in only when Paws minted a token for it. Runners before 0.1.68 get no token and still run the item. To turn the token off for a repository, list it in `config.toml`; the next turn reads the setting, without a restart:
+
+```toml
+[github]
+agent_read_off = ["acme/monorepo"]
+```
+
+Code the agent runs during a turn can read this token. It is read-only, limited to the task's repositories, and revoked when the turn ends.
+
 ## Working through a Paws outage
 
 Runner 0.1.55 keeps working while Paws cannot be reached. Deploy Paws's lease-credit

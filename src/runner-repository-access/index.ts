@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { z } from "zod";
 import {
   MAX_TOKEN_TTL_MS,
@@ -97,6 +97,7 @@ export function cacheRepositoryCredentials<
     ...options,
     github: {
       async mintInstallationToken(input) {
+        if (input.access === "agent_read") return options.github.mintInstallationToken(input);
         const key = `${input.installationId}:${input.repository}:${input.access ?? "write"}`;
         const cached = tokens.get(key);
         if (cached) {
@@ -192,6 +193,191 @@ export function createRunnerRepositoryAccess(options: {
           { status: 409, headers: { "cache-control": "no-store" } },
         );
       if (error instanceof GitHubUnavailableError) return unavailable();
+      return denied();
+    }
+  };
+}
+
+export const AGENT_READ_REFRESH_MS = 10 * 60_000;
+
+type AgentReadLease = {
+  itemId: string;
+  runId: string;
+  repository: string;
+  installationId: string;
+  current: { token: string; expiresAt: number };
+  minted: string[];
+  refreshes: number;
+  refreshing?: Promise<{ token: string; expiresAt: number }>;
+  mintFailed?: boolean;
+};
+
+export type AgentReadTokens = ReturnType<typeof createAgentReadTokens>;
+
+export function createAgentReadTokens(options: {
+  github: GitHubApp;
+  installationForRepository(repository: string): string | null;
+  revoke(token: string): Promise<void>;
+  store?: { read(): readonly string[]; write(tokens: readonly string[]): void };
+  now?: () => number;
+}) {
+  const now = options.now ?? Date.now;
+  const leases = new Map<string, AgentReadLease>();
+  const leftover = (() => {
+    try {
+      return [...(options.store?.read() ?? [])];
+    } catch (error) {
+      journalCaught(error, "runner-repository-access.agentRead.read", null);
+      return [];
+    }
+  })();
+  const save = () => {
+    try {
+      options.store?.write([...leftover, ...[...leases.values()].flatMap((lease) => lease.minted)]);
+    } catch (error) {
+      journalCaught(error, "runner-repository-access.agentRead.write", null);
+    }
+  };
+  const label = (lease: { itemId: string; runId: string; repository: string }) =>
+    `agent-read item=${lease.itemId} run=${lease.runId} repositories=${lease.repository}`;
+  async function mint(repository: string, installationId: string) {
+    const credential = await options.github.mintInstallationToken({
+      access: "agent_read",
+      repository,
+      installationId,
+    });
+    const checkedAt = now();
+    if (!usableCredential(credential, repository, checkedAt))
+      throw new Error("GitHub returned an unusable read token");
+    return {
+      token: credential.token,
+      expiresAt: Math.min(credential.expiresAt, checkedAt + MAX_TOKEN_TTL_MS),
+    };
+  }
+  return {
+    async open(input: {
+      commandId: string;
+      itemId: string;
+      runId: string;
+      repository: string | null;
+    }): Promise<boolean> {
+      const lease = { ...input, repository: input.repository ?? "none" };
+      try {
+        if (!input.repository) throw new Error("the item has no repository");
+        const installationId = options.installationForRepository(input.repository);
+        if (!installationId) throw new Error("no GitHub App installation covers the repository");
+        const current = await mint(input.repository, installationId);
+        leases.set(input.commandId, {
+          ...lease,
+          repository: input.repository,
+          installationId,
+          current,
+          minted: [current.token],
+          refreshes: 0,
+        });
+        save();
+        journal(`${label(lease)} minted expires=${new Date(current.expiresAt).toISOString()}`);
+        return true;
+      } catch (error) {
+        journal(
+          `${label(lease)} mint failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return false;
+      }
+    },
+    async credential(commandId: string): Promise<{ token: string; expiresAt: number } | null> {
+      const lease = leases.get(commandId);
+      if (!lease) return null;
+      if (lease.current.expiresAt - now() > AGENT_READ_REFRESH_MS + 60_000) return lease.current;
+      lease.refreshing ??= mint(lease.repository, lease.installationId)
+        .then((next) => {
+          if (leases.get(commandId) !== lease) {
+            void options.revoke(next.token).catch((caught) => {
+              journalCaught(caught, "runner-repository-access.agentRead.lateRevoke", lease.itemId);
+            });
+            throw new Error("The turn ended");
+          }
+          lease.current = next;
+          lease.minted.push(next.token);
+          lease.refreshes += 1;
+          save();
+          journal(
+            `${label(lease)} refreshed refresh=${lease.refreshes} expires=${new Date(next.expiresAt).toISOString()}`,
+          );
+          return next;
+        })
+        .finally(() => {
+          lease.refreshing = undefined;
+        });
+      try {
+        return await lease.refreshing;
+      } catch (error) {
+        if (!lease.mintFailed && leases.get(commandId) === lease)
+          journal(
+            `${label(lease)} mint failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        lease.mintFailed = true;
+        return lease.current.expiresAt > now() ? lease.current : null;
+      }
+    },
+    async recover(): Promise<void> {
+      const tokens = leftover.splice(0);
+      if (tokens.length === 0) return;
+      const results = await Promise.allSettled(tokens.map((token) => options.revoke(token)));
+      const failed = results.filter((result) => result.status === "rejected").length;
+      journal(
+        failed
+          ? `agent-read revoke failed for ${failed} of ${tokens.length} tokens left from before a restart`
+          : `agent-read revoked ${tokens.length} tokens left from before a restart`,
+      );
+      save();
+    },
+    tokens(commandId: string): readonly string[] {
+      return leases.get(commandId)?.minted ?? [];
+    },
+    async close(commandId: string): Promise<void> {
+      const lease = leases.get(commandId);
+      if (!lease) return;
+      leases.delete(commandId);
+      const results = await Promise.allSettled(lease.minted.map((token) => options.revoke(token)));
+      save();
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed)
+        journal(
+          `${label(lease)} revoke failed: ${failed.reason instanceof Error ? failed.reason.message : String(failed.reason)}`,
+        );
+      else journal(`${label(lease)} revoked refreshes=${lease.refreshes}`);
+    },
+  };
+}
+
+export function createAgentReadAccess(options: { work: RunnerWork; agentRead: AgentReadTokens }) {
+  return async (request: Request, runnerId: string): Promise<Response | null> => {
+    const path = /^\/v1\/runs\/([^/]+)\/github-read-credential$/.exec(
+      new URL(request.url).pathname,
+    );
+    if (!path) return null;
+    try {
+      const received = await credentialRequest(request);
+      if (!received) return denied();
+      const input = inputSchema.pick({ generation: true }).parse(received.body);
+      const { command } = options.work.authorize({
+        runnerId,
+        runId: idSchema.parse(decodeURIComponent(path[1]!)),
+        generation: input.generation,
+        token: received.token,
+      });
+      if (command.type !== "run" || !command.githubRead) return denied();
+      const credential = await options.agentRead.credential(command.id);
+      if (!credential) return denied();
+      return Response.json(credential, { headers: { "cache-control": "no-store" } });
+    } catch (error) {
+      journalCaught(error, "runner-repository-access.createAgentReadAccess", null);
+      if (error instanceof RunnerWorkFencedError)
+        return Response.json(
+          { error: "Runner work is fenced.", code: "fenced" },
+          { status: 409, headers: { "cache-control": "no-store" } },
+        );
       return denied();
     }
   };

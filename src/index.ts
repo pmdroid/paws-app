@@ -144,6 +144,7 @@ import {
   repositoriesRequiringUpToDate,
   listAppRepositories,
   createGitHubApp,
+  revokeInstallationToken,
   githubHttpsUrl,
   useGitTempDirectory,
   usePublicationRepositories,
@@ -2016,6 +2017,7 @@ export function runnerRepositoryAccess(
         return null;
       }
     },
+    revokeToken: (token) => revokeInstallationToken(createFetchGitHubClient(), token),
     async checkpointBot(repository) {
       const [owner, repo] = repository.split("/") as [string, string];
       const provider = authProvider(

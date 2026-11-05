@@ -10,10 +10,14 @@ export const INSTALLATION_PERMISSIONS = {
   issues: "write",
 } as const;
 
-export const ACTIONS_LOG_PERMISSIONS = {
+export const AGENT_READ_PERMISSIONS = {
+  contents: "read",
+  metadata: "read",
   actions: "read",
   checks: "read",
-  metadata: "read",
+  statuses: "read",
+  pull_requests: "read",
+  issues: "read",
 } as const;
 
 export const ACTIONS_RERUN_PERMISSIONS = {

@@ -1,6 +1,7 @@
 import { journalCaught, journalRejection } from "../journal";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
+import { z } from "zod";
 import { isAbsolute, join } from "node:path";
 import { createRunnerInputStore } from "../runner-inputs";
 import type { Database } from "bun:sqlite";
@@ -22,6 +23,8 @@ import type { WorkspacePrincipal } from "../workspace";
 import { createRunnerWork, createRunnerWorkHttp } from "../runner-work";
 import type { GitHubApp } from "../github";
 import {
+  createAgentReadAccess,
+  createAgentReadTokens,
   createRepositoryCommandAccess,
   createRunnerRepositoryAccess,
 } from "../runner-repository-access";
@@ -42,6 +45,7 @@ export type RunnerRepositoryAccessOptions = {
   github: GitHubApp;
   installationForRepository(repository: string): string | null;
   checkpointBot?: (repository: string) => Promise<{ appId: string; login: string; id: number }>;
+  revokeToken?: (token: string) => Promise<void>;
 };
 
 const SIGNING_FILE = "runner-command-key.pem";
@@ -148,6 +152,18 @@ export async function openRunnerCoordinator(options: {
   const repository = options.repositoryAccess
     ? createRunnerRepositoryAccess({ ...options.repositoryAccess, work, now: options.now })
     : undefined;
+  const revokeToken = options.repositoryAccess?.revokeToken;
+  const agentRead =
+    options.repositoryAccess && revokeToken
+      ? createAgentReadTokens({
+          ...options.repositoryAccess,
+          revoke: revokeToken,
+          store: secretList(join(options.root, AGENT_READ_FILE)),
+          now: options.now,
+        })
+      : undefined;
+  void agentRead?.recover();
+  const agentReadAccess = agentRead ? createAgentReadAccess({ work, agentRead }) : undefined;
   const repositoryCommands = createRepositoryCommandsHttp({ db: options.db, now: options.now });
   const repositoryCommandAccess = options.repositoryAccess
     ? createRepositoryCommandAccess({
@@ -190,6 +206,7 @@ export async function openRunnerCoordinator(options: {
         (await health.fetch(request, runnerId)) ??
         (await login.fetch(request, runnerId)) ??
         (await repository?.(request, runnerId)) ??
+        (await agentReadAccess?.(request, runnerId)) ??
         (await repositoryCommands(request, runnerId)) ??
         (await repositoryCommandAccess?.(request, runnerId)) ??
         (await artifacts.fetch(request, runnerId)) ??
@@ -261,6 +278,7 @@ export async function openRunnerCoordinator(options: {
     inputs,
     transcripts,
     agentSessions,
+    agentRead,
     signRetroCommand: (command: RunnerRetroCommand) =>
       signRunnerRetroCommand({
         keyId: signing.signingKeys[0].keyId,
@@ -286,6 +304,18 @@ export async function openRunnerCoordinator(options: {
       clearInterval(signInTimer);
       clearInterval(pruneTimer);
       await listener?.stop();
+    },
+  };
+}
+
+const AGENT_READ_FILE = "agent-read-tokens.json";
+
+function secretList(path: string) {
+  return {
+    read: () => z.array(z.string()).parse(JSON.parse(readSecretFile(path) ?? "[]")),
+    write(tokens: readonly string[]) {
+      if (tokens.length) writeSecretFile(path, JSON.stringify(tokens));
+      else rmSync(path, { force: true });
     },
   };
 }

@@ -48,7 +48,12 @@ export type {
 export { checkGitHubSignature, handleGitHubWebhook } from "./webhook";
 export type { SignatureCheck } from "./webhook";
 export { signAppJwt } from "./jwt";
-export { assertScopedToken, createGitHubApp, mintInstallationToken } from "./token";
+export {
+  assertScopedToken,
+  createGitHubApp,
+  mintInstallationToken,
+  revokeInstallationToken,
+} from "./token";
 export { listAppRepositories, listUserRepositories } from "./repository-catalog";
 export type { CatalogRepository } from "./repository-catalog";
 export type { GitHubAppOptions, MintedToken } from "./token";
@@ -94,7 +99,6 @@ export type {
   SerialMergeInput,
 } from "./merge";
 export { readHeadCheckRuns, readPullCi } from "./readiness";
-export { readCiLog } from "./ci-log";
 export { rerunFailedCi, CI_ALREADY_RERUN, CI_RERUN_PERMISSION_MISSING } from "./ci-rerun";
 export type { CiRerunInput } from "./ci-rerun";
 export type { FailedCheck, HeadChecks, PassedCheck, PullCi, Readiness } from "./readiness";
@@ -109,6 +113,7 @@ export {
   GitCommandError,
   GitHubTokenError,
   GitHubHttpError,
+  AGENT_READ_PERMISSIONS,
   INSTALLATION_PERMISSIONS,
   MAX_TOKEN_TTL_MS,
   TOKEN_TTL_SKEW_MS,

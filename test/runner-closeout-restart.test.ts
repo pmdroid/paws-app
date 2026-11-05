@@ -1,10 +1,10 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { git, type AcpEvent, type RunAgentOptions } from "../src/acp";
+import { git, runDir, type AcpEvent, type RunAgentOptions } from "../src/acp";
 import { PawsShutdown, RunnerCapacityWait } from "../src/core";
 import {
   applyWorkItemEvent,
@@ -44,7 +44,9 @@ const REPORT = "Closeout report for the checks";
 
 type CloseoutCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
 
-async function fixture() {
+type AgentRead = NonNullable<Parameters<typeof createRemoteAgentRunner>[0]["agentRead"]>;
+
+async function fixture(agentRead?: AgentRead) {
   const root = mkdtempSync(join(tmpdir(), "paws-closeout-restart-"));
   const worktree = join(root, "worktree");
   const env = {
@@ -138,6 +140,7 @@ async function fixture() {
       health: createRunnerHealth({ db, work }),
       placement: createRunnerPlacement({ db }),
       pollIntervalMs: 5,
+      ...(agentRead ? { agentRead } : {}),
       // The check run reports the head the worktree already holds.
       async fetchCandidate() {},
     });
@@ -238,6 +241,7 @@ async function fixture() {
 
   return {
     head,
+    root,
     item,
     run,
     placed,
@@ -554,5 +558,137 @@ test("a checks run asks for rules first only on a runner that accepts it", async
     } finally {
       await f.close();
     }
+  }
+}, 60_000);
+
+const READ_TOKEN = `ghs_${"r".repeat(36)}`;
+const READ_PROMPT = "`gh` is signed in with read-only access to this task's repositories.";
+
+function recordingAgentRead(minted = true) {
+  const opened: unknown[] = [];
+  const closed: string[] = [];
+  const agentRead: AgentRead = {
+    async open(input) {
+      opened.push(input);
+      return minted;
+    },
+    tokens: () => [READ_TOKEN],
+    async close(commandId) {
+      closed.push(commandId);
+    },
+  };
+  return { agentRead, opened, closed };
+}
+
+test("a turn on a runner that takes it gets one read token and its prompt line; an older runner gets neither", async () => {
+  for (const [version, current] of [
+    ["0.1.67", false],
+    ["0.1.68", true],
+  ] as const) {
+    const read = recordingAgentRead();
+    const f = await fixture(read.agentRead);
+    try {
+      f.db.run("UPDATE runner_host_status SET runner_version=?", [version]);
+      const running = f.services.backend.forItem(f.item.id)({
+        ...f.checks(new AbortController().signal),
+        githubRead: { prompt: READ_PROMPT },
+      });
+      await f.until(() => f.placed.length === 1);
+      const command = f.placed[0]!;
+      expect(command.type === "run" && command.githubRead).toBe(current ? true : undefined);
+      expect(command.prompt?.endsWith(`\n\n${READ_PROMPT}`)).toBe(current);
+      f.say(command, 1, `gh printed ${READ_TOKEN}`);
+      await f.until(() => f.consumed() === 1);
+      f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+      expect(await running).toMatchObject({ stopReason: "end_turn" });
+      expect(read.opened).toEqual(
+        current
+          ? [
+              {
+                commandId: command.id,
+                itemId: f.item.id,
+                runId: command.runId,
+                repository: "acme/fixture",
+              },
+            ]
+          : [],
+      );
+      expect(read.closed).toEqual(current ? [command.id] : []);
+      const stored = readFileSync(
+        join(runDir(f.root, f.checks(new AbortController().signal).runId), "acp.jsonl"),
+        "utf8",
+      );
+      expect(stored.includes(READ_TOKEN)).toBe(!current);
+      expect(JSON.stringify(f.events).includes(READ_TOKEN)).toBe(!current);
+    } finally {
+      await f.close();
+    }
+  }
+}, 60_000);
+
+test("a turn without a token still runs, and a stopped turn revokes its token", async () => {
+  const failed = recordingAgentRead(false);
+  const f = await fixture(failed.agentRead);
+  try {
+    const running = f.services.backend.forItem(f.item.id)({
+      ...f.checks(new AbortController().signal),
+      githubRead: { prompt: READ_PROMPT },
+    });
+    await f.until(() => f.placed.length === 1);
+    const command = f.placed[0]!;
+    expect(command.type === "run" && command.githubRead).toBeUndefined();
+    expect(command.prompt).not.toContain(READ_PROMPT);
+    f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+    expect(await running).toMatchObject({ stopReason: "end_turn" });
+    expect(failed.opened).toHaveLength(1);
+    expect(failed.closed).toEqual([]);
+  } finally {
+    await f.close();
+  }
+  const read = recordingAgentRead();
+  const g = await fixture(read.agentRead);
+  try {
+    const stop = new AbortController();
+    const running = g.services.backend
+      .forItem(g.item.id)({ ...g.checks(stop.signal), githubRead: { prompt: READ_PROMPT } })
+      .catch((error: unknown) => error);
+    await g.until(() => g.placed.length === 1);
+    stop.abort();
+    await running;
+    expect(read.closed).toEqual([g.placed[0]!.id]);
+  } finally {
+    await g.close();
+  }
+}, 60_000);
+
+test("a turn Paws reattaches after a restart gets a fresh read lease, and the old one is revoked", async () => {
+  const read = recordingAgentRead();
+  const f = await fixture(read.agentRead);
+  try {
+    const withRead = (signal: AbortSignal) => ({
+      ...f.checks(signal),
+      githubRead: { prompt: READ_PROMPT },
+    });
+    const command = await shutDownMidCommand(f, withRead);
+    expect(command.type === "run" && command.githubRead).toBe(true);
+    expect(read.closed).toEqual([command.id]);
+    restartWithRunnerHolding(f);
+    const resumed = f.services.backend.forItem(f.item.id)(withRead(new AbortController().signal));
+    await f.until(() => read.opened.length === 2);
+    f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
+    expect(await resumed).toMatchObject({ stopReason: "end_turn", closeoutReport: REPORT });
+    expect(f.placed).toHaveLength(1);
+    expect(read.opened).toEqual([
+      expect.objectContaining({ commandId: command.id }),
+      {
+        commandId: command.id,
+        itemId: f.item.id,
+        runId: command.runId,
+        repository: "acme/fixture",
+      },
+    ]);
+    expect(read.closed).toEqual([command.id, command.id]);
+  } finally {
+    await f.close();
   }
 }, 60_000);

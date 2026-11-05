@@ -171,7 +171,6 @@ interface HostToolBridgeOptions {
   context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
   closeout?: CloseoutSession;
   closeoutPolicy?: () => Promise<PolicyFilesLoad>;
-  ciLog?: (job?: string) => Promise<string>;
   ciRerun?: (reason: string) => Promise<string>;
   /** Installed runtimes' bin dirs, put in front of `PATH` for Closeout checks. */
   runtimeBinPaths?: readonly string[];
@@ -187,8 +186,6 @@ interface HostToolBridgeOptions {
   onHookStart?: () => void;
   onHookEnd?: () => void;
 }
-
-const CI_LOG_CALLS_PER_TURN = 20;
 
 function withSuggested(
   report: string,
@@ -230,7 +227,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     return undefined;
   });
   const lifetime = new AbortController();
-  const finish = { pullRequestOpened: false, nudged: false, ciLogCalls: 0 };
+  const finish = { pullRequestOpened: false, nudged: false };
   const sockets = new Set<Socket>();
   const onAbort = () => {
     lifetime.abort();
@@ -300,7 +297,6 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.postUpdate ? "post_update" : "",
             closeout ? "get_closeout" : "",
             closeout && allowCloseoutRun ? "run_closeout" : "",
-            options.ciLog ? "get_ci_log" : "",
             options.ciRerun ? "rerun_ci" : "",
           ]
             .filter(Boolean)
@@ -328,7 +324,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
 async function handleConnection(
   socket: Socket,
   options: HostToolBridgeOptions,
-  finish: { pullRequestOpened: boolean; nudged: boolean; ciLogCalls: number },
+  finish: { pullRequestOpened: boolean; nudged: boolean },
 ): Promise<void> {
   socket.setEncoding("utf8");
   let buffer = "";
@@ -416,23 +412,6 @@ async function handleConnection(
       } finally {
         options.onHookEnd?.();
       }
-      return;
-    }
-    if (parsed.tool === "get_ci_log") {
-      if (!options.ciLog) throw new Error("get_ci_log is unavailable");
-      if (++finish.ciLogCalls > CI_LOG_CALLS_PER_TURN)
-        throw new Error("CI log limit reached for this turn");
-      const job = parsed.arguments?.job;
-      if (job !== undefined && (typeof job !== "string" || !job.trim() || job.length > 256))
-        throw new Error("job must be a job name or numeric job id");
-      options.onHookStart?.();
-      let answer: string;
-      try {
-        answer = await abortable(options.ciLog(job?.trim()), options.signal);
-      } finally {
-        options.onHookEnd?.();
-      }
-      socket.end(`${JSON.stringify({ id, answer })}\n`);
       return;
     }
     if (parsed.tool === "rerun_ci") {

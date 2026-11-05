@@ -233,6 +233,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     adapter.args,
     {
       ...minimalAgentEnv(sourceEnv, { allowXaiApiKey: grok && agents.grok.allowApiKey }),
+      ...(options.ghConfigDir ? { GH_CONFIG_DIR: options.ghConfigDir } : {}),
       ...attributionEnv,
       ...stopHook?.env,
       ...codexSkillsHome,
@@ -284,7 +285,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   let emitQueue: Promise<void> = Promise.resolve();
   const emit: AcpEventListener = (event) => {
     emitQueue = emitQueue.then(async () => {
-      await appendFile(transcript, `${JSON.stringify({ t: new Date().toISOString(), event })}\n`);
+      const line = JSON.stringify({ t: new Date().toISOString(), event });
+      await appendFile(transcript, `${options.redactTranscript?.(line) ?? line}\n`);
       if (!state.cancelling || event.type === "cancelled") await options.onEvent?.(event);
     });
     return emitQueue;
@@ -396,7 +398,6 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         },
         commandGuard: guard,
         ...(options.closeoutPolicy ? { closeoutPolicy: options.closeoutPolicy } : {}),
-        ...(options.ciLog && options.readOnly !== true ? { ciLog: options.ciLog } : {}),
         ...(options.ciRerun && options.readOnly !== true ? { ciRerun: options.ciRerun } : {}),
         ...(options.runtimeBinPaths?.length ? { runtimeBinPaths: options.runtimeBinPaths } : {}),
         ...(options.closeoutBasePath !== undefined

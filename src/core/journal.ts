@@ -1,7 +1,7 @@
 let sink: (line: string) => void = (line) => console.error(line);
 
 export function journal(line: string): void {
-  sink(line);
+  sink(redactTokens(line));
 }
 
 export function setJournalSink(next: (line: string) => void): () => void {
@@ -52,16 +52,19 @@ export function journalCaught(
   );
 }
 
+const TOKENS = /github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+|lin_api_[A-Za-z0-9]+/g;
+
+function redactTokens(line: string): string {
+  return line.replace(TOKENS, "[redacted token]");
+}
+
 function oneLine(value: string): string {
   return value
     .replace(
       /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g,
       "[redacted key]",
     )
-    .replace(
-      /github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9_]+|lin_api_[A-Za-z0-9]+/g,
-      "[redacted token]",
-    )
+    .replace(TOKENS, "[redacted token]")
     .replace(/\b(Bearer\s+)\S+/gi, "$1[redacted]")
     .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, "$1[redacted]@")
     .replace(

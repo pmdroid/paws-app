@@ -164,24 +164,6 @@ const RUN_CLOSEOUT_TOOL = {
   },
 };
 
-const GET_CI_LOG_TOOL = {
-  name: "get_ci_log",
-  description:
-    "Read CI on this pull request's current head commit. Without job, list the failed check runs with name, conclusion, job id and URL. With job, a job name or numeric job id from that list, return its log reduced to every ##[error] line with the 30 lines before it, at most 24 KB, keeping the end. At most 20 calls per turn.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      job: {
-        type: "string",
-        minLength: 1,
-        maxLength: 256,
-        description: "A failed job's name or numeric job id. Leave out to list the failed jobs.",
-      },
-    },
-    additionalProperties: false,
-  },
-};
-
 const RERUN_CI_TOOL = {
   name: "rerun_ci",
   description:
@@ -287,7 +269,6 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           POST_UPDATE_TOOL,
           GET_CLOSEOUT_TOOL,
           RUN_CLOSEOUT_TOOL,
-          GET_CI_LOG_TOOL,
           RERUN_CI_TOOL,
         ].filter((tool) => enabledTools.has(tool.name)),
       });

@@ -77,7 +77,6 @@ export const CLOSEOUT_RULES_FIRST_RUNNER_VERSION: RunnerVersion = [0, 1, 60];
 /** First runner release whose `get_closeout` runs rule probes in implement and fix turns. */
 export const CLOSEOUT_RULE_RESULTS_RUNNER_VERSION: RunnerVersion = [0, 1, 60];
 export const AGENT_ACCOUNTS_RUNNER_VERSION: RunnerVersion = [0, 1, 61];
-export const CI_LOG_RUNNER_VERSION: RunnerVersion = [0, 1, 61];
 export const CI_RERUN_RUNNER_VERSION: RunnerVersion = [0, 1, 62];
 export const TRANSCRIPT_TIME_RUNNER_VERSION: RunnerVersion = [0, 1, 62];
 export const RETRO_RUNNER_VERSION: RunnerVersion = [0, 1, 63];
@@ -96,3 +95,4 @@ export const CLOSEOUT_TURN_KEY_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
 /** First runner release whose Closeout stop hook is TypeScript run by its own Bun, not `python3`. */
 export const BUN_STOP_HOOK_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
 export const HIDDEN_CHECKPOINT_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
+export const GITHUB_READ_RUNNER_VERSION: RunnerVersion = [0, 1, 68];

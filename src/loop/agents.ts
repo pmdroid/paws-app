@@ -76,7 +76,7 @@ export function closeoutPrompt(): string {
     "If a required check fails, fix it and call run_closeout again.",
     "If you cannot fix it, call ask_team with the error and what you tried.",
     "Reviews stay in required and are not pending. An independent reviewer runs those.",
-    "When CI failed, call get_ci_log to list the failed jobs and read their logs before changing code.",
+    "When CI failed and `gh` is signed in, read the failed jobs' logs with `gh run view <run-id> --log-failed` before changing code.",
     "If a failed job is outside your change and looks flaky, call rerun_ci once with your evidence instead of asking.",
   ].join(" ");
 }
@@ -96,6 +96,9 @@ export function closeoutChecksPrompt(head: string, fromCi: readonly string[] = [
     "Finish with one line per check: its id and status.",
   ].join("\n");
 }
+
+export const GITHUB_READ_PROMPT =
+  "`gh` is signed in with read-only access to this task's repositories. Use it to read pull requests, issues, Actions runs and logs. It can't write, and it can't read other repositories.";
 
 export const POST_UPDATE_PROMPT =
   "Call post_update when something meaningful happens, such as finding the cause, a plan change, tests passing, or being blocked. Don't narrate each step.";

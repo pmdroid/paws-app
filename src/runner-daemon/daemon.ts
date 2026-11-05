@@ -94,6 +94,7 @@ import {
   RunnerRepositoryAccessSchema,
   RunnerRepositoryCommandCredentialSchema,
   RunnerRepositoryCredentialSchema,
+  RunnerGitHubReadCredentialSchema,
   RunnerResultDeliverySchema,
   type RunnerEventDelivery,
   type RunnerGrantRequest,
@@ -894,6 +895,24 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         (access === "read" ? credential.branch !== null : credential.branch === null)
       )
         throw new Error("Runner repository credential does not match the admitted work.");
+      return credential;
+    },
+    async githubReadCredential(runId: string, generation: number, grantToken: string) {
+      ensureOpen();
+      identifier.parse(runId);
+      const body = RunnerRepositoryAccessSchema.pick({ generation: true }).parse({ generation });
+      RunnerGrantTokenSchema.parse(grantToken);
+      const credential = RunnerGitHubReadCredentialSchema.parse(
+        await authenticated(
+          `/v1/runs/${encodeURIComponent(runId)}/github-read-credential`,
+          "POST",
+          body,
+          grantToken,
+        ),
+      );
+      const current = now();
+      if (credential.expiresAt <= current || credential.expiresAt > current + 60 * 60_000)
+        throw new Error("Runner GitHub read token has an invalid expiry.");
       return credential;
     },
     async repositoryCommandGrant(id: string) {

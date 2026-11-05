@@ -6,7 +6,11 @@ import {
   type LivePreviewSystem,
 } from "../live-preview";
 import { runProviderLogin } from "../runner-login-worker";
-import { runnerCommandAccount, type RunnerLoginUpdate } from "../runner-protocol";
+import {
+  redactGitHubTokens,
+  runnerCommandAccount,
+  type RunnerLoginUpdate,
+} from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import {
   createReviewCommandRunner,
@@ -96,7 +100,10 @@ import {
   runnerHandoverRequestId,
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
+  runnerGitHubReadId,
+  GITHUB_READ_TOKENS_PER_TURN,
 } from "../runner-answers";
+import { openGitHubReadConfig, type GitHubReadConfig, type GitHubReadSource } from "./github-read";
 import {
   installRuntimes,
   prependRuntimePath,
@@ -209,6 +216,7 @@ export interface RunnerWorkerOptions {
   /** How often a running turn publishes a WIP commit when its worktree changed. Tests lower it. */
   checkpointIntervalMs?: number;
   livePreviewSystem?: LivePreviewSystem;
+  githubRead?: GitHubReadSource;
 }
 
 /** A turn that runs this long loses at most this much work to a runner crash or upgrade. */
@@ -339,18 +347,6 @@ const REMOTE_POLICY_REUSE_MS = 5 * 60_000;
 
 export type RemoteCloseoutPolicy = (() => Promise<PolicyFilesLoad>) & { invalidate(): void };
 
-export function remoteCiLog(
-  emit: (event: { type: "ci_log"; requestId: string; job?: string }) => void,
-  answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
-  signal: AbortSignal,
-): (job?: string) => Promise<string> {
-  return async (job) => {
-    const requestId = randomUUID();
-    emit({ type: "ci_log", requestId, ...(job === undefined ? {} : { job }) });
-    return decodeHostAnswer((await answer(requestId, signal)).answer, "CI log");
-  };
-}
-
 export function remoteCiRerun(
   emit: (event: { type: "ci_rerun"; requestId: string; reason: string }) => void,
   answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
@@ -378,7 +374,6 @@ function decodeHostAnswer(response: string, what: string): string {
 export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
   | { type: "closeout_policy"; requestId: string; offset?: number; hash?: string }
-  | { type: "ci_log"; requestId: string; job?: string }
   | { type: "ci_rerun"; requestId: string; reason: string }
   | { type: "acp"; event: AcpEvent }
   | {
@@ -532,6 +527,7 @@ async function snapshotAgentSession(
     turn: number;
   },
   emit: (event: RunnerWorkerEvent) => void,
+  redact?: (text: string) => string,
 ): Promise<void> {
   if (!isSessionAgent(agent)) return;
   const stagingName = `.session-${randomUUID()}.tmp`;
@@ -548,6 +544,7 @@ async function snapshotAgentSession(
           options.sessionSnapshotMaxBytes ?? AGENT_SESSION_MAX_BYTES,
           AGENT_SESSION_MAX_BYTES,
         ),
+        ...(redact ? { redact } : {}),
       };
       bundle =
         agent === "codex"
@@ -809,8 +806,14 @@ export async function executeRunnerCommand(
   let journalSize = fstatSync(eventJournal).size;
   let activityOmitted = false;
   const updates = createUpdateLimiter();
+  let githubRead: GitHubReadConfig | undefined;
+  const readRedactor = () =>
+    command.type === "run" && command.githubRead
+      ? (text: string) => redactGitHubTokens(text, githubRead?.tokens())
+      : undefined;
   function emit(event: RunnerWorkerEvent): void {
-    const line = `${JSON.stringify({ ...event, t: new Date().toISOString() })}\n`;
+    const serialized = JSON.stringify({ ...event, t: new Date().toISOString() });
+    const line = `${command.type === "run" && command.githubRead ? redactGitHubTokens(serialized, githubRead?.tokens()) : serialized}\n`;
     const length = Buffer.byteLength(line);
     if (event.type === "acp" && journalSize + length > ACTIVITY_JOURNAL_LIMIT) {
       if (activityOmitted) return;
@@ -1088,6 +1091,13 @@ export async function executeRunnerCommand(
       MISE_CACHE_DIR: mise.cacheDir,
     });
     agentEnv.PATH = withoutRunnerBin(agentEnv.PATH);
+    if (command.type === "run" && command.githubRead && options.githubRead)
+      githubRead = openGitHubReadConfig(
+        join(options.workRoot, `.gh-${command.runId}`),
+        options.githubRead,
+        undefined,
+        GITHUB_READ_TOKENS_PER_TURN,
+      );
     const closeoutBasePath = withoutRunnerBin(process.env.PATH);
     // Pinned bin dirs, not shims: nothing on PATH reads the repository's mise config.
     if (installed.binPaths.length)
@@ -1174,6 +1184,10 @@ export async function executeRunnerCommand(
         : {}),
       ...(command.type === "run" && command.hooks?.length ? { workspaceHooks: command.hooks } : {}),
       env: agentEnv,
+      ...(command.type === "run" && command.githubRead
+        ? { redactTranscript: (line: string) => redactGitHubTokens(line, githubRead?.tokens()) }
+        : {}),
+      ...(githubRead ? { ghConfigDir: githubRead.directory } : {}),
       ...(installed.binPaths.length ? { runtimeBinPaths: installed.binPaths } : {}),
       closeoutBasePath,
       checkpointEnv: env,
@@ -1195,15 +1209,6 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.closeoutRulesFirst ? { closeoutRulesFirst: true } : {}),
       ...(command.type === "run" && command.suggestedFindings?.length
         ? { suggestedFindings: command.suggestedFindings }
-        : {}),
-      ...(command.type === "run" && command.ciLog && options.answer
-        ? {
-            ciLog: remoteCiLog(
-              emit,
-              options.answer,
-              options.signal ?? new AbortController().signal,
-            ),
-          }
         : {}),
       ...(command.type === "run" && command.ciRerun && options.answer
         ? {
@@ -1595,6 +1600,7 @@ export async function executeRunnerCommand(
               turn: runCommand!.generation,
             },
             emit,
+            readRedactor(),
           ),
         );
         if (!existsSync(join(options.outputDirectory, SESSION_METADATA_FILE)))
@@ -1999,6 +2005,7 @@ export async function executeRunnerCommand(
           turn: command.generation,
         },
         emit,
+        readRedactor(),
       );
     const serialized = JSON.stringify(
       command.type === "helper"
@@ -2014,14 +2021,15 @@ export async function executeRunnerCommand(
           }
         : result,
     );
-    if (Buffer.byteLength(serialized) > 1_048_576)
+    const redacted = readRedactor()?.(serialized) ?? serialized;
+    if (Buffer.byteLength(redacted) > 1_048_576)
       throw new Error("Runner result exceeds size limit");
     const stagingName = `.result-${randomUUID()}.tmp`;
     const stagingPath = join(options.outputDirectory, stagingName);
     try {
       const final = outputFile(options.outputDirectory, stagingName, options.resultsGid);
       try {
-        writeFileSync(final, serialized);
+        writeFileSync(final, redacted);
         fsyncSync(final);
       } finally {
         closeSync(final);
@@ -2041,6 +2049,7 @@ export async function executeRunnerCommand(
     }
     return result;
   } finally {
+    githubRead?.close();
     previewStart.abort();
     await (await preview)?.stop("run_ended");
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
@@ -2208,6 +2217,18 @@ export async function runRunnerWorker(options: {
               if (request) return { deadline: Number(request.answer) };
               await delay(250, undefined, { signal });
             }
+          },
+          githubRead(sequence: number) {
+            const published = readRunnerAnswer(
+              spool,
+              options.executionId,
+              runnerGitHubReadId(sequence),
+            );
+            if (!published) return null;
+            const value = JSON.parse(published.answer) as { token?: unknown; expiresAt?: unknown };
+            if (typeof value.token !== "string" || !/^ghs_[A-Za-z0-9_]+$/.test(value.token))
+              throw new Error("Runner GitHub read token is invalid");
+            return { token: value.token, expiresAt: Number(value.expiresAt) };
           },
           checkpointPublished(sequence: number) {
             return (

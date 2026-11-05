@@ -178,7 +178,6 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
       .regex(/^[a-f0-9]{64}$/)
       .optional(),
   }),
-  z.strictObject({ type: z.literal("ci_log"), job: z.string().min(1).max(256).optional() }),
   z.strictObject({ type: z.literal("ci_rerun"), reason: z.string().min(1).max(2000) }),
   RunnerPreviewEventSchema,
   z.strictObject({ type: z.literal("completed") }),

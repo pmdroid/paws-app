@@ -2,10 +2,10 @@ import { createVerify, generateKeyPairSync } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import { signAppJwt } from "./jwt";
 import { createFetchGitHubClient } from "./client";
-import { assertScopedToken, mintInstallationToken } from "./token";
+import { assertScopedToken, mintInstallationToken, revokeInstallationToken } from "./token";
 import {
-  ACTIONS_LOG_PERMISSIONS,
   ACTIONS_RERUN_PERMISSIONS,
+  AGENT_READ_PERMISSIONS,
   INSTALLATION_PERMISSIONS,
   GitHubTokenError,
   type GitHubClient,
@@ -51,14 +51,21 @@ describe("GitHub App tokens", () => {
     expect(claims.exp).toBeLessThanOrEqual(Math.floor(now.getTime() / 1000) + 600);
   });
 
-  test("an Actions log token asks for Actions, Checks and Metadata read and nothing more", async () => {
-    const seen: Array<{ body: { permissions: unknown } }> = [];
+  test("the agent read token holds read permissions only", () => {
+    const values = Object.values(AGENT_READ_PERMISSIONS) as string[];
+    expect(values.length).toBeGreaterThan(0);
+    expect(values.filter((value) => value === "write" || value === "admin")).toEqual([]);
+    expect(new Set(values)).toEqual(new Set(["read"]));
+  });
+
+  test("an agent read token asks for the read set on the item's repository and nothing more", async () => {
+    const seen: Array<{ body: { repositories: unknown; permissions: unknown } }> = [];
     const client: GitHubClient = {
       async request(req) {
-        seen.push(req as { body: { permissions: unknown } });
+        seen.push(req as (typeof seen)[number]);
         return {
           status: 201,
-          body: tokenBody("ghs_actions", { permissions: ACTIONS_LOG_PERMISSIONS }),
+          body: tokenBody("ghs_agentread", { permissions: AGENT_READ_PERMISSIONS }),
         };
       },
     };
@@ -69,25 +76,27 @@ describe("GitHub App tokens", () => {
       privateKeyPem: PRIVATE_KEY,
       owner: "pmdroid",
       repo: "paws-demo",
-      access: "actions",
+      access: "agent_read",
     });
-    expect(minted.token).toBe("ghs_actions");
-    expect(seen.map((request) => request.body.permissions)).toEqual([ACTIONS_LOG_PERMISSIONS]);
+    expect(minted.token).toBe("ghs_agentread");
+    expect(seen.map((request) => request.body)).toEqual([
+      { repositories: ["paws-demo"], permissions: AGENT_READ_PERMISSIONS },
+    ]);
     const now = new Date();
     for (const permissions of [
-      { checks: "read", metadata: "read" },
-      { ...ACTIONS_LOG_PERMISSIONS, actions: "write" },
-      { ...ACTIONS_LOG_PERMISSIONS, contents: "write" },
+      { ...AGENT_READ_PERMISSIONS, contents: "write" },
+      { ...AGENT_READ_PERMISSIONS, workflows: "write" },
+      { metadata: "read" },
     ])
       expect(() =>
         assertScopedToken(
-          tokenBody("ghs_actions", { permissions }),
+          tokenBody("ghs_agentread", { permissions }),
           "pmdroid",
           "paws-demo",
           now,
-          "actions",
+          "agent_read",
         ),
-      ).toThrow("Actions token grants unexpected permissions");
+      ).toThrow("agent read token grants unexpected permissions");
     expect(() =>
       assertScopedToken(
         tokenBody("ghs_wide", { permissions: { ...INSTALLATION_PERMISSIONS, actions: "read" } }),
@@ -96,6 +105,23 @@ describe("GitHub App tokens", () => {
         now,
       ),
     ).toThrow("installation token grants unexpected permission actions");
+  });
+
+  test("revoking a token deletes it with itself and accepts one GitHub already dropped", async () => {
+    const seen: unknown[] = [];
+    const answer = { status: 204 };
+    const client: GitHubClient = {
+      async request(req) {
+        seen.push({ method: req.method, path: req.path, token: req.token });
+        return { status: answer.status, body: null };
+      },
+    };
+    await revokeInstallationToken(client, "ghs_done");
+    answer.status = 401;
+    await revokeInstallationToken(client, "ghs_done");
+    answer.status = 500;
+    await expect(revokeInstallationToken(client, "ghs_done")).rejects.toThrow("status 500");
+    expect(seen[0]).toEqual({ method: "DELETE", path: "/installation/token", token: "ghs_done" });
   });
 
   test("the CI re-run token holds only Actions write and metadata read", () => {

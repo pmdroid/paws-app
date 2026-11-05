@@ -71,15 +71,16 @@ import {
   REVIEW_COMMAND_RUNNER_VERSION,
   REVIEW_CONTEXT_RUNNER_VERSION,
   CLOSEOUT_RULES_FIRST_RUNNER_VERSION,
-  CI_LOG_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   SUGGESTED_FINDINGS_RUNNER_VERSION,
+  GITHUB_READ_RUNNER_VERSION,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
   RUNNER_LEASE_GRACE_MS,
   RUNTIMES_RUNNER_VERSION,
   ANY_MISE_BACKEND_RUNNER_VERSION,
   legacyRuntimeTool,
+  redactGitHubTokens,
   SESSION_RESUME_RUNNER_VERSION,
   HIDDEN_CHECKPOINT_RUNNER_VERSION,
   type RunnerCodingAgent,
@@ -378,6 +379,16 @@ export function createRemoteAgentRunner(options: {
   /** How long a run may go without a runner event before Paws stops it, confirmed or not. */
   hungRunMs?: number;
   placement?: RunnerPlacement;
+  agentRead?: {
+    open(input: {
+      commandId: string;
+      itemId: string;
+      runId: string;
+      repository: string | null;
+    }): Promise<boolean>;
+    tokens(commandId: string): readonly string[];
+    close(commandId: string): Promise<void>;
+  };
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
@@ -406,6 +417,13 @@ export function createRemoteAgentRunner(options: {
         )
         .get(agent, sessionId, now())?.resetsAt ?? null
     );
+  }
+  function hostVersion(runnerId: string) {
+    return db
+      .query<{ version: string | null }, [string]>(
+        "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+      )
+      .get(runnerId)?.version;
   }
   /** Workspace hooks for the run's agent, signed into the command with everything else. */
   function runHooks(agent: string, runnerId: string): { hooks?: WorkspaceHook[] } {
@@ -714,7 +732,12 @@ export function createRemoteAgentRunner(options: {
    * which names the heads it covers: it attaches only to the same command, and cancels other open
    * work no attempt here is reading so it can be placed again.
    */
-  function attachedWork(itemId: string, type: WorkCommand["type"], closeoutPrompt?: string) {
+  function attachedWork(
+    itemId: string,
+    type: WorkCommand["type"],
+    closeoutPrompt?: string,
+    readPrompt?: string,
+  ) {
     const runId = getWorkItem(db, itemId)?.currentRunId;
     if (!runId) return undefined;
     const row = db
@@ -742,10 +765,13 @@ export function createRemoteAgentRunner(options: {
         "utf8",
       ),
     ) as WorkCommand;
-    if (
-      closeoutPrompt !== undefined &&
-      (command.type !== type || command.prompt !== closeoutPrompt)
-    ) {
+    const sameCloseout =
+      command.prompt === closeoutPrompt ||
+      (command.type === "run" &&
+        command.githubRead === true &&
+        readPrompt !== undefined &&
+        command.prompt === `${closeoutPrompt}\n\n${readPrompt}`);
+    if (closeoutPrompt !== undefined && (command.type !== type || !sameCloseout)) {
       // The run holds one command at a time, so the stale one would block the new assignment.
       if (!reservations.has(runId)) {
         try {
@@ -933,6 +959,7 @@ export function createRemoteAgentRunner(options: {
               itemId,
               responseTask ? "task" : input.role === "reviewer" ? "review" : "run",
               closeoutWork ? input.prompt : undefined,
+              input.githubRead?.prompt,
             );
         const chosen = attached
           ? undefined
@@ -966,7 +993,28 @@ export function createRemoteAgentRunner(options: {
         let transcriptBytes = 0;
         let previousTranscript = Buffer.alloc(0);
         const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
-        const emit = async (event: AcpEvent, origin?: AcpEventOrigin) => {
+        let readCommand: string | undefined;
+        const scrub = <T>(value: T): T =>
+          readCommand && options.agentRead
+            ? (JSON.parse(
+                redactGitHubTokens(JSON.stringify(value), options.agentRead.tokens(readCommand)),
+              ) as T)
+            : value;
+        const reattached = attached?.assigned;
+        if (
+          reattached?.type === "run" &&
+          reattached.githubRead &&
+          options.agentRead &&
+          (await options.agentRead.open({
+            commandId: reattached.id,
+            itemId,
+            runId: reattached.runId,
+            repository: `${reattached.repository.owner}/${reattached.repository.repo}`,
+          }))
+        )
+          readCommand = reattached.id;
+        const emit = async (raw: AcpEvent, origin?: AcpEventOrigin) => {
+          const event = scrub(raw);
           const line = `${JSON.stringify({ t: new Date(now()).toISOString(), event })}\n`;
           transcriptBytes += Buffer.byteLength(line);
           if (transcriptBytes > 16_777_216) throw new Error("Remote transcript exceeds limit");
@@ -1226,7 +1274,26 @@ export function createRemoteAgentRunner(options: {
               phase("start_commit");
               // A runner command does not carry the caller's session, so a resume replays.
               const replayed = input.resume?.replayPrompt ?? input.prompt;
-              const prompt = lostNote ? `${lostNote}\n\n${replayed}` : replayed;
+              const commandId = randomUUID();
+              const githubRead =
+                !taskScope &&
+                input.role === "implementer" &&
+                input.readOnly !== true &&
+                input.githubRead !== undefined &&
+                options.agentRead !== undefined &&
+                versionAtLeast(hostVersion(selected.id), GITHUB_READ_RUNNER_VERSION) &&
+                (await options.agentRead.open({
+                  commandId,
+                  itemId,
+                  runId: selected.runId,
+                  repository: scoped.repository
+                    ? `${scoped.repository.owner}/${scoped.repository.repo}`
+                    : null,
+                }));
+              if (githubRead) readCommand = commandId;
+              const prompt = [lostNote, replayed, githubRead ? input.githubRead!.prompt : undefined]
+                .filter(Boolean)
+                .join("\n\n");
               const prepared = input.prepareInputFiles
                 ? await input.prepareInputFiles({
                     workspace: input.worktreePath,
@@ -1258,7 +1325,6 @@ export function createRemoteAgentRunner(options: {
                 throw new Error("Remote agent input transfer is unavailable");
               if (prepared.prompt.length > 65_536 && !options.inputs)
                 throw new Error("Remote conversation context transfer is unavailable");
-              const commandId = randomUUID();
               const inputFiles = files.length
                 ? options.inputs!.stage(
                     commandId,
@@ -1620,12 +1686,7 @@ export function createRemoteAgentRunner(options: {
                       versionAtLeast(runnerVersion, SUGGESTED_FINDINGS_RUNNER_VERSION)
                         ? { suggestedFindings: input.suggestedFindings.slice(0, 50) }
                         : {}),
-                      ...(input.role !== "reviewer" &&
-                      input.ciLog &&
-                      input.readOnly !== true &&
-                      versionAtLeast(runnerVersion, CI_LOG_RUNNER_VERSION)
-                        ? { ciLog: true as const }
-                        : {}),
+                      ...(githubRead ? { githubRead: true as const } : {}),
                       ...(input.role !== "reviewer" &&
                       input.ciRerun &&
                       input.readOnly !== true &&
@@ -1869,7 +1930,7 @@ export function createRemoteAgentRunner(options: {
               );
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
-              const event = row.event;
+              const event = scrub(row.event);
               const origin = {
                 runId: assigned.runId,
                 generation: assigned.generation,
@@ -1981,7 +2042,6 @@ export function createRemoteAgentRunner(options: {
               const answered =
                 (event.type === "artifact" ||
                   event.type === "closeout_policy" ||
-                  event.type === "ci_log" ||
                   event.type === "ci_rerun") &&
                 results.answered(assigned.runId, assigned.generation, row.sequence) !== null;
               if (answered && event.type === "artifact" && event.dropped === undefined)
@@ -2008,24 +2068,6 @@ export function createRemoteAgentRunner(options: {
                     event.offset === undefined
                       ? encodePolicyFiles(policy)
                       : encodePolicyChunk(policy, event.offset, event.hash),
-                });
-              }
-              if (event.type === "ci_log" && !answered) {
-                const read = input.ciLog
-                  ? await input.ciLog(event.job).then(
-                      (answer) => ({ answer }),
-                      (error: unknown) => {
-                        journalCaught(error, "runner-backend.forItem.ciLog", itemId);
-                        return { error: error instanceof Error ? error.message : String(error) };
-                      },
-                    )
-                  : { error: "get_ci_log is unavailable for this run" };
-                signal.throwIfAborted();
-                results.answer({
-                  runId: assigned.runId,
-                  generation: assigned.generation,
-                  sequence: row.sequence,
-                  answer: JSON.stringify(read),
                 });
               }
               if (event.type === "ci_rerun" && !answered) {
@@ -2424,7 +2466,7 @@ export function createRemoteAgentRunner(options: {
           work.finish(assigned.runId, assigned.generation);
           command = undefined;
           await emit({ type: "prompt_complete", stopReason: complete.stopReason });
-          return { ...complete, transcriptPath: transcript };
+          return { ...scrub(complete), transcriptPath: transcript };
         } catch (error) {
           if (!(error instanceof Error) || error.message !== "cancelled" || !signal.aborted) {
             throw error;
@@ -2509,6 +2551,7 @@ export function createRemoteAgentRunner(options: {
             }
             input.signal?.removeEventListener("abort", abort);
           } finally {
+            if (readCommand) await options.agentRead?.close(readCommand);
             // Keep attachment fenced through cleanup, then free the slot before returning.
             reservations.delete(selected.runId);
           }

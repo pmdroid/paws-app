@@ -2,8 +2,8 @@ import { isTransient } from "../core";
 import type { GitHubApp, InstallationToken, MintTokenInput } from "./app";
 import { signAppJwt } from "./jwt";
 import {
-  ACTIONS_LOG_PERMISSIONS,
   ACTIONS_RERUN_PERMISSIONS,
+  AGENT_READ_PERMISSIONS,
   INSTALLATION_PERMISSIONS,
   MAX_TOKEN_TTL_MS,
   TOKEN_TTL_SKEW_MS,
@@ -29,7 +29,7 @@ const OPTIONAL_PERMISSIONS: Record<string, string>[] = [
 ];
 const grantedOptional = new Map<string, Record<string, string>>();
 
-export type TokenAccess = "read" | "write" | "actions" | "actions_write";
+export type TokenAccess = "read" | "write" | "agent_read" | "actions_write";
 
 export type MintedToken = {
   token: string;
@@ -66,7 +66,7 @@ export async function mintInstallationToken(input: {
     });
   let response!: GitHubResponse;
   if (input.access === "read") response = await request({ contents: "read", metadata: "read" });
-  else if (input.access === "actions") response = await request(ACTIONS_LOG_PERMISSIONS);
+  else if (input.access === "agent_read") response = await request(AGENT_READ_PERMISSIONS);
   else if (input.access === "actions_write") response = await request(ACTIONS_RERUN_PERMISSIONS);
   else {
     const known = grantedOptional.get(input.installationId);
@@ -128,15 +128,19 @@ export function assertScopedToken(
   }
   if (!isRecord(body.permissions))
     throw new GitHubTokenError("installation token permissions are missing");
-  if (access === "actions" || access === "actions_write") {
+  if (access === "agent_read" || access === "actions_write") {
     const expected: Record<string, string> =
-      access === "actions" ? ACTIONS_LOG_PERMISSIONS : ACTIONS_RERUN_PERMISSIONS;
+      access === "agent_read" ? AGENT_READ_PERMISSIONS : ACTIONS_RERUN_PERMISSIONS;
     const granted = Object.entries(body.permissions);
     if (
       body.permissions.actions !== expected.actions ||
       granted.some(([key, value]) => expected[key] !== value)
     )
-      throw new GitHubTokenError("Actions token grants unexpected permissions");
+      throw new GitHubTokenError(
+        access === "agent_read"
+          ? "agent read token grants unexpected permissions"
+          : "Actions token grants unexpected permissions",
+      );
     return { token: body.token, expiresAt };
   }
   for (const [key, value] of Object.entries(body.permissions)) {
@@ -170,6 +174,20 @@ export function assertScopedToken(
   if (body.permissions.issues !== "write")
     throw new GitHubTokenError("issues permission must be write");
   return { token: body.token, expiresAt };
+}
+
+export async function revokeInstallationToken(client: GitHubClient, token: string): Promise<void> {
+  const response = await client.request({
+    method: "DELETE",
+    path: "/installation/token",
+    token,
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (response.status !== 204 && response.status !== 401)
+    throw new GitHubTokenError(
+      `installation token revoke failed with status ${response.status}`,
+      response,
+    );
 }
 
 export type GitHubAppOptions = {

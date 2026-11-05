@@ -25,12 +25,7 @@ export function createAppTokenProvider(options: AppTokenProviderOptions): GitHub
   return {
     mode: "app",
     async tokenFor(purpose): Promise<string> {
-      const access =
-        purpose === "ci_log"
-          ? "actions"
-          : purpose === "ci_rerun"
-            ? "actions_write"
-            : options.access;
+      const access = purpose === "ci_rerun" ? "actions_write" : options.access;
       const minted = await app.mintInstallationToken({
         installationId: options.installationId,
         repository,
@@ -70,7 +65,6 @@ export async function acquireOperationToken(
     privateKeyPem: input.privateKeyPem,
     owner: input.owner,
     repo: input.repo,
-    ...(purpose === "ci_log" ? { access: "actions" as const } : {}),
     ...(purpose === "ci_rerun" ? { access: "actions_write" as const } : {}),
     ...(input.now ? { now: input.now } : {}),
   });

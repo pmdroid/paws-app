@@ -96,7 +96,7 @@ export {
   type RunnerLoginInput,
 } from "./login";
 
-export { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
+export { RunnerActivitySchema, RunnerPermissionSchema, redactGitHubTokens } from "./activity";
 
 export {
   RunnerHostStatusSchema,
@@ -165,9 +165,9 @@ export {
   CLOSEOUT_POLICY_CHUNKS_RUNNER_VERSION,
   LIVE_PREVIEW_RUNNER_VERSION,
   AGENT_ACCOUNTS_RUNNER_VERSION,
-  CI_LOG_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   SUGGESTED_FINDINGS_RUNNER_VERSION,
+  GITHUB_READ_RUNNER_VERSION,
   RETRO_RUNNER_VERSION,
   REPOSITORY_COMMAND_RUNNER_VERSION,
   CLOSEOUT_TURN_KEY_RUNNER_VERSION,

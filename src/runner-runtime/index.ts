@@ -34,6 +34,9 @@ import {
   runnerHandoverRequestId,
   runnerCheckpointRequestId,
   runnerCheckpointPublishedId,
+  runnerGitHubReadId,
+  removeRunnerGitHubRead,
+  GITHUB_READ_TOKENS_PER_TURN,
 } from "../runner-answers";
 import {
   CandidateRebaseConflict,
@@ -162,7 +165,11 @@ type Active = {
   checkpointSha?: string;
   /** How many checkpoints this execution pushed, each acknowledged to the worker. */
   checkpointsPublished?: number;
+  githubRead?: { sent: number; expiresAt: number; nextAt: number; fetching?: Promise<void> };
 };
+
+const GITHUB_READ_REFRESH_MS = 10 * 60_000;
+const GITHUB_READ_RECHECK_MS = 5 * 60_000;
 
 /** The session description the worker writes next to its bundle. */
 const SessionMetadataSchema = AgentSessionFinishSchema.omit({
@@ -210,6 +217,7 @@ export async function openRunnerRuntime(options: {
         | "repositoryCommandGrant"
         | "repositoryCommandCredential"
         | "postRepositoryCommandResult"
+        | "githubReadCredential"
       >
     >;
   spool: RunnerSpool;
@@ -547,6 +555,46 @@ export async function openRunnerRuntime(options: {
       entry.grant = undefined;
       const renewed = await grant(entry);
       return await remote(() => request(renewed));
+    }
+  }
+  function retire(entry: Active) {
+    active.delete(key(entry.execution.command));
+    const command = entry.execution.command;
+    if (command.type === "run" && command.githubRead)
+      try {
+        removeRunnerGitHubRead(options.spool, entry.execution.id);
+      } catch (error) {
+        journalCaught(error, "runner-runtime.retire.removeRunnerGitHubRead", command.itemId);
+      }
+  }
+  async function fetchGitHubRead(entry: Active) {
+    const command = entry.execution.command;
+    const fetch = options.daemon.githubReadCredential;
+    if (command.type !== "run" || !command.githubRead || !fetch) return;
+    const read = (entry.githubRead ??= { sent: 0, expiresAt: 0, nextAt: 0 });
+    if (read.sent >= GITHUB_READ_TOKENS_PER_TURN) return;
+    read.nextAt = now() + GITHUB_READ_RECHECK_MS;
+    try {
+      const credential = await withGrant(entry, (token) =>
+        fetch(command.runId, command.generation, token),
+      );
+      check(entry);
+      if (credential.expiresAt <= read.expiresAt) return;
+      publishRunnerAnswer(options.spool, entry.execution.id, {
+        requestId: runnerGitHubReadId(read.sent + 1),
+        answer: JSON.stringify(credential),
+      });
+      read.sent += 1;
+      read.expiresAt = credential.expiresAt;
+      read.nextAt = Math.min(
+        credential.expiresAt - GITHUB_READ_REFRESH_MS,
+        now() + GITHUB_READ_RECHECK_MS,
+      );
+      removeRunnerGitHubRead(options.spool, entry.execution.id, read.sent);
+    } catch (error) {
+      if (entry.abort.signal.aborted) return;
+      if (read.sent === 0) read.nextAt = Number.POSITIVE_INFINITY;
+      journalCaught(error, "runner-runtime.fetchGitHubRead", command.itemId);
     }
   }
   async function interrupt(
@@ -1315,6 +1363,7 @@ export async function openRunnerRuntime(options: {
           ...inputs,
         },
       );
+      await fetchGitHubRead(entry);
       check(entry);
       if (entry.execution.command.expiresAt <= now())
         throw new Error("Runner command expired before dispatch");
@@ -1781,7 +1830,7 @@ export async function openRunnerRuntime(options: {
     }
     await drainTranscript(entry, true);
     journal.saveResult(entry.execution.id, result);
-    active.delete(key(entry.execution.command));
+    retire(entry);
     await deliverResult(entry.execution);
   }
   async function step() {
@@ -1869,7 +1918,7 @@ export async function openRunnerRuntime(options: {
     );
     for (const entry of active.values()) {
       if (entry.abort.signal.aborted) {
-        if (entry.teardownConfirmed && !entry.task) active.delete(key(entry.execution.command));
+        if (entry.teardownConfirmed && !entry.task) retire(entry);
         else if (!entry.stopped)
           void interrupt(entry, "cleanup pending").catch(
             journalRejection(
@@ -1958,6 +2007,11 @@ export async function openRunnerRuntime(options: {
         });
         entry.checkpoints.sent++;
       }
+      const read = entry.githubRead;
+      if (read && entry.execution.phase === "running" && now() >= read.nextAt)
+        read.fetching ??= fetchGitHubRead(entry).finally(() => {
+          read.fetching = undefined;
+        });
       entry.delivering ??= advance(entry).finally(() => {
         entry.delivering = undefined;
       });
@@ -1971,7 +2025,7 @@ export async function openRunnerRuntime(options: {
     try {
       await entry.restoring;
       if (journal.hasResult(entry.execution.id)) {
-        active.delete(key(entry.execution.command));
+        retire(entry);
         await deliverResult(entry.execution);
         return;
       }
