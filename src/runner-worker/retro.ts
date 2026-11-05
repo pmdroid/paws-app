@@ -23,7 +23,11 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
 } from "../acp";
-import { ExecutionIdSchema, openRunnerAccountHome } from "../runner-execution";
+import {
+  ExecutionIdSchema,
+  openRunnerAccountHome,
+  type RunnerAccountOwners,
+} from "../runner-execution";
 import { withoutRunnerBin } from "../runner-mise";
 import {
   RUNNER_INPUT_CHUNK_BYTES,
@@ -182,6 +186,7 @@ export interface RetroWorkerOptions {
   workRoot: string;
   home: string;
   resultsGid: number;
+  owners?: RunnerAccountOwners;
   signal?: AbortSignal;
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
   executionLimitMs?: number;
@@ -321,7 +326,9 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
   mkdirSync(workspace, { recursive: true, mode: 0o700 });
   try {
     writeFileSync(join(workspace, RETRO_DIGEST_FILE), digest, { flag: "wx", mode: 0o400 });
-    const home = openRunnerAccountHome(options.home, command.account, command.profile.agent);
+    const home = openRunnerAccountHome(options.home, command.account, command.profile.agent, {
+      ...(options.owners ? { owners: options.owners } : {}),
+    });
     const env = minimalAgentEnv({
       PATH: "/usr/local/bin:/usr/bin:/bin",
       ...options.launch?.env,

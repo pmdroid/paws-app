@@ -120,14 +120,14 @@ function privateParents(home: string, directory: string): void {
       info = lstatSync(current);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      mkdirSync(current, { mode: 0o700 });
+      mkdirSync(current, { mode: 0o770 });
       info = lstatSync(current);
     }
     if (info.isSymbolicLink() || !info.isDirectory())
       throw new Error("Provider credentials folder is not a private directory");
     if (process.getuid && info.uid !== process.getuid())
       throw new Error("Provider credentials folder belongs to another user");
-    if (part && (info.mode & 0o077) !== 0) chmodSync(current, info.mode & 0o700);
+    if (part && (info.mode & 0o007) !== 0) chmodSync(current, info.mode & 0o770);
   }
 }
 

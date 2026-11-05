@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -47,6 +48,7 @@ for (const purpose of ["answer", "artifact"] as const) {
       const home = join(root, "home");
       for (const path of [worktree, outputDirectory, home])
         mkdirSync(path, { recursive: true, mode: 0o700 });
+      chmodSync(worktree, 0o770);
       const script = join(root, "script.json");
       const recorded = join(root, "agent.json");
       writeFileSync(
@@ -188,6 +190,7 @@ test("a 21st publish_artifact is a tool error and the run still finishes", async
     const home = join(root, "home");
     for (const path of [worktree, outputDirectory, home])
       mkdirSync(path, { recursive: true, mode: 0o700 });
+    chmodSync(worktree, 0o770);
     for (let index = 1; index <= 21; index++)
       writeFileSync(join(worktree, `screen-${index}.png`), `screen ${index}`);
     const script = join(root, "script.json");
@@ -269,6 +272,7 @@ test("ask_team context reaches the runner journal's question event", async () =>
     const home = join(root, "home");
     for (const path of [join(workRoot, executionId), outputDirectory, home])
       mkdirSync(path, { recursive: true, mode: 0o700 });
+    chmodSync(join(workRoot, executionId), 0o770);
     const script = join(root, "script.json");
     const recorded = join(root, "agent.json");
     const context = "1. escape-a\n2. escape-b\n16. escape-p";

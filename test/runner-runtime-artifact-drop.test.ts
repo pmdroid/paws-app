@@ -23,7 +23,7 @@ async function deliverRejected(rejection: RunnerRequestError) {
   };
   for (const directory of [spool.root, results.root]) {
     mkdirSync(directory);
-    chmodSync(directory, 0o750);
+    chmodSync(directory, directory === results.root ? 0o770 : 0o750);
   }
   const artifact = (path: string): RunnerArtifact => ({
     id: randomUUID(),

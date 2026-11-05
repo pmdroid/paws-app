@@ -123,7 +123,7 @@ function runnerHost(
   };
   for (const [path, mode] of [
     [spool.root, 0o750],
-    [results.root, 0o750],
+    [results.root, 0o770],
     [join(root, "retro"), 0o700],
     [join(root, "home"), 0o700],
   ] as const) {

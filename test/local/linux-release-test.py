@@ -1379,6 +1379,79 @@ class DockerAccess(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "grant or deny"):
                 deb.configure()
 
+
+class StateDirectories(unittest.TestCase):
+    IDS = {"paws-runner": 60980, "paws-agent": 60979, "paws-results": 60981}
+
+    def setUp(self):
+        self.installer = load("install")
+        self.temporary = tempfile.TemporaryDirectory(prefix="paws-state-directories-")
+        self.root = pathlib.Path(self.temporary.name)
+        self.gids = dict(self.IDS)
+        self.stack = contextlib.ExitStack()
+        self.stack.enter_context(mock.patch.object(self.installer.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=self.IDS[name])))
+        self.stack.enter_context(mock.patch.object(self.installer.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid=self.gids[name])))
+        self.layout = {path: SimpleNamespace(st_mode=stat.S_IFDIR | mode, st_uid=self.IDS[owner], st_gid=self.IDS[group]) for path, owner, group, mode in self.installer.STATE_DIRECTORIES}
+
+    def tearDown(self):
+        self.stack.close()
+        self.temporary.cleanup()
+
+    def validate(self):
+        self.installer.validate_state_directories(lambda path: self.layout[path])
+
+    def test_tmpfiles_creates_what_the_installer_validates(self):
+        tmpfiles = pathlib.Path(sys.argv[1]).with_name("paws-runner.tmpfiles").read_text().splitlines()
+        created = [(path, owner, group, int(mode, 8)) for kind, path, mode, owner, group, _ in (line.split() for line in tmpfiles) if kind == "d" and path.startswith("/var/lib/")]
+        self.assertEqual(created, list(self.installer.STATE_DIRECTORIES))
+
+    def test_shared_trees_belong_to_the_runner_and_reach_agents_through_a_group(self):
+        shared = {path: (owner, group, mode) for path, owner, group, mode in self.installer.STATE_DIRECTORIES if path in self.installer.SHARED_DIRECTORIES}
+        self.assertEqual(shared, {
+            "/var/lib/paws-agent": ("paws-runner", "paws-agent", 0o2770),
+            "/var/lib/paws-agent-tasks": ("paws-runner", "paws-agent", 0o2770),
+            "/var/lib/paws-agent-results": ("paws-runner", "paws-results", 0o2770),
+        })
+        self.validate()
+
+    def test_validation_refuses_the_earlier_private_layout_and_other_access(self):
+        for path, mode in (("/var/lib/paws-agent", 0o700), ("/var/lib/paws-agent-tasks", 0o711), ("/var/lib/paws-agent-results", 0o750), ("/var/lib/paws-agent", 0o2777), ("/var/lib/paws-agent", 0o770)):
+            with self.subTest(path=path, mode=oct(mode)):
+                before = self.layout[path]
+                self.layout[path] = SimpleNamespace(st_mode=stat.S_IFDIR | mode, st_uid=before.st_uid, st_gid=before.st_gid)
+                try:
+                    with self.assertRaisesRegex(ValueError, path):
+                        self.validate()
+                finally:
+                    self.layout[path] = before
+
+    def test_validation_refuses_a_tree_outside_the_agent_group(self):
+        self.gids["paws-agent"] = 60990
+        with self.assertRaisesRegex(ValueError, "/var/lib/paws-agent$"):
+            self.validate()
+
+    def test_an_upgrade_adopts_earlier_trees_as_setgid_and_group_shared(self):
+        for name in ("agent/.paws-accounts/binding/.claude", "results/01K00000000000000000000000"):
+            (self.root / name).mkdir(parents=True, mode=0o700)
+        (self.root / "results/01K00000000000000000000000").chmod(0o750)
+        (self.root / "agent/.paws-accounts/binding/account.json").write_text("{}")
+        (self.root / "agent/.paws-accounts/binding/account.json").chmod(0o600)
+        modes, owners = {}, {}
+        with mock.patch.object(self.installer.os, "chmod", lambda path, mode: modes.__setitem__(str(pathlib.Path(path).relative_to(self.root)), mode)), mock.patch.object(self.installer.os, "lchown", lambda path, uid, gid: owners.__setitem__(str(pathlib.Path(path).relative_to(self.root)), (uid, gid))):
+            self.installer.adopt_tree(self.root / "agent", 60980, 60979, 0o2770, self.installer.SHARED_DIRECTORIES["/var/lib/paws-agent"])
+            self.installer.adopt_tree(self.root / "results", 60980, 60981, 0o2770, self.installer.SHARED_DIRECTORIES["/var/lib/paws-agent-results"])
+        self.assertEqual(modes, {
+            "agent": 0o2770,
+            "agent/.paws-accounts": 0o2770,
+            "agent/.paws-accounts/binding": 0o2770,
+            "agent/.paws-accounts/binding/.claude": 0o2770,
+            "results": 0o2770,
+            "results/01K00000000000000000000000": 0o2750,
+        })
+        self.assertEqual(owners["agent/.paws-accounts/binding/account.json"], (60980, 60979))
+        self.assertEqual(owners["results/01K00000000000000000000000"], (60980, 60981))
+
+
 class FakeSystemctl:
     """systemctl and the release's Bun for install(): records every call; `active` lists running executions."""
 

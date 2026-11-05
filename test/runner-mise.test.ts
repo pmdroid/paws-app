@@ -116,6 +116,7 @@ async function runTask(name: string, runtimes: Array<{ tool: string; version: st
   const worktree = join(workRoot, executionId);
   const outputDirectory = join(task, "output");
   for (const path of [worktree, outputDirectory]) mkdirSync(path, { recursive: true, mode: 0o700 });
+  chmodSync(worktree, 0o770);
   const { dataDir } = runnerMiseDirectories(home);
   const script = join(task, "script.json");
   const recorded = join(task, "agent.json");
@@ -293,6 +294,7 @@ async function runPathTask(
   const system = join(task, "system");
   for (const path of [worktree, outputDirectory, system])
     mkdirSync(path, { recursive: true, mode: 0o700 });
+  chmodSync(worktree, 0o770);
   writeFileSync(join(system, "node"), `#!/bin/sh\necho ${join(system, "node")}\n`);
   chmodSync(join(system, "node"), 0o755);
   const git = (...args: string[]) => {

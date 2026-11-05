@@ -74,13 +74,25 @@ class Journal:
         self.end(name)
 
 
-def adopt_tree(path, uid, gid, mode):
+def adopt_tree(path, uid, gid, mode, directory_mode=None):
     info = path.lstat()
     os.lchown(path, uid, gid)
     if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
         os.chmod(path, mode)
         for child in path.iterdir():
-            adopt_tree(child, uid, gid, stat.S_IMODE(child.lstat().st_mode))
+            child_info = child.lstat()
+            child_mode = stat.S_IMODE(child_info.st_mode)
+            if directory_mode and stat.S_ISDIR(child_info.st_mode):
+                child_mode = directory_mode(child_mode)
+            adopt_tree(child, uid, gid, child_mode, directory_mode)
+
+
+def group_shared(mode):
+    return stat.S_ISGID | (mode & 0o700) | (mode & 0o700) >> 3
+
+
+def group_inherited(mode):
+    return stat.S_ISGID | mode
 
 
 def root_directory(path, mode=0o755):
@@ -142,6 +154,27 @@ def service_groups():
         except KeyError:
             pass
     return groups
+
+
+STATE_DIRECTORIES = (
+    ("/var/lib/paws-runner", "paws-runner", "paws-runner", 0o700),
+    ("/var/lib/paws-agent", "paws-runner", "paws-agent", 0o2770),
+    ("/var/lib/paws-agent-tasks", "paws-runner", "paws-agent", 0o2770),
+    ("/var/lib/paws-runner-spool", "paws-runner", "paws-agent", 0o2750),
+    ("/var/lib/paws-agent-results", "paws-runner", "paws-results", 0o2770),
+)
+SHARED_DIRECTORIES = {"/var/lib/paws-agent": group_shared, "/var/lib/paws-agent-tasks": group_shared, "/var/lib/paws-agent-results": group_inherited}
+
+
+def state_directories():
+    return [(path, pwd.getpwnam(owner).pw_uid, grp.getgrnam(group).gr_gid, mode) for path, owner, group, mode in STATE_DIRECTORIES]
+
+
+def validate_state_directories(lstat=os.lstat):
+    for path, uid, gid, mode in state_directories():
+        info = lstat(path)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o7777 != mode:
+            raise ValueError(f"Unsafe runner installation state directory: {path}")
 
 
 def validate_identity_separation():
@@ -602,11 +635,9 @@ def switch_release(unpacked, destination, pointers):
             write_atomic(target, (assets / name).read_bytes(), 0o644)
     release.command(["/usr/bin/systemd-sysusers", "/etc/sysusers.d/paws-runner.conf"])
     release.command(["/usr/bin/systemd-tmpfiles", "--create", "/etc/tmpfiles.d/paws-runner.conf"])
-    runner = pwd.getpwnam("paws-runner")
-    results_group = grp.getgrnam("paws-results")
-    adopt_tree(pathlib.Path("/var/lib/paws-agent"), runner.pw_uid, runner.pw_gid, 0o700)
-    adopt_tree(pathlib.Path("/var/lib/paws-agent-tasks"), runner.pw_uid, runner.pw_gid, 0o711)
-    adopt_tree(pathlib.Path("/var/lib/paws-agent-results"), runner.pw_uid, results_group.gr_gid, 0o750)
+    for path, uid, gid, mode in state_directories():
+        if path in SHARED_DIRECTORIES:
+            adopt_tree(pathlib.Path(path), uid, gid, mode, SHARED_DIRECTORIES[path])
     shutil.rmtree("/var/lib/paws-runner-members", ignore_errors=True)
     validate_identity_separation()
     runner = pwd.getpwnam("paws-runner")
@@ -616,10 +647,7 @@ def switch_release(unpacked, destination, pointers):
     results_group = grp.getgrnam("paws-results")
     if runner.pw_uid <= 0 or agent.pw_uid <= 0 or runner.pw_uid == agent.pw_uid or runner.pw_gid != runner_group.gr_gid or agent.pw_gid != agent_group.gr_gid or runner.pw_gid == agent.pw_gid or runner.pw_shell != "/usr/sbin/nologin" or agent.pw_shell != "/usr/sbin/nologin" or runner.pw_dir != "/var/lib/paws-runner" or agent.pw_dir != "/var/lib/paws-agent" or "paws-agent" in runner_group.gr_mem:
         raise ValueError("Unsafe runner service identities")
-    for path, uid, gid, mode in (("/var/lib/paws-runner", runner.pw_uid, runner_group.gr_gid, 0o700), ("/var/lib/paws-agent", runner.pw_uid, runner.pw_gid, 0o700), ("/var/lib/paws-runner-spool", runner.pw_uid, agent_group.gr_gid, 0o2750), ("/var/lib/paws-agent-tasks", runner.pw_uid, runner.pw_gid, 0o711), ("/var/lib/paws-agent-results", runner.pw_uid, results_group.gr_gid, 0o750)):
-        info = pathlib.Path(path).lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o7777 != mode:
-            raise ValueError(f"Unsafe runner installation state directory: {path}")
+    validate_state_directories()
     if "paws-runner" not in agent_group.gr_mem or not {"paws-runner", "paws-agent"} <= set(results_group.gr_mem):
         raise ValueError("Unsafe runner service identities")
     root_directory(pathlib.Path("/etc/paws-runner"))
