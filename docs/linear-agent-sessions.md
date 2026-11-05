@@ -151,7 +151,7 @@ When every runner the delegator may use, online or not, refuses the item's repos
 
 - **Retry** restarts the item, which checks placement again at once. If no runner allows the repository yet, Paws asks once more with the current reasons.
 - **Stop** cancels the item.
-- A runner heartbeat that changes its host list, or an admin who changes the runner's page list, answers the open question as Retry once some runner allows the repository. The question records the runner (`runner:<id>`) or the admin as the answerer.
+- A runner heartbeat that changes its host list, or an admin who changes the runner's page list, answers the open question as Retry when that runner now allows the repository and the delegator may use it. The question records the runner (`runner:<id>`) or the admin as the answerer.
 
 While the question is open nothing retries, so Linear gets nothing more. When a runner that allows the repository is only offline or busy, there is no question: the item waits as before, and the wait says "Waiting for a paired runner to come online" only when a runner is offline.
 

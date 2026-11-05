@@ -691,6 +691,7 @@ export type OrchestratorOptions = {
     itemId: string,
     now: number,
   ) => { repository: string; refusals: readonly RunnerRepositoryRefusal[] } | null;
+  repositoryAllowedOn?: (itemId: string, runnerId: string, now: number) => boolean;
   /**
    * A runner the item's owner may use for this agent now, for the line that resumes a
    * runner-setup hold. Null when none is eligible. SQLite only.
@@ -1766,7 +1767,9 @@ export class Orchestrator {
       if (owner !== null) this.checkRunnerSetup(owner);
     });
     jobs.register(JOB_KIND.runnerRepositoryCheck, async (job) => {
-      this.checkRunnerRepositories(readString(job.payload, "answeredBy") ?? "paws");
+      const runnerId = readString(job.payload, "runnerId");
+      if (runnerId !== null)
+        this.checkRunnerRepositories(runnerId, readString(job.payload, "answeredBy") ?? "paws");
       await this.flush();
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
@@ -2561,32 +2564,37 @@ export class Orchestrator {
     return true;
   }
 
-  private checkRunnerRepositories(answeredBy: string): void {
-    const refusals = this.options.repositoryRefusals;
-    if (!refusals) return;
+  private checkRunnerRepositories(runnerId: string, answeredBy: string): void {
+    const allowedOn = this.options.repositoryAllowedOn;
+    if (!allowedOn) return;
     const now = this.now();
-    const waiting = this.db
-      .query<{ id: string; itemId: string; sessionId: string }, []>(
-        `SELECT id,item_id AS itemId,session_id AS sessionId FROM question
-         WHERE kind='runner-repository' AND status='open' AND cancelled_at IS NULL`,
-      )
-      .all();
+    const seen = new Set<string>();
+    const waiting = () =>
+      this.db
+        .query<{ id: string; itemId: string; sessionId: string }, []>(
+          `SELECT id,item_id AS itemId,session_id AS sessionId FROM question
+           WHERE kind='runner-repository' AND status='open' AND cancelled_at IS NULL`,
+        )
+        .all()
+        .filter((question) => !seen.has(question.id));
     let answered = false;
-    for (const question of waiting) {
-      if (refusals(question.itemId, now) !== null) continue;
-      const outcome = answerAsked(
-        this.db,
-        {
-          sessionId: question.sessionId,
-          deliveryId: `runner-repository-allowed:${question.id}`,
-          body: RUNNER_REPOSITORY_RETRY,
-          answeredBy,
-          now,
-        },
-        questionEffects(this.db, { now, maxAwakeMs: this.options.caps?.maxAwakeMs }),
-      );
-      answered = outcome.status === "answered" || answered;
-    }
+    for (let batch = waiting(); batch.length > 0; batch = waiting())
+      for (const question of batch) {
+        seen.add(question.id);
+        if (!allowedOn(question.itemId, runnerId, now)) continue;
+        const outcome = answerAsked(
+          this.db,
+          {
+            sessionId: question.sessionId,
+            deliveryId: `runner-repository-allowed:${question.id}`,
+            body: RUNNER_REPOSITORY_RETRY,
+            answeredBy,
+            now,
+          },
+          questionEffects(this.db, { now, maxAwakeMs: this.options.caps?.maxAwakeMs }),
+        );
+        answered = outcome.status === "answered" || answered;
+      }
     if (answered) this.dispatch();
   }
 

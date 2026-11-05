@@ -225,6 +225,7 @@ import {
   itemOwnerEligibleRunner,
   itemOwnerHasEligibleRunner,
   itemOwnerRunnerSetupNeed,
+  itemRepositoryAllowedOn,
   itemRepositoryRefusals,
   itemRepositoryRunner,
 } from "./runner-placement";
@@ -1284,6 +1285,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 itemOwnerEligibleRunner(db, { itemId, agent, now }),
               repositoryRefusals: (itemId: string, now: number) =>
                 itemRepositoryRefusals(db, { itemId, now }),
+              repositoryAllowedOn: (itemId: string, runnerId: string, now: number) =>
+                itemRepositoryAllowedOn(db, { itemId, runnerId, now }),
               runnerRebase: async (
                 item: WorkItemRecord,
                 heads: { head: string; main: string },

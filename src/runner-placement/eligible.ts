@@ -319,21 +319,38 @@ const OUT_OF_SCOPE = new Set<EligibleRunnerReason>([
   "owner-not-in-team",
 ]);
 
-export function itemRepositoryRefusals(
-  db: Database,
-  input: { itemId: string; now?: number },
-): { repository: string; refusals: RepositoryRefusal[] } | null {
+function itemRepositoryRunners(db: Database, input: { itemId: string; now?: number }) {
   const scope = itemOwnerScope(db, input.itemId);
   const binding = getWorkItemRepository(db, input.itemId);
   if (!scope || !binding) return null;
-  const repository = `${binding.owner}/${binding.repo}`;
   const runners = eligibleRunners(db, {
     ...scope,
     agent: "",
     purpose: "prepare",
     ...(input.now === undefined ? {} : { now: input.now }),
   }).filter((runner) => !OUT_OF_SCOPE.has(runner.reason));
-  if (runners.length === 0) return null;
+  return { repository: `${binding.owner}/${binding.repo}`, runners };
+}
+
+export function itemRepositoryAllowedOn(
+  db: Database,
+  input: { itemId: string; runnerId: string; now?: number },
+): boolean {
+  const found = itemRepositoryRunners(db, input);
+  return (
+    found !== null &&
+    found.runners.some((runner) => runner.id === input.runnerId) &&
+    runnerRepositoryRefusal(db, input.runnerId, found.repository) === null
+  );
+}
+
+export function itemRepositoryRefusals(
+  db: Database,
+  input: { itemId: string; now?: number },
+): { repository: string; refusals: RepositoryRefusal[] } | null {
+  const found = itemRepositoryRunners(db, input);
+  if (!found || found.runners.length === 0) return null;
+  const { repository, runners } = found;
   const refusals: RepositoryRefusal[] = [];
   for (const runner of runners) {
     const refusal = runnerRepositoryRefusal(db, runner.id, repository);

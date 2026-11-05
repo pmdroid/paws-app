@@ -21,6 +21,7 @@ import {
   itemOwnerEligibleRunner,
   itemOwnerHasEligibleRunner,
   itemOwnerRunnerSetupNeed,
+  itemRepositoryAllowedOn,
   itemRepositoryRefusals,
 } from "../src/runner-placement";
 import { tempDb, tempHome } from "./helpers";
@@ -95,6 +96,8 @@ function orchestrator(db: Database, clock: FakeClock, jobs: JobLoop) {
     runnerSetupNeed: (itemId, agent, now) => itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
     eligibleRunner: (itemId, agent, now) => itemOwnerEligibleRunner(db, { itemId, agent, now }),
     repositoryRefusals: (itemId, now) => itemRepositoryRefusals(db, { itemId, now }),
+    repositoryAllowedOn: (itemId, runnerId, now) =>
+      itemRepositoryAllowedOn(db, { itemId, runnerId, now }),
   });
 }
 
@@ -294,5 +297,22 @@ test("Stop cancels the item", async () => {
       }),
     ).toBe("answered");
     expect(getWorkItem(db, "cli")?.state).toBe("cancelled");
+  });
+});
+
+test("only a runner that now allows the repository answers, and it is recorded as the answerer", async () => {
+  await withPaws(async ({ db, clock, jobs, paws }) => {
+    recordRunnerRepositories(db, "runner-1", ["acme/monorepo"], START);
+    paws.reconcileExecution();
+    await start(jobs);
+    clock.advance(1_000);
+    db.run("UPDATE runner SET revoked_at=?,status='revoked' WHERE id='runner-1'", [clock.now()]);
+    recordRunnerRepositories(db, "runner-1", ["acme/monorepo", "acme/other"], clock.now());
+    while ((await jobs.tick([JOB_KIND.runnerRepositoryCheck])) !== null);
+    expect(questions(db)[0]!.status).toBe("open");
+    addRunner(db, "runner-2", clock.now());
+    recordRunnerRepositories(db, "runner-2", ["acme/cli"], clock.now());
+    while ((await jobs.tick([JOB_KIND.runnerRepositoryCheck])) !== null);
+    expect(questions(db)[0]).toMatchObject({ status: "answered", by: "runner:runner-2" });
   });
 });

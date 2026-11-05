@@ -24,7 +24,7 @@ export function recordRunnerRepositories(
     [runnerId, reported, at],
   );
   if (before === null || before.host !== reported)
-    enqueueRepositoryCheck(db, `runner:${runnerId}`, at);
+    enqueueRepositoryCheck(db, runnerId, `runner:${runnerId}`, at);
 }
 
 export function setRunnerAdminRepositories(
@@ -58,7 +58,7 @@ export function setRunnerAdminRepositories(
       subject: input.runnerId,
       now: input.now,
     });
-    enqueueRepositoryCheck(db, input.userId, input.now);
+    enqueueRepositoryCheck(db, input.runnerId, input.userId, input.now);
   });
 }
 
@@ -98,7 +98,12 @@ export function runnerAllowsRepository(
   return runnerRepositoryRefusal(db, runnerId, repository) === null;
 }
 
-function enqueueRepositoryCheck(db: Database, answeredBy: string, at: number): void {
+function enqueueRepositoryCheck(
+  db: Database,
+  runnerId: string,
+  answeredBy: string,
+  at: number,
+): void {
   const waiting = db
     .query(
       `SELECT 1 FROM question WHERE kind='runner-repository' AND status='open'
@@ -106,12 +111,15 @@ function enqueueRepositoryCheck(db: Database, answeredBy: string, at: number): v
     )
     .get();
   const pending = db
-    .query("SELECT 1 FROM job WHERE queue=? AND status='pending' LIMIT 1")
-    .get(JOB_KIND.runnerRepositoryCheck);
+    .query(
+      `SELECT 1 FROM job WHERE queue=? AND status='pending'
+       AND json_extract(payload,'$.runnerId')=? AND json_extract(payload,'$.answeredBy')=? LIMIT 1`,
+    )
+    .get(JOB_KIND.runnerRepositoryCheck, runnerId, answeredBy);
   if (!waiting || pending) return;
   enqueueJob(db, {
     queue: JOB_KIND.runnerRepositoryCheck,
-    payload: { answeredBy },
+    payload: { runnerId, answeredBy },
     maxAttempts: 3,
     now: at,
   });

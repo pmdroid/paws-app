@@ -64,6 +64,7 @@ export type RepositoryRefusal = {
 };
 export {
   eligibleRunners,
+  itemRepositoryAllowedOn,
   itemRepositoryRefusals,
   itemOwnerEligibleRunner,
   itemOwnerHasEligibleRunner,
