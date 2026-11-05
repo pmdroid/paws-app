@@ -170,24 +170,40 @@ test("the agent finds the turn's token in gh's config, never in its environment,
 });
 
 test("a turn without a read token gets no GH_CONFIG_DIR, not even an inherited one, and nothing is written", async () => {
-  for (const [githubRead, tokens] of [
-    [false, { 1: TOKEN }],
-    [true, {}],
-  ] as const) {
-    const inherited = join(temporary(), "operator-gh");
-    const { trace, asked, directory } = await turn(
-      githubRead,
-      tokens,
-      {},
-      {
-        GH_CONFIG_DIR: inherited,
-      },
-    );
-    expect(trace.env?.ghConfig).toBeUndefined();
-    expect(asked.length > 0).toBe(githubRead);
-    expect(existsSync(directory)).toBe(false);
-  }
+  const inherited = join(temporary(), "operator-gh");
+  const { trace, asked, directory } = await turn(
+    false,
+    { 1: TOKEN },
+    {},
+    { GH_CONFIG_DIR: inherited },
+  );
+  expect(trace.env?.ghConfig).toBeUndefined();
+  expect(asked).toEqual([]);
+  expect(existsSync(directory)).toBe(false);
 }, 30_000);
+
+test("a token minted after the agent started still reaches gh's config", async () => {
+  const directory = join(temporary(), ".gh-run");
+  const published: Record<number, string> = {};
+  const config = openGitHubReadConfig(
+    directory,
+    (sequence) => {
+      const token = published[sequence];
+      return token ? { token, expiresAt: Date.now() + 3_600_000 } : null;
+    },
+    10,
+  );
+  expect(config?.directory).toBe(directory);
+  expect(readdirSync(directory)).toEqual([]);
+  expect(config.tokens()).toEqual([]);
+  published[1] = TOKEN;
+  const hosts = join(directory, "hosts.yml");
+  for (let i = 0; i < 200 && !existsSync(hosts); i++) await Bun.sleep(10);
+  expect(readFileSync(hosts, "utf8")).toContain(`oauth_token: ${TOKEN}`);
+  expect(config.tokens()).toEqual([TOKEN]);
+  config.close();
+  expect(existsSync(directory)).toBe(false);
+});
 
 test("a fresh token replaces hosts.yml atomically before the old one expires", async () => {
   const directory = join(temporary(), ".gh-run");
@@ -217,7 +233,7 @@ test("a restarted worker starts from the newest token the runner kept", async ()
   const directory = join(temporary(), ".gh-run");
   const config = openGitHubReadConfig(directory, (sequence) =>
     sequence === 3 ? { token: FRESH, expiresAt: Date.now() + 3_600_000 } : null,
-  )!;
+  );
   expect(readFileSync(join(directory, "hosts.yml"), "utf8")).toContain(`oauth_token: ${FRESH}`);
   expect(config.tokens()).toEqual([FRESH]);
   config.close();
