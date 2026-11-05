@@ -2378,6 +2378,12 @@ export function createRemoteAgentRunner(options: {
                 : ((command.type === "run" && command.checkpoint !== false) ||
                     command.type === "task") &&
                   state === "running");
+            if (!detached)
+              try {
+                markAgentWait(db, itemId, false, mono(), now());
+              } catch (error) {
+                journalCaught(error, "runner-backend.cleanup.agentWait", itemId);
+              }
             // A stop Paws asked for keeps the turn's work: the runner publishes it as a WIP commit
             // first, and the next turn starts from it.
             try {

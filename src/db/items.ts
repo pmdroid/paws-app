@@ -453,7 +453,6 @@ export function markJobAwakeWait(
   const itemId = (job.payload as { itemId?: string }).itemId;
   if (!itemId) return;
   immediate(db, () => {
-    if (getWorkItem(db, itemId) === null) return;
     accrueAwake(db, itemId, mono, now);
     if (waiting) {
       db.run(
@@ -473,7 +472,6 @@ export function markJobAwakeWait(
   });
 }
 
-/** Read ownership and wait flags in one scan for each accrual. Pending CI marks are never live. */
 export function markAgentWait(
   db: Database,
   itemId: string,
@@ -482,6 +480,7 @@ export function markAgentWait(
   now: number,
 ): void {
   immediate(db, () => {
+    if (getWorkItem(db, itemId) === null) return;
     accrueAwake(db, itemId, mono, now);
     if (waiting)
       db.run(
@@ -501,6 +500,7 @@ export function markAgentWait(
   });
 }
 
+/** Read ownership and wait flags in one scan for each accrual. Pending CI marks are never live. */
 function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId = -1) {
   const row = db
     .query<
