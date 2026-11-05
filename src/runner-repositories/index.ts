@@ -3,6 +3,8 @@ import {
   appBotCommitIdentity,
   assertDescendsFromAny,
   candidateBases,
+  checkpointRef,
+  checkpointStart,
   commitCoauthorTrailers,
   commitIdentityEnv,
   validateCommitAttribution,
@@ -399,13 +401,41 @@ export function createRunnerRepositories(options: {
           ).trim() !== main
         )
           throw new Error("Assigned main is unavailable");
+        const restore = command.type === "run" ? command.restoreCheckpoint : undefined;
+        if (restore) {
+          const hidden = checkpointRef(restore.branch);
+          await invoke(["check-ref-format", hidden], signal);
+          await network({
+            operation: "fetch",
+            remoteUrl: command.repository.remoteUrl,
+            token,
+            cwd: options.root,
+            dest: mirror,
+            refspec: `+${hidden}:${hidden}`,
+            env,
+            signal,
+          });
+          signal?.throwIfAborted();
+          const saved = (
+            await invoke(
+              ["--git-dir", mirror, "rev-parse", "--verify", `${hidden}^{commit}`],
+              signal,
+            )
+          ).trim();
+          if (saved !== restore.sha) throw new Error("Assigned checkpoint is unavailable");
+          await checkpointStart(
+            (args) => invoke(["--git-dir", mirror, ...args], signal),
+            saved,
+            main ? [base, main] : [base],
+          );
+        }
         const snapshot = join(
           options.root,
           `snapshot-${createHash("sha256").update(command.id).digest("hex")}.bundle`,
         );
         const blobs = snapshot.replace(/\.bundle$/, ".pack");
         const ref = `refs/heads/paws-snapshot-${createHash("sha256").update(command.id).digest("hex")}`;
-        const tips = main ? [base, main] : [base];
+        const tips = [base, ...(main ? [main] : []), ...(restore ? [restore.sha] : [])];
         await prefetch(
           mirror,
           tips,
@@ -425,10 +455,13 @@ export function createRunnerRepositories(options: {
         signal?.throwIfAborted();
         try {
           const mainRef = `${ref}-main`;
-          const refs = main ? [ref, mainRef] : [ref];
+          const checkpointHead = `${ref}-checkpoint`;
+          const refs = [ref, ...(main ? [mainRef] : []), ...(restore ? [checkpointHead] : [])];
           await invoke(["--git-dir", mirror, "update-ref", ref, base]);
           try {
             if (main) await invoke(["--git-dir", mirror, "update-ref", mainRef, main]);
+            if (restore)
+              await invoke(["--git-dir", mirror, "update-ref", checkpointHead, restore.sha]);
             signal?.throwIfAborted();
             let filtered = false;
             try {
@@ -458,6 +491,7 @@ export function createRunnerRepositories(options: {
           } finally {
             await invoke(["--git-dir", mirror, "update-ref", "-d", ref]);
             if (main) await invoke(["--git-dir", mirror, "update-ref", "-d", mainRef]);
+            if (restore) await invoke(["--git-dir", mirror, "update-ref", "-d", checkpointHead]);
           }
         } catch (error) {
           rmSync(snapshot, { force: true });
@@ -473,9 +507,8 @@ export function createRunnerRepositories(options: {
      */
     async publish(
       input: WorkCommand,
-      candidate: { bundle: Buffer; sha: string; branch: string; rebase?: boolean },
+      candidate: { bundle: Buffer; sha: string; branch: string; rebase?: boolean; ref?: string },
       signal?: AbortSignal,
-      /** The WIP commit this run last published there, which the push may replace. */
       lease?: string,
     ): Promise<string> {
       const command = parse(input);
@@ -489,7 +522,12 @@ export function createRunnerRepositories(options: {
       if (lease !== undefined && !/^[a-f0-9]{40}$/.test(lease))
         throw new Error("Invalid runner candidate lease");
       if (command.type !== "run") throw new Error("Only a run can publish a candidate");
-      await invoke(["check-ref-format", `refs/heads/${candidate.branch}`], signal);
+      const target = candidate.ref ?? `refs/heads/${candidate.branch}`;
+      const hidden = target === checkpointRef(candidate.branch);
+      if (!hidden && target !== `refs/heads/${candidate.branch}`)
+        throw new Error("Invalid runner candidate ref");
+      if (hidden && candidate.rebase) throw new Error("A runner checkpoint is never rebased");
+      await invoke(["check-ref-format", target], signal);
       return serialize(command, async (mirror) => {
         signal?.throwIfAborted();
         const path = join(options.root, `candidate-${randomUUID()}.bundle`);
@@ -606,19 +644,20 @@ export function createRunnerRepositories(options: {
             signal?.throwIfAborted();
             const token = await options.credential(command, "write");
             signal?.throwIfAborted();
-            const push = (target: string, expected?: string) =>
+            const push = (source: string, expected?: string, force = false) =>
               network({
                 operation: "push",
                 remoteUrl: command.repository.remoteUrl,
                 token,
                 cwd: mirror,
-                refspec: `${target}:refs/heads/${candidate.branch}`,
+                refspec: `${force ? "+" : ""}${source}:${target}`,
                 ...(expected ? { lease: expected } : {}),
                 env,
                 signal,
               });
             try {
-              if (lease && lease !== sha) await push(sha, lease);
+              if (hidden) await push(sha, lease, lease === undefined);
+              else if (lease && lease !== sha) await push(sha, lease);
               else if (!rebased) await push(sha);
               else
                 await push(sha).catch((caughtError4) => {
@@ -828,6 +867,7 @@ export function createRunnerRepositories(options: {
   };
 }
 export type RunnerRepositories = ReturnType<typeof createRunnerRepositories>;
+export { checkpointRef };
 
 const SNAPSHOT_BLOB_COMMITS = 200;
 const PREFETCH_BATCH = 1_000;

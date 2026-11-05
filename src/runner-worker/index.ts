@@ -46,6 +46,7 @@ import {
   validateCandidateAttribution,
   assertDescendsFromAny,
   candidateBases,
+  checkpointStart,
   CHECKPOINT_COMMIT_MESSAGE,
   ArtifactRejectedError,
   commitCheckpoint,
@@ -908,6 +909,7 @@ export async function executeRunnerCommand(
       GIT_TERMINAL_PROMPT: "0",
     };
     const invokeGit = (args: string[]) => git(args, { env, signal: options.signal });
+    let restoredCheckpoint = false;
     if (resumed) {
       if (!lstatSync(worktree).isDirectory()) throw new Error("Runner workspace is missing");
     } else if (repository) {
@@ -976,6 +978,23 @@ export async function executeRunnerCommand(
       )
         throw new Error("Runner repository main mismatch");
       await invokeGit(["-C", worktree, "update-ref", "refs/remotes/origin/main", main]);
+      const restore = command.type === "run" ? command.restoreCheckpoint : undefined;
+      if (restore) {
+        if (
+          (
+            await invokeGit(["-C", worktree, "rev-parse", "--verify", `${restore.sha}^{commit}`])
+          ).trim() !== restore.sha
+        )
+          throw new Error("Runner checkpoint is missing");
+        const start = await checkpointStart(
+          (args) => invokeGit(["-C", worktree, ...args]),
+          restore.sha,
+          command.repository.mainSha ? [base, command.repository.mainSha] : [base],
+        );
+        await invokeGit(["-C", worktree, "read-tree", "-u", "--reset", restore.sha]);
+        await invokeGit(["-C", worktree, "reset", "-q", start]);
+        restoredCheckpoint = true;
+      }
       if (options.repositoryBlobs)
         for (const ref of (
           await invokeGit(["-C", worktree, "for-each-ref", "--format=%(refname)", SNAPSHOT_REFS])
@@ -1589,7 +1608,7 @@ export async function executeRunnerCommand(
       }
     };
     /** The worktree state this turn last emitted, and the commit it emitted for it. */
-    let checkpointed: string | undefined;
+    let checkpointed: string | undefined = restoredCheckpoint ? "restored" : undefined;
     let checkpointedSha: string | undefined;
     const published = new Set<string>();
     let acknowledged = 0;
@@ -1604,11 +1623,6 @@ export async function executeRunnerCommand(
       return sha !== undefined && published.has(sha);
     };
     let checkpointing = Promise.resolve();
-    /**
-     * Publishes the worktree as a WIP commit on top of the branch, uncommitted changes included,
-     * without touching the agent's branch, index or files. The runtime pushes the bundle to the
-     * item's branch. An unchanged worktree publishes nothing; a stop Paws asked for still hears.
-     */
     const checkpointWorktree = async (reason: "stop" | "interval") => {
       const run = runCommand!;
       try {

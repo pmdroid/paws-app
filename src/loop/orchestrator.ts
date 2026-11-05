@@ -331,6 +331,7 @@ import {
   publishAccepted,
   storeEvidenceFiles,
   closeStoppedPull,
+  deleteHiddenRef,
   fetchUpstreamMain,
   leaveGitHubMergeQueue,
   readPullMergeable,
@@ -567,6 +568,7 @@ import {
   RISK_ANSWERERS,
 } from "./risk-approval";
 import { sweepWorktrees } from "./worktree-sweep";
+import { sweepCheckpointRefs } from "./checkpoint-ref";
 import {
   KEEP_WAITING,
   MOVE_TO_ANOTHER_RUNNER,
@@ -6439,7 +6441,26 @@ export class Orchestrator {
     this.dispatch();
   }
 
-  sweepWorktrees(signal: AbortSignal): Promise<void> {
+  async sweepWorktrees(signal: AbortSignal): Promise<void> {
+    await sweepCheckpointRefs({
+      db: this.db,
+      signal,
+      remove: (repository, ref) => {
+        const github = this.githubForRepository(repository);
+        if (!github)
+          return Promise.reject(
+            new Error(`No GitHub App binding for ${repository.owner}/${repository.repo}`),
+          );
+        return deleteHiddenRef({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          ref,
+          ...this.gitHubCredentials(github),
+          signal,
+        });
+      },
+    });
     const busy = (itemId: string) =>
       this.jobContexts.has(itemId) ||
       [...this.live.values()].some((live) => live.itemId === itemId);

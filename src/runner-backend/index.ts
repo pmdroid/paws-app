@@ -81,6 +81,7 @@ import {
   ANY_MISE_BACKEND_RUNNER_VERSION,
   legacyRuntimeTool,
   SESSION_RESUME_RUNNER_VERSION,
+  HIDDEN_CHECKPOINT_RUNNER_VERSION,
   type RunnerCodingAgent,
   type RunnerCommand,
   type RunnerResult,
@@ -93,7 +94,12 @@ import { agentName, usageLimitWait } from "./usage-limit-wait";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
-import { ensureStartOnRemote, lostCommitsNote, RemoteStartUnverified } from "./start-commit";
+import {
+  CheckpointLookupFailed,
+  ensureStartOnRemote,
+  lostCommitsNote,
+  RemoteStartUnverified,
+} from "./start-commit";
 import {
   planSessionRestore,
   runnerGoneReason,
@@ -112,6 +118,8 @@ import {
   type UsageLimit,
 } from "./failover";
 import {
+  checkpointRef,
+  checkpointStart,
   isReadOnlyTaskMode,
   isResponseTaskMode,
   PawsShutdown,
@@ -1059,7 +1067,9 @@ export function createRemoteAgentRunner(options: {
            * Brings a WIP commit a runner published after the item's candidate into it, so a
            * restarted turn starts from the work a stopped or lost one saved.
            */
-          const importCheckpoint = async (networkGit: (args: string[]) => Promise<string>) => {
+          const importCheckpoint = async (
+            networkGit: (args: string[]) => Promise<string>,
+          ): Promise<{ sha: string; branch: string } | undefined> => {
             const scoped = work.scope(selected.runId, selected.workspaceId);
             if (!scoped.repository) return;
             const { mirror, ref } = itemCandidate(scoped.repository);
@@ -1098,6 +1108,27 @@ export function createRemoteAgentRunner(options: {
               () => true,
               () => false,
             );
+            const hidden =
+              scoped.item.branchName &&
+              (await hiddenCheckpoint(
+                mirror,
+                scoped.item.branchName,
+                scoped.repository.remoteUrl,
+                networkGit,
+              )) === wip;
+            if (hidden) {
+              const version = db
+                .query<{ version: string | null }, [string]>(
+                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                )
+                .get(selected.id)?.version;
+              if (versionAtLeast(version, HIDDEN_CHECKPOINT_RUNNER_VERSION))
+                return { sha: wip, branch: scoped.item.branchName };
+              throw new RetryableRunnerError(
+                selected.id,
+                `Runner ${selected.id} is older than ${HIDDEN_CHECKPOINT_RUNNER_VERSION.join(".")} and cannot restore the saved work at ${wip.slice(0, 7)} without putting it on ${scoped.item.branchName}`,
+              );
+            }
             if (local) return;
             // The turn must start from the saved work; a checkout without it would lose it.
             try {
@@ -1184,8 +1215,10 @@ export function createRemoteAgentRunner(options: {
             (await (async () => {
               const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
               // A runner's saved WIP comes first; then the head it gives must be on GitHub.
-              if (!taskScope && input.role === "implementer" && input.networkGit)
-                await importCheckpoint(input.networkGit);
+              let restoreCheckpoint =
+                !taskScope && input.role === "implementer" && input.networkGit
+                  ? await importCheckpoint(input.networkGit)
+                  : undefined;
               const lostNote =
                 !taskScope && input.role === "implementer" && input.networkGit
                   ? await remoteStart(scoped, input.networkGit)
@@ -1326,7 +1359,7 @@ export function createRemoteAgentRunner(options: {
                   ? undefined
                   : upstreamMain;
               const mainCandidate = input.mainSha ?? fetchedMain ?? checkpointBase;
-              const mainSha =
+              let mainSha =
                 !taskScope &&
                 baseSha &&
                 mainCandidate &&
@@ -1347,6 +1380,39 @@ export function createRemoteAgentRunner(options: {
                     })))
                   ? mainCandidate
                   : undefined;
+              if (
+                restoreCheckpoint &&
+                getWorkItem(db, itemId)?.checkpoint?.wipCommit !== restoreCheckpoint.sha
+              ) {
+                journal(
+                  `item ${itemId} starts from ${head ?? "no head"} instead of its checkpoint ${restoreCheckpoint.sha}`,
+                );
+                restoreCheckpoint = undefined;
+              }
+              if (restoreCheckpoint && head) {
+                const saved = restoreCheckpoint.sha;
+                const savedOn = getWorkItem(db, itemId)?.checkpoint?.checkpointMain;
+                const savedMain = savedOn?.sha === saved ? savedOn.main : undefined;
+                const startsOn = (bases: string[]) =>
+                  checkpointStart(
+                    (args) => git(["--git-dir", mirror!, ...args]),
+                    saved,
+                    bases,
+                  ).then(
+                    () => true,
+                    (error: unknown) => {
+                      journalCaught(error, "runner-backend.forItem.checkpointStart", itemId);
+                      return false;
+                    },
+                  );
+                if (!(await startsOn(mainSha ? [head, mainSha] : [head]))) {
+                  if (!savedMain || savedMain === mainSha || !(await startsOn([savedMain])))
+                    throw new Error(
+                      `Paws could not restore the saved work at ${saved.slice(0, 7)}: it is on neither ${restoreCheckpoint.branch} at ${head.slice(0, 7)} nor main`,
+                    );
+                  mainSha = savedMain;
+                }
+              }
               const generation =
                 (db
                   .query<{ generation: number }, [string]>(
@@ -1567,6 +1633,10 @@ export function createRemoteAgentRunner(options: {
                         ? { ciRerun: true as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
+                      ...(restoreCheckpoint &&
+                      versionAtLeast(runnerVersion, HIDDEN_CHECKPOINT_RUNNER_VERSION)
+                        ? { restoreCheckpoint }
+                        : {}),
                       ...(restorePlan?.eligible
                         ? { restoreSession: restorePlan.restoreSession }
                         : {}),
@@ -1875,6 +1945,7 @@ export function createRemoteAgentRunner(options: {
                   itemId,
                   runId: assigned.runId,
                   baseSha: baseSha!,
+                  ...(assigned.repository.mainSha ? { mainSha: assigned.repository.mainSha } : {}),
                   event,
                   now: now(),
                 });
@@ -2485,6 +2556,7 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
+export { recordRunnerCheckpoint } from "./checkpoint";
 export { ensureStartOnRemote, RemoteStartUnverified } from "./start-commit";
 
 export { remoteCommandsGone } from "./released";
@@ -2582,3 +2654,50 @@ function handoverWaitNotice(db: Database, move: HandoverMove, why: string): stri
 
 export { AccountPolicyUnavailable, UsageLimitExhaustedError, UsageLimitPause } from "./failover";
 export { createFindingGroupHelper } from "./finding-groups";
+
+async function hiddenCheckpoint(
+  mirror: string,
+  branch: string,
+  remoteUrl: string,
+  networkGit: (args: string[]) => Promise<string>,
+): Promise<string | null> {
+  const ref = `refs/paws/fetched-checkpoints/${randomUUID()}`;
+  try {
+    try {
+      await networkGit([
+        "-C",
+        mirror,
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--",
+        remoteUrl,
+        `+${checkpointRef(branch)}:${ref}`,
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/couldn't find remote ref/i.test(message))
+        throw new CheckpointLookupFailed(branch, { cause: error });
+      journalCaught(
+        error,
+        "runner-backend.hiddenCheckpoint",
+        null,
+        "the branch saved no checkpoint",
+      );
+      return null;
+    }
+    return await git([
+      "--git-dir",
+      mirror,
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `${ref}^{commit}`,
+    ]).then(
+      (sha) => sha.trim() || null,
+      () => null,
+    );
+  } finally {
+    await git(["--git-dir", mirror, "update-ref", "-d", ref]).catch(() => undefined);
+  }
+}

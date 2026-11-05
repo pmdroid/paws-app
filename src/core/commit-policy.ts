@@ -101,6 +101,24 @@ export async function assertDescendsFromAny(
 
 export const CHECKPOINT_COMMIT_MESSAGE = "Save work in progress so far";
 
+export function checkpointRef(branch: string): string {
+  return `refs/paws/checkpoints/${branch}`;
+}
+
+export async function checkpointStart(
+  invoke: (args: string[]) => Promise<string>,
+  checkpoint: string,
+  bases: readonly string[],
+): Promise<string> {
+  const subject = (await invoke(["log", "-1", "--format=%s", checkpoint])).trim();
+  const start =
+    subject === CHECKPOINT_COMMIT_MESSAGE
+      ? (await invoke(["rev-parse", "--verify", `${checkpoint}^1^{commit}`])).trim()
+      : checkpoint;
+  await assertDescendsFromAny(invoke, bases, start);
+  return start;
+}
+
 export async function candidateBases(
   invoke: (args: string[]) => Promise<string>,
   base: string,

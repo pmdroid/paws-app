@@ -17,6 +17,7 @@ const TRANSIENT_ERROR_NAMES = new Set([
   "PolicyFetchError",
   "RemoteStartUnverified",
   "HostDiskFullError",
+  "CheckpointLookupFailed",
 ]);
 
 const TRANSIENT_CODES = new Set([

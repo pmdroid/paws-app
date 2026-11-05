@@ -223,6 +223,15 @@ export const RunnerCommandSchema = z
       checkpointBot: RunnerCheckpointBotSchema.optional(),
       commitPolicy: RunnerCommitPolicySchema.optional(),
       checkpoint: z.literal(false).optional(),
+      restoreCheckpoint: z
+        .strictObject({
+          sha: z.string().regex(/^[a-f0-9]{40}$/),
+          branch: z
+            .string()
+            .max(255)
+            .regex(/^paws\/[A-Za-z0-9][A-Za-z0-9._/-]*$/),
+        })
+        .optional(),
       closeoutRulesFirst: z.literal(true).optional(),
       suggestedFindings: z
         .array(

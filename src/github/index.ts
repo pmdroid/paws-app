@@ -139,6 +139,7 @@ export { PUBLICATION_STAGING_FAILURE, usePublicationRepositories } from "./publi
 export { useGitTempDirectory } from "./temp";
 
 export { closeStoppedPull } from "./stopped";
+export { deleteHiddenRef } from "./hidden-ref";
 export { mergedPullHeads, readPullMerge, type PullMerge } from "./merged-pulls";
 export { branchContains, readBranchWork, readOpenPullHead } from "./pull-head";
 export { inspectPullRequestMerge } from "./blocker-merge";

@@ -60,4 +60,6 @@ export type Checkpoint = {
    * so a run that fails or a restart before dispatch still tells the agent what to redo.
    */
   lostCommits?: string;
+  /** The main the runner's checkpoint `sha` was taken against, when its run had one. */
+  checkpointMain?: { sha: string; main: string };
 };
