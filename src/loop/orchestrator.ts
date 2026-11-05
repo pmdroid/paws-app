@@ -2379,14 +2379,16 @@ export class Orchestrator {
         }
         const delayMs = transientRetryDelayMs(retry, error, this.options.retryBaseMs);
 
-        this.noteHostDiskFull(item.id, error);
+        const diskFull = isHostDiskFull(error);
+        if (diskFull) this.noteHostDiskFull(item.id, error);
         this.settleItemAwake(item.id);
         deferWorkItem(this.db, item, {
           retry,
           delayMs,
           handoff: readString(job.payload, "handoff"),
-          message: retryNote(message, delayMs),
+          message: diskFull ? null : retryNote(message, delayMs),
           now: this.now(),
+          ...(diskFull ? { lastError: message } : {}),
         });
 
         journalCaught(

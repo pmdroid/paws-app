@@ -923,6 +923,24 @@ describe("live status provider", () => {
     expect(provider.issue("ENG-31")?.issue.hostDiskFull).toBeUndefined();
   });
 
+  test("an item backing off after a full disk keeps the notice until its retry runs", () => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "ENG-32", title: "Disk", sessionKey: "ses_e", now: 1 });
+    const failed = enqueueJob(db, { queue: "run.resume", payload: { itemId: item.id }, now: 10 });
+    db.run("UPDATE job SET status='done' WHERE id=?", [failed]);
+    const reason = "Paws's host is out of disk space (/tmp, 0 KB left)";
+    const retry = enqueueJob(db, {
+      queue: "run.resume",
+      payload: { itemId: item.id, reason: "transient_failure", lastError: `${reason}: ENOSPC` },
+      runAt: 1_000,
+      now: 20,
+    });
+    const provider = createLiveStatusProvider(db);
+    expect(provider.issue("ENG-32")?.issue.hostDiskFull).toBe(reason);
+    db.run("UPDATE job SET status='done' WHERE id=?", [retry]);
+    expect(provider.issue("ENG-32")?.issue.hostDiskFull).toBeUndefined();
+  });
+
   test("the merge queue names each task's bound repository without a configured repo", () => {
     const db = database();
     const now = 1_700_000_000_000;

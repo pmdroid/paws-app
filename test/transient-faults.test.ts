@@ -88,6 +88,10 @@ test("a full disk while a run starts retries, and Linear hears it once within th
     result.thoughts.filter((body) => body === HOST_DISK_FULL_THOUGHT),
     result.detail,
   ).toEqual([HOST_DISK_FULL_THOUGHT]);
+  expect(
+    result.thoughts.filter((body) => body.includes("No space left on device")),
+    result.detail,
+  ).toEqual([]);
 }, 90_000);
 
 test("a tracker 503 retries without applying run_failed", async () => {

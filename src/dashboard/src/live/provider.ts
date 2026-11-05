@@ -1260,7 +1260,8 @@ function hostDiskFullOf(
 ): Pick<StatusItem, "hostDiskFull"> {
   if (isTerminalWorkItemState(record.state)) return {};
   const last = newest(jobs.filter((job) => readString(job.payload, "itemId") === record.id));
-  const reason = hostDiskFullReason(last?.lastError ?? null);
+  const pending = last?.status === "pending" ? readString(last.payload, "lastError") : null;
+  const reason = hostDiskFullReason(last?.lastError ?? pending);
   return reason === null ? {} : { hostDiskFull: reason };
 }
 
