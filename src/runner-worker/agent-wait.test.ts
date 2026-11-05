@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import type { AcpEvent } from "../acp";
-import { FakeClock } from "../core";
 import { agentWaitTracker, type AgentWaitEvent, type AgentWaitTimers } from "./agent-wait";
 
 const MINUTE = 60_000;
 
 function harness() {
-  const clock = new FakeClock(0);
+  let at = 0;
+  const clock = { now: () => at, advance: (ms: number) => void (at += ms) };
   const pending = new Map<number, { at: number; callback: () => void }>();
   let next = 0;
   const timers: AgentWaitTimers = {
