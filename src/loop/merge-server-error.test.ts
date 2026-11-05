@@ -16,9 +16,11 @@ import {
   migrate,
   openDatabase,
   recordItemPullRequest,
+  recordRebaseReturn,
 } from "../db";
 import { GitHubHttpError, type GitHubClient } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION } from "../merge";
+import { findOpenQuestion } from "../questions";
 import { Orchestrator } from "./orchestrator";
 
 const HEAD = "6496aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -112,6 +114,28 @@ test("a merge attempt that gets HTTP 500 on a conflicting pull request goes back
     expect(f.lines.filter((line) => line.includes("conflicts with main"))).toEqual([
       `item DEP-661 merge attempt got GitHub HTTP 500; pull request #6496 at ${HEAD.slice(0, 7)}: the pull request conflicts with main. Sent back to the agent to rebase.`,
     ]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("an HTTP 500 on a conflicting pull request with the rebase budget spent asks", async () => {
+  const f = await fixture(false);
+  try {
+    for (let spent = 0; spent < 3; spent++)
+      recordRebaseReturn(f.db, {
+        itemId: "DEP-661",
+        jobId: 900 + spent,
+        candidate: `earlier-${spent}`,
+        reason: "merge",
+        base: MAIN,
+        files: null,
+        recordedAt: 1_000,
+      });
+    expect(await f.failed(500)).toBe(true);
+    expect(f.resumes()).toEqual([]);
+    expect(getWorkItem(f.db, "DEP-661")?.state).toBe("awaiting_input");
+    expect(findOpenQuestion(f.db, "ses-1")).toMatchObject({ reason: "rebase_budget_spent" });
   } finally {
     await f.cleanup();
   }

@@ -506,6 +506,7 @@ import {
   ciWaitVerification,
   parkMerge,
   queueConflictSweep,
+  askMergeHelp,
   rebaseBudgetFor,
   returnQueuedConflicts,
   wakeMergesBehind,
@@ -2210,11 +2211,27 @@ export class Orchestrator {
       () => null,
     );
     if (read === null || !read.open || read.merges !== "conflict") return false;
-    return this.sendBackForConflict(
-      item,
-      read.head,
-      `merge attempt got ${error.message}; pull request #${pull.pullNumber} at ${read.head.slice(0, 7)}`,
+    const found = `merge attempt got ${error.message}; pull request #${pull.pullNumber} at ${read.head.slice(0, 7)}`;
+    if (await this.sendBackForConflict(item, read.head, found)) return true;
+    const base = await this.fetchUpstreamMain(item).catch(() => null);
+    const budget = rebaseBudgetFor(this.db, item.id, { base, files: null }, this.now());
+    if (
+      budget.allowed ||
+      !askMergeHelp(this.db, {
+        itemId: item.id,
+        body: `${budget.message} Reply with guidance to continue, or stop the task.`,
+        reason: "rebase_budget_spent",
+        now: this.now(),
+        session: (current) => this.activitySession(current),
+        ask,
+      })
+    )
+      return false;
+    this.options.journal?.(
+      `item ${item.linearIdentifier} ${found}: the pull request conflicts with main and the rebase budget is spent. Asked for guidance.`,
     );
+    await this.flush();
+    return true;
   }
 
   private async readItemPull(
