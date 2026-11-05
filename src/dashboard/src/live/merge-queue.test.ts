@@ -125,6 +125,16 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
     keys: [{ key: "items[].ci", needs: "0.1.49" }],
     checkedAt: now,
   });
+  db.run(
+    "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','org','W',0)",
+  );
+  db.run(
+    "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('w','acme/platform','team')",
+  );
+  db.run(
+    `INSERT INTO linear_session (session_id, organization_id, oauth_client_id, app_user_id, team_id,
+      installation_observed_at, created_at) VALUES ('ses_mine', 'org', 'fixture', 'app', 'team', 1, 0)`,
+  );
 
   const seen = recordQueries(db);
   const provider = createLiveStatusProvider(db, { sessionIds: ["ses_mine"], env: {} });

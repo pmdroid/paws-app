@@ -27,7 +27,7 @@ export function scrubCommandEnv(parent: NodeJS.ProcessEnv = process.env): Record
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(parent)) {
     if (value === undefined) continue;
-    if (isScrubbed(key)) continue;
+    if (isScrubbed(key) || key === "PAWS_TEST_BAIL") continue;
     env[key] = value;
   }
   return env;

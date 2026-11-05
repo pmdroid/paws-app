@@ -664,7 +664,7 @@ export {
   saveWorkspaceOAuthRequest,
 } from "./workspace-auth";
 export type { WorkspaceOAuthRequest } from "./workspace-auth";
-export { workspaceSessionIds } from "./workspace-scope";
+export { sessionRepositoriesAllowed, workspaceSessionIds } from "./workspace-scope";
 export { resolveDashboardAlias } from "./dashboard-aliases";
 export type { DashboardAliasKind } from "./dashboard-aliases";
 

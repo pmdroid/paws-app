@@ -78,6 +78,7 @@ import {
   listJobs,
   listLinearTurnsForItem,
   listOpenQuestions,
+  sessionRepositoriesAllowed,
   listOutbox,
   listMergeQueues,
   runnerCapacityWait,
@@ -451,8 +452,8 @@ function readMergeQueue(db: Database, options: LiveStatusOptions): MergeQueueRes
     entries,
     history,
     issues: issues.filter((issue) => shown.has(issue.id)),
-    pushOutages: readPushOutages(db).pushOutages ?? [],
-    policyRunnerWarnings: readPolicyRunnerWarnings(db).policyRunnerWarnings ?? [],
+    pushOutages: readPushOutages(db, options).pushOutages ?? [],
+    policyRunnerWarnings: readPolicyRunnerWarnings(db, options).policyRunnerWarnings ?? [],
   };
 }
 
@@ -756,8 +757,11 @@ function emptyScope(now: Date, project: LiveStatusOptions["project"]): IssueScop
 }
 
 /** Repositories GitHub refuses pushes from the Paws App for (PAS-867). */
-export function readPushOutages(db: Database): { pushOutages?: StatusPushOutage[] } {
-  const outages = listPushOutages(db);
+export function readPushOutages(
+  db: Database,
+  options: Pick<LiveStatusOptions, "sessionIds"> = {},
+): { pushOutages?: StatusPushOutage[] } {
+  const outages = visibleDiagnostics(db, options, listPushOutages(db));
   if (!outages.length) return {};
   return {
     pushOutages: outages.map((outage) => ({
@@ -771,10 +775,13 @@ export function readPushOutages(db: Database): { pushOutages?: StatusPushOutage[
 }
 
 /** Repositories whose Closeout policy uses keys the lowest online runner does not know (PAS-888). */
-export function readPolicyRunnerWarnings(db: Database): {
+export function readPolicyRunnerWarnings(
+  db: Database,
+  options: Pick<LiveStatusOptions, "sessionIds"> = {},
+): {
   policyRunnerWarnings?: StatusPolicyRunnerWarning[];
 } {
-  const warnings = listPolicyRunnerWarnings(db);
+  const warnings = visibleDiagnostics(db, options, listPolicyRunnerWarnings(db));
   if (!warnings.length) return {};
   return {
     policyRunnerWarnings: warnings.map((warning) => ({
@@ -785,6 +792,28 @@ export function readPolicyRunnerWarnings(db: Database): {
       checkedAt: iso(warning.checkedAt),
     })),
   };
+}
+
+export function visibleDiagnosticRepositories(
+  db: Database,
+  options: Pick<LiveStatusOptions, "sessionIds">,
+): string[] {
+  const rows = [...listPushOutages(db), ...listPolicyRunnerWarnings(db)];
+  return [...new Set(visibleDiagnostics(db, options, rows).map((row) => row.repository))].sort();
+}
+
+function visibleDiagnostics<T extends { repository: string }>(
+  db: Database,
+  options: Pick<LiveStatusOptions, "sessionIds">,
+  rows: T[],
+): T[] {
+  if (options.sessionIds === undefined) return rows;
+  const allowed = sessionRepositoriesAllowed(
+    db,
+    options.sessionIds,
+    rows.map((row) => row.repository),
+  );
+  return rows.filter((row) => allowed.has(row.repository));
 }
 
 export function readIntake(
