@@ -383,7 +383,13 @@ export async function probeRunnerWorker(
     true,
     { artifact: snapshots[0], response: fake.artifact.text },
   );
-  assert.deepEqual(fake.env, { xaiApiKey: false, ghToken: false, sshAuthSock: false, aws: false });
+  assert.deepEqual(fake.env, {
+    xaiApiKey: false,
+    ghToken: false,
+    githubToken: false,
+    sshAuthSock: false,
+    aws: false,
+  });
   assert.equal(statSync(join(firstOutput, "result.json")).mode & 0o777, 0o640);
   assert.equal(statSync(join(firstOutput, "candidate.bundle")).mode & 0o777, 0o640);
   observe(
