@@ -31,6 +31,7 @@ function fakeGitHub(rerunStatus = 201) {
             check_runs: [
               {
                 id: 1,
+                name: "test",
                 status: "completed",
                 conclusion: "cancelled",
                 html_url: "https://github.com/owner/repo/actions/runs/41545628595/job/1",

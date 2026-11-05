@@ -255,6 +255,9 @@ export async function mergeHarness(
           status: 200,
           body: {
             check_runs: nodes.map((node) => ({
+              name: node?.name ?? node?.context ?? "",
+              started_at: node?.startedAt ?? null,
+              completed_at: node?.completedAt ?? null,
               status: node?.conclusion ? "completed" : "in_progress",
               conclusion: node?.conclusion?.toLowerCase() ?? null,
               html_url: node?.detailsUrl ?? null,
