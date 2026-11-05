@@ -350,10 +350,18 @@ function concatBytes(
   return out;
 }
 
-async function drain(
+function dispatch(socketPath: string, message: Rpc): void {
+  handle(socketPath, message).catch((error: unknown) => {
+    journalCaught(error, "ask-team-mcp.dispatch", null);
+    const text = error instanceof Error ? error.message : String(error);
+    if (message.id != null) fail(message.id, -32603, text);
+  });
+}
+
+function drain(
   socketPath: string,
   incoming: Uint8Array<ArrayBufferLike>,
-): Promise<Uint8Array<ArrayBufferLike>> {
+): Uint8Array<ArrayBufferLike> {
   let buffer: Uint8Array<ArrayBufferLike> = incoming;
   const headerBreak = new Uint8Array([13, 10, 13, 10]);
   for (;;) {
@@ -372,7 +380,7 @@ async function drain(
       if (buffer.length < start + length) return buffer;
       const body = decoder.decode(buffer.subarray(start, start + length));
       buffer = buffer.subarray(start + length);
-      await handle(socketPath, JSON.parse(body) as Rpc);
+      dispatch(socketPath, JSON.parse(body) as Rpc);
       continue;
     }
     const newline = buffer.indexOf(0x0a);
@@ -381,7 +389,7 @@ async function drain(
     buffer = buffer.subarray(newline + 1);
     if (!line.trim()) continue;
     framing = "ndjson";
-    await handle(socketPath, JSON.parse(line) as Rpc);
+    dispatch(socketPath, JSON.parse(line) as Rpc);
   }
 }
 
@@ -396,7 +404,7 @@ async function main(): Promise<void> {
     const bytes =
       typeof chunk === "string" ? new TextEncoder().encode(chunk) : new Uint8Array(chunk);
     buffer = concatBytes(buffer, bytes);
-    buffer = await drain(socketPath, buffer);
+    buffer = drain(socketPath, buffer);
   }
 }
 
