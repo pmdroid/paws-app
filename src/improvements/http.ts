@@ -262,24 +262,20 @@ export function createImprovementsHttp(options: {
             },
             400,
           );
-        const { expectedVersion, ...request } = parsed.data;
+        const { expectedVersion, evidence, revision, deployment, ...stated } = parsed.data;
         return respond(
           recordVerification(db, {
             access: reviewer,
             improvementId,
             expectedVersion,
             request: {
-              outcome: request.outcome,
-              check: request.check,
-              result: request.result,
+              ...stated,
               evidence:
-                request.evidence.kind === "attestation" && request.evidence.url
-                  ? { kind: "attestation", url: request.evidence.url }
-                  : request.evidence.kind === "attestation"
-                    ? { kind: "attestation" }
-                    : request.evidence,
-              ...(request.revision ? { revision: request.revision } : {}),
-              ...(request.deployment ? { deployment: request.deployment } : {}),
+                evidence.kind === "attestation"
+                  ? { kind: "attestation", ...(evidence.url ? { url: evidence.url } : {}) }
+                  : evidence,
+              ...(revision ? { revision } : {}),
+              ...(deployment ? { deployment } : {}),
             },
             now: now(),
           }),
