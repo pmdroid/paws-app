@@ -1063,6 +1063,7 @@ export {
   closeoutStepResult,
   expiredImprovementDelegations,
   followThroughCandidates,
+  markImprovementChecked,
   improvementDelegation,
   improvementIssueSync,
   listImprovementActions,

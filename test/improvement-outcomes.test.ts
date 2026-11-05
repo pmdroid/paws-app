@@ -149,6 +149,7 @@ describe("follow-through from create to verified", () => {
     });
     const tracks = listImprovementOutcomes(t.w.db, t.id).map((o) => `${o.track}:${o.state}`);
     expect(tracks).toEqual([
+      "implementation:not_started",
       "implementation:in_progress",
       "implementation:merged",
       "verification:due",
@@ -364,6 +365,7 @@ describe("daily findings", () => {
         )
       ).body.status,
     ).toBe("recorded");
+    const form = getImprovement(w.db, id)!.version;
     w.db.run("UPDATE review_finding SET status = 'open', last_seen_at = ? WHERE id = ?", [
       w.now() + 10_000,
       findings[0]!.id,
@@ -372,6 +374,13 @@ describe("daily findings", () => {
       attention: "verification_stale",
       verification: { stale: "recurred" },
     });
+    const replayed = await w.api(
+      "ada",
+      `/api/improvements/${id}/verification`,
+      verify(form, { deployment: "v6" }),
+    );
+    expect([replayed.status, replayed.body.reason]).toEqual([409, "stale"]);
+    expect(getImprovement(w.db, id)!.verificationState).toBe("contradicted");
     await sync();
     expect(listImprovementOutcomes(w.db, id).at(-1)).toMatchObject({
       state: "contradicted",
@@ -836,6 +845,87 @@ describe("one bound work item", () => {
       }),
     );
     expect(loose.body.reason).toBe("not_applicable");
+  });
+});
+
+describe("settled before every mutation", () => {
+  const share = (t: Awaited<ReturnType<typeof linked>>) => {
+    const other = t.w.retro.b;
+    t.w.db.run("INSERT INTO workspace_repository VALUES ('ws', 'acme/b', 'team-a')");
+    t.w.db.run(
+      `UPDATE improvement SET review_state = 'accepted', reviewed_proposal = 1, intent = 'link',
+         intent_issue_id = ?, issue_id = ?, issue_identifier = 'PAS-70', issue_confirmed_at = ?
+       WHERE id = ?`,
+      [ISSUE, ISSUE, END, other],
+    );
+    return other;
+  };
+
+  test("a delegation answer carries the version the next mutation needs", async () => {
+    const t = await linked();
+    t.starter.fail(true);
+    const failed = await t.post("delegate", { expectedVersion: t.version() });
+    expect(failed.body.reason).toBe("delegation_failed");
+    expect(failed.body.item.version).toBe(t.version());
+    t.starter.fail(false);
+    const delegated = await t.post("delegate", { expectedVersion: failed.body.item.version });
+    expect(delegated.body.status).toBe("delegated");
+    expect(delegated.body.item.version).toBe(t.version());
+    const annotated = await t.post("criterion", {
+      expectedVersion: delegated.body.item.version,
+      criterion: "The retro-recovery check passes.",
+    });
+    expect(annotated.body.status).toBe("recorded");
+  });
+
+  test("another improvement's finished delegation does not block redelegating the issue", async () => {
+    const t = await linked();
+    const other = share(t);
+    expect((await t.post("delegate", { expectedVersion: t.version() })).body.status).toBe(
+      "delegated",
+    );
+    t.work("cancelled");
+    await t.sync();
+    const view = (await t.w.api("admin", `/api/improvements/${other}/follow-through`)).body
+      .followThrough;
+    expect(view.recovery).toContain("redelegate");
+    const again = await t.w.api("admin", `/api/improvements/${other}/recovery`, {
+      expectedVersion: view.version,
+      choice: "redelegate",
+      reason: "The first run was cancelled",
+    });
+    expect(again.body.status).toBe("delegated");
+    expect(t.starter.calls).toEqual([ISSUE, ISSUE]);
+  });
+
+  test("a workspace whose reads keep failing does not starve the next one", async () => {
+    const t = await linked();
+    const other = t.w.retro.b;
+    t.w.db.run(
+      `UPDATE improvement SET review_state = 'accepted', reviewed_proposal = 1, intent = 'link',
+         intent_issue_id = 'issue-y', issue_id = 'issue-y', issue_identifier = 'PAS-80',
+         issue_confirmed_at = ? WHERE id = ?`,
+      [END, other],
+    );
+    const reader = {
+      async findIssue(id: string) {
+        if (id === ISSUE) return { ok: false as const, failure: "rate_limited" as const };
+        return {
+          ok: true as const,
+          value: { id, teamId: "team-a", state: "open" as const, delegated: false },
+        };
+      },
+    };
+    for (let i = 0; i < 2; i++)
+      await syncImprovementOutcomes({
+        db: t.w.db,
+        linearFor: async () => reader,
+        now: t.w.now,
+        limit: 1,
+      });
+    expect(
+      t.w.db.query("SELECT status FROM improvement_issue_sync WHERE improvement_id = ?").get(other),
+    ).toEqual({ status: "available" });
   });
 });
 

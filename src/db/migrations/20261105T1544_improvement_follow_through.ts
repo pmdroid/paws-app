@@ -28,6 +28,11 @@ CREATE TABLE improvement_delegation (
   CHECK(state <> 'requested' OR lease_expires_at IS NOT NULL)
 ) STRICT;
 
+CREATE TABLE improvement_sweep (
+  improvement_id TEXT PRIMARY KEY REFERENCES improvement(id),
+  checked_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE improvement_work (
   improvement_id TEXT PRIMARY KEY REFERENCES improvement(id),
   issue_id TEXT NOT NULL,

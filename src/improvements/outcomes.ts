@@ -18,6 +18,7 @@ import {
   listImprovementCriteria,
   listImprovementDeliveries,
   listImprovementOutcomes,
+  markImprovementChecked,
   newestIssueWork,
   otherDelegationForIssue,
   recordImprovementAction,
@@ -215,11 +216,64 @@ function followWork(db: Database, item: InboxItem, now: number): void {
     throw new Error("improvement work binding changed during follow-through");
 }
 
-function settleWork(db: Database, access: ImprovementAccess, improvementId: string, now: number) {
+function settle(db: Database, access: ImprovementAccess, improvementId: string, now: number) {
   return immediate(db, () => {
+    const found = findInboxItem(db, access, improvementId);
+    if (!found) return null;
+    followWork(db, found, now);
     const item = findInboxItem(db, access, improvementId);
-    if (!item) return null;
-    followWork(db, item, now);
+    if (!item?.improvement.issue) return item;
+    const view = followThrough(db, item, now);
+    if (view.attention === "closed") return item;
+    const { improvement } = item;
+    const implementation = view.implementation;
+    if (
+      implementation.source !== "none" &&
+      implementation.state !== improvement.implementationState
+    )
+      recordImprovementOutcome(db, {
+        improvementId,
+        track: "implementation",
+        state: implementation.state,
+        evidence: view.work
+          ? [
+              `work:${view.work.itemId}:${view.work.state}`,
+              ...(view.work.pull ? [`pull:${view.work.pull.number}`] : []),
+            ]
+          : [`linear:${view.issue?.sync?.stateType ?? "unknown"}`],
+        ...(view.work?.merge?.sha ? { revision: view.work.merge.sha } : {}),
+        actor: "paws",
+        now,
+      });
+    if (improvement.verificationState === "unknown" && DONE.includes(implementation.state)) {
+      recordImprovementOutcome(db, {
+        improvementId,
+        track: "verification",
+        state: "due",
+        evidence: [`implementation:${implementation.state}`],
+        actor: "paws",
+        now,
+      });
+      bumpImprovementVersion(db, improvementId);
+    }
+    if (improvement.verificationState === "verified" && view.verification.stale) {
+      recordImprovementOutcome(db, {
+        improvementId,
+        track: "verification",
+        state: "contradicted",
+        evidence:
+          view.verification.stale === "recurred"
+            ? item.members
+                .filter(
+                  (m) => m.status === "open" && m.lastSeenAt > (improvement.verificationAt ?? 0),
+                )
+                .map((m) => `review_finding:${m.key}`)
+            : [`implementation:${implementation.state}`],
+        actor: "paws",
+        now,
+      });
+      bumpImprovementVersion(db, improvementId);
+    }
     return findInboxItem(db, access, improvementId);
   });
 }
@@ -634,8 +688,19 @@ export async function delegateImprovement(
     now: () => number;
   },
 ): Promise<FollowThroughOutcome> {
-  const first = settleWork(db, input.reviewer, input.improvementId, input.now());
+  const first = settle(db, input.reviewer, input.improvementId, input.now());
   if (!first) return NOT_FOUND;
+  const fresh = (access: ImprovementAccess) => {
+    const item = findInboxItem(db, access, input.improvementId);
+    return item ? followThrough(db, item, input.now()) : undefined;
+  };
+  const answer = (
+    status: "existing" | "delegated",
+    access: ImprovementAccess,
+  ): FollowThroughOutcome => {
+    const item = fresh(access);
+    return item ? { status, item } : NOT_FOUND;
+  };
   const view = followThrough(db, first, input.now());
   const issue = first.improvement.issue;
   if (first.improvement.reviewState !== "accepted" || !issue)
@@ -656,7 +721,7 @@ export async function delegateImprovement(
   });
   if ((!input.again && view.work) || shared) {
     claimAndSettleExisting(db, first, input.reviewer.userId, input.now());
-    return { status: "existing", item: followThrough(db, first, input.now()) };
+    return answer("existing", input.reviewer);
   }
   if (first.improvement.version !== input.expectedVersion) return refuse("conflict", "stale", view);
   if (input.again && !view.recovery.includes("redelegate"))
@@ -673,32 +738,30 @@ export async function delegateImprovement(
   const observedAt = input.now();
   const read = await input.linear.findIssue(issue.id);
   syncFrom(db, first.improvement.id, issue.id, observedAt, read);
-  if (!read.ok)
-    return refuse("unavailable", "linear_unavailable", followThrough(db, first, input.now()));
-  if (read.value === null)
-    return refuse("conflict", "issue_missing", followThrough(db, first, input.now()));
+  if (!read.ok) return refuse("unavailable", "linear_unavailable", fresh(input.reviewer));
+  if (read.value === null) return refuse("conflict", "issue_missing", fresh(input.reviewer));
   if (read.value.state === "closed")
-    return refuse("conflict", "issue_closed", followThrough(db, first, input.now()));
+    return refuse("conflict", "issue_closed", fresh(input.reviewer));
   const freshTeam = read.value.teamId;
   if (
     !improvementDestinations(db, input.reviewer, first.improvement.repository).includes(freshTeam)
   )
-    return refuse("forbidden", "destination", followThrough(db, first, input.now()));
+    return refuse("forbidden", "destination", fresh(input.reviewer));
   if (!input.again && read.value.delegated) {
     claimAndSettleExisting(db, first, input.reviewer.userId, input.now());
-    return { status: "existing", item: followThrough(db, first, input.now()) };
+    return answer("existing", input.reviewer);
   }
 
   const claim = immediate(db, (): FollowThroughOutcome | { attempts: number } => {
     const current = input.reauthorize ? input.reauthorize() : input.reviewer;
-    const item = current && settleWork(db, current, input.improvementId, input.now());
+    const item = current && settle(db, current, input.improvementId, input.now());
     if (!current || !item) return NOT_FOUND;
     const latest = followThrough(db, item, input.now());
     if (!improvementDestinations(db, current, item.improvement.repository).includes(freshTeam))
       return refuse("forbidden", "destination", latest);
     if (!input.again && latest.work) {
       claimAndSettleExisting(db, item, current.userId, input.now());
-      return { status: "existing", item: followThrough(db, item, input.now()) };
+      return answer("existing", current);
     }
     if (item.improvement.version !== input.expectedVersion) {
       if (latest.delegation?.state === "requested") return { status: "in_progress", item: latest };
@@ -712,7 +775,7 @@ export async function delegateImprovement(
       })
     ) {
       claimAndSettleExisting(db, item, current.userId, input.now());
-      return { status: "existing", item: followThrough(db, item, input.now()) };
+      return answer("existing", current);
     }
     const claimed = claimImprovementDelegation(db, {
       improvementId: item.improvement.id,
@@ -752,7 +815,7 @@ export async function delegateImprovement(
       sessionId: session.id,
       now: input.now(),
     });
-    return { status: "delegated", item: followThrough(db, first, input.now()) };
+    return answer("delegated", input.reviewer);
   } catch (error) {
     journalCaught(error, "improvements.delegateImprovement", null);
     settleImprovementDelegation(db, {
@@ -762,7 +825,7 @@ export async function delegateImprovement(
       error: MESSAGES.delegation_failed,
       now: input.now(),
     });
-    return refuse("failed", "delegation_failed", followThrough(db, first, input.now()));
+    return refuse("failed", "delegation_failed", fresh(input.reviewer));
   }
 }
 
@@ -810,7 +873,7 @@ export function recordVerification(
 ): FollowThroughOutcome {
   const { request } = input;
   return immediate(db, (): FollowThroughOutcome => {
-    const item = settleWork(db, input.access, input.improvementId, input.now);
+    const item = settle(db, input.access, input.improvementId, input.now);
     if (!item) return NOT_FOUND;
     const view = followThrough(db, item, input.now);
     if (item.improvement.reviewState !== "accepted" || !view.issue)
@@ -902,7 +965,7 @@ export function recordCriterion(
   },
 ): FollowThroughOutcome {
   return immediate(db, (): FollowThroughOutcome => {
-    const item = settleWork(db, input.access, input.improvementId, input.now);
+    const item = settle(db, input.access, input.improvementId, input.now);
     if (!item) return NOT_FOUND;
     const view = followThrough(db, item, input.now);
     if (item.improvement.reviewState !== "accepted" || item.improvement.reviewedProposal === null)
@@ -946,7 +1009,7 @@ export function recoverImprovement(
   },
 ): FollowThroughOutcome {
   return immediate(db, (): FollowThroughOutcome => {
-    const item = settleWork(db, input.access, input.improvementId, input.now);
+    const item = settle(db, input.access, input.improvementId, input.now);
     if (!item) return NOT_FOUND;
     const view = followThrough(db, item, input.now);
     if (item.improvement.version !== input.expectedVersion)
@@ -1015,61 +1078,7 @@ export function reconcileImprovement(
   workspaceId: string,
   now: number,
 ): void {
-  immediate(db, () => {
-    const item = settleWork(db, { workspaceId }, improvementId, now);
-    if (!item || !item.improvement.issue) return;
-    const view = followThrough(db, item, now);
-    if (view.attention === "closed") return;
-    const { improvement } = item;
-    const implementation = view.implementation;
-    if (
-      implementation.source !== "none" &&
-      implementation.state !== improvement.implementationState
-    )
-      recordImprovementOutcome(db, {
-        improvementId,
-        track: "implementation",
-        state: implementation.state,
-        evidence: view.work
-          ? [
-              `work:${view.work.itemId}:${view.work.state}`,
-              ...(view.work.pull ? [`pull:${view.work.pull.number}`] : []),
-            ]
-          : [`linear:${view.issue?.sync?.stateType ?? "unknown"}`],
-        ...(view.work?.merge?.sha ? { revision: view.work.merge.sha } : {}),
-        actor: "paws",
-        now,
-      });
-    if (improvement.verificationState === "unknown" && DONE.includes(implementation.state)) {
-      recordImprovementOutcome(db, {
-        improvementId,
-        track: "verification",
-        state: "due",
-        evidence: [`implementation:${implementation.state}`],
-        actor: "paws",
-        now,
-      });
-      bumpImprovementVersion(db, improvementId);
-    }
-    if (improvement.verificationState === "verified" && view.verification.stale) {
-      recordImprovementOutcome(db, {
-        improvementId,
-        track: "verification",
-        state: "contradicted",
-        evidence:
-          view.verification.stale === "recurred"
-            ? item.members
-                .filter(
-                  (m) => m.status === "open" && m.lastSeenAt > (improvement.verificationAt ?? 0),
-                )
-                .map((m) => `review_finding:${m.key}`)
-            : [`implementation:${implementation.state}`],
-        actor: "paws",
-        now,
-      });
-      bumpImprovementVersion(db, improvementId);
-    }
-  });
+  settle(db, { workspaceId }, improvementId, now);
 }
 
 export async function syncImprovementOutcomes(options: {
@@ -1104,6 +1113,7 @@ export async function syncImprovementOutcomes(options: {
     db,
     options.limit ?? IMPROVEMENT_OUTCOME_LIMITS.syncBatch,
   )) {
+    markImprovementChecked(db, candidate.id, now());
     const linear = await options.linearFor(candidate.workspaceId);
     if (!linear)
       recordImprovementIssueSync(db, {

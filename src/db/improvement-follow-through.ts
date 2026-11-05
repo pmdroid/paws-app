@@ -95,11 +95,19 @@ export function followThroughCandidates(
   return db
     .query<{ id: string; workspaceId: string; issueId: string }, [number]>(
       `SELECT i.id, i.workspace_id AS workspaceId, i.issue_id AS issueId FROM improvement i
-       LEFT JOIN improvement_issue_sync s ON s.improvement_id = i.id
+       LEFT JOIN improvement_sweep s ON s.improvement_id = i.id
        WHERE i.review_state = 'accepted' AND i.issue_id IS NOT NULL
-       ORDER BY coalesce(s.observed_at, 0), i.id LIMIT ?`,
+       ORDER BY coalesce(s.checked_at, 0), i.id LIMIT ?`,
     )
     .all(limit);
+}
+
+export function markImprovementChecked(db: Database, improvementId: string, now: number): void {
+  db.run(
+    `INSERT INTO improvement_sweep (improvement_id, checked_at) VALUES (?, ?)
+     ON CONFLICT(improvement_id) DO UPDATE SET checked_at = excluded.checked_at`,
+    [improvementId, now],
+  );
 }
 
 export type ImprovementDelegationState = "requested" | "started" | "existing" | "failed";
@@ -171,6 +179,7 @@ export function claimImprovementDelegation(
        VALUES (?1, ?2, 'requested', 1, ?4 + ?5, ?3, ?4, ?4)
        ON CONFLICT(improvement_id) DO UPDATE SET state = 'requested', issue_id = excluded.issue_id,
          attempts = attempts + 1, lease_expires_at = excluded.lease_expires_at, error = NULL,
+         requested_at = excluded.requested_at,
          actor = excluded.actor, updated_at = excluded.updated_at
        WHERE improvement_delegation.state = 'failed'
          OR (improvement_delegation.state = 'requested' AND improvement_delegation.lease_expires_at <= ?4)
@@ -222,9 +231,12 @@ export function otherDelegationForIssue(
 ): ImprovementDelegation | null {
   const row = db
     .query<DelegationRow, [string, string, number]>(
-      `SELECT * FROM improvement_delegation WHERE issue_id = ? AND improvement_id <> ?
-         AND (state IN ('started','existing') OR (state = 'requested' AND lease_expires_at > ?))
-       ORDER BY updated_at DESC LIMIT 1`,
+      `SELECT * FROM improvement_delegation d WHERE d.issue_id = ?1 AND d.improvement_id <> ?2
+         AND ((d.state = 'requested' AND d.lease_expires_at > ?3)
+           OR (d.state IN ('started','existing') AND NOT EXISTS (SELECT 1 FROM work_item w
+             WHERE w.linear_issue_id = d.issue_id AND w.created_at >= d.requested_at
+               AND w.state IN ('completed','merged','cancelled','failed'))))
+       ORDER BY d.updated_at DESC LIMIT 1`,
     )
     .get(input.issueId, input.improvementId, input.now);
   return row ? delegationFromRow(row) : null;
