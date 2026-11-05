@@ -6,9 +6,10 @@ import { initializeWorkspaceIdentities } from "./workspace-identities";
 import { initializeWorkspaceAudit } from "./workspace-audit";
 import { initializeWorkspaceGitHub } from "./workspace-github";
 import { initializeWorkspaceAttribution } from "./workspace-attribution";
+import { initializeWorkspaceMembers } from "./workspace-members";
 import { routeHref } from "./route";
 import { DASHBOARD_PATH } from "../../../dashboard-links";
-import { clearSettingsLoads, loadWhenShown, settingsPageShown } from "./settings-loads";
+import { clearSettingsLoads, settingsPageShown } from "./settings-loads";
 
 type BrowserSession = {
   userId?: string;
@@ -78,7 +79,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
       root.dataset.loaded = "true";
       renderMarkup(
         root,
-        '<p data-settings-page="integrations">Configure workspace sign-in to manage service connections.</p><p data-settings-page="workspace">Configure workspace sign-in to manage members and repositories.</p><p data-settings-page="audit">Configure workspace sign-in to view workspace changes.</p>',
+        '<p data-settings-page="integrations">Configure workspace sign-in to manage service connections.</p><p data-settings-page="members">Configure workspace sign-in to manage members.</p><p data-settings-page="workspace">Configure workspace sign-in to manage repositories.</p><p data-settings-page="audit">Configure workspace sign-in to view workspace changes.</p>',
       );
     }
     return true;
@@ -164,22 +165,8 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   root.className = "flex min-w-0 flex-col gap-8";
   renderMarkup(
     root,
-    `<section data-settings-page="account" class="settings-section"><div><h2>Linear account</h2><p class="sub">You are signed in to ${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "your workspace")}.</p></div><div class="settings-account"><strong>${escapeHtml(session.user?.name ?? "Linear account")}</strong>${session.user?.email ? `<span>${escapeHtml(session.user.email)}</span>` : ""}<span class="muted">Workspace role: ${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div></section><p id="workspace-feedback" class="empty:hidden" data-settings-page="workspace" role="status"></p>${linearConnectionMarkup(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}${session.role === "admin" ? '<section data-settings-page="workspace" id="workspace-members" class="settings-section"><div><h2>Members</h2><p class="sub">Choose who can manage and use this workspace.</p><button class="btn" type="button" data-members-refresh>Refresh members</button></div><div id="workspace-members-list"></div></section><section data-settings-page="workspace" class="settings-section"><div><h2>Repositories</h2><p class="sub">Give each Linear team access to its repositories.</p></div><div><p>Connect GitHub and match repositories to Linear teams in Integrations.</p><a class="btn" href="' + routeHref({ view: "settings", page: "integrations" }) + '">Manage GitHub repositories</a></div></section>' : '<p data-settings-page="workspace" class="sub">Ask a workspace admin to change members, roles, or repository access.</p>'}${session.role !== "admin" ? '<p data-settings-page="audit" class="sub">Audit history is available to workspace admins.</p>' : ""}`,
+    `<section data-settings-page="account" class="settings-section"><div><h2>Linear account</h2><p class="sub">You are signed in to ${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "your workspace")}.</p></div><div class="settings-account"><strong>${escapeHtml(session.user?.name ?? "Linear account")}</strong>${session.user?.email ? `<span>${escapeHtml(session.user.email)}</span>` : ""}<span class="muted">Workspace role: ${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div></section><p id="workspace-feedback" class="empty:hidden" data-settings-page="workspace" role="status"></p>${linearConnectionMarkup(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}${session.role === "admin" ? '<section data-settings-page="workspace" class="settings-section"><div><h2>Members</h2><p class="sub">Change roles, and revoke or restore access.</p></div><div><a class="btn" href="' + routeHref({ view: "settings", page: "members" }) + '">Manage members</a></div></section><section data-settings-page="workspace" class="settings-section"><div><h2>Repositories</h2><p class="sub">Give each Linear team access to its repositories.</p></div><div><p>Connect GitHub and match repositories to Linear teams in Integrations.</p><a class="btn" href="' + routeHref({ view: "settings", page: "integrations" }) + '">Manage GitHub repositories</a></div></section>' : '<p data-settings-page="workspace" class="sub">Ask a workspace admin to change repository access.</p>'}${session.role !== "admin" ? '<p data-settings-page="audit" class="sub">Audit history is available to workspace admins.</p>' : ""}`,
   );
-  async function change(path: string, method: string, body?: unknown) {
-    const result = await fetch(path, {
-      method,
-      headers: { "content-type": "application/json", "x-paws-csrf": session.csrfToken },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    if (!result.ok) {
-      const data = (await result.json().catch((caughtError6) => {
-        journalCaught(caughtError6, "workspace.change.json", null);
-        return null;
-      })) as { error?: string } | null;
-      throw new Error(data?.error ?? "The change could not be saved. Try again.");
-    }
-  }
   async function report(action: () => Promise<void>) {
     const feedback = root!.querySelector("#workspace-feedback");
     try {
@@ -198,72 +185,7 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
         await signOut(session.csrfToken);
       }),
   );
-  if (session.role === "admin") {
-    async function loadMembers() {
-      const refresh = root!.querySelector<HTMLButtonElement>("[data-members-refresh]")!;
-      refresh.disabled = true;
-      try {
-        const memberResponse = await fetch("/api/workspaces/members", { cache: "no-store" });
-        if (!memberResponse.ok)
-          throw new Error("Members could not be loaded. Refresh members to try again.");
-        const data = (await memberResponse.json()) as {
-          members: { id: string; name: string; role: string; active: number }[];
-        };
-        const list = root!.querySelector("#workspace-members-list");
-        if (list !== null) {
-          renderMarkup(
-            list,
-            data.members
-              .map(
-                (member) =>
-                  `<form class="row workspace-member" data-member="${escapeHtml(member.id)}"><span>${escapeHtml(member.name)}${member.active ? "" : " (removed)"}</span><label><span class="sr-only">Role for ${escapeHtml(member.name)}</span><select name="role"${member.active ? "" : " disabled"}>${(
-                    [
-                      ["admin", "Admin"],
-                      ["member", "Member"],
-                    ] as const
-                  )
-                    .map(
-                      ([role, label]) =>
-                        `<option value="${role}"${role === member.role ? " selected" : ""}>${label}</option>`,
-                    )
-                    .join(
-                      "",
-                    )}</select></label><button class="btn" type="submit"${member.active ? "" : " disabled"}>Save role</button></form>`,
-              )
-              .join(""),
-          );
-          for (const form of list.querySelectorAll<HTMLFormElement>("form"))
-            form.addEventListener("submit", (event) => {
-              event.preventDefault();
-              const button = form.querySelector<HTMLButtonElement>("button")!;
-              button.disabled = true;
-              void report(async () => {
-                await change("/api/workspaces/members", "PUT", {
-                  userId: form.dataset.member,
-                  role: new FormData(form).get("role"),
-                });
-                const feedback = root!.querySelector("#workspace-feedback");
-                if (feedback !== null) feedback.textContent = "Workspace role saved.";
-              }).finally(() => {
-                button.disabled = false;
-              });
-            });
-        }
-      } catch (caughtError7) {
-        journalCaught(caughtError7, "workspace.loadMembers.fetch", null);
-        renderMarkup(
-          root!.querySelector("#workspace-members-list")!,
-          '<p role="status">Members could not be loaded. Refresh members to try again.</p>',
-        );
-      } finally {
-        refresh.disabled = false;
-      }
-    }
-    root
-      .querySelector("[data-members-refresh]")!
-      .addEventListener("click", () => void loadMembers());
-    loadWhenShown("workspace", () => void loadMembers());
-  }
+  initializeWorkspaceMembers(root, session);
   initializeWorkspaceAttribution(root, session.csrfToken);
   initializeWorkspaceGitHub(root, session.csrfToken, session.role === "admin");
   initializeDecisions(root, session.csrfToken);
