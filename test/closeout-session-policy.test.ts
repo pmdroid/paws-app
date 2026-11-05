@@ -202,6 +202,32 @@ test("a remote policy is fetched once for repeated and concurrent calls, and aga
   expect(transfers).toBe(2);
 });
 
+test("invalidating the remote policy fetches it again, also when a fetch was already running", async () => {
+  const loaded = trusted("lint");
+  let transfers = 0;
+  let release: (() => void) | undefined;
+  const load = remoteCloseoutPolicy(
+    () => {
+      transfers++;
+    },
+    async () => {
+      if (transfers === 2) await new Promise<void>((resolve) => (release = resolve));
+      return { answer: encodePolicyFiles(loaded) };
+    },
+    new AbortController().signal,
+    () => 0,
+  );
+  expect(await load()).toEqual(loaded);
+  load.invalidate();
+  const pending = load();
+  await Bun.sleep(1);
+  load.invalidate();
+  release!();
+  expect(await pending).toEqual(loaded);
+  expect(await load()).toEqual(loaded);
+  expect(transfers).toBe(3);
+});
+
 test("a failed remote policy fetch is not reused", async () => {
   let attempts = 0;
   const load = remoteCloseoutPolicy(
