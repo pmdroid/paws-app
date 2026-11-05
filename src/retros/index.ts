@@ -28,10 +28,13 @@ export {
 } from "./settings";
 export {
   createFakeRetroCatalog,
+  createRetroReviewHttp,
   createRetroSettingsHttp,
+  RETRO_HISTORY_PATH,
   RETRO_SETTINGS_PATH,
   type RetroCatalog,
 } from "./http";
+export { retroReaderAccess, type RetroReaderAccess } from "./access";
 export {
   boundRetroDigest,
   buildRetroDigest,

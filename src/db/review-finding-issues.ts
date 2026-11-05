@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
+import { reviewFindingKey as coreFindingKey } from "../core";
+import { immediate } from "./tx";
 
 /** Where a finding points: its path and its line, or `first-last`. */
 export type ReviewFindingPlace = { path: string; lines: string };
@@ -122,4 +124,71 @@ export function saveReviewFindingIssue(
     ],
   );
   return getReviewFindingIssue(db, issue.key)!;
+}
+
+export function claimReviewFindingIssue(
+  db: Database,
+  input: {
+    key: string;
+    finding: { repository: string; location: string; text: string };
+    itemId: string | null;
+    by: string;
+    now: number;
+  },
+): boolean {
+  const findingKey = coreFindingKey(input.finding);
+  return immediate(db, () => {
+    const accepted = db
+      .query(
+        `SELECT 1 FROM review_finding AS finding
+         JOIN improvement_source AS source ON source.source_kind = 'daily_finding'
+           AND instr(source.source_key, '#' || finding.id || ':') > 0
+         JOIN improvement ON improvement.id = source.improvement_id
+         WHERE finding.dedupe_key = ? AND improvement.review_state = 'accepted' LIMIT 1`,
+      )
+      .get(findingKey);
+    if (accepted !== null) return false;
+    db.run(
+      `INSERT INTO review_finding_issue_claim (key, finding_key, item_id, claimed_by, claimed_at)
+       VALUES (?, ?, ?, ?, ?) ON CONFLICT(key) DO NOTHING`,
+      [input.key, findingKey, input.itemId, input.by, input.now],
+    );
+    return true;
+  });
+}
+
+export type ReviewFindingIssueClaim = { findingKey: string; issue: ReviewFindingIssue | null };
+
+export function reviewFindingIssueClaims(
+  db: Database,
+  findings: readonly {
+    key: string;
+    repository: string;
+    path: string;
+    lines: string;
+    text: string;
+  }[],
+): Map<string, ReviewFindingIssueClaim> {
+  const claims = new Map<string, ReviewFindingIssueClaim>();
+  if (findings.length === 0) return claims;
+  const rows = db
+    .query<{ findingKey: string; key: string }, [string]>(
+      `SELECT finding_key AS findingKey, key FROM review_finding_issue_claim
+       WHERE finding_key IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(findings.map((f) => f.key)));
+  const byFinding = new Map(rows.map((row) => [row.findingKey, row.key]));
+  for (const finding of findings) {
+    const issueKey =
+      byFinding.get(finding.key) ??
+      reviewFindingKey({
+        repository: finding.repository,
+        location: `${finding.path}:${finding.lines}`,
+        text: finding.text,
+      });
+    const issue = issueKey === null ? null : getReviewFindingIssue(db, issueKey);
+    if (byFinding.has(finding.key) || issue !== null)
+      claims.set(finding.key, { findingKey: finding.key, issue });
+  }
+  return claims;
 }

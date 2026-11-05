@@ -230,15 +230,18 @@ import { startServer } from "./server";
 import { activeRunnerReadiness } from "./settings";
 import {
   createRetroDispatcher,
+  createRetroReviewHttp,
   createRetroScheduleHttp,
   createRetroScheduler,
   createRetroSettingsHttp,
+  retroReaderAccess,
   RETRO_DISPATCH_JOB,
   RETRO_DISPATCH_TIMING,
   RETRO_SCHEDULE_JOB,
   RETRO_SCHEDULE_TICK_MS,
   type RetroDispatcher,
 } from "./retros";
+import { createImprovementsHttp } from "./improvements";
 import { itemReviews } from "./dashboard";
 import { createSkillResolver, createSkillUpdates, SKILL_UPDATE_INTERVAL } from "./skills";
 import { createAgentCatalog, createNpmRegistry } from "./agent-catalog";
@@ -1017,12 +1020,26 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           scheduler: retroScheduler,
           catalog: retroCatalog,
         });
-        return async (request: Request, principal: WorkspacePrincipal) =>
-          (await settings(request, principal)) ?? schedule(request, principal);
+        const review = createRetroReviewHttp({ db, artifactRoot: join(paths.home, "retros") });
+        return async (
+          request: Request,
+          principal: WorkspacePrincipal,
+          sessionIds: readonly string[],
+        ) =>
+          (await settings(request, principal)) ??
+          (await review(request, principal, sessionIds)) ??
+          schedule(request, principal);
       })(),
       blockerChecks: async (request, _principal, sessionIds) =>
         blockerChecks?.(request, sessionIds) ??
         Response.json({ error: "Blocker checks are starting." }, { status: 503 }),
+      improvements: createImprovementsHttp({
+        db,
+        ...(linear?.improvementIssues ? { lookup: linear.improvementIssues } : {}),
+        retroEvidence: (principal, sessionIds, retroId) =>
+          retroReaderAccess(db, join(paths.home, "retros"), principal, sessionIds, retroId)
+            ?.readable ?? null,
+      }),
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??
         Response.json({ error: "Execution controls are starting." }, { status: 503 }),

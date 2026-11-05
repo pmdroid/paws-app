@@ -51,6 +51,8 @@ With workspace access on, the server authenticates every `/api/` request before 
 - A method other than `GET`, `HEAD` or `OPTIONS` needs an `Origin` equal to the workspace origin and an `x-paws-csrf` header with the session's token. The dashboard reads the token from its page and from `GET /api/auth/session`.
 - Dashboard pages load without a session and show sign-in; they carry no work data.
 
+The improvement inbox and retro review routes add per-item repository checks; see [Improvement review API](improvement-review.md).
+
 ## Freshness and caching
 
 Every page resource answers with `generatedAt` in the body, `Cache-Control: no-store`, `Paws-Generated-At` and a weak `ETag` computed without `generatedAt`. `If-None-Match` with the current tag answers 304 with no body; the page keeps the body it has and takes the time from the header.

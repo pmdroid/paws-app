@@ -18,3 +18,18 @@ export {
   type InboxItem,
   type ReuseChoice,
 } from "./inbox";
+export {
+  createFakeIssueLookup,
+  decideInboxItem,
+  improvementDetail,
+  improvementView,
+  listImprovementPage,
+  memberRepositories,
+  retryInboxDelivery,
+  type ImprovementDecisionRequest,
+  type ImprovementReviewer,
+  type ImprovementView,
+  type IssueLookup,
+  type LinkableIssue,
+} from "./review";
+export { createImprovementsHttp, IMPROVEMENTS_PATH, type RetroEvidenceReader } from "./http";

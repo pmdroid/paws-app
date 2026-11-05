@@ -851,11 +851,14 @@ export { yieldFindingGroupHelpers, runnerHelperAvailability } from "./runner-cap
 
 export {
   getReviewFindingIssue,
+  claimReviewFindingIssue,
+  reviewFindingIssueClaims,
   reviewFindingIssues,
   reviewFindingKey,
   reviewFindingPlace,
   saveReviewFindingIssue,
   type ReviewFindingIssue,
+  type ReviewFindingIssueClaim,
   type ReviewFindingPlace,
 } from "./review-finding-issues";
 
@@ -998,6 +1001,7 @@ export {
   type RetroGenerationRow,
 } from "./retro-dispatch";
 export {
+  acceptedImprovementsForFindings,
   claimableImprovementDeliveries,
   claimImprovementDelivery,
   decideImprovement,
@@ -1005,6 +1009,7 @@ export {
   improvementBySource,
   improvementDeliveryId,
   improvementsForIssue,
+  listImprovementCriteria,
   listImprovementDecisions,
   listImprovementDeliveries,
   listImprovementDeliveryAttempts,
@@ -1013,9 +1018,11 @@ export {
   listImprovements,
   recordImprovementOutcome,
   recordImprovementProposal,
+  requeueImprovementDelivery,
   settleImprovementDelivery,
   type Improvement,
   type ImprovementActionStep,
+  type ImprovementCriterion,
   type ImprovementDecision,
   type ImprovementDecisionResult,
   type ImprovementDelivery,

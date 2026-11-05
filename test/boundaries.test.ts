@@ -113,7 +113,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "execution-controls": ["journal", "core", "db", "workspace"],
   scheduler: ["journal", "core", "db", "intake"],
   "finding-groups": ["db", "linear"],
-  improvements: ["db"],
+  improvements: ["db", "journal", "workspace"],
   acp: ["journal", "core", "config", "process", "worktree-checkout", "closeout-spec"],
   closeout: ["journal", "core", "closeout-spec"],
   "closeout-spec": ["journal", "core", "worktree-checkout"],

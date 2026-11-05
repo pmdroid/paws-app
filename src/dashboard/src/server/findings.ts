@@ -1,5 +1,6 @@
 import {
   workspaceMemberUsable,
+  acceptedImprovementsForFindings,
   auditWorkspaceAccess,
   listReviewFindings,
   reviewFindingItems,
@@ -125,6 +126,14 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
   )
     return Response.json(
       { error: "This finding has a group action in progress. Finish that action first." },
+      { status: 409 },
+    );
+  if (
+    action.action === "dismiss" &&
+    acceptedImprovementsForFindings(db, principal.workspaceId, [action.id]).length
+  )
+    return Response.json(
+      { error: "The improvement inbox already accepted this finding. Its issue delivery stands." },
       { status: 409 },
     );
   const now = (options.now ?? Date.now)();

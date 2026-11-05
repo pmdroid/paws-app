@@ -9,6 +9,7 @@ import {
   listRetroEvidence,
   listRetros,
   retroScheduleRuntime,
+  reviewFindingIssueClaims,
   reviewFindingItems,
   type FindingGroupRun,
   type Improvement,
@@ -23,6 +24,7 @@ export type ImprovementAccess = {
   workspaceId: string;
   repositories?: readonly string[];
   sessionIds?: readonly string[];
+  retroEvidence?: (retroId: string) => ReadonlySet<string> | null;
 };
 
 export type InboxLifecycle = "needs_review" | "pending" | "linked" | "rejected";
@@ -130,6 +132,25 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
       );
       if (!visible) return [];
       legacy = legacyActions(findings, groups);
+      const covered = new Set(
+        legacy
+          .filter((action) => action.kind !== "dismissed")
+          .flatMap((action) => action.findingIds),
+      );
+      const claims = reviewFindingIssueClaims(db, findings);
+      for (const f of findings) {
+        const claim = claims.get(f.key);
+        if (covered.has(f.id) || claim === undefined) continue;
+        legacy.push({
+          kind: claim.issue ? "filed" : "claimed",
+          groupId: null,
+          findingIds: [f.id],
+          issue: claim.issue?.identifier ?? null,
+          reason: null,
+          by: claim.issue?.filedBy ?? null,
+          at: claim.issue?.filedAt ?? null,
+        });
+      }
       const decided = new Set(legacy.flatMap((a) => a.findingIds));
       undecided = findings.filter((f) => !decided.has(f.id)).map((f) => f.id);
       members = findings.map((f) => ({
@@ -142,11 +163,18 @@ export function listInboxItems(db: Database, access: ImprovementAccess): InboxIt
         lastSeenAt: f.last.at,
       }));
     } else {
-      const visible = proposal.evidence.every((ref) => {
-        const [, retroId, evidenceId] = ref.split(":");
-        const repository = retroEvidence(retroId ?? "").get(evidenceId ?? "");
-        return repository !== undefined && allowedRepository(access, repository);
-      });
+      const visible =
+        proposal.evidence.length > 0 &&
+        proposal.evidence.every((ref) => {
+          const [, retroId, evidenceId] = ref.split(":");
+          const repository = retroEvidence(retroId ?? "").get(evidenceId ?? "");
+          return (
+            repository !== undefined &&
+            allowedRepository(access, repository) &&
+            (access.retroEvidence === undefined ||
+              access.retroEvidence(retroId!)?.has(evidenceId!) === true)
+          );
+        });
       if (!visible) return [];
     }
     return [
