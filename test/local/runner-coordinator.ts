@@ -138,7 +138,9 @@ export async function probeRunnerCoordinator(
     async fetch(input) {
       if (new URL(input.url).pathname === "/api/runner-enrollments")
         return coordinator.hostEnrollment(input);
-      return (await coordinator.browser(input, principal)) ?? new Response(null, { status: 404 });
+      return (
+        (await coordinator.browser(input, principal, [])) ?? new Response(null, { status: 404 })
+      );
     },
   });
   let keepAlive: Agent | undefined;
@@ -359,11 +361,12 @@ export async function probeRunnerCoordinator(
             body: JSON.stringify({ type: "probe", profile: { agent: "codex", model: null } }),
           }),
           member,
+          [],
         )
       )?.status,
       403,
     );
-    const pendingHealth = await coordinator.browser(healthRequest, principal);
+    const pendingHealth = await coordinator.browser(healthRequest, principal, []);
     assert.equal(pendingHealth?.status, 200);
     const healthCommand = (await pendingHealth!.json()) as { commandId: string };
     const delivered = await exchange<{ commands: SignedRunnerCommand[] }>(
@@ -395,6 +398,7 @@ export async function probeRunnerCoordinator(
     const healthList = await coordinator.browser(
       new Request(`https://localhost${healthPath}`),
       member,
+      [],
     );
     const healthBody = (await healthList!.json()) as {
       lastSeenAt: number;

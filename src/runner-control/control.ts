@@ -6,7 +6,9 @@ import {
   createRunnerEnrollment,
   enrollRunner,
   findRunnerEnrollment,
+  getRun,
   getRunner,
+  getWorkItem,
   immediate,
   listRunnerOverview,
   renewRunnerCertificate,
@@ -144,10 +146,19 @@ export function createRunnerControl(options: {
           .get(peer.fingerprint) !== null
       );
     },
-    list(principal: WorkspacePrincipal) {
+    list(principal: WorkspacePrincipal, sessionIds: readonly string[]) {
       if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
         throw new Error("Workspace membership is required.");
-      return listRunnerOverview(db, principal.workspaceId, now());
+      const scope = new Set(sessionIds);
+      const visible = (runId: string) => {
+        const run = getRun(db, runId);
+        const sessionKey = run ? getWorkItem(db, run.itemId)?.sessionKey : null;
+        return typeof sessionKey === "string" && scope.has(sessionKey);
+      };
+      return listRunnerOverview(db, principal.workspaceId, now()).map((runner) => ({
+        ...runner,
+        running: runner.running.filter((session) => visible(session.runId)),
+      }));
     },
     serverVersion() {
       return serverVersion;

@@ -1068,13 +1068,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 : Promise.resolve(
                     Response.json({ error: "Runner control is starting." }, { status: 503 }),
                   ),
-            runnerControl: async (request: Request, principal: WorkspacePrincipal) =>
+            runnerControl: async (
+              request: Request,
+              principal: WorkspacePrincipal,
+              sessionIds: readonly string[],
+            ) =>
               (await memberVmHttp(request, principal)) ??
               (await accountManagement(request, principal)) ??
               (await placementBrowser(request, principal)) ??
               (await sessionMoves?.fetch(request, principal)) ??
               (runner
-                ? await runner.browser(request, principal)
+                ? await runner.browser(request, principal, sessionIds)
                 : Response.json({ error: "Runner control is starting." }, { status: 503 })),
           }),
       port: env.port,

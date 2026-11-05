@@ -216,7 +216,7 @@ async function fixture({
     const request = new Request(url.href, { method, headers, body: init.body ?? null });
     return (
       (await vmHttp(request, member)) ??
-      (await runnerHttp.browser(request, member)) ??
+      (await runnerHttp.browser(request, member, [])) ??
       new Response(null, { status: 404 })
     );
   };
@@ -440,7 +440,7 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
       purpose: "work",
     });
   expect(await candidates()).toEqual([]);
-  expect(f.control.list(f.member).find((runner) => runner.id === vm.runnerId)?.hasRunWork).toBe(
+  expect(f.control.list(f.member, []).find((runner) => runner.id === vm.runnerId)?.hasRunWork).toBe(
     false,
   );
   f.control.setStatus(f.member, vm.runnerId!, "active");
@@ -583,7 +583,8 @@ test("only active owners and workspace admins can turn on a member's runner", as
     name: "paused-host",
     csr: key.csr,
   });
-  const status = () => f.control.list(f.member).find((runner) => runner.id === runnerId)?.status;
+  const status = () =>
+    f.control.list(f.member, []).find((runner) => runner.id === runnerId)?.status;
   expect(status()).toBe("paused");
   const otherId = putWorkspaceUser(f.db, {
     id: workspaceId(),

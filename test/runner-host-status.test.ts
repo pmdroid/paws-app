@@ -109,6 +109,7 @@ async function fixture() {
       (await (await browser.browser(
         new Request("https://paws.invalid/api/runners"),
         principal,
+        [],
       ))!.json()) as {
         runners: {
           id: string;

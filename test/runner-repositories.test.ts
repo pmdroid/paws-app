@@ -120,6 +120,7 @@ async function fixture() {
       const response = await browser.browser(
         new Request("https://paws.invalid/api/runners"),
         admin,
+        [],
       );
       return ((await response!.json()) as { runners: { repositories: Lists }[] }).runners[0]!
         .repositories;
@@ -132,6 +133,7 @@ async function fixture() {
           body: JSON.stringify({ repositories }),
         }),
         as,
+        [],
       ))!;
       return response.status;
     },
