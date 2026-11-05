@@ -96,4 +96,4 @@ export const CLOSEOUT_TURN_KEY_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
 export const BUN_STOP_HOOK_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
 export const HIDDEN_CHECKPOINT_RUNNER_VERSION: RunnerVersion = [0, 1, 67];
 export const GITHUB_READ_RUNNER_VERSION: RunnerVersion = [0, 1, 68];
-export const CLOSEOUT_FOCUS_RUNNER_VERSION: RunnerVersion = [0, 1, 68];
+export const CLOSEOUT_FOCUS_RUNNER_VERSION: RunnerVersion = [0, 1, 69];
