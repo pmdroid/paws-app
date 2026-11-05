@@ -29,7 +29,7 @@ import {
 } from "../runner-protocol";
 import { ExecutionIdSchema } from "./jobs";
 import { listExecutionProcesses, startTime } from "./processes";
-import { SETGID, sharedDirectoryAllowed } from "./shared";
+import { SETGID, clearInheritedSetgid, sharedDirectoryAllowed } from "./shared";
 
 export const RUNNER_ACCOUNT_HOMES = ".paws-accounts";
 const MANIFEST = "account.json";
@@ -438,6 +438,8 @@ export function prepareRunnerWorkRoot(
   const root = lstatSync(workRoot);
   if (root.isSymbolicLink() || !root.isDirectory())
     throw new RunnerAccountHomeError("Runner work root is not a directory");
+  // The worker clears an inherited setgid bit itself, but only the owner may, and that is us.
+  if (root.uid === process.getuid?.()) clearInheritedSetgid(workRoot);
   shareRunnerPaths([workRoot], owners, { depth: 0 });
   shareRunnerPaths(
     readdirSync(workRoot)
