@@ -57,6 +57,32 @@ The agent cannot end its turn while a check is still pending. When the agent tri
 
 A fix round narrows what is pending. After a `findings` restart, `get_closeout` lists as pending only the command checks and setup steps that did not pass in the last Closeout run, and lists the others with status `deferred` and the note "passed on <head>; Closeout reruns it at the end". After a `review` restart, a check that passed there is pending again only when a file changed since that head matches its paths; a check without `paths` matches every file. The focus holds only while the policy digest is the one that run used. Running a deferred check in the turn is still allowed. The Closeout after the turn runs every check, reusing the agent's passes on the final head, and runs the review again (`closeoutFocus` in `src/loop/closeout-focus.ts`).
 
+### The pull request title and description
+
+Paws agents set the pull request title and description with `open_pull_request`, not `gh pr create`, so a repository's own title hook never sees them. A command check or rule probe can read what the agent saved:
+
+- `PAWS_PR_TITLE` holds the saved title.
+- `PAWS_PR_BODY_FILE` is the path of a file holding the saved description. The file has mode `0600`, sits in a temporary folder outside the checkout, and is deleted when the command ends.
+
+Without a saved draft neither variable is set. Both are added after the credential scrub; the agent still gets no write access to pull requests. A check whose `exec` names either variable depends on the draft: a new title or description from `open_pull_request` makes it pending again, and its earlier result is not reused, in the agent's turn or in Paws Closeout. Other checks keep their results. On a runner, the draft travels with the run and needs runner 0.1.70 or later.
+
+A repository that checks titles in CI can run the same script before the pull request exists:
+
+```yaml
+- id: pr-title
+  kind: command
+  gate: beforePR
+  exec:
+    [
+      "bash",
+      "-c",
+      'test -n "$PAWS_PR_TITLE" && .github/scripts/pr-title-type.sh "$PAWS_PR_TITLE" >/dev/null',
+    ]
+  timeoutSeconds: 30
+```
+
+`test -n` fails the check while no title is saved yet, so the agent calls `open_pull_request` before `run_closeout`. The script's error output is what the agent sees when the title is wrong (`test/closeout-pull-request-draft.test.ts`).
+
 ## Evidence checks
 
 An `evidence` check asks the agent for screenshots or videos instead of running a command. This repository requires one when a change touches the status dashboard or the landing page:
