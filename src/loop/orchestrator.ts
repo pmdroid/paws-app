@@ -22,6 +22,7 @@ import {
   parkLeasedJob,
   replaceLeasedJobPayload,
   refreshVerificationJobVersion,
+  type RestartHandoff,
 } from "../db";
 import { journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
@@ -437,6 +438,12 @@ import {
 } from "./merge-jobs";
 import { handlePullComments } from "./pull-comments";
 import { readReviewChecks, withReviewWait } from "./review-checks";
+import {
+  readPendingFeedback,
+  restartWithFeedback,
+  storedFeedbackReads,
+  type FeedbackReads,
+} from "./pending-feedback";
 import {
   authorizeLinearComment,
   commitLinearCommentRoute,
@@ -1850,6 +1857,7 @@ export class Orchestrator {
       if (sweep === null || !context.isCurrent()) return;
       await returnQueuedConflicts(this.db, sweep, {
         ask,
+        restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
         now: () => this.now(),
         session: (item) => this.activitySession(item),
         voice: {
@@ -1904,7 +1912,7 @@ export class Orchestrator {
       if (typeof reviewId !== "number" || !context.isCurrent()) return;
       let reviewWait: ReviewCheckWait | null | undefined;
       const step = await handlePullReview(this.db, reviewId, {
-        ...this.pullFeedbackCapabilities(context),
+        ...this.pullFeedbackCapabilities(context.signal),
         noteReviewWait: (wait) => {
           reviewWait = wait;
         },
@@ -1929,7 +1937,7 @@ export class Orchestrator {
       if (typeof itemId !== "string" || !context.isCurrent()) return;
       let reviewWait: ReviewCheckWait | null | undefined;
       const step = await handlePullComments(this.db, itemId, {
-        ...this.pullFeedbackCapabilities(context),
+        ...this.pullFeedbackCapabilities(context.signal),
         noteReviewWait: (wait) => {
           reviewWait = wait;
         },
@@ -1952,7 +1960,7 @@ export class Orchestrator {
   }
 
   /** GitHub and Linear for a review or comments on the item's pull request. */
-  private pullFeedbackCapabilities(context: JobContext): PullReviewCapabilities {
+  private pullFeedbackCapabilities(signal?: AbortSignal): PullReviewCapabilities {
     return {
       now: () => this.now(),
       busy: (item) =>
@@ -1985,9 +1993,26 @@ export class Orchestrator {
           prNumber: pullNumber,
           reads: 1,
           ...this.gitHubCredentials(github),
-          signal: context.signal,
+          ...(signal ? { signal } : {}),
         });
         return pull?.head ?? null;
+      },
+      pullConflict: async (item, pullNumber) => {
+        const repository = this.repositoryForItem(item);
+        const github = repository ? this.githubForRepository(repository) : null;
+        if (!repository || !github) return null;
+        const pull = await readPullMergeable({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          prNumber: pullNumber,
+          reads: 1,
+          ...this.gitHubCredentials(github),
+          ...(signal ? { signal } : {}),
+        }).catch(() => null);
+        if (pull?.merges !== "conflict") return null;
+        const base = await this.fetchUpstreamMain(item).catch(() => null);
+        return base === null ? null : { head: pull.head, base };
       },
       leaveMergeQueue: async (item, pullNumber) => {
         const repository = this.repositoryForItem(item);
@@ -1999,7 +2024,7 @@ export class Orchestrator {
           repo: repository.repo,
           prNumber: pullNumber,
           ...this.gitHubCredentials(github),
-          signal: context.signal,
+          ...(signal ? { signal } : {}),
         });
       },
       fixRoundLimit: (item) => this.fixRoundLimit(item),
@@ -2035,7 +2060,7 @@ export class Orchestrator {
           prNumber: pullNumber,
           reads: 1,
           ...this.gitHubCredentials(github),
-          signal: context.signal,
+          ...(signal ? { signal } : {}),
         });
         const maxMs = this.feedbackWait().reviewMaxMs ?? PULL_REVIEW_CHECK_MAX_WAIT_MS;
         if (!pull) return { head: null, pending: null, until: since + maxMs };
@@ -2065,7 +2090,7 @@ export class Orchestrator {
               repo: repository.repo,
               head,
               ...this.gitHubCredentials(github),
-              signal: context.signal,
+              ...(signal ? { signal } : {}),
             }),
         });
       },
@@ -3413,7 +3438,7 @@ export class Orchestrator {
     if (!options.decide && (await this.openVisualReviewCheck(item, worktree, base, head)))
       await this.flush();
     const ci = options.decide ? null : await this.recheckCi(item, worktree, head);
-    if (ci?.kind === "ci-failed" && this.sendBackForCi(item, head, ci.checks)) {
+    if (ci?.kind === "ci-failed" && (await this.sendBackForCi(item, head, ci.checks))) {
       await this.flush();
       return;
     }
@@ -4184,6 +4209,8 @@ export class Orchestrator {
     if (base === null) return false;
     this.assertJobCurrent(item.id);
     const conflict = { base, files: null, reason: "merge" as const };
+    const reads = await this.readPendingFeedback(item);
+    this.assertJobCurrent(item.id);
     const sent = immediate(this.db, () => {
       const current = getWorkItem(this.db, item.id);
       if (
@@ -4193,9 +4220,12 @@ export class Orchestrator {
         !rebaseBudgetFor(this.db, item.id, conflict, this.now()).allowed
       )
         return false;
-      const jobId = restart(this.db, current, {
+      const jobId = restartWithFeedback(this.db, current, {
         reason: "conflict",
-        body: REBASE_CONFLICT_INSTRUCTION,
+        lead: [REBASE_CONFLICT_INSTRUCTION],
+        reads,
+        fixRoundLimit: this.fixRoundLimit(current),
+        sessionId: this.activitySession(current),
         now: this.now(),
         jobKey: `conflict:${item.id}:recheck:${head}`,
       });
@@ -4220,32 +4250,62 @@ export class Orchestrator {
    * CI failed on a merge-queue re-check's head: a CI fix round, as the merge lane would send.
    * False when no fix round is left, so the checks run and the usual way asks.
    */
-  private sendBackForCi(
+  private async sendBackForCi(
     item: WorkItemRecord,
     head: string,
     checks: readonly FailedCiCheck[],
-  ): boolean {
+  ): Promise<boolean> {
     this.assertJobCurrent(item.id);
-    const current = getWorkItem(this.db, item.id);
-    if (
-      !current ||
-      current.cancelRequested ||
-      (current.state !== "verifying" && current.state !== "merge_queue")
-    )
-      return false;
-    const rounds = fixRounds(this.db, item.id);
-    const limit = this.fixRoundLimit(current);
-    if (rounds >= limit) return false;
-    this.options.journal?.(
-      `item ${current.linearIdentifier} re-check at ${head.slice(0, 7)}: ${ciFixRoundLine(checks, rounds + 1, limit)}`,
-    );
-    return (
-      restart(this.db, current, {
+    const reads = await this.readPendingFeedback(item);
+    this.assertJobCurrent(item.id);
+    return immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (
+        !current ||
+        current.cancelRequested ||
+        (current.state !== "verifying" && current.state !== "merge_queue")
+      )
+        return false;
+      const rounds = fixRounds(this.db, item.id);
+      const limit = this.fixRoundLimit(current);
+      if (rounds >= limit) return false;
+      const jobId = restartWithFeedback(this.db, current, {
         reason: "ci",
-        body: ciFixHandoff(checks),
+        lead: [ciFixHandoff(checks)],
+        reads,
+        ci: false,
+        fixRoundLimit: limit,
+        sessionId: this.activitySession(current),
         now: this.now(),
         jobKey: `ci-failed:${item.id}:recheck:${head}`,
-      }) !== null
+      });
+      if (jobId === null) return false;
+      this.options.journal?.(
+        `item ${current.linearIdentifier} re-check at ${head.slice(0, 7)}: ${ciFixRoundLine(checks, rounds + 1, limit)}`,
+      );
+      return true;
+    });
+  }
+
+  private restartWithStoredFeedback(item: WorkItemRecord, handoff: RestartHandoff): number | null {
+    return restartWithFeedback(this.db, item, {
+      reason: handoff.reason,
+      now: handoff.now,
+      ...(handoff.jobKey === undefined ? {} : { jobKey: handoff.jobKey }),
+      ...(handoff.limit === undefined ? {} : { limit: handoff.limit }),
+      lead: [handoff.body],
+      reads: storedFeedbackReads(this.db, item, handoff.now),
+      ci: false,
+      fixRoundLimit: this.fixRoundLimit(item),
+      sessionId: this.activitySession(item),
+    });
+  }
+
+  private async readPendingFeedback(item: WorkItemRecord): Promise<FeedbackReads | null> {
+    return readPendingFeedback(
+      this.db,
+      item,
+      this.pullFeedbackCapabilities(this.jobContexts.get(item.id)?.signal),
     );
   }
 
@@ -4268,11 +4328,20 @@ export class Orchestrator {
     const rounds = fixRounds(this.db, item.id);
     const limit = this.fixRoundLimit(item);
     if (failed && !exhausted && !setupFailed && rounds < limit) {
-      restart(this.db, current, {
-        reason: "findings",
-        body: result?.handoff ?? summary,
-        now: this.now(),
-        limit: fixAttemptLimit(limit, rounds + 1, result?.fixesLeft ?? null),
+      const reads = await this.readPendingFeedback(current);
+      this.assertJobCurrent(item.id);
+      immediate(this.db, () => {
+        const latest = getWorkItem(this.db, item.id);
+        if (latest?.version !== current.version) return;
+        restartWithFeedback(this.db, latest, {
+          reason: "findings",
+          lead: [result?.handoff ?? summary],
+          reads,
+          fixRoundLimit: limit,
+          sessionId: this.activitySession(latest),
+          now: this.now(),
+          limit: fixAttemptLimit(limit, rounds + 1, result?.fixesLeft ?? null),
+        });
       });
       return;
     }
@@ -5154,6 +5223,7 @@ export class Orchestrator {
           ...this.gitHubCredentials(github),
         });
       },
+      restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
       dependencyHold: (id) => {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
         const admitted = this.admission.canMerge(id);

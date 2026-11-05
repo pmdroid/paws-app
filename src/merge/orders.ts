@@ -39,7 +39,13 @@ import {
 } from "../github";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
 import type { RebaseConflict } from "./budget";
-import { askMergeHelp, rebaseBudgetFor, returnToAgent, type MergeReturnReason } from "./returns";
+import {
+  askMergeHelp,
+  rebaseBudgetFor,
+  returnToAgent,
+  type MergeRestart,
+  type MergeReturnReason,
+} from "./returns";
 import type { MergeStep } from "./step";
 import { ciWaitVerification, githubQueueWatch, type MergeWait } from "./wait";
 
@@ -184,6 +190,7 @@ export type OrderCapabilities = {
    * blockers it waits for, empty when none can be named. A held task takes no place in the queue.
    */
   dependencyHold(itemId: string): readonly string[] | null;
+  restart?: MergeRestart;
   voice: MergeVoice;
 };
 
@@ -222,6 +229,7 @@ export function sendBack(
     record: report.record,
     ...(report.failedChecks ? { failedChecks: report.failedChecks } : {}),
     ...(report.pullNumber !== undefined ? { pullNumber: report.pullNumber } : {}),
+    ...(caps.restart ? { restart: caps.restart } : {}),
     announce: (running, attempt, key) => {
       if (reason === "ci-failed") caps.voice.status(running, report.thought(attempt), key);
       else caps.voice.thought(running, report.thought(attempt), key);

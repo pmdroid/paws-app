@@ -134,6 +134,7 @@ export type PullReviewCapabilities = {
   pullHead(item: WorkItemRecord, pullNumber: number): Promise<string | null>;
   /** Unresolved review threads on the pull request. Throws when GitHub cannot be read. */
   threads(item: WorkItemRecord, pullNumber: number): Promise<ReviewThread[]>;
+  pullConflict?(item: WorkItemRecord, pullNumber: number): Promise<PullConflict | null>;
   fixRoundLimit(item: WorkItemRecord): number;
   /** The item's stored Closeout review findings. Empty when none can be read. */
   closeoutFindings(item: WorkItemRecord): Promise<readonly StoredReviewFinding[]>;
@@ -146,6 +147,8 @@ export type PullReviewCapabilities = {
   ): Promise<ReviewChecks | null>;
   noteReviewWait?(wait: ReviewCheckWait | null): void;
 };
+
+export type PullConflict = { head: string; base: string };
 
 export type PullReviewStep = "wait" | "restarted" | "asked" | "dropped" | "done";
 

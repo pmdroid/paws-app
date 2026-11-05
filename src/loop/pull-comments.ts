@@ -2,14 +2,14 @@ import type { Database } from "bun:sqlite";
 import {
   fixRounds,
   getItemPullRequest,
-  getPullReview,
   getWorkItem,
   immediate,
   pendingChangeRequests,
   pendingPullCiFailures,
   pendingPullComments,
+  rebaseReturnedFor,
   recordPullComment,
-  recordReviewEscape,
+  recordRebaseReturn,
   settlePullCiFailures,
   settlePullComments,
   type PullCommentRecord,
@@ -17,28 +17,24 @@ import {
   type WorkItemRecord,
 } from "../db";
 import type { ReviewThread } from "../github";
+import { REBASE_CONFLICT_INSTRUCTION, rebaseBudgetFor } from "../merge";
 import { ask, restart } from "./operations";
 import {
-  currentPullCi,
-  pullCiHead,
-  pullCiAsked,
-  pullCiHandoff,
-  pullCiQuestion,
-  pullCiRestarted,
-} from "./pull-ci";
-import {
-  REVIEW_REPLY_MARKER,
-  recordReplyTargets,
-  replyListSection,
-  replyTargets,
-} from "./review-replies";
+  authors,
+  deliverFeedback,
+  feedbackHandoff,
+  hasFeedback,
+  pendingFeedback,
+  settleCovered,
+  who,
+} from "./pending-feedback";
+import { currentPullCi, pullCiHead, pullCiAsked, pullCiHandoff, pullCiQuestion } from "./pull-ci";
+import { REVIEW_REPLY_MARKER } from "./review-replies";
 import { holdForReviewChecks } from "./review-checks";
 import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
 import {
   clip,
-  closeoutFindingsNote,
   itemForBranch,
-  postPullFeedback,
   threadLines,
   type PullReviewCapabilities,
   type PullReviewStep,
@@ -257,21 +253,20 @@ export async function handlePullComments(
   const findings = await caps.closeoutFindings(item);
   const head = await pullCiHead(db, item, pullNumber, caps.pullHead);
   if (head === "unreadable") return "wait";
+  const conflict = (await caps.pullConflict?.(item, pullNumber)) ?? null;
   const step = immediate(db, (): PullReviewStep => {
     const current = getWorkItem(db, item.id);
     if (current === null || current.version !== item.version || current.state !== "merge_queue")
       return "wait";
     const now = caps.now();
-    settleCovered(db, pendingPullComments(db, itemId), now);
-    const batch = pendingPullComments(db, itemId);
-    const failure = currentPullCi(db, current, now, { pullNumber, head, observedBy: started });
-    if (batch.length === 0 && failure === null) return "done";
-    const digest = batch.length === 0 ? null : commentDigest(batch, threads);
-    if (digest === null && batch.length > 0) {
-      settlePullComments(db, batch, "dropped", now);
-      if (failure === null) return "dropped";
-    }
-    const comments = digest === null ? [] : batch;
+    const feedback = pendingFeedback(
+      db,
+      current,
+      { pullNumber, threads, findings, head, started },
+      now,
+    );
+    if (!hasFeedback(feedback)) return "done";
+    const { comments, digest, failure } = feedback;
     const rounds = fixRounds(db, current.id);
     const limit = caps.fixRoundLimit(current);
     if (rounds < limit) {
@@ -279,59 +274,35 @@ export async function handlePullComments(
       const jobKey = first
         ? `review:${current.id}:${first.source}:${first.commentId}`
         : `ci:${current.id}:${failure!.head}`;
-      const targets = replyTargets({ pullNumber, threads, reviews: [], comments });
+      const rebase =
+        conflict !== null &&
+        !rebaseReturnedFor(db, current.id, conflict.head) &&
+        rebaseBudgetFor(db, current.id, { ...conflict, files: null, reason: "merge" }, now).allowed
+          ? conflict
+          : null;
       const jobId = restart(db, current, {
         reason: comments.length > 0 ? "review" : "ci",
-        body: [
-          digest ?? "",
-          failure === null ? "" : pullCiHandoff(failure),
-          comments.length > 0 ? closeoutFindingsNote(findings, comments) : "",
-          comments.length > 0 ? COMMENT_FIX_INSTRUCTION : "",
-          replyListSection(targets),
-        ]
-          .filter((part) => part !== "")
-          .join("\n\n"),
+        body: feedbackHandoff(rebase ? [REBASE_CONFLICT_INSTRUCTION] : [], feedback),
         jobKey,
         now,
       });
       if (jobId === null) return "wait";
-      if (comments.length > 0) {
-        postPullFeedback(db, {
-          sessionId: caps.session(current),
-          item: current,
-          key: jobKey,
-          body: `${authors(comments)} commented on pull request #${pullNumber}. The agent is working on the comments.`,
-          now,
+      if (rebase)
+        recordRebaseReturn(db, {
+          itemId: current.id,
+          jobId,
+          candidate: rebase.head,
+          reason: "merge",
+          base: rebase.base,
+          files: null,
+          recordedAt: now,
         });
-        recordReplyTargets(db, current.id, jobKey, targets, now);
-        if (current.acceptedHead !== null)
-          recordReviewEscape(db, {
-            triggerKey: jobKey,
-            itemId: current.id,
-            trigger: "comment",
-            acceptedHead: current.acceptedHead,
-            pullNumber,
-            detail: {
-              comments: comments
-                .filter((comment) => comment.body.trim() !== "")
-                .map((comment) => ({
-                  id: comment.commentId,
-                  author: comment.author,
-                  body: comment.body,
-                })),
-            },
-            recordedAt: now,
-          });
-        settlePullComments(db, comments, "restarted", now);
-      }
-      if (failure !== null)
-        postPullFeedback(db, {
-          sessionId: caps.session(current),
-          item: current,
-          key: `${jobKey}:ci`,
-          body: pullCiRestarted(db, { item: current, failure, jobKey, limit, now }),
-          now,
-        });
+      deliverFeedback(db, current, feedback, {
+        jobKey,
+        sessionId: caps.session(current),
+        limit,
+        now,
+      });
       return "restarted";
     }
     const sessionId = caps.session(current);
@@ -360,18 +331,6 @@ export async function handlePullComments(
   });
   if (step !== "wait" && step !== "done") await caps.flush();
   return step;
-}
-
-/** Inline comments of a changes-requested review reach the agent with that review. */
-function settleCovered(db: Database, comments: readonly PullCommentRecord[], now: number): number {
-  const covered = comments.filter(
-    (comment) =>
-      comment.source === "inline" &&
-      comment.reviewId !== null &&
-      getPullReview(db, comment.reviewId) !== null,
-  );
-  settlePullComments(db, covered, "covered", now);
-  return covered.length;
 }
 
 /**
@@ -428,15 +387,6 @@ export function commentDigest(
 function where(comment: PullCommentRecord): string {
   if (!comment.path) return "";
   return `\`${comment.path}${comment.line === null ? "" : `:${comment.line}`}\`: `;
-}
-
-function authors(comments: readonly PullCommentRecord[]): string {
-  const names = [...new Set(comments.map((comment) => who(comment.author)))];
-  return names.length <= 2 ? names.join(" and ") : `${names.slice(0, 2).join(", ")} and others`;
-}
-
-function who(author: string | null): string {
-  return author ? `@${author}` : "Someone";
 }
 
 function indent(text: string): string {
