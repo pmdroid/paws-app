@@ -1430,7 +1430,7 @@ class StateDirectories(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "/var/lib/paws-agent$"):
             self.validate()
 
-    def test_an_upgrade_adopts_earlier_trees_as_setgid_and_group_shared(self):
+    def test_an_upgrade_adopts_earlier_trees_group_shared_with_setgid_only_on_the_roots(self):
         for name in ("agent/.paws-accounts/binding/.claude", "results/01K00000000000000000000000"):
             (self.root / name).mkdir(parents=True, mode=0o700)
         (self.root / "results/01K00000000000000000000000").chmod(0o750)
@@ -1442,11 +1442,11 @@ class StateDirectories(unittest.TestCase):
             self.installer.adopt_tree(self.root / "results", 60980, 60981, 0o2770, self.installer.SHARED_DIRECTORIES["/var/lib/paws-agent-results"])
         self.assertEqual(modes, {
             "agent": 0o2770,
-            "agent/.paws-accounts": 0o2770,
-            "agent/.paws-accounts/binding": 0o2770,
-            "agent/.paws-accounts/binding/.claude": 0o2770,
+            "agent/.paws-accounts": 0o770,
+            "agent/.paws-accounts/binding": 0o770,
+            "agent/.paws-accounts/binding/.claude": 0o770,
             "results": 0o2770,
-            "results/01K00000000000000000000000": 0o2750,
+            "results/01K00000000000000000000000": 0o750,
         })
         self.assertEqual(owners["agent/.paws-accounts/binding/account.json"], (60980, 60979))
         self.assertEqual(owners["results/01K00000000000000000000000"], (60980, 60981))
