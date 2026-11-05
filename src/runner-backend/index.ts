@@ -29,6 +29,7 @@ import {
   immediate,
   inMergeQueue,
   listHooks,
+  markAgentWait,
   pinnedSlotsReserved,
   releasePinnedSlot,
   restartedFromMergeQueue,
@@ -1858,6 +1859,8 @@ export function createRemoteAgentRunner(options: {
                 );
               }
               if (event.type === "hook_failed") await emit(event, origin);
+              if (event.type === "agent_wait_started" || event.type === "agent_wait_ended")
+                markAgentWait(db, itemId, event.type === "agent_wait_started", mono(), now());
               if (event.type === "checkpoint" && assigned.type === "run")
                 recordRunnerCheckpoint(db, {
                   itemId,

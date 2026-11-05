@@ -158,6 +158,7 @@ export {
   TransitionRejectedError,
   accrueAtJobBoundary,
   accrueAwake,
+  markAgentWait,
   markJobAwakeWait,
   applyWorkItemEvent,
   awakeBreakdown,

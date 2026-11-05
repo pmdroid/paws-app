@@ -600,6 +600,20 @@ export function openExecutionJournal(root: string) {
               raw &&
               typeof raw === "object" &&
               "type" in raw &&
+              (raw.type === "agent_wait_started" || raw.type === "agent_wait_ended")
+            ) {
+              const parsed = RunnerEventSchema.safeParse(raw);
+              if (
+                !parsed.success ||
+                (parsed.data.type !== "agent_wait_started" &&
+                  parsed.data.type !== "agent_wait_ended")
+              )
+                throw new Error("Invalid runner agent wait");
+              event = parsed.data;
+            } else if (
+              raw &&
+              typeof raw === "object" &&
+              "type" in raw &&
               raw.type === "checkpoint"
             ) {
               const parsed = RunnerEventSchema.safeParse(raw);

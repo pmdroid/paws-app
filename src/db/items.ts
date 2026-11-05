@@ -453,6 +453,7 @@ export function markJobAwakeWait(
   const itemId = (job.payload as { itemId?: string }).itemId;
   if (!itemId) return;
   immediate(db, () => {
+    if (getWorkItem(db, itemId) === null) return;
     accrueAwake(db, itemId, mono, now);
     if (waiting) {
       db.run(
@@ -473,6 +474,33 @@ export function markJobAwakeWait(
 }
 
 /** Read ownership and wait flags in one scan for each accrual. Pending CI marks are never live. */
+export function markAgentWait(
+  db: Database,
+  itemId: string,
+  waiting: boolean,
+  mono: number,
+  now: number,
+): void {
+  immediate(db, () => {
+    accrueAwake(db, itemId, mono, now);
+    if (waiting)
+      db.run(
+        `UPDATE job SET payload = json_set(payload, '$.awakeWait',
+           json_object('kind', 'agent', 'worker', locked_by, 'attempt', attempts))
+         WHERE json_extract(payload, '$.itemId')=?1 AND status='running' AND locked_until>?2
+           AND json_extract(payload, '$.awakeWait') IS NULL
+           AND (queue IN (?3, ?4, ?5, ?6) OR queue LIKE (?6 || '.%'))`,
+        [itemId, now, JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify, JOB_KIND.merge],
+      );
+    else
+      db.run(
+        `UPDATE job SET payload = json_remove(payload, '$.awakeWait')
+         WHERE json_extract(payload, '$.itemId')=? AND json_extract(payload, '$.awakeWait.kind')='agent'`,
+        [itemId],
+      );
+  });
+}
+
 function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId = -1) {
   const row = db
     .query<
@@ -483,7 +511,7 @@ function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId
          SELECT 1 FROM runner_work w JOIN work_item i ON i.current_run_id=w.run_id
          WHERE i.id=?2 AND w.ended_at IS NULL AND w.lease_until>?8)) AS live,
        COALESCE(MAX(status='running' AND locked_until>?1
-         AND json_extract(payload, '$.awakeWait.kind') IN ('ci', 'runner', 'backoff')
+         AND json_extract(payload, '$.awakeWait.kind') IN ('ci', 'runner', 'backoff', 'agent')
          AND json_extract(payload, '$.awakeWait.worker')=locked_by
          AND json_extract(payload, '$.awakeWait.attempt')=attempts), 0) AS waiting,
        EXISTS(SELECT 1 FROM usage_pause p JOIN work_item i ON i.current_run_id=p.run_id

@@ -20,6 +20,7 @@ import {
   listJobs,
   listOutbox,
   markCloseoutAccepted,
+  markAgentWait,
   markJobAwakeWait,
   migrate,
   openDatabase,
@@ -410,6 +411,45 @@ describe("awake-time cap after Closeout accepted the work", () => {
       db.close();
     });
   }
+
+  test("an agent waiting 50 minutes on its own command stays under a 60-minute limit", () => {
+    const clock = new FakeClock(20_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 60 * MINUTE, now: 0 });
+    const id = enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: { itemId: item.id },
+      now: clock.now(),
+    });
+    db.run(
+      "INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,paths,hot,created_at) VALUES(?,?,'*','fixture','[]',0,?)",
+      [item.id, id, clock.now()],
+    );
+    expect(
+      claimNextJob(db, { now: clock.now(), leaseMs: 24 * 60 * MINUTE, queues: [JOB_KIND.start] }),
+    ).not.toBeNull();
+    beginImplementRun(db, item.id, clock.now());
+    accrueAwake(db, item.id, clock.mono(), clock.now());
+    clock.advance(9 * MINUTE);
+    markAgentWait(db, item.id, true, clock.mono(), clock.now());
+    for (let minute = 0; minute < 50; minute++) {
+      clock.advance(MINUTE);
+      const outcome = accrueAwake(db, item.id, clock.mono(), clock.now());
+      expect(outcome).toMatchObject({ capped: false });
+      expect(outcome.stopAgent).toBeUndefined();
+    }
+    markAgentWait(db, item.id, false, clock.mono(), clock.now());
+    clock.advance(MINUTE);
+    expect(accrueAwake(db, item.id, clock.mono(), clock.now()).item).toMatchObject({
+      state: "running",
+      awakeMs: 10 * MINUTE,
+      agentMs: 10 * MINUTE,
+      waitingMs: 50 * MINUTE,
+    });
+    expect(listJobs(db).some((job) => job.queue === "item.ask")).toBe(false);
+    db.close();
+  });
 
   test("a Closeout run waiting on CI does not accrue closeout time", () => {
     const clock = new FakeClock(20_000);
