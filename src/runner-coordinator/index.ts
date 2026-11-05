@@ -85,6 +85,7 @@ export async function openRunnerCoordinator(options: {
   discoverModels?: boolean;
   /** Queue login_check commands in the background so agent sign-in status stays current. */
   checkSignIn?: boolean;
+  extraUsage?: (agent: string) => boolean;
   /** Registered skill bundles runners download, `<name>/<version>/skill.tar.gz`. */
   skillsRoot?: string;
   /** The dashboard's public HTTPS origin, written into a new host's config on Add a host. */
@@ -120,7 +121,12 @@ export async function openRunnerCoordinator(options: {
     now: options.now,
   });
   const results = createRunnerResults({ db: options.db, work, now: options.now });
-  const health = createRunnerHealth({ db: options.db, work, now: options.now });
+  const health = createRunnerHealth({
+    db: options.db,
+    work,
+    now: options.now,
+    ...(options.extraUsage ? { extraUsage: options.extraUsage } : {}),
+  });
   const login = createRunnerLogin({
     db: options.db,
     work,
