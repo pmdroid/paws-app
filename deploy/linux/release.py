@@ -93,6 +93,7 @@ ASSETS = {
     "paws-runner-agents.service",
     "paws-runner.sysusers",
     "paws-runner.tmpfiles",
+    "paws-runner.polkit",
 }
 REQUIRED = {
     "bin/bun",

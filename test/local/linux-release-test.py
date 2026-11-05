@@ -1702,5 +1702,46 @@ class RunnerUpgrade(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in (self.base / "releases").iterdir()), ["1.2.2"])
 
 
+class AgentUnit(unittest.TestCase):
+    def setUp(self):
+        self.installer = load("install")
+        self.assets = pathlib.Path(sys.argv[1]).parent
+
+    def unit(self, name):
+        keys = {}
+        for line in (self.assets / name).read_text().splitlines():
+            if "=" in line and not line.startswith(("#", "[")):
+                key, value = line.split("=", 1)
+                keys.setdefault(key, []).append(value)
+        return keys
+
+    def test_the_polkit_rule_ships_and_installs_into_polkit_rules(self):
+        self.assertIn("paws-runner.polkit", self.installer.release.ASSETS)
+        self.assertEqual(self.installer.asset_target("paws-runner.polkit"), pathlib.Path("/etc/polkit-1/rules.d/50-paws-runner.rules"))
+        self.assertEqual(self.installer.asset_target("paws-agent@.service"), pathlib.Path("/etc/systemd/system/paws-agent@.service"))
+        rule = (self.assets / "paws-runner.polkit").read_text()
+        for needed in ('"org.freedesktop.systemd1.manage-units"', 'subject.user !== "paws-runner"', 'verb === "start" || verb === "stop"', "^paws-agent@[0-7][0-9A-HJKMNP-TV-Z]{25}\\.service$"):
+            self.assertIn(needed, rule)
+
+    def test_tmpfiles_makes_the_agent_environment_directory(self):
+        lines = (self.assets / "paws-runner.tmpfiles").read_text().splitlines()
+        self.assertIn("d /run/paws-runner/agent 2750 paws-runner paws-agent -", lines)
+        self.assertLess(lines.index("d /run/paws-runner 0755 root root -"), lines.index("d /run/paws-runner/agent 2750 paws-runner paws-agent -"))
+
+    def test_the_agent_unit_takes_its_launch_from_the_runner(self):
+        unit = self.unit("paws-agent@.service")
+        self.assertEqual(unit["EnvironmentFile"], ["/run/paws-runner/agent/%i.env"])
+        self.assertEqual(unit["ExecStart"], ["/opt/paws-runner/bin/paws-runner runner worker --execution-id %i $PAWS_RESUME"])
+        self.assertEqual(unit["StandardOutput"], ["append:/var/lib/paws-agent-tasks/%i/worker.log"])
+        self.assertEqual(unit["StandardError"], unit["StandardOutput"])
+        self.assertEqual(unit["UMask"], ["0007"])
+        self.assertEqual(unit["User"], ["paws-agent"])
+        self.assertEqual(unit["KillMode"], ["control-group"])
+        self.assertIn("PAWS_AGENT_USER=paws-agent", unit["Environment"])
+        self.assertNotIn("StateDirectory", unit)
+        self.assertNotIn("StateDirectoryMode", unit)
+        self.assertIn("-/run/paws-runner/agent", self.unit("paws-runner.service")["ReadWritePaths"])
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], *sys.argv[2:]], verbosity=2)
