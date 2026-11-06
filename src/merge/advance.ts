@@ -62,7 +62,7 @@ import {
   type MergeStep,
   type SerialMergeStep,
 } from "./step";
-import { wakeMergesBehind } from "./wait";
+import { githubQueueWatch, wakeMergesBehind } from "./wait";
 
 export type MergePublication = MergePull & {
   github: GitHubBinding & { gitExec: GitExec };
@@ -209,6 +209,15 @@ export async function advanceMerge(
   const { voice } = caps;
   const mergeSettings = await caps.settings(item, published.signal);
   if (mergeSettings.order === "github-queue") {
+    if (!githubQueueWatch(input.payload)?.queued && caps.mergeResultPolicy) {
+      const main = await caps.fetchMain(item);
+      if (caps.stopped()) return { kind: "obsolete" };
+      const broken =
+        main === null
+          ? undefined
+          : caps.mergeResultPolicy(item, published.worktree, { base: main, head: published.head });
+      if (broken) return returnForPolicy(merge, broken, caps.ciFixAttempts(item));
+    }
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
     if (handed !== "no_queue") {
       if (handed.kind === "merged")
