@@ -583,6 +583,16 @@ describe("runner details", () => {
     expect(html).not.toContain("Updated");
   });
 
+  test("the runner says who its agents run as, read-only", () => {
+    expect(runnerDetailMarkup({ ...runner, agentUser: "paws-agent" }, view)).toContain(
+      "<span>Agents run as: paws-agent</span>",
+    );
+    expect(runnerDetailMarkup({ ...runner, agentUser: "runner" }, view)).toContain(
+      "<span>Agents run as: paws-runner</span>",
+    );
+    expect(runnerDetailMarkup({ ...runner, agentUser: null }, view)).not.toContain("Agents run as");
+  });
+
   test("a signed-out agent and an older runner version are flagged", () => {
     const html = runnerDetailMarkup(
       {

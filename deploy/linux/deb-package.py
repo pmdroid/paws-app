@@ -21,7 +21,7 @@ def write(path, content, mode=0o644):
 
 def postrm(units, root=""):
     """The package's postrm. `root` prefixes every host path, so a test can run it against a fake root."""
-    paths = [*(f"{root}/etc/systemd/system/{name}" for name in units), f"{root}/etc/sysusers.d/paws-runner.conf", f"{root}/etc/tmpfiles.d/paws-runner.conf"]
+    paths = [*(f"{root}/etc/systemd/system/{name}" for name in units), f"{root}/etc/sysusers.d/paws-runner.conf", f"{root}/etc/tmpfiles.d/paws-runner.conf", f"{root}/etc/polkit-1/rules.d/50-paws-runner.rules"]
     return f"""#!/bin/sh
 set -eu
 case "$1" in

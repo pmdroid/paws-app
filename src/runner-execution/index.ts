@@ -17,7 +17,10 @@ export {
   RUNNER_DOCKER_SOCKET,
   RUNNER_SKILLS_ENV,
   runnerDockerEnv,
+  workerSpawn,
 } from "./supervisor";
+export { RUNNER_AGENT_USER_ENV, type RunnerSystemctl } from "./agent-unit";
+export { RUNNER_AGENT_USERS, type RunnerAgentUser } from "../runner-protocol";
 export {
   createRunnerResultDirectory,
   runnerResultDirectory,
@@ -42,5 +45,6 @@ export {
   publishRunnerAccountHome,
   runnerAccountBindings,
   runnerAccountHome,
+  shareRunnerAgentState,
 } from "./accounts";
 export { clearInheritedSetgid, sharedDirectoryAllowed } from "./shared";

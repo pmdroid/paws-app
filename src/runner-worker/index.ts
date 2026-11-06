@@ -771,8 +771,20 @@ export async function executeRunnerCommand(
     ? accountAgentEnv(home)
     : { HOME: home, CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude") };
   for (const provider of [".codex", ".claude", ".grok"]) {
-    mkdirSync(join(home, provider), { recursive: true, mode: 0o700 });
-    chmodSync(join(home, provider), 0o700);
+    const folder = join(home, provider);
+    mkdirSync(folder, { recursive: true, mode: 0o700 });
+    const info = lstatSync(folder);
+    if (info.uid === process.getuid?.()) chmodSync(folder, 0o700);
+    else if (
+      !info.isDirectory() ||
+      !options.owners ||
+      !sharedDirectoryAllowed(info, {
+        owners: [options.owners.runnerUid],
+        gid: options.owners.agentGid,
+        mode: 0o770,
+      })
+    )
+      throw new Error("Agent provider folder is not shared with the agent group");
   }
   // A run's Codex home links each entry of `.codex`; a missing `sessions` folder would leave
   // the rollout in that run's own folder, where the turn-end snapshot can't find it.
@@ -849,10 +861,20 @@ export async function executeRunnerCommand(
           ? {
               account: {
                 publish: (write: () => void) =>
-                  publishRunnerAccountHome(home, job.executionId, () => {
-                    write();
-                    markRunnerAccountSignedIn(home, binding.account, binding.agent, options.owners);
-                  }),
+                  publishRunnerAccountHome(
+                    home,
+                    job.executionId,
+                    () => {
+                      write();
+                      markRunnerAccountSignedIn(
+                        home,
+                        binding.account,
+                        binding.agent,
+                        options.owners,
+                      );
+                    },
+                    options.owners,
+                  ),
               },
             }
           : {}),

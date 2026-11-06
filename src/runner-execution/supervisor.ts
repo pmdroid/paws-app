@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import {
   closeSync,
   constants,
+  existsSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -12,20 +13,32 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { runnerCommandAccount } from "../runner-protocol";
+import { runnerCommandAccount, type RunnerAgentUser } from "../runner-protocol";
 import { ExecutionIdSchema } from "./jobs";
 import { executionScope, executionTag, startTime, stopExecutionProcesses } from "./processes";
 import { readRunnerJob, type RunnerSpool } from "./spool";
-import type { RunnerResults } from "./results";
+import { readRunnerResultFile, type RunnerResults } from "./results";
 import type { RunnerBrokerClient } from "./broker";
 import type { RunnerSkillInstaller } from "./skills";
 import { openSharedDirectory } from "./shared";
 import {
+  confirmRunnerAccountHold,
   holdRunnerAccountHome,
   openRunnerAccountHome,
   releaseRunnerAccountHome,
   runnerAccountHome,
+  prepareRunnerWorkRoot,
+  shareRunnerAgentState,
 } from "./accounts";
+import {
+  agentUnit,
+  agentUnitFailure,
+  removeAgentEnv,
+  RUNNER_AGENT_ENV_ROOT,
+  runnerSystemctl,
+  writeAgentEnv,
+  type RunnerSystemctl,
+} from "./agent-unit";
 
 export const RUNNER_SKILLS_ENV = "PAWS_AGENT_SKILLS";
 
@@ -104,7 +117,7 @@ export function runnerDockerEnv(socket = RUNNER_DOCKER_SOCKET): Record<string, s
   }
 }
 
-function workerLaunch(
+export function workerSpawn(
   executionId: string,
   home: string,
   log: number,
@@ -135,12 +148,15 @@ function workerLaunch(
     const value = process.env[key];
     if (value) env[key] = value;
   }
-  return spawn(process.execPath, args, {
-    cwd: home,
-    detached: true,
-    stdio: ["ignore", log, log],
-    env,
-  });
+  return [
+    process.execPath,
+    args,
+    { cwd: home, detached: true, stdio: ["ignore", log, log], env },
+  ] as const satisfies Parameters<typeof spawn>;
+}
+
+function workerLaunch(...input: Parameters<typeof workerSpawn>) {
+  return spawn(...workerSpawn(...input));
 }
 
 export function createDirectWorkerSupervisor(options: {
@@ -148,8 +164,13 @@ export function createDirectWorkerSupervisor(options: {
   spool?: RunnerSpool;
   results?: RunnerResults;
   taskRoot?: string;
+  agentUser?: RunnerAgentUser;
+  systemctl?: RunnerSystemctl;
+  agentEnvRoot?: string;
   /** The home every agent runs from. */
   agentHome?: string;
+  /** Where run and review checkouts live, under the agent home. */
+  workRoot?: string;
   /** Installs current skills into a home before its worker starts, and pins them for the run. */
   skills?: Pick<RunnerSkillInstaller, "prepareHome" | "hold" | "release">;
   launch?: (
@@ -168,10 +189,15 @@ export function createDirectWorkerSupervisor(options: {
 }): RunnerBrokerClient {
   const taskRoot = options.taskRoot ?? "/var/lib/paws-agent-tasks";
   const agentHome = options.agentHome ?? "/var/lib/paws-agent";
+  const workRoot = options.workRoot ?? join(agentHome, "work");
   const launch = options.launch ?? workerLaunch;
+  const configured: RunnerAgentUser = options.agentUser ?? "runner";
+  const systemctl = options.systemctl ?? runnerSystemctl;
+  const agentEnvRoot = options.agentEnvRoot ?? RUNNER_AGENT_ENV_ROOT;
   const scope = executionScope(options.stateRoot);
   mkdirSync(options.stateRoot, { recursive: true, mode: 0o700 });
   const held = new Map<string, string>();
+  const shared = new Set<string>();
   function homeFor(executionId: string): string {
     if (!options.spool || !options.results) return process.env.HOME ?? "/var/lib/paws-agent";
     const job = readRunnerJob(options.spool, executionId);
@@ -220,8 +246,31 @@ export function createDirectWorkerSupervisor(options: {
     if (!born || !Number.isSafeInteger(pid) || pid <= 1) return;
     return { pid, born };
   }
+  function userPath(executionId: string): string {
+    ExecutionIdSchema.parse(executionId);
+    return join(options.stateRoot, `${executionId}.user`);
+  }
+  /**
+   * The user an execution was admitted as. It keeps that user across resumes and stops, so a
+   * checkout and results written before agentUser changed stay its own. An execution with no
+   * record was admitted before the setting existed, as paws-runner.
+   */
+  function userOf(executionId: string): RunnerAgentUser {
+    try {
+      const text = readFileSync(userPath(executionId), "utf8").trim();
+      return text === "paws-agent" ? "paws-agent" : "runner";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      journalCaught(error, "supervisor.userOf", null, "optional file may be absent");
+      return "runner";
+    }
+  }
+  function asAgentFor(executionId: string): boolean {
+    return userOf(executionId) === "paws-agent";
+  }
   function logPath(executionId: string): string {
     ExecutionIdSchema.parse(executionId);
+    if (asAgentFor(executionId)) return join(agentEnvRoot, `${executionId}.log`);
     return join(options.stateRoot, `${executionId}.log`);
   }
   function alive(executionId: string): boolean {
@@ -253,7 +302,9 @@ export function createDirectWorkerSupervisor(options: {
     },
     async stop(executionId) {
       const worker = recorded(executionId);
-      if (worker && startTime(worker.pid) === worker.born) {
+      if (asAgentFor(executionId)) {
+        if (existsSync(receipt(executionId))) await stopUnit(executionId);
+      } else if (worker && startTime(worker.pid) === worker.born) {
         const { pid, born } = worker;
         killRecorded(pid);
         const deadline = Date.now() + 5_000;
@@ -268,6 +319,60 @@ export function createDirectWorkerSupervisor(options: {
     /** Stops processes left by executions whose worker is gone, such as before a restart. */
     sweep: () => stopExecutionProcesses(scope, (id) => !alive(id)),
   };
+  async function stopUnit(executionId: string) {
+    const stopped = await systemctl(["stop", agentUnit(executionId)]);
+    if (stopped.code !== 0) throw agentUnitFailure(executionId, "stop", stopped.output);
+    removeAgentEnv(agentEnvRoot, executionId);
+  }
+  function persisted(executionId: string): boolean {
+    const results = options.results;
+    if (!results) return false;
+    return (["result.json", "retro-result.json"] as const).some((name) => {
+      try {
+        readRunnerResultFile(results, executionId, name);
+        return true;
+      } catch (error) {
+        journalCaught(error, "supervisor.persisted", null, "optional file may be absent");
+        return false;
+      }
+    });
+  }
+  async function startUnit(
+    executionId: string,
+    resume: boolean,
+    skills: string | undefined,
+  ): Promise<{ pid?: number }> {
+    writeAgentEnv(
+      agentEnvRoot,
+      executionId,
+      {
+        PAWS_RESUME: resume ? "--resume" : "",
+        ...(skills ? { [RUNNER_SKILLS_ENV]: skills } : {}),
+        ...executionTag(scope, executionId),
+        ...runnerDockerEnv(),
+      },
+      options.spool?.agentGid,
+    );
+    const started = await systemctl(["start", agentUnit(executionId)]);
+    if (started.code !== 0) {
+      removeAgentEnv(agentEnvRoot, executionId);
+      throw agentUnitFailure(executionId, "start", started.output);
+    }
+    const shown = await systemctl([
+      "show",
+      "--property=MainPID",
+      "--value",
+      agentUnit(executionId),
+    ]);
+    const pid = Number(shown.output.trim());
+    if (shown.code !== 0 || !Number.isSafeInteger(pid) || pid < 0) {
+      if (persisted(executionId)) return {};
+      await stopUnit(executionId);
+      throw new Error("Runner worker did not start");
+    }
+    // MainPID is 0 once the worker has exited; its outcome is in its results, as after a crash.
+    return { pid: pid > 1 ? pid : undefined };
+  }
   async function admit(executionId: string, resume: boolean) {
     const path = receipt(executionId);
     const home = homeFor(executionId);
@@ -281,7 +386,22 @@ export function createDirectWorkerSupervisor(options: {
       }
       throw error;
     }
+    if (!resume) {
+      const user = openSync(
+        userPath(executionId),
+        constants.O_CREAT | constants.O_TRUNC | constants.O_WRONLY | constants.O_NOFOLLOW,
+        0o600,
+      );
+      try {
+        writeSync(user, `${configured}\n`);
+        fsyncSync(user);
+      } finally {
+        closeSync(user);
+      }
+    }
+    const asAgent = asAgentFor(executionId);
     let child: ReturnType<typeof launch> | undefined;
+    let unit = false;
     const log = openSync(
       logPath(executionId),
       constants.O_CREAT | constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
@@ -292,7 +412,7 @@ export function createDirectWorkerSupervisor(options: {
         holdRunnerAccountHome(
           home,
           executionId,
-          { receipt: path, scope },
+          { scope },
           {
             runnerUid: options.spool.runnerUid,
             agentGid: options.spool.agentGid,
@@ -300,16 +420,45 @@ export function createDirectWorkerSupervisor(options: {
         );
         held.set(executionId, home);
       }
+      if (asAgent && options.spool) {
+        const { command } = readRunnerJob(options.spool, executionId);
+        if (command.type === "run" || command.type === "review" || command.type === "retro")
+          prepareRunnerWorkRoot(
+            workRoot,
+            { runnerUid: options.spool.runnerUid, agentGid: options.spool.agentGid },
+            command.type === "run" && !resume ? { name: command.runId } : undefined,
+          );
+      }
+      if (asAgent && options.spool)
+        for (const folder of new Set([agentHome, home])) {
+          if (shared.has(folder)) continue;
+          shareRunnerAgentState(folder, {
+            runnerUid: options.spool.runnerUid,
+            agentGid: options.spool.agentGid,
+          });
+          shared.add(folder);
+        }
       options.skills?.prepareHome(home);
       const skills = options.skills?.hold(home, executionId);
-      child = launch(
-        executionId,
-        held.has(executionId) ? agentHome : home,
-        log,
-        resume,
-        executionTag(scope, executionId),
-        skills,
-      );
+      if (asAgent) {
+        const started = await startUnit(executionId, resume, skills);
+        unit = true;
+        if (started.pid === undefined) {
+          writeSync(fd, "0 exited\n");
+          fsyncSync(fd);
+          syncDirectory(options.stateRoot);
+          return { alreadyAdmitted: false };
+        }
+        child = { pid: started.pid, unref() {} };
+      } else
+        child = launch(
+          executionId,
+          held.has(executionId) ? agentHome : home,
+          log,
+          resume,
+          executionTag(scope, executionId),
+          skills,
+        );
       child.on?.("exit", (code, signal) => {
         try {
           const exit = openSync(logPath(executionId), constants.O_WRONLY | constants.O_APPEND);
@@ -327,9 +476,22 @@ export function createDirectWorkerSupervisor(options: {
       });
       if (child.pid === undefined) throw new Error("Runner worker did not start");
       const born = startTime(child.pid);
-      if (born === undefined) throw new Error("Runner worker did not start");
+      if (born === undefined) {
+        if (!unit) throw new Error("Runner worker did not start");
+        writeSync(fd, "0 exited\n");
+        fsyncSync(fd);
+        syncDirectory(options.stateRoot);
+        return { alreadyAdmitted: false };
+      }
       writeSync(fd, `${child.pid} ${born}\n`);
       fsyncSync(fd);
+      if (held.has(executionId) && options.spool)
+        confirmRunnerAccountHold(
+          home,
+          executionId,
+          { scope, pid: child.pid, born },
+          { runnerUid: options.spool.runnerUid, agentGid: options.spool.agentGid },
+        );
       syncDirectory(options.stateRoot);
       child.unref();
       return { alreadyAdmitted: false };
@@ -346,7 +508,8 @@ export function createDirectWorkerSupervisor(options: {
         );
       }
       syncDirectory(options.stateRoot);
-      if (child?.pid !== undefined) killRecorded(child.pid);
+      if (unit) await stopUnit(executionId);
+      else if (child?.pid !== undefined) killRecorded(child.pid);
       release(executionId);
       throw error;
     } finally {

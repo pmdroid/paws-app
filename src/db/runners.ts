@@ -2,6 +2,11 @@ import { workspaceMemberUsableSql, auditWorkspaceAccess } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { endRevokedRunnerAuthority, runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
+import {
+  AGENT_USER_RUNNER_VERSION,
+  runnerReleaseAtLeast,
+  type RunnerAgentUser,
+} from "../runner-protocol";
 import type { RunnerSessionMove } from "./runner-session-moves";
 import { listSkills, runnerSkillStates, type RunnerSkillView } from "./skills";
 import { listRunnerRuntimes, type RunnerRuntimeStatus } from "./runner-runtimes";
@@ -58,6 +63,7 @@ export type RunnerHostSample = {
   miseVersion?: string;
   /** Absent when the runner does not report them. */
   strayProcesses?: RunnerStrayProcess[];
+  agentUser?: RunnerAgentUser;
 };
 
 /** A process of the runner user outside the runner's process tree, as last reported. */
@@ -88,6 +94,7 @@ export type RunnerOverview = RunnerRecord & {
   } | null;
   os: { id: string | null; version: string | null } | null;
   version: string | null;
+  agentUser: RunnerAgentUser | null;
   idle: boolean;
   slots: { used: number; total: number };
   /** Desired is set in Paws; applied and ceiling are what the runner last reported. */
@@ -170,14 +177,15 @@ export function recordRunnerHostStatus(
   db.run(
     `INSERT INTO runner_host_status(runner_id,cpu_percent,cpu_count,memory_total_bytes,memory_available_bytes,
     load_1,load_5,load_15,disk_total_bytes,disk_free_bytes,os_id,os_version,runner_version,mise_version,
-    stray_processes,reported_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    stray_processes,agent_user,reported_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(runner_id) DO UPDATE SET cpu_percent=excluded.cpu_percent,cpu_count=excluded.cpu_count,
     memory_total_bytes=excluded.memory_total_bytes,memory_available_bytes=excluded.memory_available_bytes,
     load_1=excluded.load_1,load_5=excluded.load_5,load_15=excluded.load_15,
     disk_total_bytes=excluded.disk_total_bytes,disk_free_bytes=excluded.disk_free_bytes,
     os_id=excluded.os_id,os_version=excluded.os_version,runner_version=excluded.runner_version,
-    mise_version=excluded.mise_version,stray_processes=excluded.stray_processes,reported_at=excluded.reported_at`,
+    mise_version=excluded.mise_version,stray_processes=excluded.stray_processes,
+    agent_user=excluded.agent_user,reported_at=excluded.reported_at`,
     [
       runnerId,
       sample.cpuPercent ?? null,
@@ -194,6 +202,7 @@ export function recordRunnerHostStatus(
       sample.runnerVersion ?? null,
       sample.miseVersion ?? null,
       sample.strayProcesses ? JSON.stringify(sample.strayProcesses) : null,
+      sample.agentUser ?? null,
       reportedAt,
     ],
   );
@@ -253,6 +262,7 @@ export function listRunnerOverview(
     osVersion: string | null;
     runnerVersion: string | null;
     strayProcesses: string | null;
+    agentUser: RunnerAgentUser | null;
     reportedAt: number | null;
     busy: number;
     used: number;
@@ -275,7 +285,7 @@ export function listRunnerOverview(
     h.memory_available_bytes AS memoryAvailableBytes,h.load_1 AS load1,h.load_5 AS load5,
     h.load_15 AS load15,h.disk_total_bytes AS diskTotalBytes,h.disk_free_bytes AS diskFreeBytes,
     h.os_id AS osId,h.os_version AS osVersion,h.runner_version AS runnerVersion,
-    h.stray_processes AS strayProcesses,h.reported_at AS reportedAt,
+    h.stray_processes AS strayProcesses,h.agent_user AS agentUser,h.reported_at AS reportedAt,
     (EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL)
      OR EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id
        AND c.acknowledged_at IS NULL AND c.expires_at>?)) AS busy,
@@ -323,6 +333,12 @@ export function listRunnerOverview(
           ? null
           : { id: row.osId, version: row.osVersion },
       version: row.runnerVersion,
+      agentUser:
+        row.agentUser ??
+        (row.runnerVersion !== null &&
+        !runnerReleaseAtLeast(row.runnerVersion, AGENT_USER_RUNNER_VERSION)
+          ? "runner"
+          : null),
       idle: row.busy === 0,
       slots: { used: row.used, total: row.total },
       concurrency:

@@ -50,6 +50,7 @@ export type Runner = {
   } | null;
   os: { id: string | null; version: string | null } | null;
   version: string | null;
+  agentUser?: "runner" | "paws-agent" | null;
   idle: boolean;
   slots?: { used: number; total: number };
   /** Desired is chosen in Paws; applied and ceiling are what the runner last reported. */
@@ -1186,7 +1187,11 @@ export function runnerDetailMarkup(
     runner.version ? `Runner ${runner.version}` : "Version not reported",
     os || "OS not reported",
     metrics ? `Seen ${updatedLabel(metrics.reportedAt, view.now)}` : "Never seen",
+    runner.agentUser
+      ? `Agents run as: ${runner.agentUser === "paws-agent" ? "paws-agent" : "paws-runner"}`
+      : "",
   ]
+    .filter(Boolean)
     .map((part) => `<span>${esc(part)}</span>`)
     .join("");
   const owns =

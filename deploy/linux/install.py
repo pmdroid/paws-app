@@ -166,6 +166,7 @@ STATE_DIRECTORIES = (
     ("/var/lib/paws-runner-spool", "paws-runner", "paws-agent", 0o2750),
     ("/var/lib/paws-agent-results", "paws-runner", "paws-results", 0o2770),
 )
+POLKIT_RULE = pathlib.Path("/etc/polkit-1/rules.d/50-paws-runner.rules")
 SHARED_DIRECTORIES = {"/var/lib/paws-agent": group_shared, "/var/lib/paws-agent-tasks": group_shared, "/var/lib/paws-agent-results": group_inherited}
 
 
@@ -634,6 +635,18 @@ def agent_bin_pointer():
         sync_directory(BASE)
 
 
+def asset_target(name):
+    if name.endswith((".service", ".socket", ".path")):
+        return pathlib.Path("/etc/systemd/system") / name
+    if name.endswith(".sysusers"):
+        return pathlib.Path("/etc/sysusers.d/paws-runner.conf")
+    if name.endswith(".tmpfiles"):
+        return pathlib.Path("/etc/tmpfiles.d/paws-runner.conf")
+    if name.endswith(".polkit"):
+        return POLKIT_RULE
+    return None
+
+
 def switch_release(unpacked, destination, pointers):
     """With the runner stopped: put the units, accounts and runtime pointers in place, then point `current` at destination."""
     root_directory(BASE / "bin")
@@ -646,7 +659,7 @@ def switch_release(unpacked, destination, pointers):
     deployed_assets = destination / "deploy/linux"
     root_directory(deployed_assets)
     for name in sorted(release.ASSETS):
-        target = pathlib.Path("/etc/systemd/system") / name if name.endswith((".service", ".socket", ".path")) else pathlib.Path("/etc/sysusers.d/paws-runner.conf") if name.endswith(".sysusers") else pathlib.Path("/etc/tmpfiles.d/paws-runner.conf") if name.endswith(".tmpfiles") else None
+        target = asset_target(name)
         if target is not None:
             write_atomic(target, (assets / name).read_bytes(), 0o644)
     release.command(["/usr/bin/systemd-sysusers", "/etc/sysusers.d/paws-runner.conf"])

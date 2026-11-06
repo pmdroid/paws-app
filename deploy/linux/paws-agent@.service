@@ -6,15 +6,19 @@ Type=exec
 User=paws-agent
 Group=paws-agent
 Environment=HOME=/var/lib/paws-agent
-StateDirectory=paws-agent
-StateDirectoryMode=0700
-WorkingDirectory=/var/lib
-ExecStart=/opt/paws-runner/bin/paws-runner runner worker --execution-id %i
+Environment=PATH=/opt/paws-runner/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=LANG=C.UTF-8
+Environment=PAWS_AGENT_USER=paws-agent
+EnvironmentFile=/run/paws-runner/agent/%i.env
+WorkingDirectory=/var/lib/paws-agent
+ExecStart=/opt/paws-runner/bin/paws-runner runner worker --execution-id %i $PAWS_RESUME
+StandardOutput=append:/run/paws-runner/agent/%i.log
+StandardError=append:/run/paws-runner/agent/%i.log
 KillMode=control-group
 KillSignal=SIGKILL
 TimeoutStartSec=30s
 TimeoutStopSec=30s
 SendSIGKILL=yes
-UMask=0077
+UMask=0007
 NoNewPrivileges=yes
 CapabilityBoundingSet=

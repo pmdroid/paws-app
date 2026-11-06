@@ -4,6 +4,8 @@ import {
   chmodSync,
   closeSync,
   constants,
+  fchmodSync,
+  fchownSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -13,6 +15,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  unlinkSync,
   writeSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -26,13 +29,15 @@ import {
 } from "../runner-protocol";
 import { ExecutionIdSchema } from "./jobs";
 import { listExecutionProcesses, startTime } from "./processes";
-import { SETGID, sharedDirectoryAllowed } from "./shared";
+import { SETGID, clearInheritedSetgid, sharedDirectoryAllowed } from "./shared";
 
 export const RUNNER_ACCOUNT_HOMES = ".paws-accounts";
 const MANIFEST = "account.json";
 const ACTIVE = ".paws-active";
 const PUBLISHING = ".paws-publishing";
 const ADMISSION_MS = 60_000;
+const SHARE_LIMIT = 100_000;
+const SHARED_ELSEWHERE = new Set(["work", RUNNER_ACCOUNT_HOMES, MANIFEST, ACTIVE, PUBLISHING]);
 
 const HOME_FOLDERS = [
   ".claude",
@@ -51,13 +56,20 @@ const ManifestSchema = z.strictObject({
   accountId: RunnerAccountSchema.shape.accountId,
   agent: z.enum(RUNNER_CODING_AGENTS),
 });
-const ReceiptSchema = z.union([
-  z.strictObject({
-    receipt: z.string().min(1).max(4096),
-    scope: z.string().regex(/^[a-f0-9]{16}$/),
-  }),
-  z.strictObject({ pid: z.number().int().min(2), born: z.string().min(1).max(64) }),
+const ScopeSchema = z.string().regex(/^[a-f0-9]{16}$/);
+const PidSchema = z.number().int().min(2);
+const BornSchema = z.string().min(1).max(64);
+const LockSchema = z.strictObject({ pid: PidSchema, born: BornSchema });
+const HoldSchema = z.union([
+  z.strictObject({ scope: ScopeSchema, pid: PidSchema, born: BornSchema }),
+  z.strictObject({ scope: ScopeSchema }),
+  z
+    .strictObject({ scope: ScopeSchema, receipt: z.string().min(1).max(4096) })
+    .transform((hold) => ({
+      scope: hold.scope,
+    })),
 ]);
+type Hold = { scope: string; pid?: number; born?: string };
 
 export type RunnerAccountOwners = { runnerUid: number; agentGid: number };
 
@@ -117,7 +129,7 @@ export function markRunnerAccountSignedIn(
       throw new RunnerAccountHomeError("Agent account binding belongs to another account");
     return;
   }
-  writePrivateFile(join(home, MANIFEST), `${JSON.stringify(manifest)}\n`);
+  writeSharedFile(join(home, MANIFEST), `${JSON.stringify(manifest)}\n`, owners);
 }
 
 export function runnerAccountBindings(
@@ -156,20 +168,39 @@ export function runnerAccountBindings(
 export function holdRunnerAccountHome(
   home: string,
   executionId: string,
-  holder: { receipt: string; scope: string },
+  holder: { scope: string },
   owners: RunnerAccountOwners = processOwners(),
 ): void {
   const active = join(home, ACTIVE);
   privateDirectory(active, true, owners);
-  writePrivateFile(
-    join(active, ExecutionIdSchema.parse(executionId)),
-    JSON.stringify(ReceiptSchema.parse({ receipt: holder.receipt, scope: holder.scope })),
-  );
-  const publisher = readReceipt(join(home, PUBLISHING));
+  writeHold(home, executionId, { scope: holder.scope }, owners);
+  const publisher = readLock(join(home, PUBLISHING));
   if (publisher && publisher !== "stale") {
     releaseRunnerAccountHome(home, executionId);
     throw new RunnerAccountHomeError("This agent account is signing in on the runner");
   }
+}
+
+export function confirmRunnerAccountHold(
+  home: string,
+  executionId: string,
+  holder: { scope: string; pid: number; born: string },
+  owners: RunnerAccountOwners = processOwners(),
+): void {
+  writeHold(home, executionId, holder, owners);
+}
+
+function writeHold(
+  home: string,
+  executionId: string,
+  holder: Hold,
+  owners: RunnerAccountOwners,
+): void {
+  writeSharedFile(
+    join(home, ACTIVE, ExecutionIdSchema.parse(executionId)),
+    JSON.stringify(HoldSchema.parse(holder)),
+    owners,
+  );
 }
 
 export function releaseRunnerAccountHome(home: string, executionId: string): void {
@@ -180,17 +211,18 @@ export function publishRunnerAccountHome(
   home: string,
   executionId: string,
   publish: () => void,
+  owners: RunnerAccountOwners = processOwners(),
 ): void {
   const born = startTime(process.pid);
   if (!born) throw new RunnerAccountHomeError("Runner sign-in process is unavailable");
   const lock = join(home, PUBLISHING);
-  const owner = readReceipt(lock);
+  const owner = readLock(lock);
   if (owner && owner !== "stale")
     throw new RunnerAccountHomeError("Another sign-in is publishing this agent account");
   if (owner === "stale") rmSync(lock, { force: true });
   let descriptor: number;
   try {
-    descriptor = openSync(lock, "wx", 0o600);
+    descriptor = openSync(lock, "wx", 0o640);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST")
       throw new RunnerAccountHomeError("Another sign-in is publishing this agent account");
@@ -198,12 +230,13 @@ export function publishRunnerAccountHome(
   }
   try {
     try {
+      shareWithAgents(descriptor, owners);
       writeSync(descriptor, JSON.stringify({ pid: process.pid, born }));
       fsyncSync(descriptor);
     } finally {
       closeSync(descriptor);
     }
-    const busy = activeExecutions(home).filter((id) => id !== executionId);
+    const busy = activeExecutions(home, executionId);
     if (busy.length)
       throw new RunnerAccountHomeError(
         "Work is still running with this agent account. Let it finish or stop it, then sign in again.",
@@ -214,7 +247,7 @@ export function publishRunnerAccountHome(
   }
 }
 
-export function activeExecutions(home: string): string[] {
+export function activeExecutions(home: string, except?: string): string[] {
   const active = join(home, ACTIVE);
   let names: string[];
   try {
@@ -228,58 +261,64 @@ export function activeExecutions(home: string): string[] {
   }
   const live: string[] = [];
   for (const name of names) {
-    if (!ExecutionIdSchema.safeParse(name).success) continue;
-    const state = readReceipt(join(active, name), name);
+    if (name === except || !ExecutionIdSchema.safeParse(name).success) continue;
+    const state = readHold(join(active, name), name);
     if (state === "stale") rmSync(join(active, name), { force: true });
     else if (state) live.push(name);
   }
   return live;
 }
 
-function readReceipt(path: string, executionId?: string): "live" | "stale" | null {
-  let text: string;
-  let modified: number;
+function readShared(path: string): { text: string; modified: number } | "live" | "stale" | null {
   try {
     const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
-      modified = fstatSync(descriptor).mtimeMs;
-      text = readFileSync(descriptor, "utf8");
+      return { modified: fstatSync(descriptor).mtimeMs, text: readFileSync(descriptor, "utf8") };
     } finally {
       closeSync(descriptor);
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      journalCaught(error, "accounts.readReceipt", null, "optional file may be absent");
+      journalCaught(error, "accounts.readShared", null, "optional file may be absent");
       return null;
     }
     if ((error as NodeJS.ErrnoException).code === "ELOOP") return "stale";
+    if ((error as NodeJS.ErrnoException).code === "EACCES") return "live";
     throw error;
   }
-  let holder: z.infer<typeof ReceiptSchema>;
+}
+
+function admitting(modified: number): "live" | "stale" {
+  return Date.now() - modified < ADMISSION_MS ? "live" : "stale";
+}
+
+function readLock(path: string): "live" | "stale" | null {
+  const file = readShared(path);
+  if (file === null || typeof file === "string") return file;
+  let lock: z.infer<typeof LockSchema>;
   try {
-    holder = ReceiptSchema.parse(JSON.parse(text));
+    lock = LockSchema.parse(JSON.parse(file.text));
   } catch (caughtError1) {
-    journalCaught(caughtError1, "accounts.readReceipt.parse", null);
-    return Date.now() - modified < ADMISSION_MS ? "live" : "stale";
+    journalCaught(caughtError1, "accounts.readLock.parse", null);
+    return admitting(file.modified);
   }
-  if ("pid" in holder) return startTime(holder.pid) === holder.born ? "live" : "stale";
-  if (
-    executionId &&
-    listExecutionProcesses(holder.scope).some((entry) => entry.executionId === executionId)
-  )
-    return "live";
-  let worker = "";
+  return startTime(lock.pid) === lock.born ? "live" : "stale";
+}
+
+function readHold(path: string, executionId: string): "live" | "stale" | null {
+  const file = readShared(path);
+  if (file === null || typeof file === "string") return file;
+  let hold: Hold;
   try {
-    worker = readFileSync(holder.receipt, "utf8").trim();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    journalCaught(error, "accounts.readReceipt.worker", null, "optional file may be absent");
+    hold = HoldSchema.parse(JSON.parse(file.text));
+  } catch (caughtError1) {
+    journalCaught(caughtError1, "accounts.readHold.parse", null);
+    return admitting(file.modified);
   }
-  const [pidText, born] = worker.split(" ");
-  const pid = Number(pidText);
-  if (!born || !Number.isSafeInteger(pid) || pid <= 1)
-    return Date.now() - modified < ADMISSION_MS ? "live" : "stale";
-  return startTime(pid) === born ? "live" : "stale";
+  if (listExecutionProcesses(hold.scope).some((entry) => entry.executionId === executionId))
+    return "live";
+  if (hold.pid === undefined || hold.born === undefined) return admitting(file.modified);
+  return startTime(hold.pid) === hold.born ? "live" : "stale";
 }
 
 function readManifest(
@@ -301,8 +340,16 @@ function readManifest(
     const descriptor = openSync(join(home, MANIFEST), constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const info = fstatSync(descriptor);
-      if (!info.isFile() || info.uid !== process.getuid?.() || info.size > 4096)
+      const self = process.getuid?.();
+      if (
+        !info.isFile() ||
+        info.size > 4096 ||
+        (info.mode & 0o022) !== 0 ||
+        (info.uid !== self && info.uid !== owners.runnerUid && info.gid !== owners.agentGid)
+      )
         throw new RunnerAccountHomeError("Agent account binding manifest is unsafe");
+      if (info.uid === self && (info.gid !== owners.agentGid || (info.mode & 0o777) !== 0o640))
+        shareWithAgents(descriptor, owners);
       text = readFileSync(descriptor, "utf8");
     } finally {
       closeSync(descriptor);
@@ -357,11 +404,137 @@ export function accountHomeVerdict(
   return "repair";
 }
 
-function writePrivateFile(path: string, text: string): void {
+export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners): void {
+  let names: string[];
+  try {
+    names = readdirSync(home);
+  } catch (error) {
+    if (["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    throw error;
+  }
+  shareRunnerPaths(
+    names.filter((name) => !SHARED_ELSEWHERE.has(name)).map((name) => join(home, name)),
+    owners,
+    { limit: 1_000_000 },
+  );
+}
+
+/**
+ * Gives the agent group the access paws-runner has to the work root it may have created while
+ * agents ran as paws-runner: the root itself and its runner-wide `.paws` state. A leftover
+ * checkout of a run that starts over is removed, as the worker would remove it. A resumed
+ * execution keeps the user it started as, so its checkout is left as it is.
+ */
+export function prepareRunnerWorkRoot(
+  workRoot: string,
+  owners: RunnerAccountOwners,
+  checkout?: { name: string },
+): void {
+  try {
+    mkdirSync(workRoot, { mode: 0o770 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    journalCaught(
+      error,
+      "accounts.prepareRunnerWorkRoot.mkdirSync",
+      null,
+      "path may already exist",
+    );
+  }
+  const root = lstatSync(workRoot);
+  if (root.isSymbolicLink() || !root.isDirectory())
+    throw new RunnerAccountHomeError("Runner work root is not a directory");
+  // The worker clears an inherited setgid bit itself, but only the owner may, and that is us.
+  if (root.uid === process.getuid?.()) clearInheritedSetgid(workRoot);
+  shareRunnerPaths([workRoot], owners, { depth: 0 });
+  shareRunnerPaths(
+    readdirSync(workRoot)
+      .filter((name) => name.startsWith(".paws") && !name.startsWith(".paws-skills-"))
+      .map((name) => join(workRoot, name)),
+    owners,
+  );
+  if (!checkout) return;
+  const path = join(workRoot, checkout.name);
+  let info;
+  try {
+    info = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (info.isSymbolicLink() || !info.isDirectory() || info.uid !== process.getuid?.()) return;
+  removeRunnerTree(path);
+}
+
+function removeRunnerTree(path: string): void {
+  const info = lstatSync(path);
+  if (!info.isDirectory()) return unlinkSync(path);
+  chmodSync(path, 0o700);
+  for (const name of readdirSync(path)) removeRunnerTree(join(path, name));
+  rmSync(path, { recursive: true });
+}
+
+function shareRunnerPaths(
+  roots: readonly string[],
+  owners: RunnerAccountOwners,
+  bounds: { depth?: number; limit?: number } = {},
+): void {
+  const self = process.getuid?.();
+  const limit = bounds.limit ?? SHARE_LIMIT;
+  let seen = 0;
+  const visit = (path: string, depth: number) => {
+    if (++seen > limit) throw new RunnerAccountHomeError("Agent state has too many files");
+    let info;
+    try {
+      info = lstatSync(path);
+    } catch (error) {
+      if (["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+      throw error;
+    }
+    if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) return;
+    if (info.uid === self) {
+      const group = (info.mode & 0o700) >> 3;
+      const regroup = info.gid !== owners.agentGid;
+      const remode = (info.mode & 0o070) !== group;
+      if (regroup || remode) {
+        const descriptor = openSync(
+          path,
+          constants.O_RDONLY |
+            constants.O_NOFOLLOW |
+            (info.isDirectory() ? constants.O_DIRECTORY : 0),
+        );
+        try {
+          if (regroup) fchownSync(descriptor, -1, owners.agentGid);
+          if (remode) fchmodSync(descriptor, (info.mode & 0o707) | group);
+        } finally {
+          closeSync(descriptor);
+        }
+      }
+    }
+    if (!info.isDirectory() || depth === bounds.depth) return;
+    let names: string[];
+    try {
+      names = readdirSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EACCES") return;
+      throw error;
+    }
+    for (const name of names) visit(join(path, name), depth + 1);
+  };
+  for (const root of roots) visit(root, 0);
+}
+
+function shareWithAgents(descriptor: number, owners: RunnerAccountOwners): void {
+  fchownSync(descriptor, -1, owners.agentGid);
+  fchmodSync(descriptor, 0o640);
+}
+
+function writeSharedFile(path: string, text: string, owners: RunnerAccountOwners): void {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    const descriptor = openSync(temporary, "wx", 0o600);
+    const descriptor = openSync(temporary, "wx", 0o640);
     try {
+      shareWithAgents(descriptor, owners);
       writeSync(descriptor, text);
       fsyncSync(descriptor);
     } finally {

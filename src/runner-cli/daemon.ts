@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { RunnerDaemon } from "../runner-daemon";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
 import { openRunnerRetroRuntime } from "../runner-retro-runtime";
-import { createRunnerSkillInstaller } from "../runner-execution";
+import { createRunnerSkillInstaller, type RunnerAgentUser } from "../runner-execution";
 import { openRunnerAgents, openRunnerRuntime } from "../runner-runtime";
 
 export async function runPairedDaemon(
@@ -13,8 +13,10 @@ export async function runPairedDaemon(
   ids: {
     runnerUid: number;
     agentUid: number;
+    pawsAgentUid: number;
     agentGid: number;
     resultsGid: number;
+    agentUser: RunnerAgentUser;
   },
   signal: AbortSignal,
   report: (error: Error) => void,
@@ -36,8 +38,10 @@ export async function runPairedDaemon(
       root: "/var/lib/paws-agent-results",
       runnerUid: ids.runnerUid,
       agentUid: ids.agentUid,
+      pawsAgentUid: ids.pawsAgentUid,
       resultsGid: ids.resultsGid,
     },
+    agentUser: ids.agentUser,
     onError: report,
   };
   const skills = createRunnerSkillInstaller({

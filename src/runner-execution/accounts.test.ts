@@ -7,20 +7,25 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  readFileSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   activeExecutions,
+  confirmRunnerAccountHold,
   holdRunnerAccountHome,
   markRunnerAccountSignedIn,
   openRunnerAccountHome,
+  prepareRunnerWorkRoot,
   publishRunnerAccountHome,
   releaseRunnerAccountHome,
   runnerAccountBindings,
   runnerAccountHome,
+  shareRunnerAgentState,
 } from "./accounts";
 import { executionScope, executionTag, startTime } from "./processes";
 
@@ -40,10 +45,13 @@ const b = { accountId: "01JACCOUNTB000000000000000", bindingId: "01JBINDINGB0000
 const execution = "01J00000000000000000000001";
 const other = "01J00000000000000000000002";
 
-function liveReceipt(root: string) {
-  const path = join(root, `${execution}.pid`);
-  writeFileSync(path, `${process.pid} ${startTime(process.pid)}\n`);
-  return { receipt: path, scope: executionScope(root) };
+const live = () => ({ pid: process.pid, born: startTime(process.pid)! });
+const dead = { pid: 2147483646, born: "1" };
+
+function hold(home: string, id: string, root: string, worker: { pid: number; born: string }) {
+  const scope = executionScope(root);
+  holdRunnerAccountHome(home, id, { scope });
+  confirmRunnerAccountHold(home, id, { scope, ...worker });
 }
 
 test("a command without an account keeps the default home", () => {
@@ -142,7 +150,7 @@ test("generated paths reject traversal, symlinks and foreign permissions", () =>
 test("a sign-in waits for live work on its binding and keeps new work out while it publishes", () => {
   const root = agentHome();
   const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
-  holdRunnerAccountHome(home, other, liveReceipt(root));
+  hold(home, other, root, live());
   expect(activeExecutions(home)).toEqual([other]);
   let published = 0;
   expect(() => publishRunnerAccountHome(home, execution, () => published++)).toThrow(
@@ -153,20 +161,18 @@ test("a sign-in waits for live work on its binding and keeps new work out while 
   releaseRunnerAccountHome(home, other);
   publishRunnerAccountHome(home, execution, () => {
     published++;
-    expect(() => holdRunnerAccountHome(home, other, liveReceipt(root))).toThrow(/signing in/);
+    expect(() => hold(home, other, root, live())).toThrow(/signing in/);
   });
   expect(published).toBe(1);
   expect(activeExecutions(home)).toEqual([]);
-  holdRunnerAccountHome(home, other, liveReceipt(root));
+  hold(home, other, root, live());
   expect(activeExecutions(home)).toEqual([other]);
 });
 
 test("holds and publish locks left by a crashed process are stale", () => {
   const root = agentHome();
   const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
-  const dead = join(root, "dead.pid");
-  writeFileSync(dead, "2147483646 1\n");
-  holdRunnerAccountHome(home, other, { receipt: dead, scope: executionScope(root) });
+  hold(home, other, root, dead);
   writeFileSync(join(home, ".paws-publishing"), JSON.stringify({ pid: 2147483646, born: "1" }));
   expect(activeExecutions(home)).toEqual([]);
   let published = 0;
@@ -175,29 +181,29 @@ test("holds and publish locks left by a crashed process are stale", () => {
   expect(readdirSync(join(home, ".paws-active"))).toEqual([]);
 });
 
-test("an admission whose worker receipt is still empty keeps its hold", () => {
+test("an admission whose worker has not started keeps its hold for the admission window", () => {
   const root = agentHome();
   const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
-  const receipt = join(root, "admitting.pid");
-  writeFileSync(receipt, "");
-  holdRunnerAccountHome(home, other, { receipt, scope: executionScope(root) });
+  holdRunnerAccountHome(home, other, { scope: executionScope(root) });
   expect(activeExecutions(home)).toEqual([other]);
   expect(() => publishRunnerAccountHome(home, execution, () => {})).toThrow(/still running/);
+  const old = new Date(Date.now() - 120_000);
+  utimesSync(join(home, ".paws-active", other), old, old);
+  expect(activeExecutions(home)).toEqual([]);
 });
 
 test("a hold stays while the execution's processes outlive its worker", async () => {
   const root = agentHome();
   const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
   const scope = executionScope(root);
-  const dead = join(root, "dead.pid");
-  writeFileSync(dead, "2147483646 1\n");
   const survivor = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
     env: { ...process.env, ...executionTag(scope, other) },
     stdio: "ignore",
   });
   try {
     while (startTime(survivor.pid!) === undefined) await Bun.sleep(10);
-    holdRunnerAccountHome(home, other, { receipt: dead, scope });
+    holdRunnerAccountHome(home, other, { scope });
+    confirmRunnerAccountHold(home, other, { scope, ...dead });
     expect(activeExecutions(home)).toEqual([other]);
     expect(() => publishRunnerAccountHome(home, execution, () => {})).toThrow(/still running/);
   } finally {
@@ -205,4 +211,145 @@ test("a hold stays while the execution's processes outlive its worker", async ()
     await new Promise((resolve) => survivor.once("exit", resolve));
   }
   expect(activeExecutions(home)).toEqual([]);
+});
+
+test("a binding's manifest, holds and sign-in lock are readable by the agent group", () => {
+  const root = agentHome();
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  markRunnerAccountSignedIn(home, a, "claude");
+  const manifest = statSync(join(home, "account.json"));
+  expect([manifest.mode & 0o777, manifest.gid]).toEqual([0o640, process.getgid!()]);
+  hold(home, execution, root, live());
+  expect(statSync(join(home, ".paws-active", execution)).mode & 0o777).toBe(0o640);
+  releaseRunnerAccountHome(home, execution);
+  let lock = 0;
+  publishRunnerAccountHome(home, execution, () => {
+    lock = statSync(join(home, ".paws-publishing")).mode & 0o777;
+  });
+  expect(lock).toBe(0o640);
+});
+
+test("a manifest written 0600 before agents ran as paws-agent is shared on the next open", () => {
+  const root = agentHome();
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  writeFileSync(join(home, "account.json"), `${JSON.stringify({ ...a, agent: "claude" })}\n`);
+  chmodSync(join(home, "account.json"), 0o600);
+  expect(openRunnerAccountHome(root, a, "claude")).toBe(home);
+  expect(statSync(join(home, "account.json")).mode & 0o777).toBe(0o640);
+  chmodSync(join(home, "account.json"), 0o660);
+  expect(() => openRunnerAccountHome(root, a, "claude")).toThrow(/manifest is unsafe/);
+});
+
+test("agent state written by the runner is shared with the agent group before paws-agent runs", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  mkdirSync(join(root, ".codex/sessions/2026"), { recursive: true, mode: 0o700 });
+  chmodSync(join(root, ".codex"), 0o700);
+  chmodSync(join(root, ".codex/sessions"), 0o700);
+  chmodSync(join(root, ".codex/sessions/2026"), 0o700);
+  writeFileSync(join(root, ".codex/auth.json"), "{}", { mode: 0o600 });
+  chmodSync(join(root, ".codex/auth.json"), 0o600);
+  writeFileSync(join(root, ".codex/sessions/2026/rollout.jsonl"), "", { mode: 0o600 });
+  chmodSync(join(root, ".codex/sessions/2026/rollout.jsonl"), 0o600);
+  const outside = join(agentHome(), "elsewhere");
+  writeFileSync(outside, "", { mode: 0o600 });
+  chmodSync(outside, 0o600);
+  symlinkSync(outside, join(root, ".codex/link"));
+  mkdirSync(join(root, ".local/share/opencode"), { recursive: true, mode: 0o700 });
+  chmodSync(join(root, ".local"), 0o700);
+  for (const folder of [".cache/mise/downloads", "work/run", ".paws-accounts/binding"])
+    mkdirSync(join(root, folder), { recursive: true, mode: 0o700 });
+  for (const folder of [".cache", ".cache/mise", ".cache/mise/downloads", "work", "work/run"])
+    chmodSync(join(root, folder), 0o700);
+  chmodSync(join(root, ".paws-accounts/binding"), 0o700);
+  shareRunnerAgentState(root, owners);
+  const mode = (path: string) => statSync(join(root, path)).mode & 0o7777;
+  expect(mode(".local")).toBe(0o770);
+  expect([mode(".cache"), mode(".cache/mise"), mode(".cache/mise/downloads")]).toEqual([
+    0o770, 0o770, 0o770,
+  ]);
+  expect([mode("work"), mode("work/run"), mode(".paws-accounts/binding")]).toEqual([
+    0o700, 0o700, 0o700,
+  ]);
+  expect(mode(".codex")).toBe(0o770);
+  expect(mode(".codex/sessions/2026")).toBe(0o770);
+  expect(mode(".codex/auth.json")).toBe(0o660);
+  expect(mode(".codex/sessions/2026/rollout.jsonl")).toBe(0o660);
+  expect(statSync(outside).mode & 0o777).toBe(0o600);
+  shareRunnerAgentState(root, owners);
+  expect(mode(".codex/auth.json")).toBe(0o660);
+});
+
+test("sharing an account home keeps its binding, holds and sign-in lock at 0640", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  markRunnerAccountSignedIn(home, a, "claude");
+  hold(home, execution, root, live());
+  writeFileSync(join(home, ".paws-publishing"), "{}", { mode: 0o640 });
+  chmodSync(join(home, ".paws-publishing"), 0o640);
+  shareRunnerAgentState(home, owners);
+  const mode = (path: string) => statSync(join(home, path)).mode & 0o777;
+  expect([
+    mode("account.json"),
+    mode(`.paws-active/${execution}`),
+    mode(".paws-publishing"),
+  ]).toEqual([0o640, 0o640, 0o640]);
+  expect(openRunnerAccountHome(root, a, "claude")).toBe(home);
+});
+
+test("a hold names its worker itself, so no reader follows a path into runner-private state", () => {
+  const root = agentHome();
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  const runnerPrivate = join(root, "private.pid");
+  writeFileSync(runnerPrivate, `${process.pid} ${startTime(process.pid)}\n`);
+  chmodSync(runnerPrivate, 0o000);
+  hold(home, execution, root, live());
+  const legacy = join(home, ".paws-active", other);
+  writeFileSync(legacy, JSON.stringify({ receipt: runnerPrivate, scope: executionScope(root) }));
+  expect(activeExecutions(home, execution)).toEqual([other]);
+  const old = new Date(Date.now() - 120_000);
+  utimesSync(legacy, old, old);
+  let published = 0;
+  publishRunnerAccountHome(home, execution, () => published++);
+  expect(published).toBe(1);
+  expect(readFileSync(join(home, ".paws-active", execution), "utf8")).not.toContain("receipt");
+});
+
+test("sharing agent state skips folders the runner cannot list", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  mkdirSync(join(root, ".codex/sessions/private"), { recursive: true });
+  writeFileSync(join(root, ".codex/auth.json"), "{}");
+  chmodSync(join(root, ".codex/auth.json"), 0o600);
+  chmodSync(join(root, ".codex/sessions/private"), 0o000);
+  try {
+    shareRunnerAgentState(root, owners);
+  } finally {
+    chmodSync(join(root, ".codex/sessions/private"), 0o700);
+  }
+  expect(statSync(join(root, ".codex/auth.json")).mode & 0o777).toBe(0o660);
+});
+
+test("a work root the runner made 0700 is shared with the agent group before paws-agent runs", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  const work = join(root, "work");
+  const mode = (path: string) => statSync(join(work, path)).mode & 0o777;
+  for (const path of ["", ".paws/runs", "resumed/src", "restarted/src", "other"])
+    mkdirSync(join(work, path), { recursive: true, mode: 0o700 });
+  for (const path of ["", ".paws", ".paws/runs", "resumed", "resumed/src", "other"])
+    chmodSync(join(work, path), 0o700);
+  writeFileSync(join(work, "resumed/src/a.ts"), "", { mode: 0o600 });
+  chmodSync(join(work, "resumed/src/a.ts"), 0o600);
+  prepareRunnerWorkRoot(work, owners);
+  expect([mode(""), mode(".paws/runs")]).toEqual([0o770, 0o770]);
+  expect([mode("resumed/src"), mode("resumed/src/a.ts"), mode("other")]).toEqual([
+    0o700, 0o600, 0o700,
+  ]);
+  prepareRunnerWorkRoot(work, owners, { name: "restarted" });
+  expect(readdirSync(work).sort()).toEqual([".paws", "other", "resumed"]);
+  const fresh = join(root, "fresh");
+  prepareRunnerWorkRoot(fresh, owners);
+  expect(statSync(fresh).isDirectory()).toBe(true);
 });

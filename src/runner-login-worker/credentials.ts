@@ -3,6 +3,7 @@ import {
   chmodSync,
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -73,7 +74,7 @@ export function publishCredentials(agent: Agent, staged: string, home: string): 
       const live = read(target);
       if (live !== null) data = mergeKeys(live, source, file.merge);
     }
-    replaceFile(target, data, existing ? (existing.mode & 0o600) | 0o400 : 0o600);
+    replaceFile(target, data, existing ? (existing.mode & 0o660) | 0o400 : 0o600);
     published += 1;
   }
   if (published === 0) throw new Error("Provider did not write credentials");
@@ -125,8 +126,11 @@ function privateParents(home: string, directory: string): void {
     }
     if (info.isSymbolicLink() || !info.isDirectory())
       throw new Error("Provider credentials folder is not a private directory");
-    if (process.getuid && info.uid !== process.getuid())
-      throw new Error("Provider credentials folder belongs to another user");
+    if (process.getuid && info.uid !== process.getuid()) {
+      if (info.gid !== process.getgid?.() || (info.mode & 0o077) !== 0o070)
+        throw new Error("Provider credentials folder belongs to another user");
+      continue;
+    }
     if (part && (info.mode & 0o007) !== 0) chmodSync(current, info.mode & 0o770);
   }
 }
@@ -159,6 +163,7 @@ function replaceFile(target: string, data: Buffer, mode: number): void {
   try {
     const descriptor = openSync(temporary, "wx", mode);
     try {
+      fchmodSync(descriptor, mode);
       writeSync(descriptor, data);
       fsyncSync(descriptor);
     } finally {

@@ -117,6 +117,7 @@ async function fixture() {
           metrics: unknown;
           os: unknown;
           version: unknown;
+          agentUser?: string | null;
           idle: boolean;
         }[];
         serverVersion: string | null;
@@ -187,6 +188,21 @@ test("a heartbeat stores host metrics and the runner list returns them", async (
   expect(
     runner.db.query("SELECT mise_version AS miseVersion FROM runner_host_status").get(),
   ).toEqual({ miseVersion: null });
+});
+
+test("the runner list says who a runner starts agents as", async () => {
+  const runner = await fixture();
+  expect((await runner.heartbeat({ runnerVersion: "0.1.72" }))!.status).toBe(200);
+  expect((await runner.list()).runners[0]!.agentUser).toBe("runner");
+  expect((await runner.heartbeat({ runnerVersion: "0.1.73" }))!.status).toBe(200);
+  expect((await runner.list()).runners[0]!.agentUser).toBeNull();
+  expect(
+    (await runner.heartbeat({ runnerVersion: "0.1.73", agentUser: "paws-agent" }))!.status,
+  ).toBe(200);
+  expect((await runner.list()).runners[0]!.agentUser).toBe("paws-agent");
+  expect((await runner.heartbeat({ runnerVersion: "0.1.73", agentUser: "root" }))!.status).toBe(
+    403,
+  );
 });
 
 test("a heartbeat without host fields is still accepted", async () => {

@@ -101,6 +101,8 @@ export { RUNNER_TOKEN_MAX_LENGTH, RunnerTokenSchema, isRunnerToken } from "./tok
 
 export {
   RunnerHostStatusSchema,
+  RUNNER_AGENT_USERS,
+  type RunnerAgentUser,
   RunnerStrayProcessSchema,
   miseVersionFromOutput,
   releaseVersionFromPath,
@@ -174,6 +176,7 @@ export {
   CLOSEOUT_TURN_KEY_RUNNER_VERSION,
   HIDDEN_CHECKPOINT_RUNNER_VERSION,
   CLOSEOUT_FOCUS_RUNNER_VERSION,
+  AGENT_USER_RUNNER_VERSION,
 } from "./versions";
 export {
   POLICY_KEY_RUNNER_VERSIONS,

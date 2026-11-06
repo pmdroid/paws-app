@@ -14,6 +14,7 @@ import {
   type RunnerResults,
   type RunnerSpool,
 } from "../runner-execution";
+import type { RunnerAgentUser } from "../runner-protocol";
 import {
   RunnerCommandSchema,
   RunnerLoginUpdateSchema,
@@ -79,6 +80,7 @@ export async function openRunnerHealthRuntime(options: {
     >;
   spool: RunnerSpool;
   results: RunnerResults;
+  agentUser?: RunnerAgentUser;
   broker?: RunnerBrokerClient;
   now?: () => number;
   monotonic?: () => number;
@@ -108,6 +110,7 @@ export async function openRunnerHealthRuntime(options: {
       stateRoot: join(options.root, "workers"),
       spool: options.spool,
       results: options.results,
+      agentUser: options.agentUser,
     });
   const now = options.now ?? Date.now;
   const monotonic = options.monotonic ?? (() => performance.now());

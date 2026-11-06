@@ -37,6 +37,9 @@ export const RunnerStrayProcessSchema = z.strictObject({
 
 export type RunnerStrayProcess = z.infer<typeof RunnerStrayProcessSchema>;
 
+export const RUNNER_AGENT_USERS = ["runner", "paws-agent"] as const;
+export type RunnerAgentUser = (typeof RUNNER_AGENT_USERS)[number];
+
 /** Host sample a runner sends with its heartbeat. Every field is optional so older runners stay valid. */
 export const RunnerHostStatusSchema = z.strictObject({
   cpuPercent: z.number().min(0).max(100).optional(),
@@ -55,6 +58,7 @@ export const RunnerHostStatusSchema = z.strictObject({
   /** Version of the mise binary shipped next to the runner. */
   miseVersion: miseVersion.optional(),
   strayProcesses: z.array(RunnerStrayProcessSchema).max(20).optional(),
+  agentUser: z.enum(RUNNER_AGENT_USERS).optional(),
 });
 
 export type RunnerHostStatus = z.infer<typeof RunnerHostStatusSchema>;

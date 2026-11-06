@@ -3,4 +3,6 @@ d /var/lib/paws-agent 2770 paws-runner paws-agent -
 d /var/lib/paws-agent-tasks 2770 paws-runner paws-agent -
 d /var/lib/paws-runner-spool 2750 paws-runner paws-agent -
 d /var/lib/paws-agent-results 2770 paws-runner paws-results -
+d /run/paws-runner 0755 root root -
+d /run/paws-runner/agent 2750 paws-runner paws-agent -
 d /run/systemd/system 0755 root root -

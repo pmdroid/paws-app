@@ -221,7 +221,23 @@ test("results accept the shared layout and refuse other access or another group"
   expect(sharedDirectoryAllowed(directory(agent, resultsGroup, 0o2750), job)).toBe(true);
   expect(sharedDirectoryAllowed(directory(agent, resultsGroup, 0o2755), job)).toBe(false);
   expect(sharedDirectoryAllowed(directory(agent, agentGroup, 0o2750), job)).toBe(false);
-  expect(sharedDirectoryAllowed(directory(runner, resultsGroup, 0o2750), job)).toBe(false);
+  // paws-runner wrote the results of executions admitted before agentUser named paws-agent.
+  expect(sharedDirectoryAllowed(directory(runner, resultsGroup, 0o2750), job)).toBe(true);
+  expect(sharedDirectoryAllowed(directory(1003, resultsGroup, 0o2750), job)).toBe(false);
+});
+
+test("after agentUser goes back to runner, results paws-agent wrote are still accepted", () => {
+  const results = {
+    root: "/results",
+    runnerUid: runner,
+    agentUid: runner,
+    pawsAgentUid: agent,
+    resultsGid: resultsGroup,
+  };
+  const job = runnerResultDirectoryRule(results);
+  expect(sharedDirectoryAllowed(directory(agent, resultsGroup, 0o2750), job)).toBe(true);
+  expect(sharedDirectoryAllowed(directory(runner, resultsGroup, 0o2750), job)).toBe(true);
+  expect(sharedDirectoryAllowed(directory(1003, resultsGroup, 0o2750), job)).toBe(false);
 });
 
 test("an account home is shared through the agent group with either user", () => {
