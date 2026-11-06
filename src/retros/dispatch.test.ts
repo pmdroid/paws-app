@@ -4,7 +4,10 @@ import { createHash } from "node:crypto";
 import { rmSync } from "node:fs";
 import {
   accountSlotsInUse,
+  beginRetroCollection,
+  closeRetro,
   createRetro,
+  freezeRetroInput,
   ensureLegacyAgentBinding,
   getRetro,
   getRetroDispatch,
@@ -13,10 +16,12 @@ import {
   listRetroDispatches,
   listRetroItems,
   openDatabase,
+  readRetroArtifact,
   recordAccountObservation,
   retroSlotsHeld,
   retroWatermarks,
   runnerOccupancy,
+  writeRetroArtifact,
 } from "../db";
 import { verifyRunnerRetroCommand, type RunnerRetroCommand } from "../runner-protocol";
 import { createRetroDispatcher, retroRetryDelayMs } from "./index";
@@ -290,6 +295,51 @@ describe("placement", () => {
     expect(getRetro(db, "r1")!.state).toBe("published");
     expect(listRetroDispatches(db, "r1")).toEqual([]);
     expect(dispatcher.generation("r1")!.state).toBe("ready");
+  });
+
+  test("a digest over the runner limit abandons the retro and names its size and the limit", () => {
+    const { db, root, clock, open } = world();
+    const first = getRetro(db, "r1")!;
+    const read = (kind: "digest" | "manifest") => {
+      const stored = readRetroArtifact(db, root, "r1", kind);
+      if (!stored.ok) throw new Error(stored.reason);
+      return Buffer.from(stored.bytes);
+    };
+    const digest = read("digest");
+    const manifest = read("manifest");
+    closeRetro(db, { retroId: "r1", state: "abandoned", error: "replaced", now: clock.now });
+    db.run("DELETE FROM retro_collection_lock WHERE retro_id = 'r1'");
+    createRetro(db, {
+      id: "r2",
+      workspaceId: "ws",
+      windowStart: FIXTURE_START,
+      windowEnd: FIXTURE_END + 1,
+      origin: "manual",
+      settingsRevision: first.settingsRevision,
+      agentProfile: first.agentProfile,
+      now: clock.now,
+    });
+    expect(beginRetroCollection(db, { retroId: "r2", now: clock.now }).ok).toBe(true);
+    const padded = Buffer.concat([digest, Buffer.alloc(8_718_484 - digest.length, " ")]);
+    for (const [kind, bytes] of [
+      ["digest", padded],
+      ["manifest", manifest],
+    ] as const)
+      writeRetroArtifact(db, root, { retroId: "r2", kind, bytes, now: clock.now });
+    freezeRetroInput(db, {
+      retroId: "r2",
+      endCursors: { [FIXTURE_REPO]: FIXTURE_END },
+      now: clock.now,
+    });
+    addRunner(db, { id: "R1" });
+    db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
+    open(db).tick();
+    expect(getRetro(db, "r2")).toMatchObject({
+      state: "abandoned",
+      error:
+        "The frozen digest is 8.3 MiB (8,718,484 bytes); runners accept at most 8.0 MiB (8,388,608 bytes).",
+    });
+    expect(listRetroDispatches(db, "r2")).toEqual([]);
   });
 });
 
