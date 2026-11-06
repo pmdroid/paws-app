@@ -289,8 +289,6 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     ["GET", "/api/runners/usage"],
     ["GET", "/api/runners/models"],
     ["GET POST", "/api/runners/accounts"],
-    ["POST", "/api/runners/accounts/preview"],
-    ["PUT DELETE", "/api/runners/accounts/:id"],
     ["POST", "/api/runners/coding-agents/update-all"],
     ["POST", "/api/runners/:id/coding-agents/:agent/update"],
     ["POST", "/api/runners/:id/status"],
@@ -309,6 +307,15 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
     ["GET", "/api/runners/vm/pools"],
   ].map(([method, pattern]) =>
     api(method!, pattern!, "delegated", "src/runner-control", {
+      sample: pattern!.replaceAll(":id", "01JRUNNER0000000000000000A"),
+    }),
+  ),
+  ...[
+    ["POST", "/api/runners/accounts/preview"],
+    ["PUT DELETE", "/api/runners/accounts/:id"],
+  ].map(([method, pattern]) =>
+    api(method!, pattern!, "delegated", "src/runner-control", {
+      via: "/api/runners/accounts",
       sample: pattern!.replaceAll(":id", "01JRUNNER0000000000000000A"),
     }),
   ),
