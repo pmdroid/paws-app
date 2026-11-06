@@ -169,6 +169,18 @@ describe("runner failure causes", () => {
     }
   });
 
+  test("a configuration without agentUser runs agents as paws-agent; an explicit value stays", () => {
+    const base = {
+      controlPlaneUrl: "https://paws.example",
+      runnerApiUrl: "https://runners.example",
+    };
+    const load = (value: object) =>
+      loadConfig(tempFile(JSON.stringify(value)), process.getuid!()).agentUser;
+    expect(load(base)).toBe("paws-agent");
+    expect(load({ ...base, agentUser: "runner" })).toBe("runner");
+    expect(load({ ...base, agentUser: "paws-agent" })).toBe("paws-agent");
+  });
+
   test("the token value never appears in any cause", () => {
     const failures: unknown[] = [
       transport(CONTROL, "ENOTFOUND", { hostname: "paws.example.com" }),

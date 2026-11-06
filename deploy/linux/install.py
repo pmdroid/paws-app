@@ -117,10 +117,12 @@ def root_directory(path, mode=0o755):
     sync_directory(path)
 
 
-def write_atomic(path, content, mode):
+def write_atomic(path, content, mode, owner=None):
     root_directory(path.parent, 0o700 if path.parent == STATE else 0o755)
     descriptor, temporary = tempfile.mkstemp(prefix=".paws-", dir=path.parent)
     try:
+        if owner is not None:
+            os.fchown(descriptor, *owner)
         os.fchmod(descriptor, mode)
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(content)
@@ -167,6 +169,7 @@ STATE_DIRECTORIES = (
     ("/var/lib/paws-agent-results", "paws-runner", "paws-results", 0o2770),
 )
 POLKIT_RULE = pathlib.Path("/etc/polkit-1/rules.d/50-paws-runner.rules")
+RUNNER_CONFIG = pathlib.Path("/etc/paws-runner/config.json")
 SHARED_DIRECTORIES = {"/var/lib/paws-agent": group_shared, "/var/lib/paws-agent-tasks": group_shared, "/var/lib/paws-agent-results": group_inherited}
 
 
@@ -647,6 +650,24 @@ def asset_target(name):
     return None
 
 
+def default_agent_user(path=RUNNER_CONFIG):
+    """Add `"agentUser": "paws-agent"` to the host config when it names no agent user; an explicit value stays.
+
+    A host without a config yet gets none here: the enrollment command writes it after the package,
+    and the runner reads a missing key as "paws-agent". Returns whether the file changed.
+    """
+    try:
+        info = os.lstat(path)
+        config = json.loads(release.read_regular(path, 65536))
+    except (OSError, ValueError):
+        # Missing, or unreadable: the runner reports a bad config itself, and the install leaves it.
+        return False
+    if not isinstance(config, dict) or "agentUser" in config:
+        return False
+    write_atomic(path, (json.dumps({**config, "agentUser": "paws-agent"}) + "\n").encode(), stat.S_IMODE(info.st_mode), (info.st_uid, info.st_gid))
+    return True
+
+
 def switch_release(unpacked, destination, pointers):
     """With the runner stopped: put the units, accounts and runtime pointers in place, then point `current` at destination."""
     root_directory(BASE / "bin")
@@ -680,6 +701,7 @@ def switch_release(unpacked, destination, pointers):
     if "paws-runner" not in agent_group.gr_mem or not {"paws-runner", "paws-agent"} <= set(results_group.gr_mem):
         raise ValueError("Unsafe runner service identities")
     root_directory(pathlib.Path("/etc/paws-runner"))
+    default_agent_user()
     current = BASE / "current"
     if current.exists() and not current.is_symlink():
         raise ValueError("Unsafe current release pointer")

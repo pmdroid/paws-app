@@ -72,6 +72,8 @@ try:
         assert time.monotonic() < deadline
         time.sleep(0.02)
     config = json.loads(ready.read_text())
+    # This container has no systemd to start paws-agent@ units, so the runner spawns workers itself.
+    config["agentUser"] = "runner"
     path = pathlib.Path("/etc/paws-runner/config.json")
 
     def install_config(value=config):
