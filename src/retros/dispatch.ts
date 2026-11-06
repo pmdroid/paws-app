@@ -67,8 +67,14 @@ import {
 } from "../runner-protocol";
 import { runnerRequestUnavailable } from "../runner-work";
 import { isWorkspaceAdmin } from "../workspace";
-import { freezeRenderedRetroPrompt } from "./prompt";
-import { RETRO_RESULT_LIMITS, retroNeedsGeneration, settleRetroAttempt } from "./result";
+import { freezeRenderedRetroPrompt, retroRepairPrompt } from "./prompt";
+import {
+  RETRO_RESULT_LIMITS,
+  retroNeedsGeneration,
+  retroOutputLimits,
+  retroRepairProblems,
+  settleRetroAttempt,
+} from "./result";
 import { retroAttemptLimits, type RetroAgentProfile } from "./settings";
 import type { RetroDigest } from "./digest";
 
@@ -310,6 +316,41 @@ function readDigest(db: Database, root: string, retro: Retro): RetroDigest | nul
   const stored = readRetroArtifact(db, root, retro.id, "digest");
   if (!stored.ok || stored.artifact.sha256 !== retro.digestSha256) return null;
   return JSON.parse(new TextDecoder().decode(stored.bytes)) as RetroDigest;
+}
+
+/**
+ * The prompt an attempt runs: the frozen prompt, plus a repair block when the latest earlier
+ * result failed validation with invalid_result. It derives from frozen inputs only, so every
+ * read for the same attempt returns the same bytes.
+ */
+function attemptPrompt(
+  db: Database,
+  retro: Retro,
+  digest: RetroDigest,
+  frozen: string,
+  attempt: number,
+): Uint8Array {
+  const previous = db
+    .query<{ commandId: string }, [string, number]>(
+      `SELECT command_id AS commandId FROM retro_dispatch
+       WHERE retro_id = ? AND attempt < ? AND result IS NOT NULL ORDER BY attempt DESC LIMIT 1`,
+    )
+    .get(retro.id, attempt);
+  const result =
+    previous === null
+      ? null
+      : (getRetroDispatch(db, previous.commandId)?.result as RunnerRetroResult);
+  const output = result?.outcome === "completed" ? (result.output ?? null) : null;
+  const problems =
+    output === null || retro.digestSha256 === null
+      ? null
+      : retroRepairProblems(output, {
+          digest,
+          digestSha256: retro.digestSha256,
+          limits: retroOutputLimits(retro.outputLimits),
+        });
+  const text = problems === null ? frozen : retroRepairPrompt(frozen, problems, output!);
+  return new TextEncoder().encode(text);
 }
 
 export function createRetroDispatcher(options: {
@@ -613,10 +654,10 @@ export function createRetroDispatcher(options: {
       return;
     }
     const digestRecord = retroArtifact(db, retro.id, "digest")!;
-    const promptRecord = retroArtifact(db, retro.id, "prompt")!;
+    const promptBytes = attemptPrompt(db, retro, digest, prompt.prompt, retro.attempt + 1);
     const oversized = [
       oversizedInput("digest", digestRecord.sizeBytes, RUNNER_RETRO_LIMITS.digestBytes),
-      oversizedInput("prompt", promptRecord.sizeBytes, RUNNER_RETRO_LIMITS.promptBytes),
+      oversizedInput("prompt", promptBytes.byteLength, RUNNER_RETRO_LIMITS.promptBytes),
     ].filter((message) => message !== null);
     if (oversized.length > 0) {
       const error = oversized.join(" ");
@@ -702,8 +743,8 @@ export function createRetroDispatcher(options: {
           kind: "prompt",
           workspaceId: retro.workspaceId,
           retroId: retro.id,
-          sha256: promptRecord.sha256,
-          sizeBytes: promptRecord.sizeBytes,
+          sha256: sha256(promptBytes),
+          sizeBytes: promptBytes.byteLength,
         },
       };
       const account = recordCommandAccount(db, command, at);
@@ -764,6 +805,15 @@ export function createRetroDispatcher(options: {
         return note(retro.id, "retry_backoff", retro.error ?? "The attempt failed.", { until: at });
       return place(retro);
     }
+  }
+
+  function inputBytes(retro: Retro, kind: "digest" | "prompt", attempt: number) {
+    const stored = readRetroArtifact(db, root, retro.id, kind);
+    if (!stored.ok) return null;
+    if (kind === "digest") return stored.bytes;
+    const digest = readDigest(db, root, retro);
+    if (digest === null) return null;
+    return attemptPrompt(db, retro, digest, new TextDecoder().decode(stored.bytes), attempt);
   }
 
   function authorize(runnerId: string, commandId: string, terminal = false) {
@@ -895,10 +945,10 @@ export function createRetroDispatcher(options: {
       const { kind, offset, length, sha256: expected } = authorized.request;
       if (authorized.request.commandId !== commandId)
         throw new RetroFencedError("Retro input command changed");
-      const stored = readRetroArtifact(db, root, retro.id, kind);
-      if (!stored.ok || stored.artifact.sha256 !== expected)
+      const bytes = inputBytes(retro, kind, dispatch.attempt);
+      if (bytes === null || sha256(bytes) !== expected)
         throw new RetroFencedError(`The frozen retro ${kind} is unreadable`);
-      const chunk = stored.bytes.subarray(offset, offset + length);
+      const chunk = bytes.subarray(offset, offset + length);
       return {
         commandId,
         kind,
