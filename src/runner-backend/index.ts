@@ -79,6 +79,7 @@ import {
   CLOSEOUT_RULES_FIRST_RUNNER_VERSION,
   CLOSEOUT_FOCUS_RUNNER_VERSION,
   PULL_REQUEST_DRAFT_RUNNER_VERSION,
+  QUESTION_ENDS_TURN_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   SUGGESTED_FINDINGS_RUNNER_VERSION,
   GITHUB_READ_RUNNER_VERSION,
@@ -1743,6 +1744,12 @@ export function createRemoteAgentRunner(options: {
                       input.readOnly !== true &&
                       versionAtLeast(runnerVersion, CI_RERUN_RUNNER_VERSION)
                         ? { ciRerun: true as const }
+                        : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.askTeam &&
+                      input.readOnly !== true &&
+                      versionAtLeast(runnerVersion, QUESTION_ENDS_TURN_RUNNER_VERSION)
+                        ? { questionEndsTurn: true as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
                       ...(restoreCheckpoint &&

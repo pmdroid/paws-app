@@ -238,6 +238,10 @@ export const HANDOVER_STEP_TIMEOUT_MS = 60_000;
 export const HANDOVER_COMMIT_MESSAGE =
   "Save work in progress to hand the session to another runner";
 
+export const QUESTION_COMMIT_MESSAGE = "Save work in progress while the team answers a question";
+
+const QUESTION_TOOL_GRACE_MS = 2_000;
+
 export const RESUME_PROMPT =
   "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
 
@@ -1199,6 +1203,17 @@ export async function executeRunnerCommand(
     let waitingForAnswer = 0;
     const safePoint = () =>
       [...toolCalls.values()].every((call) => call.askTeam && waitingForAnswer > 0);
+    const questionEnd = new AbortController();
+    let turnFinished = false;
+    const endAfterQuestion = async () => {
+      const grace = Date.now() + QUESTION_TOOL_GRACE_MS;
+      for (;;) {
+        const running = [...toolCalls.values()].some((call) => !call.askTeam || Date.now() < grace);
+        if (turnFinished || !running) break;
+        await delay(50);
+      }
+      questionEnd.abort(FOLLOW_UP_INTERRUPTION);
+    };
     const earlierSession =
       command.type === "run"
         ? restoreRequest
@@ -1493,7 +1508,9 @@ export async function executeRunnerCommand(
                 });
                 waitingForAnswer++;
                 try {
-                  return await options.answer(requestId, context.signal);
+                  const answer = await options.answer(requestId, context.signal);
+                  if (command.type === "run" && command.questionEndsTurn) void endAfterQuestion();
+                  return answer;
                 } finally {
                   waitingForAnswer--;
                 }
@@ -1812,13 +1829,15 @@ export async function executeRunnerCommand(
       runCommand && runCommand.checkpoint !== false && installFailure === undefined
         ? watchCheckpoints(watch.signal, halt, turnDone)
         : undefined;
+    const questionEndsTurn = runCommand?.questionEndsTurn === true;
     const current: RunAgentOptions =
-      handover || checkpoints
+      handover || checkpoints || questionEndsTurn
         ? {
             ...agent,
             signal: AbortSignal.any([
               ...(handover ? [interrupt.signal] : []),
               ...(checkpoints ? [halt.signal] : []),
+              ...(questionEndsTurn ? [questionEnd.signal] : []),
               ...(options.signal ? [options.signal] : []),
             ]),
           }
@@ -1859,6 +1878,7 @@ export async function executeRunnerCommand(
           ? await runWithFollowUps(current, options.followUp, runner).finally(endTurn)
           : await runner(current).finally(endTurn);
     endTurn();
+    turnFinished = true;
     waits.stop();
     // A turn halted for a stop leaves its work in the stop checkpoint, never in a candidate.
     if (halt.signal.aborted) run = { ...run, cancelled: true, interrupted: false };
@@ -1867,6 +1887,39 @@ export async function executeRunnerCommand(
     // A checkpoint in progress finishes before the turn's own commit and result.
     await checkpoints;
     await checkpointing;
+    if (
+      questionEnd.signal.aborted &&
+      !interrupted &&
+      !halt.signal.aborted &&
+      !options.signal?.aborted &&
+      run.interrupted &&
+      run.agentExited
+    ) {
+      await bounded("commit", (signal) =>
+        commitCheckpoint(
+          worktree,
+          runCommand!.commitPolicy
+            ? commitPolicyMessage(QUESTION_COMMIT_MESSAGE, runCommand!.commitPolicy)
+            : QUESTION_COMMIT_MESSAGE,
+          signal,
+          undefined,
+          env,
+          inputFiles.map((file) => file.path),
+          runCommand!.commitPolicy
+            ? appBotCommitIdentity(runCommand!.commitPolicy.bot)
+            : runCommand!.checkpointBot
+              ? appBotCommitIdentity(runCommand!.checkpointBot)
+              : undefined,
+        ),
+      ).catch((error: unknown) =>
+        journalCaught(
+          error,
+          "runner-worker.executeRunnerCommand.questionCommit",
+          runCommand!.itemId,
+        ),
+      );
+      run = { ...run, stopReason: "end_turn", cancelled: false, interrupted: false };
+    }
     let handoverReady = false;
     let handoverFailure: RunnerHandoverFailure | null = null;
     if (interrupted && (!run.cancelled || !run.agentExited || options.signal?.aborted))

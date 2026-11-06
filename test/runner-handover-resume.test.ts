@@ -24,7 +24,12 @@ import { createRunnerControl, createRunnerSessionMoves } from "../src/runner-con
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerPlacement } from "../src/runner-placement";
-import { verifyRunnerCommand, type RunnerCommand, type RunnerEvent } from "../src/runner-protocol";
+import {
+  QUESTION_ENDS_TURN_RUNNER_VERSION,
+  verifyRunnerCommand,
+  type RunnerCommand,
+  type RunnerEvent,
+} from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerWork } from "../src/runner-work";
@@ -542,6 +547,26 @@ test("a session still waiting on its question keeps it and does not move", async
   const { running } = await context.handOverTurn(undefined, "open");
   expect(await running).toMatchObject({ handedOver: true });
   expect(await context.next(runners.b, 50)).toBeNull();
+});
+
+test("only a runner that ends the turn at a question is told to; an older one keeps the question in the turn", async () => {
+  const { db, runners } = context;
+  for (const [version, told] of [
+    ["0.1.73", undefined],
+    [QUESTION_ENDS_TURN_RUNNER_VERSION.join("."), true],
+  ] as const) {
+    const record = context.item();
+    db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+    db.run("UPDATE runner_host_status SET runner_version=? WHERE runner_id=?", [
+      version,
+      runners.a,
+    ]);
+    const { running } = context.turn(record, [], "open");
+    const onA = (await context.next(runners.a)) as RunCommand;
+    expect(onA.questionEndsTurn).toBe(told);
+    context.submit(onA, runners.a, { candidateSha: context.base });
+    expect(await running).toMatchObject({ stopReason: "end_turn" });
+  }
 });
 
 test("after a restart the handed-over run still avoids the runner it left and waits", async () => {
