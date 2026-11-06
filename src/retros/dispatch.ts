@@ -121,6 +121,14 @@ const owner = (commandId: string) => `retro-dispatch:${commandId}`;
 const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 const MAX_OUTPUT_CHARS = Math.min(RUNNER_RETRO_LIMITS.outputChars, RETRO_RESULT_LIMITS.outputChars);
 
+const mebibytes = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+const exactBytes = (bytes: number) => `${bytes.toLocaleString("en-US")} bytes`;
+
+function oversizedInput(kind: "digest" | "prompt", sizeBytes: number, limitBytes: number) {
+  if (sizeBytes <= limitBytes) return null;
+  return `The frozen ${kind} is ${mebibytes(sizeBytes)} (${exactBytes(sizeBytes)}); runners accept at most ${mebibytes(limitBytes)} (${exactBytes(limitBytes)}).`;
+}
+
 export function retroRetryDelayMs(attemptsUsed: number): number {
   const exponent = Math.max(0, attemptsUsed - 1);
   return Math.min(
@@ -606,11 +614,12 @@ export function createRetroDispatcher(options: {
     }
     const digestRecord = retroArtifact(db, retro.id, "digest")!;
     const promptRecord = retroArtifact(db, retro.id, "prompt")!;
-    if (
-      digestRecord.sizeBytes > RUNNER_RETRO_LIMITS.digestBytes ||
-      promptRecord.sizeBytes > RUNNER_RETRO_LIMITS.promptBytes
-    ) {
-      const error = "The frozen retro inputs exceed the runner limits.";
+    const oversized = [
+      oversizedInput("digest", digestRecord.sizeBytes, RUNNER_RETRO_LIMITS.digestBytes),
+      oversizedInput("prompt", promptRecord.sizeBytes, RUNNER_RETRO_LIMITS.promptBytes),
+    ].filter((message) => message !== null);
+    if (oversized.length > 0) {
+      const error = oversized.join(" ");
       closeRetro(db, { retroId: retro.id, state: "abandoned", error, now: at });
       note(retro.id, "failed", error);
       return;

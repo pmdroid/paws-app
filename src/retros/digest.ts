@@ -1035,7 +1035,13 @@ export function collectRetroDigest(
   const retro = getRetro(db, input.retroId);
   if (retro === null || retro.state !== "collecting")
     return { ok: false, reason: "not_collecting" };
-  const begun = beginRetroCollection(db, { retroId: retro.id, now: input.now });
+  const begun = beginRetroCollection(db, {
+    retroId: retro.id,
+    initialCursors: Object.fromEntries(
+      retro.repositories.map((repository) => [repository, retro.windowStart]),
+    ),
+    now: input.now,
+  });
   if (!begun.ok) return begun;
   const cut = retro.windowEnd;
   const windows = begun.repositories.map((cursor) => ({

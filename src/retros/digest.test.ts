@@ -216,13 +216,12 @@ const counted = (digest: RetroDigest) =>
   digest.records.filter((record) => record.scope === "counted").map((r) => r.evidenceId);
 
 describe("incremental retro windows", () => {
-  test("the first retro covers retained history and a later one counts a new answer on an old item", () => {
+  test("the first retro starts at its window and a later one counts a new answer on an old item", () => {
     const { db, root } = world();
     const old = item(db, "PAS-100", { createdAt: at(1) });
     const first = question(db, old, { createdAt: at(1, 5), answeredAt: at(2) });
     const first_digest = collect(db, root, { id: "r1", start: at(0), end: at(3) });
-    expect(first_digest.windows).toEqual([{ repository: REPO, start: 0, end: at(3) }]);
-    expect(first_digest.coverage.firstCollection).toEqual([REPO]);
+    expect(first_digest.windows).toEqual([{ repository: REPO, start: at(0), end: at(3) }]);
     expect(first_digest.counts.answeredQuestions.evidenceIds).toEqual([`question:${first}`]);
     expect(first_digest.counts.sessions.newWorkItems).toBe(1);
     publish(db, "r1", at(3, 1));
@@ -323,7 +322,7 @@ describe("incremental retro windows", () => {
     expect(JSON.stringify(digest)).not.toContain("ACME-1");
   });
 
-  test("re-enabling a repository resumes its watermark and a new one starts from retained history", () => {
+  test("re-enabling a repository resumes its watermark and a new one starts at the retro window", () => {
     const { db, root } = world();
     item(db, "PAS-1", { createdAt: at(0) });
     collect(db, root, { id: "r1", start: at(0), end: at(2), repositories: [REPO, OTHER] });
@@ -348,7 +347,7 @@ describe("incremental retro windows", () => {
       end: at(8),
       repositories: [REPO, OTHER, "pmdroid/new"],
     });
-    expect(added.windows.find((window) => window.repository === "pmdroid/new")!.start).toBe(0);
+    expect(added.windows.find((window) => window.repository === "pmdroid/new")!.start).toBe(at(6));
   });
 });
 
