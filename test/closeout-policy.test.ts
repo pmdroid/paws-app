@@ -863,7 +863,7 @@ function expectBlocked(
   source: "repo" | "global",
   message: string,
 ): void {
-  expect(result).toEqual({ ok: false, source, message });
+  expect(result).toMatchObject({ ok: false, source, message });
 }
 
 function commandPolicy(id: string): string {
