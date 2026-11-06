@@ -38,8 +38,9 @@ type HealthRequest = z.infer<typeof requestSchema>;
 type Agent = "claude" | "codex" | "grok" | "opencode";
 export type AgentSignIn = {
   agent: Agent;
-  status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "unknown";
+  status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "extra_usage" | "unknown";
   checkedAt: number | null;
+  extraUsage?: true;
   resetsAt?: number | null;
   limits?: RunnerAgentLimit[];
   limitsAt?: number;
@@ -57,7 +58,6 @@ export function createRunnerHealth(options: {
   db: Database;
   work: RunnerWork;
   now?: () => number;
-  extraUsage?: (agent: string) => boolean;
 }) {
   const { db, work } = options;
   const now = options.now ?? Date.now;
@@ -243,23 +243,49 @@ export function createRunnerHealth(options: {
       const { runner } = visible(principal, runnerId);
       const at = now();
       const last = history(runnerId, at);
-      return runnerAgents.map((agent) => {
+      return runnerAgents.map((agent): AgentSignIn => {
         const entry = last(agent);
         const checkedAt = entry?.result?.receivedAt ?? null;
-        if (entry?.inFlight) return { agent, status: "checking", checkedAt };
-        if (entry?.result && !entry.result.authenticated)
-          return { agent, status: "signed_out", checkedAt };
-        const limit = db
-          .query<{ resetsAt: number }, [string, string, number]>(
-            "SELECT COALESCE(resets_at,cooldown_until) AS resetsAt FROM runner_agent_policy WHERE runner_id=? AND agent=? AND quota_state='exhausted' AND cooldown_until>?",
+        const policy = db
+          .query<
+            {
+              extraUsage: number;
+              quotaState: string;
+              resetsAt: number | null;
+              cooldownUntil: number;
+            },
+            [string, string]
+          >(
+            "SELECT extra_usage AS extraUsage,quota_state AS quotaState,resets_at AS resetsAt,cooldown_until AS cooldownUntil FROM runner_agent_policy WHERE runner_id=? AND agent=?",
           )
-          .get(runner.id, agent, at);
+          .get(runner.id, agent);
+        const extraUsage = policy?.extraUsage === 1;
+        const extra = extraUsage ? { extraUsage: true as const } : {};
+        if (entry?.inFlight) return { agent, status: "checking", checkedAt, ...extra };
+        if (entry?.result && !entry.result.authenticated)
+          return { agent, status: "signed_out", checkedAt, ...extra };
         const usage = runnerAgentUsage(db, runnerId, agent);
         const limits = usage ? { limits: usage.limits, limitsAt: usage.observedAt } : {};
-        if (limit)
-          return { agent, status: "usage_limit", checkedAt, resetsAt: limit.resetsAt, ...limits };
-        if (entry?.result) return { agent, status: "signed_in", checkedAt, ...limits };
-        return { agent, status: "unknown", checkedAt };
+        if (policy?.quotaState === "exhausted" && policy.cooldownUntil > at)
+          return {
+            agent,
+            status: "usage_limit",
+            checkedAt,
+            ...extra,
+            resetsAt: policy.resetsAt ?? policy.cooldownUntil,
+            ...limits,
+          };
+        if (policy?.quotaState === "spent_extra" && extraUsage)
+          return {
+            agent,
+            status: "extra_usage",
+            checkedAt,
+            ...extra,
+            resetsAt: policy.resetsAt,
+            ...limits,
+          };
+        if (entry?.result) return { agent, status: "signed_in", checkedAt, ...extra, ...limits };
+        return { agent, status: "unknown", checkedAt, ...extra };
       });
     },
     submit(runnerId: string, input: RunnerHealthResult) {
@@ -354,18 +380,29 @@ export function createRunnerHealth(options: {
             observedAt: at,
           });
         if (assigned.type === "login_check" && result.login?.authenticated && result.agentLimits) {
-          const spent = options.extraUsage?.(assigned.agent)
-            ? []
-            : result.agentLimits.filter((limit) => limit.usedPercent >= 100);
+          const extraUsage =
+            db
+              .query<{ extraUsage: number }, [string, string]>(
+                "SELECT extra_usage AS extraUsage FROM runner_agent_policy WHERE runner_id=? AND agent=?",
+              )
+              .get(runnerId, assigned.agent)?.extraUsage === 1;
+          const spent = result.agentLimits.filter((limit) => limit.usedPercent >= 100);
           const until = spent.length
             ? Math.max(...spent.map((limit) => limit.resetsAt ?? at + 15 * 60_000))
             : null;
           const resetsAt = spent.every((limit) => limit.resetsAt !== null) ? until : null;
           const low = result.agentLimits.some((limit) => limit.usedPercent >= 80);
-          if (observe(spent.length ? "exhausted" : low ? "low" : "ok", "quota", resetsAt) && legacy)
+          const cools = spent.length > 0 && !extraUsage;
+          if (observe(cools ? "exhausted" : low ? "low" : "ok", "quota", resetsAt) && legacy)
             db.run(
               "UPDATE runner_agent_policy SET quota_state=?,resets_at=?,cooldown_until=? WHERE runner_id=? AND agent=?",
-              [spent.length ? "exhausted" : "ok", until, until ?? 0, runnerId, assigned.agent],
+              [
+                cools ? "exhausted" : spent.length ? "spent_extra" : "ok",
+                until,
+                cools ? until! : 0,
+                runnerId,
+                assigned.agent,
+              ],
             );
         }
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);

@@ -18,7 +18,7 @@ export const RUNNER_STALE_MS = 2 * RUNNER_HEARTBEAT_MS;
 type RunnerStatus = "active" | "paused" | "draining" | "revoked";
 export type AgentSignIn = {
   agent: string;
-  status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "unknown";
+  status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "extra_usage" | "unknown";
   checkedAt: number | null;
   resetsAt?: number | null;
   limits?: AgentLimit[];
@@ -454,6 +454,7 @@ const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
   signed_out: ["bad", "Signed out"],
   checking: ["running", "Checking"],
   usage_limit: ["warn", "Usage limit"],
+  extra_usage: ["warn", "Usage limit, running on extra usage"],
   unknown: ["", "Not checked"],
 };
 

@@ -772,10 +772,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           db,
           discoverModels: true,
           checkSignIn: true,
-          extraUsage: (agent: string) =>
-            (loadConfigFile(join(paths.home, "config.toml")).extraUsageAgents ?? []).includes(
-              agent,
-            ),
           root: runnerConfig.root,
           hostname: runnerConfig.hostname,
           port: runnerConfig.port,

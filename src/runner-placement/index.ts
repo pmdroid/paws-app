@@ -148,7 +148,7 @@ export type RunnerPlacement = {
 };
 
 /** Why placement ranked a runner ahead of the others, recorded with its usage. */
-export type PlacementReason = "session_restore";
+export type PlacementReason = "session_restore" | "extra_usage";
 
 export {
   createRunnerPlacement,

@@ -1282,3 +1282,14 @@ test("a new paused runner tells its member owner to sign in and turn it on", () 
   expect(active).toContain(">Pause</button>");
   expect(active).not.toContain("then turn it on.");
 });
+
+test("a spent window with extra usage on reads as running on extra usage", () => {
+  const html = runnerDetailMarkup(
+    {
+      ...runner,
+      agents: [{ agent: "claude", status: "extra_usage", checkedAt: now }],
+    },
+    view,
+  );
+  expect(html).toContain('<span class="tag warn">Usage limit, running on extra usage</span>');
+});

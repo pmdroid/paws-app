@@ -22,7 +22,7 @@ afterEach(() => {
   for (const db of databases.splice(0)) db.close();
 });
 
-function fixture(extraUsage?: (agent: string) => boolean) {
+function fixture() {
   const db = new Database(":memory:");
   databases.push(db);
   db.run("PRAGMA foreign_keys=ON");
@@ -63,12 +63,7 @@ function fixture(extraUsage?: (agent: string) => boolean) {
     eventKey: Buffer.alloc(32, 7),
     now: () => at,
   });
-  const health = createRunnerHealth({
-    db,
-    work,
-    now: () => at,
-    ...(extraUsage ? { extraUsage } : {}),
-  });
+  const health = createRunnerHealth({ db, work, now: () => at });
   const runner = (
     status: "active" | "paused" | "draining" | "revoked" = "active",
     lastSeenAt: number | null = at,
@@ -276,10 +271,14 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
   ]);
 });
 
-test("a spent usage window cools the agent down unless it may run on extra usage", () => {
-  for (const extra of [false, true]) {
-    const f = fixture(extra ? (agent) => agent === "claude" : undefined);
+test("a spent usage window cools the agent down unless the runner keeps it on extra usage", () => {
+  for (const extra of [0, 1]) {
+    const f = fixture();
     const runnerId = f.runner();
+    f.db.run("INSERT INTO runner_agent_policy(runner_id,agent,extra_usage) VALUES(?,'claude',?)", [
+      runnerId,
+      extra,
+    ]);
     f.health.refresh();
     const [claude] = f.checks();
     const resetsAt = f.now() + 3_600_000;
@@ -293,9 +292,11 @@ test("a spent usage window cools the agent down unless it may run on extra usage
       )
       .get(runnerId);
     expect(policy).toEqual(
-      extra ? { quota: "ok", cooldown: 0 } : { quota: "exhausted", cooldown: resetsAt },
+      extra ? { quota: "spent_extra", cooldown: 0 } : { quota: "exhausted", cooldown: resetsAt },
     );
-    expect(f.health.agents(f.owner, runnerId)[0]!.status).toBe(extra ? "signed_in" : "usage_limit");
+    const status = f.health.agents(f.owner, runnerId)[0]!;
+    expect(status.status).toBe(extra ? "extra_usage" : "usage_limit");
+    expect(status.extraUsage).toBe(extra ? true : undefined);
   }
 });
 
