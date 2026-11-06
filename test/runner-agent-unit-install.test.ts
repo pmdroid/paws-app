@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "bun:test";
 
-async function releaseTests(name: string) {
+async function releaseTests(name: string, skips = false) {
   const child = Bun.spawn(
     [
       "python3",
@@ -18,7 +18,7 @@ async function releaseTests(name: string) {
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  expect(stdout + stderr).not.toContain("skipped");
+  if (!skips) expect(stdout + stderr).not.toContain("skipped");
   expect(code).toBe(0);
   return stderr;
 }
@@ -29,6 +29,16 @@ test("the installer ships the agent unit, its polkit rule and its environment di
 
 test("an install names paws-agent only where the host config has no agent user", async () => {
   expect(await releaseTests("AgentUserDefault")).toMatch(/Ran 4 tests[\s\S]*\nOK\n?$/);
+});
+
+test("with agents as paws-agent an install hands their state to paws-agent once, and with runner leaves it", async () => {
+  expect(await releaseTests("AgentStateHandover")).toMatch(/Ran 3 tests[\s\S]*\nOK\n?$/);
+});
+
+test("the agent user can chmod its handed-over state (root only, skipped elsewhere)", async () => {
+  expect(await releaseTests("AgentStateHandoverAsAgent", true)).toMatch(
+    /Ran 1 test[\s\S]*\nOK( \(skipped=1\))?\n?$/,
+  );
 });
 
 test("the polkit rule lets paws-runner start and stop agent units and nothing else", () => {

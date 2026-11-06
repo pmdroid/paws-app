@@ -77,17 +77,20 @@ class Journal:
         self.end(name)
 
 
-def adopt_tree(path, uid, gid, mode, directory_mode=None):
+def adopt_tree(path, uid, gid, mode, directory_mode=None, skip=frozenset()):
+    """Give path's tree to uid:gid; paths in skip, and everything below them, are left alone."""
     info = path.lstat()
     os.lchown(path, uid, gid)
     if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
         os.chmod(path, mode)
         for child in path.iterdir():
+            if child in skip:
+                continue
             child_info = child.lstat()
             child_mode = stat.S_IMODE(child_info.st_mode)
             if directory_mode and stat.S_ISDIR(child_info.st_mode):
                 child_mode = directory_mode(child_mode)
-            adopt_tree(child, uid, gid, child_mode, directory_mode)
+            adopt_tree(child, uid, gid, child_mode, directory_mode, skip)
 
 
 def group_shared(mode):
@@ -171,6 +174,10 @@ STATE_DIRECTORIES = (
 POLKIT_RULE = pathlib.Path("/etc/polkit-1/rules.d/50-paws-runner.rules")
 RUNNER_CONFIG = pathlib.Path("/etc/paws-runner/config.json")
 SHARED_DIRECTORIES = {"/var/lib/paws-agent": group_shared, "/var/lib/paws-agent-tasks": group_shared, "/var/lib/paws-agent-results": group_inherited}
+# Each agent's state in an agent home (OpenCode's is under .config, .local and .cache). It belongs to the
+# user agents run as: Codex and OpenCode chmod their own state, which only its owner may. `work/`,
+# `.paws-skills` and an account home's own files (account.json, .paws-active) stay paws-runner's.
+AGENT_STATE = (".bun", ".cache", ".claude", ".claude.json", ".codex", ".config", ".grok", ".local")
 
 
 def state_directories():
@@ -668,6 +675,50 @@ def default_agent_user(path=RUNNER_CONFIG):
     return True
 
 
+def configured_agent_user(path=RUNNER_CONFIG):
+    """The user agents run as: the host config's agentUser, "paws-agent" when it names none, None when it is unreadable."""
+    try:
+        config = json.loads(release.read_regular(path, 65536))
+    except FileNotFoundError:
+        return "paws-agent"
+    except (OSError, ValueError):
+        return None
+    return config.get("agentUser", "paws-agent") if isinstance(config, dict) else None
+
+
+def agent_state_to_hand_over(home, config=RUNNER_CONFIG):
+    """Each agent's state in the agent home and its account homes when agents run as paws-agent, else none. Links are not followed."""
+    if configured_agent_user(config) != "paws-agent":
+        return frozenset()
+    homes = [home]
+    accounts = home / ".paws-accounts"
+    with contextlib.suppress(FileNotFoundError):
+        if stat.S_ISDIR(accounts.lstat().st_mode):
+            homes += [child for child in sorted(accounts.iterdir()) if stat.S_ISDIR(child.lstat().st_mode)]
+    return frozenset(base / name for base in homes for name in AGENT_STATE)
+
+
+def hand_over_agent_state(paths, uid, gid, lstat=os.lstat, lchown=os.lchown):
+    """Give each path's tree to uid:gid. Modes stay as they are, and links are changed, never followed.
+
+    Returns how many entries changed owner, so a second run returns 0.
+    """
+    changed = 0
+    pending = sorted(paths)
+    while pending:
+        path = pending.pop()
+        try:
+            info = lstat(path)
+        except FileNotFoundError:
+            continue
+        if (info.st_uid, info.st_gid) != (uid, gid):
+            lchown(path, uid, gid)
+            changed += 1
+        if stat.S_ISDIR(info.st_mode):
+            pending += [path / name for name in sorted(os.listdir(path))]
+    return changed
+
+
 def switch_release(unpacked, destination, pointers):
     """With the runner stopped: put the units, accounts and runtime pointers in place, then point `current` at destination."""
     root_directory(BASE / "bin")
@@ -685,9 +736,13 @@ def switch_release(unpacked, destination, pointers):
             write_atomic(target, (assets / name).read_bytes(), 0o644)
     release.command(["/usr/bin/systemd-sysusers", "/etc/sysusers.d/paws-runner.conf"])
     release.command(["/usr/bin/systemd-tmpfiles", "--create", "/etc/tmpfiles.d/paws-runner.conf"])
+    root_directory(pathlib.Path("/etc/paws-runner"))
+    default_agent_user()
+    # With agents as paws-agent their state is handed to paws-agent below; adopting it would take it back.
+    agent_state = agent_state_to_hand_over(pathlib.Path("/var/lib/paws-agent"))
     for path, uid, gid, mode in state_directories():
         if path in SHARED_DIRECTORIES:
-            adopt_tree(pathlib.Path(path), uid, gid, mode, SHARED_DIRECTORIES[path])
+            adopt_tree(pathlib.Path(path), uid, gid, mode, SHARED_DIRECTORIES[path], agent_state)
     shutil.rmtree("/var/lib/paws-runner-members", ignore_errors=True)
     validate_identity_separation()
     runner = pwd.getpwnam("paws-runner")
@@ -700,8 +755,7 @@ def switch_release(unpacked, destination, pointers):
     validate_state_directories()
     if "paws-runner" not in agent_group.gr_mem or not {"paws-runner", "paws-agent"} <= set(results_group.gr_mem):
         raise ValueError("Unsafe runner service identities")
-    root_directory(pathlib.Path("/etc/paws-runner"))
-    default_agent_user()
+    hand_over_agent_state(agent_state, agent.pw_uid, agent.pw_gid)
     current = BASE / "current"
     if current.exists() and not current.is_symlink():
         raise ValueError("Unsafe current release pointer")
