@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
@@ -9,8 +11,12 @@ import {
   listRetroItems,
   listRetros,
   readRetroArtifact,
+  retroArtifact,
   workspaceMember,
+  type RetroArtifactKind,
+  type RetroCoverageGap,
 } from "../db";
+import { improvementFollowThrough, memberRepositories } from "../improvements";
 import { journalCaught } from "../journal";
 import type { AgentModelCatalog } from "../runner-models";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
@@ -126,6 +132,16 @@ const REPORT =
   /^\/api\/retros\/reports\/([0-9A-Za-z]{1,64})(?:\/(digest|report|prompt)|\/items\/([A-Za-z0-9_.-]{1,100})\/evidence)?$/;
 const HISTORY_PAGE = { size: 20, max: 50 } as const;
 
+/**
+ * History pages by period: newest window end first, then id. The cursor names the last retro
+ * shown, so a retro added or removed meanwhile neither repeats nor skips one on the next page.
+ */
+function parseHistoryCursor(raw: string | null) {
+  if (raw === null || raw === "") return null;
+  const match = /^(\d{1,16})\.([0-9A-Za-z]{1,64})$/.exec(raw);
+  return match ? { windowEnd: Number(match[1]), id: match[2]! } : undefined;
+}
+
 const missing = () =>
   json(
     { error: "This retro is not available to you. Return to the history.", reason: "not_found" },
@@ -136,12 +152,41 @@ function visibleItem(access: RetroReaderAccess, evidenceIds: readonly string[]) 
   return evidenceIds.length > 0 && evidenceIds.every((id) => access.readable.has(id));
 }
 
-function historyEntry(db: Database, access: RetroReaderAccess) {
+const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
+
+/** The agent, model and effort frozen on the retro. A null effort means the agent's default. */
+const profileOf = (profile: Record<string, unknown>) => ({
+  agent: text(profile.agent),
+  model: text(profile.model),
+  effort: text(profile.effort),
+});
+
+/** `none` when Paws never stored the file, `unavailable` when its record outlived the file. */
+function artifactState(db: Database, root: string, retroId: string, kind: RetroArtifactKind) {
+  const record = retroArtifact(db, retroId, kind);
+  if (record === null) return "none" as const;
+  return existsSync(join(root, record.fileName)) ? ("stored" as const) : ("unavailable" as const);
+}
+
+/** Expired when a source's retention ran out before collection, incomplete for any other gap. */
+const evidenceState = (gaps: readonly RetroCoverageGap[]) =>
+  gaps.some((gap) => gap.kind === "retention_gap")
+    ? ("expired" as const)
+    : gaps.length
+      ? ("incomplete" as const)
+      : ("complete" as const);
+
+function historyEntry(db: Database, root: string, access: RetroReaderAccess) {
   const { retro } = access;
   const items = listRetroItems(db, retro.id).filter((item) =>
     visibleItem(access, item.evidenceIds),
   );
+  const improvements = items.map((item) => ({
+    item,
+    improvement: getImprovement(db, item.improvementId),
+  }));
   const generation = retroGenerationView(db, retro.id);
+  const result = retro.result as RetroReport | null;
   return {
     id: retro.id,
     windowStart: retro.windowStart,
@@ -154,11 +199,93 @@ function historyEntry(db: Database, access: RetroReaderAccess) {
     generation: access.full ? generation : { state: generation?.state ?? null },
     items: {
       visible: items.length,
-      toReview: items.filter(
-        (item) => getImprovement(db, item.improvementId)?.reviewState === "needs_review",
+      toReview: improvements.filter(
+        ({ improvement }) => improvement?.reviewState === "needs_review",
       ).length,
+      links: improvements.map(({ item, improvement }) => ({
+        itemId: item.itemId,
+        improvementId: item.improvementId,
+        reviewState: improvement?.reviewState ?? null,
+        issue: improvement?.issue
+          ? { identifier: improvement.issue.identifier, url: improvement.issue.url }
+          : null,
+      })),
+    },
+    ...(access.full
+      ? {
+          settingsRevision: retro.settingsRevision,
+          profile: profileOf(retro.agentProfile),
+          digest: retro.digestSha256 === null ? null : access.digest,
+          patterns: result === null ? null : result.items.length,
+          evidence: evidenceState(listRetroCoverageGaps(db, retro.id)),
+          artifacts: {
+            digest: artifactState(db, root, retro.id, "digest"),
+            prompt: artifactState(db, root, retro.id, "prompt"),
+            report: result === null ? ("none" as const) : ("stored" as const),
+          },
+        }
+      : {
+          settingsRevision: null,
+          profile: null,
+          digest: null,
+          patterns: null,
+          evidence: null,
+          artifacts: null,
+        }),
+  };
+}
+
+/** Each visible item's follow-through as it is now, or null when it is not in the reader's inbox. */
+function currentOutcomes(
+  db: Database,
+  root: string,
+  principal: WorkspacePrincipal,
+  sessionIds: readonly string[],
+  access: RetroReaderAccess,
+  itemIds: readonly { itemId: string; improvementId: string }[],
+  now: number,
+) {
+  const evidence = new Map<string, ReadonlySet<string> | null>([
+    [access.retro.id, access.readable],
+  ]);
+  const reader = {
+    workspaceId: principal.workspaceId,
+    repositories: memberRepositories(db, principal.workspaceId, principal.userId),
+    sessionIds,
+    retroEvidence: (retroId: string) => {
+      if (!evidence.has(retroId))
+        evidence.set(
+          retroId,
+          retroReaderAccess(db, root, principal, sessionIds, retroId)?.readable ?? null,
+        );
+      return evidence.get(retroId)!;
     },
   };
+  return Object.fromEntries(
+    itemIds.map(({ itemId, improvementId }) => {
+      const view = improvementFollowThrough(db, reader, improvementId, now)?.followThrough;
+      return [
+        itemId,
+        view
+          ? {
+              improvementId,
+              attention: view.attention,
+              issue: view.issue
+                ? {
+                    identifier: view.issue.identifier,
+                    url: view.issue.url,
+                    confirmedAt: view.issue.confirmedAt,
+                    syncedAt: view.issue.sync?.confirmedAt ?? null,
+                    fresh: view.issue.fresh,
+                  }
+                : null,
+              implementation: { state: view.implementation.state, at: view.implementation.at },
+              verification: { state: view.verification.state, at: view.verification.at },
+            }
+          : null,
+      ];
+    }),
+  );
 }
 
 function filteredReport(db: Database, access: RetroReaderAccess) {
@@ -237,9 +364,9 @@ export function createRetroReviewHttp(options: {
     }
     if (request.method !== "GET") return json({ error: "Use GET." }, 405);
     if (!report) {
-      const cursor = Number(url.searchParams.get("cursor") ?? 0);
+      const cursor = parseHistoryCursor(url.searchParams.get("cursor"));
       const limit = Number(url.searchParams.get("limit") ?? HISTORY_PAGE.size);
-      if (!Number.isInteger(cursor) || cursor < 0 || !Number.isInteger(limit) || limit < 1)
+      if (cursor === undefined || !Number.isInteger(limit) || limit < 1)
         return json({ error: "Check the history page parameters." }, 400);
       const size = Math.min(limit, HISTORY_PAGE.max);
       const visible = listRetros(db, principal.workspaceId).flatMap((retro) => {
@@ -250,10 +377,21 @@ export function createRetroReviewHttp(options: {
           ? [access]
           : [];
       });
+      const after =
+        cursor === null
+          ? visible
+          : visible.filter(
+              ({ retro }) =>
+                retro.windowEnd < cursor.windowEnd ||
+                (retro.windowEnd === cursor.windowEnd && retro.id > cursor.id),
+            );
+      const shown = after.slice(0, size);
+      const last = shown.at(-1)?.retro;
       return json({
-        retros: visible.slice(cursor, cursor + size).map((access) => historyEntry(db, access)),
+        retros: shown.map((access) => historyEntry(db, root, access)),
         total: visible.length,
-        nextCursor: cursor + size < visible.length ? String(cursor + size) : null,
+        nextCursor:
+          last !== undefined && after.length > size ? `${last.windowEnd}.${last.id}` : null,
       });
     }
     const [, retroId, file, itemId] = report;
@@ -322,10 +460,24 @@ export function createRetroReviewHttp(options: {
         }),
       });
     }
+    const shown = filteredReport(db, access);
     return json({
-      retro: historyEntry(db, access),
-      report: filteredReport(db, access),
+      retro: historyEntry(db, root, access),
+      report: shown,
       coverageGaps: access.full ? listRetroCoverageGaps(db, retroId!) : null,
+      current: currentOutcomes(
+        db,
+        root,
+        principal,
+        sessionIds,
+        access,
+        (shown?.items ?? []).flatMap((item) =>
+          item.improvement
+            ? [{ itemId: item.itemId, improvementId: item.improvement.improvementId }]
+            : [],
+        ),
+        now(),
+      ),
     });
   };
 }

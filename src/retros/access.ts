@@ -5,7 +5,14 @@ import type { WorkspacePrincipal } from "../workspace";
 import type { RetroDigest } from "./digest";
 
 type EvidenceSource = { itemId: string; identifier: string; repository: string };
-type DigestIndex = { records: Map<string, EvidenceSource>; itemIds: string[] };
+type DigestIndex = {
+  records: Map<string, EvidenceSource>;
+  itemIds: string[];
+  coverage: RetroDigestSize;
+};
+
+/** How much the frozen digest holds: sessions, counted records and context-only records. */
+export type RetroDigestSize = { sessions: number; counted: number; context: number };
 
 export type RetroReaderAccess = {
   retro: Retro;
@@ -13,13 +20,15 @@ export type RetroReaderAccess = {
   readable: ReadonlySet<string>;
   repositories: string[];
   sources: ReadonlyMap<string, EvidenceSource>;
+  digest: RetroDigestSize;
 };
 
 const CACHE_LIMIT = 16;
 const indexes = new Map<string, DigestIndex>();
 
 function digestIndex(db: Database, root: string, retro: Retro): DigestIndex | null {
-  if (retro.digestSha256 === null) return { records: new Map(), itemIds: [] };
+  if (retro.digestSha256 === null)
+    return { records: new Map(), itemIds: [], coverage: { sessions: 0, counted: 0, context: 0 } };
   const key = `${retro.id}:${retro.digestSha256}`;
   const cached = indexes.get(key);
   if (cached) return cached;
@@ -44,6 +53,11 @@ function digestIndex(db: Database, root: string, retro: Retro): DigestIndex | nu
         ...digest.records.map((record) => record.itemId),
       ]),
     ],
+    coverage: {
+      sessions: digest.sessions.length,
+      counted: digest.records.filter((record) => record.scope !== "context").length,
+      context: digest.records.filter((record) => record.scope === "context").length,
+    },
   };
   if (indexes.size >= CACHE_LIMIT) indexes.delete(indexes.keys().next().value!);
   indexes.set(key, index);
@@ -95,5 +109,6 @@ export function retroReaderAccess(
     readable,
     repositories: full ? retro.repositories : [...repositories].sort(),
     sources: index.records,
+    digest: index.coverage,
   };
 }

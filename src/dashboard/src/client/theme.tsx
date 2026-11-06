@@ -361,6 +361,10 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "ol" && has("improvement-report-items"))
     return styled("flex min-w-0 list-none flex-col gap-4 p-0");
   if (has("improvement-numbers")) return styled("flex list-none flex-wrap gap-4 p-0");
+  if (has("improvement-now"))
+    return styled(
+      "flex min-w-0 flex-col gap-2 rounded-base border-2 border-dashed border-border bg-background p-3 [overflow-wrap:anywhere]",
+    );
   if (has("status-meta")) return styled("flex min-w-0 flex-wrap items-center gap-3");
   if (has("status-actions"))
     return styled("grid grid-cols-2 gap-3 self-stretch sm:flex sm:shrink-0 sm:self-auto");
@@ -591,7 +595,14 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   if (has("card", "q", "runner-section", "login-panel"))
     return (
-      <Card {...props} className={cn(attribs.class, "min-w-0 bg-secondary-background p-4 sm:p-6")}>
+      <Card
+        {...props}
+        className={cn(
+          attribs.class,
+          "min-w-0 bg-secondary-background p-4 sm:p-6",
+          has("selected") && "outline-4 outline-offset-2 outline-main",
+        )}
+      >
         {children()}
       </Card>
     );

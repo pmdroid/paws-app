@@ -15,10 +15,13 @@ import {
   parseImprovementQuery,
   parseOutcome,
   parseRetroHistory,
+  parseRetroItemEvidence,
   parseRetroReport,
   parseRetroSchedule,
+  retroEvidencePath,
   retroReportPath,
   type ImprovementItem,
+  type RetroArtifact,
   type ImprovementList,
   type RetroHistory,
   type ImprovementOutcome,
@@ -45,6 +48,31 @@ export type ImprovementsOptions = {
   replaceSearch?: (search: string) => void;
   counted?: (total: number) => void;
   go?: (route: ImprovementRoute) => void;
+  /** Hands a downloaded file to the browser; tests record it instead. */
+  save?: (blob: Blob, fileName: string) => void;
+};
+
+function saveFile(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/** The report item the address selects, or null. */
+function selectedItem(search: string): string | null {
+  const item = new URLSearchParams(search).get("item");
+  return item && /^[A-Za-z0-9_.-]{1,100}$/.test(item) ? item : null;
+}
+
+/** The selected item's evidence heading, or the notice that the report has no such item. */
+const RETRO_ITEM_FOCUS = "#retro-item-evidence, [data-retro-item-missing]";
+
+const DOWNLOAD_REFUSED: Record<number, string> = {
+  403: "Paws refused the download: it needs access to every repository and session this retro includes, and you no longer have that. Nothing from the file was sent.",
+  404: "Paws no longer has this file. It is not rebuilt from current sessions.",
 };
 
 type Answer = { status: number; body: unknown };
@@ -93,6 +121,10 @@ function emptyView(local: boolean, now: number): ImprovementsView {
     reportState: "loading",
     history: null,
     historyError: null,
+    item: null,
+    itemEvidence: null,
+    itemEvidenceState: "idle",
+    download: { file: null, error: null },
     expanded: false,
     choice: null,
     drafts: {},
@@ -134,6 +166,7 @@ export function createImprovements(options: ImprovementsOptions = {}) {
   const retroSettings =
     options.retroSettings ?? createRetroSettings({ fetch: fetchImpl, csrf, paint: draw });
   const where = options.location ?? (() => location);
+  const save = options.save ?? saveFile;
   const go = options.go ?? ((route: ImprovementRoute) => location.assign(routeHref(route)));
   const replaceSearch =
     options.replaceSearch ??
@@ -192,6 +225,7 @@ export function createImprovements(options: ImprovementsOptions = {}) {
         if (!view.detail) view.detailState = "error";
       } else if (key === "report") view.reportState = "error";
       else if (key === "history") view.historyError = "Paws did not answer. Retry in a moment.";
+      else if (key === "evidence") view.itemEvidenceState = "error";
     }
     if (current()) paint();
   };
@@ -346,6 +380,60 @@ export function createImprovements(options: ImprovementsOptions = {}) {
       view.reportState = "ready";
     });
 
+  const loadEvidence = () =>
+    guarded("evidence", async (current) => {
+      const id = view.id;
+      const item = view.item;
+      if (id === null || item === null || view.tab !== "report") return;
+      const answer = await request(retroEvidencePath(id, item));
+      if (!current() || view.id !== id || view.item !== item) return;
+      if (answer.status === 404 || answer.status === 403) {
+        view.itemEvidence = null;
+        view.itemEvidenceState = "missing";
+        return;
+      }
+      const parsed = answer.status === 200 ? parseRetroItemEvidence(answer.body) : null;
+      if (!parsed?.ok) {
+        view.itemEvidenceState = "error";
+        return;
+      }
+      view.itemEvidence = parsed.value;
+      view.itemEvidenceState = "ready";
+    });
+
+  const download = async (file: RetroArtifact) => {
+    const id = view.id;
+    if (id === null || view.tab !== "report" || view.download.file !== null) return;
+    const mounted = root;
+    const started = visit;
+    const here = () => root === mounted && visit === started && view.id === id;
+    view.download = { file, error: null };
+    paint();
+    let error: string | null = null;
+    try {
+      const response = await fetchImpl(new URL(retroReportPath(id, file), engine), {
+        cache: "no-store",
+      });
+      if (response.status === 200) {
+        const name =
+          /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ??
+          `retro-${id}-${file}`;
+        const blob = await response.blob();
+        if (here()) save(blob, name);
+      } else
+        error =
+          DOWNLOAD_REFUSED[response.status] ??
+          `The download did not finish (${response.status}). Retry in a moment.`;
+    } catch (caught) {
+      journalCaught(caught, "improvements.download", null);
+      error = "Paws did not answer. Retry in a moment.";
+    }
+    if (!here()) return;
+    view.download = { file: null, error };
+    paint();
+    if (error !== null) await loadReport();
+  };
+
   const loadHistory = (append = false) =>
     guarded("history", async (current) => {
       const page = async (cursor: string | null | undefined) => {
@@ -429,8 +517,10 @@ export function createImprovements(options: ImprovementsOptions = {}) {
         void loadDaily();
       }
       if (view.id !== null) void loadDetail();
-    } else if (view.tab === "report") void loadReport();
-    else if (view.tab === "history") void loadHistory();
+    } else if (view.tab === "report") {
+      void loadReport();
+      if (view.item !== null) void loadEvidence();
+    } else if (view.tab === "history") void loadHistory();
     else void loadSchedule();
   };
 
@@ -685,7 +775,10 @@ export function createImprovements(options: ImprovementsOptions = {}) {
         if (owner === view) paint();
       });
     } else if (action === "more-history") void loadHistory(true);
-    else if (action === "evidence") {
+    else if (action === "download") {
+      const file = button.dataset.file;
+      if (file === "digest" || file === "report" || file === "prompt") void download(file);
+    } else if (action === "evidence") {
       view.expanded = !view.expanded;
       paint();
     } else if (action === "use-issue") {
@@ -835,7 +928,17 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     const previous = { tab: view.tab, id: view.id };
     const filter = parseImprovementQuery(where().search);
     const filterChanged = improvementQuery(filter) !== improvementQuery(view.filter);
-    if (previous.tab === tab && previous.id === route.id && !filterChanged) return false;
+    const item = tab === "report" ? selectedItem(where().search) : null;
+    const itemChanged = item !== view.item;
+    if (previous.tab === tab && previous.id === route.id && !filterChanged && !itemChanged)
+      return false;
+    if (itemChanged) {
+      view.item = item;
+      view.itemEvidence = null;
+      view.itemEvidenceState = item === null ? "idle" : "loading";
+      focusAfterPaint = item === null ? "#retro-report-heading" : RETRO_ITEM_FOCUS;
+    }
+    view.download = { file: null, error: null };
     epoch++;
     visit++;
     view.tab = tab;
@@ -881,6 +984,13 @@ export function createImprovements(options: ImprovementsOptions = {}) {
         view.filter = parseImprovementQuery(where().search);
         view.tab = route.tab ?? "review";
         view.id = route.id;
+        if (view.tab === "report") {
+          view.item = selectedItem(where().search);
+          if (view.item !== null) {
+            view.itemEvidenceState = "loading";
+            focusAfterPaint = RETRO_ITEM_FOCUS;
+          }
+        }
         if (view.id !== null && view.tab === "review") {
           view.detailState = "loading";
           focusAfterPaint = "#improvement-heading";

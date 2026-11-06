@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { insertQueuedItem, listImprovementDeliveries } from "../src/db";
+import { createRetro, insertQueuedItem, listImprovementDeliveries, retroArtifact } from "../src/db";
 import {
   deliverImprovements,
   syncImprovementOutcomes,
@@ -39,7 +39,18 @@ const { matchRoute, retroRedirect, routePath } = (await client(
   retroRedirect(path: string): string | null;
   routePath(route: Route): string;
 };
-import { END, ONLY_A, seedDaily, world } from "./improvement-fixtures";
+import {
+  ALL,
+  END,
+  ONLY_A,
+  START,
+  accept,
+  seedDaily,
+  world,
+  type Json,
+} from "./improvement-fixtures";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 
 const DOM_GLOBALS = [
   "window",
@@ -135,13 +146,15 @@ function harness() {
       return Response.json({ retroId: "r2", created: true, status: SCHEDULE }, { status: 202 });
     if (target.pathname === "/api/finding-groups")
       return Response.json({ groups: [], lastRun: null, canRun: false, enabled: true });
+    const sessions = who === "admin" ? ALL : ONLY_A;
     const handled = target.pathname.startsWith("/api/retros/")
-      ? await retros(request, w.people[who]!, ONLY_A)
-      : await w.improvements(request, w.people[who]!, ONLY_A);
+      ? await retros(request, w.people[who]!, sessions)
+      : await w.improvements(request, w.people[who]!, sessions);
     return handled ?? Response.json({ error: "Not found." }, { status: 404 });
   };
   let tick = () => {};
   let search = "";
+  const downloads: { name: string; text: string }[] = [];
   const counts: number[] = [];
   const went: Route[] = [];
   const page = createImprovements({
@@ -161,6 +174,9 @@ function harness() {
     location: () => ({ pathname: "/dashboard/improvements", search }),
     replaceSearch: (next: string) => {
       search = next;
+    },
+    save: (blob: Blob, name: string) => {
+      void blob.text().then((text) => downloads.push({ name, text }));
     },
   });
   const root = window.document.createElement("div");
@@ -209,6 +225,7 @@ function harness() {
     root,
     page,
     requests,
+    saved: downloads,
     counts,
     went,
     answers,
@@ -721,5 +738,248 @@ describe("improvement inbox", () => {
     expect(t.text()).toContain("A manual retro uses the same saved settings");
     await t.click('[data-improvement-action="run-retro"]');
     expect(t.text()).toContain("Retro requested");
+  });
+});
+
+const DAY = 86_400_000;
+
+/** Ada accepts the acme/a pattern, Paws files IMP-1, and work on it reaches `state`. */
+async function filedWork(t: ReturnType<typeof harness>, state: string) {
+  const id = t.w.retro.a;
+  expect((await t.w.api("ada", `/api/improvements/${id}/decision`, accept())).status).toBe(200);
+  await t.deliver();
+  const issueId = listImprovementDeliveries(t.w.db, id)[0]!.remoteId!;
+  insertQueuedItem(t.w.db, { id: "work-x", sessionKey: "session-a", now: END + 2 * 3_600_000 });
+  t.w.db.run("UPDATE work_item SET linear_issue_id = ?, state = ? WHERE id = 'work-x'", [
+    issueId,
+    state,
+  ]);
+  if (state === "merged") {
+    t.w.db.run("INSERT INTO item_pull_request VALUES ('work-x', 42, 'https://gh/pull/42', ?)", [
+      END,
+    ]);
+    t.w.db.run(
+      "INSERT INTO remote_merge_fact VALUES ('work-x', 'acme', 'a', 42, 'https://gh/pull/42', ?, ?)",
+      [MERGE, END + 3_000],
+    );
+  }
+  await t.sync();
+  return id;
+}
+
+/** Reopens the report: leaving for the history and coming back reads it again. */
+async function reopen(t: ReturnType<typeof harness>, path: string) {
+  await t.open("/improvements/history");
+  await t.open(path);
+}
+
+const now = (t: ReturnType<typeof harness>) => t.find('[data-retro-item="p1"] [data-retro-now]');
+
+describe("retro history", () => {
+  test("lists each period with sessions, profile, decisions and issue links, without excerpts", async () => {
+    const t = harness();
+    t.as("admin");
+    await t.open("/improvements/history");
+    const row = t.find('[data-retro-row="r1"]');
+    expect(row.textContent).toContain("2026-10-22 to 2026-10-29");
+    expect(row.textContent).toContain("Settings revision 1 · codex · agent default model");
+    expect(row.textContent).toContain("2 to review");
+    expect(row.querySelector("td.hide-phone")!.textContent).toBe("2");
+    expect(t.text()).toContain("sets no retention period");
+    expect(t.text()).not.toContain("forever");
+
+    const listed = await (await t.w.retroApi("admin", "/api/retros/history", ALL)).response.text();
+    expect(listed).not.toContain("Answered question");
+    expect(JSON.parse(listed).retros[0]).toMatchObject({
+      settingsRevision: 1,
+      profile: { agent: "codex", model: null, effort: null },
+      digest: { sessions: 2, counted: 4, context: 0 },
+      patterns: 2,
+      evidence: "complete",
+      artifacts: { digest: "stored", prompt: "stored", report: "stored" },
+    });
+
+    t.as("ada");
+    await t.open("/improvements/settings");
+    await t.open("/improvements/history");
+    expect(t.find('[data-retro-row="r1"]').textContent).toContain("Partial view");
+    const partial = (await (
+      await t.w.retroApi("ada", "/api/retros/history")
+    ).response.json()) as Json;
+    expect(partial.retros[0]).toMatchObject({ digest: null, patterns: null, artifacts: null });
+    expect(partial.retros[0].items.links.map((l: { itemId: string }) => l.itemId)).toEqual(["p1"]);
+
+    await filedWork(t, "running");
+    await t.poll();
+    await t.open("/improvements/settings");
+    await t.open("/improvements/history");
+    expect(t.find('[data-retro-row="r1"]').textContent).toContain("IMP-1");
+    expect(t.find('[data-retro-row="r1"]').textContent).toContain("1 reviewed");
+  });
+
+  test("several reports page by period, and a retro added between pages repeats or skips none", async () => {
+    const t = harness();
+    for (const [id, weeks] of [
+      ["r0", -1],
+      ["r2", 1],
+    ] as const)
+      createRetro(t.w.db, {
+        id,
+        workspaceId: "ws",
+        windowStart: START + weeks * 7 * DAY,
+        windowEnd: END + weeks * 7 * DAY,
+        origin: "scheduled",
+        settingsRevision: 1,
+        now: END,
+      });
+    const page = async (cursor: string | null): Promise<Json> =>
+      (
+        await t.w.retroApi(
+          "admin",
+          `/api/retros/history?limit=1${cursor ? `&cursor=${cursor}` : ""}`,
+          ALL,
+        )
+      ).response.json();
+    const first = await page(null);
+    expect(first.retros.map((r: { id: string }) => r.id)).toEqual(["r2"]);
+    createRetro(t.w.db, {
+      id: "r3",
+      workspaceId: "ws",
+      windowStart: START + 14 * DAY,
+      windowEnd: END + 14 * DAY,
+      origin: "manual",
+      settingsRevision: 1,
+      now: END,
+    });
+    const second = await page(first.nextCursor);
+    const third = await page(second.nextCursor);
+    expect([second.retros[0].id, third.retros[0].id, third.nextCursor]).toEqual(["r1", "r0", null]);
+    expect((await t.w.retroApi("admin", "/api/retros/history?cursor=7", ALL)).status).toBe(400);
+
+    t.as("admin");
+    await t.open("/improvements/history");
+    expect(
+      [...t.root.querySelectorAll("[data-retro-row]")].map((row) =>
+        row.getAttribute("data-retro-row"),
+      ),
+    ).toEqual(["r3", "r2", "r1", "r0"]);
+    expect(t.find('[data-retro-row="r3"]').textContent).toContain("Queued");
+    expect(t.find('[data-retro-row="r1"]').textContent).toContain("2 to review");
+
+    await t.open("/improvements/reports/r1");
+    await t.poll();
+    expect(t.find("#retro-report-heading").textContent).toBe("2026-10-22 to 2026-10-29");
+    expect(t.page.view().report.retro.id).toBe("r1");
+  });
+
+  test("a direct link selects the item and loads its saved evidence; Back and Forward keep the report", async () => {
+    const t = harness();
+    await t.open("/improvements/reports/r1?item=p1");
+    const card = t.find('[data-retro-item="p1"]');
+    expect(card.getAttribute("aria-current")).toBe("true");
+    expect(card.textContent).toContain("Answered question in acme/a for item-a");
+    const report = await (await t.w.retroApi("ada", "/api/retros/reports/r1")).response.text();
+    expect(report).not.toContain("Answered question");
+    const loads = t.requests.filter((r) => r.path === "/api/retros/reports/r1").length;
+
+    await t.open("/improvements/reports/r1");
+    expect(t.find('[data-retro-item="p1"]').hasAttribute("aria-current")).toBe(false);
+    expect(t.text()).not.toContain("Answered question");
+    await t.open("/improvements/reports/r1?item=p1");
+    expect(t.find('[data-retro-item="p1"]').textContent).toContain("Answered question in acme/a");
+    expect(t.page.view().report.retro.id).toBe("r1");
+    expect(t.requests.filter((r) => r.path === "/api/retros/reports/r1").length).toBe(loads + 2);
+
+    await t.open("/improvements/reports/r1?item=p2");
+    expect(t.text()).toContain("Item not available");
+    expect(t.text()).not.toContain("acme/b for item-b");
+    await t.open("/improvements/reports/gone?item=p1");
+    expect(t.text()).toContain("Retro not available");
+    expect(t.text()).toContain("Return to the history");
+  });
+
+  test("downloads the original digest, and refuses after access is lost without showing it", async () => {
+    const t = harness();
+    t.as("admin");
+    await t.open("/improvements/reports/r1");
+    expect(t.text()).toContain("not rebuilt from current sessions");
+    expect(t.text()).toContain("Coverage: 2 sessions, 4 counted records");
+    await t.click('[data-improvement-action="download"][data-file="digest"]');
+    await settle();
+    expect(t.saved).toHaveLength(1);
+    expect(t.saved[0]!.name).toBe("retro-r1-digest.json");
+    expect(JSON.parse(t.saved[0]!.text).records).toHaveLength(4);
+
+    rmSync(join(t.w.root, retroArtifact(t.w.db, "r1", "prompt")!.fileName));
+    await reopen(t, "/improvements/reports/r1");
+    expect(t.find('[data-retro-artifact="prompt"]').textContent).toContain(
+      "the stored file is unavailable",
+    );
+
+    t.w.db.run("DELETE FROM workspace_repository WHERE repository = 'acme/b'");
+    await t.click('[data-improvement-action="download"][data-file="report"]');
+    await settle();
+    expect(t.saved).toHaveLength(1);
+    expect(t.find("[data-retro-download-error]").textContent).toContain(
+      "Paws refused the download",
+    );
+    expect(t.find('[data-retro-downloads="denied"]')).toBeTruthy();
+    expect(t.text()).not.toContain("acme/b for item-b");
+
+    t.as("ada");
+    await reopen(t, "/improvements/reports/r1");
+    expect(t.find('[data-retro-downloads="denied"]').textContent).toContain(
+      "every repository and session",
+    );
+    expect(t.root.querySelector('[data-improvement-action="download"]')).toBeNull();
+  });
+
+  test("an old report shows the current outcome apart from its frozen claims", async () => {
+    const t = harness();
+    const id = await filedWork(t, "merged");
+    await t.open("/improvements/reports/r1");
+    expect(now(t).getAttribute("data-retro-now")).toBe("awaiting_verification");
+    expect(now(t).textContent).toContain("IMP-1");
+    expect(now(t).textContent).toContain("Verification: Due");
+    const card = t.find('[data-retro-item="p1"]').textContent;
+    expect(card).toContain("Make branch-tip recovery durable.");
+    expect(card).toContain("Decision: accepted");
+
+    const version = (await t.w.api("ada", `/api/improvements/${id}/follow-through`)).body
+      .followThrough.version;
+    const verified = await t.w.api("ada", `/api/improvements/${id}/verification`, {
+      expectedVersion: version,
+      outcome: "verified",
+      check: "Weekly retro push-recovery questions",
+      result: "None in the two retros after the merge.",
+      revision: MERGE,
+      evidence: { kind: "attestation" },
+    });
+    expect(verified.status).toBe(200);
+    await reopen(t, "/improvements/reports/r1");
+    expect(now(t).getAttribute("data-retro-now")).toBe("verified");
+    expect(t.find('[data-retro-item="p1"]').textContent).toContain(
+      "No push-recovery question in the next two retros.",
+    );
+
+    const body = (await (
+      await t.w.retroApi("ada", "/api/retros/reports/r1")
+    ).response.json()) as Json;
+    t.answers.set("/api/retros/reports/r1", () =>
+      Response.json({ ...body, current: { p1: null } }),
+    );
+    await reopen(t, "/improvements/reports/r1");
+    expect(now(t).getAttribute("data-retro-now")).toBe("inaccessible");
+    expect(t.find('[data-retro-item="p1"]').textContent).toContain(
+      "Make branch-tip recovery durable.",
+    );
+  });
+
+  test("canceled work shows as canceled now, not as a resolved report item", async () => {
+    const t = harness();
+    await filedWork(t, "cancelled");
+    await t.open("/improvements/reports/r1");
+    expect(now(t).getAttribute("data-retro-now")).toBe("canceled");
+    expect(now(t).textContent).toContain("Implementation: Canceled");
   });
 });
