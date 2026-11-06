@@ -39,6 +39,7 @@ export const RETRO_SCHEDULE_JOB = "retro.schedule";
 export const RETRO_SCHEDULE_TICK_MS = 60_000;
 
 const DAY = 86_400_000;
+const FIRST_RETRO_WINDOW_MS = 7 * DAY;
 const OPEN_STATES: readonly RetroState[] = ["collecting", "queued", "generating", "failed"];
 
 export type RetroLocalAdjustment = "exact" | "skipped_forward" | "repeated_first";
@@ -368,10 +369,11 @@ export function createRetroScheduler(options: {
     return fallback;
   }
 
-  function windowStart(workspaceId: string, repositories: readonly string[]): number {
+  function windowStart(workspaceId: string, repositories: readonly string[], end: number): number {
     const marks = retroWatermarks(db, workspaceId);
     const cursor = (repository: string) =>
-      marks.find((mark) => mark.repository.toLowerCase() === repository.toLowerCase())?.cursor ?? 0;
+      marks.find((mark) => mark.repository.toLowerCase() === repository.toLowerCase())?.cursor ??
+      end - FIRST_RETRO_WINDOW_MS;
     return Math.min(...repositories.map(cursor));
   }
 
@@ -415,8 +417,8 @@ export function createRetroScheduler(options: {
           reason: "no_accessible_repository",
           message: "None of the selected repositories is accessible.",
         };
-      const start = windowStart(input.workspaceId, repositories);
       const end = input.occurrence.at;
+      const start = windowStart(input.workspaceId, repositories, end);
       const consume = (retroId: string) => {
         const covered =
           input.origin === "scheduled"

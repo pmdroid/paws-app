@@ -34,7 +34,8 @@ const BERLIN = "Europe/Berlin";
 const HOUR = 3_600_000;
 const SAVED = Date.UTC(2026, 10, 1, 12);
 const MONDAY = Date.UTC(2026, 10, 2, 8);
-const WEEK = 7 * 24 * HOUR;
+const DAY = 24 * HOUR;
+const WEEK = 7 * DAY;
 const CATALOGS: AgentModelCatalog[] = [
   {
     agent: "codex",
@@ -59,12 +60,16 @@ function schedule(input: { cadence?: "weekly" | "paused"; timeZone?: string } = 
   };
 }
 
-function save(db: Database, now: number, options: { paused?: boolean; retries?: number } = {}) {
+function save(
+  db: Database,
+  now: number,
+  options: { paused?: boolean; retries?: number; repositories?: string[] } = {},
+) {
   return saveRetroSettingsRevision(db, {
     workspaceId: "ws",
     prompt: "Review {{period}} in {{repositories}}.\n\n{{digest}}",
     agentProfile: { agent: "codex", model: "gpt-x", effort: null },
-    repositories: [FIXTURE_REPO],
+    repositories: options.repositories ?? [FIXTURE_REPO],
     outputLimits: { maxItems: 5, workedWell: 3 },
     executionLimits: { activeMinutes: 15, retries: options.retries ?? 1 },
     schedule: schedule({ cadence: options.paused ? "paused" : "weekly" }),
@@ -166,7 +171,7 @@ describe("weekly schedule", () => {
     expect(retros).toHaveLength(1);
     expect(retros[0]).toMatchObject({
       origin: "scheduled",
-      windowStart: 0,
+      windowStart: MONDAY + 2 * WEEK,
       windowEnd: MONDAY + 3 * WEEK,
       scheduledFor: MONDAY + 3 * WEEK,
       state: "queued",
@@ -355,8 +360,62 @@ describe("failure keeps its window", () => {
     scheduler.tick();
     const [replacement, old] = listRetros(db, "ws");
     expect(old!.state).toBe("abandoned");
-    expect(replacement!.windowStart).toBe(failed.windowStart);
+    expect(replacement!.windowStart).toBe(MONDAY);
     expect(replacement!.windowEnd).toBe(MONDAY + WEEK);
+  });
+});
+
+describe("the first window", () => {
+  const OTHER_REPO = "pmdroid/other-app";
+
+  function watermark(db: Database, repository: string, cursor: number) {
+    db.run("PRAGMA foreign_keys = OFF");
+    db.run(
+      "INSERT INTO retro_watermark (workspace_id, repository, cursor, retro_id, updated_at) VALUES ('ws', ?, ?, 'old-retro', ?)",
+      [repository, cursor, cursor],
+    );
+    db.run("PRAGMA foreign_keys = ON");
+  }
+
+  test("a repository without a watermark starts one week before a manual or scheduled retro", () => {
+    const manual = world();
+    const at = MONDAY + 2 * DAY;
+    manual.clock.now = at;
+    expect(manual.open().request("ws", "member")).toMatchObject({
+      ok: true,
+      retro: { windowStart: at - WEEK, windowEnd: at },
+    });
+
+    const scheduled = world();
+    scheduled.clock.now = MONDAY + HOUR;
+    scheduled.open().tick();
+    expect(listRetros(scheduled.db, "ws")[0]).toMatchObject({
+      origin: "scheduled",
+      windowStart: MONDAY - WEEK,
+      windowEnd: MONDAY,
+    });
+  });
+
+  test("a watermark older than a week keeps its longer window", () => {
+    const { db, clock, open } = world();
+    const at = MONDAY + 2 * DAY;
+    watermark(db, FIXTURE_REPO, at - 10 * DAY);
+    clock.now = at;
+    expect(open().request("ws", "member")).toMatchObject({
+      ok: true,
+      retro: { windowStart: at - 10 * DAY, windowEnd: at },
+    });
+  });
+
+  test("with one repository three days in and one never covered, the window starts a week back", () => {
+    const { db, clock, open } = world();
+    db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team')", [OTHER_REPO]);
+    save(db, SAVED + 1, { repositories: [FIXTURE_REPO, OTHER_REPO] });
+    const at = MONDAY + 2 * DAY;
+    watermark(db, FIXTURE_REPO, at - 3 * DAY);
+    clock.now = at;
+    const requested = open().request("ws", "member");
+    expect(requested).toMatchObject({ ok: true, retro: { windowStart: at - WEEK, windowEnd: at } });
   });
 });
 
