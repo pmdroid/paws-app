@@ -91,4 +91,25 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
     expect(queue.enqueued).toHaveLength(1);
   });
+
+  test("with GitHub's merge queue, main breaking a queued merge result takes it out of the queue", async () => {
+    let head = async (): Promise<string> => "";
+    const queue = createFakeMergeQueue({ ahead: 1, headOf: () => head() });
+    const { h } = await policyChange({ settings: { order: "github-queue" }, queue });
+    head = () => h.remoteHead("ENG-1");
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    await h.moveMain(skill("acme-reviewer"), "# Acme review\n", [skill("acme-review")]);
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(queue.calls).toContain("dequeue");
+    const resume = listJobs(h.db).find((job) => job.queue === JOB_KIND.resume);
+    expect((resume?.payload as { reason: string } | undefined)?.reason).toBe("findings");
+  });
+
+  test("a merge result git cannot build stops the merge instead of passing", async () => {
+    const { h, item } = await policyChange();
+    const blob = await h.git(item.worktree, "rev-parse", "HEAD:.agents/closeout.yaml");
+    expect(() => mergeResultPolicyError(item.worktree, item.base, blob)).toThrow(
+      "could not build the merge result",
+    );
+  });
 });

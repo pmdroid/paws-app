@@ -25,6 +25,7 @@ import {
 } from "../db";
 import {
   adoptRunnerRebase,
+  leaveGitHubMergeQueue,
   readPullFacts,
   rebaseOntoMain,
   squashPull,
@@ -209,15 +210,8 @@ export async function advanceMerge(
   const { voice } = caps;
   const mergeSettings = await caps.settings(item, published.signal);
   if (mergeSettings.order === "github-queue") {
-    if (!githubQueueWatch(input.payload)?.queued && caps.mergeResultPolicy) {
-      const main = await caps.fetchMain(item);
-      if (caps.stopped()) return { kind: "obsolete" };
-      const broken =
-        main === null
-          ? undefined
-          : caps.mergeResultPolicy(item, published.worktree, { base: main, head: published.head });
-      if (broken) return returnForPolicy(merge, broken, caps.ciFixAttempts(item));
-    }
+    const refused = await githubQueuePolicy(merge, caps, published, input.payload);
+    if (refused) return refused;
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
     if (handed !== "no_queue") {
       if (handed.kind === "merged")
@@ -474,6 +468,53 @@ export async function advanceMerge(
   const message = failure(turn, step);
   voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
   return { kind: "failed", reason: "merge", message };
+}
+
+async function githubQueuePolicy(
+  merge: MergeContext,
+  caps: MergeCapabilities,
+  published: MergePublication,
+  payload: unknown,
+): Promise<MergeStep | undefined> {
+  const { item } = merge;
+  if (!caps.mergeResultPolicy) return undefined;
+  const watch = githubQueueWatch(payload);
+  let main: string | null;
+  try {
+    main = await caps.fetchMain(item);
+  } catch (error) {
+    journalCaught(error, "advance.githubQueuePolicy", item.id);
+    return {
+      kind: "wait",
+      reason: "ci",
+      message: "Could not read main to check the merge result's Closeout policy. Trying again.",
+      head: published.head,
+      ...(watch ? { githubQueue: watch } : {}),
+    };
+  }
+  if (caps.stopped()) return { kind: "obsolete" };
+  if (main === null) return undefined;
+  const broken = caps.mergeResultPolicy(item, published.worktree, {
+    base: main,
+    head: published.head,
+  });
+  if (!broken) return undefined;
+  if (watch?.queued) {
+    const { github, repository, pull } = published;
+    const left = await leaveGitHubMergeQueue({
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      prNumber: pull.number,
+      appId: github.appId,
+      installationId: github.installationId,
+      privateKeyPem: github.privateKeyPem,
+      ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
+      signal: published.signal,
+    });
+    if (left === "merged") return undefined;
+  }
+  return returnForPolicy(merge, broken, caps.ciFixAttempts(item));
 }
 
 function mergedPolicyMessage(error: string): string {
