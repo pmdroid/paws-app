@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { improvementStage, stageAllows, type ImprovementAction } from "./improvement-stage";
+import type { ImprovementItem } from "../improvements";
 
 const ACTIONS: ImprovementAction[] = [
   "create",
@@ -56,4 +57,16 @@ test("each inbox stage allows only its own actions", () => {
     "verification",
     "recovery",
   ]);
+});
+
+test("an accepted item allows reopen only while a stranded link delivery offers it", () => {
+  const item = (recovery: ImprovementItem["deliveries"][number]["recovery"]) => ({
+    legacy: [],
+    lifecycle: "pending" as const,
+    reviewState: "accepted" as const,
+    deliveries: [{ recovery }] as ImprovementItem["deliveries"],
+  });
+  expect(stageAllows(item("reopen"), "reopen")).toBe(true);
+  expect(stageAllows(item("retry"), "reopen")).toBe(false);
+  expect(stageAllows(item("reopen"), "retry")).toBe(true);
 });

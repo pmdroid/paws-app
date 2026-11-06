@@ -31,7 +31,8 @@ const ALLOWED: Record<ImprovementStage, ReadonlySet<ImprovementAction>> = {
   ]),
 };
 
-type Staged = Pick<ImprovementItem, "legacy" | "lifecycle" | "reviewState">;
+type Staged = Pick<ImprovementItem, "legacy" | "lifecycle" | "reviewState"> &
+  Partial<Pick<ImprovementItem, "deliveries">>;
 
 export function improvementStage(item: Staged): ImprovementStage {
   if (item.legacy.some((action) => action.kind !== "dismissed")) return "findings";
@@ -41,6 +42,8 @@ export function improvementStage(item: Staged): ImprovementStage {
 }
 
 export function stageAllows(item: Staged, action: ImprovementAction): boolean {
+  if (action === "reopen" && improvementStage(item) === "accepted")
+    return (item.deliveries ?? []).some((delivery) => delivery.recovery === "reopen");
   if (action === "reopen" && item.reviewState !== "rejected") return false;
   return ALLOWED[improvementStage(item)].has(action);
 }
