@@ -34,6 +34,7 @@ import {
   type RebaseResult,
   type SerialMergeInput,
 } from "../github";
+import { POLICY_SCHEMA_SUMMARY } from "../closeout-spec";
 import { journal, journalCaught } from "../journal";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import type { MergeFacts, RiskApproval } from "./mergeable";
@@ -109,6 +110,11 @@ export type MergeCapabilities = OrderCapabilities & {
     unreadable: MainPolicyUnreadable,
   ): string;
   policyLoads?(repository: string): void;
+  mergeResultPolicy?(
+    item: WorkItemRecord,
+    worktree: string,
+    heads: { base: string; head: string },
+  ): string | undefined;
   /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
   packages(repository: string): string[];
   assertReady(item: WorkItemRecord): Promise<void>;
@@ -260,6 +266,7 @@ export async function advanceMerge(
       : {}),
   };
   let mainPolicy: PolicyRead | undefined;
+  let mergedPolicyError: string | undefined;
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
     facts: (facts) => {
@@ -271,6 +278,19 @@ export async function advanceMerge(
     },
     rebase: (facts) => rebaseOnRunner(item, caps, lane, facts, published.signal),
     squash: async (head, facts) => {
+      mergedPolicyError = caps.mergeResultPolicy?.(item, published.worktree, {
+        base: facts.base,
+        head,
+      });
+      if (mergedPolicyError !== undefined)
+        return {
+          merged: false,
+          outcome: "invalid",
+          branch: facts.branch,
+          base: facts.base,
+          head,
+          message: mergedPolicyMessage(mergedPolicyError),
+        };
       const squashed = await squashPull(
         {
           ...lane,
@@ -350,6 +370,7 @@ export async function advanceMerge(
   await caps.assertReady(item);
   if (getWorkItem(db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
   if (step.kind === "unreadable") throw new Error(step.message);
+  if (mergedPolicyError !== undefined) return returnForPolicy(merge, mergedPolicyError, ciFixLimit);
   if (step.kind === "hold_policy" && mainPolicy && "ok" in mainPolicy) {
     const message =
       caps.holdForPolicy?.(item, queueName(repository), mainPolicy) ??
@@ -442,6 +463,33 @@ export async function advanceMerge(
   if (late) return late;
   const message = failure(turn, step);
   voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
+  return { kind: "failed", reason: "merge", message };
+}
+
+function mergedPolicyMessage(error: string): string {
+  return `The Closeout policy doesn't load once this pull request merges into main: ${error}`;
+}
+
+async function returnForPolicy(
+  merge: MergeContext,
+  error: string,
+  limit: number,
+): Promise<MergeStep> {
+  const message = mergedPolicyMessage(error);
+  const handoff = `${message}. Paws did not merge it. Update the branch onto origin/main and fix .agents/closeout.yaml or the files it references so the policy loads on top of main.\n\n${POLICY_SCHEMA_SUMMARY}`;
+  if (
+    sendBack(merge, "policy-invalid", (fixes) => fixes < limit, handoff, {
+      thought: () => `${message}. Sent it back to the agent.`,
+      record: () => {},
+    })
+  ) {
+    await merge.caps.voice.flush();
+    return { kind: "returned" };
+  }
+  if (askHelp(merge, `${message}. Reply with guidance to continue, or stop the task.`)) {
+    await merge.caps.voice.flush();
+    return { kind: "asked" };
+  }
   return { kind: "failed", reason: "merge", message };
 }
 

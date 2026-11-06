@@ -16,7 +16,7 @@ import type { ask } from "../questions";
 import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
 import type { FailedCiCheck } from "./ci-fix";
 
-export type MergeReturnReason = "rebase-conflict" | "ci-failed";
+export type MergeReturnReason = "rebase-conflict" | "ci-failed" | "policy-invalid";
 
 export type MergeRestart = (item: WorkItemRecord, handoff: RestartHandoff) => number | null;
 
@@ -37,6 +37,12 @@ export function rebaseBudgetFor(
 ): RebaseBudget {
   return rebaseBudget(listRebaseReturns(db, itemId, latestUserTurn(db, itemId)), conflict, now);
 }
+
+const RESTART_REASONS = {
+  "rebase-conflict": "conflict",
+  "ci-failed": "ci",
+  "policy-invalid": "findings",
+} as const;
 
 export function ciFixes(db: Database, itemId: string): number {
   return fixRounds(db, itemId);
@@ -72,7 +78,7 @@ export function returnToAgent(
     const jobKey = `${input.reason}:${current.id}:${round}`;
     if (input.keepPlace) keepMergeQueuePlace(db, current.id);
     const jobId = (input.restart ?? ((item, handoff) => restart(db, item, handoff)))(current, {
-      reason: input.reason === "rebase-conflict" ? "conflict" : "ci",
+      reason: RESTART_REASONS[input.reason],
       body: input.handoff,
       jobKey,
       now: input.now,

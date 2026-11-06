@@ -127,6 +127,7 @@ import {
   type TurnPass,
   candidatePolicyDigests,
   ciMappings,
+  mergeResultPolicyError,
 } from "../closeout";
 import {
   CommandBus,
@@ -5033,6 +5034,8 @@ export class Orchestrator {
         policyLoads: (repository) => {
           policyLoads(this.db, repository, this.now());
         },
+        mergeResultPolicy: (_, worktree, heads) =>
+          mergeResultPolicyError(worktree, heads.base, heads.head),
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
