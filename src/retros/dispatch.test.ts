@@ -411,9 +411,9 @@ describe("recovery", () => {
     expect(second).toMatchObject({
       attempt: 2,
       digest: first!.digest,
-      prompt: first!.prompt,
       settingsRevision: first!.settingsRevision,
     });
+    expect(second!.prompt.sha256).not.toBe(first!.prompt.sha256);
     await runner.start(dispatcher, second!);
     expect(
       (await runner.submit(dispatcher, first!, runner.result(first!, VALID_OUTPUT))).status,
@@ -429,6 +429,82 @@ describe("recovery", () => {
     runner.seen(db);
     dispatcher.tick();
     expect(listRetroDispatches(db, "r1")).toHaveLength(2);
+  });
+
+  test("an invalid result's retry is a repair turn that gets the exact problems", async () => {
+    const { db, clock, open } = world({ retries: 1 });
+    addRunner(db, { id: "R1" });
+    const runner = fakeRunner("R1", clock);
+    runner.seen(db);
+    const dispatcher = open(db);
+    dispatcher.tick();
+    const [first] = await runner.poll(dispatcher);
+    const firstInputs = await runner.start(dispatcher, first!);
+    expect(firstInputs.prompt).not.toContain("<previous_result_problems>");
+    const invalid = JSON.stringify({
+      patterns: [
+        fixturePattern({
+          explanation: "12 questions asked how to recover from a rejected push.",
+          existingIssues: ["PAS-817"],
+        }),
+      ],
+      workedWell: [],
+    });
+    await runner.submit(dispatcher, first!, runner.result(first!, invalid));
+    expect(getRetro(db, "r1")!.error).toContain(
+      "patterns[0].existingIssues[0] unknown_issue; patterns[0].explanation forged_count",
+    );
+
+    clock.now += retroRetryDelayMs(1);
+    runner.seen(db);
+    dispatcher.tick();
+    const [second] = await runner.poll(dispatcher);
+    expect(second!.attempt).toBe(2);
+    expect(second!.prompt.sha256).not.toBe(first!.prompt.sha256);
+    const { prompt } = await runner.start(dispatcher, second!);
+    expect(prompt).toStartWith(firstInputs.prompt!);
+    expect(prompt).toContain(
+      '- "patterns[0].explanation" forged_count: The cited evidence supports at most 9 questions.',
+    );
+    expect(prompt).toContain(
+      '- "patterns[0].existingIssues[0]" unknown_issue: List only existing issues the digest reports for this repository.',
+    );
+    expect(prompt).toContain(`Previous output:\n${invalid}\n</previous_result_problems>\n`);
+
+    await runner.submit(dispatcher, second!, runner.result(second!, VALID_OUTPUT));
+    expect(getRetro(db, "r1")!.state).toBe("published");
+    expect(listRetroAttempts(db, "r1").map((entry) => entry.outcome)).toEqual([
+      "failed",
+      "succeeded",
+    ]);
+  });
+
+  test("an invalid result with no retry left fails the retro as before", async () => {
+    const { db, clock, open } = world({ retries: 0 });
+    addRunner(db, { id: "R1" });
+    const runner = fakeRunner("R1", clock);
+    runner.seen(db);
+    const dispatcher = open(db);
+    dispatcher.tick();
+    const [first] = await runner.poll(dispatcher);
+    await runner.start(dispatcher, first!);
+    const invalid = JSON.stringify({
+      patterns: [fixturePattern({ existingIssues: ["PAS-817"] })],
+      workedWell: [],
+    });
+    await runner.submit(dispatcher, first!, runner.result(first!, invalid));
+    expect(dispatcher.generation("r1")).toMatchObject({
+      state: "failed",
+      diagnostic: "failed",
+      retry: null,
+      attemptsUsed: 1,
+      maxAttempts: 1,
+    });
+    expect(getRetro(db, "r1")!.error).toContain("patterns[0].existingIssues[0] unknown_issue");
+    clock.now += 86_400_000;
+    runner.seen(db);
+    dispatcher.tick();
+    expect(listRetroDispatches(db, "r1")).toHaveLength(1);
   });
 
   test("an unfetched command is re-signed under the same id; a lost fetch costs no attempt", async () => {
