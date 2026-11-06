@@ -910,8 +910,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           grantToken,
         ),
       );
-      const current = now();
-      if (credential.expiresAt <= current || credential.expiresAt > current + 60 * 60_000)
+      if (!githubReadExpiryAllowed(credential.expiresAt, now()))
         throw new Error("Runner GitHub read token has an invalid expiry.");
       return credential;
     },
@@ -1030,3 +1029,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
 }
 
 export type RunnerDaemon = ReturnType<typeof openRunnerDaemon>;
+
+const GITHUB_READ_TTL_MS = 60 * 60_000;
+const GITHUB_READ_CLOCK_SKEW_MS = 30_000;
+
+export function githubReadExpiryAllowed(expiresAt: number, now: number): boolean {
+  return expiresAt > now && expiresAt <= now + GITHUB_READ_TTL_MS + GITHUB_READ_CLOCK_SKEW_MS;
+}

@@ -158,7 +158,7 @@ test("the agent finds the turn's token in gh's config, never in its environment,
     directory,
     directoryMode: 0o700,
     hostsMode: 0o600,
-    hosts: `github.com:\n    oauth_token: ${TOKEN}\n    git_protocol: https\n    user: paws\n`,
+    hosts: `github.com:\n    oauth_token: "${TOKEN}"\n    git_protocol: https\n    user: paws\n`,
   });
   expect(trace.env?.ghToken).toBe(false);
   expect(trace.env?.githubToken).toBe(false);
@@ -199,7 +199,7 @@ test("a token minted after the agent started still reaches gh's config", async (
   published[1] = TOKEN;
   const hosts = join(directory, "hosts.yml");
   for (let i = 0; i < 200 && !existsSync(hosts); i++) await Bun.sleep(10);
-  expect(readFileSync(hosts, "utf8")).toContain(`oauth_token: ${TOKEN}`);
+  expect(readFileSync(hosts, "utf8")).toContain(`oauth_token: "${TOKEN}"`);
   expect(config.tokens()).toEqual([TOKEN]);
   config.close();
   expect(existsSync(directory)).toBe(false);
@@ -220,7 +220,7 @@ test("a fresh token replaces hosts.yml atomically before the old one expires", a
   const before = statSync(hosts).ino;
   published[2] = FRESH;
   for (let i = 0; i < 200 && !readFileSync(hosts, "utf8").includes(FRESH); i++) await Bun.sleep(10);
-  expect(readFileSync(hosts, "utf8")).toContain(`oauth_token: ${FRESH}`);
+  expect(readFileSync(hosts, "utf8")).toContain(`oauth_token: "${FRESH}"`);
   expect(statSync(hosts).ino).not.toBe(before);
   expect(statSync(hosts).mode & 0o777).toBe(0o600);
   expect(readdirSync(directory)).toEqual(["hosts.yml"]);
@@ -234,7 +234,7 @@ test("a restarted worker starts from the newest token the runner kept", async ()
   const config = openGitHubReadConfig(directory, (sequence) =>
     sequence === 3 ? { token: FRESH, expiresAt: Date.now() + 3_600_000 } : null,
   );
-  expect(readFileSync(join(directory, "hosts.yml"), "utf8")).toContain(`oauth_token: ${FRESH}`);
+  expect(readFileSync(join(directory, "hosts.yml"), "utf8")).toContain(`oauth_token: "${FRESH}"`);
   expect(config.tokens()).toEqual([FRESH]);
   config.close();
 });
