@@ -1,8 +1,17 @@
 import { acquireOperationToken } from "./auth/provider";
 import type { GitHubTokenProvider } from "./auth/types";
 import { repoApiPath } from "./client";
+import { readPullComments } from "./pull-comments";
+import { commentOnPullRequest } from "./review-replies";
 import type { GitHubClient } from "./types";
 
+/** Marks the comment Paws posts when it closes a stopped pull request, once per pull request. */
+const closedMarker = (pullNumber: number): string => `<!-- paws:closed:${pullNumber} -->`;
+
+/**
+ * Close the open Paws pull request on `branch`. With a `comment`, post it first, unless an
+ * earlier attempt of the same close already did. Returns false when no pull request is open.
+ */
 export async function closeStoppedPull(input: {
   client: GitHubClient;
   owner: string;
@@ -13,6 +22,7 @@ export async function closeStoppedPull(input: {
   installationId?: string;
   privateKeyPem?: string;
   signal?: AbortSignal;
+  comment?: string;
 }): Promise<boolean> {
   input.signal?.throwIfAborted();
   const token = await acquireOperationToken(input, "pr");
@@ -45,6 +55,17 @@ export async function closeStoppedPull(input: {
     pull.base?.repo?.full_name !== repository
   )
     throw new Error("The stopped pull request does not match its repository branch");
+  if (input.comment !== undefined) {
+    const marker = closedMarker(pull.number);
+    const comments = await readPullComments({ ...input, number: pull.number });
+    input.signal?.throwIfAborted();
+    if (!comments.some((comment) => comment.body.includes(marker)))
+      await commentOnPullRequest({
+        ...input,
+        prNumber: pull.number,
+        body: `${input.comment}\n\n${marker}`,
+      });
+  }
   input.signal?.throwIfAborted();
   const closed = await input.client.request({
     method: "PATCH",

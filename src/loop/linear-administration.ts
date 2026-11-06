@@ -7,6 +7,8 @@ import {
   changeLinearTeamAccess,
   completeMergedItem,
   getConfirmedRemoteMerge,
+  getItemPullRequest,
+  getWorkItem,
   journal,
   advanceLinearSessionGeneration,
   dropLinearSessionDeliveries,
@@ -28,6 +30,7 @@ import {
   type LinearAdministration,
   type LinearIssueClosed,
 } from "../linear";
+import { worktreeBranch } from "./sources";
 
 const notifications = new WeakMap<Database, Map<string, Promise<void>>>();
 
@@ -168,7 +171,8 @@ export type ClosedIssueTask = {
  * gets one response that completes it, and the journal says why. Tasks created after the issue
  * closed belong to a later delegation and stay. A task in the merge queue without a confirmed
  * merge is cancelled too: the cancel stops its merge job, and the stopped-pull job closes its
- * pull request unless a merge was recorded for it by then.
+ * pull request unless a merge was recorded for it by then. An issue moved to Canceled or
+ * Duplicate closes the task's open pull request in any state, with a comment that says why.
  */
 export async function closeClosedIssueTasks(
   db: Database,
@@ -201,7 +205,10 @@ export async function closeClosedIssueTasks(
         source: "linear",
         requestedAt: now,
       };
-      const result = applyLinearCommand(db, command, now, response);
+      const result =
+        closed.stateType === "canceled"
+          ? cancelWithPull(db, command, now)
+          : applyLinearCommand(db, command, now, response);
       if (result.deferred) continue;
       if (!result.applied) throw new Error(`Could not close Linear task ${row.id}`);
       journal(`${label} cancelled: its Linear issue moved to ${status} outside this task`);
@@ -213,6 +220,25 @@ export async function closeClosedIssueTasks(
   });
   await deliver(db, commands, sessions, options);
   return results;
+}
+
+/** The cancel for an issue canceled in Linear: it closes the pull request and says so. */
+function cancelWithPull(db: Database, command: LinearCommand, now: number) {
+  const item = getWorkItem(db, command.itemId);
+  const pull = getItemPullRequest(db, command.itemId);
+  if (item === null) return { applied: false };
+  const comment = `Closed because ${item.linearIdentifier} was canceled in Linear. The branch \`${worktreeBranch(item)}\` is kept.`;
+  return pull === null
+    ? applyLinearCommand(db, command, now, ISSUE_CLOSED_RESPONSE.canceled, {
+        closePullRequest: { comment },
+      })
+    : applyLinearCommand(
+        db,
+        command,
+        now,
+        `Canceled in Linear. PR #${pull.pullNumber} was closed; the branch is kept.`,
+        { closePullRequest: { comment }, responseOnly: true },
+      );
 }
 
 function openIssueTasks(
