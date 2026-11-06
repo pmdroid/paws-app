@@ -37,7 +37,7 @@ function running(pid: number): boolean {
   }
 }
 
-function fakeSystemctl(fail?: string) {
+function fakeSystemctl(fail?: string, exitsAtOnce = false) {
   const calls: string[][] = [];
   let pid: number | undefined;
   const systemctl: RunnerSystemctl = async (args) => {
@@ -53,7 +53,7 @@ function fakeSystemctl(fail?: string) {
       pids.push(pid);
       return { code: 0, output: "" };
     }
-    if (args[0] === "show") return { code: 0, output: `${pid ?? 0}\n` };
+    if (args[0] === "show") return { code: 0, output: `${exitsAtOnce ? 0 : (pid ?? 0)}\n` };
     if (args[0] === "stop") {
       const main = pid;
       if (main !== undefined && running(main)) {
@@ -68,10 +68,14 @@ function fakeSystemctl(fail?: string) {
   return { calls, systemctl };
 }
 
-function setup(agentUser: "runner" | "paws-agent", fail?: string) {
-  const root = mkdtempSync(join(tmpdir(), "paws-agent-user-"));
-  roots.push(root);
-  const fake = fakeSystemctl(fail);
+function setup(
+  agentUser: "runner" | "paws-agent",
+  fail?: string,
+  shared?: { root: string; exitsAtOnce?: boolean },
+) {
+  const root = shared?.root ?? mkdtempSync(join(tmpdir(), "paws-agent-user-"));
+  if (!shared) roots.push(root);
+  const fake = fakeSystemctl(fail, shared?.exitsAtOnce);
   const launched: unknown[][] = [];
   const supervisor = createDirectWorkerSupervisor({
     stateRoot: join(root, "workers"),
@@ -222,4 +226,31 @@ test("the worker refuses any uid but paws-agent's with \"paws-agent\", and keeps
     ["root", 990],
   ] as const)
     expect(() => workerAgentUser(value, uid, ids)).toThrow(RunnerCliFailure);
+});
+
+test("an execution keeps the user it was admitted as when agentUser changes", async () => {
+  const before = setup("runner");
+  expect(await before.supervisor.start(id)).toEqual({ alreadyAdmitted: false });
+  await before.supervisor.stop(id);
+  const after = setup("paws-agent", undefined, { root: before.root });
+  await after.supervisor.resume!(id);
+  expect(after.fake.calls).toEqual([]);
+  expect(after.launched).toHaveLength(1);
+  expect(after.launched[0]![3]).toBe(true);
+  await after.supervisor.stop(id);
+  expect(after.fake.calls).toEqual([]);
+});
+
+test("a paws-agent worker that already exited when systemd is asked keeps its admission", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-agent-user-"));
+  roots.push(root);
+  const { fake, launched, supervisor } = setup("paws-agent", undefined, {
+    root,
+    exitsAtOnce: true,
+  });
+  expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: false });
+  expect(launched).toEqual([]);
+  expect(fake.calls.map((call) => call[0])).toEqual(["start", "show"]);
+  expect(supervisor.alive!(id)).toBe(false);
+  expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: true });
 });
