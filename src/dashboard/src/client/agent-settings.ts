@@ -6,8 +6,6 @@ import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
 
 const ROLES: AgentRole[] = ["implementer", "reviewer"];
-const CI_FIX_ATTEMPTS_DEFAULT = 3;
-const CI_FIX_ATTEMPTS_MAX = 10;
 const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok", opencode: "OpenCode" };
 
 export function settingsProblems(settings: AgentSettings): string[] {
@@ -19,11 +17,6 @@ export function settingsProblems(settings: AgentSettings): string[] {
       reviewer: project.reviewer ?? settings.defaults.reviewer,
     })),
   ];
-  const attempts = settings.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT;
-  const checks =
-    Number.isInteger(attempts) && attempts >= 0 && attempts <= CI_FIX_ATTEMPTS_MAX
-      ? []
-      : [`CI fix attempts: enter a whole number from 0 to ${CI_FIX_ATTEMPTS_MAX}.`];
   return profiles
     .filter(
       ({ implementer, reviewer }) =>
@@ -31,8 +24,7 @@ export function settingsProblems(settings: AgentSettings): string[] {
     )
     .map(
       ({ name }) => `${name}: choose a different reviewer agent or model for independent review.`,
-    )
-    .concat(checks);
+    );
 }
 
 function clearAccounts(settings: AgentSettings, scope: string, role: string): void {
@@ -118,18 +110,11 @@ export function renderAgentSettings(view: SettingsView): string {
           : '<p class="sub">No project overrides.</p>'
       }
       <div class="settings-add"><label for="settings-repo">Repository</label><div class="row"><input id="settings-repo" name="repo" value="${esc(view.repoDraft ?? "")}" placeholder="owner/repository" autocapitalize="none" spellcheck="false"><button class="btn" type="button" data-settings="add">Add project</button></div></div></div></section>
-      ${checksSection(view.data.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT)}
       <div id="settings-problems" class="settings-message err" role="alert" ${problems.length ? "" : "hidden"}>${problems.map(esc).join("<br>")}</div>
       <label class="settings-inherit"><input type="checkbox" name="apply-to-waiting" ${view.applyToWaiting ? "checked" : ""} aria-describedby="apply-to-waiting-help">Also switch runs that are waiting</label>
       <p class="sub" id="apply-to-waiting-help">Waiting runs use these profiles at their next step. Agents working now finish with their current profiles.</p>
       <div class="settings-actions"><button class="btn primary" type="submit" ${problems.length ? "disabled" : ""}>Save settings</button><button class="btn" type="button" data-settings="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
-}
-
-function checksSection(attempts: number): string {
-  return `<section class="settings-section"><div class="settings-label"><h2>Pull request checks</h2><p class="sub">When CI fails on a pull request, Paws sends the failing checks and their links back to the implementing agent. After the last attempt, Paws asks in the issue's Linear session.</p></div><div class="col">
-      <label for="merge-ci-fix-attempts">CI fix attempts</label><input id="merge-ci-fix-attempts" name="merge-ci-fix-attempts" type="number" inputmode="numeric" min="0" max="${CI_FIX_ATTEMPTS_MAX}" step="1" required value="${Number.isFinite(attempts) ? attempts : ""}" aria-describedby="merge-ci-fix-attempts-help">
-      <p class="sub" id="merge-ci-fix-attempts-help">From 0 to ${CI_FIX_ATTEMPTS_MAX}. With 0, Paws asks in Linear on the first failure.</p></div></section>`;
 }
 
 function profileFields(
@@ -175,8 +160,8 @@ function profileFields(
     <div class="settings-field"><label for="${key}-effort">Effort</label>${choices("effort", profile.effort, efforts)}${catalog && efforts == null ? '<small class="sub" role="status">Loading effort choices…</small>' : ""}</div></div></div>`;
 }
 
-function withoutQueue(settings: AgentSettings): Omit<AgentSettings, "queue"> {
-  const { queue: _queue, ...rest } = settings;
+function profilesOnly(settings: AgentSettings): Omit<AgentSettings, "queue" | "merge"> {
+  const { queue: _queue, merge: _merge, ...rest } = settings;
   return rest;
 }
 
@@ -238,11 +223,6 @@ export function createAgentSettings(
         else project[role] = read(key, project[role] ?? view.data!.defaults[role]);
       }
     });
-    const ciFixAttempts = form.querySelector<HTMLInputElement>('[name="merge-ci-fix-attempts"]');
-    if (ciFixAttempts)
-      view.data.merge = {
-        ciFixAttempts: ciFixAttempts.value.trim() === "" ? NaN : Number(ciFixAttempts.value),
-      };
     view.applyToWaiting =
       form.querySelector<HTMLInputElement>('[name="apply-to-waiting"]')?.checked ?? false;
     view.repoDraft = form.querySelector<HTMLInputElement>('[name="repo"]')?.value ?? "";
@@ -373,7 +353,7 @@ export function createAgentSettings(
       >(
         engine!,
         "PUT",
-        { ...withoutQueue(view.data!), applyToWaiting: view.applyToWaiting === true },
+        { ...profilesOnly(view.data!), applyToWaiting: view.applyToWaiting === true },
         readCsrfToken(document),
       );
       if (started !== generation) return;
