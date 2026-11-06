@@ -39,12 +39,7 @@ export {
   resolveAgentProfiles,
   writeAgentSettings,
 } from "./agents";
-export type {
-  AgentProfile,
-  AgentProfiles,
-  AgentSettings,
-  ProjectAgentProfiles,
-} from "./agents";
+export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles } from "./agents";
 
 export {
   DEFAULT_CI_FIX_ATTEMPTS,

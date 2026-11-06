@@ -360,8 +360,12 @@ export function createRunnerPlacement(options: {
     workspaceId: string,
   ) {
     const agent = input.profile!.agent as RunnerCodingAgent;
-    if (commandAccount(db, input.commandId))
-      throw new PlacementRaceError("The command names an agent account placement did not choose");
+    const recorded = commandAccount(db, input.commandId);
+    if (
+      recorded &&
+      (recorded.bindingId !== account.bindingId || recorded.accountId !== account.accountId)
+    )
+      throw new PlacementRaceError("The command does not carry the sign-in placement chose");
     const runner = db
       .query<{ cooldownUntil: number; quotaState: string }, [string, string]>(
         "SELECT cooldown_until AS cooldownUntil,quota_state AS quotaState FROM runner_agent_policy WHERE runner_id=? AND agent=?",
@@ -448,12 +452,11 @@ export function createRunnerPlacement(options: {
           })),
         )
         .filter((runner) => {
-          const reason =
-            !runner.eligible
-              ? runner.reason
-              : pinnedOnline && runner.id !== pinnedRunnerId
-                ? "run pinned to another online runner"
-                : null;
+          const reason = !runner.eligible
+            ? runner.reason
+            : pinnedOnline && runner.id !== pinnedRunnerId
+              ? "run pinned to another online runner"
+              : null;
           if (reason) input.onRejected?.(runner.id, reason);
           return reason === null;
         });

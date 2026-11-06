@@ -147,13 +147,13 @@ Or sign in from the dashboard, which is all the setup there is: open the runner 
 
 The runner's owner signs in; the owner and workspace admins change the switch. Everyone else sees the table read-only. New work runs as each runner's sign-in for the agent it needs.
 
-### Agent accounts and bindings
+### Sign-in belongs to the runner
 
-Paws records each sign-in as a binding of a logical agent account (`src/db/agent-accounts.ts`). An account belongs to one workspace and one agent, and has a label and an enabled flag. It is separate from the agent, model and effort profile in `config.toml`. A binding is one runner's sign-in for one account. One account can have bindings on several runners, and each binding belongs to exactly one workspace, account and agent. The gates before configuring fallback, upgrade and rollback, and what has been tested for each agent are in [Roll out multiple agent accounts](agent-account-rollout.md).
+Each runner signs in to each agent once, in its default home, and placement uses that sign-in only. Paws records it as a legacy binding with id `legacy_<agent>_<runnerId>` of the workspace's legacy account `legacy_<agent>_<workspaceId>` (`src/db/agent-accounts.ts`). Its quota scope is `unknown`: Paws does not know whether two runners' sign-ins are the same provider account, so usage and quota stay per runner and agent in `runner_agent_policy`. Paws never derives an account from credentials, email addresses or token equality, and credentials stay on the runner.
 
-The sign-in above is the runner's default sign-in. Paws keeps it as a legacy binding with id `legacy_<agent>_<runnerId>` under the workspace's legacy account `legacy_<agent>_<workspaceId>`. Its quota scope is `unknown`: Paws does not know whether two runners' default sign-ins are the same provider account, so it treats neither as proof of separate quota. A binding added to a named account is an explicit link, with quota scope `account`: it shares that account's quota. Paws never derives an account from credentials, email addresses or token equality, and credentials stay on the runner.
+Named agent accounts, their bindings and the account and fallback orders were retired. The migration `20261106T0855_retire_named_agent_accounts` disabled every named account and journaled one line naming each; the tables stay, and no code path creates, links or orders accounts any more. The account routes answer 410 ([Account API](#account-api)).
 
-A command without `account` runs as the default sign-in, as before. A signed `run`, `review`, `task`, `helper`, `probe`, `login` or `login_check` command may name `account: { accountId, bindingId }`. Paws queues a named command only when the runner is at least 0.1.61, its latest heartbeat reported `accounts.protocol` 1 or later, and `accounts.bindings` lists that binding for the command's agent. A named `login` is the exception: it is how a runner first holds a binding, so it needs only the version and protocol. A runner older than 0.1.61 refuses the unknown field, and a newer runner refuses any other named command for a binding it does not hold (`account_unavailable`). Neither runs the default sign-in instead. A result must repeat the command's `account` exactly.
+A command without `account` runs as the default sign-in. The runner protocol still accepts `account: { accountId, bindingId }` on a signed command, for a binding the runner reported in its heartbeat (runner 0.1.61 or later); a newer runner refuses a named command for a binding it does not hold (`account_unavailable`), and a result must repeat the command's `account` exactly. Paws no longer sends one for new work.
 
 ### Isolated binding homes
 
@@ -171,43 +171,13 @@ Agents on a runner all run as the one runner account, so a binding home is isola
 
 Paws records the account and binding of every agent command in `runner_command_account` before it queues the command. Disabling or removing an account keeps those rows. A disabled account takes no new execution commands but can still sign in and be checked. Removing an account removes its bindings too, and the default sign-in account cannot be removed.
 
-### Account order
+### Runner selection
 
-`config.toml` may list the accounts each role tries, in order, by account id. A list never changes the agent, model or effort: every account in it must sign in the agent of the profile it runs, and a different account is not an independent reviewer.
+Placement (`src/runner-placement/placement.ts`) offers each runner that passes the runner checks (who may use it, its owner, online and active, repository access, version, load and work affinity) when its own sign-in for the role's agent is ready: the agent is signed in, outside its quota cooldown, and the provider and model are not blocked. A runner with quota left goes before one running on extra usage, and then the ranking is session holder, own runners, current and recent load, low quota and fair share. When no runner the owner may use is signed in to the agent, nothing is placed and the work waits for a sign-in, with each runner's rejection (`agent-not-signed-in`, `agent quota cooldown`) in the run's placement wait.
 
-```toml
-[agents.defaults.accounts]
-implementer = ["01J...A", "01J...B"]
-reviewer = ["legacy_codex_<workspaceId>"]
-reviewer_fallback = ["01J...X"] # needs [agents.defaults.reviewer_fallback]
+Assignment rechecks the choice inside the same `BEGIN IMMEDIATE` transaction that signs and stores the command: the runner's sign-in is still outside its cooldown, its health does not block it, and the command names no account. If a check fails, the whole assignment rolls back with a `PlacementRaceError`, so no runner slot is held, and the work is placed again.
 
-[agents.projects."owner/repo".accounts]
-implementer = ["01J...B"]
-```
-
-A project's list replaces the default list for that role. Without one, the project inherits the default list only while it runs the default agent for that role; a project that switches agent and lists no accounts uses that agent's default sign-in. The reviewer fallback list is set only at the defaults and is tried after the reviewer's accounts are spent. With no list, a role runs the default sign-in as before.
-
-Each list holds 1 to 8 distinct account ids (a ULID or a `legacy_<agent>_<id>` default sign-in). Names, paths and credentials are refused. Saving also refuses an id this server does not know, a removed or disabled account, and an account for another agent. `GET /api/settings/agents` returns a `revision` of `config.toml`; a `PUT` that sends an older `revision` gets HTTP 409 and changes nothing.
-
-Each run's `agent-profile.json` keeps the resolved lists with a short policy `revision`. A save reaches runs that are waiting, including a run in a usage-limit wait, which then retries with the new order; a run holding a live runner lease keeps its lists until its turn ends. Admission (`admitAgentAccounts` in `src/db/agent-accounts.ts`) reads accounts again, so a disabled, removed, foreign or other-agent account is skipped even when a saved list still names it.
-
-Every agent turn, review, probe and session helper (classification, repository selection and finding grouping) admits the list before placement (`dispatchAccount`). When no account in it is eligible, nothing is placed and Paws never uses the default sign-in instead: a reviewer with a reviewer fallback profile moves to that profile, and other work waits and retries as a transient `AccountPolicyUnavailable`. The journal records each decision with the policy revision, the accounts admitted and the accounts skipped and why.
-
-### Account and runner selection
-
-Placement (`src/runner-placement/placement.ts`) chooses an account and a runner together. Each runner that passes the runner checks (who may use it, its owner, online and active, repository access, version, load and work affinity) is offered once per admitted account, in the list's order. Without a list the only account is the default sign-in, so single-account installations place exactly as before. An account is offered on a runner only when:
-
-- for a named account, the runner holds a live binding of it, the runner is at least 0.1.61 and reported that binding, and the binding's health does not block it;
-- for the default sign-in, the runner's agent is signed in and outside its quota cooldown, and the provider and model are not blocked;
-- the account is below its `concurrency`, counted across every binding of the account, so binding one account to several runners never multiplies its slots.
-
-Candidates are ordered by account first, then by the runner ranking: session holder, own runners, current and recent load, quota and fair share. So a second account on the same runner is used when the first account is exhausted there, and one account runs on whichever of its runners is free. A runner whose default sign-in expired still runs its named accounts. Scheduler readiness and the first-start setup hold count such a runner too, when it holds a live, reported binding of an enabled named account for the agent; placement then decides whether the role's order can use it. Each rejection names the account (`B: account has no binding on this runner`, `A: agent account quota cooldown`) in the run's placement wait.
-
-Assignment rechecks the choice inside the same `BEGIN IMMEDIATE` transaction that signs and stores the command: the account is still enabled and in the order, its binding is live and supported, the command carries exactly the chosen account and binding, its health does not block it, and the account has a free slot. If any check fails, the whole assignment rolls back with a `PlacementRaceError`, so no runner slot or account slot is held, and the work is placed again. `runner_execution_usage.account_policy_revision` records the policy revision of every assignment, and `runner_command_account` its account and binding.
-
-An account slot is held until Paws knows the execution stopped (`accountSlotsInUse` in `src/db/agent-accounts.ts`): a helper until the runner reports its result or the helper command expires, even when Paws ended it locally after an abort or timeout; a probe until its result or expiry; and work while its run's current generation holds a live lease or its teardown is unresolved. A cancelled or lost run therefore keeps its account slot until the runner confirms the agent stopped, reports its result, or proves the command never ran, even though its usage receipt already ended. A result settles only its own command id, so a stale or replayed result from an older generation cannot release the newer generation's account or runner reservation.
-
-A named account's result updates only that account's health; the runner's default sign-in keeps its own quota and sign-in state. A retry after a named binding needs sign-in or hits its quota avoids that binding or account, not the whole runner, for work and helpers alike. A moved run restores its saved agent session only when the snapshot was written by the same account it now runs as: a named account's session never unpacks into another account's home or the default sign-in, and the run starts a fresh session instead (`other_account`). When no pair can run, the work waits: busy accounts and runners are a capacity wait, and blocked accounts pause until the earliest next check among them (a known reset, a bounded backoff or a model recheck). A binding that needs sign-in has no next check, so the run reports why each runner was rejected until someone signs in again. An account of another agent never blocks a profile that does not use it.
+The reviewer fallback profile in Settings › Agents still moves a review to its agent when the reviewer's agent is at its usage limit on every runner. `config.toml` account lists (`[agents.defaults.accounts]`, `[agents.projects."owner/repo".accounts]`) are accepted and ignored, and the next save of agent settings leaves them out.
 
 ### Account health
 
@@ -238,27 +208,7 @@ A turn that continues on another account starts a fresh agent session. It keeps 
 
 ### Account API
 
-The dashboard does not show named accounts, bindings, their order or the preview. `GET /api/runners/accounts` (`src/account-management`) lists each account with its agent, label, enabled flag, `concurrency`, the slots it holds now, and each live binding with its runner and readiness: `eligible`, `waiting` (runner offline, paused or busy), `auth-required` (the binding needs a sign-in, or the runner has not reported it), `cooling-down` (a quota, provider or model block, with its next check, or "reset unknown" when the provider gave no reset) or `unavailable` (removed, disabled, revoked, runner too old, or the repository not allowed). An account linked to two or more runners says that they share one limit. An agent listed in `runnerAccountAgentUnsupported` is shown as unsupported and offered no named accounts. Any active member can read the list; it carries no credentials, paths or provider messages.
-
-Writes are `POST` with the CSRF token:
-
-| Path                                                     | Body                                          | Who                          |
-| -------------------------------------------------------- | --------------------------------------------- | ---------------------------- |
-| `/api/runners/accounts`                                  | `revision`, `agent`, `label`                  | Admin                        |
-| `/api/runners/accounts/<id>`                             | `revision`, `label`, `enabled`, `concurrency` | Admin                        |
-| `/api/runners/accounts/<id>/remove`                      | `revision`                                    | Admin                        |
-| `/api/runners/accounts/<id>/bindings`                    | `revision`, `runnerId`                        | Admin, or the runner's owner |
-| `/api/runners/accounts/<id>/bindings/<bindingId>/remove` | `revision`                                    | Admin, or the runner's owner |
-
-Each write names the `revision` of the list it was based on, a digest of the workspace's account and binding rows. A write whose revision is older answers HTTP 409 with the current `revision` and changes nothing, so a stale page, a repeated submit or a second admin cannot overwrite newer state; the page reloads the list and says why. Each change is recorded in the audit history as `agent_account.*` with the agent and ids, never the label. The default sign-in accounts are read-only here. Linking a runner adds a binding; signing in stays the runner owner's own step, with `POST /api/runners/<runnerId>/accounts/<agent>/login?binding=<bindingId>`. Disabling, unlinking or removing an account changes what later admissions offer; work already running keeps the account and binding its command carries.
-
-`GET` answers carry a weak `ETag`; a matching `If-None-Match` answers 304. Paws checks the reader's workspace membership before it compares the tag, so a revoked member gets 403, not 304.
-
-`GET /api/runners/accounts/preview?role=implementer|reviewer|reviewerFallback&repository=owner/repo` previews what new work for that role would get: the profile's agent and model, the order and its policy `revision` and source (`project`, `defaults` or `default` for the default sign-in), each account's position, why admission skips it, and each binding's readiness, then the first eligible account and runner and why the accounts ahead of it were passed over, or why new work would wait. It reads SQLite and `config.toml` only: it queues no command, reserves no slot, records no health and asks no provider. Who may use each runner (owner, sharing, project leads) depends on who delegated the issue and is checked when work is placed.
-
-The order each role tries is set in `config.toml` ([Account order](#account-order)) or through `PUT /api/settings/agents` with its `revision`. Settings › Agents keeps the agent, model and effort per role; changing a role's agent there clears that role's order, since an order may only name accounts of the profile's agent.
-
-Each assignment records why the accounts ahead of the chosen one were passed over in `runner_execution_usage.account_fallback`, such as `A: agent account quota cooldown`. A runner's **Execution history** shows the account, the first characters of the order revision and that reason.
+`/api/runners/accounts` and every path under it (create, rename, enable, link and unlink named accounts, and the eligibility preview of the account order) answer HTTP 410 with `Agent accounts were replaced by per-runner sign-in on the Runners page` (`src/account-management`). Sign-in stays on each runner: `GET /api/runners/<runnerId>/accounts` and `POST /api/runners/<runnerId>/accounts/<agent>/login`, and `GET /api/runners/<runnerId>/health`.
 
 ## Add the host
 
