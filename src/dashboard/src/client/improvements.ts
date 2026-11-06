@@ -621,6 +621,29 @@ function renderRecovery(
   return `<form class="col" data-improvement-form="recovery"><h4>Recovery</h4>${input(view, "recovery-reason", "Why", { required: true, max: 500 })}<div class="row">${f.recovery.map((choice) => `<button class="btn" type="submit" name="choice" value="${choice}"${disabled(view)}>${RECOVERY_LABEL[choice]}</button>`).join("")}</div></form>`;
 }
 
+type OutcomeRecord = ImprovementFollowThroughDetail["outcomes"][number];
+
+function verificationEvidence(o: OutcomeRecord): string {
+  const facts: string[] = [];
+  for (const entry of o.evidence) {
+    const split = entry.indexOf(":");
+    const kind = split < 0 ? entry : entry.slice(0, split);
+    const value = split < 0 ? "" : entry.slice(split + 1);
+    if (kind === "check") facts.push(`<dt>Checked</dt><dd>${esc(value)}</dd>`);
+    else if (kind === "result") facts.push(`<dt>Showed</dt><dd>${esc(value)}</dd>`);
+    else if (kind === "closeout") facts.push(`<dt>Closeout step</dt><dd>${esc(value)}</dd>`);
+    else if (kind === "url") {
+      const href = safeHref(value);
+      facts.push(
+        `<dt>Evidence</dt><dd>${href ? `<a href="${esc(href)}" target="_blank" rel="noreferrer noopener">${esc(value)}</a>` : esc(value)}</dd>`,
+      );
+    }
+  }
+  if (o.revision) facts.push(`<dt>Revision</dt><dd><code>${esc(o.revision)}</code></dd>`);
+  if (o.deployment) facts.push(`<dt>Deployed version</dt><dd>${esc(o.deployment)}</dd>`);
+  return facts.length ? `<dl class="kv">${facts.join("")}</dl>` : "";
+}
+
 function renderHistoryOf(
   detail: ImprovementDetail,
   follow: ImprovementFollowThroughDetail | null,
@@ -628,17 +651,19 @@ function renderHistoryOf(
   const entries = [
     ...detail.decisions.map((d) => ({
       at: d.at,
-      text: `${d.reviewState === "needs_review" ? "reopened" : d.reviewState} by ${d.actor}${d.reason ? `: ${d.reason}` : ""}`,
+      html: esc(
+        `${d.reviewState === "needs_review" ? "reopened" : d.reviewState} by ${d.actor}${d.reason ? `: ${d.reason}` : ""}`,
+      ),
     })),
     ...(follow?.outcomes ?? []).map((o) => ({
       at: o.recordedAt,
-      text: `${o.track === "implementation" ? "Implementation" : "Verification"}: ${(o.track === "implementation" ? IMPLEMENTATION_LABEL : VERIFICATION_LABEL)[o.state] ?? o.state}${o.actor && o.actor !== "paws" ? ` by ${o.actor}` : ""}`,
+      html: `${esc(`${o.track === "implementation" ? "Implementation" : "Verification"}: ${(o.track === "implementation" ? IMPLEMENTATION_LABEL : VERIFICATION_LABEL)[o.state] ?? o.state}${o.actor && o.actor !== "paws" ? ` by ${o.actor}` : ""}`)}${o.track === "verification" ? verificationEvidence(o) : ""}`,
     })),
   ].sort((a, b) => b.at - a.at);
   if (!entries.length) return "";
   return `<section class="improvement-part" aria-labelledby="improvement-history"><h3 id="improvement-history">History</h3><ul class="improvement-history">${entries
     .slice(0, 12)
-    .map((e) => `<li><span class="muted">${esc(utcTime(e.at))}</span> ${esc(e.text)}</li>`)
+    .map((e) => `<li><span class="muted">${esc(utcTime(e.at))}</span> ${e.html}</li>`)
     .join("")}</ul></section>`;
 }
 

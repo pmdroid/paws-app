@@ -354,7 +354,7 @@ function replace(node: DOMNode): ReactElement | undefined {
       "improvement-candidates",
     )
   )
-    return styled("flex min-w-0 list-none flex-col gap-2 p-0 [&>li]:py-1");
+    return styled("flex min-w-0 list-none flex-col gap-2 p-0 [overflow-wrap:anywhere] [&>li]:py-1");
   if (name === "ol" && has("improvement-report-items"))
     return styled("flex min-w-0 list-none flex-col gap-4 p-0");
   if (has("improvement-numbers")) return styled("flex list-none flex-wrap gap-4 p-0");
