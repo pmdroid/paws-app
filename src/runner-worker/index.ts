@@ -10,6 +10,7 @@ import {
   redactGitHubTokens,
   runnerCommandAccount,
   type RunnerLoginUpdate,
+  isRunnerToken,
 } from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import {
@@ -2233,8 +2234,7 @@ export async function runRunnerWorker(options: {
             );
             if (!published) return null;
             const value = JSON.parse(published.answer) as { token?: unknown; expiresAt?: unknown };
-            if (typeof value.token !== "string" || !/^ghs_[A-Za-z0-9_]+$/.test(value.token))
-              throw new Error("Runner GitHub read token is invalid");
+            if (!isRunnerToken(value.token)) throw new Error("Runner GitHub read token is invalid");
             return { token: value.token, expiresAt: Number(value.expiresAt) };
           },
           checkpointPublished(sequence: number) {

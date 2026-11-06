@@ -7,6 +7,7 @@ import {
   RunnerRepositoryBranchSchema,
   RunnerResultSchema,
   RunnerSkillManifestSchema,
+  RunnerTokenSchema,
 } from "../runner-protocol";
 import { identifier } from "./state";
 
@@ -64,11 +65,7 @@ export const RunnerRepositoryAccessSchema = z.strictObject({
   access: z.enum(["read", "write"]),
 });
 export const RunnerRepositoryCredentialSchema = z.strictObject({
-  token: z
-    .string()
-    .min(1)
-    .max(4096)
-    .regex(/^[!-~]+$/),
+  token: RunnerTokenSchema,
   expiresAt: timestamp,
   remoteUrl: z.string().max(512),
   branch: z
@@ -80,7 +77,7 @@ export const RunnerRepositoryCredentialSchema = z.strictObject({
 export const RunnerGitHubReadCredentialSchema = RunnerRepositoryCredentialSchema.pick({
   token: true,
   expiresAt: true,
-}).extend({ token: z.string().regex(/^ghs_[A-Za-z0-9_]{1,4092}$/) });
+});
 export const RunnerRepositoryCommandCredentialSchema = RunnerRepositoryCredentialSchema.extend({
   branch: RunnerRepositoryBranchSchema,
 });

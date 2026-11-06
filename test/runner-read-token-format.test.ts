@@ -32,7 +32,7 @@ test("a read token of printable ASCII is accepted whatever its prefix or charact
 test("hosts.yml reads back the exact token even when it holds YAML-special characters", () => {
   const directory = join(mkdtempSync(join(tmpdir(), "paws-read-format-")), ".gh-run");
   roots.push(directory);
-  const token = "ghs_a:b #c -d 'e\"f";
+  const token = "ghs_a:b#c-d'e\"f{g}";
   const config = openGitHubReadConfig(directory, (sequence) =>
     sequence === 1 ? { token, expiresAt: Date.now() + 3_600_000 } : null,
   );

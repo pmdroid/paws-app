@@ -97,6 +97,7 @@ export {
 } from "./login";
 
 export { RunnerActivitySchema, RunnerPermissionSchema, redactGitHubTokens } from "./activity";
+export { RUNNER_TOKEN_MAX_LENGTH, RunnerTokenSchema, isRunnerToken } from "./token";
 
 export {
   RunnerHostStatusSchema,

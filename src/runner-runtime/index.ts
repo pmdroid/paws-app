@@ -165,11 +165,18 @@ type Active = {
   checkpointSha?: string;
   /** How many checkpoints this execution pushed, each acknowledged to the worker. */
   checkpointsPublished?: number;
-  githubRead?: { sent: number; expiresAt: number; nextAt: number; fetching?: Promise<void> };
+  githubRead?: {
+    sent: number;
+    expiresAt: number;
+    nextAt: number;
+    failures: number;
+    fetching?: Promise<void>;
+  };
 };
 
 const GITHUB_READ_REFRESH_MS = 10 * 60_000;
 const GITHUB_READ_RECHECK_MS = 5 * 60_000;
+const GITHUB_READ_RETRY_MS = [5_000, 15_000, 30_000, 60_000];
 
 /** The session description the worker writes next to its bundle. */
 const SessionMetadataSchema = AgentSessionFinishSchema.omit({
@@ -571,7 +578,7 @@ export async function openRunnerRuntime(options: {
     const command = entry.execution.command;
     const fetch = options.daemon.githubReadCredential;
     if (command.type !== "run" || !command.githubRead || !fetch) return;
-    const read = (entry.githubRead ??= { sent: 0, expiresAt: 0, nextAt: 0 });
+    const read = (entry.githubRead ??= { sent: 0, expiresAt: 0, nextAt: 0, failures: 0 });
     if (read.sent >= GITHUB_READ_TOKENS_PER_TURN) return;
     read.nextAt = now() + GITHUB_READ_RECHECK_MS;
     try {
@@ -585,6 +592,7 @@ export async function openRunnerRuntime(options: {
         answer: JSON.stringify(credential),
       });
       read.sent += 1;
+      read.failures = 0;
       read.expiresAt = credential.expiresAt;
       read.nextAt = Math.min(
         credential.expiresAt - GITHUB_READ_REFRESH_MS,
@@ -593,7 +601,8 @@ export async function openRunnerRuntime(options: {
       removeRunnerGitHubRead(options.spool, entry.execution.id, read.sent);
     } catch (error) {
       if (entry.abort.signal.aborted) return;
-      if (read.sent === 0) read.nextAt = Number.POSITIVE_INFINITY;
+      read.nextAt =
+        now() + GITHUB_READ_RETRY_MS[Math.min(read.failures++, GITHUB_READ_RETRY_MS.length - 1)]!;
       journalCaught(error, "runner-runtime.fetchGitHubRead", command.itemId);
     }
   }

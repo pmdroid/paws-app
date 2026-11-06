@@ -58,7 +58,7 @@ function writeHosts(directory: string, token: string): void {
   try {
     writeFileSync(
       temporary,
-      `github.com:\n    oauth_token: ${token}\n    git_protocol: https\n    user: paws\n`,
+      `github.com:\n    oauth_token: ${JSON.stringify(token)}\n    git_protocol: https\n    user: paws\n`,
       { mode: 0o600, flag: "wx" },
     );
     chmodSync(temporary, 0o600);
