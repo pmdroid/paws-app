@@ -62,7 +62,7 @@ export function createExecutionControls(input: {
       session &&
       workspace &&
       client &&
-      (session.stoppedAt === null || options.stoppedSession === true) &&
+      (session.stoppedAt === null || options.stoppedSession === true || item.state === "paused") &&
       session.delegationId === item.delegationId &&
       session.organizationId === workspace.organizationId &&
       sessionIds.includes(session.sessionId) &&

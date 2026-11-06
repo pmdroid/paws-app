@@ -133,7 +133,7 @@ export async function probeLinearSessionStop(root: string) {
       await sleeping;
       await poller.pollNow();
       await poller.stop();
-      assert.equal(getWorkItem(db, old.id)?.state, "cancelled");
+      assert.equal(getWorkItem(db, old.id)?.state, "paused");
       assert.equal(getLinearSession(db, old.sessionKey!)?.stoppedAt, 9_000);
       assert.equal(getWorkItem(db, replacement.id)?.state, "queued");
       observations.push({
@@ -151,7 +151,7 @@ export async function probeLinearSessionStop(root: string) {
       requestedAt: clock.now(),
     });
     await jobs.tick();
-    assert.equal(getWorkItem(db, queued.id)?.state, "cancelled");
+    assert.equal(getWorkItem(db, queued.id)?.state, "paused");
     observations.push({ case: "claimed-stop-job", passed: true });
     assert.equal(joined, 3);
     for (const field of ["stop", "archivedAt", "dismissedAt", "stopping"] as const) {
@@ -216,7 +216,7 @@ export async function probeLinearSessionStop(root: string) {
           assert.equal(response.status, 200);
           await done;
         }
-        assert.equal(getWorkItem(db, old.id)?.state, "cancelled");
+        assert.equal(getWorkItem(db, old.id)?.state, "paused");
         assert.equal(getWorkItem(db, replacement.id)?.state, "queued");
         // A stop or archive from Linear leaves the pull request and the issue status alone.
         assert.ok(
@@ -234,8 +234,18 @@ export async function probeLinearSessionStop(root: string) {
           ),
         );
         assert.ok(
-          sessionRows.some((row) =>
-            (row.payload as { body?: string }).body?.includes("PR #42 stays open"),
+          sessionRows.some(
+            (row) =>
+              (row.payload as { body?: string }).body ===
+              "Paused. Reply here or re-delegate to continue.",
+          ),
+        );
+        assert.ok(
+          !listJobs(db).some(
+            (job) =>
+              job.queue === JOB_KIND.merge &&
+              job.status === "pending" &&
+              (job.payload as { itemId?: string }).itemId === old.id,
           ),
         );
         observations.push({

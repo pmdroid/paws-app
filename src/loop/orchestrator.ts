@@ -276,6 +276,8 @@ import {
   saveRunCommitPolicy,
   getItemRunCommitPolicy,
   bindLinearSessionTask,
+  advanceLinearSessionGeneration,
+  type StoredLinearSession,
   ensureLinearSession,
   activateLinearItem,
   workItemForSession,
@@ -941,7 +943,9 @@ export class Orchestrator {
       event.action === "prompted" &&
       event.sessionId &&
       event.body !== null &&
-      (!findOpenQuestion(this.db, event.sessionId) || this.hasPublishedPullRequest(event.sessionId))
+      (!findOpenQuestion(this.db, event.sessionId) ||
+        this.hasPublishedPullRequest(event.sessionId) ||
+        this.sessionPaused(event.sessionId))
     ) {
       const turn = this.recordTurn(event);
       if (turn) turnEventKey = turn.eventKey;
@@ -1211,7 +1215,10 @@ export class Orchestrator {
   private async handleLinearEvent(event: AcceptedLinearEvent): Promise<void> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
     if (event.action === "prompted") {
-      const question = event.sessionId ? findOpenQuestion(this.db, event.sessionId) : null;
+      const question =
+        event.sessionId && !this.sessionPaused(event.sessionId)
+          ? findOpenQuestion(this.db, event.sessionId)
+          : null;
       const questionItem = question ? getWorkItem(this.db, question.itemId) : null;
       if (event.sessionId && event.body) {
         const session = recordLinearSessionEvent(this.db, event, this.now());
@@ -1261,6 +1268,7 @@ export class Orchestrator {
     const session = recordLinearSessionEvent(this.db, event, this.now());
     const taskKey = session ? sessionTaskKey(this.db, session) : null;
     if (session?.stoppedAt !== null && session?.stoppedAt !== undefined) return;
+    if (session && !startFresh && (await this.resumeRedelegatedItem(event.issueId, session))) return;
     let result: IntakeResult;
     try {
       result = await this.intakeLinearTask(event.issueId, event.sessionId, taskKey ?? undefined, {
@@ -6574,6 +6582,10 @@ export class Orchestrator {
     const resumed = immediate(this.db, () => {
       const item = getWorkItem(this.db, itemId);
       if (!canAct() || item?.state !== "paused" || item.cancelRequested) return false;
+      const session = item.sessionKey ? getLinearSession(this.db, item.sessionKey) : null;
+      if (session?.stoppedAt != null)
+        advanceLinearSessionGeneration(this.db, session.sessionId, { now: this.now() });
+      cancelItemQuestions(this.db, item.id, this.now());
       restart(this.db, item, {
         reason: "follow_up",
         body: "Continue the task from its branch.",
@@ -7413,6 +7425,75 @@ export class Orchestrator {
     );
   }
 
+  private sessionPaused(sessionId: string): boolean {
+    return workItemForSession(this.db, sessionId)?.state === "paused";
+  }
+
+  private async resumeRedelegatedItem(
+    issueId: string,
+    session: StoredLinearSession,
+  ): Promise<boolean> {
+    const elsewhere = this.db
+      .query(
+        `SELECT 1 FROM work_item WHERE linear_issue_id = ? AND session_key != ?
+         AND state NOT IN ('completed', 'merged', 'cancelled') LIMIT 1`,
+      )
+      .get(issueId, session.sessionId);
+    if (!elsewhere || !this.tracker) return false;
+    const snapshot = await this.tracker.loadEpic(issueId);
+    const isCurrent = () => {
+      const current = getLinearSession(this.db, session.sessionId);
+      return (
+        !this.shuttingDown &&
+        current?.generation === session.generation &&
+        current.stoppedAt === null &&
+        this.options.authorizeLinearIntake?.(session.sessionId, snapshot) !== false
+      );
+    };
+    await this.reconcilePreviousSessions([issueId], session.sessionId, isCurrent, {
+      keepPullRequest: true,
+    });
+    const paused = this.db
+      .query<{ id: string; sessionKey: string; delegationId: string }, [string, string]>(
+        `SELECT item.id, item.session_key AS sessionKey, item.delegation_id AS delegationId
+         FROM work_item item
+         JOIN linear_session previous ON previous.session_id = item.session_key
+         JOIN linear_session incoming ON incoming.session_id = ?
+           AND incoming.organization_id IS previous.organization_id
+           AND incoming.oauth_client_id IS previous.oauth_client_id
+           AND incoming.app_user_id IS previous.app_user_id
+           AND incoming.team_id IS previous.team_id
+         WHERE item.linear_issue_id = ? AND item.state = 'paused'
+           AND previous.stopped_at IS NOT NULL AND previous.session_id != incoming.session_id
+         ORDER BY item.created_at DESC LIMIT 1`,
+      )
+      .get(session.sessionId, issueId);
+    if (!paused) return false;
+    await this.interruptLinearSession(paused.sessionKey);
+    const resumed = immediate(this.db, () => {
+      const item = getWorkItem(this.db, paused.id);
+      if (item?.state !== "paused" || item.sessionKey !== paused.sessionKey || !isCurrent())
+        return false;
+      this.db.run("UPDATE work_item SET session_key = ? WHERE delegation_id = ? AND session_key = ?", [
+        session.sessionId,
+        paused.delegationId,
+        paused.sessionKey,
+      ]);
+      bindLinearSessionTask(this.db, session.sessionId, paused.delegationId);
+      activateLinearItem(this.db, session.sessionId, item.id);
+      cancelItemQuestions(this.db, item.id, this.now());
+      restart(this.db, getWorkItem(this.db, item.id)!, {
+        reason: "follow_up",
+        body: "The issue was delegated again in Linear. Continue the task from its branch.",
+        now: this.now(),
+      });
+      return true;
+    });
+    if (resumed) this.reconcileExecution();
+    await this.flush();
+    return resumed;
+  }
+
   private async resumeLinearSession(sessionId: string): Promise<void> {
     const active = [...this.live.values()].filter((live) =>
       this.itemsForSession(sessionId).some((item) => item.id === live.itemId),
@@ -7537,6 +7618,7 @@ export class Orchestrator {
       const handoff = [...pending.map((turn) => turn.body), ...(context ? [context] : [])].join(
         "\n\n",
       );
+      if (current.state === "paused") cancelItemQuestions(this.db, current.id, this.now());
       if (item!.cancelRequested || item!.state === "failed")
         this.db.run(
           "UPDATE work_item SET cancel_requested = 0, recovery_attempts = 0 WHERE id = ?",

@@ -162,7 +162,7 @@ async function fixture() {
 }
 
 test.each(["dismissed", "ended", "complete", "error", "stopping"])(
-  "a new session safely replaces a %s Linear session",
+  "a new session resumes the item a %s Linear session paused",
   async (state) => {
     const f = await fixture();
     f.snapshot.dismissedAt = state === "dismissed" ? new Date(20).toISOString() : null;
@@ -170,12 +170,11 @@ test.each(["dismissed", "ended", "complete", "error", "stopping"])(
     f.snapshot.status = ["dismissed", "ended"].includes(state) ? "awaitingInput" : state;
     try {
       await f.orchestrator.onLinearEvent(created("new"));
-      expect(getWorkItem(f.db, f.oldId)?.state).toBe("cancelled");
       expect(getLinearSession(f.db, "old")?.stoppedAt).not.toBeNull();
-      const replacement = getLinearSession(f.db, "new")!.activeItemId!;
-      expect(getWorkItem(f.db, replacement)).toMatchObject({ state: "queued", sessionKey: "new" });
+      expect(getLinearSession(f.db, "new")!.activeItemId).toBe(f.oldId);
+      expect(getWorkItem(f.db, f.oldId)).toMatchObject({ state: "queued", sessionKey: "new" });
       await f.orchestrator.onLinearEvent(created("new"));
-      expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(2);
+      expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -264,7 +263,7 @@ test("concurrent retries wait for old runner teardown and admit one replacement"
   release.resolve();
   try {
     expect((await results).filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(f.db.query("SELECT id FROM work_item WHERE state = 'queued'").all()).toHaveLength(1);
+    expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
   } finally {
     await f.close();
   }
