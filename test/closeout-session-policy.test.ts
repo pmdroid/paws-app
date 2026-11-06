@@ -11,6 +11,7 @@ import {
   encodePolicyChunk,
   trustedPolicyFiles,
   workspacePolicyFiles,
+  type PolicyDigests,
   type PolicyFilesLoad,
 } from "../src/closeout-spec";
 import { remoteCloseoutPolicy } from "../src/runner-worker";
@@ -124,7 +125,7 @@ test("the trusted policy comes from origin/main, not from the worktree", async (
   git(clone, "clone", "-q", origin, ".");
   writeFileSync(join(clone, ".agents", "closeout.yaml"), policy("edited-on-branch"));
   const first = trustedPolicyFiles(clone);
-  const digests = candidatePolicyDigests(clone);
+  const digests = candidatePolicyDigests(clone) as PolicyDigests | null;
   expect(digests?.paths).toContain(".agents/closeout.yaml");
   expect(digests?.digest).toBe(first.ok && !first.absent ? first.digest : undefined);
   expect(first.ok && !first.absent && first.digest).toBe(
@@ -137,6 +138,31 @@ test("the trusted policy comes from origin/main, not from the worktree", async (
   expect(second.ok && !second.absent && second.digest).toBe(
     (trusted("typecheck") as { digest: string }).digest,
   );
+});
+
+test("main's policy that does not load reports its error and the commit that broke it", () => {
+  const origin = directory();
+  git(origin, "init", "-q", "--bare", "-b", "main");
+  const seed = workspace(policy("lint"));
+  git(seed, "remote", "add", "origin", origin);
+  writeFileSync(join(seed, ".agents", "closeout.yaml"), "rules:\n  - id: no-probe\n");
+  writeFileSync(join(seed, "README.md"), "later\n");
+  git(seed, "add", ".");
+  git(seed, "commit", "-qm", "break the policy");
+  const broke = git(seed, "rev-parse", "HEAD");
+  writeFileSync(join(seed, "README.md"), "later still\n");
+  git(seed, "commit", "-qam", "unrelated");
+  git(seed, "push", "-q", "origin", "HEAD:main");
+  const clone = directory();
+  git(clone, "clone", "-q", origin, ".");
+  expect(candidatePolicyDigests(clone)).toMatchObject({
+    ok: false,
+    path: ".agents/closeout.yaml",
+    main: git(seed, "rev-parse", "HEAD"),
+    commit: broke,
+  });
+  git(clone, "remote", "set-url", "origin", join(origin, "missing"));
+  expect(candidatePolicyDigests(clone)).toBeNull();
 });
 
 test("policy files round trip through the runner answer and bad answers block", () => {

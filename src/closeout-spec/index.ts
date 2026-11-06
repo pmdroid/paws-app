@@ -133,6 +133,7 @@ export type {
   DecisionInput,
   DigestResult,
   PolicyDigests,
+  PolicyUnreadable,
   ReviewIntake,
   RunRequest,
   ValidateResult,

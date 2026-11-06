@@ -477,6 +477,7 @@ export type PolicyLoadResult =
        */
       source: "repo" | "global" | "local";
       message: string;
+      main?: string;
     };
 
 export type Finding = {

@@ -67,10 +67,16 @@ export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
       ],
     };
   }
-  const staged = originMainFiles(input);
-  if (!staged.ok) return blocked("repo", staged.message);
+  const confirmed = confirmedOriginMain(input);
+  if (!confirmed.ok) return blocked("repo", confirmed.message);
+  const staged = materialize(input.git, input.repo, confirmed.commit);
+  if (!staged.ok)
+    return staged.message === UNREAD_POLICY
+      ? blocked("repo", staged.message)
+      : { ok: false, source: "repo", message: staged.message, main: confirmed.commit };
   const loaded = loadMemoryPolicy(staged.files);
-  if (!loaded.ok) return blocked("repo", loaded.message);
+  if (!loaded.ok)
+    return { ok: false, source: "repo", message: loaded.message, main: confirmed.commit };
   if (loaded.absent) return { ok: true, policy: ABSENT_POLICY, warnings: [] };
   return { ok: true, policy: present("repo", loaded.policy), warnings: keyWarnings(loaded.policy) };
 }
@@ -276,6 +282,8 @@ function isSha(value: string): boolean {
   return (value.length === 40 || value.length === 64) && /^[0-9a-f]+$/.test(value);
 }
 
+const UNREAD_POLICY = "could not read the policy file";
+
 function blocked(source: "repo" | "global" | "local", message: string): PolicyLoadOutcome {
   return { ok: false, source, message };
 }
@@ -300,7 +308,7 @@ function materialize(
     seen.add(relative);
     if (repoPath(relative) === undefined) continue;
     const listed = git.listBlobs(repo, commit, relative);
-    if (!listed.ok) return { ok: false, message: "could not read the policy file" };
+    if (!listed.ok) return { ok: false, message: UNREAD_POLICY };
     const blob = listed.blobs.find((entry) => entry.path === relative);
     if (blob === undefined) continue;
     if (blob.mode === "120000" && probes.has(relative))
@@ -308,7 +316,7 @@ function materialize(
     if (!regularMode(blob.mode))
       return { ok: false, message: `policy path is not a file: ${relative}` };
     const read = git.readBlob(repo, blob.object);
-    if (!read.ok) return { ok: false, message: "could not read the policy file" };
+    if (!read.ok) return { ok: false, message: UNREAD_POLICY };
     files.set(relative, read.bytes);
     if (relative.endsWith("/SKILL.md")) {
       const slash = relative.lastIndexOf("/");
@@ -333,7 +341,7 @@ function copyTree(
   dir: string,
 ): { ok: true } | { ok: false; message: string } {
   const listed = git.listBlobs(repo, commit, dir);
-  if (!listed.ok) return { ok: false, message: "could not read the policy file" };
+  if (!listed.ok) return { ok: false, message: UNREAD_POLICY };
   for (const blob of listed.blobs) {
     const stored = storeSkillBlob(git, repo, files, blob);
     if (!stored.ok) return stored;
@@ -352,7 +360,7 @@ function storeSkillBlob(
   if (!regularMode(blob.mode))
     return { ok: false, message: `skill path is not a file: ${blob.path}` };
   const read = git.readBlob(repo, blob.object);
-  if (!read.ok) return { ok: false, message: "could not read the policy file" };
+  if (!read.ok) return { ok: false, message: UNREAD_POLICY };
   if (repoPath(blob.path) === undefined) {
     return { ok: false, message: `import path is not repository-relative: ${blob.path}` };
   }

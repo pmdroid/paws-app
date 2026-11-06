@@ -549,16 +549,26 @@ export function candidatePolicyDigest(
 
 /**
  * {@link candidatePolicyDigest} with the digest of the checks marked `recheck: true` under it:
- * `""` when none is. Null when the policy cannot be read.
+ * `""` when none is. {@link PolicyUnreadable} when main was read and its policy does not load;
+ * null when the policy cannot be read for another reason, such as an unreachable origin.
  */
 export function candidatePolicyDigests(
   repo: string,
   home?: string,
   policyRoot?: string,
   checkoutExclusions: readonly string[] = [],
-): PolicyDigests | null {
+): PolicyDigests | PolicyUnreadable | null {
   const loaded = loadOrigin(repo, home, policyRoot, checkoutExclusions);
-  if (!loaded.ok) return null;
+  if (!loaded.ok) {
+    if (loaded.main === undefined) return null;
+    return {
+      ok: false,
+      message: loaded.message,
+      path: PUBLIC_POLICY_PATH,
+      main: loaded.main,
+      commit: lastPolicyChange(repo, loaded.main),
+    };
+  }
   if (loaded.policy.source === "none") return { digest: "", recheck: "", paths: [] };
   return {
     digest: loaded.policy.digest,
@@ -569,6 +579,25 @@ export function candidatePolicyDigests(
 
 /** A policy's digest and the digest of its checks marked `recheck: true`. */
 export type PolicyDigests = { digest: string; recheck: string; paths?: readonly string[] };
+
+export type PolicyUnreadable = {
+  ok: false;
+  message: string;
+  path: string;
+  main: string;
+  commit: string | null;
+};
+
+function lastPolicyChange(repo: string, main: string): string | null {
+  const logged = gitSync(
+    repo,
+    ["log", "-1", "--format=%H", main, "--", PUBLIC_POLICY_PATH],
+    GIT_TIMEOUT_MS,
+  );
+  if (!logged.ok) return null;
+  const commit = logged.stdout.toString("utf8").trim();
+  return commit.length > 0 ? commit : null;
+}
 
 /** Judge the evidence already stored for this candidate. Does not run commands. */
 export async function decision(input: DecisionInput): Promise<DecisionDocument> {
