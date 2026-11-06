@@ -17,7 +17,7 @@ import { runnerCommandAccount, type RunnerAgentUser } from "../runner-protocol";
 import { ExecutionIdSchema } from "./jobs";
 import { executionScope, executionTag, startTime, stopExecutionProcesses } from "./processes";
 import { readRunnerJob, type RunnerSpool } from "./spool";
-import type { RunnerResults } from "./results";
+import { readRunnerResultFile, type RunnerResults } from "./results";
 import type { RunnerBrokerClient } from "./broker";
 import type { RunnerSkillInstaller } from "./skills";
 import { openSharedDirectory } from "./shared";
@@ -324,6 +324,19 @@ export function createDirectWorkerSupervisor(options: {
     if (stopped.code !== 0) throw agentUnitFailure(executionId, "stop", stopped.output);
     removeAgentEnv(agentEnvRoot, executionId);
   }
+  function persisted(executionId: string): boolean {
+    const results = options.results;
+    if (!results) return false;
+    return (["result.json", "retro-result.json"] as const).some((name) => {
+      try {
+        readRunnerResultFile(results, executionId, name);
+        return true;
+      } catch (error) {
+        journalCaught(error, "supervisor.persisted", null, "optional file may be absent");
+        return false;
+      }
+    });
+  }
   async function startUnit(
     executionId: string,
     resume: boolean,
@@ -353,6 +366,7 @@ export function createDirectWorkerSupervisor(options: {
     ]);
     const pid = Number(shown.output.trim());
     if (shown.code !== 0 || !Number.isSafeInteger(pid) || pid < 0) {
+      if (persisted(executionId)) return {};
       await stopUnit(executionId);
       throw new Error("Runner worker did not start");
     }
@@ -415,13 +429,15 @@ export function createDirectWorkerSupervisor(options: {
             command.type === "run" && !resume ? { name: command.runId } : undefined,
           );
       }
-      if (asAgent && options.spool && !shared.has(home)) {
-        shareRunnerAgentState(home, {
-          runnerUid: options.spool.runnerUid,
-          agentGid: options.spool.agentGid,
-        });
-        shared.add(home);
-      }
+      if (asAgent && options.spool)
+        for (const folder of new Set([agentHome, home])) {
+          if (shared.has(folder)) continue;
+          shareRunnerAgentState(folder, {
+            runnerUid: options.spool.runnerUid,
+            agentGid: options.spool.agentGid,
+          });
+          shared.add(folder);
+        }
       options.skills?.prepareHome(home);
       const skills = options.skills?.hold(home, executionId);
       if (asAgent) {

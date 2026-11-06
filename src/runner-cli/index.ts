@@ -269,6 +269,7 @@ export async function runRunnerCli(
           root: "/var/lib/paws-agent-results",
           runnerUid: ids.runnerUid,
           agentUid: agentUser === "paws-agent" ? ids.pawsAgentUid : ids.runnerUid,
+          pawsAgentUid: ids.pawsAgentUid,
           resultsGid: ids.resultsGid,
         },
         workRoot: "/var/lib/paws-agent/work",

@@ -37,7 +37,7 @@ const ACTIVE = ".paws-active";
 const PUBLISHING = ".paws-publishing";
 const ADMISSION_MS = 60_000;
 const SHARE_LIMIT = 100_000;
-const SHARED_ELSEWHERE = new Set(["work", RUNNER_ACCOUNT_HOMES]);
+const SHARED_ELSEWHERE = new Set(["work", RUNNER_ACCOUNT_HOMES, MANIFEST, ACTIVE, PUBLISHING]);
 
 const HOME_FOLDERS = [
   ".claude",
@@ -412,7 +412,6 @@ export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners)
     if (["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
     throw error;
   }
-  // The work root and the account homes are prepared on their own, each when it is used.
   shareRunnerPaths(
     names.filter((name) => !SHARED_ELSEWHERE.has(name)).map((name) => join(home, name)),
     owners,

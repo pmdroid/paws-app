@@ -280,6 +280,24 @@ test("agent state written by the runner is shared with the agent group before pa
   expect(mode(".codex/auth.json")).toBe(0o660);
 });
 
+test("sharing an account home keeps its binding, holds and sign-in lock at 0640", () => {
+  const root = agentHome();
+  const owners = { runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  const home = openRunnerAccountHome(root, a, "claude", { signIn: true });
+  markRunnerAccountSignedIn(home, a, "claude");
+  hold(home, execution, root, live());
+  writeFileSync(join(home, ".paws-publishing"), "{}", { mode: 0o640 });
+  chmodSync(join(home, ".paws-publishing"), 0o640);
+  shareRunnerAgentState(home, owners);
+  const mode = (path: string) => statSync(join(home, path)).mode & 0o777;
+  expect([
+    mode("account.json"),
+    mode(`.paws-active/${execution}`),
+    mode(".paws-publishing"),
+  ]).toEqual([0o640, 0o640, 0o640]);
+  expect(openRunnerAccountHome(root, a, "claude")).toBe(home);
+});
+
 test("a hold names its worker itself, so no reader follows a path into runner-private state", () => {
   const root = agentHome();
   const home = openRunnerAccountHome(root, a, "claude", { signIn: true });

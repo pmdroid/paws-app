@@ -13,6 +13,7 @@ export async function runPairedDaemon(
   ids: {
     runnerUid: number;
     agentUid: number;
+    pawsAgentUid: number;
     agentGid: number;
     resultsGid: number;
     agentUser: RunnerAgentUser;
@@ -37,6 +38,7 @@ export async function runPairedDaemon(
       root: "/var/lib/paws-agent-results",
       runnerUid: ids.runnerUid,
       agentUid: ids.agentUid,
+      pawsAgentUid: ids.pawsAgentUid,
       resultsGid: ids.resultsGid,
     },
     agentUser: ids.agentUser,

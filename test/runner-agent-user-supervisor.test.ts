@@ -1,12 +1,26 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import {
   createDirectWorkerSupervisor,
+  createRunnerResultDirectory,
+  markRunnerAccountSignedIn,
+  openRunnerAccountHome,
+  publishRunnerJob,
   RUNNER_SKILLS_ENV,
   workerSpawn,
+  type RunnerJob,
   type RunnerSystemctl,
 } from "../src/runner-execution";
 import { RunnerCliFailure, workerAgentUser } from "../src/runner-cli";
@@ -37,7 +51,7 @@ function running(pid: number): boolean {
   }
 }
 
-function fakeSystemctl(fail?: string, exitsAtOnce = false) {
+function fakeSystemctl(fail?: string, exitsAtOnce = false, showFails = false) {
   const calls: string[][] = [];
   let pid: number | undefined;
   const systemctl: RunnerSystemctl = async (args) => {
@@ -53,7 +67,10 @@ function fakeSystemctl(fail?: string, exitsAtOnce = false) {
       pids.push(pid);
       return { code: 0, output: "" };
     }
-    if (args[0] === "show") return { code: 0, output: `${exitsAtOnce ? 0 : (pid ?? 0)}\n` };
+    if (args[0] === "show")
+      return showFails
+        ? { code: 1, output: "Failed to connect to bus" }
+        : { code: 0, output: `${exitsAtOnce ? 0 : (pid ?? 0)}\n` };
     if (args[0] === "stop") {
       const main = pid;
       if (main !== undefined && running(main)) {
@@ -68,20 +85,60 @@ function fakeSystemctl(fail?: string, exitsAtOnce = false) {
   return { calls, systemctl };
 }
 
+function prepared(root: string, account?: RunnerJob["command"]["account"]) {
+  const spoolRoot = join(root, "spool");
+  mkdirSync(spoolRoot, { mode: 0o750 });
+  chmodSync(spoolRoot, 0o750);
+  const resultsRoot = join(root, "results");
+  mkdirSync(resultsRoot, { mode: 0o770 });
+  chmodSync(resultsRoot, 0o770);
+  const spool = { root: spoolRoot, runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  publishRunnerJob(spool, {
+    executionId: id,
+    command: {
+      id: "cmd",
+      runnerId: "runner",
+      workspaceId: "ws",
+      issuedAt: 1,
+      expiresAt: 2,
+      type: "probe",
+      profile: { agent: "codex", model: null },
+      ...(account ? { account } : {}),
+    },
+  });
+  return {
+    spool,
+    results: {
+      root: resultsRoot,
+      runnerUid: process.getuid!(),
+      agentUid: process.getuid!(),
+      resultsGid: process.getgid!(),
+    },
+  };
+}
+
 function setup(
   agentUser: "runner" | "paws-agent",
   fail?: string,
-  shared?: { root: string; exitsAtOnce?: boolean },
+  shared?: {
+    root: string;
+    exitsAtOnce?: boolean;
+    showFails?: boolean;
+    jobs?: ReturnType<typeof prepared>;
+    agentHome?: string;
+  },
 ) {
   const root = shared?.root ?? mkdtempSync(join(tmpdir(), "paws-agent-user-"));
   if (!shared) roots.push(root);
-  const fake = fakeSystemctl(fail, shared?.exitsAtOnce);
+  const fake = fakeSystemctl(fail, shared?.exitsAtOnce, shared?.showFails);
   const launched: unknown[][] = [];
   const supervisor = createDirectWorkerSupervisor({
     stateRoot: join(root, "workers"),
     taskRoot: root,
     agentEnvRoot: root,
     agentUser,
+    ...(shared?.jobs ?? {}),
+    ...(shared?.agentHome ? { agentHome: shared.agentHome, workRoot: join(root, "work") } : {}),
     systemctl: fake.systemctl,
     skills: { prepareHome() {}, hold: () => skillsPath, release() {} },
     launch(...input) {
@@ -253,4 +310,55 @@ test("a paws-agent worker that already exited when systemd is asked keeps its ad
   expect(fake.calls.map((call) => call[0])).toEqual(["start", "show"]);
   expect(supervisor.alive!(id)).toBe(false);
   expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: true });
+});
+
+test("a failed MainPID query after the worker persisted its result keeps the admission", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-agent-user-"));
+  roots.push(root);
+  const jobs = prepared(root);
+  const directory = createRunnerResultDirectory(jobs.results, id);
+  writeFileSync(join(directory, "result.json"), "{}", { mode: 0o640 });
+  chmodSync(join(directory, "result.json"), 0o640);
+  const { fake, supervisor } = setup("paws-agent", undefined, { root, showFails: true, jobs });
+  expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: false });
+  expect(fake.calls.map((call) => call[0])).toEqual(["start", "show"]);
+  expect(supervisor.alive!(id)).toBe(false);
+  expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: true });
+});
+
+test("a failed MainPID query with no result stops the unit and fails the launch", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-agent-user-"));
+  roots.push(root);
+  const jobs = prepared(root);
+  const { fake, supervisor } = setup("paws-agent", undefined, { root, showFails: true, jobs });
+  await expect(supervisor.start(id)).rejects.toThrow("Runner worker did not start");
+  expect(fake.calls.map((call) => call[0])).toEqual(["start", "show", "stop"]);
+});
+
+test("an account-bound paws-agent run shares the agent home's mise folders and keeps the binding 0640", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-agent-user-"));
+  roots.push(root);
+  const account = {
+    accountId: "01JACCOUNTA000000000000000",
+    bindingId: "01JBINDINGA000000000000000",
+  };
+  const jobs = prepared(root, account);
+  const agentHome = join(root, "agent");
+  mkdirSync(agentHome, { mode: 0o700 });
+  for (const folder of [".cache/mise", ".local/share/mise"])
+    mkdirSync(join(agentHome, folder), { recursive: true, mode: 0o700 });
+  for (const folder of [".cache", ".cache/mise", ".local", ".local/share", ".local/share/mise"])
+    chmodSync(join(agentHome, folder), 0o700);
+  const bindingHome = openRunnerAccountHome(agentHome, account, "codex", { signIn: true });
+  markRunnerAccountSignedIn(bindingHome, account, "codex");
+  const { fake, supervisor } = setup("paws-agent", undefined, { root, jobs, agentHome });
+  expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: false });
+  expect(fake.calls.map((call) => call[0])).toEqual(["start", "show"]);
+  const mode = (path: string) => statSync(path).mode & 0o777;
+  expect([
+    mode(join(agentHome, ".cache/mise")),
+    mode(join(agentHome, ".local/share/mise")),
+  ]).toEqual([0o770, 0o770]);
+  expect(mode(join(bindingHome, "account.json"))).toBe(0o640);
+  await supervisor.stop(id);
 });

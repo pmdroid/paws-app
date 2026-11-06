@@ -8,6 +8,7 @@ export interface RunnerResults {
   root: string;
   runnerUid?: number;
   agentUid: number;
+  pawsAgentUid?: number;
   resultsGid: number;
 }
 
@@ -16,13 +17,17 @@ export function runnerResultsRootRule(options: RunnerResults): SharedDirectoryRu
 }
 
 /**
- * The users a result may belong to: the configured agent user, and paws-runner, which wrote
- * the results of executions admitted before agentUser named paws-agent.
+ * The users a result may belong to: the configured agent user, paws-runner and paws-agent. An
+ * execution keeps the user it was admitted as when agentUser changes, in either direction.
  */
 function resultOwners(options: RunnerResults): number[] {
-  return options.runnerUid === undefined
-    ? [options.agentUid]
-    : [options.agentUid, options.runnerUid];
+  return [
+    ...new Set(
+      [options.agentUid, options.runnerUid, options.pawsAgentUid].filter(
+        (uid): uid is number => uid !== undefined,
+      ),
+    ),
+  ];
 }
 
 export function runnerResultDirectoryRule(options: RunnerResults): SharedDirectoryRule {
