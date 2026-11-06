@@ -161,6 +161,7 @@ When Closeout stops and the question is a Linear question (`closeout-help`, aske
 
 - **Retry Closeout** applies `reverify_requested` from `awaiting_input` and queues one re-verify job, with no agent turn. Closeout runs again on the same head; accepted, the item goes to the merge queue. The answer is stored as "Retry Closeout" with the person who chose it, and it counts as one more evaluation within the same retry limit.
 - A reply that is exactly `retry` (any case, trimmed) counts as Retry Closeout when the question offered it. Any longer reply, such as "retry, but also fix X", is guidance.
+- When the policy did not load because main's `.agents/closeout.yaml` is broken, the question also records that cause (`policy_unreadable`, the main commit, the error and the commit that last changed the policy) in `closeout_policy_block`. It names that commit, links the repository's open policy-outage question, and ends with "Paws retries by itself once main's policy loads. You don't need to reply." After every fetch of main, and every 5 minutes while such a question is open, Paws reads main's policy. Once it loads, Paws answers every such question in the repository as Retry Closeout, stored as "Answered by Paws: the policy on main loads again at <commit>". The question is then settled: if Closeout stops again, that is a new question.
 
 The item's question card in the dashboard shows Retry Closeout as a button that posts through `/api/questions/answer`.
 
