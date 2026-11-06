@@ -27,6 +27,7 @@ import { FINDING_GROUPS_API_PATH, type FindingGroupsResponse } from "../finding-
 import { journalCaught } from "../journal";
 import { readCsrfToken } from "./csrf";
 import { renderImprovements, type ImprovementsView } from "./improvements";
+import { createRetroSettings } from "./retro-settings";
 import { livePoll, PAGE_POLL_MS } from "./poll";
 import { routeHref, type ImprovementTab, type Route } from "./route";
 import { renderMarkup } from "./theme";
@@ -39,6 +40,7 @@ export type ImprovementsOptions = {
   csrf?: () => string;
   now?: () => number;
   paint?: (root: HTMLElement, html: string) => void;
+  retroSettings?: ReturnType<typeof createRetroSettings>;
   location?: () => { pathname: string; search: string };
   replaceSearch?: (search: string) => void;
   counted?: (total: number) => void;
@@ -129,6 +131,8 @@ export function createImprovements(options: ImprovementsOptions = {}) {
   const csrf = options.csrf ?? (() => readCsrfToken(document));
   const now = options.now ?? Date.now;
   const draw = options.paint ?? renderMarkup;
+  const retroSettings =
+    options.retroSettings ?? createRetroSettings({ fetch: fetchImpl, csrf, paint: draw });
   const where = options.location ?? (() => location);
   const go = options.go ?? ((route: ImprovementRoute) => location.assign(routeHref(route)));
   const replaceSearch =
@@ -467,7 +471,10 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     const panes = [...root.querySelectorAll<HTMLElement>("[data-scroll-key]")].map(
       (pane) => [pane.dataset.scrollKey, pane.scrollTop] as const,
     );
-    if (html !== shown) draw(root, html);
+    if (html !== shown) {
+      draw(root, html);
+      retroSettings.attach(root, engine, reader);
+    }
     shown = html;
     for (const [key, top] of panes) {
       const pane = root.querySelector<HTMLElement>(`[data-scroll-key="${key}"]`);

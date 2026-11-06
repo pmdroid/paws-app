@@ -676,6 +676,7 @@ function renderReport(view: ImprovementsView): string {
       ? `${back}<div class="empty" role="status"><div>Retro unavailable</div>${esc(view.error ?? "")}<div><button class="btn primary" type="button" data-improvement-action="reload">Retry</button></div></div>`
       : `${back}<div class="empty" role="status">Loading the retro…</div>`;
   const { retro, report, coverageGaps } = view.report;
+  const frozen = retro.fullAccess ? `<div data-retro-frozen="${esc(retro.id)}"></div>` : "";
   const head = `<div class="col"><h2>${esc(period(retro.windowStart, retro.windowEnd))}</h2><p class="muted">${retro.origin === "manual" ? "Manual retro" : "Scheduled retro"} · ${esc(retro.repositories.join(", "))}${retro.publishedAt ? ` · published ${esc(utcTime(retro.publishedAt))}` : ""}${retro.fullAccess ? "" : " · showing only what you can read"}</p></div>`;
   if (report === null) {
     const state = retro.generation.state ?? "queued";
@@ -689,7 +690,7 @@ function renderReport(view: ImprovementsView): string {
       retro.generation.error ??
       retro.generation.detail ??
       "The report appears here once generated.";
-    return `${back}${head}<div class="card" role="status"><div class="row">${tag(GENERATION_LABEL[state] ?? state, state === "failed" ? "err" : state === "generating" ? "now" : "warn")}</div><p>${esc(detail)}</p><p class="muted">The evidence is saved. Waiting for a runner spends no agent time.</p><div class="row">${recover}</div></div>`;
+    return `${back}${head}${frozen}<div class="card" role="status"><div class="row">${tag(GENERATION_LABEL[state] ?? state, state === "failed" ? "err" : state === "generating" ? "now" : "warn")}</div><p>${esc(detail)}</p><p class="muted">The evidence is saved. Waiting for a runner spends no agent time.</p><div class="row">${recover}</div></div>`;
   }
   const windows = report.windows.length
     ? `<p class="muted">Reporting window: ${report.windows.map((w) => `${esc(w.repository)} ${esc(utcTime(w.start))} to ${esc(utcTime(w.end))}`).join("; ")}. Frozen when the retro ran.</p>`
@@ -709,7 +710,7 @@ function renderReport(view: ImprovementsView): string {
   const gaps = coverageGaps?.length
     ? `<section class="improvement-part"><h3>Coverage gaps</h3><ul>${coverageGaps.map((g) => `<li>${esc(g.kind)}${g.repository ? ` · ${esc(g.repository)}` : ""}${g.detail ? `: ${esc(g.detail)}` : ""}</li>`).join("")}</ul></section>`
     : "";
-  return `${back}${head}${windows}${numbers}<section class="improvement-part" aria-labelledby="report-patterns"><h3 id="report-patterns">Patterns (${report.items.length} of at most 5)</h3>${items}</section>${worked}${notes}${gaps}`;
+  return `${back}${head}${frozen}${windows}${numbers}<section class="improvement-part" aria-labelledby="report-patterns"><h3 id="report-patterns">Patterns (${report.items.length} of at most 5)</h3>${items}</section>${worked}${notes}${gaps}`;
 }
 
 function reportItem(
@@ -755,17 +756,18 @@ function renderHistory(view: ImprovementsView): string {
 function renderSettings(view: ImprovementsView): string {
   const schedule = view.schedule;
   const daily = `<section class="card col" aria-labelledby="settings-daily"><h2 id="settings-daily">Daily findings</h2><p>Daily grouping keeps its own settings.</p><a class="btn" href="${esc(routeHref({ view: "settings", page: "findings" }))}">Finding settings</a></section>`;
+  const form = `<div class="card" data-retro-settings=""></div>`;
   if (schedule === null)
-    return `${daily}<div class="empty" role="status">Loading the retro schedule…</div>`;
+    return `${daily}<div class="empty" role="status">Loading the retro schedule…</div>${form}`;
   const s = schedule.schedule;
   const when = schedule.nextRun
     ? `Next retro ${utcTime(schedule.nextRun.at)}.`
     : schedule.saved
-      ? "Weekly retros are paused."
+      ? "Weekly retros are paused. No retro runs until someone selects Run retro."
       : "Retro settings are not saved yet, so no retro is scheduled.";
   const facts = Object.entries(s)
     .filter(([, value]) => ["string", "number", "boolean"].includes(typeof value))
     .map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(String(value))}</dd>`)
     .join("");
-  return `${daily}<section class="card col" aria-labelledby="settings-weekly"><h2 id="settings-weekly">Weekly retros</h2><p>${esc(when)}</p>${facts ? `<dl class="kv">${facts}</dl>` : ""}<p class="muted">${schedule.canEdit ? "Workspace admins change the prompt, agent, repositories and schedule in retro settings." : "Only workspace admins change the retro schedule."} A manual retro uses the same saved settings.</p>${schedule.canRun ? `<div class="row"><button class="btn" type="button" data-improvement-action="run-retro"${disabled(view)}>Run retro</button></div>` : ""}</section>`;
+  return `${daily}<section class="card col" aria-labelledby="settings-weekly"><h2 id="settings-weekly">Weekly retros</h2><p>${esc(when)}</p>${facts ? `<dl class="kv">${facts}</dl>` : ""}<p class="muted">${schedule.canEdit ? "Workspace admins change the prompt, agent, repositories and schedule in retro settings below." : "Only workspace admins change the retro schedule."} A manual retro uses the same saved settings and joins a retro already in flight for its window.</p>${schedule.canRun ? `<div class="row"><button class="btn" type="button" data-improvement-action="run-retro"${disabled(view)}>Run retro</button></div>` : ""}</section>${form}`;
 }
