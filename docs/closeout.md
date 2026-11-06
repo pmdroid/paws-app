@@ -64,7 +64,7 @@ Paws agents set the pull request title and description with `open_pull_request`,
 - `PAWS_PR_TITLE` holds the saved title.
 - `PAWS_PR_BODY_FILE` is the path of a file holding the saved description. The file has mode `0600`, sits in a temporary folder outside the checkout, and is deleted when the command ends.
 
-Without a saved draft neither variable is set. Both are added after the credential scrub; the agent still gets no write access to pull requests. A check whose `exec` names either variable depends on the draft: a new title or description from `open_pull_request` makes it pending again, and its earlier result is not reused, in the agent's turn or in Paws Closeout. Other checks keep their results. On a runner, the draft travels with the run and needs runner 0.1.71 or later.
+Without a saved draft neither variable is set. Both are added after the credential scrub; the agent still gets no write access to pull requests. A check whose `exec` names either variable depends on the draft: a new title or description from `open_pull_request` makes it pending again, and its earlier result is not reused, in the agent's turn or in Paws Closeout. Other checks keep their results. On a runner, the draft travels with the run and needs runner 0.1.73 or later.
 
 A repository that checks titles in CI can run the same script before the pull request exists:
 
