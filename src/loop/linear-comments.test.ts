@@ -806,6 +806,7 @@ describe("holds, questions and gates", () => {
       "plan-approval",
       "link",
       "push-outage",
+      "policy-outage",
     ];
     for (const kind of gates) {
       const f = setup();

@@ -63,6 +63,7 @@ const SUPERSEDES: Record<QuestionKind, "session" | "item" | null> = {
   "plan-approval": null,
   link: null,
   "push-outage": null,
+  "policy-outage": null,
 };
 
 const ENDED_STATES = new Set(["cancelled", "merged", "failed", "completed"]);
@@ -188,6 +189,7 @@ const CRITERIA_QUESTIONS: Record<QuestionKind, boolean> = {
   "plan-approval": true,
   link: false,
   "push-outage": false,
+  "policy-outage": false,
 };
 
 const CRITERIA_LINK_ASKS: Record<LinkAskKind, boolean> = {

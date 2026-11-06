@@ -1905,6 +1905,7 @@ const PAWS_ANSWER_KINDS: ReadonlySet<string> = new Set([
   "ci-help",
   "plan-approval",
   "push-outage",
+  "policy-outage",
 ]);
 
 function answerableInPaws(db: Database, id: string): boolean {
