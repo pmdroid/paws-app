@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -19,6 +20,17 @@ MISE_SHA256 = {
     "linux-arm64": "3a3c72376687ba21a588d0f5a2c88c76f483fb6cdece7b0fc43d5e3132b08a52",
 }
 MISE_LIMIT = 268_435_456
+# The GitHub CLI the agent uses with its read-only token (GH_CONFIG_DIR). The release carries only
+# its bin/gh, at agent-bin/gh; the installer points /opt/paws-runner/agent-bin at that folder.
+GH_VERSION = "2.103.3"
+GH_PLATFORM = {"linux-x64": "linux_amd64", "linux-arm64": "linux_arm64"}
+# sha256 of gh_<version>_<platform>.tar.gz, from the release's gh_<version>_checksums.txt.
+GH_SHA256 = {
+    "linux_amd64": "4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d",
+    "linux_arm64": "ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63",
+}
+GH_LIMIT = 134_217_728
+GH_BINARY_LIMIT = 268_435_456
 # contrib/dockerd-rootless.sh from moby tag docker-v29.1.3 (git blob a5d13d02e3686c07e4dff208d44dacaf45d35c7d),
 # vendored as deploy/linux/dockerd-rootless.sh. The package ships it; nothing fetches it at install time.
 DOCKERD_ROOTLESS_SHA256 = "8eb00d61b5e78ffc0dcd628f056389b5859cc61d6fe3ce17b4a3a4b08143c8a5"
@@ -86,6 +98,7 @@ REQUIRED = {
     "bin/bun",
     "bin/mise",
     "bin/paws-runner",
+    "agent-bin/gh",
     "app/package.json",
     "app/bun.lock",
     "app/src/index.ts",
@@ -93,7 +106,7 @@ REQUIRED = {
     "app/src/acp/ask-team-mcp.ts",
     "app/src/process/process-anchor.ts",
 } | {f"deploy/linux/{name}" for name in ASSETS}
-BINARIES = ("bin/bun", "bin/mise", "bin/paws-runner")
+BINARIES = ("bin/bun", "bin/mise", "bin/paws-runner", "agent-bin/gh")
 # bin/paws-runner runs the runner entry on the bundled Bun, so the release carries Bun once.
 # Bun would otherwise read .env and bunfig.toml (which can preload code) from the working directory.
 RUNNER_LAUNCHER = b"#!/bin/sh\nexec /opt/paws-runner/bin/bun --no-env-file --config=/dev/null /opt/paws-runner/current/src/runner-cli/main.ts \"$@\"\n"
@@ -133,6 +146,47 @@ def download_mise(platform_name, opener=urllib.request.urlopen):
     if len(content) > MISE_LIMIT:
         raise ValueError("mise download exceeds size limit")
     return verify_mise(content, platform_name)
+
+
+def gh_platform(platform_name):
+    if platform_name not in GH_PLATFORM:
+        raise ValueError("Unsupported gh platform")
+    return GH_PLATFORM[platform_name]
+
+
+def gh_url(platform_name):
+    name = gh_platform(platform_name)
+    return f"https://github.com/cli/cli/releases/download/v{GH_VERSION}/gh_{GH_VERSION}_{name}.tar.gz"
+
+
+def verify_gh(content, platform_name):
+    """Check the gh release tarball against its pinned sha256."""
+    name = gh_platform(platform_name)
+    if hashlib.sha256(content).hexdigest() != GH_SHA256[name]:
+        raise ValueError(f"gh {GH_VERSION} {name} checksum mismatch")
+    return content
+
+
+def extract_gh(content, platform_name):
+    """bin/gh from a verified gh release tarball; nothing else in it ships."""
+    name = f"gh_{GH_VERSION}_{gh_platform(platform_name)}/bin/gh"
+    with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as archive:
+        try:
+            member = archive.getmember(name)
+        except KeyError as error:
+            raise ValueError("gh release tarball has no bin/gh") from error
+        if not member.isreg() or member.size > GH_BINARY_LIMIT:
+            raise ValueError("gh release tarball has no regular bin/gh")
+        return archive.extractfile(member).read()
+
+
+def download_gh(platform_name, opener=urllib.request.urlopen):
+    """Download the pinned gh release tarball, verify it, and return its bin/gh."""
+    with opener(gh_url(platform_name), timeout=300) as response:
+        content = response.read(GH_LIMIT + 1)
+    if len(content) > GH_LIMIT:
+        raise ValueError("gh download exceeds size limit")
+    return extract_gh(verify_gh(content, platform_name), platform_name)
 
 
 def read_regular(path, limit):
@@ -229,6 +283,8 @@ def inspect_archive(path):
         raise ValueError("Coding agents are installed from agents.json, not shipped in the release")
     if seen["bin/mise"].mode != 0o755:
         raise ValueError("Bundled mise must be executable")
+    if seen["agent-bin/gh"].mode != 0o755:
+        raise ValueError("Bundled gh must be executable")
     if seen["bin/paws-runner"].mode != 0o755:
         raise ValueError("Bundled runner launcher must be executable")
     return seen

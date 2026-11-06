@@ -151,12 +151,14 @@ def pack_with(arguments, source, bun, runtime, manifest, development, modules):
     output = pathlib.Path(arguments.output)
     output.mkdir(mode=0o700)
     mise = release.verify_mise(read_package_file(arguments.mise, release.MISE_LIMIT), arguments.platform) if arguments.mise else release.download_mise(arguments.platform)
+    gh = release.extract_gh(release.verify_gh(read_package_file(arguments.gh, release.GH_LIMIT), arguments.platform), arguments.platform) if arguments.gh else release.download_gh(arguments.platform)
     artifact = output / "artifact.tar"
     launcher_targets = set()
     with tarfile.open(artifact, "w", format=tarfile.USTAR_FORMAT) as archive:
         add_content(archive, "bin/bun", runtime, True)
         add_content(archive, "bin/mise", mise, True)
         add_content(archive, "bin/paws-runner", release.RUNNER_LAUNCHER, True)
+        add_content(archive, "agent-bin/gh", gh, True)
         add_content(archive, "app/package.json", manifest)
         add_content(archive, "app/bun.lock", read_package_file(source / "bun.lock", 16_777_216))
         required_by_packed = set()
@@ -229,6 +231,7 @@ def main():
     parser.add_argument("--source", required=True)
     parser.add_argument("--bun", required=True)
     parser.add_argument("--mise", help="Local copy of the pinned mise binary; downloaded and checked when omitted")
+    parser.add_argument("--gh", help="Local copy of the pinned gh release tarball; downloaded and checked when omitted")
     parser.add_argument("--version", required=True)
     parser.add_argument("--platform", required=True)
     parser.add_argument("--output", required=True)

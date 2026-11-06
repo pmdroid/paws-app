@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-test("a runner upgrade prepares before it stops the runner and prunes old versions", async () => {
+test("a runner upgrade prepares before it stops the runner, switches the agent tools folder and prunes old versions", async () => {
   const child = Bun.spawn(
     [
       "python3",
@@ -18,6 +18,6 @@ test("a runner upgrade prepares before it stops the runner and prunes old versio
     child.exited,
   ]);
   expect(stdout + stderr).not.toContain("skipped");
-  expect(stderr).toMatch(/Ran 6 tests[\s\S]*\nOK\n?$/);
+  expect(stderr).toMatch(/Ran 8 tests[\s\S]*\nOK\n?$/);
   expect(code).toBe(0);
 });

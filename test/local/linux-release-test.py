@@ -156,8 +156,8 @@ class ReleaseVerification(unittest.TestCase):
                 runtime = self.root / ("bun-" + str(index))
                 runtime.write_bytes(b"synthetic Bun runtime")
                 output = self.root / ("package-" + str(index))
-                arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output, mise=None)
-                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
+                arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output, mise=None, gh=None)
+                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh"):
                     if index == 0:
                         packager.pack(arguments)
                         members = release.inspect_archive(output / "artifact.tar")
@@ -189,14 +189,14 @@ class ReleaseVerification(unittest.TestCase):
         runtime = self.root / "bun-unsafe"
         runtime.write_bytes(b"synthetic Bun runtime")
         output = self.root / "package-unsafe"
-        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output, mise=None)
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
+        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output, mise=None, gh=None)
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh"):
             packager.pack(arguments)
         members = release.inspect_archive(output / "artifact.tar")
         self.assertIn("app/node_modules/media/index.js", members)
         self.assertFalse(any("av01" in name or "odd" in name for name in members))
         (source / "src/bad,name.ts").write_bytes(b"source")
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh"):
             with self.assertRaises(ValueError):
                 packager.pack(argparse.Namespace(**{**vars(arguments), "output": self.root / "package-unsafe-src"}))
 
@@ -254,11 +254,11 @@ class ReleaseVerification(unittest.TestCase):
         (production / ".bin/tsc").symlink_to("../typescript/bin/tsc")
         runtime = self.root / "bun-production"
         runtime.write_bytes(b"synthetic Bun runtime")
-        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-production", mise=None)
+        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-production", mise=None, gh=None)
         def patches():
-            return mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=production), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise")
-        first, second, third = patches()
-        with first, second, third:
+            return mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=production), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh")
+        first, second, third, fourth = patches()
+        with first, second, third, fourth:
             packager.pack(arguments)
         members = release.inspect_archive(self.root / "package-production/artifact.tar")
         self.assertLessEqual(release.REQUIRED, members.keys())
@@ -270,8 +270,8 @@ class ReleaseVerification(unittest.TestCase):
         self.assertNotIn("app/node_modules/.bin/tsc", members)
         self.assertFalse(any("only-in-checkout" in name for name in members))
         (production / "media/package.json").write_text(json.dumps({"name": "media", "dependencies": {"typescript": "1.0.0"}}))
-        first, second, third = patches()
-        with first, second, third:
+        first, second, third, fourth = patches()
+        with first, second, third, fourth:
             with self.assertRaisesRegex(ValueError, "needs a development dependency: typescript"):
                 packager.pack(argparse.Namespace(**{**vars(arguments), "output": self.root / "package-production-hard"}))
 
@@ -286,7 +286,7 @@ class ReleaseVerification(unittest.TestCase):
         (source / "package.json").write_text(json.dumps(manifest))
         runtime = self.root / "bun-agent-pins"
         runtime.write_bytes(b"synthetic Bun runtime")
-        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-agent-pins", mise=None)
+        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-agent-pins", mise=None, gh=None)
         with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"):
             with self.assertRaisesRegex(ValueError, "agent-manifest.py"):
                 packager.pack(arguments)
@@ -337,7 +337,7 @@ class ReleaseVerification(unittest.TestCase):
         runtime.write_bytes(b"synthetic Bun runtime")
         mise = self.root / "mise-tampered"
         mise.write_bytes(b"\x7fELFtampered mise")
-        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-mise", mise=mise)
+        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-mise", mise=mise, gh=None)
         with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 packager.pack(arguments)
@@ -669,10 +669,10 @@ class AgentInstallation(unittest.TestCase):
         source = self.work / "source"
         synthetic_source(source, self.manifests["1.0.0"].encode())
         output = self.work / "package"
-        arguments = argparse.Namespace(source=source, bun=pathlib.Path(BUN), version="1.2.3", platform={"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], output=output, mise=None)
+        arguments = argparse.Namespace(source=source, bun=pathlib.Path(BUN), version="1.2.3", platform={"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], output=output, mise=None, gh=None)
         if subprocess.run([BUN, "--version"], capture_output=True, check=True).stdout.decode().strip() != release.BUN_VERSION:
             self.skipTest("the pinned Bun version is required")
-        with mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"):
+        with mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh"):
             packager.pack(arguments)
         unpacked = self.work / "unpacked"
         unpacked.mkdir()
@@ -1586,6 +1586,32 @@ class RunnerUpgrade(unittest.TestCase):
         self.assertEqual([line["phase"] for line in self.journal], ["verify", "extract", "agents", "stop-to-start", "prune"])
         self.assertTrue(all(isinstance(line["seconds"], float) for line in self.journal))
         self.assertFalse((self.state / "debian-services.json").exists())
+
+    def test_the_agent_tools_folder_points_at_the_current_release_and_switches_with_it(self):
+        agent_bin = self.base / "agent-bin"
+        def prepare_agents(artifact):
+            # In place before the stop, still naming the running release.
+            self.assertEqual(os.readlink(agent_bin), "current/agent-bin")
+            self.assertEqual(agent_bin.resolve(), self.base / "releases/1.2.2/agent-bin")
+            self.assertEqual(sorted(path.name for path in (self.base / "releases/1.2.3/agent-bin").iterdir()), ["gh"])
+            self.assertEqual((self.base / "releases/1.2.3/agent-bin/gh").stat().st_mode & 0o7777, 0o755)
+            return {"agents": {}}
+        self.configure(prepare_agents)
+        self.assertEqual(os.readlink(agent_bin), "current/agent-bin")
+        self.assertEqual(agent_bin.resolve(), self.base / "releases/1.2.3/agent-bin")
+        self.assertEqual((agent_bin / "gh").read_bytes(), b"synthetic reviewed release file")
+
+    def test_an_agent_tools_folder_that_is_not_the_release_pointer_stops_the_upgrade(self):
+        for make in (lambda path: path.symlink_to(self.root), lambda path: path.symlink_to("current/bin"), lambda path: path.mkdir()):
+            with self.subTest():
+                agent_bin = self.base / "agent-bin"
+                make(agent_bin)
+                self.systemctl.calls.clear()
+                with self.assertRaisesRegex(ValueError, "Unsafe agent tools pointer"):
+                    self.configure(lambda artifact: {"agents": {}})
+                self.assertNotIn("stop", self.systemctl.verbs())
+                self.assertEqual(os.readlink(self.base / "current"), str(self.base / "releases/1.2.2"))
+                agent_bin.rmdir() if agent_bin.is_dir() and not agent_bin.is_symlink() else agent_bin.unlink()
 
     def test_a_failing_agent_preparation_leaves_the_runner_running_on_its_release(self):
         def prepare_agents(artifact):
