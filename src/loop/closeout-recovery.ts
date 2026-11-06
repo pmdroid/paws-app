@@ -7,6 +7,17 @@ import {
   type CloseoutRecovery,
 } from "../db";
 import type { CloseoutBypass } from "../closeout";
+import { getQuestion, type StoredQuestion } from "../questions";
+
+export const RETRY_CLOSEOUT = "Retry Closeout";
+
+export function retriesCloseout(question: Pick<StoredQuestion, "options" | "answer">): boolean {
+  const answer = (question.answer ?? "").trim().toLowerCase();
+  return (
+    question.options.includes(RETRY_CLOSEOUT) &&
+    (answer === "retry" || answer === RETRY_CLOSEOUT.toLowerCase())
+  );
+}
 
 /** A reply that tries to bypass a check, such as `/paws bypass lint -- reason`. It is guidance now. */
 export const BYPASS_REPLY = /^\s*\/?(?:paws\s+)?bypass\b/i;
@@ -22,7 +33,8 @@ export function recoveryOptions(
     const linkAsk = getLinkAsk(db, recovery.questionId);
     if (linkAsk === null) {
       // A reply in Linear is guidance, whatever it says. It never bypasses a check.
-      if (recovery.answer !== null && recovery.answeredBy !== null)
+      const question = recovery.answer === null ? null : getQuestion(db, recovery.questionId);
+      if (recovery.answeredBy !== null && question !== null && !retriesCloseout(question))
         for (const key of recovery.retryBaseline) retryBaseline.add(key);
       continue;
     }

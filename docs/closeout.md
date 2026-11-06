@@ -26,6 +26,7 @@ flowchart TD
   Q --> G
   G -->|exhausted, blocked or fix rounds spent| J["ask(item, question)"]
   J -->|reply with guidance| R["restart(item, answer)"]
+  J -->|Retry Closeout, head not blocked on its code| G
   R --> Q
   J -->|bypass on the item page, with reasons| G
   H -->|"mergeable(S)"| M[Squash with expected head S]
@@ -209,6 +210,8 @@ The question lists every check with its status and attempts. When the candidate 
 - **Stop.** Stops the item and keeps its branch, as the item's Stop control does.
 
 A reply in Linear is guidance, whatever it says. `/paws bypass check -- reason` in a reply bypasses nothing: Paws sends it to the agent as guidance and answers once with the link to the card. Without a public link the question stays a Linear question, a reply is guidance, and no check can be bypassed.
+
+A Linear question whose head was not blocked on its code (the policy did not load, setup failed, a check timed out or could not start, a runner was unavailable, or the cause is unknown) also offers **Retry Closeout**, in Linear and on the dashboard's question card. It verifies the same head again through `reverify_requested` with no agent turn and counts as one evaluation within the same retry limit; with the limit spent, it is not offered. A reply of exactly `retry` chooses it. See [Closeout needs help](linear-agent-sessions.md#closeout-needs-help).
 
 ### Rules set to approve
 

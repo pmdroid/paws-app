@@ -13,6 +13,7 @@ import {
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import type { LinearUsage } from "../src/linear";
+import { handleQuestionAnswer, type QuestionAnswer } from "../src/questions";
 import { startServer } from "../src/server";
 import { screenshotPng } from "./png";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
@@ -42,6 +43,7 @@ export async function startDashboardFixture(options: { linearUsage?: () => Linea
   sync();
   const evidenceDir = join(home, "evidence");
   const store = createEvidenceStore({ db, root: evidenceDir });
+  const answers: Parameters<QuestionAnswer>[0][] = [];
   const runs: Record<string, string> = {};
   const evidence: Record<string, string> = {};
   for (const [item, session, team] of [
@@ -116,6 +118,13 @@ export async function startDashboardFixture(options: { linearUsage?: () => Linea
     db,
     workspaceAccess: access,
     evidenceDir,
+    questionAnswers: (request, principal, sessionIds) =>
+      handleQuestionAnswer(request, {
+        db,
+        principal,
+        sessionIds,
+        submit: async (input) => (answers.push(input), "answered"),
+      }),
     ...options,
   });
   const session = issueWorkspaceSession(db, {
@@ -128,6 +137,7 @@ export async function startDashboardFixture(options: { linearUsage?: () => Linea
     origin,
     runs,
     evidence,
+    answers,
     csrfToken: session.session.csrfToken,
     cookie: `${WORKSPACE_COOKIE}=${session.token}`,
     sessionToken: session.token,

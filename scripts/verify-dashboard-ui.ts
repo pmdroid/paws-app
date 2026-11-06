@@ -204,6 +204,36 @@ try {
   }
 
   const page = await open(1440);
+  current = "retry-closeout@1440";
+  f.db.run("UPDATE question SET kind = 'closeout-help', options = ? WHERE id = 'q-PAS-1'", [
+    JSON.stringify(["Retry Closeout"]),
+  ]);
+  await page.goto(`${f.origin}/dashboard/questions/q-PAS-1`);
+  const card = page.locator("#q-q-PAS-1");
+  const retry = card.getByRole("button", { name: /Retry Closeout/ });
+  await expect(retry).toBeVisible();
+  await page.screenshot({ path: join(out, "retry-closeout-1440.png"), fullPage: true });
+  const posted = page.waitForResponse((response) =>
+    response.url().endsWith("/api/questions/answer"),
+  );
+  await retry.click();
+  const answered = await posted;
+  expect(answered.status()).toBe(200);
+  expect(answered.request().headers()["x-paws-csrf"]).toBe(f.csrfToken);
+  expect(answered.request().postDataJSON()).toEqual({
+    questionId: "q-PAS-1",
+    answer: "Retry Closeout",
+  });
+  await expect(card.locator("[role=status]")).toHaveText("Answered");
+  expect(f.answers).toEqual([
+    {
+      questionId: "q-PAS-1",
+      answer: "Retry Closeout",
+      answeredBy: "member",
+      answeredByName: "Member",
+    },
+  ]);
+
   current = "revoked@1440";
   await page.goto(`${f.origin}/dashboard/issues/PAS-1`);
   await expect(page.locator("#content")).toContainText("Fixture PAS-1");
@@ -217,7 +247,7 @@ try {
   await Bun.write(join(out, "pages.json"), JSON.stringify(visits, null, 2));
   await Bun.write(join(out, "old-links.json"), JSON.stringify(links, null, 2));
   console.log(
-    `PASS: dashboard pages, old links, history, stale responses, keyboard and revocation. Evidence in ${out}`,
+    `PASS: dashboard pages, old links, history, stale responses, keyboard, Retry Closeout and revocation. Evidence in ${out}`,
   );
 } finally {
   await browser.close();

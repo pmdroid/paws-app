@@ -155,6 +155,15 @@ When every runner the delegator may use, online or not, refuses the item's repos
 
 While the question is open nothing retries, so Linear gets nothing more. When a runner that allows the repository is only offline or busy, there is no question: the item waits as before, and the wait says "Waiting for a paired runner to come online" only when a runner is offline.
 
+### Closeout needs help
+
+When Closeout stops and the question is a Linear question (`closeout-help`, asked by `askCloseoutHelp` in `src/loop/closeout-help.ts`), a reply is guidance: Paws calls `restart(item, answer)` and the agent takes another turn. When nothing blocked the head on its code, the question also offers one option, **Retry Closeout**: the policy did not load, setup failed, a check timed out or could not start, a runner was unavailable, or the cause is unknown. A command that failed on the code, a failed review, evidence that is missing or waits for a visual review, a spent retry limit or a failed agent preparation offers no option.
+
+- **Retry Closeout** applies `reverify_requested` from `awaiting_input` and queues one re-verify job, with no agent turn. Closeout runs again on the same head; accepted, the item goes to the merge queue. The answer is stored as "Retry Closeout" with the person who chose it, and it counts as one more evaluation within the same retry limit.
+- A reply that is exactly `retry` (any case, trimmed) counts as Retry Closeout when the question offered it. Any longer reply, such as "retry, but also fix X", is guidance.
+
+The item's question card in the dashboard shows Retry Closeout as a button that posts through `/api/questions/answer`.
+
 ### Measuring the story
 
 The outbox records every post, so these queries show whether sessions follow the rule. The live run of them is tracked in PAS-744.
