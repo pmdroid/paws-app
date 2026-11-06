@@ -192,15 +192,15 @@ test("a heartbeat stores host metrics and the runner list returns them", async (
 
 test("the runner list says who a runner starts agents as", async () => {
   const runner = await fixture();
-  expect((await runner.heartbeat({ runnerVersion: "0.1.71" }))!.status).toBe(200);
-  expect((await runner.list()).runners[0]!.agentUser).toBe("runner");
   expect((await runner.heartbeat({ runnerVersion: "0.1.72" }))!.status).toBe(200);
+  expect((await runner.list()).runners[0]!.agentUser).toBe("runner");
+  expect((await runner.heartbeat({ runnerVersion: "0.1.73" }))!.status).toBe(200);
   expect((await runner.list()).runners[0]!.agentUser).toBeNull();
   expect(
-    (await runner.heartbeat({ runnerVersion: "0.1.72", agentUser: "paws-agent" }))!.status,
+    (await runner.heartbeat({ runnerVersion: "0.1.73", agentUser: "paws-agent" }))!.status,
   ).toBe(200);
   expect((await runner.list()).runners[0]!.agentUser).toBe("paws-agent");
-  expect((await runner.heartbeat({ runnerVersion: "0.1.72", agentUser: "root" }))!.status).toBe(
+  expect((await runner.heartbeat({ runnerVersion: "0.1.73", agentUser: "root" }))!.status).toBe(
     403,
   );
 });
