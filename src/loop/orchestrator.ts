@@ -83,12 +83,10 @@ import {
   repositoryPackages,
   reviewApps,
   readQueueSettings,
-  resolveAccountPolicy,
   resolveAgentProfiles,
   resolveBriefTemplate,
   resolveMergeSettings,
   suggestedFindingsMode,
-  type AccountPolicy,
   type AgentProfile,
   type AgentProfiles,
   type CheckoutExclusions,
@@ -6917,7 +6915,6 @@ export class Orchestrator {
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
     const profiles = resolveAgentProfiles(config, repoName);
-    const accounts = resolveAccountPolicy(config, repoName);
     const run = insertRun(this.db, {
       itemId: item.id,
       now: this.now(),
@@ -6934,7 +6931,7 @@ export class Orchestrator {
       mkdirSync(runDir(this.options.pawsRoot, run.id), { recursive: true, mode: 0o700 });
       writeFileSync(
         join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
-        JSON.stringify({ profiles, ...(accounts ? { accounts } : {}), settingsSwitch }),
+        JSON.stringify({ profiles, settingsSwitch }),
         { mode: 0o600 },
       );
     }
@@ -7199,19 +7196,9 @@ export class Orchestrator {
         if (!currentRunId)
           return { profile: options.profile, fallbackProfile: options.fallbackProfile };
         const profiles = this.profileSnapshot(currentRunId);
-        const accounts = this.readProfileSnapshot(currentRunId)?.accounts;
         return {
           profile: profiles[options.role],
           fallbackProfile: options.role === "reviewer" ? profiles.reviewerFallback : undefined,
-          ...(accounts
-            ? {
-                accounts: {
-                  revision: accounts.revision,
-                  profile: accounts[options.role],
-                  fallback: options.role === "reviewer" ? accounts.reviewerFallback : undefined,
-                },
-              }
-            : {}),
         };
       };
       const result = await runner({
@@ -8687,7 +8674,6 @@ export class Orchestrator {
 
   private readProfileSnapshot(runId: string): {
     profiles: AgentProfiles;
-    accounts?: AccountPolicy;
     candidate?: AgentIdentity;
     settingsSwitch?: { id: string; previousAgent: AgentProfile["agent"] };
   } | null {
@@ -8727,21 +8713,16 @@ export class Orchestrator {
       const repository = this.repositoryForItem(item);
       const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
       const profiles = resolveAgentProfiles(config, repoName);
-      const accounts = resolveAccountPolicy(config, repoName);
-      const profilesChanged = JSON.stringify(saved.profiles) !== JSON.stringify(profiles);
-      if (!profilesChanged && (saved.accounts?.revision ?? null) === (accounts?.revision ?? null))
-        continue;
+      if (JSON.stringify(saved.profiles) === JSON.stringify(profiles)) continue;
       // Keep the original agent through repeated saves before the next turn.
       const previousAgent = saved.settingsSwitch?.previousAgent ?? saved.profiles.implementer.agent;
-      const settingsSwitch = !profilesChanged
-        ? saved.settingsSwitch
-        : previousAgent !== profiles.implementer.agent
+      const settingsSwitch =
+        previousAgent !== profiles.implementer.agent
           ? { id: randomUUID(), previousAgent }
           : undefined;
-      const { accounts: _previous, ...rest } = saved;
       writeFileSync(
         join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
-        JSON.stringify({ ...rest, profiles, ...(accounts ? { accounts } : {}), settingsSwitch }),
+        JSON.stringify({ ...saved, profiles, settingsSwitch }),
         { mode: 0o600 },
       );
       changedRuns += 1;
@@ -8782,11 +8763,10 @@ export class Orchestrator {
     const repository = item === null ? null : this.repositoryForItem(item);
     const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
     const profiles = resolveAgentProfiles(config, repoName);
-    const accounts = resolveAccountPolicy(config, repoName);
     mkdirSync(runDir(this.options.pawsRoot, runId), { recursive: true, mode: 0o700 });
     writeFileSync(
       join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
-      JSON.stringify({ profiles, ...(accounts ? { accounts } : {}) }),
+      JSON.stringify({ profiles }),
       { mode: 0o600 },
     );
     return profiles;

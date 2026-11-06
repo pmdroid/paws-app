@@ -36,19 +36,14 @@ export type { GitHubAppCredentials } from "./github-app";
 export {
   parseAgentSettings,
   readAgentSettings,
-  resolveAccountPolicy,
   resolveAgentProfiles,
-  validateAccountReferences,
   writeAgentSettings,
 } from "./agents";
 export type {
-  AccountPolicy,
-  AgentAccountReference,
   AgentProfile,
   AgentProfiles,
   AgentSettings,
   ProjectAgentProfiles,
-  RoleAccountPolicy,
 } from "./agents";
 
 export {

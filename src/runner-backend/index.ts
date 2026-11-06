@@ -21,7 +21,6 @@ import {
   workspaceMemberUsableSql,
   getTaskMode,
   closeFallbackAttempts,
-  dispatchAccount,
   fallbackHistory,
   legacyAgentAccountId,
   legacyAgentBindingId,
@@ -110,7 +109,6 @@ import {
 } from "./session-restore";
 import {
   RetryableRunnerError,
-  AccountPolicyUnavailable,
   failoverCallId,
   runWithFailover,
   USAGE_LIMIT_RESUME_SLACK_MS,
@@ -266,13 +264,6 @@ function commandAccount(account: PlacementAccount | undefined) {
   return account?.named
     ? { account: { accountId: account.accountId, bindingId: account.bindingId } }
     : {};
-}
-
-function placedAccount(
-  account: PlacementAccount | undefined,
-  accounts: { revision: string; accountIds: readonly string[] } | undefined,
-) {
-  return { ...(account ? { account } : {}), ...(accounts ? { accounts } : {}) };
 }
 
 function failedBinding(
@@ -876,24 +867,6 @@ export function createRemoteAgentRunner(options: {
           throw new Error(
             "The reviewer profile needs a Claude or Codex model to run the agent's review command",
           );
-        const accountPolicy = input.accounts?.profile;
-        let accounts: { revision: string; accountIds: readonly string[] } | undefined;
-        if (accountPolicy) {
-          const choice = dispatchAccount(db, { itemId }, input.profile.agent, accountPolicy);
-          const skipped = (choice.admission?.skipped ?? [])
-            .map((entry) => `${entry.accountId} ${entry.reason}`)
-            .join(", ");
-          if (!choice.dispatch) {
-            journal(
-              `item ${itemId}: account policy ${input.accounts!.revision} for ${input.role} cannot run${skipped ? ` (skipped ${skipped})` : ""}: ${choice.reason}`,
-            );
-            throw new AccountPolicyUnavailable(input.profile.agent, choice.reason);
-          }
-          journal(
-            `item ${itemId}: account policy ${input.accounts!.revision} for ${input.role} admits ${choice.admission.eligible.join(", ")}${skipped ? ` (skipped ${skipped})` : ""}`,
-          );
-          accounts = { revision: input.accounts!.revision, accountIds: choice.admission.eligible };
-        }
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
         const continuesSession =
@@ -922,7 +895,6 @@ export function createRemoteAgentRunner(options: {
           role: input.role,
           purpose: input.prepareOnly ? "prepare" : "work",
           excludeRunnerIds: excluded,
-          ...(accounts ? { accounts } : {}),
           ...(pinnedRunnerId ? { pinnedRunnerId } : {}),
           ...(preferRunnerId ? { preferRunnerId } : {}),
           ...(move.from ? { handedOverFrom: move.from } : {}),
@@ -1057,7 +1029,7 @@ export function createRemoteAgentRunner(options: {
                   itemId,
                   runId: selected.runId,
                   profile,
-                  ...placedAccount(selected.account, accounts),
+                  ...(selected.account ? { account: selected.account } : {}),
                   role: input.role,
                   purpose: "prepare",
                   startedAt: issuedAt,
@@ -1739,7 +1711,7 @@ export function createRemoteAgentRunner(options: {
                     itemId,
                     runId: selected.runId,
                     profile,
-                    ...placedAccount(selected.account, accounts),
+                    ...(selected.account ? { account: selected.account } : {}),
                     role: input.role,
                     purpose: "work",
                     startedAt: issuedAt,
@@ -2706,7 +2678,7 @@ function handoverWaitNotice(db: Database, move: HandoverMove, why: string): stri
   return `Waiting to move this session from ${from}: ${why} Paws moves it as soon as a runner fits.\n`;
 }
 
-export { AccountPolicyUnavailable, UsageLimitExhaustedError, UsageLimitPause } from "./failover";
+export { UsageLimitExhaustedError, UsageLimitPause } from "./failover";
 export { createFindingGroupHelper } from "./finding-groups";
 
 async function hiddenCheckpoint(
