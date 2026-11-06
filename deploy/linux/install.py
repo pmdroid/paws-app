@@ -22,6 +22,9 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 BASE = pathlib.Path("/opt/paws-runner")
 STATE = pathlib.Path("/var/lib/paws-runner-install")
+# BASE/agent-bin is the agent's tools folder (its gh), last on the agent's PATH. It names the
+# release through `current`, so it switches with the release and pruning removes old copies.
+AGENT_BIN_POINTER = "current/agent-bin"
 DEFAULT_REGISTRY = "https://registry.npmjs.org/"
 # The runner daemon writes the agent versions Paws sent it here; paws-runner-agents.path starts
 # `install.py agent-requests` when it changes. Root writes what happened to AGENT_STATUS, which the
@@ -618,6 +621,19 @@ def write_staged(root, name, content, mode):
         os.fchmod(stream.fileno(), mode)
 
 
+def agent_bin_pointer():
+    """Check BASE/agent-bin names the current release's agent-bin, and put it in place when it is missing."""
+    pointer = BASE / "agent-bin"
+    if pointer.is_symlink():
+        if pointer.lstat().st_uid != 0 or os.readlink(pointer) != AGENT_BIN_POINTER:
+            raise ValueError("Unsafe agent tools pointer")
+    elif pointer.exists():
+        raise ValueError("Unsafe agent tools pointer")
+    else:
+        pointer.symlink_to(AGENT_BIN_POINTER)
+        sync_directory(BASE)
+
+
 def switch_release(unpacked, destination, pointers):
     """With the runner stopped: put the units, accounts and runtime pointers in place, then point `current` at destination."""
     root_directory(BASE / "bin")
@@ -709,6 +725,8 @@ def install(manifest, artifact, fingerprint, reinstall=False, prepare=lambda: No
             elif pointer.exists():
                 raise ValueError("Unsafe runtime release pointer")
         root_directory(BASE)
+        # Before the runner stops: until `current` switches, it names the running release's folder.
+        agent_bin_pointer()
         root_directory(BASE / "releases")
         with tempfile.TemporaryDirectory(prefix=".install-", dir=BASE / "releases") as temporary:
             # The running runner executes from BASE/current, so the new release goes in place beside it.

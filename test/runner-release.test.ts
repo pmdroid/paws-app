@@ -106,6 +106,81 @@ print(json.dumps({"version": release.MISE_VERSION, "digests": release.MISE_SHA25
   });
 });
 
+test("the runner package pins gh for both architectures, refuses a wrong checksum and keeps only bin/gh", async () => {
+  const release = new URL("../deploy/linux/release.py", import.meta.url).pathname;
+  const script = `
+import hashlib, importlib.util, io, json, sys, tarfile
+spec = importlib.util.spec_from_file_location("release", sys.argv[1])
+release = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(release)
+class Response(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *_): return False
+def tarball(name):
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+        for path, content in ((f"gh_{release.GH_VERSION}_{name}/bin/gh", b"\\x7fELFfake gh"), (f"gh_{release.GH_VERSION}_{name}/LICENSE", b"license")):
+            member = tarfile.TarInfo(path)
+            member.size = len(content)
+            member.mode = 0o755
+            archive.addfile(member, io.BytesIO(content))
+    return stream.getvalue()
+pinned = dict(release.GH_SHA256)
+requested = []
+results = {}
+for platform_name, name in release.GH_PLATFORM.items():
+    content = tarball(name)
+    def opener(url, timeout):
+        requested.append(url)
+        return Response(content)
+    try:
+        release.download_gh(platform_name, opener)
+        results[platform_name] = {"wrong": None}
+    except ValueError as error:
+        results[platform_name] = {"wrong": str(error)}
+    # The same fake bytes, pinned: they pass, and only bin/gh comes back.
+    release.GH_SHA256[name] = hashlib.sha256(content).hexdigest()
+    results[platform_name]["right"] = release.download_gh(platform_name, opener).decode()
+    release.GH_SHA256[name] = pinned[name]
+print(json.dumps({"version": release.GH_VERSION, "digests": pinned, "required": "agent-bin/gh" in release.REQUIRED, "requested": requested, "results": results}))
+`;
+  const child = Bun.spawn(["python3", "-I", "-B", "-c", script, release], {
+    env: { PATH: "/usr/bin:/bin", LANG: "C" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  expect(stderr).toBe("");
+  expect(code).toBe(0);
+  const result = JSON.parse(stdout);
+  expect(result.version).toMatch(/^\d+\.\d+\.\d+$/);
+  expect(Object.keys(result.digests).sort()).toEqual(["linux_amd64", "linux_arm64"]);
+  for (const digest of Object.values(result.digests)) expect(digest).toMatch(/^[0-9a-f]{64}$/);
+  expect(result.required).toBe(true);
+  const url = (name: string) =>
+    `https://github.com/cli/cli/releases/download/v${result.version}/gh_${result.version}_${name}.tar.gz`;
+  expect(result.requested).toEqual([
+    url("linux_amd64"),
+    url("linux_amd64"),
+    url("linux_arm64"),
+    url("linux_arm64"),
+  ]);
+  expect(result.results).toEqual({
+    "linux-x64": {
+      wrong: `gh ${result.version} linux_amd64 checksum mismatch`,
+      right: "\x7fELFfake gh",
+    },
+    "linux-arm64": {
+      wrong: `gh ${result.version} linux_arm64 checksum mismatch`,
+      right: "\x7fELFfake gh",
+    },
+  });
+});
+
 test("a packed runner artifact has no coding agent, musl package, devDependency or dashboard, and keeps every required file", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-pack-"));
   const deploy = new URL("../deploy/linux/", import.meta.url).pathname;
@@ -147,13 +222,16 @@ for name in ("src/dashboard/index.ts", "src/dashboard/src/client/main.ts", "src/
     write(source / name)
 write(root / "bun")
 installs = []
+downloads = []
 def install(bun, checkout, workspace):
     installs.append(str(checkout))
     return modules
-with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\\n")), mock.patch.object(packager, "install_production", side_effect=install), mock.patch.object(release, "download_mise", return_value=b"\\x7fELFmise"):
-    packager.pack(argparse.Namespace(source=source, bun=root / "bun", version="1.2.3", platform={"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], output=root / "package", mise=None))
-members = sorted(tarfile.open(root / "package" / "artifact.tar").getnames())
-print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "development": sorted(development), "agents": sorted(agents), "installs": installs, "source": str(source.resolve())}))
+with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\\n")), mock.patch.object(packager, "install_production", side_effect=install), mock.patch.object(release, "download_mise", return_value=b"\\x7fELFmise"), mock.patch.object(release, "download_gh", side_effect=lambda name: downloads.append(name) or b"\\x7fELFgh"):
+    packager.pack(argparse.Namespace(source=source, bun=root / "bun", version="1.2.3", platform={"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], output=root / "package", mise=None, gh=None))
+archive = tarfile.open(root / "package" / "artifact.tar")
+members = sorted(archive.getnames())
+gh = archive.getmember("agent-bin/gh")
+print(json.dumps({"gh": {"mode": gh.mode, "uid": gh.uid, "content": archive.extractfile(gh).read().decode(), "downloads": downloads}, "members": members, "required": sorted(release.REQUIRED), "development": sorted(development), "agents": sorted(agents), "installs": installs, "source": str(source.resolve())}))
 `;
   try {
     const child = Bun.spawn(
@@ -177,6 +255,7 @@ print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "dev
     expect(stderr).toBe("");
     expect(code).toBe(0);
     const result: {
+      gh: { mode: number; uid: number; content: string; downloads: string[] };
       members: string[];
       required: string[];
       development: string[];
@@ -185,6 +264,15 @@ print(json.dumps({"members": members, "required": sorted(release.REQUIRED), "dev
       source: string;
     } = JSON.parse(stdout);
     expect(result.installs).toEqual([result.source]);
+    expect(result.members.filter((name) => name.startsWith("agent-bin/"))).toEqual([
+      "agent-bin/gh",
+    ]);
+    expect(result.gh).toEqual({
+      mode: 0o755,
+      uid: 0,
+      content: "\x7fELFgh",
+      downloads: [process.arch === "arm64" ? "linux-arm64" : "linux-x64"],
+    });
     expect(result.development).toContain("typescript");
     for (const name of result.required) expect(result.members).toContain(name);
     expect(result.members).toContain("app/node_modules/left-pad/index.js");
