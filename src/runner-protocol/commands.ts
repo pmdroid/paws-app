@@ -323,7 +323,7 @@ export const RunnerCommandSchema = z
       type: z.literal("helper"),
       sessionId: id,
       sessionGeneration: generation,
-      purpose: z.enum(["classify", "select_repository", "finding_groups"]),
+      purpose: z.enum(["classify", "select_repository", "finding_groups", "conversation"]),
       profile: RunnerProfileSchema,
       prompt: z.string().min(1).max(65_536),
       account: work.account,
@@ -409,9 +409,17 @@ export const RunnerCommandSchema = z
   .refine(
     (command) =>
       command.type !== "helper" ||
-      command.expiresAt - command.issuedAt <=
-        (command.purpose === "finding_groups" ? 600_000 : 60_000),
+      command.expiresAt - command.issuedAt <= runnerHelperLifetime(command.purpose),
   );
+
+export function runnerHelperLifetime(
+  purpose: "classify" | "select_repository" | "finding_groups" | "conversation",
+): number {
+  if (purpose === "conversation") return RUNNER_CONVERSATION_MS;
+  return purpose === "finding_groups" ? 600_000 : 60_000;
+}
+
+export const RUNNER_CONVERSATION_MS = 900_000;
 
 export const SignedRunnerCommandSchema = z.strictObject({
   keyId: id,

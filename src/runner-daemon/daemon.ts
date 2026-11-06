@@ -129,6 +129,7 @@ export type RunnerDaemonOptions = {
   trustedKeys?: ReadonlyMap<string, KeyObject>;
   allowedRepositories?: readonly string[];
   concurrency?: number;
+  conversationConcurrency?: number;
   agentUser?: RunnerAgentUser;
   now?: () => number;
   /** Host metrics sent with every heartbeat. */
@@ -145,6 +146,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     .max(16)
     .parse(options.concurrency ?? 1);
   let applied = ceiling;
+  const conversations =
+    options.conversationConcurrency === undefined
+      ? undefined
+      : z.number().int().min(0).max(16).parse(options.conversationConcurrency);
   const origins = {
     controlPlaneUrl: httpsOrigin(options.controlPlaneUrl),
     runnerApiUrl: httpsOrigin(options.runnerApiUrl),
@@ -455,6 +460,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     status,
     capacity: () => applied,
     ceiling: () => ceiling,
+    conversationCapacity: () => conversations ?? 0,
     pendingCommands,
     pruneRetired,
     /**
@@ -568,6 +574,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       });
       if (options.agentUser)
         attempts.unshift({ ...(attempts[0] as object), agentUser: options.agentUser });
+      if (conversations !== undefined)
+        attempts.unshift({ ...(attempts[0] as object), conversationConcurrency: conversations });
       let reply: unknown;
       for (const [index, attempt] of attempts.entries()) {
         try {
