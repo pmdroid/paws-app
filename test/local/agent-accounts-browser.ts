@@ -122,7 +122,7 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(`http://127.0.0.1:${server.port}/runners/runner-a`);
-  await page.getByRole("button", { name: "Sign in to agents", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in to Codex on Team Linux runner" }).click();
   await page.getByRole("button", { name: "Sign in to Codex", exact: true }).click();
   await page.getByRole("link", { name: "Open Codex sign-in", exact: true }).waitFor();
   if (providerRequests !== 0) throw new Error("Provider fetched before acceptance");
@@ -144,6 +144,8 @@ try {
     .locator('[data-agent="codex"] [data-agent-status]')
     .filter({ hasText: "Connected to your account" })
     .waitFor();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in to Claude on Team Linux runner" }).click();
   await page.getByRole("button", { name: "Sign in to Claude", exact: true }).click();
   await page.getByLabel("Reply to Claude").fill("synthetic-code");
   await page.waitForTimeout(2300);
@@ -162,6 +164,8 @@ try {
     .filter({ hasText: "Sign-in cancelled" })
     .waitFor();
   await page.screenshot({ path: `${output}/cancelled.png`, fullPage: true });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in to Grok on Team Linux runner" }).click();
   await page.getByRole("button", { name: "Sign in to Grok", exact: true }).click();
   await page.getByRole("link", { name: "Open Grok sign-in", exact: true }).waitFor();
   await page.getByText("Enter code GROK-1234. Only continue with a code you requested.").waitFor();
@@ -204,6 +208,8 @@ try {
     .locator('[data-agent="grok"] [data-agent-status]')
     .filter({ hasText: "Sign-in cancelled" })
     .waitFor();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in to OpenCode on Team Linux runner" }).click();
   await page.getByRole("button", { name: "Sign in to OpenCode", exact: true }).click();
   await page.getByLabel("Reply to OpenCode").fill("synthetic-opencode-code");
   await page

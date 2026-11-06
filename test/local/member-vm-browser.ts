@@ -251,7 +251,7 @@ try {
   observe("once ready the runner row lists the member as owner");
 
   await member.getByRole("link", { name: "Open ada-lovelace-paws", exact: true }).click();
-  await member.getByRole("button", { name: "Sign in to agents", exact: true }).waitFor();
+  await member.getByRole("button", { name: "Sign in to Claude on ada-lovelace-paws" }).waitFor();
   await member.screenshot({ path: join(output, "runner-detail-desktop.png"), fullPage: true });
   await phoneWidth(member, "runner-detail");
   observe("the runner detail view offers agent sign-in");

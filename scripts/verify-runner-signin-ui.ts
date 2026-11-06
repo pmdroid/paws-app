@@ -111,22 +111,29 @@ try {
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners/${id}`);
     await expect(page.getByText("3 of 4 slots in use")).toBeVisible();
-    const signIn = page.getByRole("button", { name: "Sign in to agents" });
+    const signIn = page.getByRole("button", { name: "Sign in to Codex again on ubuntu-arm64" });
     await expect(signIn).toBeEnabled();
     await page.screenshot({ path: join(directory, `runner-busy-${width}.png`), fullPage: true });
     await signIn.click();
-    const dialog = page.getByRole("dialog");
-    await expect(
-      dialog.getByText(
-        "Claude is running 2 tasks on this runner. Signing in switches them to the new account from their next request.",
-      ),
-    ).toBeVisible();
+    let dialog = page.getByRole("dialog");
     await expect(
       dialog.getByText(
         "Codex is running 1 task on this runner. Signing in switches it to the new account from its next request.",
       ),
     ).toBeVisible();
+    await dialog.getByRole("button", { name: "Close" }).click();
+    await page.getByRole("button", { name: "Sign in to Grok on ubuntu-arm64" }).click();
+    dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("button", { name: "Sign in to Grok" })).toBeVisible();
     await expect(dialog.getByText(/Grok is running/)).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Close" }).click();
+    await page.getByRole("button", { name: "Sign in to Claude on ubuntu-arm64" }).click();
+    dialog = page.getByRole("dialog");
+    await expect(
+      dialog.getByText(
+        "Claude is running 2 tasks on this runner. Signing in switches them to the new account from their next request.",
+      ),
+    ).toBeVisible();
     expect(await page.evaluate(noScroll)).toBe(true);
     await page.screenshot({ path: join(directory, `signin-notice-${width}.png`) });
     await dialog.getByRole("button", { name: "Sign in to Claude" }).click();
