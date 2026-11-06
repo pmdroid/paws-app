@@ -96,11 +96,15 @@ export function policyOutageNote(
   repository: string,
   itemId: string,
   publicUrl: string | null,
+  unreadable: MainPolicyError | null = null,
 ): string {
   const outage = getPolicyOutage(db, repository);
+  const changedBy = unreadable?.commit ?? outage?.changedBy ?? null;
+  const changed = changedBy
+    ? ` Commit ${changedBy} last changed \`${unreadable?.path ?? outage?.policyPath}\`.`
+    : "";
   if (outage === null)
-    return "The Closeout policy on main doesn't load, so every task in this repository waits for one fix on main.";
-  const changed = outage.changedBy ? ` Commit ${outage.changedBy} last changed it.` : "";
+    return `The Closeout policy on main doesn't load, so every task in this repository waits for one fix on main.${changed}`;
   const link = questionLink(db, outage, itemId, publicUrl);
   return `The Closeout policy on main is broken for the whole repository.${changed}${link ? ` One fix on main unblocks every task: [open question](${link}).` : ""}`;
 }

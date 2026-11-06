@@ -172,6 +172,7 @@ export const QUESTION_LINKS = [
   { table: "risk_fix", column: "approved_question_id" },
   { table: "push_outage", column: "question_id" },
   { table: "closeout_policy_outage", column: "question_id" },
+  { table: "closeout_policy_block", column: "question_id" },
 ] as const;
 
 /** True when another record is tied to this question's id. */

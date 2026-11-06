@@ -202,6 +202,8 @@ import {
   highRiskPathsFileAt,
   backfillReviewFindings,
   REVIEW_FINDINGS_BACKFILL_JOB,
+  POLICY_BLOCK_CHECK_JOB,
+  POLICY_BLOCK_CHECK_MS,
 } from "./loop";
 import {
   formatReviewScore,
@@ -1738,6 +1740,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             journalCaught(error, "index.sweepFailedIssues", null),
           );
       }
+      created.jobs.register(POLICY_BLOCK_CHECK_JOB, () => attached.checkPolicyBlocks());
+      enqueueJobOnce(db, {
+        queue: POLICY_BLOCK_CHECK_JOB,
+        jobKey: POLICY_BLOCK_CHECK_JOB,
+        recurringEveryMs: POLICY_BLOCK_CHECK_MS,
+        now: Date.now(),
+      });
       created.jobs.register("worktree.sweep", (_job, context) =>
         attached.sweepWorktrees(context.signal),
       );

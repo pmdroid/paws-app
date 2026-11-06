@@ -297,6 +297,7 @@ export {
   setPolicyOutageQuestion,
   type PolicyOutage,
 } from "./policy-outage";
+export { listOpenPolicyBlocks, savePolicyBlock, type PolicyBlock } from "./policy-block";
 export {
   clearPolicyRunnerWarning,
   listPolicyRunnerWarnings,

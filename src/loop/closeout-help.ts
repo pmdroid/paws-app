@@ -5,6 +5,7 @@ import {
   saveCheckpoint,
   saveCloseoutBypassChecks,
   saveCloseoutRecovery,
+  savePolicyBlock,
   type CloseoutRecovery,
 } from "../db";
 import type { RuleApproval } from "../closeout";
@@ -12,6 +13,10 @@ import { shortCommit } from "../questions";
 import { ask } from "./operations";
 import { PREPARATION_FAILED, RETRY_CLOSEOUT, recoveryQuestion } from "./closeout-recovery";
 import { askWithLink, linkAskAvailable } from "./link-ask";
+import type { MainPolicyError } from "./policy-outage";
+
+const RETRIES_BY_ITSELF =
+  "Paws retries by itself once main's policy loads. You don't need to reply.";
 
 function retryCloseoutOffered(
   help: CloseoutHelp,
@@ -62,6 +67,7 @@ export function askCloseoutHelp(
     publicUrl?: string | null;
     checks?: readonly CloseoutHelpCheck[];
     rules?: readonly RuleApproval[];
+    policyBlock?: { repository: string; unreadable: MainPolicyError };
   },
 ): void {
   const rules = input.rules ?? [];
@@ -69,7 +75,9 @@ export function askCloseoutHelp(
     const item = getWorkItem(db, help.itemId);
     if (!item || item.state === "cancelled") return;
     const retry = retryCloseoutOffered(help, input);
+    const block = retry ? input.policyBlock : undefined;
     const body = recoveryQuestion(help, input.error);
+    const retryNote = `Choose ${RETRY_CLOSEOUT}, or reply retry, to run Closeout again on this head without the agent.`;
     const question =
       linkAskAvailable(input.publicUrl) &&
       help.failedChecks.length > 0 &&
@@ -94,9 +102,7 @@ export function askCloseoutHelp(
               ...(input.version !== undefined ? { version: input.version } : {}),
             },
             "closeout-help",
-            retry
-              ? `${body}\n\nChoose ${RETRY_CLOSEOUT}, or reply retry, to run Closeout again on this head without the agent.`
-              : body,
+            retry ? [body, retryNote, ...(block ? [RETRIES_BY_ITSELF] : [])].join("\n\n") : body,
             {
               now: input.now,
               reason: input.reason ?? "closeout_help",
@@ -104,6 +110,18 @@ export function askCloseoutHelp(
             },
           ).question;
     saveCloseoutRecovery(db, { ...help, questionId: question.id });
+    if (block && question.kind === "closeout-help")
+      savePolicyBlock(db, {
+        questionId: question.id,
+        itemId: item.id,
+        repository: block.repository,
+        cause: "policy_unreadable",
+        error: block.unreadable.message,
+        policyPath: block.unreadable.path,
+        main: block.unreadable.main,
+        changedBy: block.unreadable.commit,
+        createdAt: input.now,
+      });
     if (question.kind === "link")
       saveCloseoutBypassChecks(
         db,

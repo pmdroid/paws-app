@@ -401,7 +401,7 @@ test("the agent and a Closeout check find the task's node before the system one"
   expect(run.agent.node).toBe(join(bin, "node"));
   expect(run.agent.path).toBe(`${bin}:${run.agentPath}:${AGENT_BIN_DIR}`);
   expect(run.closeout.node).toBe(join(bin, "node"));
-  expect(run.closeout.path).toBe(`${bin}:${withoutRunnerBin(run.workerPath)}:${AGENT_BIN_DIR}`);
+  expect(run.closeout.path).toBe(`${bin}:${withAgentBin(withoutRunnerBin(run.workerPath))}`);
   expect(log()).toContain("where node@22");
 }, 30_000);
 
@@ -412,7 +412,7 @@ test("with no runtimes, the agent's and a Closeout check's PATH gain only the ag
   expect(run.closeouts).toEqual(["which-node passed."]);
   expect(run.agent).toEqual({ path: `${run.agentPath}:${AGENT_BIN_DIR}`, node: run.system });
   expect(run.closeout).toEqual({
-    path: `${withoutRunnerBin(run.workerPath)}:${AGENT_BIN_DIR}`,
+    path: withAgentBin(withoutRunnerBin(run.workerPath)),
     node: run.system,
   });
   expect(log()).toEqual([]);

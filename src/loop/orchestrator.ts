@@ -328,6 +328,7 @@ import {
   settleLinearComments,
   recordLinearComment,
   getWorkItemLinearProjectId,
+  listOpenPolicyBlocks,
 } from "../db";
 import {
   publishAccepted,
@@ -572,7 +573,9 @@ import {
   policyLoadFailed,
   policyLoads,
   policyOutageNote,
+  type MainPolicyError,
 } from "./policy-outage";
+import { policyBlockedRepositories, retryPolicyBlocks } from "./policy-block";
 import { changedPaths, classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
@@ -4660,18 +4663,25 @@ export class Orchestrator {
     )
       return;
     const repository = this.repositoryForItem(item);
+    const repositoryName = repository ? `${repository.owner}/${repository.repo}` : null;
+    const policyFailed = repositoryName !== null && policyLoadFailed(result?.decision);
+    const unreadable = policyFailed ? this.unreadableMainPolicy(item) : null;
     const brokenMain =
-      repository && policyLoadFailed(result?.decision)
+      repositoryName && policyFailed
         ? policyOutageNote(
             this.db,
-            `${repository.owner}/${repository.repo}`,
+            repositoryName,
             item.id,
             this.options.publicUrl ?? null,
+            unreadable,
           )
         : null;
     askCloseoutHelp(this.db, sessionId, context, {
       now: this.now(),
       ...(brokenMain ? { error: brokenMain } : {}),
+      ...(repositoryName && unreadable
+        ? { policyBlock: { repository: repositoryName, unreadable } }
+        : {}),
       version: current.version,
       publicUrl: this.options.publicUrl ?? null,
       ...(rules.length > 0 ? { rules } : {}),
@@ -4931,6 +4941,35 @@ export class Orchestrator {
   private candidatePolicy(item: WorkItemRecord, worktree: string) {
     const { home, policyRoot } = this.closeoutHome(item);
     return candidatePolicyDigests(worktree, home, policyRoot, this.runCheckout(item).checks);
+  }
+
+  private unreadableMainPolicy(item: WorkItemRecord): MainPolicyError | null {
+    try {
+      const read = this.candidatePolicy(item, this.itemHead(item).repo);
+      return read !== null && "ok" in read ? read : null;
+    } catch (caughtError) {
+      journalCaught(
+        caughtError,
+        "orchestrator.unreadableMainPolicy",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return null;
+    }
+  }
+
+  private retryPolicyBlocks(item: WorkItemRecord, main: string): void {
+    const repository = this.repositoryForItem(item);
+    if (!repository) return;
+    const name = `${repository.owner}/${repository.repo}`;
+    if (listOpenPolicyBlocks(this.db, name).length === 0) return;
+    retryPolicyBlocks(this.db, {
+      repository: name,
+      main,
+      policy: this.candidatePolicy(item, this.itemHead(item).repo),
+      now: this.now(),
+    });
   }
 
   private riskDisplayInputs(item: WorkItemRecord, worktree: string) {
@@ -6559,6 +6598,22 @@ export class Orchestrator {
     this.dispatch();
   }
 
+  async checkPolicyBlocks(): Promise<void> {
+    for (const { itemId } of policyBlockedRepositories(this.db)) {
+      const item = getWorkItem(this.db, itemId);
+      if (!item) continue;
+      await this.fetchUpstreamMain(item).catch((caughtError) =>
+        journalCaught(
+          caughtError,
+          "orchestrator.checkPolicyBlocks",
+          itemId,
+          undefined,
+          this.options.journal,
+        ),
+      );
+    }
+  }
+
   async sweepWorktrees(signal: AbortSignal): Promise<void> {
     await sweepCheckpointRefs({
       db: this.db,
@@ -7510,7 +7565,7 @@ export class Orchestrator {
     const github = repository ? this.githubForRepository(repository) : null;
     const worktree = this.itemHead(item).repo;
     if (!repository || !github || !existsSync(worktree)) return null;
-    return fetchUpstreamMain({
+    const main = await fetchUpstreamMain({
       worktree,
       owner: repository.owner,
       repo: repository.repo,
@@ -7518,6 +7573,8 @@ export class Orchestrator {
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
     });
+    this.retryPolicyBlocks(item, main);
+    return main;
   }
 
   private async forwardFollowUp(
