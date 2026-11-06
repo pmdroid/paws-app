@@ -14,10 +14,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withoutJournalTime, type RunnerCommand } from "../src/runner-protocol";
 import {
+  AGENT_BIN_DIR,
   installRuntimes,
   prependRuntimePath,
   RUNNER_BIN_DIR,
   runnerMiseDirectories,
+  withAgentBin,
   withoutRunnerBin,
 } from "../src/runner-mise";
 import { executeRunnerCommand } from "../src/runner-worker";
@@ -397,18 +399,22 @@ test("the agent and a Closeout check find the task's node before the system one"
   expect(run.closeouts).toEqual(["which-node passed."]);
   const bin = join(runnerMiseDirectories(home).dataDir, "installs", "node", "22", "bin");
   expect(run.agent.node).toBe(join(bin, "node"));
-  expect(run.agent.path).toBe(`${bin}:${run.agentPath}`);
+  expect(run.agent.path).toBe(`${bin}:${run.agentPath}:${AGENT_BIN_DIR}`);
   expect(run.closeout.node).toBe(join(bin, "node"));
-  expect(run.closeout.path).toBe(`${bin}:${withoutRunnerBin(run.workerPath)}`);
+  expect(run.closeout.path).toBe(`${bin}:${withoutRunnerBin(run.workerPath)}:${AGENT_BIN_DIR}`);
   expect(log()).toContain("where node@22");
 }, 30_000);
 
-test("with no runtimes, the agent's and a Closeout check's PATH are unchanged", async () => {
+test("with no runtimes, the agent's and a Closeout check's PATH gain only the agent tools folder", async () => {
+  // This run has no GitHub read token: the folder is there anyway, and its gh is not signed in.
   const run = await runPathTask("none", []);
   expect(run.result.run.stopReason).toBe("end_turn");
   expect(run.closeouts).toEqual(["which-node passed."]);
-  expect(run.agent).toEqual({ path: run.agentPath, node: run.system });
-  expect(run.closeout).toEqual({ path: withoutRunnerBin(run.workerPath), node: run.system });
+  expect(run.agent).toEqual({ path: `${run.agentPath}:${AGENT_BIN_DIR}`, node: run.system });
+  expect(run.closeout).toEqual({
+    path: `${withoutRunnerBin(run.workerPath)}:${AGENT_BIN_DIR}`,
+    node: run.system,
+  });
   expect(log()).toEqual([]);
 }, 30_000);
 
@@ -419,8 +425,10 @@ test("the agent's and a Closeout check's PATH never have the runner's bin folder
   });
   expect(run.result.run.stopReason).toBe("end_turn");
   expect(run.closeouts).toEqual(["which-node passed."]);
-  for (const path of [run.agent.path, run.closeout.path])
+  for (const path of [run.agent.path, run.closeout.path]) {
     expect(path.split(":")).not.toContain(RUNNER_BIN_DIR);
+    expect(path.split(":").at(-1)).toBe(AGENT_BIN_DIR);
+  }
   expect(run.workerPath!.split(":")).toContain(RUNNER_BIN_DIR);
 }, 30_000);
 
@@ -441,6 +449,13 @@ test("bun resolves for the agent and a Closeout check only when the job's runtim
   expect(withBun.result.run.stopReason).toBe("end_turn");
   expect(withBun.bun).toEqual({ agent: join(runtime, "bun"), closeout: join(runtime, "bun") });
 }, 60_000);
+
+test("withAgentBin puts the agent tools folder last, once", () => {
+  expect(withAgentBin(`/runtime/bin:${AGENT_BIN_DIR}/:/usr/bin`)).toBe(
+    `/runtime/bin:/usr/bin:${AGENT_BIN_DIR}`,
+  );
+  expect(withAgentBin(undefined)).toBe(AGENT_BIN_DIR);
+});
 
 test("withoutRunnerBin drops only the runner's bin folder", () => {
   expect(withoutRunnerBin(`/a:${RUNNER_BIN_DIR}:/b:${RUNNER_BIN_DIR}/:/opt/paws-runner/bin2`)).toBe(

@@ -13,6 +13,11 @@ import { LockWaitTimeoutError, withFileLock } from "./lock";
  */
 export const RUNNER_BIN_DIR = "/opt/paws-runner/bin";
 export const RUNNER_MISE_PATH = `${RUNNER_BIN_DIR}/mise`;
+/**
+ * Tools the runner package ships for the agent itself, such as `gh` for its read-only GitHub
+ * token. It points at the current release's `agent-bin` and goes last on the agent's `PATH`.
+ */
+export const AGENT_BIN_DIR = "/opt/paws-runner/agent-bin";
 
 /** Longest a task's runtime install may run, and longest it waits for another task's lock. */
 export const RUNTIME_INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -281,6 +286,19 @@ export function withoutRunnerBin(path: string | undefined, bin: string = RUNNER_
     .split(delimiter)
     .filter((entry) => entry.length > 0 && entry.replace(/\/+$/, "") !== bin)
     .join(delimiter);
+}
+
+/**
+ * `path` with the runner's agent tools folder last, after the runtime bin folders and the system
+ * ones, so a `gh` the repository pins through mise (or one the host installed) wins.
+ */
+export function withAgentBin(path: string | undefined, bin: string = AGENT_BIN_DIR): string {
+  return [
+    ...(path ?? "")
+      .split(delimiter)
+      .filter((entry) => entry.length > 0 && entry.replace(/\/+$/, "") !== bin),
+    bin,
+  ].join(delimiter);
 }
 
 export function prependRuntimePath(binPaths: readonly string[], path: string | undefined): string {

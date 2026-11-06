@@ -110,6 +110,7 @@ import {
   installRuntimes,
   prependRuntimePath,
   runnerMiseDirectories,
+  withAgentBin,
   withoutRunnerBin,
 } from "../runner-mise";
 import {
@@ -1103,10 +1104,10 @@ export async function executeRunnerCommand(
         undefined,
         GITHUB_READ_TOKENS_PER_TURN,
       );
-    const closeoutBasePath = withoutRunnerBin(process.env.PATH);
+    // The runner's agent tools (its `gh`) go last, after the runtime bin folders Closeout prepends.
+    const closeoutBasePath = withAgentBin(withoutRunnerBin(process.env.PATH));
     // Pinned bin dirs, not shims: nothing on PATH reads the repository's mise config.
-    if (installed.binPaths.length)
-      agentEnv.PATH = prependRuntimePath(installed.binPaths, agentEnv.PATH);
+    agentEnv.PATH = withAgentBin(prependRuntimePath(installed.binPaths, agentEnv.PATH));
     const prompt =
       repository || task || command.type === "helper"
         ? (options.inputs?.prompt ?? command.prompt)
