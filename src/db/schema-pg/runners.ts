@@ -261,6 +261,7 @@ export const runnerHelper = pgTable(
     acknowledgedAt: bigint("acknowledged_at", { mode: "number" }),
     endedAt: bigint("ended_at", { mode: "number" }),
     result: jsonb(),
+    purpose: text(),
   },
   (table) => [
     index("runner_helper_pending").on(table.runnerId, table.acknowledgedAt, table.expiresAt),
@@ -293,6 +294,7 @@ export const runnerCapacity = pgTable(
     capacity: bigint({ mode: "number" }).notNull(),
     ceiling: bigint({ mode: "number" }),
     desired: bigint({ mode: "number" }),
+    conversation: bigint({ mode: "number" }),
   },
   () => [
     check("runner_capacity_check_1", sql`capacity BETWEEN 1 AND 16`),

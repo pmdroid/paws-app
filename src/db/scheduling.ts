@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
 import { JOB_KIND, delegationHasOpenWork, type WorkItemState } from "../core";
 import { orm } from "./orm";
-import { CI_WAITING } from "./runner-capacity";
+import { CI_WAITING, WORK_HELPER } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { job, schedulerAdmission, workItemScheduling } from "./schema";
 export type SchedulerItem = {
@@ -172,7 +172,8 @@ export function runnerTaskSlots(
   return orm(db).all<{ id: string; capacity: number; used: number }>(
     sql`SELECT r.id,COALESCE((SELECT MIN(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1) AS capacity,
        (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND ((w.ended_at IS NULL AND w.lease_until>${runnerLeaseCutoff(now)}) OR EXISTS(SELECT 1 FROM run held WHERE held.id=w.run_id AND held.status IN ('active','provisioning') AND NOT ${sql.raw(CI_WAITING("held"))}))) +
-       (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>${now}) +
+       (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>${now}
+         AND ${sql.raw(WORK_HELPER("x"))}) +
        (SELECT count(*) FROM runner_reservation v WHERE v.runner_id=r.id AND v.expires_at>${now}
          AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=v.run_id AND w.runner_id=v.runner_id)) AS used
        FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>${seenAfter}`,
