@@ -12,6 +12,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunnerRequestError } from "../src/runner-daemon";
+import { readRunnerAnswer, runnerGitHubReadId } from "../src/runner-answers";
 import { openRunnerRuntime } from "../src/runner-runtime";
 import type { RunnerCommand } from "../src/runner-protocol";
 
@@ -52,7 +53,12 @@ async function settleUntil(
   }
 }
 
-async function fixture(input: { pushMs?: number; chunkMs?: number; refuse?: Refusal }) {
+async function fixture(input: {
+  pushMs?: number;
+  chunkMs?: number;
+  refuse?: Refusal;
+  githubRead?: { failures: number; token: string };
+}) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-grant-"));
   let wall = Date.now();
   const source = join(root, "source");
@@ -99,6 +105,7 @@ async function fixture(input: { pushMs?: number; chunkMs?: number; refuse?: Refu
     },
     profile: { agent: "claude", model: null },
     prompt: "Implement the assigned issue",
+    ...(input.githubRead ? { githubRead: true as const } : {}),
   };
   const paired = {
     phase: "paired" as const,
@@ -115,6 +122,7 @@ async function fixture(input: { pushMs?: number; chunkMs?: number; refuse?: Refu
   const chunks: string[] = [];
   const stopped: string[] = [];
   let refusedOnce = false;
+  let readAttempts = 0;
   const expired = (token: string) => (grants.get(token) ?? 0) <= wall;
   const refuseExpired = (token: string, path: string) => {
     if (expired(token))
@@ -213,6 +221,12 @@ async function fixture(input: { pushMs?: number; chunkMs?: number; refuse?: Refu
       async renewCertificate() {
         return paired;
       },
+      async githubReadCredential() {
+        readAttempts++;
+        if (readAttempts <= (input.githubRead?.failures ?? 0))
+          throw new Error("Runner control plane is unavailable");
+        return { token: input.githubRead!.token, expiresAt: wall + 3_600_000 };
+      },
       async uploadArtifact(_runId, _chunk, token) {
         refuseExpired(token, "/v1/runs/run/artifacts");
         chunks.push(token);
@@ -266,6 +280,11 @@ async function fixture(input: { pushMs?: number; chunkMs?: number; refuse?: Refu
     },
     progress(text: string) {
       event({ type: "progress", text });
+    },
+    readAttempts: () => readAttempts,
+    readToken: () => readRunnerAnswer(spool, execution, runnerGitHubReadId(1))?.answer ?? null,
+    advance(ms: number) {
+      wall += ms;
     },
     settleUntil: (what: string, holds: () => boolean, options?: { timeoutMs?: number }) =>
       settleUntil(tick, what, holds, options),
@@ -348,6 +367,27 @@ linuxOnly(
       await f.settleUntil("the fenced run stops", () => f.stopped.length > 0);
       expect(f.sent).toEqual([]);
       expect(f.stopped.length).toBeGreaterThan(0);
+    } finally {
+      await f.cleanup();
+    }
+  },
+  30_000,
+);
+
+linuxOnly(
+  "a read token whose first fetches fail still reaches the turn on a later retry",
+  async () => {
+    const token = "ghs_ab.cd-ef~gh";
+    const f = await fixture({ githubRead: { failures: 2, token } });
+    try {
+      expect(f.readAttempts()).toBe(1);
+      expect(f.readToken()).toBeNull();
+      f.advance(5_000);
+      await f.settleUntil("the second attempt runs", () => f.readAttempts() === 2);
+      expect(f.readToken()).toBeNull();
+      f.advance(15_000);
+      await f.settleUntil("the third attempt delivers the token", () => f.readToken() !== null);
+      expect(JSON.parse(f.readToken()!).token).toBe(token);
     } finally {
       await f.cleanup();
     }
