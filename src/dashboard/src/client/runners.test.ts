@@ -55,7 +55,6 @@ function statusLine(html: string): string | undefined {
   return /<p class="runner-status">(.*?)<\/p>/.exec(html)?.[1];
 }
 
-/** Each agents table row, by its agent. */
 function agentRows(html: string): { agent: string; html: string }[] {
   return [...html.matchAll(/<tr data-agent="([^"]+)">(.*?)<\/tr>/g)].map((match) => ({
     agent: match[1]!,

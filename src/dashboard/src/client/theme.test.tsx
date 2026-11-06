@@ -246,7 +246,6 @@ describe("runner card", () => {
     expect(gauges).toContain("min-w-0");
     expect(classNames(html, "runner-setting")[0]).toContain("grid-cols-1");
     expect(classNames(html, "runner-setting")[0]).toContain("sm:grid-cols-[10rem_minmax(0,1fr)]");
-    // The agents table stacks each row on phones, and its cells wrap.
     expect(html).toContain("max-sm:[&amp;_tr]:flex-col");
     for (const value of classNames(html, "runner-agent-cell")) expect(value).toContain("flex-wrap");
     // Every gauge reserves its label and bar rows, so bars in a row line up.

@@ -35,7 +35,6 @@ export function settingsProblems(settings: AgentSettings): string[] {
     .concat(checks);
 }
 
-/** An account order names one agent's accounts, so choosing another agent drops it. */
 function clearAccounts(settings: AgentSettings, scope: string, role: string): void {
   const owner = scope === "defaults" ? settings.defaults : settings.projects[Number(scope)];
   if (!owner?.accounts) return;

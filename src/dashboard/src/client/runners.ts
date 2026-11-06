@@ -455,7 +455,6 @@ const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
   signed_in: ["ok", "Signed in"],
   signed_out: ["bad", "Signed out"],
   checking: ["running", "Checking"],
-  // The usage column says when a window is spent.
   usage_limit: ["ok", "Signed in"],
   extra_usage: ["ok", "Signed in"],
   unknown: ["", "Not checked"],
@@ -1106,7 +1105,6 @@ function resetLabel(at: number, now: number): string {
   return `Resets ${new Date(at).toLocaleString([], options)}`;
 }
 
-/** Statuses where the agent holds a sign-in. */
 const SIGNED_IN = new Set<AgentSignIn["status"]>(["signed_in", "usage_limit", "extra_usage"]);
 
 export function agentUsageMarkup(entry: AgentSignIn, now: number): string {
@@ -1139,7 +1137,6 @@ export function agentUsageMarkup(entry: AgentSignIn, now: number): string {
   ].join("");
 }
 
-/** One table row per agent: sign-in, usage and the extra usage switch. */
 export function runnerAgentsMarkup(
   runner: Pick<Runner, "id" | "name">,
   agents: readonly AgentSignIn[],
