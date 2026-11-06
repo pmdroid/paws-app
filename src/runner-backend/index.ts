@@ -71,6 +71,7 @@ import {
   REVIEW_CONTEXT_RUNNER_VERSION,
   CLOSEOUT_RULES_FIRST_RUNNER_VERSION,
   CLOSEOUT_FOCUS_RUNNER_VERSION,
+  PULL_REQUEST_DRAFT_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   SUGGESTED_FINDINGS_RUNNER_VERSION,
   GITHUB_READ_RUNNER_VERSION,
@@ -1668,6 +1669,16 @@ export function createRemoteAgentRunner(options: {
                             closeoutFocus: {
                               ...input.closeoutFocus,
                               passed: [...input.closeoutFocus.passed],
+                            },
+                          }
+                        : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.pullRequestDraft &&
+                      versionAtLeast(runnerVersion, PULL_REQUEST_DRAFT_RUNNER_VERSION)
+                        ? {
+                            pullRequestDraft: {
+                              title: input.pullRequestDraft.title,
+                              body: input.pullRequestDraft.body,
                             },
                           }
                         : {}),

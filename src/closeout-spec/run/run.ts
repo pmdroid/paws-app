@@ -37,7 +37,7 @@ import {
   resolveCommit,
   type PawsCommandRunner,
 } from "./exec";
-import { credentialSecrets, scrubCommandEnv } from "./env";
+import { credentialSecrets, scrubCommandEnv, type PullRequestDraft } from "./env";
 import { withRetryLock } from "./lock";
 import { matchPaths } from "./paths";
 import {
@@ -108,6 +108,7 @@ export type CloseoutRunInput = {
    */
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
+  pullRequest?: PullRequestDraft;
 };
 
 type Runnable = ResolvedSetup | ResolvedCommand;
@@ -543,6 +544,7 @@ async function runOne(
     onOutput: (stream, text, truncated) => {
       input.progress?.output(identity, item.id, stream, text, truncated);
     },
+    ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
   });
   const task = input.candidate.task;
   const record: CommandRecord = {
@@ -753,6 +755,7 @@ async function runRule(
       onOutput: (stream, text, truncated) => {
         input.progress?.output(identity, rule.id, stream, text, truncated);
       },
+      ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
     });
   } catch (caughtError) {
     journalCaught(caughtError, "run.runRule.runProbe", rule.id);

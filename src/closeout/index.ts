@@ -77,6 +77,8 @@ export type {
   PublishedEvidence,
   ResolvedEvidence,
 } from "../closeout-spec";
+export { pullRequestDraftKey, usesPullRequestDraft } from "../closeout-spec";
+export type { PullRequestDraft } from "../closeout-spec";
 export { formatEvidenceSummary, formatFixFeedback } from "./summary";
 export { MAX_FIX_ATTEMPTS } from "./types";
 export type {

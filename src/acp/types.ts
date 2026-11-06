@@ -1,7 +1,12 @@
 import type { GitCommitIdentity, GitCommitPolicy, HookEvent, WorkspaceHook } from "../core";
 import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
-import type { CloseoutFocus, EarlierFinding, PolicyFilesLoad } from "../closeout-spec";
+import type {
+  CloseoutFocus,
+  EarlierFinding,
+  PolicyFilesLoad,
+  PullRequestDraft,
+} from "../closeout-spec";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import type { SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 import type { CheckpointResult } from "./checkpoint";
@@ -106,6 +111,7 @@ export interface RunAgentOptions {
   readOnly?: boolean;
   closeoutRulesFirst?: boolean;
   closeoutFocus?: CloseoutFocus;
+  pullRequestDraft?: PullRequestDraft;
   suggestedFindings?: readonly SuggestedFindingLine[];
   hostAccess?: boolean;
   prepareOnly?: boolean;

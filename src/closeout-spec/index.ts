@@ -78,7 +78,8 @@ export type {
   SpecVersion,
 } from "./types";
 
-export { credentialSecrets } from "./run/env";
+export { credentialSecrets, pullRequestDraftKey, usesPullRequestDraft } from "./run/env";
+export type { PullRequestDraft } from "./run/env";
 export type {
   CloseoutOutputStream,
   CloseoutProgress,

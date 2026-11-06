@@ -50,6 +50,7 @@ import {
   type PublishedEvidence,
   type CiResult,
   type TurnPass,
+  type PullRequestDraft,
 } from "../closeout-spec";
 
 export type EvaluateInput = {
@@ -78,6 +79,7 @@ export type EvaluateInput = {
   /** Command checks taken from green CI at `head` instead of running. */
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
+  pullRequest?: () => PullRequestDraft | undefined;
 };
 
 export type Evaluation = {
@@ -120,6 +122,7 @@ export type GateInput = {
   /** Command checks taken from green CI at the first head. A fixed head runs them again. */
   fromCi?: readonly CiResult[];
   fromTurn?: readonly TurnPass[];
+  pullRequest?: () => PullRequestDraft | undefined;
 };
 
 /**
@@ -250,6 +253,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
       ...(input.fromCi ? { fromCi: input.fromCi } : {}),
       ...(input.fromTurn ? { fromTurn: input.fromTurn } : {}),
+      ...pullRequestOf(input),
     });
   } catch (error) {
     await early?.done.catch((caughtError1) => {
@@ -574,6 +578,11 @@ async function attemptFix(
 export function evidenceOnly(items: readonly CloseoutItem[]): boolean {
   const failed = items.filter((item) => item.state === "failed");
   return failed.length > 0 && failed.every((item) => item.kind === "evidence");
+}
+
+function pullRequestOf(input: EvaluateInput): { pullRequest?: PullRequestDraft } {
+  const draft = input.pullRequest?.();
+  return draft ? { pullRequest: draft } : {};
 }
 
 function publishedOf(input: EvaluateInput): {

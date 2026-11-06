@@ -35,7 +35,12 @@ export function sessionCloseoutAccepted(report: string | undefined): boolean {
   return pending.length === 0 && record.blocked === null;
 }
 
-export function writeSessionCloseout(path: string, head: string, report: string | undefined): void {
+export function writeSessionCloseout(
+  path: string,
+  head: string,
+  report: string | undefined,
+  draft = "",
+): void {
   if (
     report === undefined ||
     Buffer.byteLength(report) > REPORT_LIMIT ||
@@ -45,10 +50,14 @@ export function writeSessionCloseout(path: string, head: string, report: string 
     return;
   }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify({ head, report }), { mode: 0o600 });
+  writeFileSync(path, JSON.stringify({ head, report, ...(draft ? { draft } : {}) }), {
+    mode: 0o600,
+  });
 }
 
-export function readSessionCloseout(path: string): { head: string; report: string } | undefined {
+export function readSessionCloseout(
+  path: string,
+): { head: string; report: string; draft: string } | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -61,7 +70,11 @@ export function readSessionCloseout(path: string): { head: string; report: strin
   if (typeof record.head !== "string" || !/^[a-f0-9]{40}$/.test(record.head)) return undefined;
   if (typeof record.report !== "string" || Buffer.byteLength(record.report) > REPORT_LIMIT)
     return undefined;
-  return { head: record.head, report: record.report };
+  return {
+    head: record.head,
+    report: record.report,
+    draft: typeof record.draft === "string" ? record.draft : "",
+  };
 }
 
 export class CloseoutResultMissingError extends Error {

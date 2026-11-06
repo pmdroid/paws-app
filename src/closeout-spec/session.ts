@@ -8,7 +8,14 @@ import { loadMemoryPolicy, type TreePolicy } from "./policy/resolve";
 import type { PolicyFilesLoad } from "./policy/load";
 import { changesPolicyInput } from "./policy/inputs";
 import { POLICY_SCHEMA_SUMMARY } from "./policy/schema-summary";
-import { credentialSecrets, scrubCommandEnv } from "./run/env";
+import {
+  credentialSecrets,
+  pullRequestDraftKey,
+  scrubCommandEnv,
+  usesPullRequestDraft,
+  withPullRequestDraft,
+  type PullRequestDraft,
+} from "./run/env";
 import { scrubText } from "./run/scrub";
 import { git } from "./run/exec";
 import { executeProbe, PROBE_TIMEOUT_SECONDS } from "./run/probe";
@@ -100,6 +107,7 @@ export type CloseoutSessionOptions = {
   onProgress?: (event: CloseoutSessionEvent) => void;
   rulesFirst?: boolean;
   focus?: CloseoutFocus;
+  pullRequest?: () => PullRequestDraft | undefined;
 };
 
 export type CloseoutFocus = {
@@ -208,9 +216,10 @@ export function createCloseoutSession(
 ): CloseoutSession {
   const memory = new Map<string, ItemMemory>();
   let fingerprint: string | undefined;
+  let draftKey: string | undefined;
   let checkedHead: string | undefined;
   let probed = new Map<string, SessionRuleResult>();
-  let probedFingerprint: string | undefined;
+  let probedKey: string | undefined;
   let chain: Promise<unknown> = Promise.resolve();
   let listed: Prepared | undefined;
   let last: { report: string; head: string | undefined } | undefined;
@@ -265,6 +274,9 @@ export function createCloseoutSession(
     }
     fingerprint = next;
     checkedHead = head;
+    const draft = pullRequestDraftKey(options.pullRequest?.());
+    if (draftKey !== undefined && draftKey !== draft) staleDraftChecks(policy, memory);
+    draftKey = draft;
     const published = source.published
       ? await publishedAtHead(
           workspace,
@@ -290,9 +302,10 @@ export function createCloseoutSession(
   const judgeRules = async (prepared: Prepared): Promise<void> => {
     if (prepared.kind !== "ready") return;
     if (!options.rulesFirst && !commandsPassed(prepared, memory)) return;
-    if (probedFingerprint !== fingerprint) {
+    const probeKey = `${fingerprint}\n${pullRequestDraftKey(options.pullRequest?.())}`;
+    if (probedKey !== probeKey) {
       probed = new Map();
-      probedFingerprint = fingerprint;
+      probedKey = probeKey;
     }
     const unprobed = prepared.rules.filter((rule) => !probed.has(rule.id));
     if (unprobed.length > 0) {
@@ -349,7 +362,8 @@ export function createCloseoutSession(
       let view = memory;
       let recordedHead = checkedHead;
       if (prepared.kind === "ready") {
-        const current = await candidateOf(workspace, prepared.policy);
+        const policy = prepared.policy;
+        const current = await candidateOf(workspace, policy);
         if (!current.ok) {
           prepared = { kind: "blocked", message: current.message };
         } else if (current.fingerprint !== fingerprint) {
@@ -374,6 +388,10 @@ export function createCloseoutSession(
             policyChanged: changesPolicyInput(prepared.policy, current.paths),
           };
         }
+        if (draftKey !== undefined && pullRequestDraftKey(options.pullRequest?.()) !== draftKey) {
+          view = new Map([...view].map(([id, state]) => [id, { ...state }]));
+          staleDraftChecks(policy, view);
+        }
         recordedHead = current.ok ? current.head : undefined;
       }
       const broken = ruleBreak(prepared);
@@ -393,6 +411,15 @@ export function createCloseoutSession(
       return last.report;
     },
   };
+}
+
+function staleDraftChecks(policy: TreePolicy, memory: Map<string, ItemMemory>): void {
+  for (const item of [...policy.setup, ...policy.items]) {
+    const state = memory.get(item.id);
+    if (!state?.passed || !("exec" in item) || !usesPullRequestDraft(item.exec)) continue;
+    state.passed = false;
+    state.stale = true;
+  }
 }
 
 /** The candidate's head and its fingerprint: head, policy digest and changed files. */
@@ -595,6 +622,7 @@ async function runProbes(
     const rule = prepared.policy.rules.find((entry) => entry.id === listed.id);
     const bytes = rule && prepared.policy.probeFiles.get(rule.probe);
     if (rule === undefined || bytes === undefined || options.signal?.aborted) continue;
+    const draft = options.pullRequest?.();
     const ran = await executeProbe({
       rule,
       bytes,
@@ -603,6 +631,7 @@ async function runProbes(
       checkout: workspace,
       timeoutSeconds: PROBE_TIMEOUT_SECONDS,
       env,
+      ...(draft ? { pullRequest: draft } : {}),
     });
     listed.result = {
       argv: ran.argv,
@@ -878,16 +907,19 @@ async function execute(
   const started = Date.now();
   const timeoutSeconds = item.timeoutSeconds ?? 30;
   const signals = [options.signal, stop].filter((signal) => signal !== undefined);
-  const result = await runCommand(
-    workspace,
-    argv,
-    timeoutSeconds,
-    signals.length > 0 ? AbortSignal.any(signals) : undefined,
-    {
-      runtimeBinPaths: options.runtimeBinPaths,
-      basePath: options.basePath,
-      bail: item.kind === "command",
-    },
+  const result = await withPullRequestDraft({}, options.pullRequest?.(), (draft) =>
+    runCommand(
+      workspace,
+      argv,
+      timeoutSeconds,
+      signals.length > 0 ? AbortSignal.any(signals) : undefined,
+      {
+        runtimeBinPaths: options.runtimeBinPaths,
+        basePath: options.basePath,
+        bail: item.kind === "command",
+        env: draft,
+      },
+    ),
   );
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   const cleanAfter = await clean(workspace);
@@ -1191,9 +1223,14 @@ function killCommand(pid: number | undefined): void {
   }
 }
 
-type CheckPath = { runtimeBinPaths?: readonly string[]; basePath?: string; bail?: boolean };
+type CheckPath = {
+  runtimeBinPaths?: readonly string[];
+  basePath?: string;
+  bail?: boolean;
+  env?: Record<string, string>;
+};
 
-function commandEnv({ runtimeBinPaths = [], basePath, bail }: CheckPath = {}): Record<
+function commandEnv({ runtimeBinPaths = [], basePath, bail, env: extra }: CheckPath = {}): Record<
   string,
   string
 > {
@@ -1202,11 +1239,13 @@ function commandEnv({ runtimeBinPaths = [], basePath, bail }: CheckPath = {}): R
     GIT_CONFIG_COUNT: "0",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
+    ...extra,
   };
   if (basePath !== undefined) env.PATH = basePath;
   if (runtimeBinPaths.length)
     env.PATH = [...runtimeBinPaths, ...(env.PATH ? [env.PATH] : [])].join(delimiter);
   if (bail) env.PAWS_TEST_BAIL = "1";
+  else delete env.PAWS_TEST_BAIL;
   return env;
 }
 

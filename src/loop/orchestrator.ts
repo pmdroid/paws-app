@@ -118,6 +118,9 @@ import {
   sessionCloseoutPath,
   sessionCloseoutResult,
   writeSessionCloseout,
+  pullRequestDraftKey,
+  usesPullRequestDraft,
+  type PullRequestDraft,
   type GateResult,
   type ReviewRounds,
   type CloseoutGate,
@@ -243,6 +246,7 @@ import {
   closeoutHeadsStarted,
   getLinkAsk,
   getPullRequestDraft,
+  pullRequestDraftSavedAt,
   savePullRequestDraft,
   savePullRequestText,
   listAgentCloseout,
@@ -3380,6 +3384,7 @@ export class Orchestrator {
         .filter((part) => part)
         .join("\n\n");
       const focus = closeoutFocus(this.db, item.id, returned?.reason);
+      const draft = this.savedDraft(item.id);
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
@@ -3460,6 +3465,7 @@ export class Orchestrator {
         publishArtifact: this.artifactPublisher(item),
         closeoutProgress: this.agentCloseoutHook(item, run.id),
         ...(focus ? { closeoutFocus: focus } : {}),
+        ...(draft ? { pullRequestDraft: draft } : {}),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
@@ -3547,6 +3553,7 @@ export class Orchestrator {
           sessionCloseoutPath(this.options.pawsRoot, pathId),
           head,
           executed.run.closeoutReport,
+          pullRequestDraftKey(this.savedDraft(item.id)),
         );
       else closeActiveRun(this.db, run.id, this.now());
       const suggestionJob = suggestionTurnRunning(this.db, item.id);
@@ -3564,7 +3571,7 @@ export class Orchestrator {
         base,
         head,
         this.candidateFor(run.id),
-        turnPasses(listAgentCloseout(this.db, [run.id])),
+        turnPasses(listAgentCloseout(this.db, [run.id]), pullRequestDraftSavedAt(this.db, item.id)),
       );
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
@@ -4009,9 +4016,15 @@ export class Orchestrator {
         };
     }
     const sessionPath = sessionCloseoutPath(this.options.pawsRoot, itemPathId(item));
-    const savedReport = (commit: string) => {
+    const savedReport = (commit: string, argv: readonly string[] = []) => {
       const saved = readSessionCloseout(sessionPath);
-      return saved?.head === commit ? saved.report : undefined;
+      if (saved?.head !== commit) return undefined;
+      if (
+        usesPullRequestDraft(argv) &&
+        saved.draft !== pullRequestDraftKey(this.savedDraft(item.id))
+      )
+        return undefined;
+      return saved.report;
     };
     const recovery = recoveryOptions(this.db, item.id);
     let rulesFirst = !recovery.bypasses.some((bypass) => bypass.head === head);
@@ -4042,15 +4055,15 @@ export class Orchestrator {
           runLogged: async (request: Parameters<typeof loggedSessionCloseout>[1]) => {
             assertCurrent();
             const commit = request.expectedHead;
-            if (!sessionCloseoutResult(savedReport(commit), request))
+            if (!sessionCloseoutResult(savedReport(commit, request.argv), request))
               await runnerResults(commit, request.itemId);
             assertCurrent();
             const broken = rulesFirst ? brokenRuleOf(savedReport(commit)) : undefined;
-            if (broken && !sessionCloseoutResult(savedReport(commit), request)) {
+            if (broken && !sessionCloseoutResult(savedReport(commit, request.argv), request)) {
               stoppedOnRule = broken;
               throw new Error(`Rule ${broken} broke before the checks ran.`);
             }
-            const result = loggedSessionCloseout(savedReport(commit), request);
+            const result = loggedSessionCloseout(savedReport(commit, request.argv), request);
             assertCurrent();
             return result;
           },
@@ -4099,6 +4112,7 @@ export class Orchestrator {
       ...(fromCi.length > 0 ? { fromCi } : {}),
       ...(fromTurn.length > 0 ? { fromTurn } : {}),
       ...(commands ? { commandRunner: commands } : {}),
+      pullRequest: () => this.savedDraft(item.id),
       reviewer: {
         async review(request) {
           // A runner-backed item's review runs on its runner; the mirror has no files to narrow.
@@ -4207,6 +4221,7 @@ export class Orchestrator {
         input.report(
           `Running the Closeout checks for ${item.linearIdentifier} on its runner at ${short}.`,
         );
+      const draft = this.savedDraft(item.id);
       try {
         const options: RunAgentOptions = {
           repository: deps.repository,
@@ -4219,6 +4234,7 @@ export class Orchestrator {
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
+          ...(draft ? { pullRequestDraft: draft } : {}),
           mainSha: input.base,
           ...(input.policy ? { commitPolicy: input.policy } : {}),
           ...(deps.home ? { home: deps.home } : {}),
@@ -4242,7 +4258,12 @@ export class Orchestrator {
         else if (!listsChecks(result.closeoutReport))
           reason = "the runner's Closeout listed no checks";
         else {
-          writeSessionCloseout(input.sessionPath, head, result.closeoutReport);
+          writeSessionCloseout(
+            input.sessionPath,
+            head,
+            result.closeoutReport,
+            pullRequestDraftKey(draft),
+          );
           return;
         }
       } catch (error) {
@@ -7003,6 +7024,11 @@ export class Orchestrator {
         recordAgentCloseout(this.db, runId, item.id, progress, this.now());
       },
     };
+  }
+
+  private savedDraft(itemId: string): PullRequestDraft | undefined {
+    const draft = getPullRequestDraft(this.db, itemId);
+    return draft ? { title: draft.title, body: draft.body } : undefined;
   }
 
   private pullRequestHook(item: WorkItemRecord): PullRequestHook {
