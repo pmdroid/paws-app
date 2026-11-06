@@ -198,7 +198,7 @@ export function createDirectWorkerSupervisor(options: {
   mkdirSync(options.stateRoot, { recursive: true, mode: 0o700 });
   const held = new Map<string, string>();
   const shared = new Set<string>();
-  function homeFor(executionId: string): string {
+  function homeFor(executionId: string, asAgent: boolean): string {
     if (!options.spool || !options.results) return process.env.HOME ?? "/var/lib/paws-agent";
     const job = readRunnerJob(options.spool, executionId);
     const named = runnerCommandAccount(job.command);
@@ -207,6 +207,7 @@ export function createDirectWorkerSupervisor(options: {
     if (!named) return agentHome;
     return openRunnerAccountHome(agentHome, named.account, named.agent, {
       signIn: job.command.type === "login",
+      folders: !asAgent,
       owners: { runnerUid: options.spool.runnerUid, agentGid: options.spool.agentGid },
     });
   }
@@ -375,7 +376,10 @@ export function createDirectWorkerSupervisor(options: {
   }
   async function admit(executionId: string, resume: boolean) {
     const path = receipt(executionId);
-    const home = homeFor(executionId);
+    const home = homeFor(
+      executionId,
+      resume ? asAgentFor(executionId) : configured === "paws-agent",
+    );
     let fd: number;
     try {
       fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);

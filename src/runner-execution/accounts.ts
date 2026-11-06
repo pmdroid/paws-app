@@ -90,7 +90,7 @@ export function openRunnerAccountHome(
   agentHome: string,
   account: RunnerAccount | undefined,
   agent: RunnerCodingAgent,
-  options: { signIn?: boolean; owners?: RunnerAccountOwners } = {},
+  options: { signIn?: boolean; folders?: boolean; owners?: RunnerAccountOwners } = {},
 ): string {
   if (!account) return agentHome;
   const owners = options.owners ?? processOwners();
@@ -112,7 +112,8 @@ export function openRunnerAccountHome(
     manifest.agent !== agent
   )
     throw new RunnerAccountHomeError("Agent account binding belongs to another account");
-  for (const folder of HOME_FOLDERS) privateDirectory(join(home, folder), true, owners);
+  if (options.folders !== false)
+    for (const folder of HOME_FOLDERS) privateDirectory(join(home, folder), true, owners);
   return home;
 }
 

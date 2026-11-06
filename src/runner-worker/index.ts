@@ -777,7 +777,10 @@ export async function executeRunnerCommand(
     const folder = join(home, provider);
     mkdirSync(folder, { recursive: true, mode: 0o700 });
     const info = lstatSync(folder);
-    if (info.uid === process.getuid?.()) chmodSync(folder, 0o700);
+    const self = process.getuid?.();
+    if (info.uid === self && options.owners && self !== options.owners.runnerUid) {
+      if (info.mode & 0o007) chmodSync(folder, 0o770);
+    } else if (info.uid === self) chmodSync(folder, 0o700);
     else if (
       !info.isDirectory() ||
       !options.owners ||

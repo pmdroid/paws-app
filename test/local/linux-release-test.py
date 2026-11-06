@@ -1786,5 +1786,125 @@ class AgentUserDefault(unittest.TestCase):
         self.assertEqual(self.config.with_name("elsewhere.json").read_text(), "{}")
 
 
+AGENT_HOME_FOLDERS = (".codex", ".claude", ".grok", ".bun/bin", ".config/opencode", ".local/share/opencode", ".cache/opencode", "work/acme-app", ".paws-skills/versions", ".paws-accounts/01JBINDINGA000000000000000/.codex")
+AGENT_HOME_FILES = (".codex/auth.json", ".claude.json", ".config/opencode/opencode.json", "work/acme-app/README.md", ".paws-accounts/01JBINDINGA000000000000000/account.json", ".paws-accounts/01JBINDINGA000000000000000/.codex/auth.json")
+
+
+def agent_home_fixture(home):
+    """An agent home as an earlier install left it: paws-runner:paws-agent, files 0660, directories 2770 where the host allows setgid."""
+    for name in AGENT_HOME_FOLDERS:
+        (home / name).mkdir(parents=True)
+    for name in AGENT_HOME_FILES:
+        (home / name).write_text("{}")
+        (home / name).chmod(0o660)
+    for path in [home, *home.rglob("*")]:
+        if path.is_dir():
+            with contextlib.suppress(PermissionError):
+                path.chmod(0o2770)
+            if path.stat().st_mode & 0o2000 == 0:
+                path.chmod(0o770)
+
+
+class AgentStateHandover(unittest.TestCase):
+    RUNNER, AGENT, AGENT_GROUP = 60980, 60978, 60979
+    HANDED_OVER = (".codex", ".codex/auth.json", ".claude", ".claude.json", ".grok", ".bun", ".bun/bin", ".config/opencode/opencode.json", ".local/share/opencode", ".cache/opencode", ".paws-accounts/01JBINDINGA000000000000000/.codex/auth.json")
+    KEPT = ("work", "work/acme-app/README.md", ".paws-skills/versions", ".paws-accounts", ".paws-accounts/01JBINDINGA000000000000000", ".paws-accounts/01JBINDINGA000000000000000/account.json")
+
+    def setUp(self):
+        self.installer = load("install")
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = pathlib.Path(self.temporary.name)
+        self.home = self.root / "agent"
+        agent_home_fixture(self.home)
+        self.modes = {path: stat.S_IMODE(path.lstat().st_mode) for path in [self.home, *self.home.rglob("*")]}
+        # Ownership is simulated: every entry starts as paws-runner:paws-agent, as `adopt_tree` leaves it.
+        self.owners = {}
+
+    def lstat(self, path):
+        info = os.lstat(path)
+        uid, gid = self.owners.get(pathlib.Path(path), (self.RUNNER, self.AGENT_GROUP))
+        return SimpleNamespace(st_mode=info.st_mode, st_uid=uid, st_gid=gid)
+
+    def install(self, agent_user):
+        """What switch_release does to the agent home: adopt it for paws-runner, then hand agent state over."""
+        config = self.root / "config.json"
+        config.write_text(json.dumps({"agentUser": agent_user}))
+        chmods = []
+        state = self.installer.agent_state_to_hand_over(self.home, config)
+        with mock.patch.object(self.installer.os, "lchown", lambda path, uid, gid: self.owners.__setitem__(pathlib.Path(path), (uid, gid))), mock.patch.object(self.installer.os, "chmod", lambda path, mode: chmods.append(pathlib.Path(path))):
+            self.installer.adopt_tree(self.home, self.RUNNER, self.AGENT_GROUP, 0o2770, self.installer.group_shared, state)
+            changed = self.installer.hand_over_agent_state(state, self.AGENT, self.AGENT, self.lstat, lambda path, uid, gid: self.owners.__setitem__(pathlib.Path(path), (uid, gid)))
+        return changed, chmods
+
+    def owner(self, name):
+        return self.owners.get(self.home / name, (self.RUNNER, self.AGENT_GROUP))
+
+    def test_paws_agent_gets_its_state_with_modes_kept_and_a_second_run_changes_nothing(self):
+        changed, chmods = self.install("paws-agent")
+        self.assertGreater(changed, len(self.HANDED_OVER))
+        for name in self.HANDED_OVER:
+            self.assertEqual(self.owner(name), (self.AGENT, self.AGENT), name)
+            self.assertNotIn(self.home / name, chmods, name)
+        for name in self.KEPT:
+            self.assertEqual(self.owner(name), (self.RUNNER, self.AGENT_GROUP), name)
+        self.assertEqual({path: stat.S_IMODE(path.lstat().st_mode) for path in self.modes}, self.modes)
+        handed = dict(self.owners)
+        changed, chmods = self.install("paws-agent")
+        self.assertEqual(changed, 0)
+        self.assertEqual(self.owners, handed)
+        self.assertFalse({self.home / name for name in self.HANDED_OVER} & set(chmods))
+
+    def test_runner_leaves_ownership_as_it_is(self):
+        changed, _ = self.install("runner")
+        self.assertEqual(changed, 0)
+        self.assertEqual(set(self.owners.values()), {(self.RUNNER, self.AGENT_GROUP)})
+
+    def test_a_missing_config_reads_as_paws_agent_and_an_unreadable_one_hands_nothing_over(self):
+        self.assertIn(self.home / ".codex", self.installer.agent_state_to_hand_over(self.home, self.root / "missing.json"))
+        (self.root / "broken.json").write_text("{not json")
+        self.assertEqual(self.installer.agent_state_to_hand_over(self.home, self.root / "broken.json"), frozenset())
+
+
+class AgentStateHandoverAsAgent(unittest.TestCase):
+    """A real handover: needs root to chown, so it skips elsewhere, like the setgid tests."""
+
+    AGENT, OTHER = 65534, 65533
+
+    @unittest.skipUnless(sys.platform == "linux" and os.geteuid() == 0, "chown to another user needs root")
+    def test_the_agent_user_can_chmod_its_handed_over_state(self):
+        installer = load("install")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            root.chmod(0o755)
+            home = root / "agent"
+            agent_home_fixture(home)
+            for path in [home, *home.rglob("*")]:
+                os.lchown(path, self.OTHER, self.AGENT)
+            auth = home / ".codex/auth.json"
+            self.assertNotEqual(self.chmod_as_agent(auth), 0)
+            config = root / "config.json"
+            config.write_text('{"agentUser": "paws-agent"}')
+            modes = {path: stat.S_IMODE(path.lstat().st_mode) for path in home.rglob("*")}
+            installer.hand_over_agent_state(installer.agent_state_to_hand_over(home, config), self.AGENT, self.AGENT)
+            self.assertEqual({path: stat.S_IMODE(path.lstat().st_mode) for path in home.rglob("*")}, modes)
+            self.assertEqual((home / "work").stat().st_uid, self.OTHER)
+            self.assertEqual(self.chmod_as_agent(auth), 0)
+            self.assertEqual(stat.S_IMODE(auth.stat().st_mode), 0o600)
+
+    def chmod_as_agent(self, path):
+        child = os.fork()
+        if child == 0:
+            try:
+                os.setgroups([])
+                os.setgid(self.AGENT)
+                os.setuid(self.AGENT)
+                os.chmod(path, 0o600)
+                os._exit(0)
+            except OSError:
+                os._exit(1)
+        return os.waitstatus_to_exitcode(os.waitpid(child, 0)[1])
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], *sys.argv[2:]], verbosity=2)

@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -85,7 +86,11 @@ function fakeSystemctl(fail?: string, exitsAtOnce = false, showFails = false) {
   return { calls, systemctl };
 }
 
-function prepared(root: string, account?: RunnerJob["command"]["account"]) {
+function prepared(
+  root: string,
+  account?: RunnerJob["command"]["account"],
+  type: "probe" | "login_check" | "login" = "probe",
+) {
   const spoolRoot = join(root, "spool");
   mkdirSync(spoolRoot, { mode: 0o750 });
   chmodSync(spoolRoot, 0o750);
@@ -101,8 +106,9 @@ function prepared(root: string, account?: RunnerJob["command"]["account"]) {
       workspaceId: "ws",
       issuedAt: 1,
       expiresAt: 2,
-      type: "probe",
-      profile: { agent: "codex", model: null },
+      ...(type === "probe"
+        ? { type, profile: { agent: "codex" as const, model: null } }
+        : { type, agent: "codex" as const }),
       ...(account ? { account } : {}),
     },
   });
@@ -360,5 +366,62 @@ test("an account-bound paws-agent run shares the agent home's mise folders and k
     mode(join(agentHome, ".local/share/mise")),
   ]).toEqual([0o770, 0o770]);
   expect(mode(join(bindingHome, "account.json"))).toBe(0o640);
+  await supervisor.stop(id);
+});
+
+for (const type of ["login", "login_check", "probe"] as const)
+  test(`a ${type} for an account starts as paws-agent and leaves the agent folders to it`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "paws-agent-user-"));
+    roots.push(root);
+    const account = {
+      accountId: "01JACCOUNTA000000000000000",
+      bindingId: "01JBINDINGA000000000000000",
+    };
+    const agentHome = join(root, "agent");
+    mkdirSync(agentHome, { mode: 0o770 });
+    chmodSync(agentHome, 0o770);
+    if (type !== "login") {
+      const home = openRunnerAccountHome(agentHome, account, "codex", {
+        signIn: true,
+        folders: false,
+      });
+      markRunnerAccountSignedIn(home, account, "codex");
+    }
+    const jobs = prepared(root, account, type);
+    const { fake, launched, supervisor } = setup("paws-agent", undefined, {
+      root,
+      jobs,
+      agentHome,
+    });
+    expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: false });
+    expect(launched).toEqual([]);
+    expect(fake.calls[0]).toEqual(["start", unit]);
+    const home = join(agentHome, ".paws-accounts", account.bindingId);
+    expect(readdirSync(home).filter((name) => !name.startsWith("."))).toEqual(
+      type === "login" ? [] : ["account.json"],
+    );
+    for (const folder of [".codex", ".claude", ".config", ".local", ".cache"])
+      expect(existsSync(join(home, folder))).toBe(false);
+    await supervisor.stop(id);
+  });
+
+test('a "runner" sign-in check still spawns directly and makes the account folders', async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-agent-user-"));
+  roots.push(root);
+  const account = {
+    accountId: "01JACCOUNTA000000000000000",
+    bindingId: "01JBINDINGA000000000000000",
+  };
+  const agentHome = join(root, "agent");
+  mkdirSync(agentHome, { mode: 0o770 });
+  chmodSync(agentHome, 0o770);
+  const home = openRunnerAccountHome(agentHome, account, "codex", { signIn: true });
+  markRunnerAccountSignedIn(home, account, "codex");
+  const jobs = prepared(root, account, "login_check");
+  const { fake, launched, supervisor } = setup("runner", undefined, { root, jobs, agentHome });
+  expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: false });
+  expect(fake.calls).toEqual([]);
+  expect(launched).toHaveLength(1);
+  expect(existsSync(join(home, ".codex"))).toBe(true);
   await supervisor.stop(id);
 });

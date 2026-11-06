@@ -130,14 +130,16 @@ For a private CA, also pass `--cacert /path/to/server-ca.pem` to curl. The respo
 
 ## Sign in to the agents
 
-Run the login command for each provider you intend to use on this host. Agents run as `paws-agent`, but sign in as `paws-runner`: the runner's sign-in checks, usage probes and dashboard sign-ins read the same credentials as `paws-runner`, and the runner shares what `paws-runner` writes in `/var/lib/paws-agent` with the `paws-agent` group before it first starts an agent there. Both accounts use the provider state under `/var/lib/paws-agent` as `HOME`:
+Run the login command for each provider you intend to use on this host, as the user agents run as. An agent's state belongs to that user: with `"agentUser": "paws-agent"` (the default) the runner's sign-in checks, usage probes and dashboard sign-ins start through `paws-agent@<executionId>.service` like any agent turn, so they run as `paws-agent`. Each package install or upgrade with `"paws-agent"` hands existing agent state in `/var/lib/paws-agent` and in each account home under `.paws-accounts` to `paws-agent:paws-agent`, recursively: `.codex`, `.claude`, `.claude.json`, `.grok`, `.bun`, `.config`, `.local` and `.cache` (OpenCode's config, data and cache are under the last three). Modes and the setgid bit stay as they are, and running the installer again changes nothing. `work/`, `.paws-skills`, `.paws-accounts` itself and each account home's `account.json` and holds stay `paws-runner`'s. Codex and OpenCode change the modes of their own state, which only its owner may, so they fail with `Operation not permitted` when it belongs to `paws-runner`. Run the installer again (`sudo dpkg-reconfigure paws-runner`) after switching an existing host to `"paws-agent"`. With `"agentUser": "runner"` the installer leaves ownership as it is and everything runs as `paws-runner`, as in runner 0.1.72; to go back to it on a host that was already handed over, give the folders above back to `paws-runner:paws-agent` (`chown -R`) before restarting. Both accounts use the provider state under `/var/lib/paws-agent` as `HOME`:
 
 ```sh
-sudo /usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/claude auth login
-sudo /usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/codex login --device-auth
+sudo /usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/claude auth login
+sudo /usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/codex login --device-auth
 ```
 
-Follow the provider's browser instructions. Provider credentials stay in `/var/lib/paws-agent` on the VM. The runner shares a home's files with `paws-agent` once per daemon start, so after signing in again on a runner that has already run agents as `paws-agent`, restart `paws-runner.service` before the next item.
+With `"agentUser": "runner"`, use `--user paws-runner` instead.
+
+Follow the provider's browser instructions. Provider credentials stay in `/var/lib/paws-agent` on the VM.
 
 Or sign in from the dashboard, which is all the setup there is: open the runner on the **Runners** page. Its **Agents** table has one row per agent (Claude, Codex, Grok and OpenCode) with:
 
