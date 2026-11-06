@@ -965,14 +965,13 @@ export function mergeResultPolicyError(
   head: string,
 ): string | undefined {
   const main = loadCommitPolicy({ repo, git: gitReader }, base);
-  if (!main.ok) return undefined;
   const diff = gitSync(
     repo,
     ["diff", "--name-only", "--no-renames", "-z", `${base}...${head}`, "--"],
     GIT_TIMEOUT_MS,
   );
   const paths = diff.ok ? splitNul(diff.stdout).flatMap((name) => utf8(name) ?? []) : undefined;
-  if (paths && !changesPolicyInput(main.policy ?? { files: [], items: [] }, paths))
+  if (main.ok && paths && !changesPolicyInput(main.policy ?? { files: [], items: [] }, paths))
     return undefined;
   const merged = gitSync(repo, ["merge-tree", "--write-tree", base, head], GIT_TIMEOUT_MS);
   const conflicted =

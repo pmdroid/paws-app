@@ -375,20 +375,11 @@ export async function advanceMerge(
   if (getWorkItem(db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
   if (step.kind === "unreadable") throw new Error(step.message);
   if (mergedPolicyError !== undefined) return returnForPolicy(merge, mergedPolicyError, ciFixLimit);
-  if (step.kind === "hold_policy" && mainPolicy && "ok" in mainPolicy) {
-    const message =
-      caps.holdForPolicy?.(item, queueName(repository), mainPolicy) ??
-      `The Closeout policy on main doesn't load: ${mainPolicy.message}. Paws merges again once it's fixed.`;
-    voice.status(item, message, `${item.id}:policy-unreadable:${message}`);
-    return {
-      kind: "wait",
-      reason: "policy",
-      queued: true,
-      message,
+  if (step.kind === "hold_policy" && mainPolicy && "ok" in mainPolicy)
+    return holdForMainPolicy(item, caps, queueName(repository), mainPolicy, {
       base: step.base,
       head: step.head,
-    };
-  }
+    });
   if (step.kind === "ask_risk") return holdForRisk(db, item, caps, published);
   if (step.kind === "reverify") {
     reverify(merge, step, input.jobId);
@@ -494,27 +485,52 @@ async function githubQueuePolicy(
   }
   if (caps.stopped()) return { kind: "obsolete" };
   if (main === null) return undefined;
+  const repository = queueName(published.repository);
+  const mainPolicy = caps.policyDigests(item, published.worktree);
+  if (mainPolicy && "ok" in mainPolicy) {
+    if (watch?.queued && (await leaveGitHubQueue(published)) === "merged") return undefined;
+    return {
+      ...holdForMainPolicy(item, caps, repository, mainPolicy, { head: published.head }),
+      githubQueue: { queued: false },
+    };
+  }
+  if (mainPolicy) caps.policyLoads?.(repository);
   const broken = caps.mergeResultPolicy(item, published.worktree, {
     base: main,
     head: published.head,
   });
   if (!broken) return undefined;
-  if (watch?.queued) {
-    const { github, repository, pull } = published;
-    const left = await leaveGitHubMergeQueue({
-      client: github.client,
-      owner: repository.owner,
-      repo: repository.repo,
-      prNumber: pull.number,
-      appId: github.appId,
-      installationId: github.installationId,
-      privateKeyPem: github.privateKeyPem,
-      ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
-      signal: published.signal,
-    });
-    if (left === "merged") return undefined;
-  }
+  if (watch?.queued && (await leaveGitHubQueue(published)) === "merged") return undefined;
   return returnForPolicy(merge, broken, caps.ciFixAttempts(item));
+}
+
+function leaveGitHubQueue(published: MergePublication) {
+  const { github, repository, pull } = published;
+  return leaveGitHubMergeQueue({
+    client: github.client,
+    owner: repository.owner,
+    repo: repository.repo,
+    prNumber: pull.number,
+    appId: github.appId,
+    installationId: github.installationId,
+    privateKeyPem: github.privateKeyPem,
+    ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
+    signal: published.signal,
+  });
+}
+
+function holdForMainPolicy(
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+  repository: string,
+  unreadable: MainPolicyUnreadable,
+  candidate: { base?: string; head: string },
+): Extract<MergeStep, { kind: "wait" }> {
+  const message =
+    caps.holdForPolicy?.(item, repository, unreadable) ??
+    `The Closeout policy on main doesn't load: ${unreadable.message}. Paws merges again once it's fixed.`;
+  caps.voice.status(item, message, `${item.id}:policy-unreadable:${message}`);
+  return { kind: "wait", reason: "policy", queued: true, message, ...candidate };
 }
 
 function mergedPolicyMessage(error: string): string {

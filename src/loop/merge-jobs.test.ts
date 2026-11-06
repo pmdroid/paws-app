@@ -123,6 +123,27 @@ describe("merge CI wait", () => {
     });
   });
 
+  test("a queued wait that left GitHub's merge queue records it, so the next pass does not ask", async () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    enqueueJob(db, {
+      queue: JOB_KIND.merge,
+      payload: { itemId: "eng-1", githubQueue: { queued: true, position: 1 } },
+      now: clock.now(),
+    });
+    const loop = new JobLoop(db, clock, { leaseMs: 60_000 });
+    loop.register(JOB_KIND.merge, (job) => {
+      parkMerge(db, job, clock.now(), {
+        queued: true,
+        reason: "policy",
+        message: "The Closeout policy on main doesn't load.",
+        githubQueue: { queued: false },
+      });
+    });
+    const ran = await loop.tick();
+    expect(getJob(db, ran!.id)?.payload).toMatchObject({ githubQueue: { queued: false } });
+  });
+
   test("a merge whose CI is still pending does not keep a running job", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });

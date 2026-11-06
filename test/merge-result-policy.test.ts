@@ -112,4 +112,39 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
       "could not build the merge result",
     );
   });
+
+  const unreadableMain = {
+    ok: false as const,
+    message: ".agents/closeout.yaml: review acme-review: skill file is missing",
+    path: ".agents/closeout.yaml",
+    main: "a".repeat(40),
+    commit: "b".repeat(40),
+  };
+
+  test("with GitHub's merge queue, an unreadable main policy holds the pull request instead of queueing it", async () => {
+    const queue = createFakeMergeQueue({ ahead: 1, headOf: async () => "" });
+    const { h } = await policyChange({ settings: { order: "github-queue" }, queue });
+    h.state.mainPolicy = unreadableMain;
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "policy", queued: true });
+    expect(queue.enqueued).toEqual([]);
+    expect(h.state.policyHolds.map((hold) => hold.id)).toEqual(["ENG-1"]);
+    expect(listJobs(h.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
+  });
+
+  test("with GitHub's merge queue, main's policy breaking while queued takes the pull request out and holds it", async () => {
+    let head = async (): Promise<string> => "";
+    const queue = createFakeMergeQueue({ ahead: 1, headOf: () => head() });
+    const { h } = await policyChange({ settings: { order: "github-queue" }, queue });
+    head = () => h.remoteHead("ENG-1");
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    h.state.mainPolicy = unreadableMain;
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "policy", queued: true });
+    expect(queue.calls).toContain("dequeue");
+    expect(listJobs(h.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+
+    h.state.mainPolicy = null;
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", githubQueue: { queued: true } });
+    expect(h.state.policyLoads).toContain("acme/app");
+  });
 });
