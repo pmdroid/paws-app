@@ -9,9 +9,6 @@ import { readCsrfToken } from "./csrf";
 const ROLES: AgentRole[] = ["implementer", "reviewer"];
 const CI_FIX_ATTEMPTS_DEFAULT = 3;
 const CI_FIX_ATTEMPTS_MAX = 10;
-const QUEUE_START_TIMEOUT_DEFAULT = 24;
-const QUEUE_START_TIMEOUT_MAX = 720;
-const OWNER_CAP_MAX = 1000;
 const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok", opencode: "OpenCode" };
 
 export function settingsProblems(settings: AgentSettings): string[] {
@@ -28,16 +25,6 @@ export function settingsProblems(settings: AgentSettings): string[] {
     Number.isInteger(attempts) && attempts >= 0 && attempts <= CI_FIX_ATTEMPTS_MAX
       ? []
       : [`CI fix attempts: enter a whole number from 0 to ${CI_FIX_ATTEMPTS_MAX}.`];
-  const hours = settings.queue?.startTimeoutHours ?? QUEUE_START_TIMEOUT_DEFAULT;
-  if (!Number.isInteger(hours) || hours < 1 || hours > QUEUE_START_TIMEOUT_MAX)
-    checks.push(
-      `Queue start timeout: enter a whole number of hours from 1 to ${QUEUE_START_TIMEOUT_MAX}.`,
-    );
-  const cap = settings.queue?.maxRunningPerOwner ?? null;
-  if (cap !== null && (!Number.isInteger(cap) || cap < 1 || cap > OWNER_CAP_MAX))
-    checks.push(
-      `Running items per owner: leave empty for no cap, or enter a whole number from 1 to ${OWNER_CAP_MAX}.`,
-    );
   return profiles
     .filter(
       ({ implementer, reviewer }) =>
@@ -124,10 +111,6 @@ export function renderAgentSettings(view: SettingsView): string {
       }
       <div class="settings-add"><label for="settings-repo">Repository</label><div class="row"><input id="settings-repo" name="repo" value="${esc(view.repoDraft ?? "")}" placeholder="owner/repository" autocapitalize="none" spellcheck="false"><button class="btn" type="button" data-settings="add">Add project</button></div></div></div></section>
       ${checksSection(view.data.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT)}
-      ${queueSection(
-        view.data.queue?.startTimeoutHours ?? QUEUE_START_TIMEOUT_DEFAULT,
-        view.data.queue?.maxRunningPerOwner ?? null,
-      )}
       <div id="settings-problems" class="settings-message err" role="alert" ${problems.length ? "" : "hidden"}>${problems.map(esc).join("<br>")}</div>
       <label class="settings-inherit"><input type="checkbox" name="apply-to-waiting" ${view.applyToWaiting ? "checked" : ""} aria-describedby="apply-to-waiting-help">Also switch runs that are waiting</label>
       <p class="sub" id="apply-to-waiting-help">Waiting runs use these profiles at their next step. Agents working now finish with their current profiles.</p>
@@ -139,14 +122,6 @@ function checksSection(attempts: number): string {
   return `<section class="settings-section"><div class="settings-label"><h2>Pull request checks</h2><p class="sub">When CI fails on a pull request, Paws sends the failing checks and their links back to the implementing agent. After the last attempt, Paws asks in the issue's Linear session.</p></div><div class="col">
       <label for="merge-ci-fix-attempts">CI fix attempts</label><input id="merge-ci-fix-attempts" name="merge-ci-fix-attempts" type="number" inputmode="numeric" min="0" max="${CI_FIX_ATTEMPTS_MAX}" step="1" required value="${Number.isFinite(attempts) ? attempts : ""}" aria-describedby="merge-ci-fix-attempts-help">
       <p class="sub" id="merge-ci-fix-attempts-help">From 0 to ${CI_FIX_ATTEMPTS_MAX}. With 0, Paws asks in Linear on the first failure.</p></div></section>`;
-}
-
-function queueSection(hours: number, cap: number | null): string {
-  return `<section class="settings-section"><div class="settings-label"><h2>Queue</h2><p class="sub">While every runner slot is busy, a delegated item waits in line and Linear shows its place.</p></div><div class="col">
-      <label for="queue-start-timeout">Fail an item that has not started after, in hours</label><input id="queue-start-timeout" name="queue-start-timeout" type="number" inputmode="numeric" min="1" max="${QUEUE_START_TIMEOUT_MAX}" step="1" required value="${Number.isFinite(hours) ? hours : ""}" aria-describedby="queue-start-timeout-help">
-      <p class="sub" id="queue-start-timeout-help">From 1 to ${QUEUE_START_TIMEOUT_MAX} hours. The default is ${QUEUE_START_TIMEOUT_DEFAULT}. Paws then fails the item in Linear, and delegating it again retries.</p>
-      <label for="queue-owner-cap">Most items one person or project runs at once</label><input id="queue-owner-cap" name="queue-owner-cap" type="number" inputmode="numeric" min="1" max="${OWNER_CAP_MAX}" step="1" value="${cap !== null && Number.isFinite(cap) ? cap : ""}" aria-describedby="queue-owner-cap-help">
-      <p class="sub" id="queue-owner-cap-help">Free runners take turns between the people and projects with queued work. Empty means no cap, so one person alone still gets every runner.</p></div></section>`;
 }
 
 function profileFields(
@@ -190,6 +165,11 @@ function profileFields(
       .join("")}</select></div>
     <div class="settings-field"><label for="${key}-model">Model</label>${choices("model", profile.model, catalog?.models)}${longContext ? `<small class="sub" id="${key}-model-hint">1M context uses more of your Claude usage.</small>` : ""}${catalog ? "" : '<small class="sub">Sign in on a runner to load model choices.</small>'}</div>
     <div class="settings-field"><label for="${key}-effort">Effort</label>${choices("effort", profile.effort, efforts)}${catalog && efforts == null ? '<small class="sub" role="status">Loading effort choices…</small>' : ""}</div></div></div>`;
+}
+
+function withoutQueue(settings: AgentSettings): Omit<AgentSettings, "queue"> {
+  const { queue: _queue, ...rest } = settings;
+  return rest;
 }
 
 export function createAgentSettings(
@@ -254,13 +234,6 @@ export function createAgentSettings(
     if (ciFixAttempts)
       view.data.merge = {
         ciFixAttempts: ciFixAttempts.value.trim() === "" ? NaN : Number(ciFixAttempts.value),
-      };
-    const startTimeout = form.querySelector<HTMLInputElement>('[name="queue-start-timeout"]');
-    const ownerCap = form.querySelector<HTMLInputElement>('[name="queue-owner-cap"]');
-    if (startTimeout)
-      view.data.queue = {
-        startTimeoutHours: startTimeout.value.trim() === "" ? NaN : Number(startTimeout.value),
-        maxRunningPerOwner: ownerCap?.value.trim() ? Number(ownerCap.value) : null,
       };
     view.applyToWaiting =
       form.querySelector<HTMLInputElement>('[name="apply-to-waiting"]')?.checked ?? false;
@@ -392,7 +365,7 @@ export function createAgentSettings(
       >(
         engine!,
         "PUT",
-        { ...view.data, applyToWaiting: view.applyToWaiting === true },
+        { ...withoutQueue(view.data!), applyToWaiting: view.applyToWaiting === true },
         readCsrfToken(document),
       );
       if (started !== generation) return;

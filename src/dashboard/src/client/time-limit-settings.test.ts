@@ -21,8 +21,8 @@ const view = (data: TimeLimitSettings) => ({
   fieldErrors: {},
 });
 
-test("Settings › Agents holds the Time limits section", () => {
-  expect(renderSettingsPage("agents")).toContain('id="time-limit-settings"');
+test("Settings › Queue and limits holds the Time limits section", () => {
+  expect(renderSettingsPage("limits")).toContain('id="time-limit-settings"');
 });
 
 test("the section shows the defaults and the not-counted state", () => {

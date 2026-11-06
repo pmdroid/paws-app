@@ -47,6 +47,7 @@ import { createHookSettings } from "./hooks";
 import { createBriefSettings } from "./brief-settings";
 import { createFindingSettings } from "./finding-settings";
 import { createTimeLimitSettings } from "./time-limit-settings";
+import { createQueueSettings } from "./queue-settings";
 import { createCheckoutSettings } from "./checkout-settings";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
@@ -86,6 +87,10 @@ const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const findingSettings = createFindingSettings();
 const timeLimitSettings = createTimeLimitSettings();
+const queueSettings = createQueueSettings(() => {
+  settings.stale();
+  accountOrder.stale();
+});
 const checkoutSettings = createCheckoutSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
@@ -425,7 +430,7 @@ function paint(): void {
     access.hidden =
       !showSettings ||
       model.route.view !== "settings" ||
-      ["agents", "merging"].includes(model.route.page ?? "agents");
+      ["agents", "merging", "limits"].includes(model.route.page ?? "agents");
   showWorkspaceSettingsPage(
     model.route.view === "settings" ? (model.route.page ?? "agents") : null,
   );
@@ -452,6 +457,8 @@ function paint(): void {
   if (mergeRoot) mergeSettings.mount(mergeRoot, currentEngine());
   const hooksRoot = document.querySelector<HTMLElement>("#hook-settings");
   if (hooksRoot) hookSettings.mount(hooksRoot, currentEngine());
+  const queueRoot = document.querySelector<HTMLElement>("#queue-settings");
+  if (queueRoot) queueSettings.mount(queueRoot, currentEngine());
   const timeLimitRoot = document.querySelector<HTMLElement>("#time-limit-settings");
   if (timeLimitRoot) timeLimitSettings.mount(timeLimitRoot, currentEngine());
   const briefSettingsRoot = document.querySelector<HTMLElement>("#brief-settings");
