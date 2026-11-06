@@ -284,6 +284,22 @@ test("a checkpoint rebased onto an earlier main restores against that main after
   expect(result.pushes).toBe(0);
 });
 
+test("a checkpoint on neither the PR branch nor main starts from the branch head instead of failing", async () => {
+  const result = await startScenario({
+    local: [],
+    push: "fails",
+    hiddenCheckpoint: { runnerVersion: "0.1.67", offBranch: true },
+  });
+  expect(result.error, result.detail).toBeUndefined();
+  expect(result.offersRestore, result.detail).toBe(false);
+  expect(result.baseSha).toBe(result.prHead);
+  expect(result.remoteBranch).toBe(result.prHead);
+  expect(result.pushes).toBe(0);
+  expect(result.thoughts).toEqual([
+    `The saved work at ${result.hiddenWip!.slice(0, 8)} is on neither paws/item at ${result.prHead.slice(0, 8)} nor main, so this run continues from ${result.prHead.slice(0, 8)} and the agent redoes the rest.\n`,
+  ]);
+});
+
 test("a runner older than the hidden checkpoint release gets a run command without restoreCheckpoint", async () => {
   const result = await startScenario({ local: [], push: "works", runnerVersion: "0.1.66" });
   expect(result.error, result.detail).toBeUndefined();
@@ -332,7 +348,12 @@ async function startScenario(input: {
   failFirstDispatch?: true;
   /** Paws saved the fallback and stopped before it moved the candidate ref. */
   stoppedBeforeReset?: true;
-  hiddenCheckpoint?: { runnerVersion: string; rebasedOnEarlierMain?: true; lookup?: "fails" };
+  hiddenCheckpoint?: {
+    runnerVersion: string;
+    rebasedOnEarlierMain?: true;
+    lookup?: "fails";
+    offBranch?: true;
+  };
   runnerVersion?: string;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-start-commit-"));
@@ -401,6 +422,9 @@ async function startScenario(input: {
       earlierMain = await git(["-C", other, "rev-parse", "HEAD"]);
       await git(["-C", other, "push", origin, "HEAD:refs/heads/main"]);
       await commit(other, "Rebased branch work");
+    } else if (input.hiddenCheckpoint.offBranch) {
+      await git(["-C", other, "checkout", "--orphan", "rewritten"]);
+      await commit(other, "Branch work before the rebase");
     } else await git(["-C", other, "checkout", "--detach", prHead]);
     await commit(other, "Save work in progress so far");
     hiddenWip = await git(["-C", other, "rev-parse", "HEAD"]);
@@ -618,7 +642,10 @@ async function startScenario(input: {
           networkGit,
           signal: new AbortController().signal,
           onEvent(event: AcpEvent) {
-            if (event.type === "progress" && event.text.includes("GitHub"))
+            if (
+              event.type === "progress" &&
+              (event.text.includes("GitHub") || event.text.includes("saved work"))
+            )
               thoughts.push(event.text);
           },
         })

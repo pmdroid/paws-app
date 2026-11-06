@@ -1445,11 +1445,18 @@ export function createRemoteAgentRunner(options: {
                     },
                   );
                 if (!(await startsOn(mainSha ? [head, mainSha] : [head]))) {
-                  if (!savedMain || savedMain === mainSha || !(await startsOn([savedMain])))
-                    throw new Error(
-                      `Paws could not restore the saved work at ${saved.slice(0, 7)}: it is on neither ${restoreCheckpoint.branch} at ${head.slice(0, 7)} nor main`,
+                  if (savedMain && savedMain !== mainSha && (await startsOn([savedMain])))
+                    mainSha = savedMain;
+                  else {
+                    journal(
+                      `item ${itemId} starts from ${head} instead of its checkpoint ${saved}: it is on neither ${restoreCheckpoint.branch} at ${head.slice(0, 7)} nor main`,
                     );
-                  mainSha = savedMain;
+                    await emit({
+                      type: "progress",
+                      text: `The saved work at ${saved.slice(0, 8)} is on neither ${restoreCheckpoint.branch} at ${head.slice(0, 8)} nor main, so this run continues from ${head.slice(0, 8)} and the agent redoes the rest.\n`,
+                    });
+                    restoreCheckpoint = undefined;
+                  }
                 }
               }
               const generation =
