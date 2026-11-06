@@ -881,20 +881,12 @@ test("Stop fences pending answer plans and prevents completed session metadata",
     expect(
       metadata.filter((row) => row.delivery !== "stop").every((row) => row.status === "dropped"),
     ).toBe(true);
-    expect(metadata.filter((row) => row.delivery === "stop").map((row) => row.payload)).toEqual([
-      expect.objectContaining({
-        summary: "ENG-1: stopped",
-        plan: [
-          { content: "Read the reference", status: "completed" },
-          { content: "Prepare the requested result", status: "canceled" },
-        ],
-      }),
-    ]);
+    expect(metadata.filter((row) => row.delivery === "stop")).toEqual([]);
     expect(f.tracker.sessionUpdates.some((update) => update.summary === "ENG-1: completed")).toBe(
       false,
     );
     expect(getWorkItem(f.db, getLinearSession(f.db, "session")!.activeItemId!)?.state).toBe(
-      "cancelled",
+      "paused",
     );
   } finally {
     f.db.close();

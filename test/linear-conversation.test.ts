@@ -378,7 +378,7 @@ test("Stop wins over an interrupted turn, quiesces descendants and keeps complet
     await Bun.sleep(10);
     expect(duplicateFinished).toBe(false);
     await Promise.all([tick, update, stop, duplicate]);
-    expect(f.item().state).toBe("cancelled");
+    expect(f.item().state).toBe("paused");
     expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
     expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
     expect(await tickWithRestarts(f.jobs, f.orchestrator, f.db)).toBeNull();
@@ -622,7 +622,7 @@ test("an unhandled Stop replay after reopen preserves a newer explicit task", as
   }
 });
 
-test("a failed Stop transaction leaves no receipt, generation or partial cancellation", async () => {
+test("a failed Stop transaction leaves no receipt, generation or partial pause", async () => {
   const f = fixture(null, false, true);
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
@@ -635,7 +635,7 @@ test("a failed Stop transaction leaves no receipt, generation or partial cancell
       emitted += 1;
     });
     f.db.exec(`CREATE TRIGGER reject_stop BEFORE UPDATE ON work_item
-      WHEN NEW.state = 'cancelled' AND NEW.position = 1
+      WHEN NEW.state = 'paused' AND NEW.position = 1
       BEGIN SELECT RAISE(ABORT, 'stop rejected'); END`);
     const stop = event("retry-stop", null, 2, "stop");
     await expect(f.orchestrator.onLinearEvent(stop)).rejects.toThrow("Could not stop Linear task");
@@ -647,7 +647,7 @@ test("a failed Stop transaction leaves no receipt, generation or partial cancell
     expect(f.db.query("SELECT * FROM linear_stop_receipt").all()).toEqual([]);
     f.db.exec("DROP TRIGGER reject_stop");
     await f.orchestrator.onLinearEvent(stop);
-    expect(f.item().state).toBe("cancelled");
+    expect(f.item().state).toBe("paused");
     expect(emitted).toBe(2);
     expect(f.db.query("SELECT * FROM linear_stop_receipt").all()).toHaveLength(1);
   } finally {

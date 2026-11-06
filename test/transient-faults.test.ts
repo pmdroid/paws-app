@@ -321,7 +321,7 @@ test("a capacity error after losing the job lease does not leave an active run",
   expect(result.implementations, result.detail).toBe(0);
 }, 60_000);
 
-test("Stop while the task waits for a busy runner cancels it", async () => {
+test("Stop while the task waits for a busy runner pauses it", async () => {
   const clock = new FakeClock(Date.now());
   const result = await runWithFault({
     error: busyRunner,
@@ -329,7 +329,7 @@ test("Stop while the task waits for a busy runner cancels it", async () => {
     clock,
     stopAtMs: 2 * HOUR_MS,
   });
-  expect(result.state, result.detail).toBe("cancelled");
+  expect(result.state, result.detail).toBe("paused");
   expect(result.elapsedMs, result.detail).toBeLessThan(2 * HOUR_MS + 5 * 60_000);
   expect(
     result.jobs.filter((job) => job.startsWith(`${JOB_KIND.resume}:pending`)),
@@ -498,7 +498,9 @@ async function runWithFault(fault: {
     let stopped = false;
     while (
       Date.now() < deadline &&
-      !["merge_queue", "merged", "failed", "cancelled"].includes(stateOf(db, "ENG-7") ?? "") &&
+      !["merge_queue", "merged", "failed", "cancelled", "paused"].includes(
+        stateOf(db, "ENG-7") ?? "",
+      ) &&
       (fault.untilMs === undefined || clock.now() - startedAt < fault.untilMs)
     ) {
       if (leaseLost) break;

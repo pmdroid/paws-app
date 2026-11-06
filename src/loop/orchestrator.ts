@@ -1268,7 +1268,8 @@ export class Orchestrator {
     const session = recordLinearSessionEvent(this.db, event, this.now());
     const taskKey = session ? sessionTaskKey(this.db, session) : null;
     if (session?.stoppedAt !== null && session?.stoppedAt !== undefined) return;
-    if (session && !startFresh && (await this.resumeRedelegatedItem(event.issueId, session))) return;
+    if (session && !startFresh && (await this.resumeRedelegatedItem(event.issueId, session)))
+      return;
     let result: IntakeResult;
     try {
       result = await this.intakeLinearTask(event.issueId, event.sessionId, taskKey ?? undefined, {
@@ -7474,11 +7475,10 @@ export class Orchestrator {
       const item = getWorkItem(this.db, paused.id);
       if (item?.state !== "paused" || item.sessionKey !== paused.sessionKey || !isCurrent())
         return false;
-      this.db.run("UPDATE work_item SET session_key = ? WHERE delegation_id = ? AND session_key = ?", [
-        session.sessionId,
-        paused.delegationId,
-        paused.sessionKey,
-      ]);
+      this.db.run(
+        "UPDATE work_item SET session_key = ? WHERE delegation_id = ? AND session_key = ?",
+        [session.sessionId, paused.delegationId, paused.sessionKey],
+      );
       bindLinearSessionTask(this.db, session.sessionId, paused.delegationId);
       activateLinearItem(this.db, session.sessionId, item.id);
       cancelItemQuestions(this.db, item.id, this.now());
@@ -8371,6 +8371,7 @@ export class Orchestrator {
     effects: LinkAskEffects = {},
   ): Promise<"answered" | "forbidden" | "rejected"> {
     const itemId = getQuestion(this.db, input.questionId)?.itemId;
+    if (itemId && getWorkItem(this.db, itemId)?.state === "paused") return "rejected";
     const outcome = decideLinkAsk(
       this.db,
       { ...input, now: this.now() },

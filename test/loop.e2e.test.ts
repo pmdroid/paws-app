@@ -261,7 +261,18 @@ test.each([false, true, "cap"] as const)(
       expect(run?.summary).toContain("Step 1 of 1: Repair missing output.");
       expect(JSON.stringify(tracker.progress)).not.toContain("PRIVATE_FIX_REASONING");
       expect(JSON.stringify(parsed.response)).not.toContain("PRIVATE_FIX_REASONING");
-      if (stop === true) await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
+      if (stop === true) {
+        await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
+        await running;
+        const item = listWorkItems(db)[0]!;
+        expect(getWorkItem(db, item.id)?.state, debug(layout, db)).toBe("paused");
+        await orchestrator.onLinearEvent(linearEvent("prompted", "Continue the repair", null));
+        expect(getWorkItem(db, item.id)?.state).toBe("queued");
+        expect(
+          listJobs(db).findLast((job) => job.queue === JOB_KIND.resume)?.payload,
+        ).toMatchObject({ reason: "follow_up", handoff: "Continue the repair" });
+        running = tickWithRestarts(jobs, orchestrator, db);
+      }
       if (stop === "cap") {
         const item = listWorkItems(db)[0]!;
         configureWorkItem(db, item.id, { limits: { fixes: 1_000 } });
@@ -285,7 +296,7 @@ test.each([false, true, "cap"] as const)(
       if (release) writeFileSync(release, "go");
       await running;
       while (outbox.tick().length > 0) await outbox.idle();
-      expect(stateOf(db, "ENG-302")).toBe(stop === true ? "cancelled" : "merge_queue");
+      expect(stateOf(db, "ENG-302")).toBe("merge_queue");
     } finally {
       writeFileSync(release, "go");
       await running;
@@ -1003,7 +1014,7 @@ test("the demo delegation merges three pull requests with gh auth", async () => 
 }, 120_000);
 
 test.each(["claude", "codex", "grok"])(
-  "stop from Linear cancels the live %s run",
+  "stop from Linear pauses the live %s run",
   async (implementer) => {
     const layout = await repoLayout("paws-e2e-");
     await writeFile(
@@ -1057,16 +1068,14 @@ test.each(["claude", "codex", "grok"])(
     expect(tracker.progress.some((update) => update.body.includes("Working on ENG-9"))).toBe(true);
     await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
     await running;
-    expect(stateOf(db, "ENG-9")).toBe("cancelled");
+    expect(stateOf(db, "ENG-9")).toBe("paused");
+    expect(listRuns(db).some((run) => run.status === "active")).toBe(false);
     // A stop from Linear leaves the issue's status to people.
     expect(tracker.statuses.filter((update) => update.stateType === "canceled")).toEqual([]);
     expect(tracker.progress.at(-1)).toMatchObject({
       kind: "response",
-      body: expect.stringMatching(
-        /^Stopped\. Branch paws\/eng-9\S* has no commits; no PR was opened\. Re-delegate to continue\.$/,
-      ),
+      body: "Paused. Reply here or re-delegate to continue.",
     });
-    expect(tracker.sessionUpdates.at(-1)).toMatchObject({ summary: "ENG-9: stopped" });
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
     const agents = listRuns(db).map((run) => run.agent);
     db.close();
@@ -4568,9 +4577,9 @@ for (const race of ["token", "merge", "followup"] as const) {
           : linearEvent("prompted", null, "stop"),
       );
       if (race === "token")
-        for (let i = 0; i < 1_000 && getWorkItem(db, item.id)?.state !== "cancelled"; i++)
+        for (let i = 0; i < 1_000 && getWorkItem(db, item.id)?.state !== "paused"; i++)
           await Bun.sleep(1);
-      if (race === "token") expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
+      if (race === "token") expect(getWorkItem(db, item.id)?.state).toBe("paused");
       else if (race === "merge") {
         await stopped;
         expect(getWorkItem(db, item.id)).toMatchObject({
@@ -4581,7 +4590,7 @@ for (const race of ["token", "merge", "followup"] as const) {
       release.resolve();
       await publication;
       await stopped;
-      expect(getWorkItem(db, item.id)?.state).toBe(race === "token" ? "cancelled" : "merged");
+      expect(getWorkItem(db, item.id)?.state).toBe(race === "token" ? "paused" : "merged");
       if (race === "merge") {
         db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.command]);
         await tickWithRestarts(jobs, orchestrator, db);

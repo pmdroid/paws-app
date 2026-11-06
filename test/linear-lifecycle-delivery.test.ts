@@ -352,7 +352,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
     expect(listOutbox(db).find((entry) => entry.id === row.id)?.status).toBe("sent");
     await orchestrator.onLinearEvent(stop);
     expect(ids).toEqual([id, id]);
-    expect(listOutbox(db).map((entry) => entry.op)).toEqual(["activity", "linear.session.plan"]);
+    expect(listOutbox(db).map((entry) => entry.op)).toEqual(["activity"]);
   } finally {
     await orchestrator.shutdown();
     await outbox.idle();

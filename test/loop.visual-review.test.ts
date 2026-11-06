@@ -231,7 +231,7 @@ test("the reminder is posted once after 24 hours, without buttons", async () => 
   }
 }, 90_000);
 
-test("stopping the task ends the wait", async () => {
+test("a Linear stop holds the review until the task resumes", async () => {
   const f = await pausedForReview();
   try {
     const open = findOpenQuestion(f.db, "ses_1")!;
@@ -240,8 +240,8 @@ test("stopping the task ends the wait", async () => {
       body: null,
       signal: "stop",
     });
-    expect(listWorkItems(f.db)[0]!.state).toBe("cancelled");
-    expect(getQuestion(f.db, open.id)?.status).toBe("cancelled");
+    expect(listWorkItems(f.db)[0]!.state).toBe("paused");
+    expect(getQuestion(f.db, open.id)?.status).toBe("open");
 
     f.advance(VISUAL_REVIEW_REMINDER_MS);
     await f.tickAll();

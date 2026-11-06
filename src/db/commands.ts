@@ -170,11 +170,7 @@ export function applyLinearCommand(
 
 const LINEAR_PAUSED_RESPONSE = "Paused. Reply here or re-delegate to continue.";
 
-function pauseFromLinear(
-  db: Database,
-  item: WorkItemRecord,
-  now: number,
-): { applied: boolean } {
+function pauseFromLinear(db: Database, item: WorkItemRecord, now: number): { applied: boolean } {
   if (item.state !== "paused") {
     try {
       immediate(db, () => {
