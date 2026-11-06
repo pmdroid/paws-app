@@ -1958,6 +1958,7 @@ export class Orchestrator {
     });
     jobs.register(JOB_KIND.closeStoppedPull, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
+      const comment = readString(job.payload, "comment");
       const item = itemId ? getWorkItem(this.db, itemId) : null;
       if (!item || item.state !== "cancelled" || getConfirmedRemoteMerge(this.db, item.id)) return;
       // A re-delegation that took over the branch owns its pull request now.
@@ -1982,6 +1983,7 @@ export class Orchestrator {
         branch: worktreeBranch(item),
         ...this.gitHubCredentials(github),
         signal: context.signal,
+        ...(comment ? { comment } : {}),
       });
     });
     jobs.register(JOB_KIND.pullReview, async (job, context) => {

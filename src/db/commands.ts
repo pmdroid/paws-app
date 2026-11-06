@@ -50,8 +50,10 @@ export function applyLinearCommand(
    * `keepPullRequest`: the stop leaves the item's pull request open, as Stop on the Risk card does.
    * A stop from Linear (stop button, `/paws stop`, an archived session) keeps it unless the caller
    * passes `false`, as a fresh re-delegation does.
+   * `closePullRequest`: the cancel closes the item's open pull request whatever its state, and the
+   * close job first posts `comment` on it, as an issue canceled in Linear does.
    */
-  options: { keepPullRequest?: boolean; responseOnly?: boolean } = {},
+  options: CommandOptions = {},
 ): { applied: boolean; deferred?: boolean } {
   return immediate(db, () => {
     const item = getWorkItem(db, command.itemId);
@@ -112,23 +114,28 @@ export function applyLinearCommand(
     const keepPullRequest =
       options.keepPullRequest ?? (command.type === "stop" && command.source === "linear");
     const closing =
-      !keepPullRequest &&
-      (item.state === "merge_queue" ||
-        db
-          .query(
-            "SELECT 1 FROM job WHERE (queue=? OR queue LIKE ?) AND json_extract(payload,'$.itemId')=? LIMIT 1",
-          )
-          .get(JOB_KIND.merge, `${JOB_KIND.merge}.%`, item.id) !== null);
+      options.closePullRequest !== undefined ||
+      (!keepPullRequest &&
+        (item.state === "merge_queue" ||
+          db
+            .query(
+              "SELECT 1 FROM job WHERE (queue=? OR queue LIKE ?) AND json_extract(payload,'$.itemId')=? LIMIT 1",
+            )
+            .get(JOB_KIND.merge, `${JOB_KIND.merge}.%`, item.id) !== null));
     if (closing)
       enqueueJobOnce(db, {
         queue: JOB_KIND.closeStoppedPull,
         jobKey: `close-stopped:${item.id}:${getWorkItem(db, item.id)!.version}`,
-        payload: { itemId: item.id },
+        payload: {
+          itemId: item.id,
+          ...(options.closePullRequest ? { comment: options.closePullRequest.comment } : {}),
+        },
         now,
       });
 
     const sessionId = item.sessionKey ?? item.id;
-    const closed = response?.startsWith("Closed:") === true;
+    const closed =
+      response?.startsWith("Closed:") === true || options.closePullRequest !== undefined;
     const generation = !closed
       ? stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now)
       : advanceOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, { now });
@@ -168,6 +175,12 @@ export function applyLinearCommand(
     return { applied: true };
   });
 }
+
+type CommandOptions = {
+  keepPullRequest?: boolean;
+  responseOnly?: boolean;
+  closePullRequest?: { comment: string };
+};
 
 const LINEAR_PAUSED_RESPONSE = "Paused. Reply here or re-delegate to continue.";
 
@@ -242,7 +255,7 @@ export function drainCommands(db: Database, bus: CommandBus, now = Date.now()): 
     const command = parseLinearCommand(job.payload);
     const saved = job.payload as {
       response?: string;
-      options?: { keepPullRequest?: boolean; responseOnly?: boolean };
+      options?: CommandOptions;
     };
     const result =
       command !== null ? applyLinearCommand(db, command, now, saved.response, saved.options) : null;
