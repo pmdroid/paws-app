@@ -451,14 +451,14 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       persist();
       continue;
     }
-    if (step.type === "post_update") {
+    if (step.type === "post_update" || step.type === "reply") {
       const server = state.mcpServers[0];
       state.updates ??= [];
       try {
         if (!server?.command) throw new Error("no mcp server");
         state.updates.push({
           ok: true,
-          text: await callHostTool(server, "post_update", { text: step.text }),
+          text: await callHostTool(server, step.type, { text: step.text }),
         });
       } catch (error) {
         state.updates.push({

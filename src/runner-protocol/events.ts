@@ -91,6 +91,7 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
     /** Set by the runner itself, so Paws posts it even inside the update interval. */
     notice: z.literal(true).optional(),
   }),
+  z.strictObject({ type: z.literal("reply"), text: z.string().min(1).max(4000) }),
   z.strictObject({ type: z.literal("activity"), update: RunnerActivitySchema }),
   /** Whether the runner continued a moved run's saved session, and why not. */
   z.strictObject({

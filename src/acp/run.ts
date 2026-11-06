@@ -202,6 +202,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       options.updatePlan ||
       options.pullRequest ||
       options.postUpdate ||
+      options.reply ||
       options.publishArtifact) &&
     options.readOnly !== true
       ? await installCloseoutStopHook({
@@ -379,6 +380,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       options.updatePlan ||
       options.pullRequest ||
       options.postUpdate ||
+      options.reply ||
       options.publishArtifact
     ) {
       bridge = await startAskTeamBridge({
@@ -387,6 +389,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         updatePlan: options.updatePlan,
         pullRequest: options.pullRequest,
         postUpdate: options.postUpdate,
+        reply: options.reply,
         publishArtifact: options.publishArtifact,
         ...(options.closeoutProgress ? { closeoutProgress: options.closeoutProgress } : {}),
         artifactLimits: options.artifactLimits,
