@@ -104,7 +104,11 @@ export async function probeRunnerDaemon(
       if (path === "/v1/heartbeat") {
         const body = await request.json();
         heartbeatBodies.push(body);
-        if (/"waiting"|"runtimes"|"agents"|"repositories"|"accounts"|"conversationConcurrency"/.test(JSON.stringify(body)))
+        if (
+          /"waiting"|"runtimes"|"agents"|"repositories"|"accounts"|"conversationConcurrency"/.test(
+            JSON.stringify(body),
+          )
+        )
           return Response.json({}, { status: 403 });
         return deliver(heartbeatResponse);
       }
