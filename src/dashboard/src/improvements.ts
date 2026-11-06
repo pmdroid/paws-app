@@ -329,7 +329,41 @@ export type RetroHistoryEntry = {
   fullAccess: boolean;
   repositories: string[];
   generation: Partial<RetroGenerationView> & { state: RetroGenerationView["state"] | null };
-  items: { visible: number; toReview: number };
+  items: {
+    visible: number;
+    toReview: number;
+    links: {
+      itemId: string;
+      improvementId: string;
+      reviewState: string | null;
+      issue: { identifier: string | null; url: string | null } | null;
+    }[];
+  };
+  /** The rest is null without access to every repository and session the retro includes. */
+  settingsRevision: number | null;
+  /** The agent, model and effort frozen on the retro; a null effort is the agent's default. */
+  profile: { agent: string | null; model: string | null; effort: string | null } | null;
+  digest: { sessions: number; counted: number; context: number } | null;
+  patterns: number | null;
+  evidence: "complete" | "incomplete" | "expired" | null;
+  artifacts: Record<RetroArtifact, "stored" | "unavailable" | "none"> | null;
+};
+
+export type RetroArtifact = "digest" | "report" | "prompt";
+
+/** An item's follow-through now. It is separate from what the frozen report claimed. */
+export type RetroCurrentOutcome = {
+  improvementId: string;
+  attention: string;
+  issue: {
+    identifier: string | null;
+    url: string | null;
+    confirmedAt: number;
+    syncedAt: number | null;
+    fresh: boolean;
+  } | null;
+  implementation: { state: string; at: number | null };
+  verification: { state: string; at: number | null };
 };
 
 export type RetroHistory = {
@@ -352,6 +386,33 @@ export type RetroReportResponse = {
   retro: RetroHistoryEntry;
   report: RetroReportView | null;
   coverageGaps: { kind: string; repository: string | null; detail: string | null }[] | null;
+  /** How much of the digest the bounded prompt gave the agent. Full access only; null if unknown. */
+  promptCoverage: {
+    maxChars: number | null;
+    sessionsIncluded: number;
+    sessionsOmitted: number;
+    countedIncluded: number;
+    countedOmitted: number;
+    contextIncluded: number;
+    contextOmitted: number;
+  } | null;
+  /** Keyed by report item id; null when the item's improvement is not in the reader's inbox. */
+  current: Record<string, RetroCurrentOutcome | null>;
+};
+
+export type RetroItemEvidence = {
+  retroId: string;
+  itemId: string;
+  improvementId: string;
+  evidence: {
+    evidenceId: string;
+    repository: string;
+    sourceKind: string;
+    sourceRef: string;
+    occurredAt: number;
+    excerpt: string;
+    identifier: string | null;
+  }[];
 };
 
 export type RetroSchedule = RetroScheduleStatus & { canEdit: boolean; canRun: boolean };
@@ -383,8 +444,11 @@ export function parseImprovementQuery(search: string | URLSearchParams): Improve
 export const improvementPath = (id: string, action = "") =>
   `${IMPROVEMENTS_API_PATH}/${encodeURIComponent(id)}${action ? `/${action}` : ""}`;
 
-export const retroReportPath = (retroId: string) =>
-  `/api/retros/reports/${encodeURIComponent(retroId)}`;
+export const retroReportPath = (retroId: string, file?: RetroArtifact) =>
+  `/api/retros/reports/${encodeURIComponent(retroId)}${file ? `/${file}` : ""}`;
+
+export const retroEvidencePath = (retroId: string, itemId: string) =>
+  `${retroReportPath(retroId)}/items/${encodeURIComponent(itemId)}/evidence`;
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -471,7 +535,15 @@ export const parseRetroReport = (body: unknown) =>
     (b) =>
       record(b.retro) &&
       typeof b.retro.id === "string" &&
+      record(b.current) &&
       (b.report === null || (record(b.report) && Array.isArray(b.report.items))),
+  );
+
+export const parseRetroItemEvidence = (body: unknown) =>
+  shaped<RetroItemEvidence>(
+    body,
+    "retro item evidence",
+    (b) => typeof b.itemId === "string" && Array.isArray(b.evidence),
   );
 
 export const parseRetroSchedule = (body: unknown) =>

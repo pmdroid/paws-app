@@ -1,5 +1,6 @@
 import { improvementStage, stageAllows } from "./improvement-stage";
 import {
+  DEFAULT_IMPROVEMENT_FILTER,
   IMPROVEMENT_LIFECYCLES,
   improvementQuery,
   type AttentionState,
@@ -10,7 +11,11 @@ import {
   type ImprovementItem,
   type ImprovementLifecycle,
   type ImprovementList,
+  type RetroArtifact,
+  type RetroCurrentOutcome,
   type RetroHistory,
+  type RetroHistoryEntry,
+  type RetroItemEvidence,
   type RetroReportResponse,
   type RetroSchedule,
 } from "../improvements";
@@ -37,6 +42,11 @@ export type ImprovementsView = {
   reportState: "loading" | "ready" | "missing" | "error";
   history: RetroHistory | null;
   historyError: string | null;
+  /** The report item the address selects (`?item=`), kept across reload and Back/Forward. */
+  item: string | null;
+  itemEvidence: RetroItemEvidence | null;
+  itemEvidenceState: "idle" | "loading" | "ready" | "missing" | "error";
+  download: { file: RetroArtifact | null; error: string | null };
   expanded: boolean;
   choice: DecisionChoice | null;
   drafts: Record<string, string>;
@@ -667,17 +677,87 @@ function renderHistoryOf(
     .join("")}</ul></section>`;
 }
 
+const historyHref = () => esc(routeHref({ view: "improvements", tab: "history", id: null }));
+
+function reportItemHref(retroId: string, itemId: string): string {
+  return `${routeHref({ view: "improvements", tab: "report", id: retroId })}?item=${encodeURIComponent(itemId)}`;
+}
+
+function profileText(retro: RetroHistoryEntry): string | null {
+  if (retro.profile === null || retro.settingsRevision === null) return null;
+  const { agent, model, effort } = retro.profile;
+  return `Settings revision ${retro.settingsRevision} · ${agent ?? "Unknown agent"} · ${model ?? "agent default model"} · ${effort ? `${effort} effort` : "default effort"}`;
+}
+
+const ARTIFACT_LABEL: Record<RetroArtifact, string> = {
+  digest: "Download digest",
+  report: "Download report",
+  prompt: "Download rendered prompt",
+};
+
+const RETENTION =
+  "Paws keeps these files with the retro but sets no retention period, so a file can still go missing; this page says when one has.";
+
+function renderDownloads(view: ImprovementsView, response: RetroReportResponse): string {
+  const { retro } = response;
+  const error = view.download.error
+    ? `<p class="checkout-error" role="alert" data-retro-download-error="">${esc(view.download.error)}</p>`
+    : "";
+  if (!retro.fullAccess || retro.artifacts === null)
+    return `<section class="improvement-part" aria-labelledby="retro-files"><h3 id="retro-files">Frozen files</h3><p data-retro-downloads="denied">Downloads need access to every repository and session this retro includes. You can read part of it, so Paws shows only the items you can read and no download.</p>${error}</section>`;
+  const artifacts = retro.artifacts;
+  const button = (file: RetroArtifact) => {
+    const state = artifacts[file];
+    if (state !== "stored")
+      return `<span class="muted" data-retro-artifact="${file}">${esc(ARTIFACT_LABEL[file].replace("Download ", ""))}: ${state === "unavailable" ? "the stored file is unavailable" : "never stored"}</span>`;
+    const busy = view.download.file === file;
+    return `<button class="btn" type="button" data-improvement-action="download" data-file="${file}"${view.download.file !== null ? " disabled" : ""}>${busy ? "Downloading…" : ARTIFACT_LABEL[file]}</button>`;
+  };
+  const windows = response.report?.windows ?? [];
+  const window = windows.length
+    ? windows
+        .map((w) => `${esc(w.repository)} ${esc(utcTime(w.start))} to ${esc(utcTime(w.end))}`)
+        .join("; ")
+    : esc(period(retro.windowStart, retro.windowEnd));
+  const digest = retro.digest;
+  const coverage = digest
+    ? `${digest.sessions} session${digest.sessions === 1 ? "" : "s"}, ${digest.counted} counted record${digest.counted === 1 ? "" : "s"}${digest.context ? `, and ${digest.context} earlier record${digest.context === 1 ? "" : "s"} included only as bounded prompt context, not counted` : ""}`
+    : "no digest was saved";
+  const evidence =
+    retro.evidence === "expired"
+      ? " Some source evidence had expired before Paws collected it; the digest says what is missing and Paws does not fill it in from current sessions."
+      : retro.evidence === "incomplete"
+        ? " Some source evidence was unavailable when Paws collected it; see the coverage gaps."
+        : "";
+  return `<section class="improvement-part" aria-labelledby="retro-files"><h3 id="retro-files">Frozen files</h3><p>The digest is the original evidence saved when the retro ran, not rebuilt from current sessions. Window: ${window}. Coverage: ${esc(coverage)}.${esc(evidence)}</p>${promptCoverageText(response)}<p class="muted">${esc(RETENTION)}</p><div class="row" data-retro-downloads="full">${(["digest", "report", "prompt"] as const).map(button).join("")}</div>${error}</section>`;
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** What the agent was actually given, kept apart from the full digest's coverage above it. */
+function promptCoverageText(response: RetroReportResponse): string {
+  const p = response.promptCoverage;
+  if (p === null)
+    return `<p data-retro-prompt-coverage="unknown">Paws did not save how much of this digest the prompt included, so the agent may have seen less than the full digest.</p>`;
+  const omitted = p.sessionsOmitted + p.countedOmitted + p.contextOmitted;
+  const given = `The agent received a bounded view of the digest${p.maxChars ? ` (at most ${p.maxChars} characters)` : ""}: ${plural(p.sessionsIncluded, "session")}, ${plural(p.countedIncluded, "counted record")} and ${plural(p.contextIncluded, "context record")}.`;
+  const left = omitted
+    ? ` Left out of the prompt but kept in the digest: ${plural(p.sessionsOmitted, "session")}, ${plural(p.countedOmitted, "counted record")} and ${plural(p.contextOmitted, "context record")}. The digest's totals still count them.`
+    : " Nothing was left out.";
+  return `<p data-retro-prompt-coverage="${omitted ? "bounded" : "complete"}">${esc(given + left)}</p>`;
+}
+
 function renderReport(view: ImprovementsView): string {
-  const back = `<a class="btn" href="${esc(routeHref({ view: "improvements", tab: "history", id: null }))}">All retros</a>`;
+  const back = `<a class="btn" href="${historyHref()}">All retros</a>`;
   if (view.reportState === "missing")
-    return `${back}<div class="empty" role="status"><div>Retro not available</div>This retro is not available to you, or it does not exist. <a href="${esc(routeHref({ view: "improvements", tab: "history", id: null }))}">Return to the history</a>.</div>`;
+    return `${back}<div class="empty" role="status"><div>Retro not available</div>This retro is not available to you, or it does not exist. <a href="${historyHref()}">Return to the history</a>.</div>`;
   if (view.report === null)
     return view.reportState === "error"
       ? `${back}<div class="empty" role="status"><div>Retro unavailable</div>${esc(view.error ?? "")}<div><button class="btn primary" type="button" data-improvement-action="reload">Retry</button></div></div>`
       : `${back}<div class="empty" role="status">Loading the retro…</div>`;
   const { retro, report, coverageGaps } = view.report;
   const frozen = retro.fullAccess ? `<div data-retro-frozen="${esc(retro.id)}"></div>` : "";
-  const head = `<div class="col"><h2>${esc(period(retro.windowStart, retro.windowEnd))}</h2><p class="muted">${retro.origin === "manual" ? "Manual retro" : "Scheduled retro"} · ${esc(retro.repositories.join(", "))}${retro.publishedAt ? ` · published ${esc(utcTime(retro.publishedAt))}` : ""}${retro.fullAccess ? "" : " · showing only what you can read"}</p></div>`;
+  const head = `<div class="col"><h2 id="retro-report-heading" tabindex="-1">${esc(period(retro.windowStart, retro.windowEnd))}</h2><p class="muted">${retro.origin === "manual" ? "Manual retro" : "Scheduled retro"} · ${esc(retro.repositories.join(", "))}${retro.publishedAt ? ` · published ${esc(utcTime(retro.publishedAt))}` : ""}${retro.fullAccess ? "" : " · showing only what you can read"}</p></div>`;
   if (report === null) {
     const state = retro.generation.state ?? "queued";
     const recover =
@@ -690,7 +770,7 @@ function renderReport(view: ImprovementsView): string {
       retro.generation.error ??
       retro.generation.detail ??
       "The report appears here once generated.";
-    return `${back}${head}${frozen}<div class="card" role="status"><div class="row">${tag(GENERATION_LABEL[state] ?? state, state === "failed" ? "err" : state === "generating" ? "now" : "warn")}</div><p>${esc(detail)}</p><p class="muted">The evidence is saved. Waiting for a runner spends no agent time.</p><div class="row">${recover}</div></div>`;
+    return `${back}${head}${frozen}<div class="card" role="status"><div class="row">${tag(GENERATION_LABEL[state] ?? state, state === "failed" ? "err" : state === "generating" ? "now" : "warn")}</div><p>${esc(detail)}</p><p class="muted">The evidence is saved. Waiting for a runner spends no agent time.</p><div class="row">${recover}</div></div>${renderDownloads(view, view.report)}`;
   }
   const windows = report.windows.length
     ? `<p class="muted">Reporting window: ${report.windows.map((w) => `${esc(w.repository)} ${esc(utcTime(w.start))} to ${esc(utcTime(w.end))}`).join("; ")}. Frozen when the retro ran.</p>`
@@ -698,6 +778,11 @@ function renderReport(view: ImprovementsView): string {
   const numbers = report.numbers?.length
     ? `<ul class="row improvement-numbers" aria-label="Numbers">${report.numbers.map((n) => `<li><b>${n.value}</b> ${esc(n.label)}</li>`).join("")}</ul>`
     : "";
+  const selected = view.item;
+  const missingItem =
+    selected !== null && !report.items.some((item) => item.itemId === selected)
+      ? `<div class="empty" role="status" tabindex="-1" data-retro-item-missing=""><div>Item not available</div>This report has no item you can read with that id. <a href="${esc(routeHref({ view: "improvements", tab: "report", id: retro.id }))}">Show the whole report</a>.</div>`
+      : "";
   const items = report.items.length
     ? `<ol class="improvement-report-items">${report.items.map((item) => reportItem(view, item)).join("")}</ol>`
     : `<div class="empty" role="status"><div>No recurring patterns</div>This retro found no pattern repeated across sessions. Nothing needs review from it.</div>`;
@@ -708,24 +793,93 @@ function renderReport(view: ImprovementsView): string {
     ? `<section class="improvement-part"><h3>Notes</h3><ul>${report.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></section>`
     : "";
   const gaps = coverageGaps?.length
-    ? `<section class="improvement-part"><h3>Coverage gaps</h3><ul>${coverageGaps.map((g) => `<li>${esc(g.kind)}${g.repository ? ` · ${esc(g.repository)}` : ""}${g.detail ? `: ${esc(g.detail)}` : ""}</li>`).join("")}</ul></section>`
+    ? `<section class="improvement-part"><h3>Coverage gaps</h3><ul>${coverageGaps.map((g) => `<li>${esc(GAP_LABEL[g.kind] ?? g.kind)}${g.repository ? ` · ${esc(g.repository)}` : ""}${g.detail ? `: ${esc(g.detail)}` : ""}</li>`).join("")}</ul></section>`
     : "";
-  return `${back}${head}${frozen}${windows}${numbers}<section class="improvement-part" aria-labelledby="report-patterns"><h3 id="report-patterns">Patterns (${report.items.length} of at most 5)</h3>${items}</section>${worked}${notes}${gaps}`;
+  return `${back}${head}${frozen}${windows}${numbers}${missingItem}<section class="improvement-part" aria-labelledby="report-patterns"><h3 id="report-patterns">Patterns (${report.items.length} of at most 5)</h3><p class="muted">Each pattern shows what the report claimed when it ran. "Now" shows the improvement's current outcome separately; it never rewrites the report.</p>${items}</section>${worked}${notes}${gaps}${renderDownloads(view, view.report)}`;
+}
+
+const GAP_LABEL: Record<string, string> = {
+  missing_artifact: "A source file was missing",
+  hash_mismatch: "A source file did not match its saved hash",
+  retention_gap: "Source evidence had expired",
+  source_unavailable: "A source was unavailable",
+};
+
+function currentOutcome(current: RetroCurrentOutcome | null | undefined): string {
+  if (current === undefined) return "";
+  if (current === null)
+    return `<div class="improvement-now" data-retro-now="inaccessible"><b>Now</b> <span class="muted">You cannot see this improvement's current outcome.</span></div>`;
+  const attention = current.attention as AttentionState;
+  const issue = current.issue
+    ? `${issueLink(current.issue)} <span class="muted">${current.issue.syncedAt ? `last read from Linear ${esc(utcTime(current.issue.syncedAt))}` : "not read from Linear yet"}${current.issue.fresh ? "" : " · not current"}</span>`
+    : `<span class="muted">No confirmed issue</span>`;
+  return `<div class="improvement-now col" data-retro-now="${esc(current.attention)}"><div class="row"><b>Now</b>${tag(ATTENTION_LABEL[attention] ?? current.attention, ATTENTION_TONE[attention] ?? "")}${issue}</div><p class="muted">Implementation: ${esc(IMPLEMENTATION_LABEL[current.implementation.state] ?? current.implementation.state)} · Verification: ${esc(VERIFICATION_LABEL[current.verification.state] ?? current.verification.state)}${current.verification.state === "verified" && current.verification.at ? ` ${esc(utcTime(current.verification.at))}` : ""}</p></div>`;
+}
+
+function savedEvidence(view: ImprovementsView, itemId: string): string {
+  if (view.itemEvidenceState === "loading" || view.itemEvidenceState === "idle")
+    return `<p class="muted" role="status">Loading the saved evidence…</p>`;
+  if (view.itemEvidenceState === "missing")
+    return `<p role="status">This item's saved evidence is not available to you.</p>`;
+  if (
+    view.itemEvidenceState === "error" ||
+    view.itemEvidence?.itemId !== itemId ||
+    view.itemEvidence.retroId !== view.report?.retro.id
+  )
+    return `<p role="status">The saved evidence did not load. <button class="btn" type="button" data-improvement-action="reload">Retry</button></p>`;
+  const entries = view.itemEvidence.evidence;
+  return entries.length
+    ? `<ul class="improvement-evidence" aria-label="Saved evidence">${entries.map((e) => `<li><p>${esc(e.excerpt)}</p><span class="muted">${e.identifier ? `<span class="lin-id">${esc(e.identifier)}</span> · ` : ""}${esc(e.repository)} · ${esc(e.sourceKind)} · ${esc(utcTime(e.occurredAt))}</span></li>`).join("")}</ul>`
+    : `<p role="status">Paws saved no excerpt for this item. It does not substitute current session records.</p>`;
 }
 
 function reportItem(
   view: ImprovementsView,
   item: NonNullable<RetroReportResponse["report"]>["items"][number],
 ): string {
+  const retroId = view.report!.retro.id;
+  const selected = view.item === item.itemId;
   const improvement = item.improvement;
   const link = improvement
-    ? `<a class="btn" href="${esc(itemHref(improvement.improvementId, view.filter))}">Open in the inbox</a>${improvement.reviewState ? tag(improvement.reviewState === "needs_review" ? "Needs review" : improvement.reviewState) : ""}`
+    ? `<a class="btn" href="${esc(itemHref(improvement.improvementId, DEFAULT_IMPROVEMENT_FILTER))}">Open in the inbox</a>`
     : "";
+  const inspect = selected
+    ? `<a class="btn" href="${esc(routeHref({ view: "improvements", tab: "report", id: retroId }))}">Hide saved evidence</a>`
+    : `<a class="btn" href="${esc(reportItemHref(retroId, item.itemId))}">Inspect saved evidence</a>`;
   const counts = `${item.counts.sessions} session${item.counts.sessions === 1 ? "" : "s"} · ${item.counts.events} event${item.counts.events === 1 ? "" : "s"}${item.counts.byWorkItem.length ? ` · ${item.counts.byWorkItem.map((w) => `<span class="lin-id">${esc(w.identifier)}</span> ${w.events}`).join(", ")}` : ""}`;
   const prior = item.priorWork.length
-    ? `<p class="muted">Earlier work: ${item.priorWork.map((p) => `${p.issueIdentifier ? `<span class="lin-id">${esc(p.issueIdentifier)}</span>` : "an improvement"} (${esc(p.relation.replaceAll("_", " "))})`).join(", ")}</p>`
+    ? `<p class="muted">Earlier work when it ran: ${item.priorWork.map((p) => `${p.issueIdentifier ? `<span class="lin-id">${esc(p.issueIdentifier)}</span>` : "an improvement"} (${esc(p.relation.replaceAll("_", " "))})`).join(", ")}</p>`
     : "";
-  return `<li class="card col"><div class="row">${tag(item.action.step)}<span class="muted">${esc(item.repository)} / ${esc(item.area)}</span></div><h4>${esc(item.title)}</h4><p>${esc(item.explanation)}</p><p class="muted">${counts}</p><p><b>Proposed change:</b> ${esc(item.action.change)}</p><p><b>Verify:</b> ${esc(item.verification)}</p>${prior}<div class="row">${link}</div></li>`;
+  const evidence = selected
+    ? `<section class="col" aria-labelledby="retro-item-evidence"><h5 id="retro-item-evidence" tabindex="-1">Saved evidence</h5>${savedEvidence(view, item.itemId)}</section>`
+    : "";
+  return `<li class="card col${selected ? " selected" : ""}" data-retro-item="${esc(item.itemId)}"${selected ? ' aria-current="true"' : ""}><div class="row">${tag(item.action.step)}<span class="muted">${esc(item.repository)} / ${esc(item.area)}</span>${improvement?.reviewState ? tag(`Decision: ${improvement.reviewState === "needs_review" ? "needs review" : improvement.reviewState}`) : ""}</div><h4>${esc(item.title)}</h4><p>${esc(item.explanation)}</p><p class="muted">${counts}</p><p><b>Proposed change:</b> ${esc(item.action.change)}</p><p><b>Verify:</b> ${esc(item.verification)}</p>${prior}${currentOutcome(improvement ? view.report!.current[item.itemId] : undefined)}${evidence}<div class="row">${inspect}${link}</div></li>`;
+}
+
+function historyState(retro: RetroHistoryEntry): string {
+  const state = retro.generation.state;
+  if (state !== "ready" && !retro.publishedAt)
+    return tag(GENERATION_LABEL[state ?? "queued"] ?? "Queued", state === "failed" ? "err" : "");
+  if (retro.patterns === 0) return tag("No recurring patterns", "done");
+  return retro.items.toReview
+    ? tag(`${retro.items.toReview} to review`, "warn")
+    : tag(`${retro.items.visible} reviewed`, "done");
+}
+
+function historyNotes(retro: RetroHistoryEntry): string {
+  const notes: string[] = [];
+  if (retro.evidence === "expired") notes.push(tag("Evidence expired", "warn"));
+  else if (retro.evidence === "incomplete") notes.push(tag("Evidence incomplete", "warn"));
+  if (retro.artifacts?.digest === "unavailable") notes.push(tag("Digest unavailable", "err"));
+  if (!retro.fullAccess) notes.push(tag("Partial view"));
+  return notes.join("");
+}
+
+function historyLinks(retro: RetroHistoryEntry): string {
+  const linked = retro.items.links.filter((link) => link.issue !== null);
+  return linked.length
+    ? linked.map((link) => issueLink(link.issue!)).join(" ")
+    : `<span class="muted">None</span>`;
 }
 
 function renderHistory(view: ImprovementsView): string {
@@ -734,23 +888,18 @@ function renderHistory(view: ImprovementsView): string {
       ? `<div class="empty" role="status"><div>History unavailable</div>${esc(view.historyError)}<div><button class="btn primary" type="button" data-improvement-action="reload">Retry</button></div></div>`
       : `<div class="empty" role="status">Loading retro history…</div>`;
   if (!view.history.retros.length)
-    return `<div class="empty" role="status"><div>No retros yet</div>Your first retro reads the recorded sessions of the selected repositories.<div><button class="btn primary" type="button" data-improvement-action="run-retro"${disabled(view)}>Run the first retro</button></div></div>`;
+    return `<div class="empty" role="status"><div>No reports yet</div>No retro has been saved yet. Your first retro reads the recorded sessions of the selected repositories.<div><button class="btn primary" type="button" data-improvement-action="run-retro"${disabled(view)}>Run the first retro</button></div></div>`;
   const rows = view.history.retros
     .map((retro) => {
-      const state = retro.generation.state;
-      const status =
-        state === "ready" || retro.publishedAt
-          ? retro.items.toReview
-            ? tag(`${retro.items.toReview} to review`, "warn")
-            : tag(`${retro.items.visible} reviewed`, "done")
-          : tag(GENERATION_LABEL[state ?? "queued"] ?? "Queued", state === "failed" ? "err" : "");
-      return `<tr><td><a href="${esc(routeHref({ view: "improvements", tab: "report", id: retro.id }))}">${esc(period(retro.windowStart, retro.windowEnd))}</a></td><td class="hide-phone">${esc(retro.repositories.join(", "))}</td><td>${status}</td></tr>`;
+      const href = esc(routeHref({ view: "improvements", tab: "report", id: retro.id }));
+      return `<tr data-retro-row="${esc(retro.id)}"><td><a href="${href}"><b>${esc(period(retro.windowStart, retro.windowEnd))}</b></a><div class="muted">${retro.origin === "manual" ? "Manual" : "Scheduled"} · ${esc(retro.repositories.join(", "))}</div>${profileText(retro) ? `<div class="muted">${esc(profileText(retro)!)}</div>` : ""}</td><td class="hide-phone">${retro.digest ? retro.digest.sessions : `<span class="muted">—</span>`}</td><td class="retro-state"><div class="row">${historyState(retro)}${historyNotes(retro)}</div></td><td class="hide-phone">${historyLinks(retro)}</td></tr>`;
     })
     .join("");
   const more = view.history.nextCursor
     ? `<button class="btn" type="button" data-improvement-action="more-history"${view.busy === "more" ? " disabled" : ""}>Show older retros</button>`
     : "";
-  return `<p class="muted">Each retro keeps its frozen report, window and evidence. ${view.history.total} retro${view.history.total === 1 ? "" : "s"}.</p><table><thead><tr><th>Window</th><th class="hide-phone">Repositories</th><th>Review</th></tr></thead><tbody>${rows}</tbody></table>${more}`;
+  const shown = view.history.retros.length;
+  return `<p class="muted">Saved retros, newest period first. Each retro keeps its frozen report and the digest it was generated from. ${esc(RETENTION)} Showing ${shown} of ${view.history.total} retro${view.history.total === 1 ? "" : "s"}.</p><table><thead><tr><th>Period</th><th class="hide-phone">Sessions</th><th>Review</th><th class="hide-phone">Linked issues</th></tr></thead><tbody>${rows}</tbody></table>${more}`;
 }
 
 function renderSettings(view: ImprovementsView): string {
