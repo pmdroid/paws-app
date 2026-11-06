@@ -9,7 +9,6 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  listOpenQuestions,
   listOutbox,
 } from "../src/db";
 import {
