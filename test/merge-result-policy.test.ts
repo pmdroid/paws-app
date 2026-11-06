@@ -79,7 +79,7 @@ describe("advanceMerge when the pull request changes the Closeout policy", () =>
     expect(queue.enqueued).toEqual([]);
     expect(h.github.merged).toEqual([]);
     const resume = listJobs(h.db).find((job) => job.queue === JOB_KIND.resume);
-    expect((resume?.payload as { reason: string }).reason).toBe("findings");
+    expect((resume?.payload as { reason: string } | undefined)?.reason).toBe("findings");
   });
 
   test("with GitHub's merge queue, a merge result whose policy loads is queued as before", async () => {
