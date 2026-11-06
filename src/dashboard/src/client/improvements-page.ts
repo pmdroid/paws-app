@@ -932,11 +932,13 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     const itemChanged = item !== view.item;
     if (previous.tab === tab && previous.id === route.id && !filterChanged && !itemChanged)
       return false;
-    if (itemChanged) {
+    // Evidence belongs to one report and one item: a new report drops it even if the item id repeats.
+    if (itemChanged || previous.id !== route.id || previous.tab !== tab) {
       view.item = item;
       view.itemEvidence = null;
       view.itemEvidenceState = item === null ? "idle" : "loading";
-      focusAfterPaint = item === null ? "#retro-report-heading" : RETRO_ITEM_FOCUS;
+      if (itemChanged)
+        focusAfterPaint = item === null ? "#retro-report-heading" : RETRO_ITEM_FOCUS;
     }
     view.download = { file: null, error: null };
     epoch++;

@@ -982,4 +982,61 @@ describe("retro history", () => {
     expect(now(t).getAttribute("data-retro-now")).toBe("canceled");
     expect(now(t).textContent).toContain("Implementation: Canceled");
   });
+
+  test("another report with the same item id never shows the earlier report's evidence", async () => {
+    const t = harness();
+    await t.open("/improvements/reports/r1?item=p1");
+    expect(t.find('[data-retro-item="p1"]').textContent).toContain("Answered question in acme/a");
+    const body = (await (
+      await t.w.retroApi("ada", "/api/retros/reports/r1")
+    ).response.json()) as Json;
+    t.answers.set("/api/retros/reports/r9", () =>
+      Response.json({ ...body, retro: { ...body.retro, id: "r9" } }),
+    );
+    t.holdOn(/\/r9\/items\//);
+    await t.open("/improvements/reports/r9?item=p1");
+    expect(t.page.view().report.retro.id).toBe("r9");
+    expect(t.find('[data-retro-item="p1"]').textContent).toContain("Loading the saved evidence");
+    expect(t.text()).not.toContain("Answered question in acme/a");
+    t.holdOn(null);
+    for (const held of t.holds) held.release();
+    await settle();
+    expect(t.text()).not.toContain("Answered question in acme/a");
+  });
+
+  test("the prompt coverage says what the agent received, apart from the full digest", async () => {
+    const t = harness();
+    t.as("admin");
+    await t.open("/improvements/reports/r1");
+    expect(t.find("[data-retro-prompt-coverage]").getAttribute("data-retro-prompt-coverage")).toBe(
+      "unknown",
+    );
+    expect(t.text()).not.toContain("embeds the whole digest");
+    const body = (await (
+      await t.w.retroApi("admin", "/api/retros/reports/r1", ALL)
+    ).response.json()) as Json;
+    expect(body.promptCoverage).toBeNull();
+    t.answers.set("/api/retros/reports/r1", () =>
+      Response.json({
+        ...body,
+        promptCoverage: {
+          maxChars: 60000,
+          sessionsIncluded: 1,
+          sessionsOmitted: 1,
+          countedIncluded: 2,
+          countedOmitted: 2,
+          contextIncluded: 0,
+          contextOmitted: 0,
+        },
+      }),
+    );
+    await reopen(t, "/improvements/reports/r1");
+    const coverage = t.find("[data-retro-prompt-coverage]");
+    expect(coverage.getAttribute("data-retro-prompt-coverage")).toBe("bounded");
+    expect(coverage.textContent).toContain("1 session, 2 counted records and 0 context records");
+    expect(coverage.textContent).toContain(
+      "Left out of the prompt but kept in the digest: 1 session",
+    );
+    expect(t.text()).toContain("Coverage: 2 sessions, 4 counted records");
+  });
 });

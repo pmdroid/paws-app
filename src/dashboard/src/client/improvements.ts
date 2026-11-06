@@ -729,7 +729,22 @@ function renderDownloads(view: ImprovementsView, response: RetroReportResponse):
       : retro.evidence === "incomplete"
         ? " Some source evidence was unavailable when Paws collected it; see the coverage gaps."
         : "";
-  return `<section class="improvement-part" aria-labelledby="retro-files"><h3 id="retro-files">Frozen files</h3><p>The digest is the original evidence saved when the retro ran, not rebuilt from current sessions. Window: ${window}. Coverage: ${esc(coverage)}.${esc(evidence)}</p><p class="muted">The rendered prompt embeds the whole digest. ${esc(RETENTION)}</p><div class="row" data-retro-downloads="full">${(["digest", "report", "prompt"] as const).map(button).join("")}</div>${error}</section>`;
+  return `<section class="improvement-part" aria-labelledby="retro-files"><h3 id="retro-files">Frozen files</h3><p>The digest is the original evidence saved when the retro ran, not rebuilt from current sessions. Window: ${window}. Coverage: ${esc(coverage)}.${esc(evidence)}</p>${promptCoverageText(response)}<p class="muted">${esc(RETENTION)}</p><div class="row" data-retro-downloads="full">${(["digest", "report", "prompt"] as const).map(button).join("")}</div>${error}</section>`;
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** What the agent was actually given, kept apart from the full digest's coverage above it. */
+function promptCoverageText(response: RetroReportResponse): string {
+  const p = response.promptCoverage;
+  if (p === null)
+    return `<p data-retro-prompt-coverage="unknown">Paws did not save how much of this digest the prompt included, so the agent may have seen less than the full digest.</p>`;
+  const omitted = p.sessionsOmitted + p.countedOmitted + p.contextOmitted;
+  const given = `The agent received a bounded view of the digest${p.maxChars ? ` (at most ${p.maxChars} characters)` : ""}: ${plural(p.sessionsIncluded, "session")}, ${plural(p.countedIncluded, "counted record")} and ${plural(p.contextIncluded, "context record")}.`;
+  const left = omitted
+    ? ` Left out of the prompt but kept in the digest: ${plural(p.sessionsOmitted, "session")}, ${plural(p.countedOmitted, "counted record")} and ${plural(p.contextOmitted, "context record")}. The digest's totals still count them.`
+    : " Nothing was left out.";
+  return `<p data-retro-prompt-coverage="${omitted ? "bounded" : "complete"}">${esc(given + left)}</p>`;
 }
 
 function renderReport(view: ImprovementsView): string {
@@ -806,7 +821,11 @@ function savedEvidence(view: ImprovementsView, itemId: string): string {
     return `<p class="muted" role="status">Loading the saved evidence…</p>`;
   if (view.itemEvidenceState === "missing")
     return `<p role="status">This item's saved evidence is not available to you.</p>`;
-  if (view.itemEvidenceState === "error" || view.itemEvidence?.itemId !== itemId)
+  if (
+    view.itemEvidenceState === "error" ||
+    view.itemEvidence?.itemId !== itemId ||
+    view.itemEvidence.retroId !== view.report?.retro.id
+  )
     return `<p role="status">The saved evidence did not load. <button class="btn" type="button" data-improvement-action="reload">Retry</button></p>`;
   const entries = view.itemEvidence.evidence;
   return entries.length

@@ -386,6 +386,16 @@ export type RetroReportResponse = {
   retro: RetroHistoryEntry;
   report: RetroReportView | null;
   coverageGaps: { kind: string; repository: string | null; detail: string | null }[] | null;
+  /** How much of the digest the bounded prompt gave the agent. Full access only; null if unknown. */
+  promptCoverage: {
+    maxChars: number | null;
+    sessionsIncluded: number;
+    sessionsOmitted: number;
+    countedIncluded: number;
+    countedOmitted: number;
+    contextIncluded: number;
+    contextOmitted: number;
+  } | null;
   /** Keyed by report item id; null when the item's improvement is not in the reader's inbox. */
   current: Record<string, RetroCurrentOutcome | null>;
 };

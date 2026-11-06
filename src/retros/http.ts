@@ -235,6 +235,48 @@ function historyEntry(db: Database, root: string, access: RetroReaderAccess) {
   };
 }
 
+type PromptManifest = {
+  maxChars?: unknown;
+  chars?: unknown;
+  sessionsIncluded?: unknown;
+  perSession?: {
+    included?: unknown;
+    countedIncluded?: unknown;
+    countedOmitted?: unknown;
+    contextIncluded?: unknown;
+    contextOmitted?: unknown;
+  }[];
+};
+
+/**
+ * What the bounded prompt actually gave the agent, from the manifest frozen with the digest.
+ * Null when the manifest is missing, unreadable or predates prompt coverage.
+ */
+function promptCoverage(db: Database, root: string, retroId: string) {
+  const stored = readRetroArtifact(db, root, retroId, "manifest");
+  if (!stored.ok) return null;
+  let prompt: PromptManifest | undefined;
+  try {
+    prompt = (JSON.parse(new TextDecoder().decode(stored.bytes)) as { prompt?: PromptManifest })
+      .prompt;
+  } catch {
+    return null;
+  }
+  if (!prompt || !Array.isArray(prompt.perSession)) return null;
+  const sum = (key: "countedIncluded" | "countedOmitted" | "contextIncluded" | "contextOmitted") =>
+    prompt.perSession!.reduce((total, entry) => total + (Number(entry[key]) || 0), 0);
+  const included = prompt.perSession.filter((entry) => entry.included === true).length;
+  return {
+    maxChars: Number(prompt.maxChars) || null,
+    sessionsIncluded: included,
+    sessionsOmitted: prompt.perSession.length - included,
+    countedIncluded: sum("countedIncluded"),
+    countedOmitted: sum("countedOmitted"),
+    contextIncluded: sum("contextIncluded"),
+    contextOmitted: sum("contextOmitted"),
+  };
+}
+
 /** Each visible item's follow-through as it is now, or null when it is not in the reader's inbox. */
 function currentOutcomes(
   db: Database,
@@ -465,6 +507,7 @@ export function createRetroReviewHttp(options: {
       retro: historyEntry(db, root, access),
       report: shown,
       coverageGaps: access.full ? listRetroCoverageGaps(db, retroId!) : null,
+      promptCoverage: access.full ? promptCoverage(db, root, retroId!) : null,
       current: currentOutcomes(
         db,
         root,
