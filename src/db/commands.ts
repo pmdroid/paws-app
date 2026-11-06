@@ -88,6 +88,7 @@ export function applyLinearCommand(
     if (
       command.type === "stop" &&
       command.source === "linear" &&
+      response === undefined &&
       options.keepPullRequest !== false &&
       (item.state === "paused" || transition(item.state, "pause").ok)
     )

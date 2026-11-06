@@ -474,7 +474,7 @@ test("Stop ends the hold", async () => {
     const stop: LinearCommand = { type: "stop", itemId, source: "linear", requestedAt: Date.now() };
     expect(applyLinearCommand(db, stop).applied).toBe(true);
     expect(getRunnerSetupHold(db, itemId)).toBeNull();
-    expect(getWorkItem(db, itemId)!.state).toBe("cancelled");
+    expect(getWorkItem(db, itemId)!.state).toBe("paused");
   } finally {
     await fixture.close();
   }

@@ -417,7 +417,7 @@ describe("runner control across Paws restarts", () => {
       };
       controller().enqueue(cancel);
       const held = () => {
-        expect(factsOf(w.db, "item")).toMatchObject({ state: "cancelled", liveJobs: [] });
+        expect(factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
         expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(1);
         expect(runnerCancelPending(w.db, "box")).toBe(true);
         expect(unexpectedViolations(w.db, w.now)).toEqual([]);
@@ -456,7 +456,7 @@ describe("runner control across Paws restarts", () => {
       w.crash();
       w.start();
       w.settle();
-      expect(factsOf(w.db, "item")).toMatchObject({ state: "cancelled", liveJobs: [] });
+      expect(factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
       expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(0);
     } finally {
       w.close();

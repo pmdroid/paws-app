@@ -302,5 +302,5 @@ test("a stop during the final squash reads still prevents the GitHub call", asyn
   expect(h.github.merged).toEqual([]);
   h.clock.advance(1_000);
   drainCommands(h.db, new CommandBus(), h.clock.now());
-  expect(getWorkItem(h.db, item.id)?.state).toBe("cancelled");
+  expect(getWorkItem(h.db, item.id)?.state).toBe("paused");
 });

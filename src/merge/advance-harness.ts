@@ -461,13 +461,14 @@ export async function mergeHarness(
     return {
       ask,
       now: () => clock.now(),
-      // Like the orchestrator, a stop that cancelled the item stops the lane as well as the flag.
+      // Like the orchestrator, a stop that cancelled or paused the item stops the lane as well as the flag.
       stopped: () => {
         const current = getWorkItem(db, id);
         return (
           state.stopped ||
           current === null ||
           current.state === "cancelled" ||
+          current.state === "paused" ||
           current.cancelRequested
         );
       },

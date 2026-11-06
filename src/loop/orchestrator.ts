@@ -7929,6 +7929,7 @@ export class Orchestrator {
       this.signalForItem(itemId)?.aborted === true ||
       current === null ||
       current.state === "cancelled" ||
+      current.state === "paused" ||
       current.cancelRequested
     );
   }
