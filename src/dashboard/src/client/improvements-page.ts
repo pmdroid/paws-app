@@ -937,8 +937,7 @@ export function createImprovements(options: ImprovementsOptions = {}) {
       view.item = item;
       view.itemEvidence = null;
       view.itemEvidenceState = item === null ? "idle" : "loading";
-      if (itemChanged)
-        focusAfterPaint = item === null ? "#retro-report-heading" : RETRO_ITEM_FOCUS;
+      if (itemChanged) focusAfterPaint = item === null ? "#retro-report-heading" : RETRO_ITEM_FOCUS;
     }
     view.download = { file: null, error: null };
     epoch++;
