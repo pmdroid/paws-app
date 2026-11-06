@@ -504,7 +504,7 @@ test("Stop interrupts repository interpretation before any binding or repository
     await pending;
     expect(getWorkItemRepository(f.db, question.itemId)).toBeNull();
     expect(getWorkItem(f.db, question.itemId)?.state).toBe("cancelled");
-    expect(f.tracker.statuses).toEqual([{ linearIssueId: "issue", stateType: "canceled" }]);
+    expect(f.tracker.statuses).toEqual([]);
     expect(existsSync(join(f.pawsRoot, "worktrees"))).toBe(false);
   } finally {
     await pending;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
-import { FakeClock } from "../../src/core";
+import { FakeClock, JOB_KIND } from "../../src/core";
 import {
   openDatabase,
   migrate,
@@ -13,8 +13,12 @@ import {
   getWorkItem,
   getLinearSession,
   enqueueCommand,
+  enqueueJob,
   JobLoop,
+  listJobs,
+  listOutbox,
   OutboxDispatcher,
+  recordItemPullRequest,
 } from "../../src/db";
 import {
   createInboxStore,
@@ -152,6 +156,11 @@ export async function probeLinearSessionStop(root: string) {
     assert.equal(joined, 3);
     for (const field of ["stop", "archivedAt", "dismissedAt", "stopping"] as const) {
       const old = insertQueuedItem(db, { id: `webhook-${field}`, sessionKey: `webhook-${field}` });
+      // The item waits in the merge queue with an open pull request.
+      for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
+        applyWorkItemEvent(db, old.id, step);
+      recordItemPullRequest(db, { itemId: old.id, pullNumber: 42, pullUrl: null, openedAt: 1 });
+      enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: old.id }, now: clock.now() });
       const replacement = insertQueuedItem(db, {
         id: `webhook-new-${field}`,
         sessionKey: `webhook-new-${field}`,
@@ -197,7 +206,7 @@ export async function probeLinearSessionStop(root: string) {
       try {
         const unsigned = await fetch(server.url, { method: "POST", body });
         assert.equal(unsigned.status, 401);
-        assert.equal(getWorkItem(db, old.id)?.state, "queued");
+        assert.equal(getWorkItem(db, old.id)?.state, "merge_queue");
         for (let attempt = 0; attempt < 2; attempt++) {
           const response = await fetch(server.url, {
             method: "POST",
@@ -209,6 +218,26 @@ export async function probeLinearSessionStop(root: string) {
         }
         assert.equal(getWorkItem(db, old.id)?.state, "cancelled");
         assert.equal(getWorkItem(db, replacement.id)?.state, "queued");
+        // A stop or archive from Linear leaves the pull request and the issue status alone.
+        assert.ok(
+          !listJobs(db).some(
+            (job) =>
+              job.queue === JOB_KIND.closeStoppedPull &&
+              (job.payload as { itemId?: string }).itemId === old.id,
+          ),
+        );
+        const sessionRows = listOutbox(db).filter((row) => row.orderingKey === old.sessionKey);
+        assert.ok(!sessionRows.some((row) => row.op === "status"));
+        assert.ok(
+          listOutbox(db).every(
+            (row) => row.op !== "status" || (row.payload as { itemId?: string }).itemId !== old.id,
+          ),
+        );
+        assert.ok(
+          sessionRows.some((row) =>
+            (row.payload as { body?: string }).body?.includes("PR #42 stays open"),
+          ),
+        );
         observations.push({
           case: `signed-webhook-${field}`,
           unsignedDenied: true,

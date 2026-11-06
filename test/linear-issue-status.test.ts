@@ -22,34 +22,23 @@ for (const [type, source] of [
   ["stop", "linear"],
   ["cancel", "dashboard"],
 ] as const)
-  test(`a ${source} ${type} enqueues one canceled status that survives the Stop fence`, async () => {
+  test(`a ${source} ${type} leaves the issue status to people`, async () => {
     const db = tempDb();
     try {
       const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
       beginImplementRun(db, item.id, 1);
       const command = { type, source, itemId: item.id, requestedAt: 5 };
       expect(applyLinearCommand(db, command, 5).applied).toBe(true);
-      expect(applyLinearCommand(db, { ...command, requestedAt: 6 }, 6).applied).toBe(false);
-      const rows = statusRows(db);
-      expect(rows.map((row) => [row.status, row.payload])).toEqual([
-        ["pending", { itemId: item.id, linearIssueId: item.linearIssueId, stateType: "canceled" }],
-      ]);
-      expect(rows[0]!.idempotencyKey).toMatch(
-        new RegExp(`^status:${item.id}:${item.linearIssueId}:canceled:\\d+$`),
-      );
-      // Claim through the production heads and fence checks, as the outbox worker does.
+      expect(statusRows(db)).toEqual([]);
+      // Deliver everything the stop queued, as the outbox worker does.
       const tracker = createFakeTracker();
-      for (let round = 0; round < 10 && tracker.statuses.length === 0; round += 1) {
+      for (let round = 0; round < 10; round += 1)
         for (const head of claimOutboxHeads(db, { now: 10 + round })) {
           expect(isOutboxCurrent(db, head)).toBe(true);
           if (head.op === "status") await deliverLinearOutbox(head, tracker, async () => {});
           completeOutbox(db, head, 10 + round);
         }
-      }
-      expect(tracker.statuses).toEqual([
-        { linearIssueId: item.linearIssueId, stateType: "canceled" },
-      ]);
-      expect(statusRows(db).map((row) => row.status)).toEqual(["sent"]);
+      expect(tracker.statuses).toEqual([]);
     } finally {
       db.close();
     }

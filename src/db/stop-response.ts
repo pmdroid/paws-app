@@ -62,7 +62,7 @@ export function getItemPullRequest(db: Database, itemId: string): ItemPullReques
 }
 
 /**
- * "Stopped. Branch paws/pas-1 has 2 commits; PR #12 is open. Re-delegate to continue."
+ * "Stopped. Branch paws/pas-1 has 2 commits; PR #12 stays open. Re-delegate to continue."
  * `lead` names why the work ended; the rest is the branch and pull request as Paws last saw them.
  * A `reason` from elsewhere (issue closed, access denied) replaces the lead, drops the
  * re-delegate hint and names the branch only when something is left on it.
@@ -89,7 +89,7 @@ export function stoppedResponse(
       ? "no PR was opened"
       : options.pullClosing
         ? `PR #${pull.pullNumber} will be closed`
-        : `PR #${pull.pullNumber} is open`;
+        : `PR #${pull.pullNumber} stays open`;
   const text = `${lead} Branch ${item.branchName} ${branch}; ${pr}.`;
   return options.reason ? text : `${text} Re-delegate to continue.`;
 }

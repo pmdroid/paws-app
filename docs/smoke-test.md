@@ -58,7 +58,7 @@ Each sub-issue's session is one story. Before the pull request, activities tell 
 This run proves a stop ends in one response that says what is left on the branch. Delegate a fresh issue in the sandbox team, such as **Add a CSV footer**: "Append a total row to `exportRows` output." Wait for the agent's first commit, then stop it before the pull request opens.
 
 1. Press stop on the Linear session. The session ends with one response, for example "Stopped. Branch paws/eng-n has 1 commit; no PR was opened. Re-delegate to continue." The title reads `ENG-n: stopped` and the remaining plan steps are canceled.
-2. Re-delegate the issue and wait for the pull request response. Reply `/paws stop` in the session. The one response names the branch and its commits, and says `PR #N will be closed`, because a stop in the merge queue closes the pull request. Nothing follows it.
+2. Re-delegate the issue and wait for the pull request response. Reply `/paws stop` in the session. The one response names the branch and its commits, and says `PR #N stays open`: a stop from Linear leaves the pull request open and the issue's status where it was. Nothing follows it.
 3. Delegate another issue and take it over from the dashboard. The session ends with "Taken over by <who>. Paws will not restart, verify or merge ENG-n." and the title reads `ENG-n: manual`.
 
 ## Merge lane
