@@ -862,7 +862,14 @@ async function finish(
       input.trust,
     );
   }
-  const policyError = await candidatePolicyError(input.repo, policy, base, head, input.env);
+  const policyError = await candidatePolicyError(
+    input.repo,
+    policy,
+    base,
+    head,
+    paths.paths,
+    input.env,
+  );
   const lines = policy.items.some((item) => item.gate === input.gate && "minChangedLines" in item)
     ? await changedLines(input.repo, base, head, scrubCommandEnv(input.env))
     : undefined;
@@ -911,14 +918,16 @@ async function candidatePolicyError(
   policy: ResolvedPolicy,
   base: string,
   head: string,
+  changed: readonly string[] | undefined,
   env: NodeJS.ProcessEnv | undefined,
 ): Promise<string | undefined> {
-  const candidate = loadCommitPolicy({ repo, git: gitReader }, head);
-  if (candidate.ok) return undefined;
-  const diff = await diffPaths(repo, base, head, scrubCommandEnv(env));
-  if (!diff.ok) return candidate.message;
+  const diff = changed
+    ? { ok: true as const, paths: changed }
+    : await diffPaths(repo, base, head, scrubCommandEnv(env));
   const read = new Set([PUBLIC_POLICY_PATH, ...policy.files.map((file) => file.path)]);
-  return diff.paths.some((path) => read.has(path)) ? candidate.message : undefined;
+  if (diff.ok && !diff.paths.some((path) => read.has(path))) return undefined;
+  const candidate = loadCommitPolicy({ repo, git: gitReader }, head);
+  return candidate.ok ? undefined : candidate.message;
 }
 
 async function policyLoadError(
