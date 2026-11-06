@@ -11,8 +11,13 @@ import type {
   MergeSettings,
   MergeSettingsView,
 } from "../merge-settings";
+import type { AgentSettings } from "../agent-settings";
+import { settingsRequest } from "./agent-settings";
 import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
+
+const CI_FIX_ATTEMPTS_DEFAULT = 3;
+const CI_FIX_ATTEMPTS_MAX = 10;
 
 const ORDERS: Record<MergeOrder, string> = {
   queue: "Merge queue: one pull request at a time, in order",
@@ -48,7 +53,18 @@ type View = {
   projectDraft?: string;
   ruleProjectDraft?: string;
   ruleLabelDraft?: string;
+  /**
+   * CI fix attempts, read from and saved with the agent settings: the draft and the stored value,
+   * or why they could not be read.
+   */
+  ciFix?: { attempts: number; stored: number } | { error: string };
 };
+
+export function ciFixProblem(attempts: number): string | null {
+  return Number.isInteger(attempts) && attempts >= 0 && attempts <= CI_FIX_ATTEMPTS_MAX
+    ? null
+    : `CI fix attempts: enter a whole number from 0 to ${CI_FIX_ATTEMPTS_MAX}.`;
+}
 
 function projectName(data: MergeSettingsView, id: string): string {
   return data.choices?.projects.find((project) => project.id === id)?.name ?? id;
@@ -246,6 +262,7 @@ export function renderMergeSettings(view: View): string {
       }
       <div class="settings-add"><label for="merge-rule-project">New rule</label>${ruleProject}${ruleLabel}<div class="row"><button class="btn" type="button" data-merge="add-rule">Add rule</button></div></div></div></section>
       ${data.commentWait ? commentWaitSection(data.commentWait) : ""}
+      ${checksSection(view.ciFix)}
       ${riskGateSection(data.riskGate)}
       ${data.autoApproveHighRisk === undefined ? "" : `<section class="settings-section"><div class="settings-label"><h2>High-risk approval</h2><p class="sub" id="auto-approve-high-risk-help">Off by default. When on, a high-risk change can merge without a person only when Closeout accepted the exact commit, neither security nor independent review has a P2-or-worse finding, including in pre-existing code, and no rule probe failed. A new commit needs its own reviews. Changes to the risk rules or agent instructions still need a person.${data.riskGate?.on === true ? "" : " Turn on the risk gate before changing this setting."}</p></div><div class="col"><label><input type="checkbox" name="auto-approve-high-risk" aria-describedby="auto-approve-high-risk-help"${data.autoApproveHighRisk ? " checked" : ""}${data.riskGate?.on === true ? "" : " disabled"}> Let high-risk changes through when both reviews are clean</label></div></section>`}
       ${data.highRiskRepositories ? riskSection(data.highRiskRepositories) : ""}
@@ -285,6 +302,23 @@ function commentWaitSection(wait: CommentWait): string {
     wait.maxWaitSeconds,
     "Send them anyway this long after the first one, even while comments keep coming.",
   )}</div></div></section>`;
+}
+
+function checksSection(ciFix: View["ciFix"]): string {
+  if (!ciFix) return "";
+  const label = `<div class="settings-label"><h2>Pull request checks</h2><p class="sub">When CI fails on a pull request, Paws sends the failing checks and their links back to the implementing agent. After the last attempt, Paws asks in the issue's Linear session.</p></div>`;
+  if ("error" in ciFix)
+    return `<section class="settings-section" id="merge-pull-request-checks">${label}<div class="col"><p class="settings-message err" role="status">${esc(ciFix.error)}</p></div></section>`;
+  const { attempts } = ciFix;
+  const problem = ciFixProblem(attempts);
+  return `<section class="settings-section" id="merge-pull-request-checks">${label}<div class="col">
+      <label for="merge-ci-fix-attempts">CI fix attempts</label><input id="merge-ci-fix-attempts" name="merge-ci-fix-attempts" type="number" inputmode="numeric" min="0" max="${CI_FIX_ATTEMPTS_MAX}" step="1" required value="${Number.isFinite(attempts) ? attempts : ""}" aria-describedby="merge-ci-fix-attempts-help${problem ? " merge-ci-fix-attempts-error" : ""}"${problem ? ' aria-invalid="true"' : ""}>
+      <p class="sub" id="merge-ci-fix-attempts-help">From 0 to ${CI_FIX_ATTEMPTS_MAX}. With 0, Paws asks in Linear on the first failure.</p>${problem ? `<small class="err" id="merge-ci-fix-attempts-error" role="alert">${esc(problem)}</small>` : ""}</div></section>`;
+}
+
+/** CI fix attempts as the agent settings store them. Missing means 3. */
+function storedCiFix(settings: AgentSettings): number {
+  return settings.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT;
 }
 
 function riskGateSection(gate: MergeSettingsView["riskGate"]): string {
@@ -423,6 +457,10 @@ export function createMergeSettings(invalidate: () => void): {
       }
       return next;
     });
+    if (view.ciFix && "attempts" in view.ciFix) {
+      const text = value("merge-ci-fix-attempts")?.trim();
+      if (text !== undefined) view.ciFix.attempts = text === "" ? NaN : Number(text);
+    }
     view.projectDraft = value("new-project")?.trim() ?? "";
     view.ruleProjectDraft = value("rule-project") ?? "";
     view.ruleLabelDraft = value("rule-label")?.trim() ?? "";
@@ -457,9 +495,21 @@ export function createMergeSettings(invalidate: () => void): {
     request("Loading merging settings…", async () => {
       const started = generation;
       try {
-        const data = await mergeSettingsRequest(engine!, "GET");
+        const [data, ciFix] = await Promise.all([
+          mergeSettingsRequest(engine!, "GET"),
+          settingsRequest<AgentSettings>(engine!, "GET").then(
+            (settings): View["ciFix"] => {
+              const stored = storedCiFix(settings);
+              return { attempts: stored, stored };
+            },
+            (error: unknown): View["ciFix"] => {
+              journalCaught(error, "merge-settings.createMergeSettings.settingsRequest", null);
+              return { error: "CI fix attempts could not be loaded. Reload to try again." };
+            },
+          ),
+        ]);
         if (started !== generation) return;
-        view = { data, busy: view.busy, error: null, saved: false };
+        view = { data, busy: view.busy, error: null, saved: false, ciFix };
       } catch (error) {
         if (started === generation && error instanceof Error && error.cause === 403) {
           view.denied = true;
@@ -516,11 +566,32 @@ export function createMergeSettings(invalidate: () => void): {
     event.preventDefault();
     if (view.busy || !view.data || !engine) return;
     draft();
+    const ciFix = view.ciFix && "attempts" in view.ciFix ? view.ciFix : null;
+    const problem = ciFix ? ciFixProblem(ciFix.attempts) : null;
+    if (problem) {
+      view.error = problem;
+      paint();
+      return;
+    }
     const started = generation;
     const choices = view.data.choices;
     const choicesError = view.data.choicesError;
     const { githubQueue, githubQueueError, upToDateRule, riskGate, hotFiles } = view.data;
     void request("Saving merging settings…", async () => {
+      // CI fix attempts keep their place in the agent settings. The fresh read sends back the
+      // profiles as stored, and its revision refuses the write if they change in between.
+      if (ciFix && ciFix.attempts !== ciFix.stored) {
+        const agents = await settingsRequest<AgentSettings>(engine!, "GET");
+        const saved = await settingsRequest<AgentSettings>(
+          engine!,
+          "PUT",
+          { ...agents, merge: { ciFixAttempts: ciFix.attempts } },
+          readCsrfToken(document),
+        );
+        if (started !== generation) return;
+        const stored = storedCiFix(saved);
+        view.ciFix = { attempts: stored, stored };
+      }
       const data = await mergeSettingsRequest(
         engine!,
         "PUT",

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { MergeSettingsView } from "../merge-settings";
 import {
+  ciFixProblem,
   mergeSettingsBody,
   mergeSettingsRequest,
   fieldProblem,
@@ -208,6 +209,53 @@ describe("Settings → Merging", () => {
     const without = renderMergeSettings({ data: data(), busy: null, error: null, saved: false });
     expect(without).not.toContain("Pull request comments");
     expect(mergeSettingsBody(data())).not.toHaveProperty("commentWait");
+  });
+
+  test("Pull request checks: CI fix attempts follow Pull request comments, 3 when missing", () => {
+    const view = { ...data(), commentWait: { quietSeconds: 90, maxWaitSeconds: 600 } };
+    const ciFix = { attempts: 3, stored: 3 };
+    const html = renderMergeSettings({ data: view, busy: null, error: null, saved: false, ciFix });
+    expect(html).toContain("<h2>Pull request checks</h2>");
+    expect(html.indexOf("<h2>Pull request comments</h2>")).toBeLessThan(
+      html.indexOf("<h2>Pull request checks</h2>"),
+    );
+    expect(html.indexOf("<h2>Pull request checks</h2>")).toBeLessThan(
+      html.indexOf('class="settings-actions"'),
+    );
+    expect(html).toContain('<label for="merge-ci-fix-attempts">CI fix attempts</label>');
+    expect(html).toMatch(
+      /name="merge-ci-fix-attempts" type="number"[^>]*min="0" max="10"[^>]*value="3"/,
+    );
+    expect(html).toContain("With 0, Paws asks in Linear on the first failure.");
+    expect(html).not.toContain('aria-invalid="true"');
+    expect(mergeSettingsBody(view)).not.toHaveProperty("merge");
+
+    const invalid = renderMergeSettings({
+      data: data(),
+      busy: null,
+      error: null,
+      saved: false,
+      ciFix: { attempts: 11, stored: 3 },
+    });
+    expect(invalid).toContain('aria-invalid="true"');
+    expect(invalid).toContain("CI fix attempts: enter a whole number from 0 to 10.");
+    expect(ciFixProblem(0)).toBeNull();
+    for (const attempts of [11, -1, 1.5, NaN])
+      expect(ciFixProblem(attempts)).toBe("CI fix attempts: enter a whole number from 0 to 10.");
+
+    const failed = renderMergeSettings({
+      data: data(),
+      busy: null,
+      error: null,
+      saved: false,
+      ciFix: { error: "CI fix attempts could not be loaded. Reload to try again." },
+    });
+    expect(failed).toContain("<h2>Pull request checks</h2>");
+    expect(failed).toContain("CI fix attempts could not be loaded.");
+    expect(failed).not.toContain('name="merge-ci-fix-attempts"');
+    expect(
+      renderMergeSettings({ data: data(), busy: null, error: null, saved: false }),
+    ).not.toContain("Pull request checks");
   });
 
   test("Ignored PR comments: both lists per repository, saved as sent, errors at the field", async () => {
