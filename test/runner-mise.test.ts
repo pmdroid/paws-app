@@ -352,7 +352,12 @@ async function runPathTask(
   );
   const agentPath = `${system}:${paths.base ?? `${dirname(process.execPath)}:/usr/bin:/bin`}`;
   const workerPath = process.env.PATH;
-  process.env.PATH = [system, paths.workerExtra, workerPath ?? ""].filter(Boolean).join(":");
+  // A runner host already has the agent tools folder on PATH; the expectations add it themselves.
+  const inherited = (workerPath ?? "")
+    .split(":")
+    .filter((entry) => entry.replace(/\/+$/, "") !== AGENT_BIN_DIR)
+    .join(":");
+  process.env.PATH = [system, paths.workerExtra, inherited].filter(Boolean).join(":");
   try {
     const result = await executeRunnerCommand({
       job: { executionId, command: command(runtimes) },
