@@ -53,10 +53,6 @@ type View = {
   projectDraft?: string;
   ruleProjectDraft?: string;
   ruleLabelDraft?: string;
-  /**
-   * CI fix attempts, read from and saved with the agent settings: the draft and the stored value,
-   * or why they could not be read.
-   */
   ciFix?: { attempts: number; stored: number } | { error: string };
 };
 
@@ -316,7 +312,6 @@ function checksSection(ciFix: View["ciFix"]): string {
       <p class="sub" id="merge-ci-fix-attempts-help">From 0 to ${CI_FIX_ATTEMPTS_MAX}. With 0, Paws asks in Linear on the first failure.</p>${problem ? `<small class="err" id="merge-ci-fix-attempts-error" role="alert">${esc(problem)}</small>` : ""}</div></section>`;
 }
 
-/** CI fix attempts as the agent settings store them. Missing means 3. */
 function storedCiFix(settings: AgentSettings): number {
   return settings.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT;
 }
@@ -578,8 +573,6 @@ export function createMergeSettings(invalidate: () => void): {
     const choicesError = view.data.choicesError;
     const { githubQueue, githubQueueError, upToDateRule, riskGate, hotFiles } = view.data;
     void request("Saving merging settings…", async () => {
-      // CI fix attempts keep their place in the agent settings. The fresh read sends back the
-      // profiles as stored, and its revision refuses the write if they change in between.
       if (ciFix && ciFix.attempts !== ciFix.stored) {
         const agents = await settingsRequest<AgentSettings>(engine!, "GET");
         const saved = await settingsRequest<AgentSettings>(
@@ -617,7 +610,10 @@ export function createMergeSettings(invalidate: () => void): {
     const target = event.target as HTMLInputElement | HTMLSelectElement;
     // A High-risk paths box changes on blur; repainting then would swallow the click that blurred
     // it, such as Save. Submit and the other buttons read it.
-    if (["new-project", "rule-project", "rule-label"].includes(target.name)) return;
+    if (
+      ["new-project", "rule-project", "rule-label", "merge-ci-fix-attempts"].includes(target.name)
+    )
+      return;
     if (/^(risk|ignore-bots|ignore-markers)-/.test(target.name)) return;
     draft();
     paint();
