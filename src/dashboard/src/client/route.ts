@@ -11,9 +11,12 @@ export type Route =
   | { view: "alias"; kind: AliasKind; id: string }
   | { view: "mergeQueue" }
   | { view: "findings" }
+  | { view: "improvements"; tab: ImprovementTab; id: string | null }
   | { view: "evidence"; id: string | null }
   | { view: "questions"; id: string | null }
   | { view: "settings"; page?: SettingsPage };
+
+export type ImprovementTab = "review" | "report" | "history" | "settings";
 
 export function routerBase(pathname: string): string {
   return isDashboardPath(pathname) ? DASHBOARD_PATH : "";
@@ -50,6 +53,14 @@ export function matchRoute(path: string): Route | null {
       return { view: "mergeQueue" };
     case "findings":
       return { view: "findings" };
+    case "improvements":
+      return improvementRoute(parts.slice(1));
+    case "retros":
+      return id === null
+        ? { view: "improvements", tab: "review", id: null }
+        : parts.length === 2
+          ? { view: "improvements", tab: "report", id }
+          : null;
     case "evidence":
       return { view: "evidence", id };
     case "questions":
@@ -68,6 +79,12 @@ export function routePath(route: Route): string {
   if (route.view === "settings") return route.page ? `/settings/${route.page}` : "/settings";
   if (route.view === "mergeQueue") return "/merge-queue";
   if (route.view === "findings") return "/findings";
+  if (route.view === "improvements") {
+    if (route.tab === "history" || route.tab === "settings") return `/improvements/${route.tab}`;
+    if (route.id === null) return "/improvements";
+    const id = encodeURIComponent(route.id);
+    return route.tab === "report" ? `/improvements/reports/${id}` : `/improvements/${id}`;
+  }
   if (route.view === "alias") return `/${route.kind}/${encodeURIComponent(route.id)}`;
   return route.id ? `/${route.view}/${encodeURIComponent(route.id)}` : `/${route.view}`;
 }
@@ -108,6 +125,31 @@ export function issueListRedirect(path: string): string | null {
     .split("/")
     .filter((part) => part.length > 0);
   return parts.length === 1 && isAliasKind(parts[0]) ? "/issues" : null;
+}
+
+function improvementRoute(rest: string[]): Route | null {
+  const [first, second] = rest;
+  if (first === undefined) return { view: "improvements", tab: "review", id: null };
+  if (rest.length === 1 && (first === "history" || first === "settings"))
+    return { view: "improvements", tab: first, id: null };
+  if (first === "reports")
+    return second !== undefined && rest.length === 2
+      ? { view: "improvements", tab: "report", id: second }
+      : null;
+  return rest.length === 1 ? { view: "improvements", tab: "review", id: first } : null;
+}
+
+export function retroRedirect(path: string): string | null {
+  const parts = path
+    .replace(/^#/, "")
+    .split("/")
+    .filter((part) => part.length > 0);
+  if (parts[0] !== "retros") return null;
+  const route = matchRoute(path);
+  if (route === null) return null;
+  return route.view === "improvements" && route.id === null
+    ? "/improvements?source=weekly"
+    : routePath(route);
 }
 
 function decodePart(part: string): string {

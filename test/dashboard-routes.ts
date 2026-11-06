@@ -69,6 +69,13 @@ export const DASHBOARD_ROUTES: RouteEntry[] = [
   spa("/runners", "runners", "preserved", "src/runner-control"),
   spa("/runners/:id", "runners", "preserved", "src/runner-control"),
   spa("/findings", "findings", "preserved", "src/dashboard"),
+  spa("/improvements", "improvements", "canonical", "PAS-918"),
+  spa("/improvements/:id", "improvements", "canonical", "PAS-918"),
+  spa("/improvements/reports/:id", "improvements", "canonical", "PAS-918"),
+  spa("/improvements/history", "improvements", "canonical", "PAS-918"),
+  spa("/improvements/settings", "improvements", "canonical", "PAS-918"),
+  spa("/retros", "improvements", "alias", "PAS-918"),
+  spa("/retros/:id", "improvements", "alias", "PAS-918"),
   spa("/settings", "settings", "preserved", "src/settings"),
   ...SETTINGS_PAGE_IDS.map((id): RouteEntry => ({
     surface: "settings",

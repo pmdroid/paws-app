@@ -347,7 +347,8 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
           : null;
 
   let attention: AttentionState;
-  if (improvement.reviewState === "needs_review") attention = "needs_review";
+  if (improvement.reviewState === "needs_review")
+    attention = item.lifecycle === "needs_review" ? "needs_review" : "closed";
   else if (improvement.reviewState === "rejected") attention = "rejected";
   else if (!issue)
     attention =

@@ -25,6 +25,11 @@ export const PAGES = {
     title: "Findings",
     description: "Review findings that did not block a merge and are still open, across issues.",
   },
+  improvements: {
+    title: "Improvements",
+    description:
+      "Daily review findings and weekly retro proposals: review, file or link, delegate and verify.",
+  },
   evidence: {
     title: "Evidence",
     description: "A Closeout video or screenshot the agent published for an issue.",
@@ -46,7 +51,7 @@ export const PAGES = {
 export const NAVIGATION = [
   {
     label: "Work",
-    views: ["overview", "issues", "questions", "mergeQueue", "findings"],
+    views: ["overview", "issues", "questions", "mergeQueue", "findings", "improvements"],
   },
   { label: "Manage", views: ["runners"] },
 ] as const;

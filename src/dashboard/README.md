@@ -8,15 +8,16 @@ The Paws process serves the dashboard files and its resource routes. The live re
 
 Each page loads one resource shaped for what it renders. [Dashboard API](../../docs/dashboard-api.md) has the canonical paths, old links, authorization, caching, lazy logs and media, the route coverage guard and how to verify them. Types and runtime parsers are in [`src/contract.ts`](src/contract.ts); a parser rejects a body that does not match instead of reading a missing field as empty, and ignores unknown fields.
 
-| Page                          | Resource                                                                 |
-| ----------------------------- | ------------------------------------------------------------------------ |
-| Overview                      | `GET /api/overview`                                                      |
-| Issues, run and session links | `GET /api/issues`                                                        |
-| Issue page                    | `GET /api/issues/<id>` and its check log route                           |
-| Questions                     | `GET /api/questions`, `GET /api/questions/<id>`                          |
-| Merge queue                   | `GET /api/merge-queue`                                                   |
-| Evidence                      | `GET /api/evidence`, `GET /api/evidence/<id>/metadata`                   |
-| Runners, Findings, Settings   | Their own `/api/runners...`, `/api/findings`, `/api/settings/...` routes |
+| Page                          | Resource                                                                                                        |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Overview                      | `GET /api/overview`                                                                                             |
+| Issues, run and session links | `GET /api/issues`                                                                                               |
+| Issue page                    | `GET /api/issues/<id>` and its check log route                                                                  |
+| Questions                     | `GET /api/questions`, `GET /api/questions/<id>`                                                                 |
+| Merge queue                   | `GET /api/merge-queue`                                                                                          |
+| Evidence                      | `GET /api/evidence`, `GET /api/evidence/<id>/metadata`                                                          |
+| Improvements                  | `GET /api/improvements...` and `GET /api/retros/...` ([review API](../../docs/improvement-review.md#dashboard)) |
+| Runners, Findings, Settings   | Their own `/api/runners...`, `/api/findings`, `/api/settings/...` routes                                        |
 
 - `source` is `"live"`. The serving process builds the body from its own state.
 - Every resource carries `generatedAt`, `Cache-Control: no-store`, `Paws-Generated-At` and a weak `ETag` over the body without `generatedAt`. A request whose `If-None-Match` matches answers 304 with no body; the page keeps the body it has and takes the newer time from the header.

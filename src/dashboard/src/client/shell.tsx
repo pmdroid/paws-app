@@ -26,6 +26,7 @@ import {
   GitPullRequestArrow,
   Bug,
   Hourglass,
+  Lightbulb,
 } from "lucide-react";
 import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
@@ -48,6 +49,7 @@ const ICONS = {
   runs: Terminal,
   mergeQueue: GitPullRequestArrow,
   findings: Bug,
+  improvements: Lightbulb,
   questions: CircleHelp,
   runners: Server,
   agents: Bot,
@@ -108,7 +110,9 @@ function Navigation({
                     {count > 0 && (
                       <span
                         className="ml-auto rounded-base border-2 border-border bg-secondary-background px-1.5 text-xs font-bold leading-5 text-foreground"
-                        aria-label={`${count} waiting`}
+                        aria-label={
+                          view === "improvements" ? `${count} need attention` : `${count} waiting`
+                        }
                       >
                         {count}
                       </span>
@@ -165,11 +169,11 @@ export function mountShell(): {
     const [counts, setCounts] = useState<NavigationCounts>({});
     counted = (value) =>
       setCounts((current) =>
-        Object.keys({ ...current, ...value }).every(
+        Object.keys(value).every(
           (key) => current[key as Route["view"]] === value[key as Route["view"]],
         )
           ? current
-          : value,
+          : { ...current, ...value },
       );
     const [open, setOpen] = useState(false);
     const menu = useRef<HTMLButtonElement>(null);
