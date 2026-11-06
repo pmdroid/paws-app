@@ -111,6 +111,7 @@ export {
   runnerSlotFree,
   slotWaitRunners,
   runnerSlotsHeldBetweenCommands,
+  CI_WAITING,
   pinnedSlotsReserved,
   releasePinnedSlot,
   savePinnedSlots,

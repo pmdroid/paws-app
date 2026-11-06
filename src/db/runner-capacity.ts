@@ -4,6 +4,10 @@ import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 
+export const CI_WAITING = (run: string) =>
+  `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND json_extract(ci.payload,'$.itemId')=${run}.item_id
+    AND json_extract(ci.payload,'$.awakeWait.kind')='ci')`;
+
 export const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confirmed_at IS NULL
   AND NOT EXISTS(SELECT 1 FROM runner_result exited WHERE exited.run_id=w.run_id
     AND exited.generation=w.generation AND exited.command_id=w.command_id)
@@ -64,7 +68,7 @@ export function runnerSlotsHeldBetweenCommands(
        WHERE w.runner_id=? AND (w.ended_at IS NOT NULL OR (w.lease_until<=? AND EXISTS (
          SELECT 1 FROM runner_result result WHERE result.run_id=w.run_id
            AND result.generation=w.generation AND result.command_id=w.command_id)))
-       AND r.status IN ('active','provisioning') AND NOT ${TEARDOWN_UNRESOLVED}`,
+       AND r.status IN ('active','provisioning') AND NOT ${TEARDOWN_UNRESOLVED} AND NOT ${CI_WAITING("r")}`,
     )
     .all(runnerId, runnerLeaseCutoff(now))
     .map((row) => row.runId);
