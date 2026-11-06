@@ -290,6 +290,14 @@ export {
   type PushOutage,
 } from "./push-outage";
 export {
+  endPolicyOutage,
+  getPolicyOutage,
+  listPolicyOutages,
+  recordPolicyOutage,
+  setPolicyOutageQuestion,
+  type PolicyOutage,
+} from "./policy-outage";
+export {
   clearPolicyRunnerWarning,
   listPolicyRunnerWarnings,
   policyKeysLowestRunnerLacks,

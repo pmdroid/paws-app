@@ -28,7 +28,8 @@ export type MergeWaitReason =
   | "review"
   | "branch_update"
   | "dependencies"
-  | "merge_outcome";
+  | "merge_outcome"
+  | "policy";
 export type MergeWait = {
   message: string;
   base?: string;

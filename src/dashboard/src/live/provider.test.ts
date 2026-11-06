@@ -146,6 +146,7 @@ describe("live status provider", () => {
     ["agent", true],
     ["plan-approval", true],
     ["push-outage", true],
+    ["policy-outage", true],
     ["link", false],
     ["visual-review", false],
     ["github-auth", false],

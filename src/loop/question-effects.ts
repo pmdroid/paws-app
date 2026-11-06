@@ -104,7 +104,7 @@ export function questionEffects(
       >(
         `SELECT id,body,options,answer FROM question WHERE item_id=? AND session_id=?
        AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL
-       AND kind NOT IN ('visual-review','runner-wait','runner-repository','github-auth','link','push-outage') ORDER BY answered_at,rowid`,
+       AND kind NOT IN ('visual-review','runner-wait','runner-repository','github-auth','link','push-outage','policy-outage') ORDER BY answered_at,rowid`,
       )
       .all(item.id, question.sessionId);
     const handoffs = pending.map((entry) =>
@@ -329,5 +329,6 @@ export function questionEffects(
     "closeout-help": closeoutHelp,
     // The workspace push outage question asks a person to look at GitHub; the item goes on.
     "push-outage": consumeTurn,
+    "policy-outage": consumeTurn,
   };
 }

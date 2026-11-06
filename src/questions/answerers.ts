@@ -15,7 +15,8 @@ export type AnswerableQuestion =
   | { kind: "github-auth"; actorId: string }
   | { kind: "plan-approval" }
   | { kind: "link"; allowedIds: readonly string[] }
-  | { kind: "push-outage" };
+  | { kind: "push-outage" }
+  | { kind: "policy-outage" };
 
 type Policy = {
   [K in AnswerableQuestion["kind"]]: (
@@ -54,4 +55,5 @@ export const ANSWER_POLICY: Policy = {
   "plan-approval": canAnswer,
   link: canAnswer,
   "push-outage": canAnswer,
+  "policy-outage": canAnswer,
 };

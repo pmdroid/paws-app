@@ -18,6 +18,7 @@ const PAWS_ANSWER_KINDS = [
   "ci-help",
   "plan-approval",
   "push-outage",
+  "policy-outage",
 ] as const;
 
 type PawsAnswerKind = (typeof PAWS_ANSWER_KINDS)[number];

@@ -15,7 +15,8 @@ export type QuestionKind =
   | "github-auth"
   | "plan-approval"
   | "link"
-  | "push-outage";
+  | "push-outage"
+  | "policy-outage";
 
 export type StoredQuestion = {
   id: string;

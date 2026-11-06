@@ -359,7 +359,7 @@ function present(result: PolicyLoadOutcome): ResolvedPolicyPresent {
 }
 
 function expectBlocked(result: PolicyLoadOutcome, message: string): void {
-  expect(result).toEqual({ ok: false, source: "repo", message });
+  expect(result).toMatchObject({ ok: false, source: "repo", message });
 }
 
 function sha256(text: string): string {

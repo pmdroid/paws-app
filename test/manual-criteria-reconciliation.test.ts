@@ -106,6 +106,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
       "time-limit",
       "github-auth",
       "push-outage",
+      "policy-outage",
     ];
     const questions = [...obsolete, ...unrelated].map(
       (kind) =>

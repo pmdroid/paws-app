@@ -80,6 +80,16 @@ export type RunnerRebase =
   | { outcome: "conflict"; files: string[] }
   | { outcome: "failed"; reason: string };
 
+export type MainPolicyUnreadable = {
+  ok: false;
+  message: string;
+  path: string;
+  main: string;
+  commit: string | null;
+};
+
+export type PolicyRead = { digest: string; recheck: string } | MainPolicyUnreadable | null;
+
 export type MergeCapabilities = OrderCapabilities & {
   runnerRebase?(
     item: WorkItemRecord,
@@ -92,7 +102,13 @@ export type MergeCapabilities = OrderCapabilities & {
    * Closeout's policy digest for the item's worktree or mirror now, and the digest of its checks marked
    * `recheck: true`: `""` without a policy or such a check, null when the policy is unreadable.
    */
-  policyDigests(item: WorkItemRecord, worktree: string): { digest: string; recheck: string } | null;
+  policyDigests(item: WorkItemRecord, worktree: string): PolicyRead;
+  holdForPolicy?(
+    item: WorkItemRecord,
+    repository: string,
+    unreadable: MainPolicyUnreadable,
+  ): string;
+  policyLoads?(repository: string): void;
   /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
   packages(repository: string): string[];
   assertReady(item: WorkItemRecord): Promise<void>;
@@ -243,17 +259,16 @@ export async function advanceMerge(
         }
       : {}),
   };
+  let mainPolicy: PolicyRead | undefined;
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
-    facts: (facts) =>
-      mergeFacts(
-        db,
-        item.id,
-        facts,
-        caps.policyDigests(item, published.worktree),
-        mergeSettings.mainMoved,
-        { head: published.head, approval: riskApproval },
-      ),
+    facts: (facts) => {
+      mainPolicy = caps.policyDigests(item, published.worktree);
+      return mergeFacts(db, item.id, facts, mainPolicy, mergeSettings.mainMoved, {
+        head: published.head,
+        approval: riskApproval,
+      });
+    },
     rebase: (facts) => rebaseOnRunner(item, caps, lane, facts, published.signal),
     squash: async (head, facts) => {
       const squashed = await squashPull(
@@ -268,6 +283,7 @@ export async function advanceMerge(
       return squashed;
     },
   });
+  if (mainPolicy && !("ok" in mainPolicy)) caps.policyLoads?.(queueName(repository));
   if (turn.kind === "stopped" && turn.result.outcome === "unknown") return pendingMergeOutcome();
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
@@ -334,6 +350,20 @@ export async function advanceMerge(
   await caps.assertReady(item);
   if (getWorkItem(db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
   if (step.kind === "unreadable") throw new Error(step.message);
+  if (step.kind === "hold_policy" && mainPolicy && "ok" in mainPolicy) {
+    const message =
+      caps.holdForPolicy?.(item, queueName(repository), mainPolicy) ??
+      `The Closeout policy on main doesn't load: ${mainPolicy.message}. Paws merges again once it's fixed.`;
+    voice.status(item, message, `${item.id}:policy-unreadable:${message}`);
+    return {
+      kind: "wait",
+      reason: "policy",
+      queued: true,
+      message,
+      base: step.base,
+      head: step.head,
+    };
+  }
   if (step.kind === "ask_risk") return holdForRisk(db, item, caps, published);
   if (step.kind === "reverify") {
     reverify(merge, step, input.jobId);
@@ -559,7 +589,7 @@ function recheckChanged(
   const accepted = closeoutPolicyDigests(db, item.id, acceptedHead);
   if (accepted === null) return false;
   const current = caps.policyDigests(item, worktree);
-  if (current === null || accepted.digest === current.digest) return false;
+  if (current === null || "ok" in current || accepted.digest === current.digest) return false;
   return accepted.recheck !== current.recheck;
 }
 
@@ -571,10 +601,11 @@ function mergeFacts(
   db: Database,
   itemId: string,
   pull: PullFacts,
-  policy: { digest: string; recheck: string } | null,
+  read: PolicyRead,
   mainMoved: TaskMergeSettings["mainMoved"],
   risk: { head: string; approval: RiskApproval },
 ): MergeFacts {
+  const policy = read !== null && !("ok" in read) ? read : null;
   const acceptedHead = getWorkItem(db, itemId)?.acceptedHead ?? null;
   const accepted = acceptedHead === null ? null : closeoutPolicyDigests(db, itemId, acceptedHead);
   const { readiness } = pull;
@@ -599,6 +630,7 @@ function mergeFacts(
           },
     policyDigest: policy?.digest ?? null,
     recheckDigest: policy?.recheck ?? null,
+    ...(read !== null && "ok" in read ? { policyUnreadable: read.message } : {}),
     containsMain: pull.containsMain,
     ...(pull.apart === undefined ? {} : { apart: pull.apart }),
     ci:

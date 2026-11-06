@@ -110,7 +110,7 @@ order = "ci-green"
 
 - **`[merge.repositories."owner/repo"] suggested_findings`**: what Paws does with review findings below the review's `failOn` in code the pull request changed. `"off"` only lists them under the pull request's Open findings. `"next_turn"` (default) also hands them to the agent as suggestions in the next restart the item gets for any other reason. `"own_turn"` also starts one restart for them right after acceptance, once per item. A change applies to the next publication or restart, without a restart of Paws. [Suggested findings](closeout.md#suggested-findings) has the details.
 
-The merge lane squashes head S only when `mergeable(S)` holds: the pull request head is S, S contains the current `main`, Closeout accepted S under the current policy digest, CI is green for S, no review thread is unresolved and branch protection is satisfied. [After acceptance](closeout.md#after-acceptance) has the details.
+The merge lane squashes head S only when `mergeable(S)` holds: the pull request head is S, S contains the current `main`, Closeout accepted S under the current policy digest (while main's policy does not load, the lane holds the queue instead of sending items back), CI is green for S, no review thread is unresolved and branch protection is satisfied. [After acceptance](closeout.md#after-acceptance) has the details.
 
 ### `[findings]`
 
