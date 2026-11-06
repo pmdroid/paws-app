@@ -1,3 +1,4 @@
+import { stageAllows, type ImprovementAction } from "./improvement-stage";
 import {
   DEFAULT_IMPROVEMENT_FILTER,
   IMPROVEMENT_ATTENTION_PATH,
@@ -454,6 +455,15 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     }
   };
 
+  const ITEM_ACTIONS = new Set<string>([
+    "use-issue",
+    "reopen",
+    "link-closed",
+    "retry",
+    "cancel-comment",
+    "delegate",
+  ]);
+
   const mutate = async (key: string, path: string, body: unknown) => {
     if (view.busy !== null || !view.local) return;
     view.busy = key;
@@ -556,12 +566,18 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     };
   };
 
+  const allowed = (action: ImprovementAction) => {
+    const item = view.detail?.item;
+    return item !== undefined && item.id === view.id && stageAllows(item, action);
+  };
+
   const followVersion = () => view.follow?.followThrough.version ?? view.detail?.item.version ?? 1;
 
   const click = (event: Event) => {
     const target = event.target as Element;
     const choice = target.closest<HTMLElement>("[data-improvement-choice]");
     if (choice) {
+      if (!allowed("create")) return;
       view.choice = choice.dataset.improvementChoice as ImprovementsView["choice"];
       view.confirmClosed = null;
       paint();
@@ -571,6 +587,11 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     if (!button || (button as HTMLButtonElement).disabled) return;
     const action = button.dataset.improvementAction!;
     const id = view.detail?.item.id;
+    if (
+      ITEM_ACTIONS.has(action) &&
+      !allowed(action === "link-closed" ? "link" : (action as ImprovementAction))
+    )
+      return;
     if (action === "reload") reload();
     else if (action === "more") {
       view.busy = "more";
@@ -653,7 +674,7 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     event.preventDefault();
     if (view.busy !== null) return;
     const id = view.detail?.item.id;
-    if (!id) return;
+    if (!id || !allowed(kind as ImprovementAction)) return;
     if (kind === "create") {
       const team = field(form, "team") || view.detail?.destinations[0];
       if (team) void accept({ kind: "create", teamId: team }, form);

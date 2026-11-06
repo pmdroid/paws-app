@@ -267,6 +267,48 @@ describe("improvement inbox contract", () => {
 });
 
 describe("improvement inbox", () => {
+  test("a daily finding filed from Findings is read-only: no decision, delegation or follow-through", async () => {
+    const t = harness();
+    const daily = (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0]
+      .id as string;
+    t.w.db.run("UPDATE finding_group SET status = 'filed', filed_issue = 'PAS-77'");
+    await t.open(`/improvements/${daily}`);
+    expect(t.text()).toContain("Handled in Findings");
+    expect(t.text()).toContain("PAS-77");
+    const detail = t.find("[data-improvement]").textContent ?? "";
+    expect(detail).not.toContain("Needs review");
+    expect(detail).not.toContain("Accepting");
+    for (const selector of [
+      "[data-improvement-choice]",
+      "[data-improvement-form]",
+      '[data-improvement-action="delegate"]',
+      '[data-improvement-action="reopen"]',
+      '[data-improvement-action="use-issue"]',
+    ])
+      expect(t.root.querySelector(selector)).toBeNull();
+    expect(t.find(`a[href="/dashboard/findings"]`)).toBeTruthy();
+    const row = t.find(`[data-improvement-row="${daily}"]`);
+    expect(row.textContent).toContain("Handled in Findings");
+    await t.poll();
+    expect(t.requests.filter((r) => r.method === "POST")).toEqual([]);
+    const attention = (await t.w.api("ada", "/api/improvements/attention")).body;
+    expect(attention.counts.newReview).toBe(1);
+    expect(attention.items.find((i: { id: string }) => i.id === daily).attention).toBe("closed");
+  });
+
+  test("a daily finding dismissed from Findings shows no review attention and cannot be reopened here", async () => {
+    const t = harness();
+    const daily = (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0]
+      .id as string;
+    t.w.db.run("UPDATE finding_group SET status = 'dismissed', status_reason = 'Noise'");
+    await t.open(`/improvements/${daily}`);
+    const detail = t.find("[data-improvement]").textContent ?? "";
+    expect(detail).toContain("Dismissed from Findings");
+    expect(detail).not.toContain("Needs review");
+    expect(t.root.querySelector('[data-improvement-action="reopen"]')).toBeNull();
+    expect(t.root.querySelector("[data-improvement-form]")).toBeNull();
+  });
+
   test("lists both sources once each, with filters, and keeps the report capped at five", async () => {
     const t = harness();
     await t.open("/improvements");
