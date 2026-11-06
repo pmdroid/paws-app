@@ -374,6 +374,32 @@ describe("evidence quality", () => {
     ).toEqual([...ids].sort());
   });
 
+  test("a failed Closeout step under a long progress id keeps its evidence id within 200 characters", () => {
+    const { db, root } = world();
+    const id = item(db, "PAS-1", { createdAt: at(0) });
+    const longProgress = `${id}\nPAS-1-${id}\n${"a".repeat(40)}\n${"b".repeat(64)}\n${"c".repeat(40)}`;
+    const other = `${longProgress}x`;
+    db.run(
+      "INSERT INTO closeout_progress (id, item_id, task_id, base, head, policy_digest, started_at, updated_at) VALUES (?, ?, 't', 'b', 'h1', 'd', ?, ?), (?, ?, 't', 'b', 'h2', 'd', ?, ?)",
+      [longProgress, id, at(0, 3), at(0, 3), other, id, at(0, 4), at(0, 4)],
+    );
+    db.run(
+      `INSERT INTO closeout_step (progress_id, step_id, kind, state, command, attempt, ordinal, exit_code, finished_at)
+       VALUES (?, 'build-status', 'command', 'failed', 'bun run build', 1, 1, 1, ?),
+              (?, 'build-status', 'command', 'failed', 'bun run build', 1, 1, 1, ?)`,
+      [longProgress, at(0, 3), other, at(0, 4)],
+    );
+    const digest = collect(db, root, { id: "r1", start: at(0), end: at(1) });
+    const ids = digest.counts.failedChecks.groups.flatMap((group) => group.evidenceIds);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    for (const evidenceId of ids) {
+      expect(evidenceId.startsWith("closeout_step:")).toBe(true);
+      expect(evidenceId.endsWith("/build-status")).toBe(true);
+      expect(evidenceId.length).toBeLessThanOrEqual(200);
+    }
+  });
+
   test("restarts, failures, checks, findings, escapes, rebase returns and CI rounds stay separate", () => {
     const { db, root } = world();
     const id = item(db, "PAS-1", { createdAt: at(0) });
