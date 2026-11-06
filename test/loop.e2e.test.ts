@@ -1058,8 +1058,8 @@ test.each(["claude", "codex", "grok"])(
     await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
     await running;
     expect(stateOf(db, "ENG-9")).toBe("cancelled");
-    // The canceled status passes the Stop fence and reaches the tracker through the dispatcher.
-    expect(tracker.statuses.filter((update) => update.stateType === "canceled")).toHaveLength(1);
+    // A stop from Linear leaves the issue's status to people.
+    expect(tracker.statuses.filter((update) => update.stateType === "canceled")).toEqual([]);
     expect(tracker.progress.at(-1)).toMatchObject({
       kind: "response",
       body: expect.stringMatching(
