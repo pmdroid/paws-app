@@ -2028,6 +2028,11 @@ export function createRemoteAgentRunner(options: {
                   });
                 else await emit({ type: "progress", text: event.text }, origin);
               }
+              if (event.type === "reply")
+                await input.reply?.post(event.text, origin).catch((caughtError3) => {
+                  journalCaught(caughtError3, "runner-backend.forItem.reply", itemId);
+                  return undefined;
+                });
               // A replay after a restart keeps the stored answer instead of publishing again.
               const answered =
                 (event.type === "artifact" ||

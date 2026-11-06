@@ -46,11 +46,13 @@ import type {
   CloseoutProgressHook,
   PostUpdateHook,
   PullRequestHook,
+  ReplyHook,
   UpdatePlanHook,
 } from "../acp";
 import {
   executeItem,
   createUpdateLimiter,
+  REPLIES_PER_TURN,
   validateCandidateAttribution,
   git,
   removeWorktree,
@@ -821,6 +823,7 @@ export class Orchestrator {
   private waitFaces = new Map<string, string>();
   private readonly activityRequests = new Map<number, AbortSignal>();
   private readonly updates = createUpdateLimiter(() => this.now());
+  private readonly replies = new Map<string, { turn: string; count: number }>();
   private readonly inputLoader: ReturnType<typeof createLinearInputLoader> | null;
   private readonly taskPlanner: ReturnType<typeof createTaskPlanner>;
   private readonly githubAuth: GitHubInstallationCheck | null;
@@ -3453,6 +3456,7 @@ export class Orchestrator {
         updatePlan: this.planHook(item, sessionProgress),
         pullRequest: this.pullRequestHook(item),
         postUpdate: this.updateHook(item),
+        reply: this.replyHook(item),
         publishArtifact: this.artifactPublisher(item),
         closeoutProgress: this.agentCloseoutHook(item, run.id),
         ...(focus ? { closeoutFocus: focus } : {}),
@@ -7046,6 +7050,27 @@ export class Orchestrator {
           await this.flush();
         }
         return allowed;
+      },
+    };
+  }
+
+  private replyHook(item: WorkItemRecord): ReplyHook {
+    return {
+      post: async (text, origin) => {
+        if (this.activitySession(item) === null)
+          return { posted: false, reason: "this item has no Linear session" };
+        const turn = origin ? `${origin.runId}:${origin.generation}` : (item.currentRunId ?? "");
+        const sent = this.replies.get(item.id);
+        const count = sent?.turn === turn ? sent.count : 0;
+        if (count >= REPLIES_PER_TURN)
+          return { posted: false, reason: `at most ${REPLIES_PER_TURN} replies per turn` };
+        this.replies.set(item.id, { turn, count: count + 1 });
+        const key = origin
+          ? `reply:${item.id}:${origin.runId}:${origin.generation}:${origin.sequence}`
+          : this.activityKey(`reply:${item.id}`);
+        this.post(item, "response", publicToolText(text), key, {}, "ordered");
+        await this.flush();
+        return { posted: true };
       },
     };
   }

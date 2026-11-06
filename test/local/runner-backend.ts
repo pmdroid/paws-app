@@ -376,6 +376,7 @@ export async function probeRunnerBackend(
     const first = item();
     const events: AcpEvent[] = [];
     const updates: string[] = [];
+    const replies: { text: string; sequence?: number }[] = [];
     const running = backend.forItem(first.id)(
       input(first, {
         onEvent: (e) => {
@@ -384,6 +385,12 @@ export async function probeRunnerBackend(
         postUpdate: {
           async post(text) {
             updates.push(text);
+            return { posted: true };
+          },
+        },
+        reply: {
+          async post(text, origin) {
+            replies.push({ text, sequence: origin?.sequence });
             return { posted: true };
           },
         },
@@ -533,6 +540,14 @@ export async function probeRunnerBackend(
         },
       },
     });
+    work.event({
+      runnerId,
+      runId: assigned.runId,
+      generation: assigned.generation,
+      token: grant.token,
+      sequence: 6,
+      event: { type: "reply", text: "Yes, the old route still answers with 410." },
+    });
     results.submit({
       runnerId,
       runId: assigned.runId,
@@ -568,6 +583,9 @@ export async function probeRunnerBackend(
     assert.equal(getWorkItem(db, first.id)?.state, "running");
     assert.throws(() => work.current(first.run.id, 1), /fenced/);
     assert.deepEqual(updates, ["Implementation progress"]);
+    assert.deepEqual(replies, [
+      { text: "Yes, the old route still answers with 410.", sequence: 6 },
+    ]);
     const status = createLiveStatusProvider(db);
     const listed = status.issues().agentCloseout.find((entry) => entry.runId === first.run.id);
     assert.ok(listed);
