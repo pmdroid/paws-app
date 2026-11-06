@@ -474,7 +474,7 @@ export function buildRetroDigest(
   }
   for (const check of snapshot.checks)
     add(check.itemId, {
-      evidenceId: `closeout_step:${check.progressId}/${check.stepId}`,
+      evidenceId: `closeout_step:${progressKey(check.progressId)}/${check.stepId}`,
       sourceKind: "check",
       sourceRef: `closeout_step/${check.progressId}/${check.stepId}`,
       occurredAt: check.finishedAt,
@@ -1015,6 +1015,12 @@ export type RetroCollection =
   | { ok: false; reason: "busy"; busy: { repository: string; retroId: string }[] };
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+const PROGRESS_KEY_LIMIT = 64;
+const progressKey = (progressId: string) =>
+  progressId.length <= PROGRESS_KEY_LIMIT
+    ? progressId
+    : `sha256:${createHash("sha256").update(progressId).digest("hex")}`;
 
 export function collectRetroDigest(
   db: Database,
