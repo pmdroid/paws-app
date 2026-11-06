@@ -133,8 +133,8 @@ test("a failed load offers a retry and shows no partial state", async () => {
 test("the Runners page saves a reordered list through the agent settings route", async () => {
   const root = window.document.createElement("div") as unknown as HTMLElement;
   window.document.body.append(root as never);
-  const saved: number[] = [];
-  createAccountOrder(() => saved.push(1)).mount(root, "http://127.0.0.1:8787");
+  const saves: number[] = [];
+  createAccountOrder(() => saves.push(1)).mount(root, "http://127.0.0.1:8787");
   expect(requests.map((request) => request.url)).toEqual([
     "http://127.0.0.1:8787/api/settings/agents",
     "http://127.0.0.1:8787/api/runners/accounts",
@@ -174,5 +174,5 @@ test("the Runners page saves a reordered list through the agent settings route",
   requests[2]!.respond(Response.json({ ...body, revision: "cfg-2", waitingRuns: 0 }));
   await settle();
   expect(root.textContent).toContain("Account order saved.");
-  expect(saved).toEqual([1]);
+  expect(saves).toEqual([1]);
 });
