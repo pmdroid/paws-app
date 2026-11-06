@@ -101,6 +101,7 @@ export {
   preExistingFindings,
   fixAttemptLimit,
   fixesLeft,
+  mergeResultPolicyError,
   retryBaseline,
   reviewRecordsSince,
   reviewRequirements,
@@ -116,6 +117,7 @@ export {
   workspacePolicyFiles,
 } from "./facade";
 export { POLICY_VALID_ID } from "./evaluate/evaluate";
+export { POLICY_SCHEMA_SUMMARY } from "./policy/schema-summary";
 export { approvalsAtHead, fixChangedPaths, samePatch } from "./published";
 export { previewAccept } from "./preview";
 export type { PreviewAccept, PreviewAcceptInput } from "./preview";

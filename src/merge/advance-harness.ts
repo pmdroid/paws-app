@@ -42,6 +42,7 @@ import {
   advanceMerge,
   type MainPolicyUnreadable,
   type MergeCapabilities,
+  type MergeResultPolicyError,
   type RunnerRebase,
 } from "./advance";
 import type { RiskApproval } from "./mergeable";
@@ -164,6 +165,8 @@ export async function mergeHarness(
     mainPolicy: null as MainPolicyUnreadable | null,
     policyHolds: [] as { id: string; repository: string; message: string }[],
     policyLoads: [] as string[],
+    mergeResultPolicy: (_worktree: string, _heads: { base: string; head: string }) =>
+      undefined as MergeResultPolicyError | undefined,
     ciFixAttempts: 3,
     feedbackWait: DEFAULT_PULL_FEEDBACK_WAIT as PullFeedbackWait,
     ciReads: [] as string[],
@@ -442,8 +445,9 @@ export async function mergeHarness(
     return git(bare, "rev-parse", `refs/heads/paws/${id}`);
   }
 
-  async function moveMain(file: string, content: string): Promise<string> {
+  async function moveMain(file: string, content: string, removed: string[] = []): Promise<string> {
     await git(seed, "pull", "-q", "--ff-only", "origin", "main");
+    for (const gone of removed) await git(seed, "rm", "-q", gone);
     await mkdir(path.dirname(path.join(seed, file)), { recursive: true });
     await writeFile(path.join(seed, file), content);
     await git(seed, "add", ".");
@@ -549,6 +553,7 @@ export async function mergeHarness(
       policyLoads: (repository) => {
         state.policyLoads.push(repository);
       },
+      mergeResultPolicy: (_, worktree, heads) => state.mergeResultPolicy(worktree, heads),
       packages: () => state.packages,
       assertReady: async () => {},
       riskApproval: async (_, published) => state.risk(published.head),

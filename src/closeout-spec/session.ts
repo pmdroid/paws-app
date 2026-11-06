@@ -6,6 +6,8 @@ import { delimiter, join } from "node:path";
 import { anyPathMatches, pathsMatch } from "./policy/paths";
 import { loadMemoryPolicy, type TreePolicy } from "./policy/resolve";
 import type { PolicyFilesLoad } from "./policy/load";
+import { changesPolicyInput } from "./policy/inputs";
+import { POLICY_SCHEMA_SUMMARY } from "./policy/schema-summary";
 import { credentialSecrets, scrubCommandEnv } from "./run/env";
 import { scrubText } from "./run/scrub";
 import { git } from "./run/exec";
@@ -177,7 +179,7 @@ type Listed = {
 };
 
 type Prepared =
-  | { kind: "empty" }
+  | { kind: "empty"; policyChanged: boolean }
   | { kind: "blocked"; message: string }
   | {
       kind: "ready";
@@ -186,6 +188,7 @@ type Prepared =
       rules: ListedRule[];
       published: PublishedEvidence[];
       deferred: Deferred;
+      policyChanged: boolean;
     };
 
 /** `failed` are the command checks that did not pass on the focus head; they run first. */
@@ -237,7 +240,13 @@ export function createCloseoutSession(
   const prepare = async (): Promise<Prepared> => {
     const source = await options.policy();
     if (!source.ok) return { kind: "blocked", message: source.message };
-    if (source.absent) return { kind: "empty" };
+    if (source.absent) {
+      const changes = await changedPaths(workspace, false);
+      return {
+        kind: "empty",
+        policyChanged: changes.ok && changesPolicyInput({ files: [], items: [] }, changes.paths),
+      };
+    }
     const loaded = loadMemoryPolicy(source.files);
     if (!loaded.ok) return { kind: "blocked", message: loaded.message };
     if (loaded.absent || loaded.policy.digest !== source.digest)
@@ -274,6 +283,7 @@ export function createCloseoutSession(
       rules: selectRules(policy.rules, paths),
       published,
       deferred: await deferredOf(workspace, policy, required, options.focus),
+      policyChanged: changesPolicyInput(policy, paths),
     };
   };
 
@@ -361,6 +371,7 @@ export function createCloseoutSession(
             rules: selectRules(prepared.policy.rules, current.paths),
             published: [],
             deferred: await deferredOf(workspace, prepared.policy, required, options.focus),
+            policyChanged: changesPolicyInput(prepared.policy, current.paths),
           };
         }
         recordedHead = current.ok ? current.head : undefined;
@@ -460,7 +471,13 @@ function lastChars(text: string): { text: string; cut: boolean } {
 
 function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<string, unknown> {
   if (prepared.kind === "empty") {
-    return { required: [], pending: [], blocked: null, bypassed: false };
+    return {
+      required: [],
+      pending: [],
+      blocked: null,
+      bypassed: false,
+      ...(prepared.policyChanged ? { policy_schema: POLICY_SCHEMA_SUMMARY } : {}),
+    };
   }
   if (prepared.kind === "blocked") {
     return { required: [], pending: [], blocked: prepared.message, bypassed: false };
@@ -555,6 +572,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
     blocked,
     bypassed: false,
     ...(prepared.rules.length > 0 ? { rules: prepared.rules } : {}),
+    ...(prepared.policyChanged ? { policy_schema: POLICY_SCHEMA_SUMMARY } : {}),
   };
 }
 

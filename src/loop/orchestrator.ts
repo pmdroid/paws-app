@@ -127,6 +127,8 @@ import {
   type TurnPass,
   candidatePolicyDigests,
   ciMappings,
+  mergeResultPolicyError,
+  POLICY_SCHEMA_SUMMARY,
 } from "../closeout";
 import {
   CommandBus,
@@ -5032,6 +5034,10 @@ export class Orchestrator {
           }),
         policyLoads: (repository) => {
           policyLoads(this.db, repository, this.now());
+        },
+        mergeResultPolicy: (_, worktree, heads) => {
+          const error = mergeResultPolicyError(worktree, heads.base, heads.head);
+          return error === undefined ? undefined : { error, reference: POLICY_SCHEMA_SUMMARY };
         },
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>

@@ -3,6 +3,8 @@ export {
   candidatePolicyDigests,
   credentialSecrets,
   FINDING_FORMAT,
+  mergeResultPolicyError,
+  POLICY_SCHEMA_SUMMARY,
   parseFindings,
   policyKeys,
   scrubText,

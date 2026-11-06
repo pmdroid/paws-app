@@ -25,6 +25,7 @@ import {
 } from "../db";
 import {
   adoptRunnerRebase,
+  leaveGitHubMergeQueue,
   readPullFacts,
   rebaseOntoMain,
   squashPull,
@@ -62,7 +63,7 @@ import {
   type MergeStep,
   type SerialMergeStep,
 } from "./step";
-import { wakeMergesBehind } from "./wait";
+import { githubQueueWatch, wakeMergesBehind } from "./wait";
 
 export type MergePublication = MergePull & {
   github: GitHubBinding & { gitExec: GitExec };
@@ -88,6 +89,8 @@ export type MainPolicyUnreadable = {
   commit: string | null;
 };
 
+export type MergeResultPolicyError = { error: string; reference: string };
+
 export type PolicyRead = { digest: string; recheck: string } | MainPolicyUnreadable | null;
 
 export type MergeCapabilities = OrderCapabilities & {
@@ -109,6 +112,11 @@ export type MergeCapabilities = OrderCapabilities & {
     unreadable: MainPolicyUnreadable,
   ): string;
   policyLoads?(repository: string): void;
+  mergeResultPolicy?(
+    item: WorkItemRecord,
+    worktree: string,
+    heads: { base: string; head: string },
+  ): MergeResultPolicyError | undefined;
   /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
   packages(repository: string): string[];
   assertReady(item: WorkItemRecord): Promise<void>;
@@ -202,6 +210,8 @@ export async function advanceMerge(
   const { voice } = caps;
   const mergeSettings = await caps.settings(item, published.signal);
   if (mergeSettings.order === "github-queue") {
+    const refused = await githubQueuePolicy(merge, caps, published, input.payload);
+    if (refused) return refused;
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
     if (handed !== "no_queue") {
       if (handed.kind === "merged")
@@ -260,6 +270,7 @@ export async function advanceMerge(
       : {}),
   };
   let mainPolicy: PolicyRead | undefined;
+  let mergedPolicyError: MergeResultPolicyError | undefined;
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
     facts: (facts) => {
@@ -271,6 +282,19 @@ export async function advanceMerge(
     },
     rebase: (facts) => rebaseOnRunner(item, caps, lane, facts, published.signal),
     squash: async (head, facts) => {
+      mergedPolicyError = caps.mergeResultPolicy?.(item, published.worktree, {
+        base: facts.base,
+        head,
+      });
+      if (mergedPolicyError !== undefined)
+        return {
+          merged: false,
+          outcome: "invalid",
+          branch: facts.branch,
+          base: facts.base,
+          head,
+          message: mergedPolicyMessage(mergedPolicyError.error),
+        };
       const squashed = await squashPull(
         {
           ...lane,
@@ -350,20 +374,12 @@ export async function advanceMerge(
   await caps.assertReady(item);
   if (getWorkItem(db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
   if (step.kind === "unreadable") throw new Error(step.message);
-  if (step.kind === "hold_policy" && mainPolicy && "ok" in mainPolicy) {
-    const message =
-      caps.holdForPolicy?.(item, queueName(repository), mainPolicy) ??
-      `The Closeout policy on main doesn't load: ${mainPolicy.message}. Paws merges again once it's fixed.`;
-    voice.status(item, message, `${item.id}:policy-unreadable:${message}`);
-    return {
-      kind: "wait",
-      reason: "policy",
-      queued: true,
-      message,
+  if (mergedPolicyError !== undefined) return returnForPolicy(merge, mergedPolicyError, ciFixLimit);
+  if (step.kind === "hold_policy" && mainPolicy && "ok" in mainPolicy)
+    return holdForMainPolicy(item, caps, queueName(repository), mainPolicy, {
       base: step.base,
       head: step.head,
-    };
-  }
+    });
   if (step.kind === "ask_risk") return holdForRisk(db, item, caps, published);
   if (step.kind === "reverify") {
     reverify(merge, step, input.jobId);
@@ -442,6 +458,105 @@ export async function advanceMerge(
   if (late) return late;
   const message = failure(turn, step);
   voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
+  return { kind: "failed", reason: "merge", message };
+}
+
+async function githubQueuePolicy(
+  merge: MergeContext,
+  caps: MergeCapabilities,
+  published: MergePublication,
+  payload: unknown,
+): Promise<MergeStep | undefined> {
+  const { item } = merge;
+  if (!caps.mergeResultPolicy) return undefined;
+  const watch = githubQueueWatch(payload);
+  let main: string | null;
+  try {
+    main = await caps.fetchMain(item);
+  } catch (error) {
+    journalCaught(error, "advance.githubQueuePolicy", item.id);
+    return {
+      kind: "wait",
+      reason: "ci",
+      message: "Could not read main to check the merge result's Closeout policy. Trying again.",
+      head: published.head,
+      ...(watch ? { githubQueue: watch } : {}),
+    };
+  }
+  if (caps.stopped()) return { kind: "obsolete" };
+  if (main === null) return undefined;
+  const repository = queueName(published.repository);
+  const mainPolicy = caps.policyDigests(item, published.worktree);
+  if (mainPolicy && "ok" in mainPolicy) {
+    if (watch?.queued && (await leaveGitHubQueue(published)) === "merged") return undefined;
+    return {
+      ...holdForMainPolicy(item, caps, repository, mainPolicy, { head: published.head }),
+      githubQueue: { queued: false },
+    };
+  }
+  if (mainPolicy) caps.policyLoads?.(repository);
+  const broken = caps.mergeResultPolicy(item, published.worktree, {
+    base: main,
+    head: published.head,
+  });
+  if (!broken) return undefined;
+  if (watch?.queued && (await leaveGitHubQueue(published)) === "merged") return undefined;
+  return returnForPolicy(merge, broken, caps.ciFixAttempts(item));
+}
+
+function leaveGitHubQueue(published: MergePublication) {
+  const { github, repository, pull } = published;
+  return leaveGitHubMergeQueue({
+    client: github.client,
+    owner: repository.owner,
+    repo: repository.repo,
+    prNumber: pull.number,
+    appId: github.appId,
+    installationId: github.installationId,
+    privateKeyPem: github.privateKeyPem,
+    ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
+    signal: published.signal,
+  });
+}
+
+function holdForMainPolicy(
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+  repository: string,
+  unreadable: MainPolicyUnreadable,
+  candidate: { base?: string; head: string },
+): Extract<MergeStep, { kind: "wait" }> {
+  const message =
+    caps.holdForPolicy?.(item, repository, unreadable) ??
+    `The Closeout policy on main doesn't load: ${unreadable.message}. Paws merges again once it's fixed.`;
+  caps.voice.status(item, message, `${item.id}:policy-unreadable:${message}`);
+  return { kind: "wait", reason: "policy", queued: true, message, ...candidate };
+}
+
+function mergedPolicyMessage(error: string): string {
+  return `The Closeout policy doesn't load once this pull request merges into main: ${error}`;
+}
+
+async function returnForPolicy(
+  merge: MergeContext,
+  { error, reference }: MergeResultPolicyError,
+  limit: number,
+): Promise<MergeStep> {
+  const message = mergedPolicyMessage(error);
+  const handoff = `${message}. Paws did not merge it. Update the branch onto origin/main and fix .agents/closeout.yaml or the files it references so the policy loads on top of main.\n\n${reference}`;
+  if (
+    sendBack(merge, "policy-invalid", (fixes) => fixes < limit, handoff, {
+      thought: () => `${message}. Sent it back to the agent.`,
+      record: () => {},
+    })
+  ) {
+    await merge.caps.voice.flush();
+    return { kind: "returned" };
+  }
+  if (askHelp(merge, `${message}. Reply with guidance to continue, or stop the task.`)) {
+    await merge.caps.voice.flush();
+    return { kind: "asked" };
+  }
   return { kind: "failed", reason: "merge", message };
 }
 

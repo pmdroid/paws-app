@@ -9,6 +9,7 @@ import {
   decodePolicyFiles,
   encodePolicyFiles,
   encodePolicyChunk,
+  POLICY_SCHEMA_SUMMARY,
   trustedPolicyFiles,
   workspacePolicyFiles,
   type PolicyDigests,
@@ -81,6 +82,36 @@ test("get_closeout uses the trusted policy and ignores the policy in the workspa
   const listed = await report(session);
   expect(listed.required.map((item) => item.id)).toEqual(["lint"]);
   expect(listed.pending).toEqual(["lint"]);
+});
+
+test("get_closeout includes the policy schema only when the change edits a policy input", async () => {
+  const root = workspace(policy("lint"));
+  const session = createCloseoutSession(root, { policy: async () => trusted("lint") });
+  const schemaOf = async () =>
+    (JSON.parse(await session.report()) as { policy_schema?: string }).policy_schema;
+  expect(await schemaOf()).toBeUndefined();
+  writeFileSync(join(root, ".agents", "closeout.yaml"), policy("typecheck"));
+  expect(await schemaOf()).toBe(POLICY_SCHEMA_SUMMARY);
+});
+
+test("get_closeout includes the policy schema when the change adds the first policy", async () => {
+  const root = directory();
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.email", "test@example.invalid");
+  git(root, "config", "user.name", "Test");
+  writeFileSync(join(root, "README.md"), "seed\n");
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "seed");
+  git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+  const session = createCloseoutSession(root, {
+    policy: async () => ({ ok: true, absent: true }),
+  });
+  const schemaOf = async () =>
+    (JSON.parse(await session.report()) as { policy_schema?: string }).policy_schema;
+  expect(await schemaOf()).toBeUndefined();
+  mkdirSync(join(root, ".agents"), { recursive: true });
+  writeFileSync(join(root, ".agents", "closeout.yaml"), policy("lint"));
+  expect(await schemaOf()).toBe(POLICY_SCHEMA_SUMMARY);
 });
 
 test("a policy change between two get_closeout calls is picked up", async () => {

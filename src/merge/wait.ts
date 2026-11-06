@@ -66,6 +66,7 @@ export function parkMerge(
   delete payload.mergeOutcomeRetries;
   if (wait.queued) {
     delete payload.ciWaitDeadline;
+    if (wait.githubQueue !== undefined) payload.githubQueue = wait.githubQueue;
     return park(db, job, now + pollMs(db, now, MERGE_QUEUE_POLL_MS), payload, now);
   }
   const head = wait.head;
