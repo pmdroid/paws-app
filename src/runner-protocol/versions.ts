@@ -99,3 +99,5 @@ export const GITHUB_READ_RUNNER_VERSION: RunnerVersion = [0, 1, 68];
 export const CLOSEOUT_FOCUS_RUNNER_VERSION: RunnerVersion = [0, 1, 69];
 /** First runner release whose in-turn Closeout stops at the first failed command check. */
 export const CLOSEOUT_FAIL_FAST_RUNNER_VERSION: RunnerVersion = [0, 1, 70];
+/** First runner release that ships `gh` in `/opt/paws-runner/agent-bin`, last on the agent's `PATH`. */
+export const AGENT_GH_RUNNER_VERSION: RunnerVersion = [0, 1, 72];
