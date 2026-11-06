@@ -76,6 +76,18 @@ export function verifyAgain(
   });
 }
 
+export function retryCloseout(
+  db: Database,
+  question: StoredQuestion,
+  input: { now: number; answer?: string },
+): void {
+  db.run("UPDATE question SET answer=?, handoff_version=0 WHERE id=?", [
+    input.answer ?? RETRY_CLOSEOUT,
+    question.id,
+  ]);
+  verifyAgain(db, question, { now: input.now, key: "retry-closeout" });
+}
+
 export function questionEffects(
   db: Database,
   input: {
@@ -153,11 +165,7 @@ export function questionEffects(
     );
     if (recovery === undefined) return;
     if (retriesCloseout(question)) {
-      db.run("UPDATE question SET answer=?, handoff_version=0 WHERE id=?", [
-        RETRY_CLOSEOUT,
-        question.id,
-      ]);
-      verifyAgain(db, question, { now: input.now, key: "retry-closeout" });
+      retryCloseout(db, question, { now: input.now });
       return;
     }
     consumeTurn(question);

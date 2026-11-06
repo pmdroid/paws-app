@@ -11,11 +11,15 @@ import { getQuestion, type StoredQuestion } from "../questions";
 
 export const RETRY_CLOSEOUT = "Retry Closeout";
 
+export const POLICY_LOADS_ANSWER = "Answered by Paws: the policy on main loads again at";
+
 export function retriesCloseout(question: Pick<StoredQuestion, "options" | "answer">): boolean {
   const answer = (question.answer ?? "").trim().toLowerCase();
   return (
     question.options.includes(RETRY_CLOSEOUT) &&
-    (answer === "retry" || answer === RETRY_CLOSEOUT.toLowerCase())
+    (answer === "retry" ||
+      answer === RETRY_CLOSEOUT.toLowerCase() ||
+      answer.startsWith(POLICY_LOADS_ANSWER.toLowerCase()))
   );
 }
 

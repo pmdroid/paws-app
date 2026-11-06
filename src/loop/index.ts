@@ -49,6 +49,7 @@ export {
 export { itemPathId, worktreeBranch } from "./sources";
 export { askCloseoutHelp, type CloseoutHelp, type CloseoutHelpCheck } from "./closeout-help";
 export { questionEffects, verifyAgain } from "./question-effects";
+export { POLICY_BLOCK_CHECK_JOB, POLICY_BLOCK_CHECK_MS } from "./policy-block";
 
 export {
   closeClosedIssueTasks,
