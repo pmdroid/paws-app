@@ -21,7 +21,6 @@ import { enqueueOutboxOnce, stopOutboxSession, advanceOutboxSession } from "./ou
 import { withOpenFindings } from "./open-findings";
 import { markRun } from "./runs";
 import { halt } from "./halt";
-import { enqueueIssueStatus } from "./linear-delegation";
 import { enqueueEndedSessionFace, stoppedResponse } from "./stop-response";
 import { mergeCallInFlight, getConfirmedRemoteMerge } from "./remote-merges";
 import { immediate } from "./tx";
@@ -47,7 +46,11 @@ export function applyLinearCommand(
   now = command.requestedAt,
   /** Replaces the default "Stopped." or "Cancelled from Linear." lead of the response. */
   response?: string,
-  /** `keepPullRequest`: the stop leaves the item's pull request open, as Stop on the Risk card does. */
+  /**
+   * `keepPullRequest`: the stop leaves the item's pull request open, as Stop on the Risk card does.
+   * A stop from Linear (stop button, `/paws stop`, an archived session) keeps it unless the caller
+   * passes `false`, as a fresh re-delegation does.
+   */
   options: { keepPullRequest?: boolean; responseOnly?: boolean } = {},
 ): { applied: boolean; deferred?: boolean } {
   return immediate(db, () => {
@@ -98,8 +101,10 @@ export function applyLinearCommand(
       [now, item.id],
     );
     if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
+    const keepPullRequest =
+      options.keepPullRequest ?? (command.type === "stop" && command.source === "linear");
     const closing =
-      options.keepPullRequest !== true &&
+      !keepPullRequest &&
       (item.state === "merge_queue" ||
         db
           .query(
@@ -151,12 +156,7 @@ export function applyLinearCommand(
       now,
     });
     enqueueEndedSessionFace(db, { sessionId, generation, item, outcome: "stopped", now });
-    // After the fence: Stop drops pending rows, and only `stop` rows deliver in a stopped session.
-    if (!closed)
-      enqueueIssueStatus(db, getWorkItem(db, item.id)!, "canceled", now, {
-        delivery: "stop",
-        generation,
-      });
+    // The issue's status stays with people and the GitHub integration.
     return { applied: true };
   });
 }
