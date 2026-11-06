@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { POLICY_VALID_ID, run, type DecisionDocument } from "../src/closeout-spec";
 import { bypassable, type CloseoutBypass } from "../src/closeout";
@@ -44,7 +44,10 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 function commit(dir: string, files: Record<string, string>, message: string): string {
-  for (const [path, text] of Object.entries(files)) writeFileSync(join(dir, path), text);
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
   git(dir, "add", ".");
   git(dir, "commit", "-m", message);
   return git(dir, "rev-parse", "HEAD");
@@ -53,6 +56,7 @@ function commit(dir: string, files: Record<string, string>, message: string): st
 async function closeout(
   mainPolicy: string,
   files: Record<string, string>,
+  extra: { base?: Record<string, string>; candidate?: (repo: string) => void } = {},
 ): Promise<DecisionDocument> {
   const root = mkdtempSync(join(tmpdir(), "paws-candidate-policy-"));
   try {
@@ -62,11 +66,12 @@ async function closeout(
     mkdirSync(join(repo, ".agents"));
     const base = commit(
       repo,
-      { ".agents/closeout.yaml": mainPolicy, "README.md": "acme\n" },
+      { ".agents/closeout.yaml": mainPolicy, "README.md": "acme\n", ...extra.base },
       "Base",
     );
     git(root, "clone", "--bare", repo, origin);
     git(repo, "remote", "add", "origin", origin);
+    extra.candidate?.(repo);
     const head = commit(repo, files, "Candidate");
     return await run({
       repo,
@@ -93,6 +98,35 @@ test("a candidate that breaks the policy fails policy-valid and still runs main'
   expect(check?.kind).toBe("rule");
   expect(check?.state).toBe("failed");
   expect(check?.message).toContain(`.agents/closeout.yaml: ${TOO_LONG}`);
+}, 20_000);
+
+test("a symlink added under a policy skill directory fails policy-valid", async () => {
+  const skill = ".agents/skills/acme-review/SKILL.md";
+  const reviewed = JSON.stringify({
+    specVersion: "0.1",
+    items: [
+      {
+        id: "review",
+        kind: "review",
+        gate: "beforePR",
+        skill,
+        independence: { differentSession: true, differentModel: false },
+        failOn: "P1",
+      },
+    ],
+  });
+  const decided = await closeout(
+    reviewed,
+    {},
+    {
+      base: { [skill]: "# Acme review\n" },
+      candidate: (repo) =>
+        symlinkSync("SKILL.md", join(repo, ".agents/skills/acme-review/link.md")),
+    },
+  );
+  const check = decided.items.find((item) => item.id === POLICY_VALID_ID);
+  expect(check?.state).toBe("failed");
+  expect(check?.message).toContain("skill file is a symlink: .agents/skills/acme-review/link.md");
 }, 20_000);
 
 test("a candidate that leaves the policy alone has no policy-valid item", async () => {

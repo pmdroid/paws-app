@@ -925,7 +925,14 @@ async function candidatePolicyError(
     ? { ok: true as const, paths: changed }
     : await diffPaths(repo, base, head, scrubCommandEnv(env));
   const read = new Set([PUBLIC_POLICY_PATH, ...policy.files.map((file) => file.path)]);
-  if (diff.ok && !diff.paths.some((path) => read.has(path))) return undefined;
+  const skillDirs = policy.items.flatMap((item) =>
+    item.kind === "review" && "skill" in item
+      ? [item.skill.slice(0, item.skill.lastIndexOf("/") + 1)]
+      : [],
+  );
+  const touches = (path: string) =>
+    read.has(path) || skillDirs.some((dir) => dir.length > 1 && path.startsWith(dir));
+  if (diff.ok && !diff.paths.some(touches)) return undefined;
   const candidate = loadCommitPolicy({ repo, git: gitReader }, head);
   return candidate.ok ? undefined : candidate.message;
 }
