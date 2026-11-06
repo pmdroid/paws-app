@@ -179,7 +179,7 @@ type Listed = {
 };
 
 type Prepared =
-  | { kind: "empty" }
+  | { kind: "empty"; policyChanged: boolean }
   | { kind: "blocked"; message: string }
   | {
       kind: "ready";
@@ -240,7 +240,13 @@ export function createCloseoutSession(
   const prepare = async (): Promise<Prepared> => {
     const source = await options.policy();
     if (!source.ok) return { kind: "blocked", message: source.message };
-    if (source.absent) return { kind: "empty" };
+    if (source.absent) {
+      const changes = await changedPaths(workspace, false);
+      return {
+        kind: "empty",
+        policyChanged: changes.ok && changesPolicyInput({ files: [], items: [] }, changes.paths),
+      };
+    }
     const loaded = loadMemoryPolicy(source.files);
     if (!loaded.ok) return { kind: "blocked", message: loaded.message };
     if (loaded.absent || loaded.policy.digest !== source.digest)
@@ -465,7 +471,13 @@ function lastChars(text: string): { text: string; cut: boolean } {
 
 function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<string, unknown> {
   if (prepared.kind === "empty") {
-    return { required: [], pending: [], blocked: null, bypassed: false };
+    return {
+      required: [],
+      pending: [],
+      blocked: null,
+      bypassed: false,
+      ...(prepared.policyChanged ? { policy_schema: POLICY_SCHEMA_SUMMARY } : {}),
+    };
   }
   if (prepared.kind === "blocked") {
     return { required: [], pending: [], blocked: prepared.message, bypassed: false };

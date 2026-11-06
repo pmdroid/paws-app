@@ -94,6 +94,26 @@ test("get_closeout includes the policy schema only when the change edits a polic
   expect(await schemaOf()).toBe(POLICY_SCHEMA_SUMMARY);
 });
 
+test("get_closeout includes the policy schema when the change adds the first policy", async () => {
+  const root = directory();
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.email", "test@example.invalid");
+  git(root, "config", "user.name", "Test");
+  writeFileSync(join(root, "README.md"), "seed\n");
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "seed");
+  git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+  const session = createCloseoutSession(root, {
+    policy: async () => ({ ok: true, absent: true }),
+  });
+  const schemaOf = async () =>
+    (JSON.parse(await session.report()) as { policy_schema?: string }).policy_schema;
+  expect(await schemaOf()).toBeUndefined();
+  mkdirSync(join(root, ".agents"), { recursive: true });
+  writeFileSync(join(root, ".agents", "closeout.yaml"), policy("lint"));
+  expect(await schemaOf()).toBe(POLICY_SCHEMA_SUMMARY);
+});
+
 test("a policy change between two get_closeout calls is picked up", async () => {
   const root = workspace(policy("edited-on-branch"));
   const versions = [trusted("lint"), trusted("typecheck")];
