@@ -48,7 +48,7 @@ export {
 } from "./orchestrator";
 export { itemPathId, worktreeBranch } from "./sources";
 export { askCloseoutHelp, type CloseoutHelp, type CloseoutHelpCheck } from "./closeout-help";
-export { questionEffects } from "./question-effects";
+export { questionEffects, verifyAgain } from "./question-effects";
 
 export {
   closeClosedIssueTasks,

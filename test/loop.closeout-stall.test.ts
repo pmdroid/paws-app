@@ -1187,3 +1187,47 @@ function created(): AcceptedLinearEvent {
     payload: "{}",
   };
 }
+
+test("Retry Closeout on a policy that did not load verifies the same head into the merge queue", async () => {
+  const f = await verifyingWithHeldGate();
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    const runId = item.currentRunId;
+    f.gate.next = {
+      decision: "blocked",
+      exhausted: false,
+      summary: "Closeout: blocked\nMessage: .agents/closeout.yaml could not be read",
+    };
+    f.release();
+    await f.turn;
+    await f.flush();
+    const question = findOpenQuestion(f.db, "ses_1")!;
+    expect(question).toMatchObject({ kind: "closeout-help", options: ["Retry Closeout"] });
+
+    f.gate.next = { decision: "accepted", exhausted: false, summary: "Closeout: accepted" };
+    expect(
+      await f.orchestrator.answerFromPaws({
+        questionId: question.id,
+        answer: "Retry Closeout",
+        answeredBy: "delegator-1",
+        answeredByName: "Delegator",
+      }),
+    ).toBe("answered");
+    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
+    expect(
+      listJobs(f.db)
+        .filter((job) => job.queue === JOB_KIND.reverify)
+        .map((job) => job.jobKey),
+    ).toEqual([`retry-closeout:${question.id}`]);
+    await f.tickReverify();
+
+    expect(getWorkItem(f.db, item.id)).toMatchObject({ state: "merge_queue", currentRunId: runId });
+    expect(f.gate.runs.map((run) => run.headSha)).toEqual([
+      f.gate.runs[0]!.headSha,
+      f.gate.runs[0]!.headSha,
+    ]);
+    expect(restartReasons(f.db, item.id)).toEqual([]);
+  } finally {
+    await f.close();
+  }
+}, 90_000);

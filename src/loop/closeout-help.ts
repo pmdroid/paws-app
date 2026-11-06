@@ -10,8 +10,28 @@ import {
 import type { RuleApproval } from "../closeout";
 import { shortCommit } from "../questions";
 import { ask } from "./operations";
-import { PREPARATION_FAILED, recoveryQuestion } from "./closeout-recovery";
+import { PREPARATION_FAILED, RETRY_CLOSEOUT, recoveryQuestion } from "./closeout-recovery";
 import { askWithLink, linkAskAvailable } from "./link-ask";
+
+/**
+ * Whether the asked head can be verified again as it is: nothing blocked it on the code. A failed
+ * command that ran to its end, or a failed review, needs a change; a timed-out or unstarted
+ * command, a failed setup, an unloaded policy or an unknown cause does not. A spent retry limit,
+ * held rules and a preparation that never produced a candidate are not retried this way.
+ */
+function retryCloseoutOffered(
+  help: CloseoutHelp,
+  input: { reason?: string; checks?: readonly CloseoutHelpCheck[] },
+): boolean {
+  if (input.reason === "budget_spent" || input.reason === "rule_approval") return false;
+  if (help.head === "" || help.summary.startsWith(PREPARATION_FAILED)) return false;
+  return !(input.checks ?? []).some(
+    (check) =>
+      (check.state === "failed" || check.state === "exhausted") &&
+      check.kind !== "setup" &&
+      (check.kind === "review" || !/timed out|could not start|not judged/.test(check.message)),
+  );
+}
 
 export type CloseoutHelp = Omit<CloseoutRecovery, "questionId" | "answer" | "answeredBy">;
 
@@ -53,6 +73,8 @@ export function askCloseoutHelp(
   immediate(db, () => {
     const item = getWorkItem(db, help.itemId);
     if (!item || item.state === "cancelled") return;
+    const retry = retryCloseoutOffered(help, input);
+    const body = recoveryQuestion(help, input.error);
     const question =
       linkAskAvailable(input.publicUrl) &&
       help.failedChecks.length > 0 &&
@@ -77,8 +99,14 @@ export function askCloseoutHelp(
               ...(input.version !== undefined ? { version: input.version } : {}),
             },
             "closeout-help",
-            recoveryQuestion(help, input.error),
-            { now: input.now, reason: input.reason ?? "closeout_help" },
+            retry
+              ? `${body}\n\nChoose ${RETRY_CLOSEOUT}, or reply retry, to run Closeout again on this head without the agent.`
+              : body,
+            {
+              now: input.now,
+              reason: input.reason ?? "closeout_help",
+              ...(retry ? { options: [RETRY_CLOSEOUT] } : {}),
+            },
           ).question;
     saveCloseoutRecovery(db, { ...help, questionId: question.id });
     if (question.kind === "link")

@@ -44,9 +44,41 @@ import {
   planEditHandoff,
   planOptions,
 } from "./plan-proposal";
+import { RETRY_CLOSEOUT, retriesCloseout } from "./closeout-recovery";
 import { worktreeBranch } from "./sources";
 import { answerRunnerRepository } from "./runner-repository";
 import { recordVisualReviewOutcome, visualReviewHandoff } from "./visual-review";
+
+const consumeTurnOf = (db: Database, question: StoredQuestion) => {
+  if (
+    question.answerEventKey !== null &&
+    getWorkItem(db, question.itemId)?.sessionKey === question.sessionId
+  )
+    applyLinearTurns(db, question.sessionId, [question.answerEventKey], question.itemId);
+};
+
+/**
+ * Runs Closeout again on the item's head with no agent turn: `reverify_requested` from
+ * `awaiting_input` and one re-verify job keyed on the question.
+ */
+export function verifyAgain(
+  db: Database,
+  question: StoredQuestion,
+  input: { now: number; key?: string },
+): void {
+  consumeTurnOf(db, question);
+  if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
+  const item = getWorkItem(db, question.itemId);
+  if (item?.state !== "awaiting_input") return;
+  applyWorkItemEvent(db, item.id, "reverify_requested", { now: input.now });
+  if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
+  enqueueJobOnce(db, {
+    queue: JOB_KIND.reverify,
+    jobKey: `${input.key ?? "time-limit"}:${question.id}`,
+    payload: { itemId: item.id },
+    now: input.now,
+  });
+}
 
 export function questionEffects(
   db: Database,
@@ -59,13 +91,7 @@ export function questionEffects(
     marks?: readonly VisualReviewMark[];
   },
 ): AnswerEffects {
-  const consumeTurn = (question: StoredQuestion) => {
-    if (
-      question.answerEventKey !== null &&
-      getWorkItem(db, question.itemId)?.sessionKey === question.sessionId
-    )
-      applyLinearTurns(db, question.sessionId, [question.answerEventKey], question.itemId);
-  };
+  const consumeTurn = (question: StoredQuestion) => consumeTurnOf(db, question);
   const restartWithAnswers = (
     question: StoredQuestion,
     body: string,
@@ -124,12 +150,24 @@ export function questionEffects(
       held,
     );
   };
-  /** A reply is guidance for the agent. It never bypasses a check: that is decided on the item page. */
+  /**
+   * Retry Closeout verifies the same head again with no agent turn. Any other reply is guidance
+   * for the agent. It never bypasses a check: that is decided on the item page.
+   */
   const closeoutHelp = (question: StoredQuestion) => {
     const recovery = listCloseoutRecoveries(db, question.itemId).find(
       (entry) => entry.questionId === question.id,
     );
     if (recovery === undefined) return;
+    if (retriesCloseout(question)) {
+      // The history names the re-verification; no agent turn hands the answer on.
+      db.run("UPDATE question SET answer=?, handoff_version=0 WHERE id=?", [
+        RETRY_CLOSEOUT,
+        question.id,
+      ]);
+      verifyAgain(db, question, { now: input.now, key: "retry-closeout" });
+      return;
+    }
     consumeTurn(question);
     if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
     restartWithAnswers(
@@ -137,20 +175,6 @@ export function questionEffects(
       handoffNote({ question: recovery.summary, answer: question.answer ?? "" }),
       `closeout-guidance:${question.id}`,
     );
-  };
-  const verifyAgain = (question: StoredQuestion) => {
-    consumeTurn(question);
-    if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
-    const item = getWorkItem(db, question.itemId);
-    if (item?.state !== "awaiting_input") return;
-    applyWorkItemEvent(db, item.id, "reverify_requested", { now: input.now });
-    if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
-    enqueueJobOnce(db, {
-      queue: JOB_KIND.reverify,
-      jobKey: `time-limit:${question.id}`,
-      payload: { itemId: item.id },
-      now: input.now,
-    });
   };
   /**
    * Merge sends the accepted head to the merge queue without another turn. Continue, or a typed
@@ -184,7 +208,7 @@ export function questionEffects(
       // A review or comment restart the time limit cut off reaches the agent with the answer.
       const held = heldHandoffs(db, question.itemId);
       if (plain && held.length === 0 && question.reason === TIME_LIMIT_VERIFYING_REASON)
-        verifyAgain(question);
+        verifyAgain(db, question, { now: input.now });
       else resume(question, held);
       return;
     }

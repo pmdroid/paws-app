@@ -12,7 +12,7 @@ import {
   saveCloseoutRecovery,
 } from "../src/db";
 import { formatEvidenceSummary } from "../src/closeout";
-import { askCloseoutHelp, questionEffects } from "../src/loop";
+import { askCloseoutHelp, questionEffects, verifyAgain } from "../src/loop";
 import { recoveryOptions } from "../src/loop/closeout-recovery";
 import { answer, ask, findOpenQuestion, getQuestion, handoffNote } from "../src/questions";
 import { tempDb } from "./helpers";
@@ -178,4 +178,99 @@ test("a CI help answer resumes the agent with the handoff", () => {
   answer(db, reply("Fix the flaky test"), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
   expect(jobs(db).map((job) => job.jobKey)).toEqual([`resume:answer:${question.id}`]);
+});
+
+const blocked = {
+  ...help("Closeout: blocked\nMessage: .agents/closeout.yaml could not be read"),
+  retryBaseline: ["test:1"],
+};
+
+function askedAbout(
+  checks: { id: string; kind: string; state: string; message: string }[],
+  reason = "blocked_check",
+) {
+  const { db, asker } = parked();
+  askCloseoutHelp(db, "ses_1", blocked, { now: NOW, reason, checks });
+  const question = getQuestion(db, listCloseoutRecoveries(db, asker.itemId)[0]!.questionId)!;
+  return { db, asker, question };
+}
+
+const runs = (db: ReturnType<typeof tempDb>) =>
+  db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM run").get()!.count;
+
+for (const body of ["Retry Closeout", "  RETRY "])
+  test(`${JSON.stringify(body)} on a question blocked on an unreadable policy re-verifies the head without the agent`, () => {
+    const { db, asker, question } = askedAbout([]);
+    expect(question.options).toEqual(["Retry Closeout"]);
+    expect(delivered(db)[0]?.body).toContain("Choose Retry Closeout, or reply retry");
+    answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
+    expect(getWorkItem(db, asker.itemId)?.state).toBe("verifying");
+    expect(jobs(db)).toEqual([
+      {
+        queue: JOB_KIND.reverify,
+        jobKey: `retry-closeout:${question.id}`,
+        payload: { itemId: asker.itemId },
+      },
+    ]);
+    expect(runs(db)).toBe(1);
+    expect(getQuestion(db, question.id)).toMatchObject({
+      answer: "Retry Closeout",
+      answeredBy: "pascal",
+    });
+    // One more evaluation within the same retry limit: no fresh check attempts.
+    expect(recoveryOptions(db, asker.itemId).retryBaseline).toEqual([]);
+  });
+
+test("a longer reply to that question is guidance and restarts the agent with it", () => {
+  const { db, asker, question } = askedAbout([
+    { id: "test", kind: "command", state: "failed", message: "command timed out" },
+  ]);
+  expect(question.options).toEqual(["Retry Closeout"]);
+  answer(db, reply("retry, but also fix X"), questionEffects(db, { now: NOW + 100 }));
+  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect(jobs(db)).toMatchObject([
+    {
+      queue: JOB_KIND.resume,
+      jobKey: `closeout-guidance:${question.id}`,
+      payload: {
+        handoff: handoffNote({ question: blocked.summary, answer: "retry, but also fix X" }),
+      },
+    },
+  ]);
+});
+
+test("a check failing on the code offers no Retry Closeout, and retry restarts the agent", () => {
+  const { db, asker, question } = askedAbout([
+    { id: "setup", kind: "setup", state: "failed", message: "setup exited 1" },
+    { id: "test", kind: "command", state: "failed", message: "command exited 1" },
+  ]);
+  expect(question.options).toEqual([]);
+  expect(delivered(db)[0]?.body).not.toContain("Retry Closeout");
+  answer(db, reply("retry"), questionEffects(db, { now: NOW + 100 }));
+  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect(jobs(db).map((job) => job.jobKey)).toEqual([`closeout-guidance:${question.id}`]);
+});
+
+test("blocking review findings offer no Retry Closeout", () => {
+  const { question } = askedAbout([
+    { id: "independent-review", kind: "review", state: "failed", message: "finding at P1" },
+  ]);
+  expect(question.options).toEqual([]);
+});
+
+test("a spent Closeout retry limit offers no Retry Closeout", () => {
+  const { question } = askedAbout([], "budget_spent");
+  expect(question.options).toEqual([]);
+});
+
+test("the exported re-verify path settles an unanswered question without the agent", () => {
+  const { db, asker, question } = askedAbout([]);
+  db.run("UPDATE question SET status='answered', answer=? WHERE id=?", [
+    "Retry Closeout",
+    question.id,
+  ]);
+  verifyAgain(db, getQuestion(db, question.id)!, { now: NOW + 100, key: "policy-loaded" });
+  expect(getWorkItem(db, asker.itemId)?.state).toBe("verifying");
+  expect(jobs(db).map((job) => job.jobKey)).toEqual([`policy-loaded:${question.id}`]);
+  expect(runs(db)).toBe(1);
 });
