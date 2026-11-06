@@ -12,6 +12,7 @@ import type {
   CloseoutProgressHook,
   PostUpdateHook,
   PullRequestHook,
+  ReplyHook,
   UpdatePlanHook,
 } from "./ask-team";
 import type { ArtifactLimits, PublishArtifactHook } from "./artifacts";
@@ -159,6 +160,7 @@ export interface RunAgentOptions {
   updatePlan?: UpdatePlanHook;
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
+  reply?: ReplyHook;
   publishArtifact?: PublishArtifactHook;
   closeoutProgress?: CloseoutProgressHook;
   artifactLimits?: ArtifactLimits;

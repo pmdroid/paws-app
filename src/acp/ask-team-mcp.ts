@@ -135,6 +135,25 @@ const POST_UPDATE_TOOL = {
   },
 };
 
+const REPLY_TOOL = {
+  name: "reply",
+  description:
+    "Answer a person in the Linear conversation, such as a question or a follow-up they sent. Posts your text as a reply where they wrote. Use it for answers, not for progress; post_update is for progress.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      text: {
+        type: "string",
+        minLength: 1,
+        maxLength: 4000,
+        description: "The reply, in Markdown.",
+      },
+    },
+    required: ["text"],
+    additionalProperties: false,
+  },
+};
+
 const GET_CLOSEOUT_TOOL = {
   name: "get_closeout",
   description:
@@ -267,6 +286,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           ARTIFACT_TOOL,
           PULL_REQUEST_TOOL,
           POST_UPDATE_TOOL,
+          REPLY_TOOL,
           GET_CLOSEOUT_TOOL,
           RUN_CLOSEOUT_TOOL,
           RERUN_CI_TOOL,

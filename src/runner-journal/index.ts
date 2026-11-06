@@ -550,6 +550,11 @@ export function openExecutionJournal(root: string) {
               if (!parsed.success || parsed.data.type !== "hook_failed")
                 throw new Error("Invalid runner hook failure");
               event = parsed.data;
+            } else if (raw && typeof raw === "object" && "type" in raw && raw.type === "reply") {
+              const parsed = RunnerEventSchema.safeParse(raw);
+              if (!parsed.success || parsed.data.type !== "reply")
+                throw new Error("Invalid runner reply");
+              event = parsed.data;
             } else if (raw && typeof raw === "object" && "type" in raw && raw.type === "preview") {
               const parsed = RunnerEventSchema.safeParse(raw);
               if (!parsed.success || parsed.data.type !== "preview")

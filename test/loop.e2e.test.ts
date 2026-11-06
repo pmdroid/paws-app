@@ -2834,6 +2834,89 @@ test("post_update posts one Linear thought and refuses a second update within a 
   }
 }, 120_000);
 
+test("reply posts each answer as a Linear response and refuses a sixth in one turn", async () => {
+  const layout = await repoLayout("paws-e2e-");
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "reply-tool",
+      identifier: "ENG-94",
+      title: "Write ok.txt",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  const resultPath = path.join(layout.root, "reply-tool-result.json");
+  let sequence = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    admission: workspaceAdmission(db),
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: githubClient(layout.bare, github),
+    }),
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `reply-tool-${sequence}.json`);
+      const steps: FakeScript["steps"] =
+        input.purpose === "implement"
+          ? [
+              ...[1, 2, 3, 4, 5, 6].map((n) => ({ type: "reply" as const, text: `Answer ${n}.` })),
+              writeOk(input.worktree),
+              { type: "end" },
+            ]
+          : emptyReview().steps;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, input.purpose === "implement" ? resultPath : "", scriptPath],
+        env: process.env,
+      };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "reply-tool"));
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && !existsSync(resultPath)) {
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
+    }
+    const result = JSON.parse(await readFile(resultPath, "utf8")) as FakeResult;
+    expect(result.updates).toEqual([
+      ...[1, 2, 3, 4, 5].map(() => ({ ok: true, text: "Posted in the Linear conversation." })),
+      { ok: true, text: "Not posted: at most 5 replies per turn" },
+    ]);
+    while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-94") ?? "")) {
+      if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
+    }
+    expect(stateOf(db, "ENG-94"), debug(layout, db)).toBe("merged");
+    expect(tracker.progress.filter((update) => update.body.startsWith("Answer "))).toMatchObject(
+      [1, 2, 3, 4, 5].map((n) => ({ kind: "response", body: `Answer ${n}.` })),
+    );
+  } finally {
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}, 120_000);
+
 test.each([false, true])(
   "CI repair continues after PR completion and can ask for help: %s",
   async (ask) => {

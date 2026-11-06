@@ -48,6 +48,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   appBotCommitIdentity,
   createUpdateLimiter,
+  REPLIES_PER_TURN,
+  REPLY_MAX_LENGTH,
   validateCandidateAttribution,
   assertDescendsFromAny,
   candidateBases,
@@ -394,6 +396,7 @@ export type RunnerWorkerEvent =
           | "plan"
           | "pull_request"
           | "progress"
+          | "reply"
           | "closeout"
           | "hook_failed"
           | "session_restore"
@@ -821,6 +824,7 @@ export async function executeRunnerCommand(
   let journalSize = fstatSync(eventJournal).size;
   let activityOmitted = false;
   const updates = createUpdateLimiter();
+  const replies = new Map<string, number>();
   let githubRead: GitHubReadConfig | undefined;
   const readRedactor = () =>
     command.type === "run" && command.githubRead
@@ -1441,6 +1445,25 @@ export async function executeRunnerCommand(
                 const allowed = updates.take(job.executionId);
                 if (allowed.posted) emit(parsed.data);
                 return allowed;
+              },
+            }
+          : undefined,
+      reply:
+        command.type === "run"
+          ? {
+              async post(text) {
+                const parsed = RunnerEventSchema.safeParse({ type: "reply", text });
+                if (!parsed.success || parsed.data.type !== "reply")
+                  throw new Error(`reply needs text of 1 to ${REPLY_MAX_LENGTH} characters`);
+                const sent = replies.get(job.executionId) ?? 0;
+                if (sent >= REPLIES_PER_TURN)
+                  return {
+                    posted: false as const,
+                    reason: `at most ${REPLIES_PER_TURN} replies per turn`,
+                  };
+                replies.set(job.executionId, sent + 1);
+                emit(parsed.data);
+                return { posted: true as const };
               },
             }
           : undefined,

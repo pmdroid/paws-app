@@ -663,6 +663,47 @@ test("post_update posts once and answers a second call within a minute with the 
   expect(posted).toEqual(["Found the cause: the cache key ignores the locale."]);
 });
 
+test("reply posts the trimmed text through its hook and refuses empty text", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "reply", text: "  The cache key ignores the locale, so French users see English.  " },
+      { type: "reply", text: "Second answer." },
+      { type: "reply", text: "" },
+      { type: "end" },
+    ],
+  });
+  const posted: string[] = [];
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-reply",
+    prompt: "Answer the person.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    reply: {
+      post: async (text) => {
+        if (posted.length >= 1) return { posted: false, reason: "at most 1 replies per turn" };
+        posted.push(text);
+        return { posted: true };
+      },
+    },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.tools).toEqual(["reply", "get_closeout", "run_closeout"]);
+  expect(trace.updates).toEqual([
+    { ok: true, text: "Posted in the Linear conversation." },
+    { ok: true, text: "Not posted: at most 1 replies per turn" },
+    { ok: false, error: "reply needs text of 1 to 4000 characters" },
+  ]);
+  expect(posted).toEqual(["The cache key ignores the locale, so French users see English."]);
+});
+
 test("the update limiter allows one update per key per minute", () => {
   let now = 0;
   const limiter = createUpdateLimiter(() => now);

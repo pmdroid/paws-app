@@ -35,6 +35,8 @@ export {
   createUpdateLimiter,
   parsePostUpdate,
   parsePullRequest,
+  REPLY_MAX_LENGTH,
+  REPLIES_PER_TURN,
   startAskTeamBridge,
   decodePolicyFiles,
   encodePolicyFiles,
@@ -53,6 +55,7 @@ export {
   type PullRequestHook,
   type PostUpdateHook,
   type PostUpdateResult,
+  type ReplyHook,
   type UpdatePlanHook,
 } from "./ask-team";
 export {

@@ -74,6 +74,14 @@ export interface CloseoutProgressHook {
 }
 
 export const POST_UPDATE_TOOL_NAME = "post_update";
+export const REPLY_MAX_LENGTH = 4000;
+export const REPLIES_PER_TURN = 5;
+
+type ReplyResult = { posted: true } | { posted: false; reason: string };
+
+export interface ReplyHook {
+  post(text: string, origin?: AcpEventOrigin): Promise<ReplyResult>;
+}
 export const POST_UPDATE_INTERVAL_MS = 60_000;
 
 export type PostUpdateResult = { posted: true } | { posted: false; waitSeconds: number };
@@ -166,6 +174,7 @@ interface HostToolBridgeOptions {
   updatePlan?: UpdatePlanHook;
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
+  reply?: ReplyHook;
   publishArtifact?: PublishArtifactHook;
   closeoutProgress?: CloseoutProgressHook;
   artifactLimits?: ArtifactLimits;
@@ -298,6 +307,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.publishArtifact ? "publish_artifact" : "",
             options.pullRequest ? "open_pull_request" : "",
             options.postUpdate ? "post_update" : "",
+            options.reply ? "reply" : "",
             closeout ? "get_closeout" : "",
             closeout && allowCloseoutRun ? "run_closeout" : "",
             options.ciRerun ? "rerun_ci" : "",
@@ -453,6 +463,14 @@ async function handleConnection(
       const result = await options.postUpdate.post(parsePostUpdate(parsed.arguments ?? {}));
       socket.end(
         `${JSON.stringify({ id, answer: result.posted ? "Posted." : `Too soon. The next update is allowed in ${result.waitSeconds} seconds.` })}\n`,
+      );
+      return;
+    }
+    if (parsed.tool === "reply") {
+      if (!options.reply) throw new Error("reply is unavailable");
+      const result = await options.reply.post(parseReply(parsed.arguments ?? {}));
+      socket.end(
+        `${JSON.stringify({ id, answer: result.posted ? "Posted in the Linear conversation." : `Not posted: ${result.reason}` })}\n`,
       );
       return;
     }
@@ -707,6 +725,14 @@ export function parsePostUpdate(value: { text?: unknown }): string {
   const text = value.text.trim();
   if (text.length < 1 || text.length > 500)
     throw new Error("post_update needs text of 1 to 500 characters");
+  return text;
+}
+
+function parseReply(value: { text?: unknown }): string {
+  if (typeof value.text !== "string") throw new Error("reply requires text");
+  const text = value.text.trim();
+  if (text.length < 1 || text.length > REPLY_MAX_LENGTH)
+    throw new Error(`reply needs text of 1 to ${REPLY_MAX_LENGTH} characters`);
   return text;
 }
 

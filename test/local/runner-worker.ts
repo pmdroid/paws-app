@@ -202,6 +202,7 @@ export async function probeRunnerWorker(
     { type: "publish_artifact", path: "report.txt", displayName: "Report", attachToIssue: true },
     { type: "post_update", text: "Found the cause." },
     { type: "post_update", text: "Tests pass." },
+    { type: "reply", text: "Archived rows stay out unless you ask for them." },
     { type: "ask_team", question: "Include archived rows?", options: ["Yes", "No"] },
     { type: "end" },
   ]);
@@ -490,9 +491,14 @@ export async function probeRunnerWorker(
     journal.filter((event) => event.type === "progress"),
     [{ type: "progress", text: "Found the cause." }],
   );
+  assert.deepEqual(
+    journal.filter((event) => event.type === "reply"),
+    [{ type: "reply", text: "Archived rows stay out unless you ask for them." }],
+  );
   assert.deepEqual(fake.updates, [
     { ok: true, text: "Posted." },
     { ok: true, text: "Too soon. The next update is allowed in 60 seconds." },
+    { ok: true, text: "Posted in the Linear conversation." },
   ]);
   assert.equal(readRunnerAnswer(spool, first.executionId, randomUUID()), null);
   observe(
