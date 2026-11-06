@@ -489,32 +489,8 @@ export function commandAccount(db: Database, commandId: string): CommandAccount 
   return row ? { ...row, named: row.named === 1 } : null;
 }
 
-export function listAgentAccountReferences(db: Database) {
-  const references = db
-    .query<{ id: string; agent: RunnerCodingAgent; enabled: number; removedAt: number | null }, []>(
-      "SELECT id,agent,enabled,removed_at AS removedAt FROM agent_account ORDER BY rowid",
-    )
-    .all()
-    .map((row) => ({
-      id: row.id,
-      agent: row.agent,
-      enabled: row.enabled === 1,
-      removed: row.removedAt !== null,
-    }));
-  const known = new Set(references.map((reference) => reference.id));
-  for (const { id: workspaceId } of db
-    .query<{ id: string }, []>("SELECT id FROM workspace ORDER BY rowid")
-    .all())
-    for (const agent of Object.keys(AGENT_NAMES) as RunnerCodingAgent[]) {
-      const id = legacyAgentAccountId(workspaceId, agent);
-      if (!known.has(id)) references.push({ id, agent, enabled: true, removed: false });
-    }
-  return references;
-}
-
 export type AccountAdmission = {
   agent: RunnerCodingAgent;
-  configured: boolean;
   eligible: string[];
   skipped: { accountId: string; reason: AgentAccountErrorCode }[];
 };
@@ -523,11 +499,8 @@ export function admitAgentAccounts(
   db: Database,
   workspaceId: string,
   agent: RunnerCodingAgent,
-  policy?: { agent: string; accounts: readonly string[] },
 ): AccountAdmission {
-  if (policy && policy.agent !== agent)
-    throw new AgentAccountError("invalid", "The account policy belongs to another agent");
-  const ids = [...new Set(policy?.accounts ?? [legacyAgentAccountId(workspaceId, agent)])];
+  const ids = [legacyAgentAccountId(workspaceId, agent)];
   const eligible: string[] = [];
   const skipped: AccountAdmission["skipped"] = [];
   for (const id of ids) {
@@ -548,51 +521,7 @@ export function admitAgentAccounts(
     if (reason) skipped.push({ accountId: id, reason });
     else eligible.push(id);
   }
-  return { agent, configured: policy !== undefined, eligible, skipped };
-}
-
-export type AccountDispatch =
-  | { dispatch: true; accountId: string; admission: AccountAdmission }
-  | { dispatch: false; reason: string; admission: AccountAdmission | null };
-
-export function dispatchAccount(
-  db: Database,
-  scope: { itemId: string } | { sessionId: string },
-  agent: RunnerCodingAgent,
-  policy: { agent: string; accounts: readonly string[] },
-): AccountDispatch {
-  const sessionId =
-    "sessionId" in scope
-      ? scope.sessionId
-      : db
-          .query<{ sessionKey: string | null }, [string]>(
-            "SELECT session_key AS sessionKey FROM work_item WHERE id=?",
-          )
-          .get(scope.itemId)?.sessionKey;
-  const workspaceId = sessionId
-    ? db
-        .query<{ id: string }, [string]>(
-          `SELECT w.id FROM linear_session s
-           JOIN workspace w ON w.linear_organization_id=s.organization_id
-           WHERE s.session_id=?`,
-        )
-        .get(sessionId)?.id
-    : undefined;
-  if (!workspaceId)
-    return {
-      dispatch: false,
-      reason: "The task has no workspace to check its agent accounts against",
-      admission: null,
-    };
-  const admission = admitAgentAccounts(db, workspaceId, agent, policy);
-  const first = admission.eligible[0];
-  if (first === undefined)
-    return {
-      dispatch: false,
-      reason: `No configured ${AGENT_NAMES[agent]} account is eligible`,
-      admission,
-    };
-  return { dispatch: true, accountId: first, admission };
+  return { agent, eligible, skipped };
 }
 
 export function liveAccountBinding(

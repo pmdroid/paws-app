@@ -80,6 +80,10 @@ A queued item waiting only on Linear blockers shows when Paws last read its rela
 
 `POST /api/runners/<id>/agents/<agent>/extra-usage` with `{"extraUsage": true}` keeps Paws sending that agent work on that runner after a usage window is spent; the provider bills the extra usage. The runner's owner and workspace admins may change it, others get 403, and an agent never signed in on the runner answers 403. `GET /api/runners/<id>/policy` returns `extraUsage` per agent, and `GET /api/runners` reports a spent window with the switch on as status `extra_usage` instead of `usage_limit`. Placement uses such a runner only when no runner the item may use with quota left was free, and the runner history says so.
 
+## Agent sign-in
+
+Each runner signs in to its agents on the Runners page: `GET /api/runners/<id>/accounts` reads each agent's sign-in, `POST /api/runners/<id>/accounts/<agent>/login` starts one and `GET /api/runners/<id>/accounts/<agent>/login/<loginId>` follows it. `GET /api/runners/<id>/health` reads the runner's health. Placement uses each runner's own sign-in only. Named agent accounts and the account and fallback orders were retired: `/api/runners/accounts` and every path under it, including the old `/preview`, answer 410 with `{"error": "Agent accounts were replaced by per-runner sign-in on the Runners page"}`.
+
 ## Route coverage
 
 [`test/dashboard-routes.ts`](../test/dashboard-routes.ts) lists every dashboard page shape, settings page, HTML entrypoint, old link and HTTP route family with its method, a disposition and its owning issue or module:

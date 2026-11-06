@@ -12,9 +12,7 @@ import {
   readMergeSettings,
   readQueueSettings,
   storedMerge,
-  validateAccountReferences,
   writeAgentSettings,
-  type AgentAccountReference,
   type ImplementerName,
   type QueueSettings,
   type StoredMerge,
@@ -31,7 +29,6 @@ export type AgentSettingsOptions = {
   /** Records a changed workspace setting in the audit history. */
   audit?: (action: string, subject: string) => void;
   runnerReadiness?: (agent: ImplementerName) => RunnerReadiness[];
-  agentAccounts?: () => AgentAccountReference[];
 };
 
 function settingsRevision(configPath: string): string {
@@ -102,7 +99,6 @@ export async function handleAgentSettingsRequest(
     applyToWaiting = apply === true;
     expectedRevision = revision;
     settings = parseAgentSettings(isRecord(body) ? agents : body);
-    if (options.agentAccounts) validateAccountReferences(settings, options.agentAccounts());
     mergeBody = merge;
     queueBody = queue;
   } catch (error) {

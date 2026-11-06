@@ -1,6 +1,6 @@
 import type { GitCommitIdentity, GitCommitPolicy, HookEvent, WorkspaceHook } from "../core";
 import type { AgentInputFile } from "./input-files";
-import type { AgentProfile, RoleAccountPolicy } from "../config";
+import type { AgentProfile } from "../config";
 import type { CloseoutFocus, EarlierFinding, PolicyFilesLoad } from "../closeout-spec";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import type { SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
@@ -88,12 +88,6 @@ export type AcpEventListener = (event: AcpEvent, origin?: AcpEventOrigin) => voi
 
 export type AgentIdentity = { session: string; model: string; provider: string };
 
-export type RunAccounts = {
-  revision: string;
-  profile?: RoleAccountPolicy;
-  fallback?: RoleAccountPolicy;
-};
-
 export interface RunAgentOptions {
   repository?: string;
   skillsRoot?: string;
@@ -104,11 +98,9 @@ export interface RunAgentOptions {
   networkGit?: (args: string[]) => Promise<string>;
   profile?: AgentProfile;
   fallbackProfile?: AgentProfile;
-  accounts?: RunAccounts;
   resolveProfiles?: () => {
     profile?: AgentProfile;
     fallbackProfile?: AgentProfile;
-    accounts?: RunAccounts;
   };
   readOnly?: boolean;
   closeoutRulesFirst?: boolean;

@@ -45,16 +45,6 @@ export class UsageLimitPause extends Error {
   }
 }
 
-export class AccountPolicyUnavailable extends Error {
-  override readonly name = "AccountPolicyUnavailable";
-  constructor(
-    readonly agent: string,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 export const MAX_USAGE_LIMIT_EVENTS = 3;
 
 export class UsageLimitExhaustedError extends Error {
@@ -128,17 +118,15 @@ export async function runWithFailover(
   let usageLimitEvents = 0;
   let profile = input.profile;
   let fallback = input.fallbackProfile;
-  let accounts = input.accounts;
   const profileKey = (profiles: {
     profile?: RunAgentOptions["profile"];
     fallbackProfile?: RunAgentOptions["fallbackProfile"];
-    accounts?: RunAgentOptions["accounts"];
   }) =>
     JSON.stringify([
       ...[profiles.profile, profiles.fallbackProfile].map((value) =>
         value ? [value.agent, value.model, value.effort] : null,
       ),
-      profiles.accounts?.revision ?? null,
+      null,
     ]);
   let configuredProfilesKey = profileKey(input);
   const profilesChanged = () =>
@@ -166,7 +154,6 @@ export async function runWithFailover(
           ...input,
           profile,
           fallbackProfile: fallback,
-          accounts,
           prompt,
           timeoutMs: remaining,
         },
@@ -194,29 +181,6 @@ export async function runWithFailover(
         );
         profile = fallback;
         fallback = undefined;
-        if (accounts) accounts = { revision: accounts.revision, profile: accounts.fallback };
-        limit = undefined;
-        continue;
-      }
-      if (
-        error instanceof AccountPolicyUnavailable &&
-        fallback &&
-        profile?.agent === error.agent &&
-        fallback.agent !== error.agent
-      ) {
-        await input.onEvent?.({
-          type: "progress",
-          text: `${error.message}. Reviewing with ${fallback.agent}${fallback.model ? ` ${fallback.model}` : ""} instead.`,
-        });
-        journalCaught(
-          error,
-          "failover.runWithFailover.accountFallback",
-          input.itemId,
-          "moving to the fallback profile",
-        );
-        profile = fallback;
-        fallback = undefined;
-        if (accounts) accounts = { revision: accounts.revision, profile: accounts.fallback };
         limit = undefined;
         continue;
       }
@@ -233,7 +197,6 @@ export async function runWithFailover(
           if (latestKey !== configuredProfilesKey) {
             profile = latest.profile;
             fallback = latest.fallbackProfile;
-            accounts = latest.accounts;
             configuredProfilesKey = latestKey;
             excluded.length = 0;
             if (ledger) {

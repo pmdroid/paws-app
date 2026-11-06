@@ -81,7 +81,6 @@ export type RunnerSetupNeed =
   | { reason: "agent-not-signed-in"; runnerId: string; runnerName: string; agent: string };
 export type PlacementProfile = Pick<RunnerProfile, "agent"> & { model?: string | null };
 export type PlacementAccount = { accountId: string; bindingId: string; named: boolean };
-export type PlacementAccounts = { revision: string; accountIds: readonly string[] };
 export type PlacementCandidate = { id: string; workspaceId: string; account?: PlacementAccount };
 export type PlacementRequest = {
   /** Workspace maintenance helpers run only on active admins own runners. */
@@ -93,7 +92,6 @@ export type PlacementRequest = {
   purpose: PlacementPurpose;
   /** Failed hosts to avoid for new placement; an online pin retries a fresh session there. */
   excludeRunnerIds?: readonly string[];
-  accounts?: PlacementAccounts;
   /** Runner assigned to this run. Work moves only when unavailable; preparation is unpinned. */
   pinnedRunnerId?: string;
   /** For unpinned work: the runner tried first when it has a free slot, the run's own. */
@@ -132,7 +130,6 @@ export type RunnerPlacement = {
     runId?: string;
     profile?: PlacementProfile;
     account?: PlacementAccount;
-    accounts?: PlacementAccounts;
     role: "implementer" | "reviewer";
     purpose: PlacementPurpose;
     startedAt: number;
