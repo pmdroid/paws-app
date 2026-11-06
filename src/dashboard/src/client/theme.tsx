@@ -701,6 +701,7 @@ function tableCell(has: (...names: string[]) => boolean): string | undefined {
       has("skill-cell") &&
         "skill-cell min-w-0 space-y-1 px-3 py-3 align-top [overflow-wrap:anywhere] sm:p-4",
       has("skill-state") && "skill-state w-px px-3 py-3 align-top [overflow-wrap:normal] sm:p-4",
+      has("retro-state") && "retro-state w-px whitespace-nowrap [&_*]:[overflow-wrap:normal]",
     ) || undefined
   );
 }

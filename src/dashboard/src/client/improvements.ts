@@ -873,7 +873,7 @@ function renderHistory(view: ImprovementsView): string {
   const rows = view.history.retros
     .map((retro) => {
       const href = esc(routeHref({ view: "improvements", tab: "report", id: retro.id }));
-      return `<tr data-retro-row="${esc(retro.id)}"><td><a href="${href}"><b>${esc(period(retro.windowStart, retro.windowEnd))}</b></a><div class="muted">${retro.origin === "manual" ? "Manual" : "Scheduled"} · ${esc(retro.repositories.join(", "))}</div>${profileText(retro) ? `<div class="muted">${esc(profileText(retro)!)}</div>` : ""}</td><td class="hide-phone">${retro.digest ? retro.digest.sessions : `<span class="muted">—</span>`}</td><td><div class="row">${historyState(retro)}${historyNotes(retro)}</div></td><td class="hide-phone">${historyLinks(retro)}</td></tr>`;
+      return `<tr data-retro-row="${esc(retro.id)}"><td><a href="${href}"><b>${esc(period(retro.windowStart, retro.windowEnd))}</b></a><div class="muted">${retro.origin === "manual" ? "Manual" : "Scheduled"} · ${esc(retro.repositories.join(", "))}</div>${profileText(retro) ? `<div class="muted">${esc(profileText(retro)!)}</div>` : ""}</td><td class="hide-phone">${retro.digest ? retro.digest.sessions : `<span class="muted">—</span>`}</td><td class="retro-state"><div class="row">${historyState(retro)}${historyNotes(retro)}</div></td><td class="hide-phone">${historyLinks(retro)}</td></tr>`;
     })
     .join("");
   const more = view.history.nextCursor

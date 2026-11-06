@@ -1,7 +1,7 @@
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { insertQueuedItem, listImprovementDeliveries } from "../src/db";
+import { createRetro, insertQueuedItem, listImprovementDeliveries } from "../src/db";
 import {
   deliverImprovements,
   syncImprovementOutcomes,
@@ -11,7 +11,7 @@ import { createFakeImprovementLinear } from "../src/linear";
 import { createRetroReviewHttp } from "../src/retros";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
-import { END, seedDaily, world } from "../test/improvement-fixtures";
+import { END, START, seedDaily, world } from "../test/improvement-fixtures";
 
 const out =
   process.argv[2] ?? join(process.env.TMPDIR ?? "/tmp", `paws-improvements-ui-${Date.now()}`);
@@ -27,6 +27,15 @@ const startSession: StartIssueSession = async (target) => {
 const w = world({ linear, startSession, dashboardUrl: "http://127.0.0.1/" });
 seedDaily(w.db);
 const retro = w.retro.a;
+createRetro(w.db, {
+  id: "r0",
+  workspaceId: "ws",
+  windowStart: START - 7 * 86_400_000,
+  windowEnd: END - 7 * 86_400_000,
+  origin: "scheduled",
+  settingsRevision: 1,
+  now: END,
+});
 const reviews = createRetroReviewHttp({ db: w.db, artifactRoot: w.root, now: w.now });
 let scheduleState: "ready" | "waiting" | "generating" | "failed" = "ready";
 const schedule = () => ({
@@ -93,8 +102,8 @@ const access = createWorkspaceAccess({
       userId,
       active: true,
       guest: false,
-      admin: false,
-      teamIds: ["team-a"],
+      admin: userId === "linear-admin",
+      teamIds: userId === "linear-admin" ? ["team-a", "team-b"] : ["team-a"],
     }),
   },
 });
@@ -117,6 +126,7 @@ const server = startServer({
 const cookieFor = (userId: string) =>
   `${WORKSPACE_COOKIE}=${issueWorkspaceSession(w.db, { workspaceId: "ws", userId, now: Date.now() }).token}`;
 const ada = cookieFor("user-ada");
+const admin = cookieFor("user-admin");
 
 const browser = await chromium.launch({
   headless: true,
@@ -195,6 +205,56 @@ try {
       await layout(page, "settings", width, theme);
       await page.context().close();
     }
+
+  for (const theme of ["light", "dark"] as const)
+    for (const width of [1440, 390]) {
+      const page = await open(width, theme, admin);
+      await visit(page, "/dashboard/improvements/history");
+      await expect(page.locator("[data-retro-row]")).toHaveCount(2);
+      await expect(page.locator('[data-retro-row="r1"]')).toContainText("2 to review");
+      await expect(page.locator('[data-retro-row="r0"]')).toContainText("Queued");
+      await layout(page, "history-several", width, theme);
+      await visit(page, "/dashboard/improvements/reports/r1?item=p1");
+      await expect(page.locator('[data-retro-item="p1"]')).toHaveAttribute("aria-current", "true");
+      await expect(page.locator('[data-retro-item="p1"]')).toContainText(
+        "Answered question in acme/a",
+      );
+      await expect(page.locator('[data-retro-downloads="full"]')).toBeVisible();
+      await layout(page, "report-item", width, theme);
+      await page.context().close();
+      const reader = await open(width, theme);
+      await visit(reader, "/dashboard/improvements/reports/r1");
+      await expect(reader.locator('[data-retro-downloads="denied"]')).toBeVisible();
+      await layout(reader, "report-denied", width, theme);
+      await reader.context().close();
+    }
+
+  const full = await open(1440, "light", admin);
+  await visit(full, "/dashboard/improvements/reports/r1?item=p1");
+  await full.reload();
+  await expect(full.locator('[data-retro-item="p1"]')).toHaveAttribute("aria-current", "true");
+  await full
+    .locator('[data-retro-item="p2"]')
+    .getByRole("link", { name: "Inspect saved evidence" })
+    .click();
+  await expect(full).toHaveURL(`${origin}/dashboard/improvements/reports/r1?item=p2`);
+  await expect(full.locator('[data-retro-item="p2"]')).toContainText("Answered question in acme/b");
+  await full.goBack();
+  await expect(full.locator('[data-retro-item="p1"]')).toHaveAttribute("aria-current", "true");
+  await full.goForward();
+  await expect(full.locator('[data-retro-item="p2"]')).toHaveAttribute("aria-current", "true");
+  const download = full.waitForEvent("download");
+  await full.getByRole("button", { name: "Download digest" }).click();
+  expect((await download).suggestedFilename()).toBe("retro-r1-digest.json");
+  w.db.run("DELETE FROM workspace_repository WHERE repository = 'acme/b'");
+  await full.getByRole("button", { name: "Download rendered prompt" }).click();
+  await expect(full.locator("[data-retro-download-error]")).toContainText(
+    "Paws refused the download",
+  );
+  await expect(full.locator('[data-retro-downloads="denied"]')).toBeVisible();
+  await layout(full, "download-refused", 1440, "light");
+  w.db.run("INSERT INTO workspace_repository VALUES ('ws', 'acme/b', 'team-b')");
+  await full.context().close();
 
   const phone = await open(390, "light");
   await visit(phone, "/dashboard/improvements?source=weekly");
