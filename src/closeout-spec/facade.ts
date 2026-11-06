@@ -971,11 +971,17 @@ export function mergeResultPolicyError(
     ["diff", "--name-only", "--no-renames", "-z", `${base}...${head}`, "--"],
     GIT_TIMEOUT_MS,
   );
-  if (!diff.ok) return undefined;
-  const paths = splitNul(diff.stdout).flatMap((name) => utf8(name) ?? []);
-  if (!changesPolicyInput(main.policy ?? { files: [], items: [] }, paths)) return undefined;
+  const paths = diff.ok ? splitNul(diff.stdout).flatMap((name) => utf8(name) ?? []) : undefined;
+  if (paths && !changesPolicyInput(main.policy ?? { files: [], items: [] }, paths))
+    return undefined;
   const merged = gitSync(repo, ["merge-tree", "--write-tree", base, head], GIT_TIMEOUT_MS);
-  if (!merged.ok) return undefined;
+  const conflicted =
+    !merged.ok && merged.status === 1 && /^[0-9a-f]{40,64}\n/.test(merged.stdout ?? "");
+  if (conflicted) return undefined;
+  if (!merged.ok)
+    throw new Error(
+      `could not build the merge result of ${head.slice(0, 7)} into ${base.slice(0, 7)} (git merge-tree --write-tree needs git 2.38 or newer): ${merged.stderr.trim()}`,
+    );
   const tree = merged.stdout.toString("utf8").trim();
   const loaded = loadCommitPolicy({ repo, git: gitReader }, tree);
   return loaded.ok ? undefined : loaded.message;
@@ -1237,7 +1243,9 @@ function gitSync(
   repo: string,
   args: string[],
   timeout: number,
-): { ok: true; stdout: Buffer } | { ok: false; stderr: string } {
+):
+  | { ok: true; stdout: Buffer }
+  | { ok: false; stderr: string; status?: number | null; stdout?: string } {
   const result = spawnSync("git", args, {
     cwd: repo,
     timeout,
@@ -1248,7 +1256,8 @@ function gitSync(
     return { ok: false, stderr: message };
   }
   const stderr = result.stderr?.toString("utf8") ?? "";
-  if (result.status !== 0) return { ok: false, stderr };
+  if (result.status !== 0)
+    return { ok: false, stderr, status: result.status, stdout: result.stdout?.toString("utf8") };
   return { ok: true, stdout: result.stdout ?? Buffer.alloc(0) };
 }
 
