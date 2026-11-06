@@ -222,7 +222,7 @@ export function previewMarkup(view: AccountSettingsView): string {
 
 export function renderAccountSettings(view: AccountSettingsView): string {
   const intro =
-    '<div class="settings-label"><h2>Agent accounts</h2><p class="sub">Named provider accounts, each signed in on the runners linked to it. Credentials stay on the runner: a runner\'s owner signs in from Runners with the agent\'s own sign-in. Set the order each role tries in the agent profiles below.</p></div>';
+    '<div class="settings-label"><h2>Agent accounts</h2><p class="sub">Named provider accounts, each signed in on the runners linked to it. Credentials stay on the runner: a runner\'s owner signs in from Runners with the agent\'s own sign-in. Set the order each role tries below.</p></div>';
   const message = view.error
     ? `<p class="settings-message err" role="alert">${esc(view.error)}</p>`
     : view.notice

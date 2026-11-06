@@ -10,9 +10,12 @@ import {
 import {
   accountOrderMarkup,
   moveAccount,
-  renderAgentSettings,
+  renderAccountOrder,
   setAccountList,
-} from "./agent-settings";
+} from "./account-order";
+import { renderAgentSettings } from "./agent-settings";
+import { render } from "./render";
+import { renderSettingsPage } from "./settings-pages";
 import { namedStatus, signInSlots } from "./agent-accounts";
 import { accountUsageMarkup } from "./runners";
 
@@ -187,7 +190,7 @@ describe("agent accounts in Settings › Agents", () => {
   });
 });
 
-describe("account order in agent profiles", () => {
+describe("account order on the Runners page", () => {
   function settings(): AgentSettings {
     return {
       defaults: {
@@ -239,18 +242,52 @@ describe("account order in agent profiles", () => {
     expect(codex).toContain("No order.");
   });
 
-  test("the profile form keeps the revision and renders each role's order and inheritance", () => {
-    const html = renderAgentSettings({
-      data: settings(),
+  test("the Runners order renders each role's order, the reviewer fallback and inheritance", () => {
+    const data = settings();
+    data.defaults.reviewerFallback = { agent: "claude", model: "opus" };
+    const html = renderAccountOrder({
+      data,
       busy: null,
       error: null,
       saved: false,
       accounts: choices,
     });
     expect(html).toContain('data-account-order="defaults-implementer"');
+    expect(html).toContain('data-account-order="defaults-reviewer"');
+    expect(html).toContain('data-account-order="defaults-reviewerFallback"');
     expect(html).toContain('data-account-order="0-implementer"');
     expect(html).toContain("Uses the global order.");
-    expect(html).toContain('data-account-order="defaults-reviewer"');
+    expect(html).toContain('data-order="save"');
+    expect(
+      renderAccountOrder({ data: null, busy: null, error: null, saved: false, denied: true }),
+    ).toContain("Only workspace admins can change the account order.");
+  });
+
+  test("the Runners list holds the Agent accounts section and the Agents page no longer does", () => {
+    const runners = render({
+      route: { view: "runners", id: null },
+      phase: "loading",
+      error: null,
+      engineUrl: "http://localhost:8787",
+    }).content;
+    expect(runners.indexOf('id="runner-settings"')).toBeLessThan(
+      runners.indexOf('id="agent-accounts"'),
+    );
+    expect(runners).toContain('id="account-settings"');
+    expect(runners).toContain('id="account-order-settings"');
+    const detail = render({
+      route: { view: "runners", id: "runner-1" },
+      phase: "loading",
+      error: null,
+      engineUrl: "http://localhost:8787",
+    }).content;
+    expect(detail).not.toContain('id="agent-accounts"');
+    const agents = renderSettingsPage("agents");
+    expect(agents).not.toContain("account-settings");
+    expect(agents).toContain("Accounts and their order are on the Runners page.");
+    const form = renderAgentSettings({ data: settings(), busy: null, error: null, saved: false });
+    expect(form).not.toContain("data-account-order");
+    expect(form).not.toContain("Account order");
   });
 });
 
