@@ -136,14 +136,14 @@ function profileSection(state: RetroSettingsState, draft: RetroSettingsDraft): s
     state.catalogs === null
       ? `<small class="sub" role="status" id="retro-catalog-status">${esc(state.catalogError ?? "Loading model choices from signed-in runners… Your selection is kept.")}</small>`
       : `<small class="sub" id="retro-catalog-status">Choices come from your signed-in <a href="${esc(routeHref({ view: "runners", id: null }))}">Runners</a>.</small>`;
-  return `<section class="settings-section" aria-labelledby="retro-agent-heading"><div class="settings-label"><h2 id="retro-agent-heading">Agent</h2><p class="sub">Run the retro on a compatible paired runner.</p></div><div class="settings-controls">
+  return `<section class="settings-section" aria-labelledby="retro-agent-heading"><div class="settings-label"><h2 id="retro-agent-heading">Agent</h2><p class="sub">Run the retro on a compatible paired runner.</p></div><div class="settings-roles"><div class="settings-controls">
     <div class="settings-field"><label for="retro-agent">Agent</label><select id="retro-agent" name="retro-agent"${described("retro-agent", problemFor(state, "agentProfile.agent"))}>${optionList(
       Object.entries(RETRO_AGENT_NAMES).map(([id, name]) => ({ id, name })),
       profile.agent,
     )}</select>${fieldError("retro-agent", problemFor(state, "agentProfile.agent"))}</div>
     <div class="settings-field"><label for="retro-model">Model</label><select id="retro-model" name="retro-model"${described("retro-model", modelProblem, "retro-catalog-status")}>${optionList(modelChoices, profile.model)}</select>${fieldError("retro-model", modelProblem)}</div>
     <div class="settings-field"><label for="retro-effort">Reasoning effort</label><select id="retro-effort" name="retro-effort"${described("retro-effort", effortProblem)}>${optionList(effortChoices, profile.effort)}</select>${fieldError("retro-effort", effortProblem)}</div>
-    ${catalogLine}</div></section>`;
+    </div>${catalogLine}</div></section>`;
 }
 
 function promptSection(state: RetroSettingsState, draft: RetroSettingsDraft): string {
@@ -157,8 +157,8 @@ function promptSection(state: RetroSettingsState, draft: RetroSettingsDraft): st
       ? `<p class="err" role="alert">${esc(state.previewError.message)}</p>`
       : preview === null
         ? `<p class="sub" role="status">${state.busy === "preview" ? "Rendering the preview…" : "Select Preview prompt to render the draft."}</p>`
-        : `<p class="sub" role="status" id="retro-preview-label">${esc(preview.key === key ? preview.label : "The draft changed after this preview. Preview again to see the current draft.")}</p><pre class="retro-prompt-preview" id="retro-prompt-preview" tabindex="0" aria-labelledby="retro-preview-label" data-scroll-key="retro-preview">${esc(preview.text)}</pre>`;
-  return `<section class="settings-section" aria-labelledby="retro-prompt-heading"><div class="settings-label"><h2 id="retro-prompt-heading">Prompt</h2><p class="sub">Write the full instructions the retro agent receives.</p></div><div class="settings-controls">
+        : `<p class="sub" role="status" id="retro-preview-label">${esc(preview.key === key ? preview.label : "The draft changed after this preview. Preview again to see the current draft.")}</p><pre class="retro-prompt-preview whitespace-pre-wrap break-words text-sm" id="retro-prompt-preview" tabindex="0" aria-labelledby="retro-preview-label" data-scroll-key="retro-preview">${esc(preview.text)}</pre>`;
+  return `<section class="settings-section" aria-labelledby="retro-prompt-heading"><div class="settings-label"><h2 id="retro-prompt-heading">Prompt</h2><p class="sub">Write the full instructions the retro agent receives.</p></div><div class="settings-roles">
     <div class="settings-field"><label for="retro-prompt">Retro instructions</label><textarea id="retro-prompt" name="retro-prompt" rows="16" maxlength="${RETRO_PROMPT_MAX_CHARS}" spellcheck="true"${described("retro-prompt", problem, "retro-prompt-help")}>${esc(draft.prompt)}</textarea>
     <small class="err" id="retro-prompt-error" role="alert" data-retro-live="prompt">${esc(problem ?? "")}</small>
     <small class="sub" id="retro-prompt-help">Insert a variable at the cursor. The prompt must include {{digest}} exactly once.</small></div>
@@ -204,10 +204,10 @@ function outputSection(
         .join("")
     : '<p class="sub">Paws cannot access any repository in this workspace yet.</p>';
   const problem = problemFor(state, "repositories");
-  return `<section class="settings-section" aria-labelledby="retro-output-heading"><div class="settings-label"><h2 id="retro-output-heading">Sessions and output</h2><p class="sub">Choose which sessions to read and how much to propose.</p></div><div class="settings-controls">
+  return `<section class="settings-section" aria-labelledby="retro-output-heading"><div class="settings-label"><h2 id="retro-output-heading">Sessions and output</h2><p class="sub">Choose which sessions to read and how much to propose.</p></div><div class="settings-roles">
     <fieldset class="settings-field"><legend>Repositories</legend>${repositories}${fieldError("retro-repositories", problem)}<small class="sub">New activity since the previous successful retro, including older sessions with new events. A newly added repository starts from its own history.</small></fieldset>
-    ${numberField(state, "retro-max-items", "Maximum patterns", "outputLimits.maxItems", draft.outputLimits.maxItems, view.limits.maxItems)}
-    ${numberField(state, "retro-worked-well", "Worked well observations", "outputLimits.workedWell", draft.outputLimits.workedWell, view.limits.workedWell)}
+    <div class="settings-controls">${numberField(state, "retro-max-items", "Maximum patterns", "outputLimits.maxItems", draft.outputLimits.maxItems, view.limits.maxItems)}
+    ${numberField(state, "retro-worked-well", "Worked well observations", "outputLimits.workedWell", draft.outputLimits.workedWell, view.limits.workedWell)}</div>
     </div></section>`;
 }
 
@@ -216,7 +216,7 @@ function scheduleSection(state: RetroSettingsState, draft: RetroSettingsDraft) {
   const paused = schedule.cadence === "paused";
   const timeProblem = problemFor(state, "schedule.time");
   const zoneProblem = problemFor(state, "schedule.timeZone");
-  return `<section class="settings-section" aria-labelledby="retro-schedule-heading"><div class="settings-label"><h2 id="retro-schedule-heading">Schedule</h2><p class="sub">Pick a weekly time or pause automatic retros.</p></div><div class="settings-controls">
+  return `<section class="settings-section" aria-labelledby="retro-schedule-heading"><div class="settings-label"><h2 id="retro-schedule-heading">Schedule</h2><p class="sub">Pick a weekly time or pause automatic retros.</p></div><div class="settings-roles"><div class="settings-controls">
     <div class="settings-field"><label for="retro-cadence">Frequency</label><select id="retro-cadence" name="retro-cadence">${optionList(
       [
         { id: "weekly", name: "Weekly" },
@@ -233,7 +233,7 @@ function scheduleSection(state: RetroSettingsState, draft: RetroSettingsDraft) {
       retroTimeZones(schedule.timeZone).map((zone) => ({ id: zone, name: zone })),
       schedule.timeZone,
     )}</select>${fieldError("retro-time-zone", zoneProblem)}</div>
-    <small class="sub" id="retro-next-run" role="status" data-retro-live="schedule">${esc(retroScheduleSummary(schedule))}</small>
+    </div><small class="sub" id="retro-next-run" role="status" data-retro-live="schedule">${esc(retroScheduleSummary(schedule))}</small>
     </div></section>`;
 }
 
@@ -242,10 +242,10 @@ function limitsSection(
   view: RetroSettingsView,
   draft: RetroSettingsDraft,
 ) {
-  return `<section class="settings-section" aria-labelledby="retro-limits-heading"><div class="settings-label"><h2 id="retro-limits-heading">Run limits</h2><p class="sub">Limit agent time and retries for each retro.</p></div><div class="settings-controls">
+  return `<section class="settings-section" aria-labelledby="retro-limits-heading"><div class="settings-label"><h2 id="retro-limits-heading">Run limits</h2><p class="sub">Limit agent time and retries for each retro.</p></div><div class="settings-roles"><div class="settings-controls">
     ${numberField(state, "retro-active-minutes", "Execution time limit, minutes", "executionLimits.activeMinutes", draft.executionLimits.activeMinutes, view.limits.activeMinutes)}
     ${numberField(state, "retro-retries", "Generation retries", "executionLimits.retries", draft.executionLimits.retries, view.limits.retries)}
-    <small class="sub">Only active agent time counts. Waiting for runner capacity or a provider's quota cooldown spends no execution minutes. A retry reuses the same evidence and frozen settings.</small>
+    </div><small class="sub">Only active agent time counts. Waiting for runner capacity or a provider's quota cooldown spends no execution minutes. A retry reuses the same evidence and frozen settings.</small>
     </div></section>`;
 }
 
@@ -323,7 +323,7 @@ export function renderRetroFrozenSettings(frozen: Frozen): string {
   const download = value.renderedPrompt
     ? `<a class="btn" href="${esc(retroRenderedPromptPath(value.retroId))}" download>Download the rendered prompt</a>`
     : '<p class="muted">The rendered prompt is saved when a runner starts the retro.</p>';
-  return `<details class="improvement-part" data-retro-frozen-details=""><summary>Settings this retro ran with</summary><p class="muted">Frozen when the retro started. Later settings changes do not affect it or its retries.</p><dl class="kv">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl><h4>Prompt template</h4><pre class="retro-prompt-preview" tabindex="0">${esc(value.prompt)}</pre>${download}</details>`;
+  return `<details class="improvement-part" data-retro-frozen-details=""><summary>Settings this retro ran with</summary><p class="muted">Frozen when the retro started. Later settings changes do not affect it or its retries.</p><dl class="kv">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl><h4>Prompt template</h4><pre class="retro-prompt-preview whitespace-pre-wrap break-words text-sm" tabindex="0">${esc(value.prompt)}</pre>${download}</details>`;
 }
 
 export type RetroSettingsOptions = {
