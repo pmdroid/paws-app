@@ -239,15 +239,15 @@ describe("runner card", () => {
 
   test("the card fits a 390 px phone without horizontal scroll", () => {
     const html = card();
-    // Two gauge columns on phones, four from lg; agents and settings stack until sm.
+    // Two gauge columns on phones, four from lg; settings stack until sm.
     const gauges = classNames(html, "runner-gauges")[0]!;
     expect(gauges).toContain("grid-cols-2");
     expect(gauges).toContain("lg:grid-cols-4");
     expect(gauges).toContain("min-w-0");
-    for (const name of ["runner-agent", "runner-setting"]) {
-      expect(classNames(html, name)[0]).toContain("grid-cols-1");
-      expect(classNames(html, name)[0]).toContain("sm:grid-cols-[10rem_minmax(0,1fr)]");
-    }
+    expect(classNames(html, "runner-setting")[0]).toContain("grid-cols-1");
+    expect(classNames(html, "runner-setting")[0]).toContain("sm:grid-cols-[10rem_minmax(0,1fr)]");
+    expect(html).toContain("max-sm:[&amp;_tr]:flex-col");
+    for (const value of classNames(html, "runner-agent-cell")) expect(value).toContain("flex-wrap");
     // Every gauge reserves its label and bar rows, so bars in a row line up.
     for (const value of classNames(html, "runner-gauge")) {
       expect(value).toContain("content-start");

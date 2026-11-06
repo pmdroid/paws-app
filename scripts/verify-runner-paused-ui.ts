@@ -91,7 +91,7 @@ try {
       page.getByText("Sign in the coding agents this runner should use, then turn it on."),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Turn on", exact: true })).toBeEnabled();
-    await expect(page.getByRole("button", { name: "Sign in to agents" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: /^Sign in to Claude/ })).toBeEnabled();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );

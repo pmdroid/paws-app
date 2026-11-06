@@ -39,8 +39,6 @@ import { livePoll, PAGE_POLL_MS } from "./poll";
 import { createPageLoader, errorText } from "./page-loader";
 import type { SettingsPage } from "./settings-pages";
 
-import { createAccountSettings } from "./account-settings";
-import { createAccountOrder } from "./account-order";
 import { createAgentSettings } from "./agent-settings";
 import { createSkillSettings } from "./skills";
 import { createMergeSettings } from "./merge-settings";
@@ -77,22 +75,14 @@ redirectLegacyHash();
 const shell = mountShell();
 const router = shell.router;
 
-const settings = createAgentSettings(
-  () => paint(),
-  () => accountOrder.stale(),
-);
-const accountOrder = createAccountOrder(() => settings.stale());
-const accountSettings = createAccountSettings(() => accountOrder.accountsChanged());
+const settings = createAgentSettings(() => paint());
 const skillSettings = createSkillSettings();
 const mergeSettings = createMergeSettings(() => paint());
 const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const findingSettings = createFindingSettings();
 const timeLimitSettings = createTimeLimitSettings();
-const queueSettings = createQueueSettings(() => {
-  settings.stale();
-  accountOrder.stale();
-});
+const queueSettings = createQueueSettings(() => settings.stale());
 const checkoutSettings = createCheckoutSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
@@ -464,10 +454,6 @@ function paint(): void {
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
-  const accountRoot = document.querySelector<HTMLElement>("#account-settings");
-  if (accountRoot) accountSettings.mount(accountRoot, currentEngine());
-  const orderRoot = document.querySelector<HTMLElement>("#account-order-settings");
-  if (orderRoot) accountOrder.mount(orderRoot, currentEngine());
   const checkoutRoot = document.querySelector<HTMLElement>("#checkout-settings");
   if (checkoutRoot) checkoutSettings.mount(checkoutRoot, currentEngine());
   const skillsRoot = document.querySelector<HTMLElement>("#skill-settings");
