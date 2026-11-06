@@ -27,7 +27,7 @@ import { journalCaught } from "../journal";
 import { readCsrfToken } from "./csrf";
 import { renderImprovements, type ImprovementsView } from "./improvements";
 import { livePoll, PAGE_POLL_MS } from "./poll";
-import type { ImprovementTab, Route } from "./route";
+import { routeHref, type ImprovementTab, type Route } from "./route";
 import { renderMarkup } from "./theme";
 
 export type ImprovementRoute = Extract<Route, { view: "improvements" }>;
@@ -41,12 +41,14 @@ export type ImprovementsOptions = {
   location?: () => { pathname: string; search: string };
   replaceSearch?: (search: string) => void;
   counted?: (total: number) => void;
+  go?: (route: ImprovementRoute) => void;
 };
 
 type Answer = { status: number; body: unknown };
 
 const QUIET_ATTENTION = new Set(["rejected", "verified", "closed"]);
 const SETTLED_GENERATION = new Set(["ready", "failed"]);
+const PAGE_SIZE = 100;
 
 const MESSAGES: Record<string, string> = {
   create: "Accepted. Paws files the issue in Linear and shows it here when Linear confirms it.",
@@ -127,6 +129,7 @@ export function createImprovements(options: ImprovementsOptions = {}) {
   const now = options.now ?? Date.now;
   const draw = options.paint ?? renderMarkup;
   const where = options.location ?? (() => location);
+  const go = options.go ?? ((route: ImprovementRoute) => location.assign(routeHref(route)));
   const replaceSearch =
     options.replaceSearch ??
     ((search: string) => {
@@ -146,6 +149,8 @@ export function createImprovements(options: ImprovementsOptions = {}) {
   let focusAfterPaint: string | null = null;
   let dailyLoaded = false;
   let countToken = 0;
+  let busyToken = 0;
+  let carried = "";
   const count = (token: number, total: number) => {
     if (token === countToken) options.counted?.(total);
   };
@@ -187,32 +192,56 @@ export function createImprovements(options: ImprovementsOptions = {}) {
 
   const loadList = (append = false) =>
     guarded("list", async (current) => {
-      const cursor = append ? view.list?.nextCursor : null;
-      const query = improvementQuery(view.filter, cursor);
-      const limit = append ? 0 : Math.min(100, Math.max(50, view.list?.items.length ?? 0));
-      const path = `${IMPROVEMENTS_API_PATH}${query}${limit ? `${query ? "&" : "?"}limit=${limit}` : ""}`;
-      const answer = await request(path);
-      if (!current()) return;
-      if (answer.status !== 200) {
-        view.listError =
-          answer.status === 403
-            ? "Your workspace access changed, so Paws cannot list improvements for you now."
-            : errorOf(answer, "Improvements did not load.");
-        return;
-      }
-      const parsed = parseImprovementList(answer.body);
-      if (!parsed.ok) {
-        view.listError = parsed.error;
-        return;
-      }
-      view.listError = null;
-      if (append && view.list) {
-        const seen = new Set(view.list.items.map((item) => item.id));
+      const page = async (cursor: string | null | undefined, limit: number) => {
+        const query = improvementQuery(view.filter, cursor);
+        const answer = await request(
+          `${IMPROVEMENTS_API_PATH}${query}${limit ? `${query ? "&" : "?"}limit=${limit}` : ""}`,
+        );
+        if (!current()) return null;
+        if (answer.status !== 200) {
+          view.listError =
+            answer.status === 403
+              ? "Your workspace access changed, so Paws cannot list improvements for you now."
+              : errorOf(answer, "Improvements did not load.");
+          return null;
+        }
+        const parsed = parseImprovementList(answer.body);
+        if (!parsed.ok) {
+          view.listError = parsed.error;
+          return null;
+        }
+        return parsed.value;
+      };
+      if (append) {
+        const next = await page(view.list?.nextCursor, 0);
+        if (!next) return;
+        view.listError = null;
+        const seen = new Set(view.list?.items.map((item) => item.id));
         view.list = {
-          ...parsed.value,
-          items: [...view.list.items, ...parsed.value.items.filter((item) => !seen.has(item.id))],
+          ...next,
+          items: [...(view.list?.items ?? []), ...next.items.filter((item) => !seen.has(item.id))],
         };
-      } else view.list = mergeList(view.list, parsed.value);
+        return;
+      }
+      const loaded = view.list?.items.length ?? 0;
+      const items: ImprovementItem[] = [];
+      const seen = new Set<string>();
+      let last: ImprovementList | null = null;
+      do {
+        const next: ImprovementList | null = await page(
+          last?.nextCursor,
+          last ? PAGE_SIZE : Math.min(PAGE_SIZE, Math.max(50, loaded)),
+        );
+        if (!next) return;
+        last = next;
+        for (const item of next.items)
+          if (!seen.has(item.id)) {
+            seen.add(item.id);
+            items.push(item);
+          }
+      } while (last.nextCursor && items.length < loaded);
+      view.listError = null;
+      view.list = mergeList(view.list, { ...last, items });
     });
 
   const loadAttention = () =>
@@ -464,15 +493,31 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     "delegate",
   ]);
 
+  const claimBusy = (key: string) => {
+    const owner = view;
+    const token = ++busyToken;
+    owner.busy = key;
+    return () => {
+      if (owner === view && busyToken === token) view.busy = null;
+    };
+  };
+
   const mutate = async (key: string, path: string, body: unknown) => {
     if (view.busy !== null || !view.local) return;
-    view.busy = key;
+    const mounted = root;
+    const owner = view;
+    const scope = { tab: view.tab, id: view.id };
+    const here = () =>
+      root === mounted && view === owner && view.tab === scope.tab && view.id === scope.id;
+    const release = claimBusy(key);
     view.error = null;
     view.message = "";
     epoch++;
     paint();
+    let retroId: string | null = null;
     try {
       const answer = await request(path, { method: "POST", body: JSON.stringify(body ?? {}) });
+      if (!here()) return;
       const outcome = parseOutcome(answer.body);
       if (answer.status >= 200 && answer.status < 300) {
         view.message = MESSAGES[key] ?? "Saved.";
@@ -485,6 +530,8 @@ export function createImprovements(options: ImprovementsOptions = {}) {
         view.choice = null;
         view.confirmClosed = null;
         view.drafts = {};
+        const returned = (answer.body as { retroId?: unknown } | null)?.retroId;
+        if (key === "run-retro" && typeof returned === "string") retroId = returned;
       } else if (outcome?.reason === "issue_closed") {
         const issue = (answer.body as { issue?: { identifier?: string } } | null)?.issue;
         view.confirmClosed = issue?.identifier ?? view.drafts["issue"] ?? "This issue";
@@ -501,16 +548,23 @@ export function createImprovements(options: ImprovementsOptions = {}) {
       if (outcome) applyOutcome(outcome);
     } catch (error) {
       journalCaught(error, `improvements.mutate.${key}`, null);
-      view.error =
-        "Paws did not confirm the change. The page reloads what Paws has saved; nothing is filed twice.";
+      if (here())
+        view.error =
+          "Paws did not confirm the change. The page reloads what Paws has saved; nothing is filed twice.";
     } finally {
-      view.busy = null;
+      release();
+      if (here()) epoch++;
+      if (root === mounted && view === owner) paint();
     }
-    epoch++;
-    paint();
+    if (!here()) return;
+    if (retroId !== null && view.tab === "report" && retroId !== view.id) {
+      carried = view.message;
+      go({ view: "improvements", tab: "report", id: retroId });
+      return;
+    }
     if (view.tab === "review") {
       await Promise.all([loadDetail(), loadList(), loadAttention()]);
-      if (key === "run-retro") await loadSchedule();
+      if (key === "run-retro" && here()) await loadSchedule();
     } else if (view.tab === "report") await loadReport();
     else if (view.tab === "history") await loadHistory();
     else await loadSchedule();
@@ -594,11 +648,12 @@ export function createImprovements(options: ImprovementsOptions = {}) {
       return;
     if (action === "reload") reload();
     else if (action === "more") {
-      view.busy = "more";
+      const owner = view;
+      const release = claimBusy("more");
       paint();
       void loadList(true).finally(() => {
-        view.busy = null;
-        paint();
+        release();
+        if (owner === view) paint();
       });
     } else if (action === "more-history") void loadHistory(true);
     else if (action === "evidence") {
@@ -756,7 +811,8 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     view.tab = tab;
     view.id = route.id;
     view.error = null;
-    view.message = "";
+    view.message = carried;
+    carried = "";
     if (tab === "review" || filterChanged) view.filter = filter;
     if (previous.id !== route.id || previous.tab !== tab) {
       view.expanded = false;
@@ -786,6 +842,7 @@ export function createImprovements(options: ImprovementsOptions = {}) {
         reader = nextReader;
         epoch++;
         dailyLoaded = false;
+        carried = "";
         shown = "";
         const page = (globalThis as { location?: { origin: string } }).location;
         const origin = new URL(nextEngine).origin;

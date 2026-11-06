@@ -115,6 +115,7 @@ function harness() {
   const holds: { path: string; release: () => void }[] = [];
   let hold: RegExp | null = null;
   let who = "ada";
+  const answers = new Map<string, () => Response>();
   const serve = async (url: string | URL, init?: RequestInit): Promise<Response> => {
     const target = new URL(String(url));
     requests.push({ method: init?.method ?? "GET", path: `${target.pathname}${target.search}` });
@@ -127,6 +128,8 @@ function harness() {
       method: init?.method ?? "GET",
       ...(init?.body ? { body: init.body as string } : {}),
     });
+    const answer = answers.get(target.pathname);
+    if (answer) return answer();
     if (target.pathname === "/api/retros/schedule") return Response.json(SCHEDULE);
     if (target.pathname === "/api/retros/runs")
       return Response.json({ retroId: "r2", created: true, status: SCHEDULE }, { status: 202 });
@@ -140,8 +143,10 @@ function harness() {
   let tick = () => {};
   let search = "";
   const counts: number[] = [];
+  const went: Route[] = [];
   const page = createImprovements({
     counted: (total: number) => counts.push(total),
+    go: (route: Route) => went.push(route),
     fetch: serve as typeof fetch,
     poll: (next: () => void) => {
       tick = next;
@@ -205,6 +210,8 @@ function harness() {
     page,
     requests,
     counts,
+    went,
+    answers,
     holds,
     holdOn(pattern: RegExp | null) {
       hold = pattern;
@@ -409,6 +416,11 @@ describe("improvement inbox", () => {
     await t.submit('[data-improvement-form="verification"]');
     expect(t.text()).toContain("Verification recorded.");
     expect(t.text()).toContain("Verified");
+    const history = t.find(".improvement-history");
+    expect(history.textContent).toContain("Weekly retro push-recovery questions");
+    expect(history.textContent).toContain("None in the two retros after the merge.");
+    expect(history.textContent).toContain(MERGE);
+    expect(history.querySelector('a[href="https://linear.app/x/retro"]')).toBeTruthy();
     expect(t.starts).toHaveLength(1);
   });
 
@@ -558,6 +570,81 @@ describe("improvement inbox", () => {
     for (const held of t.holds.splice(0)) held.release();
     await late;
     expect(t.counts.at(-1)).toBe(0);
+  });
+
+  test("retrying a failed generation opens the retro the run endpoint returns", async () => {
+    const t = harness();
+    await t.open("/improvements/reports/r1");
+    const r1 = t.page.view().report;
+    const failed = {
+      ...r1,
+      retro: {
+        ...r1.retro,
+        id: "r0",
+        generation: { ...r1.retro.generation, state: "failed", error: "Runner lost" },
+      },
+      report: null,
+    };
+    t.answers.set("/api/retros/reports/r0", () => Response.json(failed));
+    await t.open("/improvements/reports/r0");
+    expect(t.text()).toContain("Runner lost");
+    await t.click('[data-improvement-action="run-retro"]');
+    expect(t.went).toEqual([{ view: "improvements", tab: "report", id: "r2" }]);
+    expect(t.requests.filter((r) => r.path === "/api/retros/reports/r0")).toHaveLength(1);
+    await t.open("/improvements/reports/r2");
+    expect(t.text()).toContain("Retro requested");
+  });
+
+  test("a mutation answer after navigating away leaves the new item alone", async () => {
+    const t = harness();
+    const a = t.w.retro.a;
+    const daily = (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0].id;
+    await t.open(`/improvements/${a}`);
+    await t.click('[data-improvement-choice="reject"]');
+    t.type('[data-improvement-draft="reason"]', "Not recurring");
+    t.holdOn(/\/decision$/);
+    await t.submit('[data-improvement-form="reject"]');
+    expect(t.holds).toHaveLength(1);
+    t.holdOn(null);
+    await t.open(`/improvements/${daily}`);
+    t.type('[data-improvement-draft="criterion"]', "Draft for the daily finding");
+    t.holds[0]!.release();
+    await settle();
+    expect(t.find("[data-improvement]").getAttribute("data-improvement")).toBe(daily);
+    expect(t.find('[data-improvement-draft="criterion"]').value).toBe(
+      "Draft for the daily finding",
+    );
+    expect(t.text()).not.toContain("Rejected. It stays in history");
+    expect(t.page.view().busy).toBeNull();
+  });
+
+  test("polling keeps every row Show more loaded and its next page", async () => {
+    const t = harness();
+    await t.open("/improvements");
+    const full = t.page.view().list;
+    const pages = [0, 1, 2].map((n) => ({
+      ...full,
+      items: Array.from({ length: 100 }, (_, i) => ({
+        ...full.items[0],
+        id: `item-${n * 100 + i}`,
+      })),
+      nextCursor: n < 2 ? `c${n + 1}` : null,
+    }));
+    t.page.view().list = {
+      ...pages[0],
+      items: [...pages[0]!.items, ...pages[1]!.items],
+      nextCursor: "c2",
+    };
+    const listed = t.w.improvements;
+    t.w.improvements = async (...args: Parameters<typeof listed>) => {
+      const url = new URL(args[0].url);
+      if (url.pathname !== "/api/improvements") return listed(...args);
+      const cursor = url.searchParams.get("cursor");
+      return Response.json(pages[cursor ? Number(cursor.slice(1)) : 0]);
+    };
+    await t.poll();
+    expect(t.page.view().list.items).toHaveLength(200);
+    expect(t.page.view().list.nextCursor).toBe("c2");
   });
 
   test("history lists the retro and the settings tab keeps daily and weekly controls apart", async () => {

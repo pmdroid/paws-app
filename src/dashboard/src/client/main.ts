@@ -99,6 +99,7 @@ const runners = createRunners();
 const findings = createFindings();
 const improvements = createImprovements({
   counted: (total) => shell.setCounts({ improvements: total }),
+  go: (route) => void router.navigate(routePath(route)),
 });
 const executionControls = createExecutionControls(reload);
 const deadDeliveryRetry = createDeadDeliveryRetry(reload);
