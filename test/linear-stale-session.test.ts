@@ -181,6 +181,26 @@ test.each(["dismissed", "ended", "complete", "error", "stopping"])(
   },
 );
 
+test("re-delegating an issue a Linear Stop paused resumes the same item", async () => {
+  const f = await fixture();
+  try {
+    await f.orchestrator.onLinearEvent({
+      ...created("old"),
+      dedupeKey: "old:stop",
+      action: "prompted",
+      signal: "stop",
+      updatedAtMs: 15,
+    });
+    expect(getWorkItem(f.db, f.oldId)?.state).toBe("paused");
+    await f.orchestrator.onLinearEvent(created("new"));
+    expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+    expect(getWorkItem(f.db, f.oldId)).toMatchObject({ state: "queued", sessionKey: "new" });
+    expect(getLinearSession(f.db, "new")?.activeItemId).toBe(f.oldId);
+  } finally {
+    await f.close();
+  }
+});
+
 test.each(["pending", "active", "awaitingInput", "stale", "unknown"])(
   "a %s session keeps its claim",
   async (status) => {

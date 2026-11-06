@@ -5,13 +5,16 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   CLEANUP_BLOCKED_NOTICE,
+  acceptLinearStop,
   blockConversation,
   enqueueJob,
   enqueueOutbox,
   getConversation,
   getJob,
+  getLinearSession,
   getOutbox,
   getWorkItem,
+  submitCommand,
 } from "../src/db";
 import { createExecutionControlsFixture, probeExecutionControls } from "./local/execution-controls";
 
@@ -132,6 +135,37 @@ test("Clear stuck agent clears a blocked conversation for an admin, refuses a me
     ]);
     // Nothing is blocked any more, so the action is gone.
     assert.equal((await call("clear_stuck_agent", "admin")).status, 409);
+  } finally {
+    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Resume restarts an item a Linear stop paused, and Stop cancels it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-controls-linear-stop-"));
+  const fixture = createExecutionControlsFixture(root);
+  try {
+    const { db, orchestrator, call } = fixture;
+    const stop = () => {
+      acceptLinearStop(db, "session-controlled", `stop:${Date.now()}`, Date.now());
+      submitCommand(db, orchestrator.bus, {
+        type: "stop",
+        source: "linear",
+        itemId: "controlled",
+        requestedAt: Date.now(),
+      });
+    };
+    stop();
+    assert.equal(getWorkItem(db, "controlled")?.state, "paused");
+    const view = (await (await call()).json()) as { actions: string[] };
+    assert.deepEqual(view.actions, ["stop", "resume"]);
+    assert.equal((await call("resume")).status, 200);
+    assert.equal(getWorkItem(db, "controlled")?.state, "queued");
+    assert.equal(getLinearSession(db, "session-controlled")?.stoppedAt, null);
+
+    stop();
+    assert.equal((await call("stop")).status, 200);
+    assert.equal(getWorkItem(db, "controlled")?.state, "cancelled");
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });

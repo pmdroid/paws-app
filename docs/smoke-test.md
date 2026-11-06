@@ -55,11 +55,12 @@ Each sub-issue's session is one story. Before the pull request, activities tell 
 
 ## Stop
 
-This run proves a stop ends in one response that says what is left on the branch. Delegate a fresh issue in the sandbox team, such as **Add a CSV footer**: "Append a total row to `exportRows` output." Wait for the agent's first commit, then stop it before the pull request opens.
+This run proves a stop from Linear pauses the item and a reply or re-delegation resumes it. Delegate a fresh issue in the sandbox team, such as **Add a CSV footer**: "Append a total row to `exportRows` output." Wait for the agent's first commit, then stop it before the pull request opens.
 
-1. Press stop on the Linear session. The session ends with one response, for example "Stopped. Branch paws/eng-n has 1 commit; no PR was opened. Re-delegate to continue." The title reads `ENG-n: stopped` and the remaining plan steps are canceled.
-2. Re-delegate the issue and wait for the pull request response. Reply `/paws stop` in the session. The one response names the branch and its commits, and says `PR #N stays open`: a stop from Linear leaves the pull request open and the issue's status where it was. Nothing follows it.
-3. Delegate another issue and take it over from the dashboard. The session ends with "Taken over by <who>. Paws will not restart, verify or merge ENG-n." and the title reads `ENG-n: manual`.
+1. Press stop on the Linear session. The session gets one response, "Paused. Reply here or re-delegate to continue." The dashboard shows the item as Paused, with **Resume**.
+2. Reply `Continue` in the session. The same item restarts from its branch with the reply, and opens its pull request. Reply `/paws stop`: the item pauses again, the pull request stays open and the issue's status stays where it was.
+3. Re-delegate the issue. The paused item resumes in the new session; no second item appears on the dashboard. Stop it from the dashboard: it is cancelled and the session ends with "Stopped from Paws." and what is left on the branch.
+4. Delegate another issue and take it over from the dashboard. The session ends with "Taken over by <who>. Paws will not restart, verify or merge ENG-n." and the title reads `ENG-n: manual`.
 
 ## Merge lane
 
