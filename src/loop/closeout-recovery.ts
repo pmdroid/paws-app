@@ -9,10 +9,8 @@ import {
 import type { CloseoutBypass } from "../closeout";
 import { getQuestion, type StoredQuestion } from "../questions";
 
-/** The option that runs Closeout again on the asked head, with no agent turn. */
 export const RETRY_CLOSEOUT = "Retry Closeout";
 
-/** Whether an answer to a `closeout-help` question is Retry Closeout: the option, or exactly `retry`. */
 export function retriesCloseout(question: Pick<StoredQuestion, "options" | "answer">): boolean {
   const answer = (question.answer ?? "").trim().toLowerCase();
   return (
@@ -34,8 +32,7 @@ export function recoveryOptions(
   for (const recovery of listCloseoutRecoveries(db, itemId)) {
     const linkAsk = getLinkAsk(db, recovery.questionId);
     if (linkAsk === null) {
-      // A reply in Linear is guidance, whatever it says. It never bypasses a check. Retry
-      // Closeout is one more evaluation within the same retry limit.
+      // A reply in Linear is guidance, whatever it says. It never bypasses a check.
       const question = recovery.answer === null ? null : getQuestion(db, recovery.questionId);
       if (recovery.answeredBy !== null && question !== null && !retriesCloseout(question))
         for (const key of recovery.retryBaseline) retryBaseline.add(key);

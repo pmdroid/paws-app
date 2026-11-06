@@ -217,7 +217,6 @@ for (const body of ["Retry Closeout", "  RETRY "])
       answer: "Retry Closeout",
       answeredBy: "pascal",
     });
-    // One more evaluation within the same retry limit: no fresh check attempts.
     expect(recoveryOptions(db, asker.itemId).retryBaseline).toEqual([]);
   });
 
@@ -254,6 +253,18 @@ test("a check failing on the code offers no Retry Closeout, and retry restarts t
 test("blocking review findings offer no Retry Closeout", () => {
   const { question } = askedAbout([
     { id: "independent-review", kind: "review", state: "failed", message: "finding at P1" },
+  ]);
+  expect(question.options).toEqual([]);
+});
+
+test("evidence waiting for a visual review offers no Retry Closeout", () => {
+  const { question } = askedAbout([
+    {
+      id: "visual-proof",
+      kind: "evidence",
+      state: "missing",
+      message: "waiting for a visual review",
+    },
   ]);
   expect(question.options).toEqual([]);
 });

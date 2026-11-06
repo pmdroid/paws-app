@@ -57,10 +57,6 @@ const consumeTurnOf = (db: Database, question: StoredQuestion) => {
     applyLinearTurns(db, question.sessionId, [question.answerEventKey], question.itemId);
 };
 
-/**
- * Runs Closeout again on the item's head with no agent turn: `reverify_requested` from
- * `awaiting_input` and one re-verify job keyed on the question.
- */
 export function verifyAgain(
   db: Database,
   question: StoredQuestion,
@@ -150,17 +146,13 @@ export function questionEffects(
       held,
     );
   };
-  /**
-   * Retry Closeout verifies the same head again with no agent turn. Any other reply is guidance
-   * for the agent. It never bypasses a check: that is decided on the item page.
-   */
+  /** A reply is guidance for the agent. It never bypasses a check: that is decided on the item page. */
   const closeoutHelp = (question: StoredQuestion) => {
     const recovery = listCloseoutRecoveries(db, question.itemId).find(
       (entry) => entry.questionId === question.id,
     );
     if (recovery === undefined) return;
     if (retriesCloseout(question)) {
-      // The history names the re-verification; no agent turn hands the answer on.
       db.run("UPDATE question SET answer=?, handoff_version=0 WHERE id=?", [
         RETRY_CLOSEOUT,
         question.id,

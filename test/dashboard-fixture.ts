@@ -118,7 +118,6 @@ export async function startDashboardFixture(options: { linearUsage?: () => Linea
     db,
     workspaceAccess: access,
     evidenceDir,
-    // The real answer route; the fixture records what it would submit.
     questionAnswers: (request, principal, sessionIds) =>
       handleQuestionAnswer(request, {
         db,
