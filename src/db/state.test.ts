@@ -18,6 +18,7 @@ import {
   enqueueJob,
   enqueueJobOnce,
   enterMergeQueue,
+  getItemPullRequest,
   getJob,
   getRun,
   getWorkItem,
@@ -699,30 +700,59 @@ describe("linear commands", () => {
 
     expect(result.applied).toBe(true);
     expect(seen).toEqual(["stop"]);
-    expect(getWorkItem(db, "eng-2")).toMatchObject({ state: "cancelled", cancelRequested: true });
-    expect(getRun(db, run.id)?.status).toBe("lost");
+    expect(getWorkItem(db, "eng-2")).toMatchObject({ state: "paused", cancelRequested: false });
+    expect(getRun(db, run.id)?.status).not.toBe("active");
     expect(listOutbox(db).find((row) => row.op === "activity")?.payload).toEqual({
       sessionId: "ses",
       kind: "response",
-      body: "Stopped. Branch paws/eng-2 has 3 commits; PR #7 stays open. Re-delegate to continue.",
+      body: "Paused. Reply here or re-delegate to continue.",
       id: expect.stringMatching(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
       ),
     });
     expect(merge).not.toBeNull();
     expect(merge !== null && completeJob(db, merge, clock.now())).toBe(false);
-    // A stop from Linear leaves the pull request open.
+    expect(getItemPullRequest(db, "eng-2")?.pullNumber).toBe(7);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.closeStoppedPull)).toBe(false);
 
     submitCommand(db, bus, {
-      type: "cancel",
+      type: "stop",
       source: "linear",
       itemId: "eng-2",
       requestedAt: clock.now() + 1,
     });
-    expect(seen).toEqual(["stop"]);
-    // Response and session plan, no issue status; the repeated cancel adds nothing.
-    expect(listOutbox(db).map((row) => row.op)).toEqual(["activity", "linear.session.plan"]);
+    expect(listOutbox(db).map((row) => row.op)).toEqual(["activity"]);
+
+    expect(
+      submitCommand(db, bus, {
+        type: "stop",
+        source: "dashboard",
+        itemId: "eng-2",
+        requestedAt: clock.now() + 2,
+      }).applied,
+    ).toBe(true);
+    expect(getWorkItem(db, "eng-2")).toMatchObject({ state: "cancelled", cancelRequested: true });
+  });
+
+  test("a Linear stop in the merge queue pauses the item and holds its merge", () => {
+    const { db, clock } = harness();
+    insertQueuedItem(db, { id: "eng-3", sessionKey: "ses", now: clock.now() });
+    beginImplementRun(db, "eng-3", clock.now());
+    applyWorkItemEvent(db, "eng-3", "turn_ended");
+    applyWorkItemEvent(db, "eng-3", "closeout_accepted");
+    enqueueJob(db, { queue: "github.merge", payload: { itemId: "eng-3" }, now: clock.now() });
+
+    submitCommand(db, new CommandBus(), {
+      type: "stop",
+      source: "linear",
+      itemId: "eng-3",
+      requestedAt: clock.now(),
+    });
+
+    expect(getWorkItem(db, "eng-3")?.state).toBe("paused");
+    expect(claimNextJob(db, { workerId: "m", now: clock.now(), queues: ["github.merge"] })).toBe(
+      null,
+    );
   });
 
   test("a stop names the commits left on the branch and the open pull request", () => {
@@ -740,7 +770,7 @@ describe("linear commands", () => {
     recordItemPullRequest(db, { itemId: "eng-5", pullNumber: 12, pullUrl: null, openedAt: 1 });
     submitCommand(db, new CommandBus(), {
       type: "stop",
-      source: "linear",
+      source: "dashboard",
       itemId: "eng-5",
       requestedAt: clock.now(),
     });
@@ -749,7 +779,7 @@ describe("linear commands", () => {
     expect(rows.some((row) => row.op === "status")).toBe(false);
     expect(rows.find((row) => row.op === "activity")?.payload).toMatchObject({
       kind: "response",
-      body: "Stopped. Branch paws/eng-5 has 1 commit; PR #12 stays open. Re-delegate to continue.",
+      body: "Stopped from Paws. Branch paws/eng-5 has 1 commit; PR #12 stays open. Re-delegate to continue.",
     });
     expect(rows.find((row) => row.op === "linear.session.plan")?.payload).toMatchObject({
       sessionId: "ses",
@@ -781,14 +811,14 @@ describe("linear commands", () => {
     );
     submitCommand(db, new CommandBus(), {
       type: "stop",
-      source: "linear",
+      source: "dashboard",
       itemId: "eng-6",
       requestedAt: clock.now(),
     });
     const stop = listOutbox(db).filter((row) => row.delivery === "stop");
     expect(stop.find((row) => row.op === "activity")?.payload).toMatchObject({
       kind: "response",
-      body: "Stopped. Branch paws/eng-6 has no commits; no PR was opened. Re-delegate to continue.",
+      body: "Stopped from Paws. Branch paws/eng-6 has no commits; no PR was opened. Re-delegate to continue.",
     });
     expect(stop.find((row) => row.op === "linear.session.plan")?.payload).toMatchObject({
       summary: `${identifier}: stopped`,

@@ -8,7 +8,7 @@ import {
   transition,
   type LinearCommand,
 } from "../core";
-import { applyWorkItemEvent, getWorkItem } from "./items";
+import { applyWorkItemEvent, getWorkItem, type WorkItemRecord } from "./items";
 import {
   claimNextJob,
   completeJob,
@@ -85,6 +85,14 @@ export function applyLinearCommand(
         });
       return { applied: false };
     }
+    if (
+      command.type === "stop" &&
+      command.source === "linear" &&
+      response === undefined &&
+      options.keepPullRequest !== false &&
+      (item.state === "paused" || transition(item.state, "pause").ok)
+    )
+      return pauseFromLinear(db, item, now);
     if (!transition(item.state, "cancel").ok) return { applied: false };
     try {
       immediate(db, () => {
@@ -159,6 +167,35 @@ export function applyLinearCommand(
     // The issue's status stays with people and the GitHub integration.
     return { applied: true };
   });
+}
+
+const LINEAR_PAUSED_RESPONSE = "Paused. Reply here or re-delegate to continue.";
+
+function pauseFromLinear(db: Database, item: WorkItemRecord, now: number): { applied: boolean } {
+  if (item.state !== "paused") {
+    try {
+      immediate(db, () => {
+        if (!halt(db, item, now)) throw new Error("Stop owner changed");
+        applyWorkItemEvent(db, item.id, "pause", { now });
+      });
+    } catch (caughtError) {
+      journalCaught(caughtError, "commands.pauseFromLinear.applyWorkItemEvent", item.id);
+      return { applied: false };
+    }
+  }
+  const sessionId = item.sessionKey ?? item.id;
+  const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
+  enqueueOutboxOnce(db, {
+    target: OUTBOX_ACTIVITY.target,
+    op: OUTBOX_ACTIVITY.op,
+    orderingKey: sessionId,
+    delivery: "stop",
+    generation,
+    idempotencyKey: `command:stop:${sessionId}:${generation}`,
+    payload: { sessionId, kind: "response", body: LINEAR_PAUSED_RESPONSE, id: crypto.randomUUID() },
+    now,
+  });
+  return { applied: true };
 }
 
 /**
@@ -239,5 +276,9 @@ export function submitCommand(
   enqueueCommand(db, command);
   drainCommands(db, bus, command.requestedAt);
   const after = getWorkItem(db, command.itemId);
-  return { applied: before !== "cancelled" && after?.state === "cancelled" };
+  return {
+    applied:
+      (before !== "cancelled" && after?.state === "cancelled") ||
+      (before !== "paused" && after?.state === "paused"),
+  };
 }

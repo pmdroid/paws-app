@@ -164,7 +164,7 @@ test("the running keepalive names the agent's current plan step, never a bare Wo
     await orchestrator.onLinearEvent(event("prompted", "stop"));
     writeFileSync(release, "go");
     await running;
-    expect(stateOf(db, "ENG-25")).toBe("cancelled");
+    expect(stateOf(db, "ENG-25")).toBe("paused");
   } finally {
     for (const file of [planned, release])
       if (file !== "" && !existsSync(file)) writeFileSync(file, "go");

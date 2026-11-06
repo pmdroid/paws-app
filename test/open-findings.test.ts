@@ -112,7 +112,7 @@ test("the stopped and closed responses carry the open findings of the last publi
       expect(
         applyLinearCommand(
           db,
-          { type: "stop", source: "linear", itemId: id, requestedAt: 5 },
+          { type: "stop", source: "dashboard", itemId: id, requestedAt: 5 },
           5,
           response,
         ).applied,

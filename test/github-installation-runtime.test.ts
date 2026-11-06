@@ -155,8 +155,8 @@ test("Stop prevents a returning installation from resuming the item", async () =
     await f.orchestrator.onLinearEvent({ ...prompt("linear-owner", "stop"), signal: "stop" });
     f.host.installed = true;
     await f.orchestrator.recoverGitHubAuth();
-    expect(getQuestion(f.db, question.id)?.status).toBe("cancelled");
-    expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+    expect(getQuestion(f.db, question.id)?.status).toBe("open");
+    expect(getWorkItem(f.db, f.item.id)?.state).toBe("paused");
     expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
   } finally {
     await f.orchestrator.shutdown();

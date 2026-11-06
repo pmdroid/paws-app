@@ -191,14 +191,21 @@ export async function probePublicationStop(
       payload: "{}",
     });
     observe(
-      "a Linear Stop cancels canonical merge work and leaves the pull request open",
-      getWorkItem(db, "item")?.state === "cancelled" &&
+      "a Linear Stop pauses the item, cancels canonical merge work and leaves the pull request open",
+      getWorkItem(db, "item")?.state === "paused" &&
         db.query<{ status: string }, []>("SELECT status FROM job WHERE job_key='old-merge'").get()
           ?.status === "cancelled" &&
         db.query("SELECT 1 FROM job WHERE queue='github.close_stopped'").get() === null &&
         open &&
         calls.length === 0,
       { calls, joined },
+    );
+    applyLinearCommand(
+      db,
+      { type: "stop", source: "dashboard", itemId: "item", requestedAt: clock.now() },
+      clock.now(),
+      undefined,
+      { keepPullRequest: true },
     );
     // Only an explicit request closes a stopped pull request now.
     enqueueJob(db, {

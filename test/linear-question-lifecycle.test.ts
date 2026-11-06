@@ -9,7 +9,6 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  listOpenQuestions,
   listOutbox,
 } from "../src/db";
 import {
@@ -263,16 +262,26 @@ test("a continuation write failure rolls back the answer and state transition", 
   }
 });
 
-test("Stop cancels a persisted question even when no agent is alive", async () => {
-  const { db, item, question, orchestrator } = setup();
+test("a Linear Stop pauses the item with its question open, and a reply restarts it", async () => {
+  const { db, item, question, orchestrator } = setup(createFakeTracker([]));
   try {
     await orchestrator.onLinearEvent({ ...prompt(), body: null, signal: "stop" });
-    expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
-    expect(getQuestion(db, question.id)?.status).toBe("cancelled");
-    expect(findOpenQuestion(db, "ses_1")).toBeNull();
-    expect(listOpenQuestions(db)).toHaveLength(0);
-    await orchestrator.onLinearEvent(prompt());
+    expect(getWorkItem(db, item.id)?.state).toBe("paused");
+    expect(getQuestion(db, question.id)?.status).toBe("open");
+    expect(listOutbox(db).map((row) => (row.payload as { body?: string }).body)).toContain(
+      "Paused. Reply here or re-delegate to continue.",
+    );
+
+    await orchestrator.onLinearEvent(prompt(NOW + 500, "reply-1"));
+    expect(getWorkItem(db, item.id)?.state).toBe("queued");
     expect(getQuestion(db, question.id)?.answer).toBeNull();
+    expect(findOpenQuestion(db, "ses_1")).toBeNull();
+    const resume = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+    expect(resume).toHaveLength(1);
+    expect(resume[0]!.payload).toMatchObject({
+      reason: "follow_up",
+      handoff: expect.stringContaining("Yes, include the archived rows"),
+    });
   } finally {
     db.close();
   }

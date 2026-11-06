@@ -503,7 +503,7 @@ test("Stop interrupts repository interpretation before any binding or repository
     });
     await pending;
     expect(getWorkItemRepository(f.db, question.itemId)).toBeNull();
-    expect(getWorkItem(f.db, question.itemId)?.state).toBe("cancelled");
+    expect(getWorkItem(f.db, question.itemId)?.state).toBe("paused");
     expect(f.tracker.statuses).toEqual([]);
     expect(existsSync(join(f.pawsRoot, "worktrees"))).toBe(false);
   } finally {

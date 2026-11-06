@@ -721,8 +721,8 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     await paws.catchUp();
     observe(
       "normal catch-up retains canonical Stop for an authorized teammate",
-      getQuestion(db, permittedStop.question.id)?.status === "cancelled" &&
-        getWorkItem(db, permittedStop.item.id)?.state === "cancelled",
+      getQuestion(db, permittedStop.question.id)?.status === "open" &&
+        getWorkItem(db, permittedStop.item.id)?.state === "paused",
       {
         question: getQuestion(db, permittedStop.question.id)?.status,
         state: getWorkItem(db, permittedStop.item.id)?.state,
