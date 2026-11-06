@@ -36,7 +36,7 @@ const configuration = z.strictObject({
     .optional(),
   serverCa: z.string().max(32768).optional(),
   concurrency: z.number().int().min(1).max(16).default(2),
-  agentUser: z.enum(RUNNER_AGENT_USERS).default("runner"),
+  agentUser: z.enum(RUNNER_AGENT_USERS).default("paws-agent"),
 });
 
 function account(kind: "user" | "group", name: string): number {

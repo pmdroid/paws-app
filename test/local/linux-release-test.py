@@ -1743,5 +1743,48 @@ class AgentUnit(unittest.TestCase):
         self.assertIn("-/run/paws-runner/agent", self.unit("paws-runner.service")["ReadWritePaths"])
 
 
+class AgentUserDefault(unittest.TestCase):
+    def setUp(self):
+        self.installer = load("install")
+        self.temporary = tempfile.TemporaryDirectory()
+        self.config = pathlib.Path(self.temporary.name) / "config.json"
+        patch = mock.patch.object(self.installer, "root_directory", lambda path, mode=0o755: None)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(self.temporary.cleanup)
+
+    def write(self, content):
+        self.config.write_text(content)
+        self.config.chmod(0o640)
+
+    def test_a_fresh_install_writes_no_config_and_the_runner_defaults_to_paws_agent(self):
+        self.assertFalse(self.installer.default_agent_user(self.config))
+        self.assertFalse(self.config.exists())
+
+    def test_an_upgrade_keeps_an_explicit_runner(self):
+        self.write('{"concurrency": 2, "agentUser": "runner"}')
+        self.assertFalse(self.installer.default_agent_user(self.config))
+        self.assertEqual(self.config.read_text(), '{"concurrency": 2, "agentUser": "runner"}')
+
+    def test_an_upgrade_without_the_key_adds_paws_agent_and_keeps_the_rest(self):
+        self.write('{"controlPlaneUrl": "https://paws.example", "concurrency": 3}')
+        before = self.config.stat()
+        self.assertTrue(self.installer.default_agent_user(self.config))
+        self.assertEqual(json.loads(self.config.read_text()), {"controlPlaneUrl": "https://paws.example", "concurrency": 3, "agentUser": "paws-agent"})
+        after = self.config.stat()
+        self.assertEqual((after.st_uid, after.st_gid, after.st_mode & 0o7777), (before.st_uid, before.st_gid, 0o640))
+        self.assertFalse(self.installer.default_agent_user(self.config))
+
+    def test_an_unreadable_config_is_left_for_the_runner_to_report(self):
+        self.write("{not json")
+        self.assertFalse(self.installer.default_agent_user(self.config))
+        self.assertEqual(self.config.read_text(), "{not json")
+        self.config.unlink()
+        self.config.symlink_to(self.config.with_name("elsewhere.json"))
+        self.config.with_name("elsewhere.json").write_text("{}")
+        self.assertFalse(self.installer.default_agent_user(self.config))
+        self.assertEqual(self.config.with_name("elsewhere.json").read_text(), "{}")
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], *sys.argv[2:]], verbosity=2)

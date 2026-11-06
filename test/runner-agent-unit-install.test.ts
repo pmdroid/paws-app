@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "bun:test";
 
-test("the installer ships the agent unit, its polkit rule and its environment directory", async () => {
+async function releaseTests(name: string) {
   const child = Bun.spawn(
     [
       "python3",
@@ -9,7 +9,7 @@ test("the installer ships the agent unit, its polkit rule and its environment di
       "-B",
       new URL("local/linux-release-test.py", import.meta.url).pathname,
       new URL("../deploy/linux/release.py", import.meta.url).pathname,
-      "AgentUnit",
+      name,
     ],
     { env: { PATH: "/usr/bin:/bin", LANG: "C" }, stdout: "pipe", stderr: "pipe" },
   );
@@ -19,8 +19,16 @@ test("the installer ships the agent unit, its polkit rule and its environment di
     child.exited,
   ]);
   expect(stdout + stderr).not.toContain("skipped");
-  expect(stderr).toMatch(/Ran 3 tests[\s\S]*\nOK\n?$/);
   expect(code).toBe(0);
+  return stderr;
+}
+
+test("the installer ships the agent unit, its polkit rule and its environment directory", async () => {
+  expect(await releaseTests("AgentUnit")).toMatch(/Ran 3 tests[\s\S]*\nOK\n?$/);
+});
+
+test("an install names paws-agent only where the host config has no agent user", async () => {
+  expect(await releaseTests("AgentUserDefault")).toMatch(/Ran 4 tests[\s\S]*\nOK\n?$/);
 });
 
 test("the polkit rule lets paws-runner start and stop agent units and nothing else", () => {

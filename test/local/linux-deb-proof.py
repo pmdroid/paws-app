@@ -116,7 +116,9 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
         assert pathlib.Path("/opt/paws-runner/current").resolve().name == "0.1.2"
         assert set(json.loads(services.read_text())) == set(active)
         assert all(path.read_text() == "preserved local identity state" for path in markers)
-        assert config.read_text() == "{}"
+        # The upgrade names the agent user the config left out, and keeps the file's owner and mode.
+        assert json.loads(config.read_text()) == {"agentUser": "paws-agent"}
+        assert (config.stat().st_uid, config.stat().st_gid, config.stat().st_mode & 0o7777) == (0, runner.pw_gid, 0o640)
         observations.append({"name": "upgrade restarts previously active services and preserves configuration and agent state", "passed": True})
         enabled = ROOT / "enabled-services.json"
         enabled.write_text(json.dumps(active))
