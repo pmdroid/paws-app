@@ -41,6 +41,7 @@ const CONFIG_KEYS = new Set([
   "allowedRepositories",
   "serverCa",
   "concurrency",
+  "conversationConcurrency",
 ]);
 /**
  * A fixed English sentence: letters, spaces and light punctuation only. Messages that carry data

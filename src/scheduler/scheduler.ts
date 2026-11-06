@@ -30,6 +30,7 @@ import {
   repositoryKey,
   runnerLeaseCutoff,
   CI_WAITING,
+  WORK_HELPER,
 } from "../db";
 import { blockingIssues, readyItems } from "../intake";
 import { createAdmission, type ItemAdmission } from "./admission";
@@ -330,7 +331,7 @@ function taskSlots(
     .query<{ id: string; capacity: number; used: number }, [number, number, number]>(
       `SELECT r.id,COALESCE((SELECT MIN(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1) AS capacity,
        (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND ((w.ended_at IS NULL AND w.lease_until>?) OR EXISTS(SELECT 1 FROM run held WHERE held.id=w.run_id AND held.status IN ('active','provisioning') AND NOT ${CI_WAITING("held")}))) +
-       (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used
+       (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>? AND ${WORK_HELPER("x")}) AS used
        FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?`,
     )
     .all(runnerLeaseCutoff(now), now, now - RUNNER_SEEN_MS);

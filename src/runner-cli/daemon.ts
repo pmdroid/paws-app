@@ -72,7 +72,11 @@ export async function runPairedDaemon(
   };
   try {
     signal.throwIfAborted();
-    health = await openRunnerHealthRuntime({ ...shared, root: join(root, "health") });
+    health = await openRunnerHealthRuntime({
+      ...shared,
+      root: join(root, "health"),
+      conversations: () => daemon.conversationCapacity(),
+    });
     signal.throwIfAborted();
     retro = await openRunnerRetroRuntime({ ...shared, root: join(root, "retro") });
     signal.throwIfAborted();

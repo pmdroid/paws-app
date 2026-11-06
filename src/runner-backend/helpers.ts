@@ -6,7 +6,7 @@ import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from
 import type { RunnerHelpers } from "../runner-helpers";
 import type { PlacementAccount, PlacementCandidate, RunnerPlacement } from "../runner-placement";
 import { RunnerSlotsBusyError, systemClock, UserFacingError } from "../core";
-import { immediate, runnerHasCapacity, workspaceSessionIds } from "../db";
+import { immediate, runnerHasCapacity, WORK_HELPER, workspaceSessionIds } from "../db";
 import { FINDING_GROUPS_RUNNER_VERSION, type RunnerCommand } from "../runner-protocol";
 import { versionAtLeast } from "./session-restore";
 import { usageLimitWait } from "./usage-limit-wait";
@@ -174,7 +174,7 @@ export function createRemoteSessionAgentRunner(options: {
           if (command) break;
           const helperBusy = options.db
             .query(
-              "SELECT 1 FROM runner_helper h JOIN runner r ON r.id=h.runner_id WHERE r.status='active' AND r.revoked_at IS NULL AND h.ended_at IS NULL AND h.expires_at>?",
+              `SELECT 1 FROM runner_helper h JOIN runner r ON r.id=h.runner_id WHERE r.status='active' AND r.revoked_at IS NULL AND h.ended_at IS NULL AND h.expires_at>? AND ${WORK_HELPER("h")}`,
             )
             .get(now());
           const workFull = options.db

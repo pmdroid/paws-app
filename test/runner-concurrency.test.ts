@@ -240,3 +240,14 @@ test("lowering concurrency below running work holds back new placement", async (
       .get(runner.runnerId),
   ).toEqual({ open: 2 });
 });
+
+test("the heartbeat reports the conversation lane beside the work slots", async () => {
+  const runner = await fixture();
+  await runner.heartbeat({ capacity: 4, ceiling: 4, conversationConcurrency: 2 });
+  expect(await runner.list()).toMatchObject({
+    slots: { used: 0, total: 4 },
+    conversations: { used: 0, total: 2 },
+  });
+  await runner.heartbeat({ capacity: 4, ceiling: 4 });
+  expect(await runner.list()).toMatchObject({ conversations: null });
+});

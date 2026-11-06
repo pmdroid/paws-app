@@ -17,6 +17,7 @@ import {
   RunnerCommandSchema,
   RunnerHelperResultSchema,
   RUNNER_RESULT_BODY_LIMIT,
+  runnerHelperLifetime,
   runnerAccountEchoed,
   signRunnerCommand,
   type RunnerCommand,
@@ -128,9 +129,15 @@ export function createRunnerHelpers(options: {
         if (!session) throw new HelperFencedError("Linear helper session is unavailable");
         const runner = scope(input.runnerId, input.sessionId, session.generation, input.purpose);
         if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
+        const conversation = input.purpose === "conversation";
         if (
-          !runnerHelperAvailability(db, input.runnerId, now(), input.purpose !== "finding_groups")
-            .available
+          !runnerHelperAvailability(
+            db,
+            input.runnerId,
+            now(),
+            input.purpose !== "finding_groups",
+            conversation,
+          ).available
         )
           throw new Error("Runner is busy");
         const at = now();
@@ -141,7 +148,7 @@ export function createRunnerHelpers(options: {
           workspaceId: runner.workspaceId,
           sessionGeneration: session.generation,
           issuedAt: at,
-          expiresAt: at + (input.purpose === "finding_groups" ? 600_000 : 60_000),
+          expiresAt: at + runnerHelperLifetime(input.purpose),
         }) as HelperCommand;
         const envelope = signRunnerCommand({
           keyId: options.keyId,
@@ -150,9 +157,10 @@ export function createRunnerHelpers(options: {
         });
         // Validate and sign first. Fencing and admission commit together, only on this runner.
         recordCommandAccount(db, command, at);
-        if (input.purpose !== "finding_groups") yieldFindingGroupHelpers(db, input.runnerId, at);
+        if (input.purpose !== "finding_groups" && !conversation)
+          yieldFindingGroupHelpers(db, input.runnerId, at);
         db.run(
-          "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES(?,?,?,?,?,?,?,?)",
+          "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at,purpose) VALUES(?,?,?,?,?,?,?,?,?)",
           [
             command.id,
             command.runnerId,
@@ -162,6 +170,7 @@ export function createRunnerHelpers(options: {
             runner.fence,
             JSON.stringify(envelope),
             command.expiresAt,
+            command.purpose,
           ],
         );
         return { command, envelope };

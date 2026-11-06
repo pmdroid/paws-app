@@ -112,6 +112,7 @@ export {
   slotWaitRunners,
   runnerSlotsHeldBetweenCommands,
   CI_WAITING,
+  WORK_HELPER,
   pinnedSlotsReserved,
   releasePinnedSlot,
   savePinnedSlots,
