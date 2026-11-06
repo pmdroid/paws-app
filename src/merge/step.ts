@@ -97,6 +97,7 @@ export type SerialMergeStep =
   | { kind: "merged" }
   | ({ kind: "wait" } & MergeWait)
   | { kind: "unreadable"; message: string }
+  | { kind: "hold_policy"; head: string; base: string }
   /** Closeout runs on `head` before the lane may merge it. `rebased` when the lane just made it. */
   | { kind: "reverify"; head: string; base: string; rebased: boolean }
   /**
@@ -118,6 +119,7 @@ export function serialMergeStep(facts: SerialMergeFacts): {
   const next = step(facts);
   const keepsPlace =
     next.kind === "unreadable" ||
+    next.kind === "hold_policy" ||
     next.kind === "reverify" ||
     next.kind === "carry" ||
     (next.kind === "wait" && next.reason === "ci");
@@ -187,6 +189,8 @@ function blocked(facts: SerialMergeFacts, block: LaneBlock, pull: PullFacts): Se
         message: "The pull request head changed before the merge. Reading it again.",
         ...candidate,
       };
+    case "policy_unreadable":
+      return { kind: "hold_policy", ...candidate };
     case "not_accepted":
       return { kind: "reverify", head: pull.head, base: pull.base, rebased: false };
     case "risk_approval":

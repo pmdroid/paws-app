@@ -1,7 +1,9 @@
 export {
   advanceMerge,
   type MergeCapabilities,
+  type MainPolicyUnreadable,
   type MergePublication,
+  type PolicyRead,
   type RunnerRebase,
 } from "./advance";
 export {

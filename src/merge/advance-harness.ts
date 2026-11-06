@@ -38,7 +38,12 @@ import {
   type GitHubClient,
   type GitHubResponse,
 } from "../github";
-import { advanceMerge, type MergeCapabilities, type RunnerRebase } from "./advance";
+import {
+  advanceMerge,
+  type MainPolicyUnreadable,
+  type MergeCapabilities,
+  type RunnerRebase,
+} from "./advance";
 import type { RiskApproval } from "./mergeable";
 import { returnQueuedConflicts } from "./queue-conflicts";
 import type { MergeStep } from "./step";
@@ -156,6 +161,9 @@ export async function mergeHarness(
      * {@link CLOSEOUT_RECHECK_DIGEST}.
      */
     recheckDigest: CLOSEOUT_RECHECK_DIGEST,
+    mainPolicy: null as MainPolicyUnreadable | null,
+    policyHolds: [] as { id: string; repository: string; message: string }[],
+    policyLoads: [] as string[],
     ciFixAttempts: 3,
     feedbackWait: DEFAULT_PULL_FEEDBACK_WAIT as PullFeedbackWait,
     ciReads: [] as string[],
@@ -529,9 +537,18 @@ export async function mergeHarness(
         resolved: {},
       }),
       policyDigests: () =>
-        state.policyDigest === null
+        state.mainPolicy ??
+        (state.policyDigest === null
           ? null
-          : { digest: state.policyDigest, recheck: state.recheckDigest },
+          : { digest: state.policyDigest, recheck: state.recheckDigest }),
+      holdForPolicy: (current, repository, unreadable) => {
+        const message = `held: ${unreadable.message} (${unreadable.commit ?? "unknown"})`;
+        state.policyHolds.push({ id: current.id, repository, message });
+        return message;
+      },
+      policyLoads: (repository) => {
+        state.policyLoads.push(repository);
+      },
       packages: () => state.packages,
       assertReady: async () => {},
       riskApproval: async (_, published) => state.risk(published.head),

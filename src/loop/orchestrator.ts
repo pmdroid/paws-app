@@ -567,6 +567,12 @@ import {
   pushRefused,
   pushWorked,
 } from "./push-outage";
+import {
+  holdForPolicyOutage,
+  policyLoadFailed,
+  policyLoads,
+  policyOutageNote,
+} from "./policy-outage";
 import { changedPaths, classifyPathsRisk } from "./candidate-risk";
 import {
   askRiskApproval,
@@ -4653,8 +4659,19 @@ export class Orchestrator {
       (await this.askReviewRounds(current, sessionId, result, context))
     )
       return;
+    const repository = this.repositoryForItem(item);
+    const brokenMain =
+      repository && policyLoadFailed(result?.decision)
+        ? policyOutageNote(
+            this.db,
+            `${repository.owner}/${repository.repo}`,
+            item.id,
+            this.options.publicUrl ?? null,
+          )
+        : null;
     askCloseoutHelp(this.db, sessionId, context, {
       now: this.now(),
+      ...(brokenMain ? { error: brokenMain } : {}),
       version: current.version,
       publicUrl: this.options.publicUrl ?? null,
       ...(rules.length > 0 ? { rules } : {}),
@@ -4923,7 +4940,8 @@ export class Orchestrator {
     let policyFiles: ReturnType<RiskDisplayReader["observeFiles"]> = [];
     try {
       if (settings.autoApproveHighRisk) {
-        const current = this.candidatePolicy(item, worktree);
+        const read = this.candidatePolicy(item, worktree);
+        const current = read !== null && !("ok" in read) ? read : null;
         policyDigest = current?.digest ?? null;
         policyPaths = current?.paths ?? null;
         const { home, policyRoot } = this.closeoutHome(item);
@@ -4967,6 +4985,17 @@ export class Orchestrator {
         ...(this.options.runnerRebase ? { runnerRebase: this.options.runnerRebase } : {}),
         settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
         policyDigests,
+        holdForPolicy: (item, repository, unreadable) =>
+          holdForPolicyOutage(this.db, {
+            item,
+            repository,
+            unreadable,
+            now: this.now(),
+            publicUrl: this.options.publicUrl ?? null,
+          }),
+        policyLoads: (repository) => {
+          policyLoads(this.db, repository, this.now());
+        },
         packages: (repository) => this.repositoryPackages(repository),
         assertReady: (item) =>
           this.assertPublicationReady(item, "merge", run.signal!, run.publicationCandidate),
@@ -6135,7 +6164,11 @@ export class Orchestrator {
     // The installation check answers its own waiting question when the App returns.
     if (open.kind === "github-auth") return "rejected";
     if (!canAnswer({ kind: open.kind }, user)) return "rejected";
-    if (open.kind === "push-outage" || open.kind === "runner-repository") {
+    if (
+      open.kind === "push-outage" ||
+      open.kind === "policy-outage" ||
+      open.kind === "runner-repository"
+    ) {
       const outcome = answerAsked(
         this.db,
         { sessionId, deliveryId: event.dedupeKey, body: answer, answeredBy, now: this.now() },

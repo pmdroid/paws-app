@@ -18,6 +18,7 @@ export type MergeFacts = {
   accept: AcceptRow | null;
   /** The Closeout policy digest for S now: `""` without a policy, null when it cannot be read. */
   policyDigest: string | null;
+  policyUnreadable?: string;
   /** The digest of the current policy's checks marked `recheck: true`: `""` when none is. */
   recheckDigest?: string | null;
   /** S has the current main as an ancestor. */
@@ -44,6 +45,7 @@ export type RiskApproval = "not_required" | "approved" | "missing";
 export type MergeBlock =
   | "head_moved"
   | "behind_main"
+  | "policy_unreadable"
   | "not_accepted"
   | "risk_approval"
   | "ci_failed"
@@ -61,6 +63,7 @@ export type Mergeable = { ok: true } | { ok: false; block: MergeBlock };
  */
 export function mergeable(facts: MergeFacts): Mergeable {
   if (facts.headMoved) return { ok: false, block: "head_moved" };
+  if (facts.policyUnreadable !== undefined) return { ok: false, block: "policy_unreadable" };
   // A head behind main gets a new head; nothing else about S matters.
   if (!facts.containsMain && facts.apart !== true) return { ok: false, block: "behind_main" };
   if (!closeoutAccepted(facts)) return { ok: false, block: "not_accepted" };
@@ -74,7 +77,8 @@ export function mergeable(facts: MergeFacts): Mergeable {
 
 /**
  * The accept row binds S and the policy it ran under. An acceptance with no recorded Closeout
- * run, or a policy that cannot be read now, sends S back through Closeout. A policy change alone
+ * run, or a policy that cannot be read now for a reason other than main's policy not loading
+ * (`policy_unreadable`), sends S back through Closeout. A policy change alone
  * leaves S accepted; a change to a check marked `recheck: true` (or a run that did not record
  * those checks) sends it back.
  */

@@ -198,7 +198,7 @@ Paws asks through `ask(item, question)`, the one operation that asks a person. I
 - a check is exhausted (`attempts_per_check` spent),
 - the fix rounds are spent, whether by findings, red CI or a changes-requested review,
 - the rebase returns are spent (see [After acceptance](#after-acceptance)),
-- the policy blocks the candidate or cannot be read, or
+- the policy blocks the candidate or cannot be read (when main's policy does not load, the question says main's policy is broken, names the commit that last changed it and links the repository's question below), or
 - a setup fault fails again after one retry.
 
 A spent budget is always a question, never a state of its own. `failed` means execution stopped with nothing to ask: a crash budget, a run failure or a start timeout.
@@ -240,6 +240,7 @@ Only when all seven hold does the lane squash, with GitHub's expected-head guard
 
 When `mergeable(S)` is false, the first failing condition decides:
 
+- **Main's policy does not load.** Main was read, but its `.agents/closeout.yaml` fails to load, for example against `policy.schema.json`. Closeout cannot judge any head until main is fixed, so the lane neither rebases S nor sends it back. The item stays in `merge_queue` and waits with "The Closeout policy on main doesn't load: <error>. Paws merges again once it's fixed.", and every pass reads main again. The first item to hit it asks one workspace question for the repository with `ask()`: the file, the error and the commit on main that last changed the policy (`git log -1 -- .agents/closeout.yaml`). The item keeps its state. Other items held by the same error and the same breaking commit ask nothing and link to the open question; a different break replaces it. The first pass that loads main again settles the question ("the policy on main loads again") and judges acceptance as usual, so a matching recheck digest merges S without a new Closeout. An origin Paws cannot reach is not this case: S goes back to `verifying` as below.
 - **S is behind main.** The lane rebases to a new head S' and releases the lock. What happens next follows `[merge] main_moved` (see the [configuration reference](configuration.md#merge)):
   - `ci` (default): S' carries the accept row of the head it was rebased from and merges once its CI is green. Closeout does not run again.
   - `overlap`: as `ci`, but the lane rebases only when main's new commits touch a file or package root the pull request changes, or GitHub requires branches to be up to date. Otherwise S merges without a rebase.
