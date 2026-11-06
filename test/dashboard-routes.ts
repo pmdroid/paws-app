@@ -37,6 +37,7 @@ export const SETTINGS_PAGE_IDS = [
   "decisions",
   "agents",
   "merging",
+  "limits",
   "brief",
   "findings",
   "integrations",

@@ -56,7 +56,7 @@ Each stage has its own limit, and `0` means the stage's time is not counted. The
 - **Fixes**: turns for CI, review comments, Closeout findings and merge conflicts. Fix rounds are already limited by count (`ci_fix_attempts`), so by default their time is not counted.
 - **Closeout**: Closeout's checks of a head.
 
-A key missing from a project's table comes from `[time_limits]`. A missing `implementation_minutes` is `[caps] max_awake_ms`, so a file without `[time_limits]` limits implementation to `max_awake_ms` (3 hours by default) and counts neither fixes nor Closeout. Limits are fixed when an item is delegated and when a person asks for more time. Settings › Time limits (`/api/settings/time-limits`) reads and writes these tables.
+A key missing from a project's table comes from `[time_limits]`. A missing `implementation_minutes` is `[caps] max_awake_ms`, so a file without `[time_limits]` limits implementation to `max_awake_ms` (3 hours by default) and counts neither fixes nor Closeout. Limits are fixed when an item is delegated and when a person asks for more time. Settings › Queue and limits › Time limits (`/api/settings/time-limits`) reads and writes these tables.
 
 When a stage reaches its limit, Paws stops the agent or the Closeout run and asks in the Linear session, naming the stage ("Implementation reached its 3 h limit"): Continue or Stop, plus Merge once Closeout accepted a head. Continue after a stopped Closeout run checks the same head again. Accepted work in the merge queue or re-verification is not stopped. A task without a Linear session pauses when Closeout accepted a head, and fails otherwise.
 
@@ -122,6 +122,8 @@ Grouping uses a paired runner owned by an active workspace owner or admin who ca
 
 - **`start_timeout_hours`**: how long an item may wait for a runner slot before Paws fails it. Default 24, from 1 to 720.
 - **`max_running_per_owner`**: how many items one owner may run at once. Missing means no cap; at most 1000.
+
+Settings › Queue and limits › Queue sets both.
 
 ## Closeout `retry`
 

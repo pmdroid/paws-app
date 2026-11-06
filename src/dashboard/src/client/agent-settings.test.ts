@@ -1,11 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { createElement, Fragment } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import type { AgentModelCatalog, AgentSettings } from "../agent-settings";
 import { renderAgentSettings, settingsProblems, settingsRequest } from "./agent-settings";
 import { render } from "./render";
 import { parseRoute, routeHref } from "./route";
-import { themedMarkup } from "./theme";
+import { renderSettingsPage } from "./settings-pages";
 
 function settings(): AgentSettings {
   return {
@@ -79,48 +77,13 @@ describe("agent settings", () => {
       ]);
   });
 
-  test("the Queue section shows the start timeout in hours, 24 when missing", () => {
+  test("the Agents page leaves the Queue section and time limits to Settings → Queue and limits", () => {
     const html = renderAgentSettings(view());
-    expect(html).toContain("<h2>Queue</h2>");
-    expect(html).toContain(
-      '<label for="queue-start-timeout">Fail an item that has not started after, in hours</label>',
-    );
-    expect(html).toMatch(
-      /name="queue-start-timeout" type="number"[^>]*min="1" max="720"[^>]*value="24"/,
-    );
-    const six = { ...settings(), queue: { startTimeoutHours: 6 } };
-    expect(renderAgentSettings(view(six))).toMatch(/name="queue-start-timeout"[^>]*value="6"/);
-    expect(settingsProblems(six)).toEqual([]);
-    for (const startTimeoutHours of [0, 721, 1.5, NaN])
-      expect(settingsProblems({ ...settings(), queue: { startTimeoutHours } })).toEqual([
-        "Queue start timeout: enter a whole number of hours from 1 to 720.",
-      ]);
-  });
-
-  test("desktop: the Queue section offers an optional cap on running items per owner, empty by default", () => {
-    const html = renderAgentSettings(view());
-    expect(html).toContain(
-      '<label for="queue-owner-cap">Most items one person or project runs at once</label>',
-    );
-    expect(html).toMatch(/name="queue-owner-cap" type="number"[^>]*min="1"[^>]*value=""/);
-    expect(html).not.toMatch(/name="queue-owner-cap"[^>]*required/);
-    const three = { ...settings(), queue: { startTimeoutHours: 24, maxRunningPerOwner: 3 } };
-    expect(renderAgentSettings(view(three))).toMatch(/name="queue-owner-cap"[^>]*value="3"/);
-    expect(settingsProblems(three)).toEqual([]);
-    for (const maxRunningPerOwner of [0, 2.5, NaN])
-      expect(
-        settingsProblems({ ...settings(), queue: { startTimeoutHours: 24, maxRunningPerOwner } }),
-      ).toEqual([
-        "Running items per owner: leave empty for no cap, or enter a whole number from 1 to 1000.",
-      ]);
-  });
-
-  test("390 px: the owner cap field stacks in the Queue section without a fixed width", () => {
-    const html = renderToStaticMarkup(
-      createElement(Fragment, null, themedMarkup(renderAgentSettings(view()))),
-    );
-    expect(html).toContain('id="queue-owner-cap"');
-    expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
+    expect(html).not.toContain("<h2>Queue</h2>");
+    expect(html).not.toContain("queue-start-timeout");
+    expect(html).not.toContain("queue-owner-cap");
+    expect(renderSettingsPage("agents")).not.toContain('id="time-limit-settings"');
+    expect(renderSettingsPage("agents")).not.toContain('id="queue-settings"');
   });
 
   test("settings remain reachable before any status items exist", () => {

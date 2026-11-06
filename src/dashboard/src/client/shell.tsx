@@ -25,6 +25,7 @@ import {
   GitMerge,
   GitPullRequestArrow,
   Bug,
+  Hourglass,
 } from "lucide-react";
 import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
@@ -52,6 +53,7 @@ const ICONS = {
   agents: Bot,
   brief: BookOpen,
   merging: GitMerge,
+  limits: Hourglass,
   integrations: Plug,
   members: Users,
   workspace: KeyRound,
