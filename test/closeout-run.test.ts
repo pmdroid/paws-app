@@ -303,10 +303,17 @@ describe("closeout command runner", () => {
       "check.js",
       `require("node:fs").appendFileSync(${JSON.stringify(seen)}, process.argv[2] + "=" + (process.env.PAWS_TEST_BAIL ?? "") + "\\n"); process.exit(process.argv[2] === "lint" ? 1 : 0);`,
     );
+    const { PAWS_TEST_BAIL: _, ...env } = process.env;
     try {
-      const result = await run(fx, {
-        items: ["lint", "format", "test"].map((id) => command(id, [process.execPath, script, id])),
-      });
+      const result = await run(
+        fx,
+        {
+          items: ["lint", "format", "test"].map((id) =>
+            command(id, [process.execPath, script, id]),
+          ),
+        },
+        { env },
+      );
       expect(result.dispositions.map((item) => [item.id, item.state])).toEqual([
         ["lint", "ran"],
         ["format", "ran"],
