@@ -100,6 +100,8 @@ export interface Rendered {
 }
 
 /** The Findings page loads its own data into this root. */
+const AGENT_ACCOUNTS =
+  '<section id="agent-accounts" class="runner-section" aria-label="Agent accounts"><div id="account-settings" class="agent-settings"></div><div id="account-order-settings" class="agent-settings"></div></section>';
 const FINDINGS_ROOT = `${pageHeading("findings")}<div id="findings-page"></div>`;
 
 const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
@@ -118,7 +120,7 @@ export function render(model: RenderModel): Rendered {
       model.route.view === "alias"
         ? renderAlias(model)
         : model.route.view === "runners"
-          ? '<div id="runner-settings"></div>'
+          ? `<div id="runner-settings"></div>${model.route.id === null ? AGENT_ACCOUNTS : ""}`
           : model.route.view === "findings"
             ? FINDINGS_ROOT
             : model.route.view === "settings"

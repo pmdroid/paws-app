@@ -9,20 +9,20 @@ Leave fallback unconfigured until every gate below is met. An installation with 
 1. **Paws and every runner that will hold a binding are current.** Named accounts need runner 0.1.61 or later (`AGENT_ACCOUNTS_RUNNER_VERSION` in `src/runner-protocol/versions.ts`). An older runner is never offered a named account and never runs one as its default sign-in.
 2. **The agent is supported.** Use only an agent marked Supported in [the adapter matrix](#adapter-matrix). An agent with a reason in `runnerAccountAgentUnsupported` (`src/runner-protocol/accounts.ts`) is refused by Paws and by the runner, and the dashboard shows it as unsupported.
 3. **The accounts are authorized.** Use only provider accounts the workspace is allowed to use under the provider's terms. Paws never buys, shares or distributes credentials. Do not post credentials, tokens or sign-in codes in Linear, the dashboard or `config.toml`; only opaque account and binding ids leave the runner.
-4. **Each binding is signed in and reported.** In **Settings › Agents › Agent accounts** every binding you intend to use shows `eligible`, not `auth-required` or `unavailable`.
-5. **The preview picks what you expect.** `GET /api/runners/accounts/preview?role=…` (or the preview in Settings) names the first account and runner new work would get, and why accounts ahead of it were passed over.
+4. **Each binding is signed in and reported.** In **Runners › Agent accounts** every binding you intend to use shows `eligible`, not `auth-required` or `unavailable`.
+5. **The preview picks what you expect.** `GET /api/runners/accounts/preview?role=…` (or the preview in Runners › Agent accounts) names the first account and runner new work would get, and why accounts ahead of it were passed over.
 6. **The real-account acceptance run is recorded** for that agent (see [Real-account acceptance](#real-account-acceptance)). Until then, a configured order is a trial on a test workspace, not a rollout.
 
 ## Register accounts and bindings
 
-1. As an admin, add an account in **Settings › Agents › Agent accounts**: pick the agent and a label. The label is for people; Paws refers to the account by its ULID.
+1. As an admin, add an account in **Runners › Agent accounts**: pick the agent and a label. The label is for people; Paws refers to the account by its ULID.
 2. Link the account to each runner that should hold it. Linking one account to two runners makes two bindings that share one quota, one cooldown and one `concurrency` limit. Paws refuses a second binding of the same account on the same runner.
 3. The runner's owner signs in each binding from **Runners › Sign in › Sign in to this account**. The provider's own interactive sign-in runs inside that binding's private home. Paws never reads the credential and never infers which provider account it is.
 4. Optionally set `concurrency` to cap how many executions the account runs at once across all its bindings.
 
 ## Configure the order
 
-Edit **Account order** under each role in Settings › Agents, or `config.toml` as in [Account order](runner-enrollment.md#account-order). Start with one role on one project:
+Edit **Account order** under each role in Runners › Agent accounts, or `config.toml` as in [Account order](runner-enrollment.md#account-order). Start with one role on one project:
 
 ```toml
 [agents.projects."owner/repo".accounts]
@@ -35,7 +35,7 @@ An order never changes the agent, model or effort, and a second account of the r
 
 | Question                                    | Where to look                                                                                                |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Why does new work get this account?         | The preview, or Settings › Agents › Agent accounts                                                           |
+| Why does new work get this account?         | The preview, or Runners › Agent accounts                                                                     |
 | Why did a run use B instead of A?           | `runner_execution_usage.account_fallback`, shown in the runner's **Execution history**                       |
 | Which account ran a command?                | `runner_command_account` (kept after an account is disabled or removed)                                      |
 | Why is a binding not eligible?              | Its readiness: `auth-required`, `cooling-down` with its next check, `waiting` or `unavailable`               |
@@ -49,7 +49,7 @@ A binding that needs sign-in has no next check: sign in again from Runners. **Re
 
 Upgrading applies the account migrations once. Each runner and agent pair that already existed becomes a default sign-in binding (`legacy_<agent>_<runnerId>`) of the workspace's default sign-in account (`legacy_<agent>_<workspaceId>`), with quota scope `unknown`. The runner's own quota and cooldown rows and the execution history are kept as they were.
 
-To turn fallback off, remove the `accounts` lists from Settings or `config.toml`. Every role returns to the default sign-in at its next admission; running work keeps the account its command carries until its turn ends. Disable an account rather than removing it if you may want it back: a disabled account keeps its bindings and can still sign in.
+To turn fallback off, remove the `accounts` lists in Runners › Agent accounts or `config.toml`. Every role returns to the default sign-in at its next admission; running work keeps the account its command carries until its turn ends. Disable an account rather than removing it if you may want it back: a disabled account keeps its bindings and can still sign in.
 
 To roll Paws back to a release without accounts, first remove the `accounts` lists, wait for running work on named accounts to finish, then install the older release. The older release applies none of its migrations again and does not touch the account tables: accounts, bindings, `runner_command_account` and health rows stay, and the schema refuses deleting them. Reinstalling the newer release finds every account, binding and recorded command account where it was. On a runner, a rollback below 0.1.61 leaves the binding homes under `/var/lib/paws-agent/.paws-accounts` in place and unused; the older runner refuses any command that names an account.
 

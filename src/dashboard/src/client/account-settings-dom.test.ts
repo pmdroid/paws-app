@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
+import { createAccountOrder } from "./account-order";
 import { createAccountSettings, type AgentAccounts } from "./account-settings";
 
 const realFetch = globalThis.fetch;
@@ -47,6 +48,7 @@ afterEach(async () => {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const ACCOUNT = "01J00000000000000000000AAA";
+const OTHER = "01J00000000000000000000BBB";
 
 function list(revision: string, enabled: boolean, label = "Team A"): AgentAccounts {
   return {
@@ -126,4 +128,51 @@ test("a failed load offers a retry and shows no partial state", async () => {
   expect(root.textContent).toContain("Workspace access is unavailable.");
   click(root, "reload");
   expect(requests).toHaveLength(2);
+});
+
+test("the Runners page saves a reordered list through the agent settings route", async () => {
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.append(root as never);
+  const saves: number[] = [];
+  createAccountOrder(() => saves.push(1)).mount(root, "http://127.0.0.1:8787");
+  expect(requests.map((request) => request.url)).toEqual([
+    "http://127.0.0.1:8787/api/settings/agents",
+    "http://127.0.0.1:8787/api/runners/accounts",
+  ]);
+  const settings = {
+    defaults: {
+      implementer: { agent: "claude", model: null },
+      reviewer: { agent: "codex", model: null },
+      accounts: { implementer: [ACCOUNT, OTHER] },
+    },
+    projects: [],
+    queue: { startTimeoutHours: 24, maxRunningPerOwner: null },
+    revision: "cfg-1",
+  };
+  requests[0]!.respond(Response.json(settings));
+  const accounts = list("rev-1", true);
+  accounts.accounts.push({ ...accounts.accounts[0]!, id: OTHER, label: "Team B" });
+  requests[1]!.respond(Response.json(accounts));
+  await settle();
+  expect(root.textContent).toContain("1. Team A");
+
+  root
+    .querySelector<HTMLButtonElement>('[aria-label="Move Team B up"]')!
+    .dispatchEvent(new window.MouseEvent("click", { bubbles: true }) as unknown as Event);
+  expect(root.textContent).toContain("1. Team B");
+  root
+    .querySelector<HTMLButtonElement>('[data-order="save"]')!
+    .dispatchEvent(new window.MouseEvent("click", { bubbles: true }) as unknown as Event);
+  expect(requests[2]!.init.method).toBe("PUT");
+  expect((requests[2]!.init.headers as Record<string, string>)["x-paws-csrf"]).toBe("token-1");
+  const body = JSON.parse(String(requests[2]!.init.body));
+  expect(body).toEqual({
+    ...settings,
+    defaults: { ...settings.defaults, accounts: { implementer: [OTHER, ACCOUNT] } },
+    applyToWaiting: false,
+  });
+  requests[2]!.respond(Response.json({ ...body, revision: "cfg-2", waitingRuns: 0 }));
+  await settle();
+  expect(root.textContent).toContain("Account order saved.");
+  expect(saves).toEqual([1]);
 });
