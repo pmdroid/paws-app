@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, expect, test } from "bun:test";
-import { createCloseoutSession, workspacePolicyFiles } from "../src/closeout-spec";
+import {
+  createCloseoutSession,
+  POLICY_SCHEMA_SUMMARY,
+  workspacePolicyFiles,
+} from "../src/closeout-spec";
 import { closeoutPrompt, fixPrompt, implementPrompt } from "../src/loop/agents";
 
 const roots: string[] = [];
@@ -57,6 +61,7 @@ test("get_closeout reports path matches and run_closeout runs the pending id", a
     pending: [],
     blocked: null,
     bypassed: false,
+    policy_schema: POLICY_SCHEMA_SUMMARY,
   });
 
   writeFileSync(join(root, "docs", "note.md"), "note\n");
