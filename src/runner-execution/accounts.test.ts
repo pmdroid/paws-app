@@ -251,19 +251,31 @@ test("agent state written by the runner is shared with the agent group before pa
   chmodSync(join(root, ".codex/auth.json"), 0o600);
   writeFileSync(join(root, ".codex/sessions/2026/rollout.jsonl"), "", { mode: 0o600 });
   chmodSync(join(root, ".codex/sessions/2026/rollout.jsonl"), 0o600);
-  writeFileSync(join(root, "elsewhere"), "", { mode: 0o600 });
-  chmodSync(join(root, "elsewhere"), 0o600);
-  symlinkSync(join(root, "elsewhere"), join(root, ".codex/link"));
+  const outside = join(agentHome(), "elsewhere");
+  writeFileSync(outside, "", { mode: 0o600 });
+  chmodSync(outside, 0o600);
+  symlinkSync(outside, join(root, ".codex/link"));
   mkdirSync(join(root, ".local/share/opencode"), { recursive: true, mode: 0o700 });
   chmodSync(join(root, ".local"), 0o700);
+  for (const folder of [".cache/mise/downloads", "work/run", ".paws-accounts/binding"])
+    mkdirSync(join(root, folder), { recursive: true, mode: 0o700 });
+  for (const folder of [".cache", ".cache/mise", ".cache/mise/downloads", "work", "work/run"])
+    chmodSync(join(root, folder), 0o700);
+  chmodSync(join(root, ".paws-accounts/binding"), 0o700);
   shareRunnerAgentState(root, owners);
   const mode = (path: string) => statSync(join(root, path)).mode & 0o7777;
   expect(mode(".local")).toBe(0o770);
+  expect([mode(".cache"), mode(".cache/mise"), mode(".cache/mise/downloads")]).toEqual([
+    0o770, 0o770, 0o770,
+  ]);
+  expect([mode("work"), mode("work/run"), mode(".paws-accounts/binding")]).toEqual([
+    0o700, 0o700, 0o700,
+  ]);
   expect(mode(".codex")).toBe(0o770);
   expect(mode(".codex/sessions/2026")).toBe(0o770);
   expect(mode(".codex/auth.json")).toBe(0o660);
   expect(mode(".codex/sessions/2026/rollout.jsonl")).toBe(0o660);
-  expect(mode("elsewhere")).toBe(0o600);
+  expect(statSync(outside).mode & 0o777).toBe(0o600);
   shareRunnerAgentState(root, owners);
   expect(mode(".codex/auth.json")).toBe(0o660);
 });
@@ -312,11 +324,12 @@ test("a work root the runner made 0700 is shared with the agent group before paw
     chmodSync(join(work, path), 0o700);
   writeFileSync(join(work, "resumed/src/a.ts"), "", { mode: 0o600 });
   chmodSync(join(work, "resumed/src/a.ts"), 0o600);
-  prepareRunnerWorkRoot(work, owners, { name: "resumed", resume: true });
-  expect([mode(""), mode(".paws/runs"), mode("resumed/src")]).toEqual([0o770, 0o770, 0o770]);
-  expect(mode("resumed/src/a.ts")).toBe(0o660);
-  expect(mode("other")).toBe(0o700);
-  prepareRunnerWorkRoot(work, owners, { name: "restarted", resume: false });
+  prepareRunnerWorkRoot(work, owners);
+  expect([mode(""), mode(".paws/runs")]).toEqual([0o770, 0o770]);
+  expect([mode("resumed/src"), mode("resumed/src/a.ts"), mode("other")]).toEqual([
+    0o700, 0o600, 0o700,
+  ]);
+  prepareRunnerWorkRoot(work, owners, { name: "restarted" });
   expect(readdirSync(work).sort()).toEqual([".paws", "other", "resumed"]);
   const fresh = join(root, "fresh");
   prepareRunnerWorkRoot(fresh, owners);

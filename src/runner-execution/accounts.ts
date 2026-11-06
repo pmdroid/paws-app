@@ -37,7 +37,7 @@ const ACTIVE = ".paws-active";
 const PUBLISHING = ".paws-publishing";
 const ADMISSION_MS = 60_000;
 const SHARE_LIMIT = 100_000;
-const AGENT_STATE = [".claude", ".codex", ".grok", ".config", ".local/share"] as const;
+const SHARED_ELSEWHERE = new Set(["work", RUNNER_ACCOUNT_HOMES]);
 
 const HOME_FOLDERS = [
   ".claude",
@@ -405,24 +405,31 @@ export function accountHomeVerdict(
 }
 
 export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners): void {
+  let names: string[];
+  try {
+    names = readdirSync(home);
+  } catch (error) {
+    if (["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    throw error;
+  }
+  // The work root and the account homes are prepared on their own, each when it is used.
   shareRunnerPaths(
-    AGENT_STATE.map((folder) => join(home, folder)),
+    names.filter((name) => !SHARED_ELSEWHERE.has(name)).map((name) => join(home, name)),
     owners,
+    { limit: 1_000_000 },
   );
-  // `.local/share` is shared below; its parent must let the agent group through as well.
-  shareRunnerPaths([join(home, ".local")], owners, { depth: 0 });
 }
 
 /**
  * Gives the agent group the access paws-runner has to the work root it may have created while
- * agents ran as paws-runner: the root itself, its runner-wide `.paws` state, and the checkout
- * this run resumes. A leftover checkout of a run that starts over is removed, as the worker
- * would remove it. Other runs' checkouts are left for their own admission.
+ * agents ran as paws-runner: the root itself and its runner-wide `.paws` state. A leftover
+ * checkout of a run that starts over is removed, as the worker would remove it. A resumed
+ * execution keeps the user it started as, so its checkout is left as it is.
  */
 export function prepareRunnerWorkRoot(
   workRoot: string,
   owners: RunnerAccountOwners,
-  checkout?: { name: string; resume: boolean },
+  checkout?: { name: string },
 ): void {
   try {
     mkdirSync(workRoot, { mode: 0o770 });
@@ -457,8 +464,7 @@ export function prepareRunnerWorkRoot(
     throw error;
   }
   if (info.isSymbolicLink() || !info.isDirectory() || info.uid !== process.getuid?.()) return;
-  if (checkout.resume) shareRunnerPaths([path], owners, { limit: 1_000_000 });
-  else removeRunnerTree(path);
+  removeRunnerTree(path);
 }
 
 function removeRunnerTree(path: string): void {
