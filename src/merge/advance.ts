@@ -34,7 +34,6 @@ import {
   type RebaseResult,
   type SerialMergeInput,
 } from "../github";
-import { POLICY_SCHEMA_SUMMARY } from "../closeout-spec";
 import { journal, journalCaught } from "../journal";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import type { MergeFacts, RiskApproval } from "./mergeable";
@@ -89,6 +88,8 @@ export type MainPolicyUnreadable = {
   commit: string | null;
 };
 
+export type MergeResultPolicyError = { error: string; reference: string };
+
 export type PolicyRead = { digest: string; recheck: string } | MainPolicyUnreadable | null;
 
 export type MergeCapabilities = OrderCapabilities & {
@@ -114,7 +115,7 @@ export type MergeCapabilities = OrderCapabilities & {
     item: WorkItemRecord,
     worktree: string,
     heads: { base: string; head: string },
-  ): string | undefined;
+  ): MergeResultPolicyError | undefined;
   /** `[merge.repositories."owner/repo"] packages`, the package roots `overlap` compares by. */
   packages(repository: string): string[];
   assertReady(item: WorkItemRecord): Promise<void>;
@@ -266,7 +267,7 @@ export async function advanceMerge(
       : {}),
   };
   let mainPolicy: PolicyRead | undefined;
-  let mergedPolicyError: string | undefined;
+  let mergedPolicyError: MergeResultPolicyError | undefined;
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
     facts: (facts) => {
@@ -289,7 +290,7 @@ export async function advanceMerge(
           branch: facts.branch,
           base: facts.base,
           head,
-          message: mergedPolicyMessage(mergedPolicyError),
+          message: mergedPolicyMessage(mergedPolicyError.error),
         };
       const squashed = await squashPull(
         {
@@ -472,11 +473,11 @@ function mergedPolicyMessage(error: string): string {
 
 async function returnForPolicy(
   merge: MergeContext,
-  error: string,
+  { error, reference }: MergeResultPolicyError,
   limit: number,
 ): Promise<MergeStep> {
   const message = mergedPolicyMessage(error);
-  const handoff = `${message}. Paws did not merge it. Update the branch onto origin/main and fix .agents/closeout.yaml or the files it references so the policy loads on top of main.\n\n${POLICY_SCHEMA_SUMMARY}`;
+  const handoff = `${message}. Paws did not merge it. Update the branch onto origin/main and fix .agents/closeout.yaml or the files it references so the policy loads on top of main.\n\n${reference}`;
   if (
     sendBack(merge, "policy-invalid", (fixes) => fixes < limit, handoff, {
       thought: () => `${message}. Sent it back to the agent.`,

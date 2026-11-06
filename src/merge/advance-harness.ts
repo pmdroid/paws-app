@@ -42,6 +42,7 @@ import {
   advanceMerge,
   type MainPolicyUnreadable,
   type MergeCapabilities,
+  type MergeResultPolicyError,
   type RunnerRebase,
 } from "./advance";
 import type { RiskApproval } from "./mergeable";
@@ -165,7 +166,7 @@ export async function mergeHarness(
     policyHolds: [] as { id: string; repository: string; message: string }[],
     policyLoads: [] as string[],
     mergeResultPolicy: (_worktree: string, _heads: { base: string; head: string }) =>
-      undefined as string | undefined,
+      undefined as MergeResultPolicyError | undefined,
     ciFixAttempts: 3,
     feedbackWait: DEFAULT_PULL_FEEDBACK_WAIT as PullFeedbackWait,
     ciReads: [] as string[],
