@@ -308,7 +308,10 @@ function replace(node: DOMNode): ReactElement | undefined {
       <Table
         {...props}
         className={cn(
-          has("runner-history", "merge-table", "members-table") && "[overflow-wrap:normal]",
+          has("runner-history", "merge-table", "members-table", "runner-agents") &&
+            "[overflow-wrap:normal]",
+          has("runner-agents") &&
+            "[&_td]:align-top max-sm:[&_thead]:sr-only max-sm:[&_tr]:flex max-sm:[&_tr]:flex-col max-sm:[&_tr]:gap-2 max-sm:[&_tr]:py-3 max-sm:[&_td]:px-3 max-sm:[&_td]:py-0 max-sm:[&_td:empty]:hidden [&_.btn]:whitespace-nowrap",
           has("runner-history") &&
             "max-sm:[&_td]:px-3 max-sm:[&_th]:px-3 [&_.lin-id]:whitespace-nowrap",
         )}
@@ -428,9 +431,6 @@ function replace(node: DOMNode): ReactElement | undefined {
         has("stale") && "opacity-60 grayscale",
       ),
     );
-  if (has("agent-usage")) return styled("flex min-w-0 flex-col gap-3");
-  if (has("agent-limits"))
-    return styled("m-0 grid min-w-0 grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2");
   if (has("gauge-bar")) return styled("flex h-4 items-center");
   if (has("runner-gauge"))
     return styled(
@@ -462,15 +462,9 @@ function replace(node: DOMNode): ReactElement | undefined {
       </span>
     );
   }
-  if (name === "ul" && has("runner-agent-list"))
-    return styled("m-0 flex min-w-0 list-none flex-col gap-5 p-0");
-  if (has("runner-agent"))
+  if (has("runner-agent-cell"))
     return styled(
-      "grid min-w-0 grid-cols-1 items-start gap-x-6 gap-y-3 sm:grid-cols-[10rem_minmax(0,1fr)]",
-    );
-  if (has("runner-agent-name"))
-    return styled(
-      "flex min-h-6 min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm [&>.tag]:whitespace-normal",
+      "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm [&>.tag]:whitespace-normal",
     );
   if (name === "ul" && has("runner-skill-list"))
     return styled("m-0 flex min-w-0 list-none flex-col gap-3 p-0");

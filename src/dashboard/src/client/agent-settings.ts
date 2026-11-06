@@ -2,7 +2,6 @@ import { journalCaught } from "../journal";
 import { routeHref } from "./route";
 import { renderMarkup } from "./theme";
 import type { AgentModelCatalog, AgentProfile, AgentRole, AgentSettings } from "../agent-settings";
-import { setAccountList } from "./account-order";
 import { esc } from "./format";
 import { readCsrfToken } from "./csrf";
 
@@ -34,6 +33,16 @@ export function settingsProblems(settings: AgentSettings): string[] {
       ({ name }) => `${name}: choose a different reviewer agent or model for independent review.`,
     )
     .concat(checks);
+}
+
+/** An account order names one agent's accounts, so choosing another agent drops it. */
+function clearAccounts(settings: AgentSettings, scope: string, role: string): void {
+  const owner = scope === "defaults" ? settings.defaults : settings.projects[Number(scope)];
+  if (!owner?.accounts) return;
+  const lists: Record<string, unknown> = { ...owner.accounts };
+  delete lists[role];
+  if (Object.keys(lists).length) owner.accounts = lists as typeof owner.accounts;
+  else delete owner.accounts;
 }
 
 export async function settingsRequest<T>(
@@ -400,7 +409,7 @@ export function createAgentSettings(
         delete profile.effort;
         if (name.endsWith("-agent")) profile.model = null;
       }
-      if (name.endsWith("-agent") && view.data) setAccountList(view.data, scope, role, []);
+      if (name.endsWith("-agent") && view.data) clearAccounts(view.data, scope, role);
       const effort = root?.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`);
       if (effort) effort.value = "";
     }

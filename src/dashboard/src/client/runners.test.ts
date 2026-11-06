@@ -55,6 +55,14 @@ function statusLine(html: string): string | undefined {
   return /<p class="runner-status">(.*?)<\/p>/.exec(html)?.[1];
 }
 
+/** Each agents table row, by its agent. */
+function agentRows(html: string): { agent: string; html: string }[] {
+  return [...html.matchAll(/<tr data-agent="([^"]+)">(.*?)<\/tr>/g)].map((match) => ({
+    agent: match[1]!,
+    html: match[2]!,
+  }));
+}
+
 /** One gauge's markup, from its `data-gauge` wrapper to the closing tag. */
 function gauge(html: string, name: string): string {
   return (
@@ -822,17 +830,18 @@ describe("simpler runner card", () => {
     expect(html).not.toContain(`<code>${runner.id}</code>`);
   });
 
-  test("agents share one row with their sign-in state and the sign-in action", () => {
+  test("agents share one table row each, with sign-in, usage and extra usage", () => {
     const html = runnerDetailMarkup(runner, view);
-    expect(html).toContain(
-      `<h3 id="runner-${runner.id}-agents">Agents</h3><button class="btn" data-runner-signin=`,
-    );
-    expect(html).toContain(
-      '<li class="runner-agent" data-agent="claude"><span class="runner-agent-name"><b>Claude</b><span class="tag ok">Signed in</span></span><p class="muted">Usage not reported</p></li><li class="runner-agent" data-agent="codex"><span class="runner-agent-name"><b>Codex</b><span class="tag ">Not checked</span></span></li>',
-    );
+    expect(html).toContain(`<h3 id="runner-${runner.id}-agents">Agents</h3></div><table`);
+    expect(agentRows(html).map((row) => row.agent)).toEqual(["claude", "codex"]);
+    expect(agentRows(html)[0]!.html).toContain('<span class="tag ok">Signed in</span>');
+    expect(agentRows(html)[0]!.html).toContain("Usage not reported");
+    expect(agentRows(html)[1]!.html).toContain('<span class="tag ">Not checked</span>');
+    expect(html).toContain("Keep running on extra usage: when a usage window is spent");
+    expect(html).not.toContain("Agent sign-in and usage");
   });
 
-  test("agent usage shows one bar per window, orange from 90 percent", () => {
+  test("Claude at 62% and Codex not signed in: a Sign in button only on the Codex row", () => {
     const html = runnerDetailMarkup(
       {
         ...runner,
@@ -842,27 +851,70 @@ describe("simpler runner card", () => {
             status: "signed_in",
             checkedAt: now,
             limits: [
-              { window: "5-hour", usedPercent: 7, resetsAt: now + 3_600_000 },
-              { window: "Weekly", usedPercent: 92, resetsAt: null },
+              { window: "5-hour", usedPercent: 62, resetsAt: now + 3_600_000 },
+              { window: "weekly", usedPercent: 3, resetsAt: null },
             ],
           },
-          {
-            agent: "codex",
-            status: "signed_out",
-            checkedAt: now,
-            limits: [{ window: "Weekly", usedPercent: 10, resetsAt: null }],
-          },
+          { agent: "codex", status: "signed_out", checkedAt: now },
         ],
       },
       view,
     );
-    expect(gauge(html, "5-hour")).toContain('<span class="gauge-value">7% used</span>');
-    expect(gauge(html, "5-hour")).toContain('data-fill="7"');
-    expect(gauge(html, "5-hour")).toContain("Resets ");
-    expect(gauge(html, "weekly")).toContain('data-level="high"');
-    expect(gauge(html, "weekly")).not.toContain("Resets");
-    expect(html.match(/data-gauge="weekly"/g)).toHaveLength(1);
-    expect(html).not.toContain("As of");
+    const [claude, codex] = agentRows(html);
+    expect(agentRows(html)).toHaveLength(2);
+    expect(claude!.html).toContain("5-hour 62% · weekly 3%");
+    expect(claude!.html).toContain(">Sign in again</button>");
+    expect(claude!.html).not.toContain(">Sign in</button>");
+    expect(codex!.html).toContain('<span class="tag bad">Signed out</span>');
+    expect(codex!.html).toContain(
+      `data-runner-signin="${runner.id}" data-signin-agent="codex" data-focus="signin:${runner.id}:codex" aria-label="Sign in to Codex on build-box">Sign in</button>`,
+    );
+  });
+
+  test("a spent window reads as running on extra usage with the switch on, and Usage limit with it off", () => {
+    const spent = { window: "5-hour", usedPercent: 100, resetsAt: now + 3_600_000 };
+    const on = agentRows(
+      runnerDetailMarkup(
+        {
+          ...runner,
+          agents: [
+            {
+              agent: "claude",
+              status: "extra_usage",
+              checkedAt: now,
+              extraUsage: true,
+              limits: [spent],
+            },
+          ],
+        },
+        view,
+      ),
+    )[0]!.html;
+    expect(on).toContain('<span class="tag warn">Running on extra usage</span>');
+    expect(on).not.toContain("Usage limit");
+    expect(on).toMatch(/data-runner-extra-usage="[^"]+" data-extra-agent="claude"[^>]* checked/);
+    const off = agentRows(
+      runnerDetailMarkup(
+        {
+          ...runner,
+          agents: [
+            {
+              agent: "claude",
+              status: "usage_limit",
+              checkedAt: now,
+              resetsAt: now + 3_600_000,
+              limits: [spent],
+            },
+          ],
+        },
+        view,
+      ),
+    )[0]!.html;
+    expect(off).toContain('<span class="tag warn">Usage limit</span>');
+    expect(off).not.toContain("Running on extra usage");
+    expect(off).toContain("5-hour 100%");
+    expect(off).toContain("Resets ");
+    expect(off).not.toMatch(/data-extra-agent="claude"[^>]* checked/);
   });
 
   test("stored usage says how old it is and drops windows that have reset since", () => {
@@ -884,9 +936,9 @@ describe("simpler runner card", () => {
       },
       view,
     );
-    expect(html).toContain('<p class="muted">As of 12 min ago</p>');
-    expect(gauge(html, "5-hour")).toBe("");
-    expect(gauge(html, "weekly")).toContain("30% used");
+    expect(html).toContain('<span class="muted">As of 12 min ago</span>');
+    expect(html).not.toContain("5-hour");
+    expect(html).toContain("Weekly 30%");
     const reset = runnerDetailMarkup(
       {
         ...runner,
@@ -903,6 +955,30 @@ describe("simpler runner card", () => {
       view,
     );
     expect(reset).toContain("Usage not reported");
+  });
+
+  test("a member who neither owns the runner nor administers sees the table without controls", () => {
+    const html = runnerDetailMarkup(
+      {
+        ...runner,
+        agents: [
+          ...runner.agents!,
+          { agent: "grok", status: "signed_in", checkedAt: now, extraUsage: true },
+        ],
+      },
+      { ...view, userId: "someone", role: "member" },
+    );
+    expect(agentRows(html).map((row) => row.agent)).toEqual(["claude", "codex", "grok"]);
+    expect(html).not.toContain("data-runner-signin");
+    expect(html).not.toContain("data-runner-extra-usage");
+    expect(agentRows(html)[0]!.html).toContain("Extra usage off");
+    expect(agentRows(html)[2]!.html).toContain("Extra usage on");
+  });
+
+  test("an admin who does not own the runner gets the extra usage switch but not sign-in", () => {
+    const html = runnerDetailMarkup(runner, { ...view, userId: "someone", role: "admin" });
+    expect(html).not.toContain("data-runner-signin");
+    expect(html).toContain('data-extra-agent="claude"');
   });
 
   test("heartbeats in a second render update the values in place", () => {
@@ -1291,15 +1367,4 @@ test("a new paused runner tells its member owner to sign in and turn it on", () 
   const active = runnerDetailMarkup({ ...fresh, status: "active" }, view);
   expect(active).toContain(">Pause</button>");
   expect(active).not.toContain("then turn it on.");
-});
-
-test("a spent window with extra usage on reads as running on extra usage", () => {
-  const html = runnerDetailMarkup(
-    {
-      ...runner,
-      agents: [{ agent: "claude", status: "extra_usage", checkedAt: now }],
-    },
-    view,
-  );
-  expect(html).toContain('<span class="tag warn">Usage limit, running on extra usage</span>');
 });

@@ -20,6 +20,7 @@ export type AgentSignIn = {
   agent: string;
   status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "extra_usage" | "unknown";
   checkedAt: number | null;
+  extraUsage?: true;
   resetsAt?: number | null;
   limits?: AgentLimit[];
   limitsAt?: number;
@@ -454,8 +455,9 @@ const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
   signed_in: ["ok", "Signed in"],
   signed_out: ["bad", "Signed out"],
   checking: ["running", "Checking"],
-  usage_limit: ["warn", "Usage limit"],
-  extra_usage: ["warn", "Usage limit, running on extra usage"],
+  // The usage column says when a window is spent.
+  usage_limit: ["ok", "Signed in"],
+  extra_usage: ["ok", "Signed in"],
   unknown: ["", "Not checked"],
 };
 
@@ -1104,35 +1106,66 @@ function resetLabel(at: number, now: number): string {
   return `Resets ${new Date(at).toLocaleString([], options)}`;
 }
 
-function agentMarkup(entry: AgentSignIn, now: number): string {
-  const label = AGENT_LABELS[entry.agent] ?? entry.agent;
-  const [tone, text] = SIGN_IN[entry.status] ?? SIGN_IN.unknown;
-  const limits =
-    entry.status === "signed_out"
-      ? []
-      : (entry.limits ?? []).filter((limit) => !limit.resetsAt || limit.resetsAt > now);
-  const gauges = limits
-    .map((limit) =>
-      gaugeMarkup({
-        label: limit.window,
-        value: `${Math.round(limit.usedPercent)}% used`,
-        fill: limit.usedPercent,
-        high: limit.usedPercent >= 90,
-        ...(limit.resetsAt ? { detail: resetLabel(limit.resetsAt, now) } : {}),
-      }),
-    )
-    .join("");
-  const observed = entry.limitsAt
-    ? `<p class="muted">As of ${esc(updatedLabel(entry.limitsAt, now))}</p>`
-    : "";
-  const usage = limits.length
-    ? `<div class="agent-usage"><dl class="agent-limits">${gauges}</dl>${observed}</div>`
-    : entry.status === "usage_limit" && entry.resetsAt
-      ? `<p class="muted">${esc(resetLabel(entry.resetsAt, now))}</p>`
-      : entry.status === "signed_in"
-        ? '<p class="muted">Usage not reported</p>'
+/** Statuses where the agent holds a sign-in. */
+const SIGNED_IN = new Set<AgentSignIn["status"]>(["signed_in", "usage_limit", "extra_usage"]);
+
+export function agentUsageMarkup(entry: AgentSignIn, now: number): string {
+  if (!SIGNED_IN.has(entry.status)) return "";
+  const limits = (entry.limits ?? []).filter((limit) => !limit.resetsAt || limit.resetsAt > now);
+  const spentWindow = limits.some((limit) => limit.usedPercent >= 100);
+  const spent =
+    entry.status === "extra_usage" ||
+    (entry.status === "signed_in" && spentWindow && entry.extraUsage)
+      ? "Running on extra usage"
+      : entry.status === "usage_limit" || spentWindow
+        ? "Usage limit"
         : "";
-  return `<li class="runner-agent" data-agent="${esc(entry.agent)}"><span class="runner-agent-name"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span></span>${usage}</li>`;
+  const windows = limits
+    .map((limit) => `${limit.window} ${Math.round(limit.usedPercent)}%`)
+    .join(" · ");
+  return [
+    spent ? `<span class="tag warn">${spent}</span>` : "",
+    windows
+      ? `<span class="tabular-nums">${esc(windows)}</span>`
+      : spent
+        ? ""
+        : '<span class="muted">Usage not reported</span>',
+    spent && entry.resetsAt
+      ? `<span class="muted">${esc(resetLabel(entry.resetsAt, now))}</span>`
+      : "",
+    windows && entry.limitsAt
+      ? `<span class="muted">As of ${esc(updatedLabel(entry.limitsAt, now))}</span>`
+      : "",
+  ].join("");
+}
+
+/** One table row per agent: sign-in, usage and the extra usage switch. */
+export function runnerAgentsMarkup(
+  runner: Pick<Runner, "id" | "name">,
+  agents: readonly AgentSignIn[],
+  view: { now: number; signs: boolean; switches: boolean; busy: boolean },
+): string {
+  const id = esc(runner.id);
+  const name = esc(runner.name);
+  const disabled = view.busy ? " disabled" : "";
+  const rows = agents.map((entry) => {
+    const agent = esc(entry.agent);
+    const label = esc(AGENT_LABELS[entry.agent] ?? entry.agent);
+    const [tone, text] = SIGN_IN[entry.status] ?? SIGN_IN.unknown;
+    const again = SIGNED_IN.has(entry.status);
+    const signIn = view.signs
+      ? `<button class="btn" type="button" data-runner-signin="${id}" data-signin-agent="${agent}" data-focus="signin:${id}:${agent}" aria-label="Sign in to ${label}${again ? " again" : ""} on ${name}">${again ? "Sign in again" : "Sign in"}</button>`
+      : "";
+    const usage = agentUsageMarkup(entry, view.now);
+    const on = entry.extraUsage === true || entry.status === "extra_usage";
+    const extra = !view.switches
+      ? `<span class="muted">Extra usage ${on ? "on" : "off"}</span>`
+      : entry.status === "unknown" && !on
+        ? '<span class="muted">Sign in first</span>'
+        : `<label class="runner-consent"><input type="checkbox" data-runner-extra-usage="${id}" data-extra-agent="${agent}" data-focus="extra:${id}:${agent}"${on ? " checked" : ""}${disabled}><span>Keep running on extra usage</span></label>`;
+    return `<tr data-agent="${agent}"><td><b>${label}</b></td><td><span class="runner-agent-cell"><span class="tag ${tone}">${text}</span>${signIn}</span></td><td>${usage ? `<span class="runner-agent-cell">${usage}</span>` : ""}</td><td>${extra}</td></tr>`;
+  });
+  return `<table class="runner-agents" aria-label="Agents on ${name}"><thead><tr><th scope="col">Agent</th><th scope="col">Sign-in</th><th scope="col">Usage</th><th scope="col">Extra usage</th></tr></thead><tbody>${rows.join("")}</tbody></table><p class="muted">Keep running on extra usage: when a usage window is spent, Paws keeps sending that agent work on this runner if no runner with quota left is free, and the provider bills the extra usage.</p>`;
 }
 
 function statusLine(runner: Runner, view: { now: number; serverVersion: string | null }): string {
@@ -1203,9 +1236,6 @@ export function runnerDetailMarkup(
   const signIns = runner.agents?.length
     ? runner.agents
     : AGENTS.map((agent): AgentSignIn => ({ agent, status: "unknown", checkedAt: null }));
-  const signIn = !owns
-    ? ""
-    : `<button class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button>`;
   const slots = runner.slots;
   const capacity = slots
     ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(runnerSlotsLabel(runner.running ?? [], slots))}</span>`
@@ -1234,8 +1264,13 @@ export function runnerDetailMarkup(
       : block(
           "agents",
           "Agents",
-          signIn,
-          `<ul class="runner-agent-list" role="list" aria-label="Agent sign-in and usage">${signIns.map((entry) => agentMarkup(entry, view.now)).join("")}</ul>`,
+          "",
+          runnerAgentsMarkup(runner, signIns, {
+            now: view.now,
+            signs: owns,
+            switches: owns || manages,
+            busy: view.busy,
+          }),
         )
   }${
     revoked || runner.skills === undefined
@@ -1856,8 +1891,22 @@ export function createRunners() {
       button.addEventListener("click", () => {
         const runner = runners.find((entry) => entry.id === button.dataset.runnerSignin);
         if (!runner) return;
-        refocus(`signin:${runner.id}`);
-        openAgentAccounts(runner, () => void load(true));
+        const agent = button.dataset.signinAgent!;
+        refocus(`signin:${runner.id}:${agent}`);
+        openAgentAccounts(runner, agent, () => void load(true));
+      });
+    for (const box of root!.querySelectorAll<HTMLInputElement>("input[data-runner-extra-usage]"))
+      box.addEventListener("change", () => {
+        const runnerId = box.dataset.runnerExtraUsage!;
+        const agent = box.dataset.extraAgent!;
+        refocus(`extra:${runnerId}:${agent}`);
+        void change(async () => {
+          await api(
+            `/api/runners/${encodeURIComponent(runnerId)}/agents/${encodeURIComponent(agent)}/extra-usage`,
+            { extraUsage: box.checked },
+          );
+          feedback = "Extra usage saved.";
+        }, false);
       });
     for (const form of root!.querySelectorAll<HTMLFormElement>("form[data-runner-concurrency]")) {
       const runnerId = form.dataset.runnerConcurrency!;
