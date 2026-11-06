@@ -82,10 +82,7 @@ const hookSettings = createHookSettings();
 const briefSettings = createBriefSettings();
 const findingSettings = createFindingSettings();
 const timeLimitSettings = createTimeLimitSettings();
-const queueSettings = createQueueSettings(() => {
-  settings.stale();
-  accountOrder.stale();
-});
+const queueSettings = createQueueSettings(() => settings.stale());
 const checkoutSettings = createCheckoutSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
