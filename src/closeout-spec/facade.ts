@@ -37,6 +37,7 @@ import {
   unknownKeysWarning,
   type TreePolicy,
 } from "./policy/resolve";
+import { changesPolicyInput } from "./policy/inputs";
 import { isPreExisting, type ChangedLines } from "./review/changed";
 import { earlierFindings } from "./review/earlier";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
@@ -953,17 +954,31 @@ async function candidatePolicyError(
   const diff = changed
     ? { ok: true as const, paths: changed }
     : await diffPaths(repo, base, head, scrubCommandEnv(env));
-  const read = new Set([PUBLIC_POLICY_PATH, ...policy.files.map((file) => file.path)]);
-  const skillDirs = policy.items.flatMap((item) =>
-    item.kind === "review" && "skill" in item
-      ? [item.skill.slice(0, item.skill.lastIndexOf("/") + 1)]
-      : [],
-  );
-  const touches = (path: string) =>
-    read.has(path) || skillDirs.some((dir) => dir.length > 1 && path.startsWith(dir));
-  if (diff.ok && !diff.paths.some(touches)) return undefined;
+  if (diff.ok && !changesPolicyInput(policy, diff.paths)) return undefined;
   const candidate = loadCommitPolicy({ repo, git: gitReader }, head);
   return candidate.ok ? undefined : candidate.message;
+}
+
+export function mergeResultPolicyError(
+  repo: string,
+  base: string,
+  head: string,
+): string | undefined {
+  const main = loadCommitPolicy({ repo, git: gitReader }, base);
+  if (!main.ok) return undefined;
+  const diff = gitSync(
+    repo,
+    ["diff", "--name-only", "--no-renames", "-z", `${base}...${head}`, "--"],
+    GIT_TIMEOUT_MS,
+  );
+  if (!diff.ok) return undefined;
+  const paths = splitNul(diff.stdout).flatMap((name) => utf8(name) ?? []);
+  if (!changesPolicyInput(main.policy ?? { files: [], items: [] }, paths)) return undefined;
+  const merged = gitSync(repo, ["merge-tree", "--write-tree", base, head], GIT_TIMEOUT_MS);
+  if (!merged.ok) return undefined;
+  const tree = merged.stdout.toString("utf8").trim();
+  const loaded = loadCommitPolicy({ repo, git: gitReader }, tree);
+  return loaded.ok ? undefined : loaded.message;
 }
 
 async function policyLoadError(

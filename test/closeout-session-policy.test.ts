@@ -9,6 +9,7 @@ import {
   decodePolicyFiles,
   encodePolicyFiles,
   encodePolicyChunk,
+  POLICY_SCHEMA_SUMMARY,
   trustedPolicyFiles,
   workspacePolicyFiles,
   type PolicyDigests,
@@ -81,6 +82,16 @@ test("get_closeout uses the trusted policy and ignores the policy in the workspa
   const listed = await report(session);
   expect(listed.required.map((item) => item.id)).toEqual(["lint"]);
   expect(listed.pending).toEqual(["lint"]);
+});
+
+test("get_closeout includes the policy schema only when the change edits a policy input", async () => {
+  const root = workspace(policy("lint"));
+  const session = createCloseoutSession(root, { policy: async () => trusted("lint") });
+  const schemaOf = async () =>
+    (JSON.parse(await session.report()) as { policy_schema?: string }).policy_schema;
+  expect(await schemaOf()).toBeUndefined();
+  writeFileSync(join(root, ".agents", "closeout.yaml"), policy("typecheck"));
+  expect(await schemaOf()).toBe(POLICY_SCHEMA_SUMMARY);
 });
 
 test("a policy change between two get_closeout calls is picked up", async () => {

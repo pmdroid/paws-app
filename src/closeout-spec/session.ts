@@ -6,6 +6,8 @@ import { delimiter, join } from "node:path";
 import { anyPathMatches, pathsMatch } from "./policy/paths";
 import { loadMemoryPolicy, type TreePolicy } from "./policy/resolve";
 import type { PolicyFilesLoad } from "./policy/load";
+import { changesPolicyInput } from "./policy/inputs";
+import { POLICY_SCHEMA_SUMMARY } from "./policy/schema-summary";
 import { credentialSecrets, scrubCommandEnv } from "./run/env";
 import { scrubText } from "./run/scrub";
 import { git } from "./run/exec";
@@ -186,6 +188,7 @@ type Prepared =
       rules: ListedRule[];
       published: PublishedEvidence[];
       deferred: Deferred;
+      policyChanged: boolean;
     };
 
 /** `failed` are the command checks that did not pass on the focus head; they run first. */
@@ -274,6 +277,7 @@ export function createCloseoutSession(
       rules: selectRules(policy.rules, paths),
       published,
       deferred: await deferredOf(workspace, policy, required, options.focus),
+      policyChanged: changesPolicyInput(policy, paths),
     };
   };
 
@@ -361,6 +365,7 @@ export function createCloseoutSession(
             rules: selectRules(prepared.policy.rules, current.paths),
             published: [],
             deferred: await deferredOf(workspace, prepared.policy, required, options.focus),
+            policyChanged: changesPolicyInput(prepared.policy, current.paths),
           };
         }
         recordedHead = current.ok ? current.head : undefined;
@@ -555,6 +560,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
     blocked,
     bypassed: false,
     ...(prepared.rules.length > 0 ? { rules: prepared.rules } : {}),
+    ...(prepared.policyChanged ? { policy_schema: POLICY_SCHEMA_SUMMARY } : {}),
   };
 }
 

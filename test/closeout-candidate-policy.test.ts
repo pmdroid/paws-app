@@ -3,7 +3,12 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { POLICY_VALID_ID, run, type DecisionDocument } from "../src/closeout-spec";
+import {
+  POLICY_SCHEMA_SUMMARY,
+  POLICY_VALID_ID,
+  run,
+  type DecisionDocument,
+} from "../src/closeout-spec";
 import { bypassable, type CloseoutBypass } from "../src/closeout";
 import { applyBypasses } from "../src/closeout/bypass";
 
@@ -98,6 +103,10 @@ test("a candidate that breaks the policy fails policy-valid and still runs main'
   expect(check?.kind).toBe("rule");
   expect(check?.state).toBe("failed");
   expect(check?.message).toContain(`.agents/closeout.yaml: ${TOO_LONG}`);
+  expect(check?.message).toContain(POLICY_SCHEMA_SUMMARY);
+  for (const kind of ["command", "review", "evidence", "preview"])
+    expect(check?.message).toContain(`kind "${kind}"`);
+  expect(check?.message).toContain("rules[]: requires id, probe, summary, failOn");
 }, 20_000);
 
 test("a symlink added under a policy skill directory fails policy-valid", async () => {

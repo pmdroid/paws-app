@@ -37,6 +37,7 @@ import {
 import { evidenceAttemptKey } from "../retry";
 import { probeArgv, probeArtifactPath } from "../rule-result";
 import { isPreExisting, type ChangedLines } from "../review/changed";
+import { POLICY_SCHEMA_SUMMARY } from "../policy/schema-summary";
 import { anyPathMatches } from "./paths";
 import { producerTrusted, type EvaluateTrust } from "./trust";
 
@@ -206,7 +207,7 @@ export function evaluate(
       kind: "rule",
       state: "failed",
       message: clip(
-        `P1 finding: the changed Closeout policy does not load: ${request.candidatePolicyError}`,
+        `P1 finding: the changed Closeout policy does not load: ${request.candidatePolicyError.slice(0, MESSAGE_LIMIT - POLICY_SCHEMA_SUMMARY.length - 100)}\n\n${POLICY_SCHEMA_SUMMARY}`,
       ),
     });
   }
