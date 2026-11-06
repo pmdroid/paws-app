@@ -114,7 +114,7 @@ try {
     for (const [name, path, heading] of [
       ["runners", "/dashboard/runners", "Runners"],
       ["findings", "/dashboard/findings", "Findings"],
-      ["settings-brief", "/dashboard/settings/brief", "Agent brief"],
+      ["settings-brief", "/dashboard/settings/brief", "Agent instructions"],
       ["settings-workspace", "/dashboard/settings/workspace", "Workspace access"],
     ] as const)
       await visit(page, width, name, path, heading);
