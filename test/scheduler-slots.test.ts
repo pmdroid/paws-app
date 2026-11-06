@@ -102,6 +102,34 @@ test("a task between its run and Closeout keeps its runner slot until the run en
   }
 });
 
+test("a task waiting for CI between its run and Closeout frees its runner slot", () => {
+  const { db, second } = fixture();
+  try {
+    expect(workspaceDispatch(db, { now: NOW })).toHaveLength(3);
+    db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
+      NOW + 2,
+      NOW + 2,
+      second,
+    ]);
+    const recheck = enqueueJob(db, {
+      queue: JOB_KIND.resume,
+      payload: { itemId: "placed-2" },
+      now: NOW + 2,
+    });
+    db.run(
+      `UPDATE job SET status='running',locked_by='worker',locked_until=?,
+       payload=json_set(payload,'$.awakeWait',json_object('kind','ci','worker','worker','attempt',0)) WHERE id=?`,
+      [NOW + 60_000, recheck],
+    );
+    expect(runnerSlotFree(db, ["goldbox"], NOW + 2)).toBe(true);
+    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["next-4"]);
+    db.run("UPDATE job SET payload=json_remove(payload,'$.awakeWait') WHERE id=?", [recheck]);
+    expect(runnerSlotFree(db, ["goldbox"], NOW + 3)).toBe(false);
+  } finally {
+    db.close();
+  }
+});
+
 test("a placement in progress holds a slot until its run reaches a runner", () => {
   const { db, stuck } = fixture();
   try {
