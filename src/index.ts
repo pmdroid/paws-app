@@ -239,6 +239,7 @@ import { startServer } from "./server";
 import { activeRunnerReadiness } from "./settings";
 import {
   createRetroDispatcher,
+  createRetroPreviewHttp,
   createRetroReviewHttp,
   createRetroScheduleHttp,
   createRetroScheduler,
@@ -1034,12 +1035,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           catalog: retroCatalog,
         });
         const review = createRetroReviewHttp({ db, artifactRoot: join(paths.home, "retros") });
+        const preview = createRetroPreviewHttp({ db, artifactRoot: join(paths.home, "retros") });
         return async (
           request: Request,
           principal: WorkspacePrincipal,
           sessionIds: readonly string[],
         ) =>
           (await settings(request, principal)) ??
+          (await preview(request, principal, sessionIds)) ??
           (await review(request, principal, sessionIds)) ??
           schedule(request, principal);
       })(),
