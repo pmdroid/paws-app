@@ -647,6 +647,70 @@ describe("improvement inbox", () => {
     expect(t.page.view().list.nextCursor).toBe("c2");
   });
 
+  test("a mutation answer after leaving and returning to the item stays stale", async () => {
+    const t = harness();
+    const a = t.w.retro.a;
+    const daily = (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0].id;
+    await t.open(`/improvements/${a}`);
+    await t.click('[data-improvement-choice="reject"]');
+    t.type('[data-improvement-draft="reason"]', "Not recurring");
+    t.holdOn(/\/decision$/);
+    await t.submit('[data-improvement-form="reject"]');
+    expect(t.holds).toHaveLength(1);
+    t.holdOn(null);
+    await t.open(`/improvements/${daily}`);
+    await t.open(`/improvements/${a}`);
+    t.holds[0]!.release();
+    await settle();
+    expect(t.page.view().message).toBe("");
+    expect(t.page.view().error).toBeNull();
+    expect(t.page.view().busy).toBeNull();
+  });
+
+  test("Review polling picks up a schedule another tab changed", async () => {
+    const t = harness();
+    await t.open("/improvements");
+    expect(t.page.view().schedule.state).toBe("ready");
+    t.answers.set("/api/retros/schedule", () =>
+      Response.json({ ...SCHEDULE, state: "running", current: null }),
+    );
+    await t.poll();
+    expect(t.page.view().schedule.state).toBe("running");
+  });
+
+  test("history polling keeps every page Show more loaded", async () => {
+    const t = harness();
+    await t.open("/improvements/history");
+    const entry = t.page.view().history.retros[0];
+    const pages = [0, 1, 2].map((n) => ({
+      retros: [0, 1].map((i) => ({
+        ...entry,
+        id: `r-${n}-${i}`,
+        generation: { ...entry.generation, state: n === 0 && i === 0 ? "running" : "ready" },
+      })),
+      total: 6,
+      nextCursor: n < 2 ? `c${n + 1}` : null,
+    }));
+    t.page.view().history = { ...pages[1], retros: [...pages[0]!.retros, ...pages[1]!.retros] };
+    t.answers.set("/api/retros/history", () => {
+      const cursor = new URL(`http://paws.test${t.requests.at(-1)!.path}`).searchParams.get(
+        "cursor",
+      );
+      return Response.json(pages[cursor ? Number(cursor.slice(1)) : 0]);
+    });
+    await t.poll();
+    expect(t.page.view().history.retros.map((r: { id: string }) => r.id)).toEqual([
+      "r-0-0",
+      "r-0-1",
+      "r-1-0",
+      "r-1-1",
+    ]);
+    expect(t.page.view().history.nextCursor).toBe("c2");
+    await t.click('[data-improvement-action="more-history"]');
+    expect(t.page.view().history.retros).toHaveLength(6);
+    expect(t.page.view().history.nextCursor).toBeNull();
+  });
+
   test("history lists the retro and the settings tab keeps daily and weekly controls apart", async () => {
     const t = harness();
     await t.open("/improvements/history");

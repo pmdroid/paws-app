@@ -20,6 +20,7 @@ import {
   retroReportPath,
   type ImprovementItem,
   type ImprovementList,
+  type RetroHistory,
   type ImprovementOutcome,
 } from "../improvements";
 import { FINDING_GROUPS_API_PATH, type FindingGroupsResponse } from "../finding-groups";
@@ -151,6 +152,7 @@ export function createImprovements(options: ImprovementsOptions = {}) {
   let countToken = 0;
   let busyToken = 0;
   let carried = "";
+  let visit = 0;
   const count = (token: number, total: number) => {
     if (token === countToken) options.counted?.(total);
   };
@@ -342,21 +344,38 @@ export function createImprovements(options: ImprovementsOptions = {}) {
 
   const loadHistory = (append = false) =>
     guarded("history", async (current) => {
-      const cursor = append ? view.history?.nextCursor : null;
-      const answer = await request(
-        `${RETRO_HISTORY_API_PATH}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
-      );
-      if (!current()) return;
-      const parsed = answer.status === 200 ? parseRetroHistory(answer.body) : null;
-      if (!parsed?.ok) {
-        view.historyError = parsed ? parsed.error : errorOf(answer, "Retro history did not load.");
-        return;
-      }
+      const page = async (cursor: string | null | undefined) => {
+        const answer = await request(
+          `${RETRO_HISTORY_API_PATH}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+        );
+        if (!current()) return null;
+        const parsed = answer.status === 200 ? parseRetroHistory(answer.body) : null;
+        if (!parsed?.ok) {
+          view.historyError = parsed
+            ? parsed.error
+            : errorOf(answer, "Retro history did not load.");
+          return null;
+        }
+        return parsed.value;
+      };
+      const kept = append ? (view.history?.retros ?? []) : [];
+      const loaded = append ? 0 : (view.history?.retros.length ?? 0);
+      const retros: RetroHistory["retros"] = [];
+      let last: RetroHistory | null = null;
+      do {
+        const next: RetroHistory | null = await page(
+          last ? last.nextCursor : append ? view.history?.nextCursor : null,
+        );
+        if (!next) return;
+        last = next;
+        retros.push(...next.retros);
+      } while (last.nextCursor && retros.length < loaded);
+      const seen = new Set(kept.map((retro) => retro.id));
       view.historyError = null;
-      view.history =
-        append && view.history
-          ? { ...parsed.value, retros: [...view.history.retros, ...parsed.value.retros] }
-          : parsed.value;
+      view.history = {
+        ...last,
+        retros: [...kept, ...retros.filter((retro) => !seen.has(retro.id))],
+      };
     });
 
   const detailNeedsPolling = () => {
@@ -380,8 +399,7 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     if (view.tab === "review") {
       void loadList();
       void loadAttention();
-      if (view.schedule === null || !["ready", "empty"].includes(view.schedule.state))
-        void loadSchedule();
+      void loadSchedule();
       if (detailNeedsPolling()) void loadDetail();
     } else if (view.tab === "report") {
       const state = view.report?.retro.generation.state;
@@ -506,9 +524,13 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     if (view.busy !== null || !view.local) return;
     const mounted = root;
     const owner = view;
-    const scope = { tab: view.tab, id: view.id };
+    const scope = { tab: view.tab, id: view.id, visit };
     const here = () =>
-      root === mounted && view === owner && view.tab === scope.tab && view.id === scope.id;
+      root === mounted &&
+      view === owner &&
+      view.tab === scope.tab &&
+      view.id === scope.id &&
+      visit === scope.visit;
     const release = claimBusy(key);
     view.error = null;
     view.message = "";
@@ -808,6 +830,7 @@ export function createImprovements(options: ImprovementsOptions = {}) {
     const filterChanged = improvementQuery(filter) !== improvementQuery(view.filter);
     if (previous.tab === tab && previous.id === route.id && !filterChanged) return false;
     epoch++;
+    visit++;
     view.tab = tab;
     view.id = route.id;
     view.error = null;
@@ -841,6 +864,7 @@ export function createImprovements(options: ImprovementsOptions = {}) {
         engine = nextEngine;
         reader = nextReader;
         epoch++;
+        visit++;
         dailyLoaded = false;
         carried = "";
         shown = "";
