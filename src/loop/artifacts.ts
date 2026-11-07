@@ -24,9 +24,10 @@ import {
   markArtifact,
   saveArtifact,
 } from "../db";
+import type { StoredEvidence, WorkItemRecord } from "../db";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
 import type { PublishedEvidence } from "../closeout";
-import { canReportProgress } from "./activity-policy";
+import { pawsIssueUrl } from "./open-findings";
 import { rejectedEvidenceIds } from "../questions";
 
 export function createLinearArtifactReader(options: { db: Database; secretsDir: string }) {
@@ -83,30 +84,100 @@ const MB = 1024 * 1024;
 export const EVIDENCE_INLINE_LIMITS = { image: 10 * MB, video: 50 * MB };
 
 /**
- * The Linear activity for one Closeout video or screenshot: the embedded upload when there is
- * one, then the Paws link, then an optional note.
+ * The files Closeout counts for each check: the latest per display name, without rejected ones.
+ * Pull request screenshots pick their files the same way.
  */
-export function evidenceActivityBody(input: {
-  checkId: string;
-  displayName: string;
-  link: string;
-  assetUrl?: string;
-  note?: string;
-}): string {
-  const label = input.displayName.replace(/[\\[\]]/g, "\\$&");
-  const heading = `Closeout evidence for check \`${input.checkId}\``;
-  const lines =
-    input.assetUrl === undefined
-      ? [`${heading}: [${label}](<${input.link}>)`]
-      : [`${heading}:`, `![${label}](<${input.assetUrl}>)`, `In Paws: [${label}](<${input.link}>)`];
-  return [...lines, ...(input.note === undefined ? [] : [input.note])].join("\n\n");
+function evidenceFiles(db: Database, itemId: string): StoredEvidence[] {
+  const rejected = rejectedEvidenceIds(db, itemId);
+  const latest = new Map<string, StoredEvidence>();
+  for (const row of listEvidence(db, itemId))
+    latest.set(JSON.stringify([row.checkId, row.displayName]), row);
+  return [...latest.values()].filter((row) => !rejected.has(row.id));
+}
+
+/** "16 screenshots" or "1 video and 2 screenshots". */
+function evidenceCount(rows: readonly StoredEvidence[]): string {
+  const videos = rows.filter((row) => row.mediaType.startsWith("video/")).length;
+  const screenshots = rows.length - videos;
+  return [
+    ...(videos ? [`${videos} video${videos === 1 ? "" : "s"}`] : []),
+    ...(screenshots ? [`${screenshots} screenshot${screenshots === 1 ? "" : "s"}`] : []),
+  ].join(" and ");
+}
+
+/** The item page's evidence gallery in Paws. */
+export function evidenceSectionUrl(publicUrl: string, item: WorkItemRecord): string | null {
+  const page = pawsIssueUrl(publicUrl, item);
+  return page && `${page}#evidence-gallery`;
 }
 
 /**
- * Keeps a video or screenshot published with a Closeout check id in the evidence store and
- * posts it to Linear. With `uploads`, files within `EVIDENCE_INLINE_LIMITS` go out as a
- * `linear.evidence` outbox row that uploads the file and embeds it; others get the Paws link.
- * After the PR response, evidence uploads stay silent and attach to the issue instead.
+ * One thought per evidence check at `head`: "Closeout evidence for `visual-proof`: 16
+ * screenshots. See them in Paws: <link>". A check without files gets none. The key names the
+ * check and the head, so a later round at the same head posts nothing new. The images stay in
+ * Paws and on the pull request.
+ */
+export function evidenceThoughts(
+  db: Database,
+  input: { itemId: string; checkIds: readonly string[]; head: string; link: string },
+): { key: string; body: string }[] {
+  const files = evidenceFiles(db, input.itemId);
+  return input.checkIds.flatMap((checkId) => {
+    const rows = files.filter((row) => row.checkId === checkId);
+    if (rows.length === 0) return [];
+    return [
+      {
+        key: `${input.itemId}:evidence:${checkId}:${input.head}`,
+        body: `Closeout evidence for \`${checkId}\`: ${evidenceCount(rows)}. See them in Paws: ${input.link}`,
+      },
+    ];
+  });
+}
+
+/**
+ * The one "Closeout evidence" card on the issue, linking to the item's evidence in Paws. One row
+ * per head: Linear updates the attachment with the same URL on the same issue, so a new head
+ * changes the subtitle ("16 screenshots at b7c55c8") and adds no card.
+ */
+export function enqueueEvidenceCard(
+  db: Database,
+  input: {
+    sessionId: string;
+    generation: number;
+    item: WorkItemRecord;
+    link: string;
+    head: string;
+    now: number;
+  },
+): void {
+  const rows = evidenceFiles(db, input.item.id);
+  if (rows.length === 0) return;
+  enqueueOutboxOnce(db, {
+    target: "linear",
+    op: "linear.attachment",
+    delivery: "ordered",
+    priority: 0,
+    orderingKey: input.sessionId,
+    generation: input.generation,
+    idempotencyKey: `evidence-card:${input.sessionId}:${input.generation}:${input.head}`,
+    payload: {
+      id: randomUUID(),
+      itemId: input.item.id,
+      issueId: input.item.linearIssueId,
+      title: "Closeout evidence",
+      subtitle: `${evidenceCount(rows)} at ${input.head.slice(0, 7)}`,
+      url: input.link,
+      evidence: true,
+    },
+    now: input.now,
+  });
+}
+
+/**
+ * Keeps a video or screenshot published with a Closeout check id in the evidence store. Nothing
+ * is posted per file: Closeout posts one thought per check, and one card after the PR response.
+ * With `uploads`, a file of a visual review check within `EVIDENCE_INLINE_LIMITS` is uploaded to
+ * Linear (`linear.evidence`) so the review question can embed it.
  * Every other artifact goes to `linear`, unchanged.
  */
 export function createEvidenceArtifactPublisher(options: {
@@ -171,56 +242,17 @@ export function createEvidenceArtifactPublisher(options: {
         const row = getEvidence(options.db, stored.id);
         const kind = row?.mediaType.startsWith("video/") ? "video" : "image";
         const inline = row !== null && row.sizeBytes <= EVIDENCE_INLINE_LIMITS[kind];
-        const activity = {
-          id: randomUUID(),
-          sessionId: options.sessionId,
-          kind: "thought",
-        };
-        const upload = inline && options.uploads;
-        const reviewed = options.reviewed?.(evidence.checkId) ?? false;
-        const quiet = !canReportProgress(options.db, options.sessionId, generation);
-        if (upload || (!reviewed && !quiet))
+        if (inline && options.uploads && (options.reviewed?.(evidence.checkId) ?? false))
           enqueueOutboxOnce(options.db, {
             target: "linear",
-            op: upload ? "linear.evidence" : "activity",
+            op: "linear.evidence",
             delivery: "ordered",
             priority: 0,
             orderingKey: options.sessionId,
             idempotencyKey: `evidence:${options.sessionId}:${generation}:${stored.id}`,
             generation,
             now: now(),
-            payload: upload
-              ? {
-                  ...activity,
-                  evidenceId: stored.id,
-                  checkId: evidence.checkId,
-                  link: url,
-                  ...(reviewed || quiet ? { uploadOnly: true } : {}),
-                }
-              : {
-                  ...activity,
-                  body: evidenceActivityBody({
-                    checkId: evidence.checkId,
-                    displayName: artifact.displayName,
-                    link: url,
-                    ...(row !== null && !inline
-                      ? {
-                          note: `This ${kind} is larger than ${EVIDENCE_INLINE_LIMITS[kind] / MB} MB, so it is only in Paws.`,
-                        }
-                      : {}),
-                  }),
-                },
-          });
-        if (quiet)
-          enqueueEvidenceAttachment(options.db, {
-            sessionId: options.sessionId,
-            generation,
-            itemId: options.itemId,
-            evidenceId: stored.id,
-            title: artifact.displayName,
-            url,
-            headCommit: evidence.headCommit,
-            now: now(),
+            payload: { evidenceId: stored.id, checkId: evidence.checkId, link: url },
           });
         return { url, displayName: artifact.displayName };
       })().finally(() => inflight.delete(key));
@@ -228,47 +260,6 @@ export function createEvidenceArtifactPublisher(options: {
       return pending;
     },
   };
-}
-
-/** A stable outbox key lets delivery adopt evidence queued before the PR gate was installed. */
-export function enqueueEvidenceAttachment(
-  db: Database,
-  input: {
-    sessionId: string;
-    generation: number;
-    itemId: string;
-    evidenceId: string;
-    title: string;
-    url: string;
-    headCommit: string;
-    now: number;
-  },
-): void {
-  const item = db
-    .query<{ issueId: string }, [string]>(
-      "SELECT linear_issue_id AS issueId FROM work_item WHERE id=?",
-    )
-    .get(input.itemId);
-  if (!item) throw new Error("Evidence has no work item");
-  enqueueOutboxOnce(db, {
-    target: "linear",
-    op: "linear.attachment",
-    delivery: "ordered",
-    priority: 0,
-    orderingKey: input.sessionId,
-    generation: input.generation,
-    idempotencyKey: `evidence-card:${input.sessionId}:${input.generation}:${input.evidenceId}`,
-    payload: {
-      id: randomUUID(),
-      itemId: input.itemId,
-      issueId: item.issueId,
-      title: input.title,
-      url: input.url,
-      evidenceId: input.evidenceId,
-      headCommit: input.headCommit,
-    },
-    now: input.now,
-  });
 }
 
 function sessionGeneration(db: Database, sessionId: string): number {

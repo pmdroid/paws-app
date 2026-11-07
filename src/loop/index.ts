@@ -71,9 +71,11 @@ export { createTaskPlanner } from "./task-planner";
 export { createLinearSessionProgress } from "./session-progress";
 export {
   createEvidenceArtifactPublisher,
+  enqueueEvidenceCard,
+  evidenceSectionUrl,
+  evidenceThoughts,
   createLinearArtifactPublisher,
   EVIDENCE_INLINE_LIMITS,
-  evidenceActivityBody,
   createLinearArtifactReader,
   type EvidenceSink,
 } from "./artifacts";

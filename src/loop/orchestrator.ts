@@ -557,6 +557,9 @@ import { renderWorkContext } from "../core";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
+  enqueueEvidenceCard,
+  evidenceThoughts,
+  evidenceSectionUrl,
   createLinearArtifactPublisher,
   publishedEvidence,
   type EvidenceSink,
@@ -4140,6 +4143,7 @@ export class Orchestrator {
       },
       recorder: {
         record: async (verdict) => {
+          if (!deps.signal?.aborted) this.postEvidence(item, verdict);
           if (
             deps.signal?.aborted ||
             verdict.outcome === "accepted" ||
@@ -5441,6 +5445,7 @@ export class Orchestrator {
       {},
       "ordered",
     );
+    this.attachEvidence(item, published.head);
     const sessionProgress = this.sessionProgress(item);
     if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
     if (newPublication || published.head !== candidateHead) sessionProgress?.phase("merging");
@@ -8202,6 +8207,41 @@ export class Orchestrator {
     });
   }
 
+  /**
+   * One thought per evidence check Closeout recorded at the verdict's head, with the file count
+   * and a link to Paws. After the pull request response, the issue's evidence card instead.
+   */
+  private postEvidence(item: WorkItemRecord, verdict: GateResult): void {
+    const link = this.options.evidence && evidenceSectionUrl(this.options.evidence.publicUrl, item);
+    if (!link || !verdict.head) return;
+    if (!this.canReportProgress(item.id)) return this.attachEvidence(item, verdict.head);
+    const checkIds = (verdict.decision?.items ?? [])
+      .filter((check) => check.kind === "evidence")
+      .map((check) => check.id);
+    for (const { key, body } of evidenceThoughts(this.db, {
+      itemId: item.id,
+      checkIds,
+      head: verdict.head,
+      link,
+    }))
+      this.post(item, "thought", body, key);
+  }
+
+  /** The issue's one "Closeout evidence" card once the pull request response exists. */
+  private attachEvidence(item: WorkItemRecord, head: string): void {
+    const sessionId = this.activitySession(item);
+    const link = this.options.evidence && evidenceSectionUrl(this.options.evidence.publicUrl, item);
+    if (!link || sessionId === null || !this.hasPublishedPullRequest(sessionId)) return;
+    enqueueEvidenceCard(this.db, {
+      sessionId,
+      generation: getLinearSessionGeneration(this.db, sessionId),
+      item,
+      link,
+      head,
+      now: this.now(),
+    });
+  }
+
   private visualReviewRequirements(item: WorkItemRecord, worktree: string): ResolvedEvidence[] {
     const repository = this.repositoryForItem(item);
     if (!repository) return [];
@@ -9473,12 +9513,14 @@ export class Orchestrator {
         if (!current()) return false;
         if (accessible) {
           bindWorkItemRepository(this.db, item.id, choice.bind);
-          this.post(
-            item,
-            "thought",
-            `Working in ${choice.bind.owner}/${choice.bind.repo}.`,
-            `${item.id}:repository`,
-          );
+          // A runner posts its own start line naming the repository.
+          if (!this.options.remoteExecution)
+            this.post(
+              item,
+              "thought",
+              `Working in ${choice.bind.owner}/${choice.bind.repo}.`,
+              `${item.id}:repository`,
+            );
           if (auth && !(await auth.ensure(item, "initial", controller.signal))) {
             await this.flush();
             return false;

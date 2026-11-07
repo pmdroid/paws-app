@@ -84,7 +84,7 @@ function validateAttachment(input: IssueAttachment): void {
     !input.issueId.trim() ||
     !input.title.trim() ||
     input.title.length > 255 ||
-    /[\r\n\0]/.test(input.title)
+    /[\r\n\0]/.test(input.title + (input.subtitle ?? ""))
   ) {
     throw new Error("Issue attachment requires an issue and a valid title");
   }
@@ -94,7 +94,7 @@ function validateAttachment(input: IssueAttachment): void {
     url.username ||
     url.password ||
     url.search ||
-    url.hash
+    (url.hash && !input.evidence)
   ) {
     throw new Error("Issue attachment requires a published Linear asset URL");
   }

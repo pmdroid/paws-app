@@ -495,7 +495,7 @@ test("a retried run starts with the main that moved while it was failed", async 
   }
 }, 30_000);
 
-test("a frontend change without visual proof gets a fix round, publishes a screenshot, and Closeout accepts", async () => {
+test("a frontend change without visual proof gets a fix round, publishes 16 screenshots, posts one evidence thought, and Closeout accepts", async () => {
   const layout = await repoLayout("paws-e2e-");
   const seed = path.join(layout.root, "seed");
   await writeFile(
@@ -553,10 +553,14 @@ test("a frontend change without visual proof gets a fix round, publishes a scree
                     cwd: input.worktree,
                     args: [
                       "-e",
-                      "await Bun.write('shot.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]))",
+                      "for (let i = 0; i < 16; i++) await Bun.write(`shot-${i}.png`, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, i]))",
                     ],
                   },
-                  { type: "publish_artifact", path: "shot.png", checkId: "visual-proof" },
+                  ...Array.from({ length: 16 }, (_, index) => ({
+                    type: "publish_artifact" as const,
+                    path: `shot-${index}.png`,
+                    checkId: "visual-proof",
+                  })),
                   { type: "end" },
                 ]
               : [
@@ -585,9 +589,18 @@ test("a frontend change without visual proof gets a fix round, publishes a scree
     expect(prompts.get("fix")).toContain("visual-proof (evidence): failed");
     expect(prompts.get("fix")).toContain('publish_artifact with checkId "visual-proof"');
     const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-303")!;
-    expect(listEvidence(db, item.id)).toMatchObject([
-      { checkId: "visual-proof", mediaType: "image/png" },
+    expect(listEvidence(db, item.id)).toHaveLength(16);
+    // One thought for the check, with the count and the Paws link; the images stay in Paws.
+    const link = "https://paws.example/dashboard/issues/ENG-303#evidence-gallery";
+    const evidence = tracker.progress.filter((update) => update.body.includes("Closeout evidence"));
+    expect(evidence.map((update) => [update.kind, update.body])).toEqual([
+      [
+        "thought",
+        `Closeout evidence for \`visual-proof\`: 16 screenshots. See them in Paws: ${link}`,
+      ],
     ]);
+    expect(tracker.progress.some((update) => update.body.includes("!["))).toBe(false);
+    expect(tracker.attachments).toEqual([]);
   } finally {
     await orchestrator.shutdown();
     db.close();

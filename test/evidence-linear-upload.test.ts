@@ -37,7 +37,7 @@ function sized(head: Buffer, bytes: number): Buffer {
   return buffer;
 }
 
-function setup() {
+function setup(reviewed = true) {
   const home = tempHome();
   homes.push(home);
   const db = openDatabase(join(home, "paws.db"));
@@ -84,6 +84,7 @@ function setup() {
     itemId: "item",
     sessionId: "session",
     uploads: true,
+    reviewed: () => reviewed,
   });
   const context: PublishArtifactContext = {
     itemId: "item",
@@ -128,7 +129,7 @@ function rows(db: Database) {
   return listOutbox(db, "session");
 }
 
-test("a published screenshot is uploaded once and its activity embeds the asset URL", async () => {
+test("a visual review screenshot is uploaded once and nothing is posted", async () => {
   const f = setup();
   try {
     const published = await f.publish(
@@ -144,15 +145,17 @@ test("a published screenshot is uploaded once and its activity embeds the asset 
     expect(f.uploads).toEqual(["Settings → Agents, desktop"]);
     expect(rows(f.db).map((row) => row.status)).toEqual(["sent"]);
     expect(getEvidence(f.db, evidenceId(published.url))?.assetUrl).toBe(ASSET);
-    expect(f.tracker.progress).toHaveLength(1);
-    expect(f.tracker.progress[0]).toMatchObject({ sessionId: "session", kind: "thought" });
-    expect(f.tracker.progress[0]!.body).toBe(
-      [
-        "Closeout evidence for check `visual-proof`:",
-        `![Settings → Agents, desktop](<${ASSET}>)`,
-        `In Paws: [Settings → Agents, desktop](<${published.url}>)`,
-      ].join("\n\n"),
-    );
+    expect(f.tracker.progress).toHaveLength(0);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("evidence of a check without a visual review is only stored", async () => {
+  const f = setup(false);
+  try {
+    await f.publish("shot.png", "image/png", sized(PNG_HEAD, 64));
+    expect(rows(f.db)).toHaveLength(0);
   } finally {
     f.db.close();
   }
@@ -167,58 +170,38 @@ test("a failed upload retries through the outbox", async () => {
     const [failed] = rows(f.db);
     expect(failed).toMatchObject({ status: "pending", attempts: 1 });
     expect(failed!.error).toContain("HTTP 503");
-    expect(f.tracker.progress).toHaveLength(0);
     expect(getEvidence(f.db, evidenceId(published.url))?.assetUrl).toBeNull();
 
     await f.deliver(3);
     expect(rows(f.db).map((row) => row.status)).toEqual(["sent"]);
     expect(f.uploads).toEqual(["clip.webm", "clip.webm"]);
-    expect(f.tracker.progress).toHaveLength(1);
-    expect(f.tracker.progress[0]!.body).toContain(`![clip.webm](<${ASSET}>)`);
+    expect(getEvidence(f.db, evidenceId(published.url))?.assetUrl).toBe(ASSET);
+    expect(f.tracker.progress).toHaveLength(0);
   } finally {
     f.db.close();
   }
 });
 
-test("an upload that keeps failing posts the Paws link on the last attempt", async () => {
+test("an upload that keeps failing gives up on the last attempt", async () => {
   const f = setup();
   try {
     f.failures.remaining = 100;
     const published = await f.publish("shot.png", "image/png", sized(PNG_HEAD, 64));
     await f.deliver(10);
     expect(rows(f.db).map((row) => row.status)).toEqual(["sent"]);
-    expect(f.tracker.progress.map((update) => update.body)).toEqual([
-      `Closeout evidence for check \`visual-proof\`: [shot.png](<${published.url}>)\n\nPaws could not upload this file to Linear.`,
-    ]);
+    expect(getEvidence(f.db, evidenceId(published.url))?.assetUrl).toBeNull();
+    expect(f.tracker.progress).toHaveLength(0);
   } finally {
     f.db.close();
   }
 });
 
-test("an oversized video posts the link and the note", async () => {
+test("files over the inline limits are not uploaded", async () => {
   const f = setup();
   try {
-    const published = await f.publish("walkthrough.webm", "video/webm", sized(WEBM_HEAD, 51 * MB));
-    expect(rows(f.db).map((row) => row.op)).toEqual(["activity"]);
-    await f.deliver(3);
-    expect(f.uploads).toHaveLength(0);
-    expect(f.tracker.progress.map((update) => update.body)).toEqual([
-      `Closeout evidence for check \`visual-proof\`: [walkthrough.webm](<${published.url}>)\n\nThis video is larger than 50 MB, so it is only in Paws.`,
-    ]);
-  } finally {
-    f.db.close();
-  }
-});
-
-test("a screenshot over 10 MB keeps only the Paws link", async () => {
-  const f = setup();
-  try {
+    await f.publish("walkthrough.webm", "video/webm", sized(WEBM_HEAD, 51 * MB));
     await f.publish("full-page.png", "image/png", sized(PNG_HEAD, 11 * MB));
-    await f.deliver(3);
-    expect(f.uploads).toHaveLength(0);
-    expect(f.tracker.progress[0]!.body).toContain(
-      "This image is larger than 10 MB, so it is only in Paws.",
-    );
+    expect(rows(f.db)).toHaveLength(0);
   } finally {
     f.db.close();
   }

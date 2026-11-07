@@ -31,7 +31,6 @@ import {
   AFTER_PULL_REQUEST_THOUGHT,
   canReportProgress,
 } from "./activity-policy";
-import { enqueueEvidenceAttachment, evidenceActivityBody } from "./artifacts";
 import { planFiledResponse } from "./plan-proposal";
 
 /** What `linear.evidence` rows need to upload a Closeout file: the transfer and the store root. */
@@ -42,7 +41,7 @@ const KINDS = new Set<ActivityKind>(["thought", "action", "elicitation", "respon
 /**
  * Deliver `linear` outbox rows to the tracker.
  * `activity` posts progress. `linear.catchup` runs the poller.
- * `linear.evidence` uploads a Closeout file and posts it inline.
+ * `linear.evidence` uploads a Closeout file for a visual review question.
  */
 export async function deliverLinearOutbox(
   message: OutboxRow,
@@ -72,13 +71,15 @@ export async function deliverLinearOutbox(
     const evidenceId = readString(payload, "evidenceId");
     if (evidenceId && !db) throw new Error("Evidence attachment needs the database");
     const evidence = evidenceId && db ? getEvidence(db, evidenceId) : null;
+    const subtitle = readString(payload, "subtitle");
     await tracker.createIssueAttachment(
       {
         id,
         issueId,
         title,
+        ...(subtitle ? { subtitle } : {}),
         url: evidence?.assetUrl ?? url,
-        ...(evidenceId ? { evidence: true } : {}),
+        ...(evidenceId || payload["evidence"] === true ? { evidence: true } : {}),
       },
       options,
     );
@@ -126,7 +127,7 @@ export async function deliverLinearOutbox(
   }
   if (message.op === "linear.evidence") {
     if (!db) throw new Error("Evidence delivery needs the database");
-    return postEvidence(message, payload, tracker, db, uploads, options);
+    return uploadEvidence(message, payload, db, uploads, options);
   }
   if (message.op.startsWith("linear.session.")) {
     return postSession(payload, tracker, options);
@@ -236,81 +237,42 @@ async function postActivity(
 }
 
 /**
- * Uploads the evidence file once and keeps its asset URL on the evidence row, so a retry
- * after a failed post does not upload again. A failed upload throws for the outbox to retry;
- * the last attempt posts the Paws link with a note instead.
+ * Uploads the evidence file once and keeps its asset URL on the evidence row, so a visual review
+ * question can embed it. A failed upload throws for the outbox to retry; the last attempt gives
+ * up and the question links to Paws. Nothing is posted: Closeout posts one thought per check.
  */
-async function postEvidence(
+async function uploadEvidence(
   message: OutboxRow,
   payload: Record<string, unknown>,
-  tracker: TrackerAdapter,
   db: Database,
   uploads: EvidenceUploads | undefined,
   options: TrackerRequestOptions,
 ): Promise<void> {
-  const id = readString(payload, "id");
-  const sessionId = readString(payload, "sessionId");
   const evidenceId = readString(payload, "evidenceId");
-  const checkId = readString(payload, "checkId");
-  const link = readString(payload, "link");
-  if (!id || !sessionId || !evidenceId || !checkId || !link)
-    throw new Error("Evidence activity is missing required fields");
+  if (!evidenceId) throw new Error("Evidence upload is missing its evidence id");
   const evidence = getEvidence(db, evidenceId);
-  if (evidence === null) throw new Error("Evidence activity has no evidence row");
-  let assetUrl = evidence.assetUrl ?? undefined;
-  let note: string | undefined;
-  if (assetUrl === undefined) {
-    try {
-      if (!uploads) throw new Error("Linear file uploads are unavailable");
-      const bytes = new Uint8Array(await readFile(join(uploads.root, evidence.id)));
-      if (
-        bytes.byteLength !== evidence.sizeBytes ||
-        createHash("sha256").update(bytes).digest("hex") !== evidence.sha256
-      )
-        throw new Error("Evidence file integrity check failed");
-      const uploaded = await uploads.files.upload({
-        filename: evidence.displayName,
-        contentType: evidence.mediaType,
-        bytes,
-        ...(options.signal ? { signal: options.signal } : {}),
-      });
-      assetUrl = uploaded.assetUrl;
-      setEvidenceAssetUrl(db, evidence.id, assetUrl);
-    } catch (error) {
-      options.signal?.throwIfAborted();
-      if (message.attempts < message.maxAttempts) throw error;
-      journalCaught(error, "dispatch.postEvidence.readFile", null, "optional file may be absent");
-      note = "Paws could not upload this file to Linear.";
-    }
-  }
-  const quiet = !canReportProgress(db, sessionId, message.generation ?? 0, message.id);
-  if (quiet)
-    enqueueEvidenceAttachment(db, {
-      sessionId,
-      generation: message.generation ?? 0,
-      itemId: evidence.itemId,
-      evidenceId,
-      title: evidence.displayName,
-      url: link,
-      headCommit: evidence.headCommit,
-      now: Date.now(),
+  if (evidence === null) throw new Error("Evidence upload has no evidence row");
+  if (evidence.assetUrl) return;
+  try {
+    if (!uploads) throw new Error("Linear file uploads are unavailable");
+    const bytes = new Uint8Array(await readFile(join(uploads.root, evidence.id)));
+    if (
+      bytes.byteLength !== evidence.sizeBytes ||
+      createHash("sha256").update(bytes).digest("hex") !== evidence.sha256
+    )
+      throw new Error("Evidence file integrity check failed");
+    const uploaded = await uploads.files.upload({
+      filename: evidence.displayName,
+      contentType: evidence.mediaType,
+      bytes,
+      ...(options.signal ? { signal: options.signal } : {}),
     });
-  if (payload["uploadOnly"] === true || quiet) return;
-  await tracker.postProgress(
-    {
-      sessionId,
-      kind: "thought",
-      id,
-      body: evidenceActivityBody({
-        checkId,
-        displayName: evidence.displayName,
-        link,
-        ...(assetUrl === undefined ? {} : { assetUrl }),
-        ...(note === undefined ? {} : { note }),
-      }),
-    },
-    options,
-  );
+    setEvidenceAssetUrl(db, evidence.id, uploaded.assetUrl);
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    if (message.attempts < message.maxAttempts) throw error;
+    journalCaught(error, "dispatch.postEvidence.readFile", null, "optional file may be absent");
+  }
 }
 
 async function postElicitation(

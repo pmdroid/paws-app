@@ -146,7 +146,7 @@ function git(cwd: string, args: string[]): void {
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 }
 
-test("a video with a check id lands in the evidence store and Linear gets the Paws link", async () => {
+test("a video with a check id lands in the evidence store and the agent gets the Paws link", async () => {
   const f = setup();
   try {
     f.write("proof.webm", sized(WEBM, 15 * 1024 * 1024));
@@ -168,12 +168,7 @@ test("a video with a check id lands in the evidence store and Linear gets the Pa
     });
     const link = `https://paws.example/evidence/${evidence!.id}`;
     expect(artifact.text).toBe(`[proof.webm](<${link}>)`);
-    const activity = listOutbox(f.db, "session").find((row) => row.op === "activity");
-    expect(activity?.payload).toMatchObject({
-      sessionId: "session",
-      kind: "thought",
-      body: `Closeout evidence for check \`browser-proof\`: [proof.webm](<${link}>)`,
-    });
+    expect(listOutbox(f.db, "session")).toHaveLength(0);
     expect(f.linearUploads).toHaveLength(0);
   } finally {
     f.db.close();
