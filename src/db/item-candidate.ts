@@ -20,7 +20,5 @@ export function recordItemCandidate(db: Database, candidate: ItemCandidate): voi
 }
 
 export function getItemCandidate(db: Database, itemId: string): ItemCandidate | null {
-  return (
-    orm(db).select().from(itemCandidate).where(eq(itemCandidate.itemId, itemId)).get() ?? null
-  );
+  return orm(db).select().from(itemCandidate).where(eq(itemCandidate.itemId, itemId)).get() ?? null;
 }

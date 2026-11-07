@@ -19,11 +19,7 @@ export {
   type ItemBranchState,
   type ItemPullRequest,
 } from "./stop-response";
-export {
-  getItemCandidate,
-  recordItemCandidate,
-  type ItemCandidate,
-} from "./item-candidate";
+export { getItemCandidate, recordItemCandidate, type ItemCandidate } from "./item-candidate";
 export {
   getPullReview,
   pendingChangeRequests,
