@@ -1,8 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
-import { orm } from "./orm";
-import { closeoutProgress, closeoutStep } from "./schema";
-import { immediate } from "./tx";
+import { and, desc, eq, inArray, isNotNull, min, or, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import type * as pgSchema from "./schema-pg";
 
 export const CLOSEOUT_OUTPUT_CAP_BYTES = 64 * 1024;
 
@@ -59,46 +58,23 @@ export type CloseoutProgressRecord = CloseoutProgressIdentity & {
   steps: CloseoutStepRecord[];
 };
 
-type ProgressSql = {
-  id: string;
-  item_id: string;
-  task_id: string;
-  base: string;
-  head: string;
-  policy_digest: string;
-  policy_path: string | null;
-  decision: string | null;
-  started_at: number;
-  updated_at: number;
-  finished_at: number | null;
-};
+type ProgressRow = typeof pgSchema.closeoutProgress.$inferSelect;
+type StepRow = typeof pgSchema.closeoutStep.$inferSelect;
 
-type StepSql = {
-  progress_id: string;
-  step_id: string;
-  kind: CloseoutStepWrite["kind"];
-  state: CloseoutStepWrite["state"];
-  command: string;
-  detail: string | null;
-  attempt: number;
-  timeout_seconds: number | null;
-  started_at: number | null;
-  finished_at: number | null;
-  exit_code: number | null;
-  timed_out: number;
-  timeout_reason: string | null;
-  stdout: string;
-  stderr: string;
-  truncated: number;
-  log_path: string | null;
-  evidence_path: string | null;
-  findings: string | null;
-  ordinal: number;
-  duration_ms: number | null;
-  tokens: number | null;
-  review_fail_on: "P0" | "P1" | "P2" | "P3" | null;
-  review_pre_existing: string | null;
-};
+type ExistingStep = Pick<
+  StepRow,
+  | "command"
+  | "ordinal"
+  | "attempt"
+  | "state"
+  | "startedAt"
+  | "findings"
+  | "truncated"
+  | "durationMs"
+  | "tokens"
+  | "reviewFailOn"
+  | "reviewPreExisting"
+>;
 
 export function ensureCloseoutProgress(
   db: Database,
@@ -107,35 +83,48 @@ export function ensureCloseoutProgress(
   now: number,
   reset: boolean,
 ): string {
+  return settled(
+    sqliteDb(db).transaction((q) => ensureCloseoutProgressSteps(q, itemId, identity, now, reset)),
+  );
+}
+
+export function* ensureCloseoutProgressSteps(
+  q: Q,
+  itemId: string,
+  identity: CloseoutProgressIdentity,
+  now: number,
+  reset: boolean,
+) {
+  const { closeoutProgress } = q.t;
   const id = progressKey(itemId, identity);
-  immediate(db, () => {
-    db.run(
-      `INSERT INTO closeout_progress (
-         id, item_id, task_id, base, head, policy_digest, policy_path, recheck_digest, decision, started_at, updated_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
-       ON CONFLICT(id) DO UPDATE SET
-         updated_at = excluded.updated_at,
-         base = excluded.base,
-         policy_path = COALESCE(excluded.policy_path, closeout_progress.policy_path),
-         recheck_digest = COALESCE(excluded.recheck_digest, closeout_progress.recheck_digest),
-         decision = CASE WHEN ? = 1 THEN NULL ELSE closeout_progress.decision END,
-         finished_at = CASE WHEN ? = 1 THEN NULL ELSE closeout_progress.finished_at END`,
-      [
+  yield* q.exec(
+    q.orm
+      .insert(closeoutProgress)
+      .values({
         id,
         itemId,
-        identity.taskId,
-        identity.base,
-        identity.head,
-        identity.policyDigest,
-        identity.policyPath,
-        identity.recheckDigest ?? null,
-        now,
-        now,
-        reset ? 1 : 0,
-        reset ? 1 : 0,
-      ],
-    );
-  });
+        taskId: identity.taskId,
+        base: identity.base,
+        head: identity.head,
+        policyDigest: identity.policyDigest,
+        policyPath: identity.policyPath,
+        recheckDigest: identity.recheckDigest ?? null,
+        decision: null,
+        startedAt: now,
+        updatedAt: now,
+        finishedAt: null,
+      })
+      .onConflictDoUpdate({
+        target: closeoutProgress.id,
+        set: {
+          updatedAt: now,
+          base: identity.base,
+          policyPath: sql`COALESCE(${identity.policyPath}, ${closeoutProgress.policyPath})`,
+          recheckDigest: sql`COALESCE(${identity.recheckDigest ?? null}, ${closeoutProgress.recheckDigest})`,
+          ...(reset ? { decision: null, finishedAt: null } : {}),
+        },
+      }),
+  );
   return id;
 }
 
@@ -146,30 +135,38 @@ export function upsertCloseoutStep(
   step: CloseoutStepWrite,
   now: number,
 ): void {
-  const progressId = ensureCloseoutProgress(db, itemId, identity, now, false);
-  const existing = db
-    .query<
-      Pick<
-        StepSql,
-        | "command"
-        | "ordinal"
-        | "attempt"
-        | "state"
-        | "started_at"
-        | "findings"
-        | "truncated"
-        | "duration_ms"
-        | "tokens"
-        | "review_fail_on"
-        | "review_pre_existing"
-      >,
-      [string, string]
-    >(
-      `SELECT command, ordinal, attempt, state, started_at, findings, truncated, duration_ms, tokens,
-              review_fail_on, review_pre_existing
-       FROM closeout_step WHERE progress_id = ? AND step_id = ?`,
-    )
-    .get(progressId, step.id);
+  settled(sqliteDb(db).transaction((q) => upsertCloseoutStepSteps(q, itemId, identity, step, now)));
+}
+
+export function* upsertCloseoutStepSteps(
+  q: Q,
+  itemId: string,
+  identity: CloseoutProgressIdentity,
+  step: CloseoutStepWrite,
+  now: number,
+) {
+  const { closeoutStep } = q.t;
+  const progressId = yield* ensureCloseoutProgressSteps(q, itemId, identity, now, false);
+  const key = and(eq(closeoutStep.progressId, progressId), eq(closeoutStep.stepId, step.id));
+  const existing =
+    (yield* q.one(
+      q.orm
+        .select({
+          command: closeoutStep.command,
+          ordinal: closeoutStep.ordinal,
+          attempt: closeoutStep.attempt,
+          state: closeoutStep.state,
+          startedAt: closeoutStep.startedAt,
+          findings: closeoutStep.findings,
+          truncated: closeoutStep.truncated,
+          durationMs: closeoutStep.durationMs,
+          tokens: closeoutStep.tokens,
+          reviewFailOn: closeoutStep.reviewFailOn,
+          reviewPreExisting: closeoutStep.reviewPreExisting,
+        })
+        .from(closeoutStep)
+        .where(key),
+    )) ?? null;
   const clearOutput =
     existing !== null &&
     (step.state === "pending" || (step.state === "running" && existing.state !== "running"));
@@ -179,94 +176,60 @@ export function upsertCloseoutStep(
   const attempt = step.attempt > 0 ? step.attempt : (existing?.attempt ?? step.attempt);
   const findings = findingsFor(existing, step);
   const rerun = step.state === "running" || step.state === "pending";
-  const durationMs = step.durationMs ?? (rerun ? null : (existing?.duration_ms ?? null));
+  const durationMs = step.durationMs ?? (rerun ? null : (existing?.durationMs ?? null));
   const tokens = step.tokens ?? (rerun ? null : (existing?.tokens ?? null));
   const truncated = clearOutput ? step.truncated : step.truncated || existing?.truncated === 1;
   // A review keeps its marks until a new review of the step reports them again.
-  const failOn = step.failOn ?? (rerun ? null : (existing?.review_fail_on ?? null));
+  const failOn = step.failOn ?? (rerun ? null : (existing?.reviewFailOn ?? null));
   const preExisting =
     step.preExisting != null
       ? JSON.stringify(step.preExisting)
       : rerun
         ? null
-        : (existing?.review_pre_existing ?? null);
-  immediate(db, () => {
-    db.run(
-      `INSERT INTO closeout_step (
-         progress_id, step_id, kind, state, command, detail, attempt, timeout_seconds,
-         started_at, finished_at, exit_code, timed_out, timeout_reason, stdout, stderr,
-         truncated, log_path, evidence_path, findings, ordinal, duration_ms, tokens,
-         review_fail_on, review_pre_existing
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(progress_id, step_id) DO UPDATE SET
-         kind = excluded.kind,
-         state = excluded.state,
-         command = excluded.command,
-         detail = excluded.detail,
-         attempt = excluded.attempt,
-         timeout_seconds = excluded.timeout_seconds,
-         started_at = excluded.started_at,
-         finished_at = excluded.finished_at,
-         exit_code = excluded.exit_code,
-         timed_out = excluded.timed_out,
-         timeout_reason = excluded.timeout_reason,
-         truncated = excluded.truncated,
-         log_path = excluded.log_path,
-         evidence_path = excluded.evidence_path,
-         findings = excluded.findings,
-         ordinal = excluded.ordinal,
-         duration_ms = excluded.duration_ms,
-         tokens = excluded.tokens,
-         review_fail_on = excluded.review_fail_on,
-         review_pre_existing = excluded.review_pre_existing`,
-      [
-        progressId,
-        step.id,
-        step.kind,
-        step.state,
-        command,
-        step.detail,
-        attempt,
-        step.timeoutSeconds,
-        startedAt,
-        step.finishedAt,
-        step.exitCode,
-        step.timedOut ? 1 : 0,
-        step.timeoutReason,
-        truncated ? 1 : 0,
-        step.logPath,
-        step.evidencePath,
-        findings,
-        ordinal,
-        durationMs,
-        tokens,
-        failOn,
-        preExisting,
-      ],
-    );
-    if (clearOutput) {
-      db.run(
-        "UPDATE closeout_step SET stdout = '', stderr = '' WHERE progress_id = ? AND step_id = ?",
-        [progressId, step.id],
-      );
-    }
-  });
+        : (existing?.reviewPreExisting ?? null);
+  const values = {
+    kind: step.kind,
+    state: step.state,
+    command,
+    detail: step.detail,
+    attempt,
+    timeoutSeconds: step.timeoutSeconds,
+    startedAt,
+    finishedAt: step.finishedAt,
+    exitCode: step.exitCode,
+    timedOut: step.timedOut ? 1 : 0,
+    timeoutReason: step.timeoutReason,
+    truncated: truncated ? 1 : 0,
+    logPath: step.logPath,
+    evidencePath: step.evidencePath,
+    findings,
+    ordinal,
+    durationMs,
+    tokens,
+    reviewFailOn: failOn,
+    reviewPreExisting: preExisting,
+  };
+  yield* q.exec(
+    q.orm
+      .insert(closeoutStep)
+      .values({ progressId, stepId: step.id, ...values, stdout: "", stderr: "" })
+      .onConflictDoUpdate({
+        target: [closeoutStep.progressId, closeoutStep.stepId],
+        set: values,
+      }),
+  );
+  if (clearOutput)
+    yield* q.exec(q.orm.update(closeoutStep).set({ stdout: "", stderr: "" }).where(key));
 }
 
-function startedAtFor(
-  existing: Pick<StepSql, "state" | "started_at"> | null,
-  step: CloseoutStepWrite,
-): number | null {
+function startedAtFor(existing: ExistingStep | null, step: CloseoutStepWrite): number | null {
   if (step.state === "pending") return null;
-  if (existing?.state === "running") return existing.started_at ?? step.startedAt;
+  if (existing?.state === "running") return existing.startedAt ?? step.startedAt;
   if (step.state === "running") return step.startedAt;
-  return step.startedAt ?? existing?.started_at ?? null;
+  return step.startedAt ?? existing?.startedAt ?? null;
 }
 
-function findingsFor(
-  existing: Pick<StepSql, "state" | "findings" | "attempt"> | null,
-  step: CloseoutStepWrite,
-): string | null {
+function findingsFor(existing: ExistingStep | null, step: CloseoutStepWrite): string | null {
   // Store typed review evidence in the existing text column, atomically with the step.
   // mapStep restores the display text for existing consumers. This is never an approval.
   if (step.findingSeverities !== undefined)
@@ -292,25 +255,50 @@ export function appendCloseoutOutput(
   truncated: boolean,
   now: number,
 ): void {
+  settled(
+    sqliteDb(db).transaction((q) =>
+      appendCloseoutOutputSteps(q, itemId, identity, stepId, stream, text, truncated, now),
+    ),
+  );
+}
+
+export function* appendCloseoutOutputSteps(
+  q: Q,
+  itemId: string,
+  identity: CloseoutProgressIdentity,
+  stepId: string,
+  stream: "stdout" | "stderr",
+  text: string,
+  truncated: boolean,
+  now: number,
+) {
+  const { closeoutProgress, closeoutStep } = q.t;
   const progressId = progressKey(itemId, identity);
+  const key = and(eq(closeoutStep.progressId, progressId), eq(closeoutStep.stepId, stepId));
+  const row = yield* q.one(
+    q.orm
+      .select({ stdout: closeoutStep.stdout, stderr: closeoutStep.stderr })
+      .from(closeoutStep)
+      .where(key),
+  );
+  if (row === undefined) return;
   const column = stream === "stderr" ? "stderr" : "stdout";
-  immediate(db, () => {
-    const row = db
-      .query<{ stdout: string; stderr: string }, [string, string]>(
-        "SELECT stdout, stderr FROM closeout_step WHERE progress_id = ? AND step_id = ?",
-      )
-      .get(progressId, stepId);
-    if (row === null) return;
-    const current = column === "stderr" ? row.stderr : row.stdout;
-    const appended = bound(current, text);
-    db.run(
-      `UPDATE closeout_step
-       SET ${column} = ?, truncated = MAX(truncated, ?)
-       WHERE progress_id = ? AND step_id = ?`,
-      [appended.text, appended.truncated || truncated ? 1 : 0, progressId, stepId],
-    );
-    db.run("UPDATE closeout_progress SET updated_at = ? WHERE id = ?", [now, progressId]);
-  });
+  const appended = bound(row[column], text);
+  yield* q.exec(
+    q.orm
+      .update(closeoutStep)
+      .set({
+        [column]: appended.text,
+        ...(appended.truncated || truncated ? { truncated: 1 } : {}),
+      })
+      .where(key),
+  );
+  yield* q.exec(
+    q.orm
+      .update(closeoutProgress)
+      .set({ updatedAt: now })
+      .where(eq(closeoutProgress.id, progressId)),
+  );
 }
 
 export function finishCloseoutProgress(
@@ -320,36 +308,85 @@ export function finishCloseoutProgress(
   decision: string,
   now: number,
 ): void {
-  immediate(db, () => {
-    const id = ensureCloseoutProgress(db, itemId, identity, now, false);
-    db.run(
-      "UPDATE closeout_progress SET decision = ?, finished_at = ?, updated_at = ? WHERE id = ?",
-      [decision, now, now, id],
-    );
-    if (decision === "rejected" || decision === "exhausted") {
-      // A verdict against the head retires its acceptance, including one carried through a
-      // permitted lane rebase. Infrastructure outcomes (blocked, invalid) leave it standing, but
-      // the merge lane still refuses while such a run is the head's latest.
-      db.run(
-        `UPDATE work_item SET accepted_head = NULL WHERE id = ? AND
-          (accepted_head = ? OR accepted_head = (SELECT accepted_head FROM merge_carried_accept
-            WHERE item_id = ? AND head = ?))`,
-        [itemId, identity.head, itemId, identity.head],
+  settled(
+    sqliteDb(db).transaction((q) =>
+      finishCloseoutProgressSteps(q, itemId, identity, decision, now),
+    ),
+  );
+}
+
+export function* finishCloseoutProgressSteps(
+  q: Q,
+  itemId: string,
+  identity: CloseoutProgressIdentity,
+  decision: string,
+  now: number,
+) {
+  const { closeoutProgress, mergeCarriedAccept, workItem } = q.t;
+  const id = yield* ensureCloseoutProgressSteps(q, itemId, identity, now, false);
+  yield* q.exec(
+    q.orm
+      .update(closeoutProgress)
+      .set({ decision, finishedAt: now, updatedAt: now })
+      .where(eq(closeoutProgress.id, id)),
+  );
+  if (decision === "rejected" || decision === "exhausted") {
+    // A verdict against the head retires its acceptance, including one carried through a
+    // permitted lane rebase. Infrastructure outcomes (blocked, invalid) leave it standing, but
+    // the merge lane still refuses while such a run is the head's latest.
+    const carried = q.orm
+      .select({ acceptedHead: mergeCarriedAccept.acceptedHead })
+      .from(mergeCarriedAccept)
+      .where(
+        and(eq(mergeCarriedAccept.itemId, itemId), eq(mergeCarriedAccept.head, identity.head)),
       );
-    }
-  });
+    yield* q.exec(
+      q.orm
+        .update(workItem)
+        .set({ acceptedHead: null })
+        .where(
+          and(
+            eq(workItem.id, itemId),
+            or(
+              eq(workItem.acceptedHead, identity.head),
+              sql`${workItem.acceptedHead} = (${carried})`,
+            ),
+          ),
+        ),
+    );
+  }
+}
+
+function latestOf(q: Q, itemId: string, head?: string) {
+  const { closeoutProgress } = q.t;
+  return {
+    where:
+      head === undefined
+        ? eq(closeoutProgress.itemId, itemId)
+        : and(eq(closeoutProgress.itemId, itemId), eq(closeoutProgress.head, head)),
+    order: [desc(closeoutProgress.updatedAt), desc(closeoutProgress.id)],
+  };
 }
 
 export function latestCloseoutIdentity(
   db: Database,
   itemId: string,
 ): { head: string; policyDigest: string } | null {
-  return db
-    .query<{ head: string; policyDigest: string }, [string]>(
-      `SELECT head, policy_digest AS policyDigest FROM closeout_progress
-       WHERE item_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1`,
-    )
-    .get(itemId);
+  return settled(sqliteDb(db).run((q) => latestCloseoutIdentitySteps(q, itemId)));
+}
+
+export function* latestCloseoutIdentitySteps(q: Q, itemId: string) {
+  const { closeoutProgress } = q.t;
+  const latest = latestOf(q, itemId);
+  const row = yield* q.one(
+    q.orm
+      .select({ head: closeoutProgress.head, policyDigest: closeoutProgress.policyDigest })
+      .from(closeoutProgress)
+      .where(latest.where)
+      .orderBy(...latest.order)
+      .limit(1),
+  );
+  return row ?? null;
 }
 
 /**
@@ -361,24 +398,25 @@ export function closeoutPolicyDigests(
   itemId: string,
   head: string,
 ): { digest: string; recheck: string | null; decision: string | null } | null {
-  return db
-    .query<{ digest: string; recheck: string | null; decision: string | null }, [string, string]>(
-      `SELECT policy_digest AS digest, recheck_digest AS recheck, decision FROM closeout_progress
-       WHERE item_id = ? AND head = ? ORDER BY updated_at DESC, id DESC LIMIT 1`,
-    )
-    .get(itemId, head);
+  return settled(sqliteDb(db).run((q) => closeoutPolicyDigestsSteps(q, itemId, head)));
 }
 
-/** The policy digest of the latest Closeout run on `head`, or null when none was recorded. */
-export function closeoutPolicyDigest(db: Database, itemId: string, head: string): string | null {
-  return (
-    db
-      .query<{ policyDigest: string }, [string, string]>(
-        `SELECT policy_digest AS policyDigest FROM closeout_progress
-         WHERE item_id = ? AND head = ? ORDER BY updated_at DESC, id DESC LIMIT 1`,
-      )
-      .get(itemId, head)?.policyDigest ?? null
+export function* closeoutPolicyDigestsSteps(q: Q, itemId: string, head: string) {
+  const { closeoutProgress } = q.t;
+  const latest = latestOf(q, itemId, head);
+  const row = yield* q.one(
+    q.orm
+      .select({
+        digest: closeoutProgress.policyDigest,
+        recheck: closeoutProgress.recheckDigest,
+        decision: closeoutProgress.decision,
+      })
+      .from(closeoutProgress)
+      .where(latest.where)
+      .orderBy(...latest.order)
+      .limit(1),
   );
+  return row ?? null;
 }
 
 /** The review steps of an accepted Closeout run, with the marks Closeout gave their findings. */
@@ -397,18 +435,32 @@ export function acceptedCloseoutReviews(
   itemId: string,
   head: string | null,
 ): AcceptedCloseoutReviews | null {
-  const run = db
-    .query<
-      { id: string; taskId: string; head: string; decision: string | null },
-      [string, string | null]
-    >(
-      `SELECT id, task_id AS taskId, head, decision FROM closeout_progress
-       WHERE item_id = ?1
-       ORDER BY head = ?2 DESC, updated_at DESC, id DESC LIMIT 1`,
-    )
-    .get(itemId, head);
-  if (run === null || run.decision !== "accepted") return null;
-  return { taskId: run.taskId, head: run.head, reviews: reviewSteps(db, run.id) };
+  return settled(sqliteDb(db).run((q) => acceptedCloseoutReviewsSteps(q, itemId, head)));
+}
+
+export function* acceptedCloseoutReviewsSteps(
+  q: Q,
+  itemId: string,
+  head: string | null,
+): Steps<AcceptedCloseoutReviews | null> {
+  const { closeoutProgress } = q.t;
+  const latest = latestOf(q, itemId);
+  const onHead = head === null ? [] : [sql`${closeoutProgress.head} = ${head} DESC`];
+  const run = yield* q.one(
+    q.orm
+      .select({
+        id: closeoutProgress.id,
+        taskId: closeoutProgress.taskId,
+        head: closeoutProgress.head,
+        decision: closeoutProgress.decision,
+      })
+      .from(closeoutProgress)
+      .where(latest.where)
+      .orderBy(...onHead, ...latest.order)
+      .limit(1),
+  );
+  if (run === undefined || run.decision !== "accepted") return null;
+  return { taskId: run.taskId, head: run.head, reviews: yield* reviewStepsSteps(q, run.id) };
 }
 
 /** An accepted Closeout run with its review steps and when Closeout finished it. */
@@ -416,49 +468,74 @@ export type AcceptedCloseoutRun = AcceptedCloseoutReviews & { itemId: string; at
 
 /** Every accepted Closeout run, oldest first. */
 export function acceptedCloseoutRuns(db: Database): AcceptedCloseoutRun[] {
-  return db
-    .query<{ id: string; itemId: string; taskId: string; head: string; at: number }, []>(
-      `SELECT id, item_id AS itemId, task_id AS taskId, head,
-         COALESCE(finished_at, updated_at) AS at
-       FROM closeout_progress WHERE decision = 'accepted' ORDER BY at, id`,
-    )
-    .all()
-    .map((run) => ({
+  return settled(sqliteDb(db).run(acceptedCloseoutRunsSteps));
+}
+
+export function* acceptedCloseoutRunsSteps(q: Q): Steps<AcceptedCloseoutRun[]> {
+  const { closeoutProgress } = q.t;
+  const at = sql`COALESCE(${closeoutProgress.finishedAt}, ${closeoutProgress.updatedAt})`;
+  const runs = yield* q.all(
+    q.orm
+      .select({
+        id: closeoutProgress.id,
+        itemId: closeoutProgress.itemId,
+        taskId: closeoutProgress.taskId,
+        head: closeoutProgress.head,
+        at: at.mapWith(Number),
+      })
+      .from(closeoutProgress)
+      .where(eq(closeoutProgress.decision, "accepted"))
+      .orderBy(at, closeoutProgress.id),
+  );
+  const accepted: AcceptedCloseoutRun[] = [];
+  for (const run of runs)
+    accepted.push({
       itemId: run.itemId,
       taskId: run.taskId,
       head: run.head,
       at: run.at,
-      reviews: reviewSteps(db, run.id),
-    }));
+      reviews: yield* reviewStepsSteps(q, run.id),
+    });
+  return accepted;
 }
 
-function reviewSteps(db: Database, progressId: string): AcceptedCloseoutReviews["reviews"] {
-  return db
-    .query<
-      Pick<StepSql, "step_id" | "attempt" | "review_fail_on" | "review_pre_existing">,
-      [string]
-    >(
-      `SELECT step_id, attempt, review_fail_on, review_pre_existing FROM closeout_step
-       WHERE progress_id = ? AND kind = 'review' ORDER BY ordinal, step_id`,
-    )
-    .all(progressId)
-    .map((step) => ({
-      id: step.step_id,
-      attempt: step.attempt,
-      failOn: step.review_fail_on,
-      preExisting: indexes(step.review_pre_existing),
-    }));
+function* reviewStepsSteps(q: Q, progressId: string): Steps<AcceptedCloseoutReviews["reviews"]> {
+  const { closeoutStep } = q.t;
+  const steps = yield* q.all(
+    q.orm
+      .select({
+        id: closeoutStep.stepId,
+        attempt: closeoutStep.attempt,
+        failOn: closeoutStep.reviewFailOn,
+        preExisting: closeoutStep.reviewPreExisting,
+      })
+      .from(closeoutStep)
+      .where(and(eq(closeoutStep.progressId, progressId), eq(closeoutStep.kind, "review")))
+      .orderBy(closeoutStep.ordinal, closeoutStep.stepId),
+  );
+  return steps.map((step) => ({
+    id: step.id,
+    attempt: step.attempt,
+    failOn: step.failOn as CloseoutStepRecord["failOn"],
+    preExisting: indexes(step.preExisting),
+  }));
 }
 
 /** When Closeout first evaluated each head of the item, by head. */
 export function closeoutHeadsStarted(db: Database, itemId: string): Map<string, number> {
-  const rows = db
-    .query<{ head: string; startedAt: number }, [string]>(
-      `SELECT head, MIN(started_at) AS startedAt FROM closeout_progress
-       WHERE item_id = ? GROUP BY head`,
-    )
-    .all(itemId);
-  return new Map(rows.map((row) => [row.head, row.startedAt]));
+  return settled(sqliteDb(db).run((q) => closeoutHeadsStartedSteps(q, itemId)));
+}
+
+export function* closeoutHeadsStartedSteps(q: Q, itemId: string) {
+  const { closeoutProgress } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ head: closeoutProgress.head, startedAt: min(closeoutProgress.startedAt) })
+      .from(closeoutProgress)
+      .where(eq(closeoutProgress.itemId, itemId))
+      .groupBy(closeoutProgress.head),
+  );
+  return new Map(rows.map((row) => [row.head, row.startedAt!]));
 }
 
 /** Latest stored Closeout results for this exact candidate, using the item index. */
@@ -467,31 +544,47 @@ export function getCloseoutProgress(
   itemId: string,
   head: string,
 ): CloseoutProgressRecord | null {
-  const run = db
-    .query<ProgressSql, [string, string]>(
-      "SELECT * FROM closeout_progress WHERE item_id = ? AND head = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
-    )
-    .get(itemId, head);
-  if (run === null) return null;
-  const steps = db
-    .query<StepSql, [string]>(
-      "SELECT * FROM closeout_step WHERE progress_id = ? ORDER BY ordinal, step_id",
-    )
-    .all(run.id);
+  return settled(sqliteDb(db).run((q) => getCloseoutProgressSteps(q, itemId, head)));
+}
+
+export function* getCloseoutProgressSteps(q: Q, itemId: string, head: string) {
+  const { closeoutProgress, closeoutStep } = q.t;
+  const latest = latestOf(q, itemId, head);
+  const run = yield* q.one(
+    q.orm
+      .select()
+      .from(closeoutProgress)
+      .where(latest.where)
+      .orderBy(...latest.order)
+      .limit(1),
+  );
+  if (run === undefined) return null;
+  const steps = yield* q.all(
+    q.orm
+      .select()
+      .from(closeoutStep)
+      .where(eq(closeoutStep.progressId, run.id))
+      .orderBy(closeoutStep.ordinal, closeoutStep.stepId),
+  );
   return progressRecord(run, steps);
 }
 
 export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
-  const runs = db
-    .query<ProgressSql, []>("SELECT * FROM closeout_progress ORDER BY updated_at, id")
-    .all();
-  const steps = db
-    .query<StepSql, []>("SELECT * FROM closeout_step ORDER BY ordinal, step_id")
-    .all();
+  return settled(sqliteDb(db).run(listCloseoutProgressSteps));
+}
+
+export function* listCloseoutProgressSteps(q: Q) {
+  const { closeoutProgress, closeoutStep } = q.t;
+  const runs = yield* q.all(
+    q.orm.select().from(closeoutProgress).orderBy(closeoutProgress.updatedAt, closeoutProgress.id),
+  );
+  const steps = yield* q.all(
+    q.orm.select().from(closeoutStep).orderBy(closeoutStep.ordinal, closeoutStep.stepId),
+  );
   return runs.map((run) =>
     progressRecord(
       run,
-      steps.filter((step) => step.progress_id === run.id),
+      steps.filter((step) => step.progressId === run.id),
     ),
   );
 }
@@ -502,70 +595,86 @@ export type CloseoutProgressState = Pick<
 > & { steps: Pick<CloseoutStepRecord, "state">[] };
 
 export function listCloseoutProgressStates(db: Database): CloseoutProgressState[] {
-  const runs = db
-    .query<Omit<CloseoutProgressState, "steps">, []>(
-      `SELECT id, item_id AS itemId, head, policy_digest AS policyDigest, decision,
-         updated_at AS updatedAt, finished_at AS finishedAt
-       FROM closeout_progress ORDER BY updated_at, id`,
-    )
-    .all();
+  return settled(sqliteDb(db).run(listCloseoutProgressStatesSteps));
+}
+
+export function* listCloseoutProgressStatesSteps(q: Q): Steps<CloseoutProgressState[]> {
+  const { closeoutProgress, closeoutStep } = q.t;
+  const runs = yield* q.all(
+    q.orm
+      .select({
+        id: closeoutProgress.id,
+        itemId: closeoutProgress.itemId,
+        head: closeoutProgress.head,
+        policyDigest: closeoutProgress.policyDigest,
+        decision: closeoutProgress.decision,
+        updatedAt: closeoutProgress.updatedAt,
+        finishedAt: closeoutProgress.finishedAt,
+      })
+      .from(closeoutProgress)
+      .orderBy(closeoutProgress.updatedAt, closeoutProgress.id),
+  );
   const steps = new Map<string, Pick<CloseoutStepRecord, "state">[]>();
-  for (const step of db
-    .query<{ progressId: string; state: CloseoutStepRecord["state"] }, []>(
-      "SELECT progress_id AS progressId, state FROM closeout_step ORDER BY ordinal, step_id",
-    )
-    .all())
-    steps.set(step.progressId, [...(steps.get(step.progressId) ?? []), { state: step.state }]);
+  for (const step of yield* q.all(
+    q.orm
+      .select({ progressId: closeoutStep.progressId, state: closeoutStep.state })
+      .from(closeoutStep)
+      .orderBy(closeoutStep.ordinal, closeoutStep.stepId),
+  ))
+    steps.set(step.progressId, [
+      ...(steps.get(step.progressId) ?? []),
+      { state: step.state as CloseoutStepRecord["state"] },
+    ]);
   return runs.map((run) => ({ ...run, steps: steps.get(run.id) ?? [] }));
 }
 
-function progressRecord(run: ProgressSql, steps: StepSql[]): CloseoutProgressRecord {
+function progressRecord(run: ProgressRow, steps: StepRow[]): CloseoutProgressRecord {
   return {
     id: run.id,
-    itemId: run.item_id,
-    taskId: run.task_id,
+    itemId: run.itemId,
+    taskId: run.taskId,
     base: run.base,
     head: run.head,
-    policyDigest: run.policy_digest,
-    policyPath: run.policy_path,
+    policyDigest: run.policyDigest,
+    policyPath: run.policyPath,
     decision: run.decision,
-    startedAt: run.started_at,
-    updatedAt: run.updated_at,
-    finishedAt: run.finished_at,
+    startedAt: run.startedAt,
+    updatedAt: run.updatedAt,
+    finishedAt: run.finishedAt,
     steps: steps.map(mapStep),
   };
 }
 
-function mapStep(row: StepSql): CloseoutStepRecord {
+function mapStep(row: StepRow): CloseoutStepRecord {
   return {
-    id: row.step_id,
-    kind: row.kind,
-    state: row.state,
+    id: row.stepId,
+    kind: row.kind as CloseoutStepRecord["kind"],
+    state: row.state as CloseoutStepRecord["state"],
     command: row.command,
     detail: row.detail,
     attempt: row.attempt,
-    timeoutSeconds: row.timeout_seconds,
-    startedAt: row.started_at,
-    finishedAt: row.finished_at,
-    exitCode: row.exit_code,
-    timedOut: row.timed_out === 1,
-    timeoutReason: row.timeout_reason,
+    timeoutSeconds: row.timeoutSeconds,
+    startedAt: row.startedAt,
+    finishedAt: row.finishedAt,
+    exitCode: row.exitCode,
+    timedOut: row.timedOut === 1,
+    timeoutReason: row.timeoutReason,
     truncated: row.truncated === 1,
-    logPath: row.log_path,
-    evidencePath: row.evidence_path,
+    logPath: row.logPath,
+    evidencePath: row.evidencePath,
     ...reviewSnapshot(row),
     ordinal: row.ordinal,
-    durationMs: row.duration_ms,
+    durationMs: row.durationMs,
     tokens: row.tokens,
-    failOn: row.review_fail_on,
-    preExisting: indexes(row.review_pre_existing),
+    failOn: row.reviewFailOn as CloseoutStepRecord["failOn"],
+    preExisting: indexes(row.reviewPreExisting),
     stdout: row.stdout,
     stderr: row.stderr,
   };
 }
 
 function reviewSnapshot(
-  row: Pick<StepSql, "kind" | "attempt" | "findings">,
+  row: Pick<StepRow, "kind" | "attempt" | "findings">,
 ): Pick<CloseoutStepRecord, "findings" | "findingSeverities"> {
   if (row.kind === "review" && row.findings?.startsWith("{")) {
     try {
@@ -640,58 +749,102 @@ export function setRunningCloseoutStepDetail(
   detail: string | null,
   now: number,
 ): void {
-  immediate(db, () => {
-    db.run(
-      `UPDATE closeout_step SET detail = ? WHERE step_id = ? AND state = 'running'
-       AND progress_id IN (SELECT id FROM closeout_progress WHERE item_id = ? AND head = ?)`,
-      [detail, stepId, itemId, head],
-    );
-    db.run(
-      `UPDATE closeout_progress SET updated_at = ? WHERE item_id = ? AND head = ?
-       AND id IN (SELECT progress_id FROM closeout_step WHERE step_id = ? AND state = 'running')`,
-      [now, itemId, head, stepId],
-    );
-  });
+  settled(
+    sqliteDb(db).transaction((q) =>
+      setRunningCloseoutStepDetailSteps(q, itemId, head, stepId, detail, now),
+    ),
+  );
+}
+
+export function* setRunningCloseoutStepDetailSteps(
+  q: Q,
+  itemId: string,
+  head: string,
+  stepId: string,
+  detail: string | null,
+  now: number,
+) {
+  const { closeoutProgress, closeoutStep } = q.t;
+  const running = and(eq(closeoutStep.stepId, stepId), eq(closeoutStep.state, "running"));
+  const onHead = and(eq(closeoutProgress.itemId, itemId), eq(closeoutProgress.head, head));
+  yield* q.exec(
+    q.orm
+      .update(closeoutStep)
+      .set({ detail })
+      .where(
+        and(
+          running,
+          inArray(
+            closeoutStep.progressId,
+            q.orm.select({ id: closeoutProgress.id }).from(closeoutProgress).where(onHead),
+          ),
+        ),
+      ),
+  );
+  yield* q.exec(
+    q.orm
+      .update(closeoutProgress)
+      .set({ updatedAt: now })
+      .where(
+        and(
+          onHead,
+          inArray(
+            closeoutProgress.id,
+            q.orm.select({ id: closeoutStep.progressId }).from(closeoutStep).where(running),
+          ),
+        ),
+      ),
+  );
 }
 
 export function failedCloseoutReviews(
   db: Database,
   itemId: string,
 ): AcceptedCloseoutReviews | null {
-  const run = orm(db)
-    .select({
-      id: closeoutProgress.id,
-      taskId: closeoutProgress.taskId,
-      head: closeoutProgress.head,
-    })
-    .from(closeoutProgress)
-    .where(and(eq(closeoutProgress.itemId, itemId), isNotNull(closeoutProgress.decision)))
-    .orderBy(desc(closeoutProgress.updatedAt), desc(closeoutProgress.id))
-    .limit(1)
-    .get();
+  return settled(sqliteDb(db).run((q) => failedCloseoutReviewsSteps(q, itemId)));
+}
+
+export function* failedCloseoutReviewsSteps(
+  q: Q,
+  itemId: string,
+): Steps<AcceptedCloseoutReviews | null> {
+  const { closeoutProgress, closeoutStep } = q.t;
+  const run = yield* q.one(
+    q.orm
+      .select({
+        id: closeoutProgress.id,
+        taskId: closeoutProgress.taskId,
+        head: closeoutProgress.head,
+      })
+      .from(closeoutProgress)
+      .where(and(eq(closeoutProgress.itemId, itemId), isNotNull(closeoutProgress.decision)))
+      .orderBy(desc(closeoutProgress.updatedAt), desc(closeoutProgress.id))
+      .limit(1),
+  );
   if (run === undefined) return null;
-  const reviews = orm(db)
-    .select({
-      id: closeoutStep.stepId,
-      attempt: closeoutStep.attempt,
-      failOn: closeoutStep.reviewFailOn,
-      preExisting: closeoutStep.reviewPreExisting,
-    })
-    .from(closeoutStep)
-    .where(
-      and(
-        eq(closeoutStep.progressId, run.id),
-        eq(closeoutStep.kind, "review"),
-        inArray(closeoutStep.state, ["failed", "exhausted"]),
-      ),
-    )
-    .orderBy(closeoutStep.ordinal, closeoutStep.stepId)
-    .all()
-    .map((step) => ({
-      id: step.id,
-      attempt: step.attempt,
-      failOn: step.failOn as NonNullable<CloseoutStepWrite["failOn"]> | null,
-      preExisting: indexes(step.preExisting),
-    }));
+  const steps = yield* q.all(
+    q.orm
+      .select({
+        id: closeoutStep.stepId,
+        attempt: closeoutStep.attempt,
+        failOn: closeoutStep.reviewFailOn,
+        preExisting: closeoutStep.reviewPreExisting,
+      })
+      .from(closeoutStep)
+      .where(
+        and(
+          eq(closeoutStep.progressId, run.id),
+          eq(closeoutStep.kind, "review"),
+          inArray(closeoutStep.state, ["failed", "exhausted"]),
+        ),
+      )
+      .orderBy(closeoutStep.ordinal, closeoutStep.stepId),
+  );
+  const reviews = steps.map((step) => ({
+    id: step.id,
+    attempt: step.attempt,
+    failOn: step.failOn as NonNullable<CloseoutStepWrite["failOn"]> | null,
+    preExisting: indexes(step.preExisting),
+  }));
   return { taskId: run.taskId, head: run.head, reviews };
 }
