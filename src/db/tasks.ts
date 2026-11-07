@@ -19,12 +19,9 @@ function* taskColumnSteps<K extends "mode" | "generation" | "repositoryContext">
   itemId: string,
   column: K,
 ) {
-  const { workItemTask } = q.t;
+  const { workItemTask: task } = q.t;
   const row = yield* q.one(
-    q.orm
-      .select({ value: workItemTask[column] })
-      .from(workItemTask)
-      .where(eq(workItemTask.itemId, itemId)),
+    q.orm.select({ value: task[column] }).from(task).where(eq(task.itemId, itemId)),
   );
   return row?.value as TaskRow[K] | undefined;
 }

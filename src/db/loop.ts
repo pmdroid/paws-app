@@ -2,7 +2,7 @@ import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
 import { and, eq, isNotNull, notInArray, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled as settledValue, sqliteDb, type Q } from "./db";
 import { jobInstanceElsewhere } from "./instances";
 import { journal } from "./journal";
 import { accrueAtJobBoundary } from "./items";
@@ -194,7 +194,9 @@ export class JobLoop {
     const registered = [...this.handlers.keys()];
     try {
       if (jobInstanceElsewhere(this.db, this.options.instanceId, this.clock.now())) return [];
-      return settled(sqliteDb(this.db).run((q) => removeUnknownRecurringJobsSteps(q, registered)));
+      return settledValue(
+        sqliteDb(this.db).run((q) => removeUnknownRecurringJobsSteps(q, registered)),
+      );
     } catch (error) {
       // The same lock that used to reject tick also rejected run() before workers existed.
       journalCaught(error, "loop.run.removeUnknownRecurring", null);
@@ -259,7 +261,7 @@ export class JobLoop {
     const handler = this.handlers.get(job.queue);
     if (handler === undefined) {
       const reason = `No handler for ${job.queue}`;
-      const cancelled = settled(
+      const cancelled = settledValue(
         sqliteDb(this.db).run((q) => cancelUnhandledJobSteps(q, job, reason, now)),
       );
       if (cancelled) journal(`job ${job.id} ${job.queue} cancelled: ${reason}`);
