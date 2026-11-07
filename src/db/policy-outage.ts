@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { asc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 export type PolicyOutage = {
@@ -38,17 +38,6 @@ export function* getPolicyOutageSteps(q: Q, repository: string): Steps<PolicyOut
 
 export function getPolicyOutage(db: Database, repository: string): PolicyOutage | null {
   return settled(sqliteDb(db).run((q) => getPolicyOutageSteps(q, repository)));
-}
-
-export function* listPolicyOutagesSteps(q: Q): Steps<PolicyOutage[]> {
-  const outage = q.t.closeoutPolicyOutage;
-  return yield* q.all(
-    q.orm.select(columns(q)).from(outage).orderBy(asc(outage.startedAt), asc(outage.repository)),
-  );
-}
-
-export function listPolicyOutages(db: Database): PolicyOutage[] {
-  return settled(sqliteDb(db).run(listPolicyOutagesSteps));
 }
 
 type PolicyOutageInput = {

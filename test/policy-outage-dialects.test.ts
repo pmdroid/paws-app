@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import {
   endPolicyOutageSteps,
   getPolicyOutageSteps,
-  listPolicyOutagesSteps,
   recordPolicyOutageSteps,
   setPolicyOutageQuestionSteps,
 } from "../src/db";
@@ -49,12 +48,6 @@ forEachDialect((connect) => {
     expect(
       await db.run((q) => recordPolicyOutageSteps(q, broken("acme/paws", 300, "m3", "other"))),
     ).toMatchObject({ startedAt: 300, main: "m3", error: "other", questionId: null });
-
-    await db.run((q) => recordPolicyOutageSteps(q, broken("acme/older", 50, "m0")));
-    expect((await db.run(listPolicyOutagesSteps)).map((outage) => outage.repository)).toEqual([
-      "acme/older",
-      "acme/paws",
-    ]);
 
     expect(await db.run((q) => endPolicyOutageSteps(q, "acme/paws"))).toMatchObject({
       repository: "acme/paws",

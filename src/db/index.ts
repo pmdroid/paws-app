@@ -359,13 +359,11 @@ export {
 export {
   endPolicyOutage,
   getPolicyOutage,
-  listPolicyOutages,
   recordPolicyOutage,
   setPolicyOutageQuestion,
   type PolicyOutage,
   endPolicyOutageSteps,
   getPolicyOutageSteps,
-  listPolicyOutagesSteps,
   recordPolicyOutageSteps,
   setPolicyOutageQuestionSteps,
 } from "./policy-outage";
@@ -662,8 +660,6 @@ export {
   listRebaseReturns,
   rebaseReturnedFor,
   recordRebaseReturn,
-  type RebaseReturn,
-  type RebaseReturnRecord,
   countRebaseReturnsSteps,
   listRebaseReturnsSteps,
   rebaseReturnedForSteps,
