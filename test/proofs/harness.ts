@@ -159,7 +159,6 @@ function fixtureGitHub(input: {
     }
     if (method === "PUT" && /\/pulls\/\d+\/merge$/.test(path)) {
       const { sha } = request.body as { sha: string };
-      // Fast-forward only: main must be an ancestor of the head, or git refuses.
       await git("-C", input.origin, "merge-base", "--is-ancestor", "main", sha);
       await git("-C", input.origin, "update-ref", "refs/heads/main", sha);
       merged.set(number, sha);
