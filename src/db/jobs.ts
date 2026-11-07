@@ -4,6 +4,7 @@ import {
   and,
   desc,
   eq,
+  getTableColumns,
   gt,
   inArray,
   isNull,
@@ -188,14 +189,6 @@ function claimWhereSql(queueCount: number): string {
   );
 }
 
-function claimCandidateSql(queueCount: number): string {
-  return (
-    "SELECT candidate.id FROM job AS candidate WHERE " +
-    claimWhereSql(queueCount) +
-    "ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1"
-  );
-}
-
 /**
  * One `UPDATE … RETURNING`. Lower priority numbers run first, then earlier run_at.
  * A running row whose lease has expired is reclaimable. No semicolon: one statement.
@@ -208,7 +201,10 @@ function claimCandidateSql(queueCount: number): string {
 export function claimJobSql(queueCount: number): string {
   return (
     "UPDATE job SET status = 'running', locked_by = ?, locked_until = ?, attempts = attempts + 1 " +
-    `WHERE id = (${claimCandidateSql(queueCount)}) RETURNING *`
+    "WHERE id = (" +
+    "SELECT candidate.id FROM job AS candidate WHERE " +
+    claimWhereSql(queueCount) +
+    "ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1) RETURNING *"
   );
 }
 
@@ -368,26 +364,13 @@ export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | nu
   const now = options.now ?? Date.now();
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
   const workerId = `${options.workerId ?? "paws"}:${randomUUID()}`;
-  const candidate = bindSql(claimCandidateSql(queues?.length ?? 0), [
-    now,
-    ...(queues ?? []),
-    // Reclaim threshold, then the cutoff for a lease that still blocks a second item.
-    now,
-    now,
-    now,
-  ]);
-  const row = orm(db)
-    .update(jobTable)
-    .set({
-      status: "running",
-      lockedBy: workerId,
-      lockedUntil: now + leaseMs,
-      attempts: drizzleSql`${jobTable.attempts} + 1`,
-    })
-    .where(eq(jobTable.id, drizzleSql`(${candidate})`))
-    .returning()
-    .get();
-  return row === undefined ? null : mapJob(row);
+  const sql = claimJobSql(queues?.length ?? 0);
+  const binds: (string | number)[] = [workerId, now + leaseMs, now];
+  if (queues !== undefined) binds.push(...queues);
+  // Reclaim threshold, then the cutoff for a lease that still blocks a second item.
+  binds.push(now, now, now);
+  const row = db.query<Record<string, unknown>, Array<string | number>>(sql).get(...binds);
+  return row === null ? null : mapJob(fromColumnNames(row));
 }
 
 /** Succeeds only for the worker that holds the lease. A recurring row arms its next fire. */
@@ -610,6 +593,12 @@ function journalOutcome(job: Job): void {
 function findByKey(db: Database, jobKey: string): Job | null {
   const row = orm(db).select().from(jobTable).where(eq(jobTable.jobKey, jobKey)).get();
   return row ? mapJob(row) : null;
+}
+
+function fromColumnNames(row: Record<string, unknown>): JobRow {
+  return Object.fromEntries(
+    Object.entries(getTableColumns(jobTable)).map(([key, column]) => [key, row[column.name]]),
+  ) as JobRow;
 }
 
 function mapJob(row: JobRow): Job {
