@@ -86,7 +86,6 @@ src/db/closeout-rounds.ts | ? db.query<RoundRow, []>(`SELECT * FROM closeout_rou
 src/db/closeout-rounds.ts | : db .query<RoundRow, [string]>( | not yet converted to Drizzle
 src/db/closeout-rounds.ts | db.run( | not yet converted to Drizzle
 src/db/closeout-rounds.ts | const row = db .query<{ baseline: string }, [string]>( | not yet converted to Drizzle
-src/db/dashboard-aliases.ts | db.query<{ public_id: string }, [string | null, string]>(`${VISIBLE} ${sql}`).get(scope, id) | not yet converted to Drizzle
 src/db/decisions.ts | const open = db .query<{ id: number }, [string, string]>( | not yet converted to Drizzle
 src/db/decisions.ts | db.run( | not yet converted to Drizzle
 src/db/decisions.ts | const last = db .query<{ payload: string }, [string, string]>( | not yet converted to Drizzle

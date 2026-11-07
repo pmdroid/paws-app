@@ -1,16 +1,55 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 
 export type DashboardAliasKind = "runs" | "sessions" | "verdicts";
 
-const VISIBLE = `WITH visible AS (
-  SELECT id,
-         CASE WHEN coalesce(trim(linear_identifier), '') = '' THEN id
-              ELSE trim(linear_identifier) END AS public_id,
-         session_key,
-         created_at
-  FROM work_item
-  WHERE ?1 IS NULL OR session_key IN (SELECT value FROM json_each(?1))
-)`;
+export function* resolveDashboardAliasSteps(
+  q: Q,
+  kind: DashboardAliasKind,
+  id: string,
+  sessionIds?: readonly string[],
+) {
+  const { run, workItem } = q.t;
+  const publicId = sql<string>`CASE WHEN coalesce(trim(${workItem.linearIdentifier}), '') = '' THEN ${workItem.id} ELSE trim(${workItem.linearIdentifier}) END`;
+  const visible =
+    sessionIds === undefined ? undefined : inArray(workItem.sessionKey, [...sessionIds]);
+  function* runAlias() {
+    const row = yield* q.one(
+      q.orm
+        .select({ publicId })
+        .from(run)
+        .innerJoin(workItem, eq(workItem.id, run.itemId))
+        .where(and(visible, eq(run.id, id))),
+    );
+    return row?.publicId ?? null;
+  }
+  switch (kind) {
+    case "runs":
+      return yield* runAlias();
+    case "sessions": {
+      const row = yield* q.one(
+        q.orm
+          .select({ publicId })
+          .from(workItem)
+          .where(and(visible, eq(workItem.sessionKey, id)))
+          .orderBy(asc(workItem.createdAt), asc(workItem.id))
+          .limit(1),
+      );
+      return row?.publicId ?? null;
+    }
+    case "verdicts": {
+      const row = yield* q.one(
+        q.orm
+          .select({ publicId })
+          .from(workItem)
+          .where(and(visible, eq(publicId, id)))
+          .limit(1),
+      );
+      return row?.publicId ?? (yield* runAlias());
+    }
+  }
+}
 
 export function resolveDashboardAlias(
   db: Database,
@@ -18,20 +57,5 @@ export function resolveDashboardAlias(
   id: string,
   sessionIds?: readonly string[],
 ): string | null {
-  const scope = sessionIds === undefined ? null : JSON.stringify(sessionIds);
-  const one = (sql: string) =>
-    db.query<{ public_id: string }, [string | null, string]>(`${VISIBLE} ${sql}`).get(scope, id)
-      ?.public_id ?? null;
-  const run = () =>
-    one("SELECT v.public_id FROM run r JOIN visible v ON v.id = r.item_id WHERE r.id = ?2");
-  switch (kind) {
-    case "runs":
-      return run();
-    case "sessions":
-      return one(
-        "SELECT public_id FROM visible WHERE session_key = ?2 ORDER BY created_at, id LIMIT 1",
-      );
-    case "verdicts":
-      return one("SELECT public_id FROM visible WHERE public_id = ?2 LIMIT 1") ?? run();
-  }
+  return settled(sqliteDb(db).run((q) => resolveDashboardAliasSteps(q, kind, id, sessionIds)));
 }
