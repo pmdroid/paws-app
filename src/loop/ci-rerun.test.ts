@@ -96,9 +96,9 @@ test("a 403 from GitHub answers with the permission message and leaves the item 
   const db = database();
   const before = insertQueuedItem(db, { id: "item" });
   const journal: string[] = [];
-  expect(await rerun(db, fakeGitHub(403).client, journal, "flaky shard")).toBe(
-    CI_RERUN_PERMISSION_MISSING,
-  );
+  const answer = await rerun(db, fakeGitHub(403).client, journal, "flaky shard");
+  expect(answer.startsWith(CI_RERUN_PERMISSION_MISSING)).toBe(true);
+  expect(answer).toContain("with status 403");
   expect(listCiReruns(db, "item")).toEqual([]);
   expect(journal).toEqual([]);
   const after = getWorkItem(db, "item");

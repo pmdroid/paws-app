@@ -100,9 +100,13 @@ test("a call while a check on the commit still runs is refused", async () => {
   expect(github.requests.some((request) => request.method === "POST")).toBe(false);
 });
 
-test("GitHub's 403 returns the Actions write permission message", async () => {
+test("GitHub's 403 returns the Actions write permission message with GitHub's status", async () => {
   const github = fakeGitHub([failedRun], 403);
-  expect(await rerun(github.client)).toEqual({ answer: CI_RERUN_PERMISSION_MISSING });
+  const { answer, rerun: started } = await rerun(github.client);
+  expect(started).toBeUndefined();
+  expect(answer.startsWith(CI_RERUN_PERMISSION_MISSING)).toBe(true);
+  expect(answer).toContain("GitHub refused the re-run of workflow run");
+  expect(answer).toContain("with status 403");
 });
 
 test("an App without Actions write cannot mint the token and gets the permission message", async () => {
@@ -112,12 +116,15 @@ test("an App without Actions write cannot mint the token and gets the permission
       if (purpose === "ci_rerun")
         throw new GitHubTokenError("installation token request failed with status 422", {
           status: 422,
-          body: {},
+          body: { message: "The permissions requested are not granted to this installation." },
         });
       return "token-merge";
     },
   });
-  expect(result).toEqual({ answer: CI_RERUN_PERMISSION_MISSING });
+  expect(result.rerun).toBeUndefined();
+  expect(result.answer).toBe(
+    `${CI_RERUN_PERMISSION_MISSING}. GitHub refused the Actions token with status 422: The permissions requested are not granted to this installation. If the App already has Actions write, accept its updated permissions on the installation.`,
+  );
 });
 
 test("a cancelled run that a newer run of the same check replaced is not re-run", async () => {
