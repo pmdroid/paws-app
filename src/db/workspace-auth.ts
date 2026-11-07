@@ -1,11 +1,12 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, count, eq, gt, isNull, lte } from "drizzle-orm";
+import { and, asc, count, eq, gt, lte } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { immediate } from "./tx";
 import {
   auditWorkspaceAccessSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
+  workspaceMemberUsableWhere,
   syncWorkspaceMember,
   type WorkspaceRole,
 } from "./workspace";
@@ -89,7 +90,7 @@ export function* listUserWorkspacesSteps(q: Q, userId: string) {
       .select({ id: w.id, name: w.name, role: m.role })
       .from(w)
       .innerJoin(m, eq(m.workspaceId, w.id))
-      .where(and(eq(m.userId, userId), eq(m.active, 1), isNull(m.revokedAt)))
+      .where(and(eq(m.userId, userId), workspaceMemberUsableWhere(m)))
       .orderBy(asc(w.name), asc(w.id)),
   );
   return rows as { id: string; name: string; role: WorkspaceRole }[];
@@ -155,8 +156,7 @@ export function* setWorkspaceRoleSteps(q: Q, input: RoleChange): Steps<void> {
           and(
             eq(m.workspaceId, input.workspaceId),
             eq(m.role, "admin"),
-            eq(m.active, 1),
-            isNull(m.revokedAt),
+            workspaceMemberUsableWhere(m),
           ),
         ),
     );
