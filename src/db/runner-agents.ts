@@ -8,7 +8,7 @@ import { agentCatalogSummarySteps, readAgentVersionSteps } from "./agent-version
 type ReportedStatus = "current" | "previous" | "installing" | "waiting" | "failed";
 
 /** A coding agent version as a runner reported it in its heartbeat. */
-export type RunnerAgentReport = {
+type RunnerAgentReport = {
   agent: string;
   version: string;
   status: ReportedStatus;
@@ -21,10 +21,10 @@ export type RunnerAgentReport = {
 export type CatalogPackage = { name: string; version: string; integrity: string };
 
 /** The native build package and its platform packages the catalog checked for an agent version. */
-export type CatalogPackages = (agent: string, nativeVersion: string | null) => CatalogPackage[];
+type CatalogPackages = (agent: string, nativeVersion: string | null) => CatalogPackage[];
 
 /** The version someone chose on the Runners page, sent to the runner until it runs it. */
-export type RunnerAgentTargetRow = {
+type RunnerAgentTargetRow = {
   id: string;
   agent: string;
   version: string;
