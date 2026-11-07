@@ -29,8 +29,10 @@ export function missingRunFileObject(error: unknown) {
   return code === "ENOENT" || code === "NoSuchKey";
 }
 
-function label(kind: RunFileKind) {
-  const { noun } = RUN_FILE_KINDS[kind];
+type RunFileObjectKind = RunFileKind | "evidence";
+
+function label(kind: RunFileObjectKind) {
+  const noun = kind === "evidence" ? kind : RUN_FILE_KINDS[kind].noun;
   return { noun, Noun: noun[0]!.toUpperCase() + noun.slice(1) };
 }
 
@@ -138,7 +140,7 @@ export function createLocalRunFileObjects(kind: RunFileKind, root: string): RunF
 
 /** Chunks in the configured transcript S3 bucket. Each object is one sealed chunk. */
 export function createS3RunFileObjects(
-  kind: RunFileKind,
+  kind: RunFileObjectKind,
   options: { client: S3Client; bucket: string },
 ): RunFileObjects {
   return s3Objects(label(kind), options);

@@ -122,7 +122,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   questions: ["core", "db", "workspace"],
   decisions: ["db", "scheduler"],
   dashboard: ["db", "core", "dashboard-links"],
-  evidence: ["journal", "db"],
+  evidence: ["journal", "db", "run-files"],
   "finding-issues": [
     "journal",
     "db",
@@ -186,6 +186,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "config",
     "runtimes",
     "dashboard-links",
+    "evidence",
   ],
   doctor: [
     "journal",

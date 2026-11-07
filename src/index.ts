@@ -47,7 +47,13 @@ import {
   worktreePath,
 } from "./acp";
 import { policyCheckPaths } from "./closeout";
-import { createEvidenceStore, EvidenceRejectedError } from "./evidence";
+import {
+  createEvidenceStore,
+  EvidenceRejectedError,
+  uploadLocalEvidence,
+  type EvidenceObjects,
+} from "./evidence";
+import { createS3RunFileObjects } from "./run-files";
 import {
   closeoutPolicyRoot,
   DEFAULT_COMMENT_WAIT,
@@ -342,6 +348,7 @@ export type StartOptions = {
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy>;
   runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
   runnerTranscriptObjects?: RunnerTranscriptObjects;
+  evidenceObjects?: EvidenceObjects;
   refreshRepositories?: boolean;
   /** Read npm once a day for the coding agent version catalog. Off in tests. */
   refreshAgentCatalog?: boolean;
@@ -782,6 +789,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         }
       : undefined;
   };
+  const evidenceObjects: EvidenceObjects =
+    options?.evidenceObjects ??
+    (() => {
+      const s3 = options?.runnerTranscriptObjects ? null : loadRunnerTranscriptS3(runtime.env.home);
+      return s3 ? createS3RunFileObjects("evidence", s3) : null;
+    });
+  void uploadLocalEvidence(db, { root: paths.evidenceDir, objects: evidenceObjects }).catch(
+    (error: unknown) => journalCaught(error, "index.startPaws.uploadLocalEvidence", null),
+  );
   let runner: RunnerCoordinator | undefined;
   let runnerStopping = false;
   let retroDispatcher: RetroDispatcher | undefined;
@@ -1122,6 +1138,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       statusEnv: envSource,
       closeoutHome: paths.home,
       evidenceDir: paths.evidenceDir,
+      evidenceObjects,
       visualReviewChanges: async (input) =>
         orchestrator ? orchestrator.requestVisualReviewChanges(input) : "rejected",
       linkAsks: (request, principal, sessionIds) =>
@@ -1565,9 +1582,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           ? {
               publicUrl: runtime.publicUrl,
               root: paths.evidenceDir,
+              objects: evidenceObjects,
               store: {
                 save: (input) =>
-                  createEvidenceStore({ db, root: paths.evidenceDir })
+                  createEvidenceStore({ db, root: paths.evidenceDir, objects: evidenceObjects })
                     .save(input)
                     .catch((error: unknown) => {
                       if (error instanceof EvidenceRejectedError)

@@ -73,7 +73,7 @@ function publish(
   return pullRequestScreenshots({
     db: s.db,
     itemId: s.itemId,
-    root: s.root,
+    storage: { root: s.root },
     owner: "acme",
     repo: "monorepo",
     store: (files) =>

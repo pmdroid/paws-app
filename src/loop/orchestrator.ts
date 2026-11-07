@@ -138,6 +138,7 @@ import {
   mergeResultPolicyError,
   POLICY_SCHEMA_SUMMARY,
 } from "../closeout";
+import type { EvidenceObjects, EvidenceStorage } from "../evidence";
 import {
   CommandBus,
   riskLine,
@@ -669,7 +670,12 @@ export type OrchestratorOptions = {
    * Closeout videos and screenshots. Links are `<publicUrl>/evidence/<id>`. With `root` and
    * `files`, the files are also uploaded to Linear and shown inline.
    */
-  evidence?: { store: EvidenceSink; publicUrl: string; root?: string } | null;
+  evidence?: {
+    store: EvidenceSink;
+    publicUrl: string;
+    root?: string;
+    objects?: EvidenceObjects;
+  } | null;
   /** The HTTPS dashboard origin (`PAWS_PUBLIC_URL`). Without it Paws cannot ask with a link. */
   publicUrl?: string | null;
   catchUp?: () => Promise<void>;
@@ -2325,14 +2331,14 @@ export class Orchestrator {
       });
     }
     const files = this.options.files;
-    const root = this.options.evidence?.root;
+    const storage = this.evidenceStorage();
     await deliverLinearOutbox(
       message,
       tracker,
       () => this.catchUpFn(),
       context,
       this.db,
-      files && root ? { files, root } : undefined,
+      files && storage ? { files, ...storage } : undefined,
     );
   }
 
@@ -5346,7 +5352,7 @@ export class Orchestrator {
     const screenshots = await pullRequestScreenshots({
       db: this.db,
       itemId: item.id,
-      root: this.options.evidence?.root,
+      storage: this.evidenceStorage(),
       owner: repository.owner,
       repo: repository.repo,
       store: (files) =>
@@ -8304,7 +8310,7 @@ export class Orchestrator {
         item.id,
         due.requirement.id,
         due.evidenceIds,
-        evidence.root,
+        this.evidenceStorage(),
       );
       const outcome = immediate(this.db, () => {
         const now = dueVisualReview(this.db, item.id, requirements, approvals);
@@ -8670,15 +8676,20 @@ export class Orchestrator {
         ? (input: { workspace: string; prompt: string; signal: AbortSignal }) =>
             loader({ ...input, sessionId, turnId })
         : undefined;
-    const root = this.options.evidence?.root;
-    if (!root) return linear;
-    const marks = createReviewMarkLoader({ db: this.db, root, itemId: item.id, turnId });
+    const storage = this.evidenceStorage();
+    if (!storage) return linear;
+    const marks = createReviewMarkLoader({ db: this.db, storage, itemId: item.id, turnId });
     return async (input: { workspace: string; prompt: string; signal: AbortSignal }) => {
       const marked = await marks(input);
       if (!linear) return marked;
       const loaded = await linear({ ...input, prompt: marked.prompt });
       return { prompt: loaded.prompt, inputFiles: [...marked.inputFiles, ...loaded.inputFiles] };
     };
+  }
+
+  private evidenceStorage(): EvidenceStorage | undefined {
+    const evidence = this.options.evidence;
+    return evidence?.root ? { root: evidence.root, objects: evidence.objects } : undefined;
   }
 
   private blockConversation(itemId: string): void {

@@ -2,11 +2,12 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, link, lstat, mkdir, open, readFile, realpath, unlink } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { git, requestText, type AgentInputFile } from "../acp";
 import type { LinearFileTransfer } from "../linear";
 import { getVisualReviewMark, recordLinearInput } from "../db";
+import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 
 const MAX_BYTES = 20 * 1024 * 1024;
 const INPUT_DIRECTORY = ".paws-linear-inputs";
@@ -139,7 +140,7 @@ const REVIEW_MARK = /\.\/\.paws-visual-review\/([0-9A-HJKMNP-TV-Z]{26})\.png/g;
 
 export function createReviewMarkLoader(options: {
   db: Database;
-  root: string;
+  storage: EvidenceStorage;
   itemId: string;
   turnId: string;
 }) {
@@ -161,7 +162,7 @@ export function createReviewMarkLoader(options: {
       request.signal.throwIfAborted();
       const mark = getVisualReviewMark(options.db, id);
       if (mark?.itemId !== options.itemId) continue;
-      const bytes = await readFile(join(options.root, id));
+      const bytes = await readEvidenceBytes(options.db, options.storage, id);
       if (digest(bytes) !== mark.sha256) continue;
       const path = join(workspace, REVIEW_MARK_DIRECTORY, turn, `${id}.png`);
       await writeAtomic(path, bytes);

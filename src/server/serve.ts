@@ -33,6 +33,7 @@ import {
   handleEvidenceRequest,
   handleVisualReviewChanges,
   VISUAL_REVIEW_CHANGES_PATH,
+  type EvidenceObjects,
   type VisualReviewChanges,
 } from "../evidence";
 import {
@@ -163,6 +164,7 @@ export type ServerOptions = {
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
+  evidenceObjects?: EvidenceObjects;
   visualReviewChanges?: VisualReviewChanges;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
@@ -270,6 +272,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(closeoutHome ? { closeoutHome } : {}),
           ...(evidenceRoot ? { evidenceRoot } : {}),
           ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
+          ...(options.evidenceObjects ? { evidenceObjects: options.evidenceObjects } : {}),
           ...(options.visualReviewChanges
             ? { visualReviewChanges: options.visualReviewChanges }
             : {}),
@@ -323,6 +326,7 @@ type Secrets = {
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
+  evidenceObjects?: EvidenceObjects;
   visualReviewChanges?: VisualReviewChanges;
 };
 
@@ -506,6 +510,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     return (await handleVisualReviewChanges(request, {
       db: secrets.db,
       root: secrets.evidenceDir,
+      objects: secrets.evidenceObjects,
       principal,
       sessionIds,
       submit: secrets.visualReviewChanges,
@@ -534,6 +539,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     return (await handleEvidenceRequest(request, {
       db: secrets.db,
       root: secrets.evidenceDir,
+      objects: secrets.evidenceObjects,
       sessionIds,
     }))!;
   }

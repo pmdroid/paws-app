@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getEvidence, getVisualReviewMark, getWorkItem } from "../db";
-import { evidencePath } from "./store";
+import { openEvidenceFile, type EvidenceObjects } from "./objects";
 import { ULID_PATTERN } from "./ulid";
 
 const EVIDENCE_API_PATH = "/api/evidence/";
@@ -12,6 +12,7 @@ export function isEvidenceFilePath(path: string): boolean {
 export type EvidenceRequestOptions = {
   db: Database;
   root: string;
+  objects?: EvidenceObjects;
   sessionIds: readonly string[] | undefined;
 };
 
@@ -36,8 +37,6 @@ export async function handleEvidenceRequest(
   if (evidence === null) return notFound();
   const item = getWorkItem(options.db, evidence.itemId);
   if (item?.sessionKey == null || !options.sessionIds.includes(item.sessionKey)) return notFound();
-  const file = Bun.file(evidencePath(options.root, id));
-  if (!(await file.exists()) || file.size !== evidence.sizeBytes) return notFound();
   const size = evidence.sizeBytes;
   const headers: Record<string, string> = {
     ...PRIVATE,
@@ -53,12 +52,15 @@ export async function handleEvidenceRequest(
       headers: { ...headers, "content-range": `bytes */${size}` },
     });
   const head = request.method === "HEAD";
+  const file = await openEvidenceFile(options.db, options, id, range ?? undefined);
+  if (file === null || file.size !== size) return notFound();
+  if (head && file.body instanceof ReadableStream) await file.body.cancel();
   if (range === null)
-    return new Response(head ? null : file, {
+    return new Response(head ? null : file.body, {
       status: 200,
       headers: { ...headers, "content-length": String(size) },
     });
-  return new Response(head ? null : file.slice(range.start, range.end + 1), {
+  return new Response(head ? null : file.body, {
     status: 206,
     headers: {
       ...headers,
