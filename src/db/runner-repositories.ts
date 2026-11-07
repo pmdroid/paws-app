@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { enqueueJob } from "./jobs";
+import { settled, sqliteDb, type Q } from "./db";
+import { readJson } from "./json-column";
 import { orm } from "./orm";
 import { job, question, runner, runnerRepositories } from "./schema";
 import { immediate } from "./tx";
@@ -82,15 +84,24 @@ export function setRunnerAdminRepositories(
 }
 
 export function runnerRepositoryLists(db: Database, runnerId: string): RunnerRepositoryLists {
-  const row = orm(db)
-    .select({ host: runnerRepositories.repositories, admin: runnerRepositories.adminRepositories })
-    .from(runnerRepositories)
-    .where(eq(runnerRepositories.runnerId, runnerId))
-    .get();
+  return settled(sqliteDb(db).run((q) => runnerRepositoryListsSteps(q, runnerId)));
+}
+
+export function* runnerRepositoryListsSteps(q: Q, runnerId: string) {
+  const { runnerRepositories } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        host: runnerRepositories.repositories,
+        admin: runnerRepositories.adminRepositories,
+      })
+      .from(runnerRepositories)
+      .where(eq(runnerRepositories.runnerId, runnerId)),
+  );
   return {
-    admin: row?.admin == null ? null : (JSON.parse(row.admin) as string[]),
-    host: row?.host == null ? null : (JSON.parse(row.host) as string[]),
-  };
+    admin: row?.admin == null ? null : readJson<string[]>(row.admin),
+    host: row?.host == null ? null : readJson<string[]>(row.host),
+  } satisfies RunnerRepositoryLists;
 }
 
 export type RunnerRepositoryRefusal = { list: "admin" | "host"; allowed: string[] };

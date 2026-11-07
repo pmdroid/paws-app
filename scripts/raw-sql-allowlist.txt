@@ -458,7 +458,6 @@ src/db/runners.ts | db.run("UPDATE member_vm SET runner_id=NULL,updated_at=? WHE
 src/db/runners.ts | db .query<{ name: string }, [string]>( | not yet converted to Drizzle
 src/db/runners.ts | const row = db .query<Omit<RunnerAvailability, "revoked"> & { revoked: number }, [string]>( | not yet converted to Drizzle
 src/db/seed.ts | db.run( | not yet converted to Drizzle
-src/db/skills.ts | return db .query<Row, []>(`SELECT ${COLUMNS} FROM agent_skill ORDER BY removed_at IS NOT NULL, name`) | not yet converted to Drizzle
 src/db/skills.ts | const row = db.query<Row, [string]>(`SELECT ${COLUMNS} FROM agent_skill WHERE name=?`).get(name); | not yet converted to Drizzle
 src/db/skills.ts | db.run( | not yet converted to Drizzle
 src/db/skills.ts | db.run("UPDATE agent_skill SET agents=?,updated_at=? WHERE name=? AND removed_at IS NULL", [ | not yet converted to Drizzle
@@ -466,7 +465,6 @@ src/db/skills.ts | db.run("UPDATE agent_skill SET removed_at=?,updated_at=? WHER
 src/db/skills.ts | db.run("DELETE FROM runner_skill WHERE runner_id=?", [runnerId]); | not yet converted to Drizzle
 src/db/skills.ts | db.run( | not yet converted to Drizzle
 src/db/skills.ts | db.run( | not yet converted to Drizzle
-src/db/skills.ts | return db .query<RunnerSkillStatus, [string]>( | not yet converted to Drizzle
 src/db/skills.ts | const runners = db .query<{ id: string; name: string }, []>( | not yet converted to Drizzle
 src/db/skills.ts | db.run( | not yet converted to Drizzle
 src/db/skills.ts | const row = db .query<{ runnerId: string; skills: string; hooks: string; recordedAt: number }, [string]>( | not yet converted to Drizzle
@@ -500,7 +498,6 @@ src/db/workspace-scope.ts | return db .query<{ session_id: string }, [string, st
 src/db/workspace-scope.ts | const query = db.query<{ allowed: number }, string[]>( | not yet converted to Drizzle
 src/db/workspace.ts | return db .query<WorkspaceRecord, [string]>( | not yet converted to Drizzle
 src/db/workspace.ts | return db .query<WorkspaceRecord, [string]>( | not yet converted to Drizzle
-src/db/workspace.ts | db.run( | not yet converted to Drizzle
 src/db/workspace.ts | return db .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id = ?") | not yet converted to Drizzle
 src/db/workspace.ts | const row = db .query<Omit<WorkspaceMember, "teamIds" | "active"> & { active: number }, [string, string]>( | not yet converted to Drizzle
 src/db/workspace.ts | const teams = db .query<{ team_id: string }, [string, string]>( | not yet converted to Drizzle
