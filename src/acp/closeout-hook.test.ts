@@ -490,6 +490,44 @@ function runScript(scriptPath: string): Promise<{ status: number | null; stdout:
   });
 }
 
+test("the turn-end report waits for a check the agent stopped waiting for", async () => {
+  const root = temp();
+  const repo = join(root, "repo");
+  initRepo(repo);
+  writeTestPolicy(repo, ["sh", "-c", "sleep 1"]);
+  spawnSync("git", ["add", "."], { cwd: repo });
+  spawnSync("git", ["commit", "-m", "policy"], { cwd: repo });
+  writeFileSync(join(repo, "src.txt"), "change\n");
+  const socketPath = join(root, "run", "ask-team.sock");
+  const bridge = await startAskTeamBridge({
+    socketPath,
+    context: { itemId: "ENG-1", runId: "gave-up", role: "implementer", worktreePath: repo },
+    commandGuard: {
+      hostAccess: true,
+      worktree: repo,
+      home: join(root, "home"),
+      pawsRoot: join(root, "paws"),
+    },
+    signal: new AbortController().signal,
+  });
+  try {
+    const call = connect(socketPath, () =>
+      call.write(`${JSON.stringify({ id: 1, tool: "run_closeout", arguments: { id: "test" } })}\n`),
+    );
+    call.on("error", () => undefined);
+    await Bun.sleep(300);
+    call.destroy();
+    const report = JSON.parse((await bridge.closeoutReport()) ?? "") as {
+      required: { id: string; status: string; result?: { exitCode: number } }[];
+    };
+    expect(report.required).toMatchObject([
+      { id: "test", status: "passed", result: { exitCode: 0 } },
+    ]);
+  } finally {
+    await bridge.close();
+  }
+});
+
 function temp(): string {
   const root = mkdtempSync(join(tmpdir(), "paws-closeout-hook-"));
   roots.push(root);
@@ -525,7 +563,7 @@ async function hookAgainst(
   }
 }
 
-function writeTestPolicy(repo: string): void {
+function writeTestPolicy(repo: string, exec: readonly string[] = ["true"]): void {
   writeFileSync(
     join(repo, ".agents", "closeout.yaml"),
     [
@@ -534,7 +572,7 @@ function writeTestPolicy(repo: string): void {
       "  - id: test",
       "    kind: command",
       "    gate: beforePR",
-      '    exec: ["true"]',
+      `    exec: ${JSON.stringify(exec)}`,
       "    timeoutSeconds: 30",
       "",
     ].join("\n"),

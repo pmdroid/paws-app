@@ -329,6 +329,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     /** The report that closes the turn. It reuses rule results `get_closeout` already has. */
     async closeoutReport() {
       if (!closeout) return undefined;
+      await closeout.settled();
       return closeout.report({ probes: true });
     },
     async close() {
