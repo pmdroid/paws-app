@@ -982,9 +982,6 @@ export {
   requestAllRunnerAgentUpdatesSteps,
   RunnerAgentUpdateError,
   type CatalogPackage,
-  type CatalogPackages,
-  type RunnerAgentReport,
-  type RunnerAgentTargetRow,
   type RunnerAgentView,
 } from "./runner-agents";
 export { listWaitingProfileRuns } from "./runs";
