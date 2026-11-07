@@ -94,7 +94,7 @@ export function queueWaitSince(db: Db, itemId: string, version: number, now: num
 - `db.transaction(function* (q) { … })` is `BEGIN IMMEDIATE … COMMIT` on SQLite, run synchronously so no other code runs inside it, and a Postgres transaction otherwise. When the body throws, all of its writes roll back. `yield* q.transaction(function* (q) { … })` inside a body is a savepoint, and so is `db.transaction()` called inside a synchronous `immediate()` on SQLite: it commits with the outer transaction.
 - A function whose generator another generator calls inside a transaction exports it as `<name>Steps(q, …)`, and the caller runs `yield* fooSteps(q, …)`. Add one only when such a caller exists.
 
-`src/db/queue-wait.ts` is the worked example. `src/db/linear-budget.ts` and `src/db/runner-reservations.ts` still write each query once per dialect through `db.orm` and `db.sync()`; their conversion issues move them to `db.run()` and remove `sync()`.
+`src/db/queue-wait.ts` is the worked example. `src/db/linear-budget.ts` still writes each query once per dialect through `db.orm` and `db.sync()`; its conversion issue moves it to `db.run()` and removes `sync()`.
 
 ### Converting a module
 

@@ -1,5 +1,17 @@
 import type { Database } from "bun:sqlite";
-import { and, eq, exists, gt, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   creditedLeaseUntil,
   OFFLINE_LEASE_RUNNER_VERSION,
@@ -8,17 +20,8 @@ import {
   RUNNER_OFFLINE_BUDGET_MS,
   runnerReleaseAtLeast,
 } from "../runner-protocol";
-import { ownerGone } from "./instances";
-import { orm } from "./orm";
-import {
-  instance,
-  runner,
-  runnerCommand,
-  runnerHostStatus,
-  runnerResult,
-  runnerWork,
-  runOwner,
-} from "./schema";
+import { settled, sqliteDb, type Q } from "./db";
+import { ownerGoneSteps } from "./instances";
 
 export { PAWS_ALIVE_LEASE_SKEW_MS };
 
@@ -36,27 +39,37 @@ export function runnerLeaseLive(leaseUntil: number, now: number): boolean {
   return leaseUntil > runnerLeaseCutoff(now);
 }
 
-export function endRevokedRunnerAuthority(db: Database, now: number): void {
+export function* endRevokedRunnerAuthoritySteps(q: Q, now: number) {
+  const { runner, runnerWork } = q.t;
   const cutoff = runnerLeaseCutoff(now);
-  const q = orm(db);
-  q.update(runnerWork)
-    .set({ leaseUntil: cutoff })
-    .where(
-      and(
-        isNull(runnerWork.endedAt),
-        gt(runnerWork.leaseUntil, cutoff),
-        sql`${runnerWork.runnerId} IN ${q
-          .select({ id: runner.id })
-          .from(runner)
-          .where(or(isNotNull(runner.revokedAt), eq(runner.status, "revoked")))}`,
+  yield* q.exec(
+    q.orm
+      .update(runnerWork)
+      .set({ leaseUntil: cutoff })
+      .where(
+        and(
+          isNull(runnerWork.endedAt),
+          gt(runnerWork.leaseUntil, cutoff),
+          inArray(
+            runnerWork.runnerId,
+            q.orm
+              .select({ id: runner.id })
+              .from(runner)
+              .where(or(isNotNull(runner.revokedAt), eq(runner.status, "revoked"))),
+          ),
+        ),
       ),
-    )
-    .run();
+  );
+}
+
+export function endRevokedRunnerAuthority(db: Database, now: number): void {
+  settled(sqliteDb(db).run((q) => endRevokedRunnerAuthoritySteps(q, now)));
 }
 
 /** The result of the work's current command. Queries select from runner_work. */
-function currentResult(db: Database) {
-  return orm(db)
+function currentResult(q: Q) {
+  const { runnerResult, runnerWork } = q.t;
+  return q.orm
     .select({ one: sql`1` })
     .from(runnerResult)
     .where(
@@ -69,11 +82,12 @@ function currentResult(db: Database) {
 }
 
 /** Settled results and acknowledged cancellations no longer hold work. */
-function unsettledRunnerWork(db: Database) {
+function unsettledRunnerWork(q: Q) {
+  const { runnerCommand, runnerWork } = q.t;
   return and(
-    notExists(currentResult(db)),
+    notExists(currentResult(q)),
     notExists(
-      orm(db)
+      q.orm
         .select({ one: sql`1` })
         .from(runnerCommand)
         .where(
@@ -89,15 +103,10 @@ function unsettledRunnerWork(db: Database) {
   );
 }
 
-/**
- * Whether Paws may release the runner slot of `runId` without fencing work the runner still does.
- * True when no work is open, when the lease is past the grace, when the runner sent its result
- * for the current command, or when the runner acknowledged a cancel Paws sent for it. The halt
- * core (restart, stop, take-over) waits for this before it releases a runner it did not ask to stop.
- */
-export function runnerWorkSettled(db: Database, runId: string, now: number): boolean {
-  return (
-    orm(db)
+export function* runnerWorkSettledSteps(q: Q, runId: string, now: number) {
+  const { runnerWork } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({ one: sql`1` })
       .from(runnerWork)
       .where(
@@ -105,11 +114,21 @@ export function runnerWorkSettled(db: Database, runId: string, now: number): boo
           eq(runnerWork.runId, runId),
           isNull(runnerWork.endedAt),
           gt(runnerWork.leaseUntil, runnerLeaseCutoff(now)),
-          unsettledRunnerWork(db),
+          unsettledRunnerWork(q),
         ),
-      )
-      .get() === undefined
+      ),
   );
+  return row === undefined;
+}
+
+/**
+ * Whether Paws may release the runner slot of `runId` without fencing work the runner still does.
+ * True when no work is open, when the lease is past the grace, when the runner sent its result
+ * for the current command, or when the runner acknowledged a cancel Paws sent for it. The halt
+ * core (restart, stop, take-over) waits for this before it releases a runner it did not ask to stop.
+ */
+export function runnerWorkSettled(db: Database, runId: string, now: number): boolean {
+  return settled(sqliteDb(db).run((q) => runnerWorkSettledSteps(q, runId, now)));
 }
 
 type InstanceSpan = { id: string; startedAt: number; heartbeatAt: number };
@@ -152,6 +171,71 @@ function ownerDowntime(
   return uncovered > 0 ? { aliveAt, until: aliveAt + uncovered } : null;
 }
 
+export function* shiftRunnerLeasesForDowntimeSteps(
+  q: Q,
+  now: number,
+  budgetMs = RUNNER_OFFLINE_BUDGET_MS,
+  self?: string,
+) {
+  const { instance, runner, runnerCommand, runnerHostStatus, runnerWork, runOwner } = q.t;
+  const hosts = yield* q.all(
+    q.orm
+      .select({ id: runner.id, version: runnerHostStatus.runnerVersion })
+      .from(runner)
+      .leftJoin(runnerHostStatus, eq(runnerHostStatus.runnerId, runner.id))
+      .where(and(isNull(runner.revokedAt), ne(runner.status, "revoked"))),
+  );
+  const eligible = new Set(
+    hosts
+      .filter((host) => runnerReleaseAtLeast(host.version, OFFLINE_LEASE_RUNNER_VERSION))
+      .map((host) => host.id),
+  );
+  if (eligible.size === 0) return;
+  const open = yield* q.all(
+    q.orm
+      .select({
+        runId: runnerWork.runId,
+        runnerId: runnerWork.runnerId,
+        leaseUntil: runnerWork.leaseUntil,
+        expiresAt: runnerCommand.expiresAt,
+        owner: runOwner.ownerInstance,
+      })
+      .from(runnerWork)
+      .innerJoin(runnerCommand, eq(runnerCommand.id, runnerWork.commandId))
+      .leftJoin(runOwner, eq(runOwner.runId, runnerWork.runId))
+      .where(and(isNull(runnerWork.endedAt), unsettledRunnerWork(q))),
+  );
+  const rows = open.filter((row) => eligible.has(row.runnerId));
+  if (rows.length === 0) return;
+  const spans: InstanceSpan[] = yield* q.all(
+    q.orm
+      .select({ id: instance.id, startedAt: instance.startedAt, heartbeatAt: instance.heartbeatAt })
+      .from(instance),
+  );
+  const gone = self === undefined ? () => true : yield* ownerGoneSteps(q, self, now);
+  const newest = spans
+    .filter((span) => span.id !== self)
+    .reduce<InstanceSpan | null>((a, b) => (a && a.heartbeatAt >= b.heartbeatAt ? a : b), null);
+  for (const row of rows) {
+    const owner = row.owner ?? newest?.id;
+    if (owner === undefined || !gone(owner)) continue;
+    const down = ownerDowntime(spans, owner, self, now);
+    if (down === null) continue;
+    const leaseUntil = creditedLeaseUntil({
+      leaseUntil: row.leaseUntil,
+      expiresAt: row.expiresAt,
+      aliveAt: down.aliveAt,
+      now: down.until,
+      budgetMs,
+      skewMs: PAWS_ALIVE_LEASE_SKEW_MS,
+    });
+    if (leaseUntil !== row.leaseUntil)
+      yield* q.exec(
+        q.orm.update(runnerWork).set({ leaseUntil }).where(eq(runnerWork.runId, row.runId)),
+      );
+  }
+}
+
 /**
  * When `self` takes over the runs of gone instances, move the lease of their open runner work
  * forward by the time no instance was alive, so that downtime does not count against it. The
@@ -170,56 +254,27 @@ export function shiftRunnerLeasesForDowntime(
   budgetMs = RUNNER_OFFLINE_BUDGET_MS,
   self?: string,
 ): void {
-  const eligible = new Set(
-    orm(db)
-      .select({ id: runner.id, version: runnerHostStatus.runnerVersion })
-      .from(runner)
-      .leftJoin(runnerHostStatus, eq(runnerHostStatus.runnerId, runner.id))
-      .where(and(isNull(runner.revokedAt), ne(runner.status, "revoked")))
-      .all()
-      .filter((host) => runnerReleaseAtLeast(host.version, OFFLINE_LEASE_RUNNER_VERSION))
-      .map((host) => host.id),
+  settled(sqliteDb(db).run((q) => shiftRunnerLeasesForDowntimeSteps(q, now, budgetMs, self)));
+}
+
+export function* runnerHoldsRunWorkSteps(q: Q, runId: string, now: number, cancelled = false) {
+  const { runnerWork } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(runnerWork)
+      .where(
+        and(
+          eq(runnerWork.runId, runId),
+          isNull(runnerWork.endedAt),
+          or(
+            gt(runnerWork.leaseUntil, runnerLeaseCutoff(now)),
+            cancelled ? undefined : exists(currentResult(q)),
+          ),
+        ),
+      ),
   );
-  if (eligible.size === 0) return;
-  const rows = orm(db)
-    .select({
-      runId: runnerWork.runId,
-      runnerId: runnerWork.runnerId,
-      leaseUntil: runnerWork.leaseUntil,
-      expiresAt: runnerCommand.expiresAt,
-      owner: runOwner.ownerInstance,
-    })
-    .from(runnerWork)
-    .innerJoin(runnerCommand, eq(runnerCommand.id, runnerWork.commandId))
-    .leftJoin(runOwner, eq(runOwner.runId, runnerWork.runId))
-    .where(and(isNull(runnerWork.endedAt), unsettledRunnerWork(db)))
-    .all()
-    .filter((row) => eligible.has(row.runnerId));
-  if (rows.length === 0) return;
-  const spans: InstanceSpan[] = orm(db)
-    .select({ id: instance.id, startedAt: instance.startedAt, heartbeatAt: instance.heartbeatAt })
-    .from(instance)
-    .all();
-  const gone = self === undefined ? () => true : ownerGone(db, self, now);
-  const newest = spans
-    .filter((span) => span.id !== self)
-    .reduce<InstanceSpan | null>((a, b) => (a && a.heartbeatAt >= b.heartbeatAt ? a : b), null);
-  for (const row of rows) {
-    const owner = row.owner ?? newest?.id;
-    if (owner === undefined || !gone(owner)) continue;
-    const down = ownerDowntime(spans, owner, self, now);
-    if (down === null) continue;
-    const leaseUntil = creditedLeaseUntil({
-      leaseUntil: row.leaseUntil,
-      expiresAt: row.expiresAt,
-      aliveAt: down.aliveAt,
-      now: down.until,
-      budgetMs,
-      skewMs: PAWS_ALIVE_LEASE_SKEW_MS,
-    });
-    if (leaseUntil !== row.leaseUntil)
-      orm(db).update(runnerWork).set({ leaseUntil }).where(eq(runnerWork.runId, row.runId)).run();
-  }
+  return row !== undefined;
 }
 
 /** Open work still belongs to its run while leased or while a delivered result awaits import. */
@@ -229,33 +284,23 @@ export function runnerHoldsRunWork(
   now: number,
   cancelled = false,
 ): boolean {
-  return (
-    orm(db)
+  return settled(sqliteDb(db).run((q) => runnerHoldsRunWorkSteps(q, runId, now, cancelled)));
+}
+
+export function* runnerWorkHasResultSteps(q: Q, runId: string) {
+  const { runnerWork } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({ one: sql`1` })
       .from(runnerWork)
       .where(
-        and(
-          eq(runnerWork.runId, runId),
-          isNull(runnerWork.endedAt),
-          or(
-            gt(runnerWork.leaseUntil, runnerLeaseCutoff(now)),
-            cancelled ? undefined : exists(currentResult(db)),
-          ),
-        ),
-      )
-      .get() !== undefined
+        and(eq(runnerWork.runId, runId), isNull(runnerWork.endedAt), exists(currentResult(q))),
+      ),
   );
+  return row !== undefined;
 }
 
 /** The current command delivered a result that its owning run has not imported yet. */
 export function runnerWorkHasResult(db: Database, runId: string): boolean {
-  return (
-    orm(db)
-      .select({ one: sql`1` })
-      .from(runnerWork)
-      .where(
-        and(eq(runnerWork.runId, runId), isNull(runnerWork.endedAt), exists(currentResult(db))),
-      )
-      .get() !== undefined
-  );
+  return settled(sqliteDb(db).run((q) => runnerWorkHasResultSteps(q, runId)));
 }
