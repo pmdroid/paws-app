@@ -12,6 +12,7 @@ export {
 export {
   drainCommands,
   enqueueCommand,
+  enqueueCommandSteps,
   submitCommand,
   applyLinearCommand,
   takeOverItem,

@@ -15,7 +15,9 @@ import {
   claimNextJob,
   completeJob,
   parkLeasedJob,
+  emitJobReady,
   enqueueJobOnce,
+  enqueueJobOnceSteps,
   errorText,
   noteJobError,
 } from "./jobs";
@@ -28,13 +30,10 @@ import { mergeCallInFlight, getConfirmedRemoteMerge } from "./remote-merges";
 import { orm } from "./orm";
 import { job as jobTable, question, workItem } from "./schema";
 import { immediate } from "./tx";
+import { settled, sqliteDb, type Q } from "./db";
 
-export function enqueueCommand(
-  db: Database,
-  command: LinearCommand,
-  now = command.requestedAt,
-): number {
-  return enqueueJobOnce(db, {
+export function* enqueueCommandSteps(q: Q, command: LinearCommand, now = command.requestedAt) {
+  return yield* enqueueJobOnceSteps(q, {
     queue: JOB_KIND.command,
     jobKey: `cmd:${command.type}:${command.itemId}:${command.requestedAt}`,
     priority: 0,
@@ -42,6 +41,16 @@ export function enqueueCommand(
     now,
     runAt: now,
   });
+}
+
+export function enqueueCommand(
+  db: Database,
+  command: LinearCommand,
+  now = command.requestedAt,
+): number {
+  const { id, inserted } = settled(sqliteDb(db).run((q) => enqueueCommandSteps(q, command, now)));
+  if (inserted) emitJobReady(db);
+  return id;
 }
 
 export function applyLinearCommand(
