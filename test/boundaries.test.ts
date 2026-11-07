@@ -108,7 +108,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   slack: ["journal", "config", "credentials", "webhook-body"],
   core: [],
   db: ["journal", "core", "runner-protocol", "dashboard-links"],
-  linear: ["journal", "core", "credentials", "webhook-body"],
+  linear: ["journal", "core", "credentials", "db", "webhook-body"],
   intake: ["journal", "core", "db", "linear", "dashboard-links"],
   "execution-controls": ["journal", "core", "db", "workspace"],
   scheduler: ["journal", "core", "db", "intake"],
