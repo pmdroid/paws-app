@@ -104,6 +104,8 @@ import { fastForwardToBranchTip } from "./candidate";
 import { agentName, usageLimitWait } from "./usage-limit-wait";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
+import { conversationTurns } from "./conversation";
+import type { RunnerHelpers } from "../runner-helpers";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
 import {
   CheckpointLookupFailed,
@@ -174,7 +176,15 @@ const RUN_HUNG_THOUGHT = (minutes: number) =>
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
 const ACCOUNT_CONCURRENCY_LIMIT = ": account at its concurrency limit";
-type SessionHolder = { runnerId: string; agent: string; sessionId: string; bindingId: string };
+type SessionHolder = {
+  runnerId: string;
+  agent: string;
+  sessionId: string;
+  bindingId: string;
+  runId: string;
+  model: string | null;
+  account?: { accountId: string; bindingId: string };
+};
 
 function earlierSession(
   db: Database,
@@ -209,9 +219,10 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
       ),
     ) as {
       runnerId?: string;
+      runId?: string;
       checkpoint?: boolean;
-      profile?: { agent?: string };
-      account?: { bindingId?: string };
+      profile?: { agent?: string; model?: string | null };
+      account?: { accountId: string; bindingId: string };
     };
     if (command.checkpoint === false) continue;
     const result = JSON.parse(row.payload) as {
@@ -224,7 +235,11 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
       result.stopReason !== "error" ||
       (result.errorMessage !== undefined &&
         quotaSignal(result.errorMessage, row.receivedAt)?.state === "exhausted");
-    return command.runnerId && command.profile?.agent && resumable && result.sessionId
+    return command.runnerId &&
+      command.runId &&
+      command.profile?.agent &&
+      resumable &&
+      result.sessionId
       ? {
           runnerId: command.runnerId,
           agent: command.profile.agent,
@@ -232,6 +247,9 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
           bindingId:
             command.account?.bindingId ??
             legacyAgentBindingId(command.runnerId, command.profile.agent as RunnerCodingAgent),
+          runId: command.runId,
+          model: command.profile.model ?? null,
+          ...(command.account ? { account: command.account } : {}),
         }
       : undefined;
   }
@@ -2684,6 +2702,15 @@ export function createRemoteAgentRunner(options: {
 }
 
 export { createRemoteSessionAgentRunner } from "./helpers";
+export type { ConversationTurns } from "./conversation";
+
+export function createConversationTurns(options: {
+  db: Database;
+  helpers: RunnerHelpers;
+  now?: () => number;
+}) {
+  return conversationTurns({ ...options, holder: (itemId) => sessionHolder(options.db, itemId) });
+}
 
 export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
 export { recordRunnerCheckpoint } from "./checkpoint";
