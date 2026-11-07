@@ -1,6 +1,8 @@
 export {
   readCredentialCiphertext,
+  readCredentialCiphertextSteps,
   writeCredentialCiphertext,
+  writeCredentialCiphertextSteps,
   type CredentialKey,
 } from "./credentials";
 export {
@@ -657,7 +659,14 @@ export {
   listGitHubDeliveries,
   type IntegrationEvent,
 } from "./integration-events";
-export { CONFIG_SETTINGS_KEY, readSavedSettings, readSetting, updateSetting } from "./settings";
+export {
+  CONFIG_SETTINGS_KEY,
+  readSavedSettings,
+  readSetting,
+  readSettingSteps,
+  updateSetting,
+  updateSettingSteps,
+} from "./settings";
 
 export {
   saveLinearSessionContext,
@@ -866,8 +875,7 @@ export {
 } from "./workspace-auth";
 export type { WorkspaceOAuthRequest } from "./workspace-auth";
 export { sessionRepositoriesAllowed, workspaceSessionIds } from "./workspace-scope";
-export { resolveDashboardAlias } from "./dashboard-aliases";
-export type { DashboardAliasKind } from "./dashboard-aliases";
+export { resolveDashboardAlias, resolveDashboardAliasSteps } from "./dashboard-aliases";
 
 export {
   linearSessionsForIssueContext,
@@ -895,7 +903,12 @@ export {
 } from "./github-attribution";
 export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-attribution";
 
-export { saveBrowserInstallation, consumeBrowserInstallation } from "./browser-installation";
+export {
+  saveBrowserInstallation,
+  saveBrowserInstallationSteps,
+  consumeBrowserInstallation,
+  consumeBrowserInstallationSteps,
+} from "./browser-installation";
 export {
   clearQueueWait,
   getQueuePosition,
