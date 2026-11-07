@@ -222,18 +222,6 @@ src/db/legacy-migrate.ts | db.run(migration.sql); | frozen legacy migration (src
 src/db/legacy-migrate.ts | db.query("PRAGMA foreign_key_check").all().length > 0 | frozen legacy migration (src/db/README.md)
 src/db/legacy-migrate.ts | db.run("INSERT INTO schema_migration (id, applied_at) VALUES (?, ?)", [ | frozen legacy migration (src/db/README.md)
 src/db/legacy-migrate.ts | db.run(`PRAGMA foreign_keys = ${foreignKeys ? "ON" : "OFF"}`); | frozen legacy migration (src/db/README.md)
-src/db/linear-comments.ts | const row = db .query<Row, [string]>("SELECT * FROM linear_comment WHERE comment_id = ?") | not yet converted to Drizzle
-src/db/linear-comments.ts | db.run( | not yet converted to Drizzle
-src/db/linear-comments.ts | db.run( | not yet converted to Drizzle
-src/db/linear-comments.ts | db.run("UPDATE linear_comment SET removed_at = ? WHERE comment_id = ?", [ | not yet converted to Drizzle
-src/db/linear-comments.ts | db.run( | not yet converted to Drizzle
-src/db/linear-comments.ts | db.run("UPDATE linear_comment SET updated_at_ms = ?, edited = 1 WHERE comment_id = ?", [ | not yet converted to Drizzle
-src/db/linear-comments.ts | db.run( | not yet converted to Drizzle
-src/db/linear-comments.ts | db.run( | not yet converted to Drizzle
-src/db/linear-comments.ts | db.run( | not yet converted to Drizzle
-src/db/linear-comments.ts | return db .query<Row, []>( | not yet converted to Drizzle
-src/db/linear-comments.ts | return db .query<Row, [string]>( | not yet converted to Drizzle
-src/db/linear-comments.ts | db .query<{ author_id: string | null }, [string]>( | not yet converted to Drizzle
 src/db/linear-comments.ts | db.run( | not yet converted to Drizzle
 src/db/linear-comments.ts | const gathering = db .query<{ n: number }, [string, string]>( | not yet converted to Drizzle
 src/db/linear-context.ts | db.run( | not yet converted to Drizzle
@@ -242,10 +230,6 @@ src/db/linear-context.ts | db .query<{ hydrated: number }, [string]>( | not yet 
 src/db/linear-context.ts | db.run( | not yet converted to Drizzle
 src/db/linear-context.ts | db.run( | not yet converted to Drizzle
 src/db/linear-context.ts | return db .query<{ snapshot: string }, [string]>( | not yet converted to Drizzle
-src/db/linear-delegation.ts | const row = db .query< | not yet converted to Drizzle
-src/db/linear-delegation.ts | db.run( | not yet converted to Drizzle
-src/db/linear-delegation.ts | return db .query<{ session_id: string }, [string, string, string, string]>( | not yet converted to Drizzle
-src/db/linear-delegation.ts | return db .query<{ session_id: string }, [string, string, string, number]>( | not yet converted to Drizzle
 src/db/linear-delivery.ts | const result = db.run( | not yet converted to Drizzle
 src/db/linear-inputs.ts | db.query(`INSERT OR IGNORE INTO linear_input (session_id, turn_id, asset_id, asset_url, mime_type, size, sha256) | not yet converted to Drizzle
 src/db/linear-inputs.ts | return db .query<LinearInputRecord, [string, string]>(`SELECT session_id AS sessionId, turn_id AS turnId, | not yet converted to Drizzle
