@@ -41,17 +41,49 @@ export function formatFixFeedback(
     if (item.state === "passed" || item.state === "skipped") continue;
     lines.push(`- ${item.id} (${item.kind}): ${item.state} — ${item.message}`);
   }
-  for (const review of reviewFindings) {
-    for (const finding of review.findings) {
+  const findings = reviewFindingText(reviewFindings);
+  if (findings) lines.push(findings);
+  return lines.join("\n");
+}
+
+export function reviewFindingText(reviewFindings: readonly ReviewFindings[]): string {
+  const { lines, omitted } = reviewFindingLines(reviewFindings);
+  return [
+    ...lines.map(({ itemId, line }) => `- review ${itemId} ${line}`),
+    ...(omitted > 0 ? [`- ${omittedFindings(omitted)}`] : []),
+  ].join("\n");
+}
+
+const FINDING_TEXT_LIMIT = 1000;
+const FINDING_LINE_LIMIT = 20;
+
+export function reviewFindingLines(reviewFindings: readonly ReviewFindings[]): {
+  lines: Array<{ itemId: string; line: string }>;
+  omitted: number;
+} {
+  const all = reviewFindings.flatMap((review) =>
+    review.findings.map((finding) => {
       const old = review.preExisting?.includes(finding)
         ? " Pre-existing code the change did not edit: not required, does not block."
         : "";
-      lines.push(
-        `- review ${review.itemId} ${finding.severity} at ${finding.location}: ${finding.explanation} (${finding.evidence})${old}`,
-      );
-    }
-  }
-  return lines.join("\n");
+      return {
+        itemId: review.itemId,
+        line: `${finding.severity} at ${finding.location}: ${clip(finding.explanation)} (${clip(finding.evidence)})${old}`,
+      };
+    }),
+  );
+  return {
+    lines: all.slice(0, FINDING_LINE_LIMIT),
+    omitted: Math.max(0, all.length - FINDING_LINE_LIMIT),
+  };
+}
+
+export function omittedFindings(count: number): string {
+  return `${count} more ${count === 1 ? "finding" : "findings"} not shown.`;
+}
+
+function clip(text: string): string {
+  return text.length > FINDING_TEXT_LIMIT ? `${text.slice(0, FINDING_TEXT_LIMIT)}…` : text;
 }
 
 /** How a verified artifact is shown. A mismatch is not linked as the recorded bytes. */
