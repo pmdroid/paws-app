@@ -1,21 +1,21 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq } from "drizzle-orm";
+import { orm } from "./orm";
+import { queuePosition, queueWait } from "./schema";
 
 export function queueWaitSince(db: Database, itemId: string, version: number, now: number): number {
-  db.run("INSERT OR IGNORE INTO queue_wait(item_id,version,since) VALUES(?,?,?)", [
-    itemId,
-    version,
-    now,
-  ]);
-  return db
-    .query<{ since: number }, [string, number]>(
-      "SELECT since FROM queue_wait WHERE item_id=? AND version=?",
-    )
-    .get(itemId, version)!.since;
+  const handle = orm(db);
+  handle.insert(queueWait).values({ itemId, version, since: now }).onConflictDoNothing().run();
+  return handle
+    .select({ since: queueWait.since })
+    .from(queueWait)
+    .where(and(eq(queueWait.itemId, itemId), eq(queueWait.version, version)))
+    .get()!.since;
 }
 
 /** Forget when an item began waiting for a slot, so its start timeout counts from the next wait. */
 export function clearQueueWait(db: Database, itemId: string): void {
-  db.run("DELETE FROM queue_wait WHERE item_id=?", [itemId]);
+  orm(db).delete(queueWait).where(eq(queueWait.itemId, itemId)).run();
 }
 
 /** A queued item's place among the items waiting for a runner slot. */
@@ -36,22 +36,35 @@ export function saveQueuePositions(
   now: number,
   ownerCaps: ReadonlyMap<string, number> = new Map(),
 ): void {
-  db.run("DELETE FROM queue_position");
+  const handle = orm(db);
+  handle.delete(queuePosition).run();
   if (slots === null) return;
   waiting.forEach((itemId, index) =>
-    db.run(
-      "INSERT INTO queue_position(item_id,position,busy_slots,total_slots,owner_cap,updated_at) VALUES(?,?,?,?,?,?)",
-      [itemId, index + 1, slots.busy, slots.total, ownerCaps.get(itemId) ?? null, now],
-    ),
+    handle
+      .insert(queuePosition)
+      .values({
+        itemId,
+        position: index + 1,
+        busySlots: slots.busy,
+        totalSlots: slots.total,
+        ownerCap: ownerCaps.get(itemId) ?? null,
+        updatedAt: now,
+      })
+      .run(),
   );
 }
 
 export function listQueuePositions(db: Database): QueuePosition[] {
-  return db
-    .query<QueuePosition, []>(
-      `SELECT item_id AS itemId,position,busy_slots AS busySlots,total_slots AS totalSlots,owner_cap AS ownerCap
-       FROM queue_position ORDER BY position`,
-    )
+  return orm(db)
+    .select({
+      itemId: queuePosition.itemId,
+      position: queuePosition.position,
+      busySlots: queuePosition.busySlots,
+      totalSlots: queuePosition.totalSlots,
+      ownerCap: queuePosition.ownerCap,
+    })
+    .from(queuePosition)
+    .orderBy(asc(queuePosition.position))
     .all();
 }
 

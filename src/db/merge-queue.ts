@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { orm } from "./orm";
-import { mergeQueueEntry } from "./schema";
+import { job, mergeQueueEntry, workItem } from "./schema";
 
 /**
  * A task's place in its lane of its repository's merge queue. A lane is a Linear project, or `''`
@@ -34,7 +35,7 @@ export type MergeQueuePosition = {
   notifiedPosition: number | null;
 };
 
-const HOLDING = "('merge_queue','verifying')";
+const HOLDING = ["merge_queue", "verifying"];
 
 /**
  * Join the lane at the end, in the order tasks became ready. A task already in the queue keeps its
@@ -44,25 +45,37 @@ export function joinMergeQueue(
   db: Database,
   input: { itemId: string; repository: string; lane?: string; now: number },
 ): void {
-  db.run(
-    "INSERT OR IGNORE INTO merge_queue_entry(item_id,repository,lane,ready_at) VALUES(?,?,?,?)",
-    [input.itemId, input.repository.toLowerCase(), input.lane ?? "", input.now],
-  );
+  orm(db)
+    .insert(mergeQueueEntry)
+    .values({
+      itemId: input.itemId,
+      repository: input.repository.toLowerCase(),
+      lane: input.lane ?? "",
+      readyAt: input.now,
+    })
+    .onConflictDoNothing()
+    .run();
 }
 
 export function leaveMergeQueue(db: Database, itemId: string): void {
-  db.run("DELETE FROM merge_queue_entry WHERE item_id=?", [itemId]);
+  orm(db).delete(mergeQueueEntry).where(eq(mergeQueueEntry.itemId, itemId)).run();
 }
 
 /** Whether the task holds a place in a merge queue: `merge_queue`, or `verifying` in it. */
 export function inMergeQueue(db: Database, itemId: string): boolean {
   return (
-    db
-      .query(
-        `SELECT 1 FROM merge_queue_entry e JOIN work_item w ON w.id = e.item_id
-         WHERE e.item_id = ? AND w.state IN ${HOLDING} AND w.cancel_requested = 0`,
+    orm(db)
+      .select({ one: sql`1` })
+      .from(mergeQueueEntry)
+      .innerJoin(workItem, eq(workItem.id, mergeQueueEntry.itemId))
+      .where(
+        and(
+          eq(mergeQueueEntry.itemId, itemId),
+          inArray(workItem.state, HOLDING),
+          eq(workItem.cancelRequested, 0),
+        ),
       )
-      .get(itemId) !== null
+      .get() !== undefined
   );
 }
 
@@ -72,16 +85,14 @@ export function inMergeQueue(db: Database, itemId: string): boolean {
  */
 export function restartedFromMergeQueue(db: Database, itemId: string): boolean {
   return (
-    db
-      .query(
-        `SELECT 1 FROM work_item_event ev
-         WHERE ev.id = (SELECT MAX(r.id) FROM work_item_event r WHERE r.item_id = ?1 AND r.kind = 'restart')
+    orm(db).get(
+      sql`SELECT 1 FROM work_item_event ev
+         WHERE ev.id = (SELECT MAX(r.id) FROM work_item_event r WHERE r.item_id = ${itemId} AND r.kind = 'restart')
          AND (ev.from_state = 'merge_queue' OR (ev.from_state = 'verifying'
-           AND (SELECT p.from_state FROM work_item_event p WHERE p.item_id = ?1 AND p.id < ev.id
+           AND (SELECT p.from_state FROM work_item_event p WHERE p.item_id = ${itemId} AND p.id < ev.id
              AND p.to_state = 'verifying' AND p.from_state <> 'verifying'
              ORDER BY p.id DESC LIMIT 1) = 'merge_queue'))`,
-      )
-      .get(itemId) !== null
+    ) !== undefined
   );
 }
 
@@ -90,22 +101,29 @@ export function restartedFromMergeQueue(db: Database, itemId: string): boolean {
  * place alone, and the next Closeout acceptance returns the task to it.
  */
 export function keepMergeQueuePlace(db: Database, itemId: string): void {
-  db.run("UPDATE merge_queue_entry SET kept=1 WHERE item_id=?", [itemId]);
+  orm(db).update(mergeQueueEntry).set({ kept: 1 }).where(eq(mergeQueueEntry.itemId, itemId)).run();
 }
 
 /** Leave the queue unless the place is kept. */
 export function releaseMergeQueuePlace(db: Database, itemId: string): void {
-  db.run("DELETE FROM merge_queue_entry WHERE item_id=? AND kept=0", [itemId]);
+  orm(db)
+    .delete(mergeQueueEntry)
+    .where(and(eq(mergeQueueEntry.itemId, itemId), eq(mergeQueueEntry.kept, 0)))
+    .run();
 }
 
 /** Closeout accepted a new head: back to a kept place, or out of the queue to join at the end. */
 export function returnToMergeQueue(db: Database, itemId: string): void {
   releaseMergeQueuePlace(db, itemId);
-  db.run("UPDATE merge_queue_entry SET kept=0 WHERE item_id=?", [itemId]);
+  orm(db).update(mergeQueueEntry).set({ kept: 0 }).where(eq(mergeQueueEntry.itemId, itemId)).run();
 }
 
 export function markMergeQueueNotified(db: Database, itemId: string, position: number): void {
-  db.run("UPDATE merge_queue_entry SET notified_position=? WHERE item_id=?", [position, itemId]);
+  orm(db)
+    .update(mergeQueueEntry)
+    .set({ notifiedPosition: position })
+    .where(eq(mergeQueueEntry.itemId, itemId))
+    .run();
 }
 
 /**
@@ -117,25 +135,26 @@ export function listMergeQueues(
   db: Database,
   held: (itemId: string) => boolean = () => false,
 ): MergeQueuePosition[] {
-  const rows = db
-    .query<
-      {
-        itemId: string;
-        repository: string;
-        lane: string;
-        projectName: string | null;
-        readyAt: number;
-        notifiedPosition: number | null;
-        state: string;
-      },
-      []
-    >(
-      `SELECT e.item_id AS itemId, e.repository, e.lane, e.ready_at AS readyAt,
-              CASE WHEN w.linear_project_id = e.lane THEN w.linear_project_name END AS projectName,
-              e.notified_position AS notifiedPosition, w.state
-       FROM merge_queue_entry e JOIN work_item w ON w.id = e.item_id
-       WHERE w.state IN ${HOLDING} AND w.cancel_requested = 0
-       ORDER BY e.repository, e.lane, e.ready_at, e.id`,
+  const rows = orm(db)
+    .select({
+      itemId: mergeQueueEntry.itemId,
+      repository: mergeQueueEntry.repository,
+      lane: mergeQueueEntry.lane,
+      readyAt: mergeQueueEntry.readyAt,
+      projectName: sql<
+        string | null
+      >`CASE WHEN ${workItem.linearProjectId} = ${mergeQueueEntry.lane} THEN ${workItem.linearProjectName} END`,
+      notifiedPosition: mergeQueueEntry.notifiedPosition,
+      state: workItem.state,
+    })
+    .from(mergeQueueEntry)
+    .innerJoin(workItem, eq(workItem.id, mergeQueueEntry.itemId))
+    .where(and(inArray(workItem.state, HOLDING), eq(workItem.cancelRequested, 0)))
+    .orderBy(
+      asc(mergeQueueEntry.repository),
+      asc(mergeQueueEntry.lane),
+      asc(mergeQueueEntry.readyAt),
+      asc(mergeQueueEntry.id),
     )
     .all();
   const byLane = new Map<string, typeof rows>();
@@ -170,12 +189,17 @@ export function mergeQueuePosition(
 
 /** A holder departed or changed eligibility: parked followers check again now. */
 export function wakeMergesBehind(db: Database, now: number): void {
-  db.run(
-    `UPDATE job SET run_at = MIN(run_at, ?)
-     WHERE queue = ? AND status = 'pending'
-       AND json_extract(payload, '$.mergeWait.reason') IN ('ahead','dependencies')`,
-    [now, JOB_KIND.merge],
-  );
+  orm(db)
+    .update(job)
+    .set({ runAt: sql`MIN(${job.runAt}, ${now})` })
+    .where(
+      and(
+        eq(job.queue, JOB_KIND.merge),
+        eq(job.status, "pending"),
+        sql`json_extract(${job.payload}, '$.mergeWait.reason') IN ('ahead','dependencies')`,
+      ),
+    )
+    .run();
 }
 
 export function mergeQueueReadyTimes(db: Database): { itemId: string; readyAt: number }[] {

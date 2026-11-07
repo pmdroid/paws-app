@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, count, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { enqueueJobOnce } from "./jobs";
+import { orm } from "./orm";
+import { job, pullComment, workItemRepository } from "./schema";
 
 /** `review`: a comment-only review. `inline`: one review comment. `conversation`: an issue comment. */
 export type PullCommentSource = "review" | "inline" | "conversation";
@@ -22,20 +25,7 @@ export type PullCommentRecord = {
   outcome: PullCommentOutcome | null;
 };
 
-type Row = {
-  source: PullCommentSource;
-  comment_id: number;
-  item_id: string;
-  pull_number: number;
-  review_id: number | null;
-  author: string | null;
-  body: string;
-  path: string | null;
-  line: number | null;
-  received_at: number;
-  handled_at: number | null;
-  outcome: PullCommentOutcome | null;
-};
+type Row = typeof pullComment.$inferSelect;
 
 /**
  * Quiet time after the last comment or changes-requested review before they go to the agent
@@ -73,21 +63,29 @@ export function deferPullFeedback(
   receivedAt: number,
   wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
 ): number {
-  return db.run(
-    `UPDATE job SET run_at = MIN(MAX(run_at, ?), created_at + ?)
-     WHERE status = 'pending' AND (
-       (queue = ? AND json_extract(payload, '$.pullCommentsFor') = ?)
-       OR (queue = ? AND job_key IN (SELECT 'pull-review:' || review_id FROM pull_review
-                                     WHERE item_id = ? AND handled_at IS NULL)))`,
-    [
-      receivedAt + wait.quietMs,
-      Math.max(wait.maxMs, wait.quietMs),
-      JOB_KIND.pullComments,
-      itemId,
-      JOB_KIND.pullReview,
-      itemId,
-    ],
-  ).changes;
+  return orm(db)
+    .update(job)
+    .set({
+      runAt: sql`MIN(MAX(${job.runAt}, ${receivedAt + wait.quietMs}), ${job.createdAt} + ${Math.max(wait.maxMs, wait.quietMs)})`,
+    })
+    .where(and(eq(job.status, "pending"), pullFeedbackJobs(itemId)))
+    .returning({ id: job.id })
+    .all().length;
+}
+
+/** The item's pending comment job and the jobs of its open reviews. */
+function pullFeedbackJobs(itemId: string) {
+  return or(
+    and(
+      eq(job.queue, JOB_KIND.pullComments),
+      sql`json_extract(${job.payload}, '$.pullCommentsFor') = ${itemId}`,
+    ),
+    and(
+      eq(job.queue, JOB_KIND.pullReview),
+      sql`${job.jobKey} IN (SELECT 'pull-review:' || review_id FROM pull_review
+                            WHERE item_id = ${itemId} AND handled_at IS NULL)`,
+    ),
+  );
 }
 
 /**
@@ -101,23 +99,24 @@ export function recordPullComment(
   comment: Omit<PullCommentRecord, "handledAt" | "outcome">,
   wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
 ): boolean {
-  const inserted = db.run(
-    `INSERT INTO pull_comment (source, comment_id, item_id, pull_number, review_id, author, body, path, line, received_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, comment_id) DO NOTHING`,
-    [
-      comment.source,
-      comment.commentId,
-      comment.itemId,
-      comment.pullNumber,
-      comment.reviewId,
-      comment.author,
-      comment.body,
-      comment.path,
-      comment.line,
-      comment.receivedAt,
-    ],
-  );
-  if (inserted.changes === 0) return false;
+  const inserted = orm(db)
+    .insert(pullComment)
+    .values({
+      source: comment.source,
+      commentId: comment.commentId,
+      itemId: comment.itemId,
+      pullNumber: comment.pullNumber,
+      reviewId: comment.reviewId,
+      author: comment.author,
+      body: comment.body,
+      path: comment.path,
+      line: comment.line,
+      receivedAt: comment.receivedAt,
+    })
+    .onConflictDoNothing({ target: [pullComment.source, pullComment.commentId] })
+    .returning({ commentId: pullComment.commentId })
+    .all();
+  if (inserted.length === 0) return false;
   gatherPullFeedback(
     db,
     comment.itemId,
@@ -136,12 +135,17 @@ export function gatherPullFeedback(
   jobKey: string,
 ): void {
   deferPullFeedback(db, itemId, receivedAt, wait);
-  const gathering = db
-    .query<{ n: number }, [string, string]>(
-      `SELECT count(*) AS n FROM job WHERE queue = ? AND status = 'pending'
-       AND json_extract(payload, '$.pullCommentsFor') = ?`,
+  const gathering = orm(db)
+    .select({ n: count() })
+    .from(job)
+    .where(
+      and(
+        eq(job.queue, JOB_KIND.pullComments),
+        eq(job.status, "pending"),
+        sql`json_extract(${job.payload}, '$.pullCommentsFor') = ${itemId}`,
+      ),
     )
-    .get(JOB_KIND.pullComments, itemId);
+    .get();
   if ((gathering?.n ?? 0) > 0) return;
   enqueueJobOnce(db, {
     queue: JOB_KIND.pullComments,
@@ -154,12 +158,12 @@ export function gatherPullFeedback(
 
 /** This item's comments that have not reached the agent or the team yet, oldest first. */
 export function pendingPullComments(db: Database, itemId: string): PullCommentRecord[] {
-  return db
-    .query<Row, [string]>(
-      `SELECT * FROM pull_comment WHERE item_id = ? AND handled_at IS NULL
-       ORDER BY received_at, comment_id`,
-    )
-    .all(itemId)
+  return orm(db)
+    .select()
+    .from(pullComment)
+    .where(and(eq(pullComment.itemId, itemId), isNull(pullComment.handledAt)))
+    .orderBy(asc(pullComment.receivedAt), asc(pullComment.commentId))
+    .all()
     .map(mapRow);
 }
 
@@ -168,10 +172,12 @@ export function getPullComment(
   source: PullCommentSource,
   commentId: number,
 ): PullCommentRecord | null {
-  const row = db
-    .query<Row, [string, number]>("SELECT * FROM pull_comment WHERE source = ? AND comment_id = ?")
-    .get(source, commentId);
-  return row === null ? null : mapRow(row);
+  const row = orm(db)
+    .select()
+    .from(pullComment)
+    .where(and(eq(pullComment.source, source), eq(pullComment.commentId, commentId)))
+    .get();
+  return row === undefined ? null : mapRow(row);
 }
 
 /** Settle the given comments that are still open. The number settled. */
@@ -183,54 +189,68 @@ export function settlePullComments(
 ): number {
   let settled = 0;
   for (const comment of comments)
-    settled += db.run(
-      `UPDATE pull_comment SET handled_at = ?, outcome = ?
-       WHERE source = ? AND comment_id = ? AND handled_at IS NULL`,
-      [now, outcome, comment.source, comment.commentId],
-    ).changes;
+    settled += orm(db)
+      .update(pullComment)
+      .set({ handledAt: now, outcome })
+      .where(
+        and(
+          eq(pullComment.source, comment.source),
+          eq(pullComment.commentId, comment.commentId),
+          isNull(pullComment.handledAt),
+        ),
+      )
+      .returning({ commentId: pullComment.commentId })
+      .all().length;
   return settled;
 }
 
 function mapRow(row: Row): PullCommentRecord {
   return {
-    source: row.source,
-    commentId: row.comment_id,
-    itemId: row.item_id,
-    pullNumber: row.pull_number,
-    reviewId: row.review_id,
+    source: row.source as PullCommentSource,
+    commentId: row.commentId,
+    itemId: row.itemId,
+    pullNumber: row.pullNumber,
+    reviewId: row.reviewId,
     author: row.author,
     body: row.body,
     path: row.path,
     line: row.line,
-    receivedAt: row.received_at,
-    handledAt: row.handled_at,
-    outcome: row.outcome,
+    receivedAt: row.receivedAt,
+    handledAt: row.handledAt,
+    outcome: row.outcome as PullCommentOutcome | null,
   };
 }
 
 export function commentingApps(db: Database, owner: string, repo: string): string[] {
-  return db
-    .query<{ login: string }, [string, string]>(
-      `SELECT DISTINCT lower(c.author) AS login FROM pull_comment c
-       JOIN work_item_repository r ON r.item_id = c.item_id
-       WHERE lower(r.owner) = lower(?) AND lower(r.repo) = lower(?)
-         AND lower(c.author) LIKE '%[bot]'`,
+  return orm(db)
+    .selectDistinct({ login: sql<string>`lower(${pullComment.author})` })
+    .from(pullComment)
+    .innerJoin(workItemRepository, eq(workItemRepository.itemId, pullComment.itemId))
+    .where(
+      and(
+        sql`lower(${workItemRepository.owner}) = lower(${owner})`,
+        sql`lower(${workItemRepository.repo}) = lower(${repo})`,
+        sql`lower(${pullComment.author}) LIKE '%[bot]'`,
+      ),
     )
-    .all(owner, repo)
+    .all()
     .map((row) => row.login.slice(0, -"[bot]".length));
 }
 
 export function pullReviewCheckWait(db: Database, itemId: string): ReviewCheckWait | null {
-  const row = db
-    .query<{ wait: string | null }, [string, string, string, string]>(
-      `SELECT json_extract(payload, '$.reviewChecks') AS wait FROM job
-       WHERE status IN ('pending', 'running') AND json_extract(payload, '$.reviewChecks') IS NOT NULL
-         AND ((queue = ? AND json_extract(payload, '$.pullCommentsFor') = ?)
-           OR (queue = ? AND job_key IN (SELECT 'pull-review:' || review_id FROM pull_review
-                                         WHERE item_id = ? AND handled_at IS NULL)))
-       ORDER BY id DESC LIMIT 1`,
+  const row = orm(db)
+    .select({ wait: sql<string | null>`json_extract(${job.payload}, '$.reviewChecks')` })
+    .from(job)
+    .where(
+      and(
+        inArray(job.status, ["pending", "running"]),
+        sql`json_extract(${job.payload}, '$.reviewChecks') IS NOT NULL`,
+        pullFeedbackJobs(itemId),
+      ),
     )
-    .get(JOB_KIND.pullComments, itemId, JOB_KIND.pullReview, itemId);
+    .orderBy(desc(job.id))
+    .limit(1)
+    .get();
   if (!row?.wait) return null;
   const wait = JSON.parse(row.wait) as Partial<ReviewCheckWait>;
   return typeof wait.head === "string" && Array.isArray(wait.names)
