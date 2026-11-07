@@ -23,11 +23,14 @@ export type ItemPullRequest = {
 
 /** The branch as the last finished agent turn left it. A later turn replaces it. */
 export function recordItemBranchState(db: Database, state: ItemBranchState): void {
-  const { itemId, ...latest } = state;
+  const { runId, head, base, commits, recordedAt } = state;
   orm(db)
     .insert(itemBranchState)
     .values(state)
-    .onConflictDoUpdate({ target: itemBranchState.itemId, set: latest })
+    .onConflictDoUpdate({
+      target: itemBranchState.itemId,
+      set: { runId, head, base, commits, recordedAt },
+    })
     .run();
 }
 

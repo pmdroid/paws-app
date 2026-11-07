@@ -25,7 +25,7 @@ import { halt } from "./halt";
 import { enqueueEndedSessionFace, stoppedResponse } from "./stop-response";
 import { mergeCallInFlight, getConfirmedRemoteMerge } from "./remote-merges";
 import { orm } from "./orm";
-import { job, question, workItem } from "./schema";
+import { job as jobTable, question, workItem } from "./schema";
 import { immediate } from "./tx";
 
 export function enqueueCommand(
@@ -129,11 +129,11 @@ export function applyLinearCommand(
         (item.state === "merge_queue" ||
           orm(db)
             .select({ one: sql`1` })
-            .from(job)
+            .from(jobTable)
             .where(
               and(
-                or(eq(job.queue, JOB_KIND.merge), like(job.queue, `${JOB_KIND.merge}.%`)),
-                sql`json_extract(${job.payload}, '$.itemId') = ${item.id}`,
+                or(eq(jobTable.queue, JOB_KIND.merge), like(jobTable.queue, `${JOB_KIND.merge}.%`)),
+                sql`json_extract(${jobTable.payload}, '$.itemId') = ${item.id}`,
               ),
             )
             .get() !== undefined));
