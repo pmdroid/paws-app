@@ -1,5 +1,10 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, sql } from "drizzle-orm";
+import { JOB_KIND } from "../core";
 import { listInFlightItems } from "./items";
+import { mergeLaneSql } from "./jobs";
+import { orm } from "./orm";
+import { linearSession } from "./schema";
 import { advanceOutboxSession, enqueueOutboxOnce } from "./outbox";
 import { immediate } from "./tx";
 
@@ -451,4 +456,20 @@ export function acceptLinearStop(
     );
     return generation;
   });
+}
+
+export function releaseIdleSessionItem(db: Database, itemId: string, now: number): void {
+  orm(db)
+    .update(linearSession)
+    .set({ activeItemId: null })
+    .where(
+      and(
+        eq(linearSession.activeItemId, itemId),
+        sql`NOT EXISTS(SELECT 1 FROM run WHERE item_id=${itemId} AND status IN ('active','provisioning'))
+       AND NOT EXISTS(SELECT 1 FROM job WHERE status='running' AND (locked_until IS NULL OR locked_until>${now})
+         AND json_extract(payload,'$.itemId')=${itemId}
+         AND (queue IN (${sql.raw(`'${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}'`)}) OR ${sql.raw(mergeLaneSql("job"))}))`,
+      ),
+    )
+    .run();
 }

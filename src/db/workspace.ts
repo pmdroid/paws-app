@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, desc, eq } from "drizzle-orm";
+import { orm } from "./orm";
+import { workspaceAccessAudit, workspaceUser } from "./schema";
 import { immediate } from "./tx";
 import { endRevokedRunnerAuthority } from "./runner-lease";
 
@@ -344,3 +347,21 @@ export const WORKSPACE_REVOKED_SIGN_IN =
   "Your access to this Paws workspace was revoked. Ask an admin.";
 export const WORKSPACE_REVOKED_RESPONSE =
   "Access to Paws was revoked for the person who delegated this. An admin can delegate it again.";
+
+export function lastPausedBy(db: Database, itemId: string): string | null {
+  return (
+    orm(db)
+      .select({ name: workspaceUser.name })
+      .from(workspaceAccessAudit)
+      .innerJoin(workspaceUser, eq(workspaceUser.id, workspaceAccessAudit.userId))
+      .where(
+        and(
+          eq(workspaceAccessAudit.action, "execution.pause"),
+          eq(workspaceAccessAudit.subject, itemId),
+        ),
+      )
+      .orderBy(desc(workspaceAccessAudit.id))
+      .limit(1)
+      .get()?.name ?? null
+  );
+}

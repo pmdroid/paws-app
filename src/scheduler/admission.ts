@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { itemDelegationId } from "../db";
 import {
   delegationReadiness,
   itemReadiness,
@@ -19,11 +20,9 @@ export function createAdmission(input: {
   const delegationHeld = (delegationId: string): HeldReason | null =>
     input.authority?.(delegationId) === false ? "project" : delegationReadiness(db, delegationId);
   const decide = (itemId: string, phase: ReadinessPhase): Admission => {
-    const delegationId = db
-      .query<{ id: string }, [string]>("SELECT delegation_id AS id FROM work_item WHERE id=?")
-      .get(itemId)?.id;
+    const delegationId = itemDelegationId(db, itemId);
     const held =
-      delegationId === undefined
+      delegationId === null
         ? "missing"
         : (delegationHeld(delegationId) ?? itemReadiness(db, itemId, phase));
     return held === null ? { ok: true } : { ok: false, held };

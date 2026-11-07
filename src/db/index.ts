@@ -182,6 +182,9 @@ export {
   completeMergedItem,
   failWorkItem,
   getWorkItem,
+  itemDelegationId,
+  itemLinearIdentifier,
+  lastItemEvent,
   listInFlightItems,
   listWorkItems,
   listWorkItemsByStates,
@@ -203,6 +206,11 @@ export {
   completeJob,
   enqueueJob,
   enqueueJobOnce,
+  cancelAdmittedJob,
+  cancelPendingItemJobs,
+  itemJobRunning,
+  latestItemJobId,
+  runPendingJobNow,
   reenqueueJob,
   extendJobLease,
   hasLiveJob,
@@ -331,6 +339,7 @@ export {
   dispatchOutbox,
   enqueueOutbox,
   enqueueOutboxOnce,
+  linearSessionClosed,
   lastOutboxSequence,
   LINEAR_PROGRESS_INTERVAL_MS,
   getOutbox,
@@ -545,6 +554,7 @@ export {
   discardLinearTurns,
   applyLinearTurns,
   getLinearSessionGeneration,
+  releaseIdleSessionItem,
   advanceLinearSessionGeneration,
   type StoredLinearSession,
   type StoredLinearTurn,
@@ -556,7 +566,18 @@ export {
   resolveTaskClassification,
   type StoredTaskClassification,
 } from "./task-requests";
-export { listTaskBlockers, saveTaskBlocks, type TaskBlock } from "./task-blocks";
+export { listTaskBlockers, listTaskBlocks, saveTaskBlocks, type TaskBlock } from "./task-blocks";
+export {
+  dropSchedulerAdmission,
+  listSchedulerAdmissions,
+  pendingRunnerWaits,
+  runnerTaskSlots,
+  saveItemScheduling,
+  saveSchedulerAdmission,
+  schedulerItems,
+  schedulingProjectLead,
+  type SchedulerItem,
+} from "./scheduling";
 export { blockerCheckedAt, recordBlockerChecks } from "./blocker-checks";
 
 export {
@@ -642,6 +663,7 @@ export { prepareLinearActivity } from "./linear-delivery";
 
 export {
   auditWorkspaceAccess,
+  lastPausedBy,
   listWorkspaceAudit,
   consumeWorkspaceBootstrap,
   createWorkspaceBootstrap,
@@ -747,6 +769,7 @@ export {
   keepMergeQueuePlace,
   leaveMergeQueue,
   listMergeQueues,
+  mergeQueueReadyTimes,
   markMergeQueueNotified,
   mergeQueuePosition,
   releaseMergeQueuePlace,
