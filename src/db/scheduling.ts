@@ -101,6 +101,7 @@ export function listSchedulerAdmissions(db: Database): {
 export function dropSchedulerAdmission(db: Database, itemId: string): void {
   orm(db).delete(schedulerAdmission).where(eq(schedulerAdmission.itemId, itemId)).run();
 }
+
 export function saveSchedulerAdmission(
   db: Database,
   row: {
@@ -112,10 +113,17 @@ export function saveSchedulerAdmission(
   },
   orIgnore = false,
 ): void {
-  orm(db).run(
-    sql`INSERT ${sql.raw(orIgnore ? "OR IGNORE " : "")}INTO scheduler_admission(item_id,job_id,project_key,repository_key,session_id,paths,hot,created_at)
-    VALUES(${row.itemId},${row.jobId},${"*"},${row.repositoryKey},${row.sessionId},${"[]"},${0},${row.now})`,
-  );
+  const insert = orm(db).insert(schedulerAdmission).values({
+    itemId: row.itemId,
+    jobId: row.jobId,
+    projectKey: "*",
+    repositoryKey: row.repositoryKey,
+    sessionId: row.sessionId,
+    paths: "[]",
+    hot: 0,
+    createdAt: row.now,
+  });
+  (orIgnore ? insert.onConflictDoNothing() : insert).run();
 }
 
 export function schedulerItems(db: Database, now: number): SchedulerItem[] {
