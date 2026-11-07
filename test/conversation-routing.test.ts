@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { FakeClock, JOB_KIND } from "../core";
+import { FakeClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -22,19 +22,19 @@ import {
   recordLinearTurn,
   recordRunnerHostStatus,
   runnerTaskSlots,
-} from "../db";
-import type { AcceptedLinearEvent } from "../linear";
+} from "../src/db";
+import type { AcceptedLinearEvent } from "../src/linear";
 import {
   CONVERSATION_TIMEOUT_REPLY,
+  Orchestrator,
   deliverLinearComments,
   linearCommentBrief,
   type LinearCommentPolicy,
-} from "./linear-comments";
-import { Orchestrator } from "./orchestrator";
-import { createConversationTurns } from "../runner-backend";
-import { createRunnerHelpers } from "../runner-helpers";
-import { RUNNER_CONVERSATION_MS } from "../runner-protocol";
-import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
+} from "../src/loop";
+import { createConversationTurns } from "../src/runner-backend";
+import { createRunnerHelpers } from "../src/runner-helpers";
+import { RUNNER_CONVERSATION_MS } from "../src/runner-protocol";
+import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 
 const T0 = Date.parse("2026-11-07T20:00:00.000Z");
 const PASCAL = "user-pascal";
