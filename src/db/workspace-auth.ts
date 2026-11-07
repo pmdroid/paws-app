@@ -1,13 +1,14 @@
+import type { Database } from "bun:sqlite";
+import { and, asc, count, eq, gt, isNull, lte } from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { immediate } from "./tx";
 import {
-  workspaceMemberUsableSql,
+  auditWorkspaceAccessSteps,
+  workspaceMemberSteps,
   workspaceMemberUsable,
-  auditWorkspaceAccess,
   syncWorkspaceMember,
-  workspaceMember,
   type WorkspaceRole,
 } from "./workspace";
-import type { Database } from "bun:sqlite";
-import { immediate } from "./tx";
 
 export type WorkspaceOAuthRequest = {
   stateHash: string;
@@ -17,27 +18,57 @@ export type WorkspaceOAuthRequest = {
   expiresAt: number;
 };
 
+export function* saveWorkspaceOAuthRequestSteps(
+  q: Q,
+  input: WorkspaceOAuthRequest,
+): Steps<boolean> {
+  const { workspaceOauthRequest: request } = q.t;
+  yield* q.exec(q.orm.delete(request).where(lte(request.expiresAt, input.expiresAt - 600_000)));
+  const stored = yield* q.one(q.orm.select({ count: count() }).from(request));
+  if (stored!.count >= 1_000) return false;
+  yield* q.exec(
+    q.orm.insert(request).values({
+      stateHash: input.stateHash,
+      browserHash: input.browserHash,
+      verifier: "",
+      bootstrapHash: input.bootstrapHash,
+      expiresAt: input.expiresAt,
+      assignmentHash: input.assignmentHash ?? null,
+    }),
+  );
+  return true;
+}
+
 export function saveWorkspaceOAuthRequest(db: Database, input: WorkspaceOAuthRequest): boolean {
-  return immediate(db, () => {
-    db.run("DELETE FROM workspace_oauth_request WHERE expires_at<=?", [input.expiresAt - 600_000]);
-    if (
-      db
-        .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_oauth_request")
-        .get()!.count >= 1_000
-    )
-      return false;
-    db.run(
-      "INSERT INTO workspace_oauth_request(state_hash,browser_hash,verifier,bootstrap_hash,expires_at,assignment_hash) VALUES(?,?,'',?,?,?)",
-      [
-        input.stateHash,
-        input.browserHash,
-        input.bootstrapHash,
-        input.expiresAt,
-        input.assignmentHash ?? null,
-      ],
-    );
-    return true;
-  });
+  return settled(sqliteDb(db).transaction((q) => saveWorkspaceOAuthRequestSteps(q, input)));
+}
+
+export function* consumeWorkspaceOAuthRequestSteps(
+  q: Q,
+  stateHash: string,
+  browserHash: string,
+  now: number,
+): Steps<WorkspaceOAuthRequest | null> {
+  const { workspaceOauthRequest: request } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .delete(request)
+      .where(
+        and(
+          eq(request.stateHash, stateHash),
+          eq(request.browserHash, browserHash),
+          gt(request.expiresAt, now),
+        ),
+      )
+      .returning({
+        stateHash: request.stateHash,
+        browserHash: request.browserHash,
+        bootstrapHash: request.bootstrapHash,
+        assignmentHash: request.assignmentHash,
+        expiresAt: request.expiresAt,
+      }),
+  );
+  return row ?? null;
 }
 
 export function consumeWorkspaceOAuthRequest(
@@ -46,57 +77,116 @@ export function consumeWorkspaceOAuthRequest(
   browserHash: string,
   now: number,
 ): WorkspaceOAuthRequest | null {
-  return db
-    .query<WorkspaceOAuthRequest, [string, string, number]>(
-      `DELETE FROM workspace_oauth_request WHERE state_hash=? AND browser_hash=? AND expires_at>?
-      RETURNING state_hash AS stateHash,browser_hash AS browserHash,bootstrap_hash AS bootstrapHash,assignment_hash AS assignmentHash,expires_at AS expiresAt`,
-    )
-    .get(stateHash, browserHash, now);
+  return settled(
+    sqliteDb(db).run((q) => consumeWorkspaceOAuthRequestSteps(q, stateHash, browserHash, now)),
+  );
+}
+
+export function* listUserWorkspacesSteps(q: Q, userId: string) {
+  const { workspace: w, workspaceMember: m } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: w.id, name: w.name, role: m.role })
+      .from(w)
+      .innerJoin(m, eq(m.workspaceId, w.id))
+      .where(and(eq(m.userId, userId), eq(m.active, 1), isNull(m.revokedAt)))
+      .orderBy(asc(w.name), asc(w.id)),
+  );
+  return rows as { id: string; name: string; role: WorkspaceRole }[];
 }
 
 export function listUserWorkspaces(db: Database, userId: string) {
-  return db
-    .query<{ id: string; name: string; role: WorkspaceRole }, [string]>(
-      `SELECT w.id,w.name,m.role FROM workspace w JOIN workspace_member m ON m.workspace_id=w.id
-      WHERE m.user_id=? AND ${workspaceMemberUsableSql("m")} ORDER BY w.name,w.id`,
-    )
-    .all(userId);
+  return settled(sqliteDb(db).run((q) => listUserWorkspacesSteps(q, userId)));
+}
+
+export function* listWorkspaceMembersSteps(q: Q, workspaceId: string) {
+  const { workspaceMember: m, workspaceUser: u } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: u.id,
+        name: u.name,
+        role: m.role,
+        active: m.active,
+        revokedAt: m.revokedAt,
+        revokedBy: m.revokedBy,
+      })
+      .from(m)
+      .innerJoin(u, eq(u.id, m.userId))
+      .where(eq(m.workspaceId, workspaceId))
+      .orderBy(asc(u.name), asc(u.id)),
+  );
+  return rows as ((typeof rows)[number] & { role: WorkspaceRole })[];
 }
 
 export function listWorkspaceMembers(db: Database, workspaceId: string) {
-  return db
-    .query<
-      {
-        id: string;
-        name: string;
-        role: WorkspaceRole;
-        active: number;
-        revokedAt: number | null;
-        revokedBy: string | null;
-      },
-      [string]
-    >(
-      `SELECT u.id,u.name,m.role,m.active,m.revoked_at AS revokedAt,m.revoked_by AS revokedBy FROM workspace_member m JOIN workspace_user u ON u.id=m.user_id
-      WHERE m.workspace_id=? ORDER BY u.name,u.id`,
-    )
-    .all(workspaceId);
+  return settled(sqliteDb(db).run((q) => listWorkspaceMembersSteps(q, workspaceId)));
+}
+
+export function* requireWorkspaceAdminSteps(
+  q: Q,
+  workspaceId: string,
+  actorId: string,
+): Steps<void> {
+  const actor = yield* workspaceMemberSteps(q, workspaceId, actorId);
+  if (actor?.role !== "admin" || !workspaceMemberUsable(actor))
+    throw new Error("Workspace administration is required.");
+}
+
+type RoleChange = {
+  workspaceId: string;
+  actorId: string;
+  userId: string;
+  role: WorkspaceRole;
+  now: number;
+};
+
+export function* setWorkspaceRoleSteps(q: Q, input: RoleChange): Steps<void> {
+  const { workspaceMember: m } = q.t;
+  const member = yield* workspaceMemberSteps(q, input.workspaceId, input.userId);
+  if (member === null || !workspaceMemberUsable(member))
+    throw new Error("An active workspace member is required.");
+  if (member.role === "admin" && input.role !== "admin") {
+    const admins = yield* q.one(
+      q.orm
+        .select({ count: count() })
+        .from(m)
+        .where(
+          and(
+            eq(m.workspaceId, input.workspaceId),
+            eq(m.role, "admin"),
+            eq(m.active, 1),
+            isNull(m.revokedAt),
+          ),
+        ),
+    );
+    if (admins!.count <= 1) throw new Error("The workspace must keep an active admin.");
+  }
+  yield* q.exec(
+    q.orm
+      .update(m)
+      .set({ role: input.role, manualRole: input.role, source: "manual" })
+      .where(and(eq(m.workspaceId, input.workspaceId), eq(m.userId, input.userId))),
+  );
+  yield* auditWorkspaceAccessSteps(q, {
+    workspaceId: input.workspaceId,
+    userId: input.actorId,
+    action: "member.role.changed",
+    subject: `${input.userId}:${input.role}`,
+    now: input.now,
+  });
 }
 
 export function changeWorkspaceRole(
   db: Database,
-  input: {
-    workspaceId: string;
-    actorId: string;
-    userId: string;
-    role: WorkspaceRole;
-    now: number;
+  input: RoleChange & {
     verified?: { active: boolean; guest: boolean; teamIds: readonly string[] };
   },
 ): void {
   const error = immediate(db, () => {
-    const actor = workspaceMember(db, input.workspaceId, input.actorId);
-    if (actor?.role !== "admin" || !workspaceMemberUsable(actor))
-      throw new Error("Workspace administration is required.");
+    settled(
+      sqliteDb(db).run((q) => requireWorkspaceAdminSteps(q, input.workspaceId, input.actorId)),
+    );
     if (input.verified !== undefined) {
       if (
         !syncWorkspaceMember(db, {
@@ -110,91 +200,76 @@ export function changeWorkspaceRole(
       if (input.verified.guest) return "Linear guests can't use Paws.";
       if (!input.verified.active) return "Current Linear membership is required.";
     }
-    const member = workspaceMember(db, input.workspaceId, input.userId);
-    if (member === null || !workspaceMemberUsable(member))
-      throw new Error("An active workspace member is required.");
-    if (member.role === "admin" && input.role !== "admin") {
-      const admins = db
-        .query<{ count: number }, [string]>(
-          `SELECT count(*) AS count FROM workspace_member WHERE workspace_id=? AND role='admin' AND ${workspaceMemberUsableSql("workspace_member")}`,
-        )
-        .get(input.workspaceId)!.count;
-      if (admins <= 1) throw new Error("The workspace must keep an active admin.");
-    }
-    db.run(
-      "UPDATE workspace_member SET role=?,manual_role=?,source='manual' WHERE workspace_id=? AND user_id=?",
-      [input.role, input.role, input.workspaceId, input.userId],
-    );
-    auditWorkspaceAccess(db, {
-      ...input,
-      userId: input.actorId,
-      action: "member.role.changed",
-      subject: `${input.userId}:${input.role}`,
-    });
+    settled(sqliteDb(db).run((q) => setWorkspaceRoleSteps(q, input)));
     return null;
   });
   if (error !== null) throw new Error(error);
 }
 
-export function replaceWorkspaceRepositories(
-  db: Database,
-  input: {
-    workspaceId: string;
-    actorId: string;
-    repositories: readonly { repository: string; teamId: string }[];
-    now: number;
-  },
-): void {
-  immediate(db, () => {
-    const actor = workspaceMember(db, input.workspaceId, input.actorId);
-    if (actor?.role !== "admin" || !workspaceMemberUsable(actor))
-      throw new Error("Workspace administration is required.");
-    db.run("DELETE FROM workspace_repository WHERE workspace_id=?", [input.workspaceId]);
-    for (const entry of input.repositories)
-      db.run("INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES(?,?,?)", [
-        input.workspaceId,
-        entry.repository,
-        entry.teamId,
-      ]);
-    auditWorkspaceAccess(db, {
-      ...input,
-      userId: input.actorId,
-      action: "repositories.changed",
-      subject: input.workspaceId,
-    });
+type RepositoriesChange = {
+  workspaceId: string;
+  actorId: string;
+  repositories: readonly { repository: string; teamId: string }[];
+  now: number;
+};
+
+export function* replaceWorkspaceRepositoriesSteps(q: Q, input: RepositoriesChange): Steps<void> {
+  const { workspaceRepository: repository } = q.t;
+  yield* requireWorkspaceAdminSteps(q, input.workspaceId, input.actorId);
+  yield* q.exec(q.orm.delete(repository).where(eq(repository.workspaceId, input.workspaceId)));
+  for (const entry of input.repositories)
+    yield* q.exec(
+      q.orm.insert(repository).values({
+        workspaceId: input.workspaceId,
+        repository: entry.repository,
+        teamId: entry.teamId,
+      }),
+    );
+  yield* auditWorkspaceAccessSteps(q, {
+    workspaceId: input.workspaceId,
+    userId: input.actorId,
+    action: "repositories.changed",
+    subject: input.workspaceId,
+    now: input.now,
   });
+}
+
+export function replaceWorkspaceRepositories(db: Database, input: RepositoriesChange): void {
+  settled(sqliteDb(db).transaction((q) => replaceWorkspaceRepositoriesSteps(q, input)));
 }
 
 /**
  * Every repository a workspace can use, `owner/repo`: the ones mapped to its Linear teams and the
  * ones its stored GitHub App connection approved. Without `workspaceId`, every workspace's.
  */
-export function listWorkspaceRepositoryNames(db: Database, workspaceId?: string): string[] {
-  const scope = workspaceId === undefined ? "" : " WHERE workspace_id=?1";
-  const args = workspaceId === undefined ? [] : [workspaceId];
-  const mapped = db
-    .query<{ repository: string }, string[]>(
-      `SELECT repository FROM workspace_repository${scope} ORDER BY repository`,
-    )
-    .all(...args)
-    .map((row) => row.repository);
-  const connected = db
-    .query<{ repositories: string }, string[]>(
-      `SELECT repositories FROM workspace_github_connection${scope}`,
-    )
-    .all(...args)
-    .flatMap((row) => {
-      try {
-        const names: unknown = JSON.parse(row.repositories);
-        return Array.isArray(names)
-          ? names.filter((name): name is string => typeof name === "string")
-          : [];
-      } catch {
-        return [];
-      }
-    });
+export function* listWorkspaceRepositoryNamesSteps(q: Q, workspaceId?: string): Steps<string[]> {
+  const { workspaceGithubConnection: connection, workspaceRepository: repository } = q.t;
+  const mapped = yield* q.all(
+    q.orm
+      .select({ repository: repository.repository })
+      .from(repository)
+      .where(workspaceId === undefined ? undefined : eq(repository.workspaceId, workspaceId))
+      .orderBy(asc(repository.repository)),
+  );
+  const connections = yield* q.all(
+    q.orm
+      .select({ repositories: connection.repositories })
+      .from(connection)
+      .where(workspaceId === undefined ? undefined : eq(connection.workspaceId, workspaceId))
+      .orderBy(asc(connection.workspaceId)),
+  );
+  const connected = connections.flatMap((row) => {
+    try {
+      const names: unknown = JSON.parse(row.repositories);
+      return Array.isArray(names)
+        ? names.filter((name): name is string => typeof name === "string")
+        : [];
+    } catch {
+      return [];
+    }
+  });
   const seen = new Set<string>();
-  return [...mapped, ...connected].filter((name) => {
+  return [...mapped.map((row) => row.repository), ...connected].filter((name) => {
     const key = name.toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
@@ -202,10 +277,21 @@ export function listWorkspaceRepositoryNames(db: Database, workspaceId?: string)
   });
 }
 
+export function listWorkspaceRepositoryNames(db: Database, workspaceId?: string): string[] {
+  return settled(sqliteDb(db).run((q) => listWorkspaceRepositoryNamesSteps(q, workspaceId)));
+}
+
+export function* listWorkspaceRepositoriesSteps(q: Q, workspaceId: string) {
+  const { workspaceRepository: repository } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ repository: repository.repository, teamId: repository.teamId })
+      .from(repository)
+      .where(eq(repository.workspaceId, workspaceId))
+      .orderBy(asc(repository.repository), asc(repository.teamId)),
+  );
+}
+
 export function listWorkspaceRepositories(db: Database, workspaceId: string) {
-  return db
-    .query<{ repository: string; teamId: string }, [string]>(
-      "SELECT repository,team_id AS teamId FROM workspace_repository WHERE workspace_id=? ORDER BY repository,team_id",
-    )
-    .all(workspaceId);
+  return settled(sqliteDb(db).run((q) => listWorkspaceRepositoriesSteps(q, workspaceId)));
 }

@@ -331,19 +331,6 @@ src/db/runners.ts | db.run("UPDATE member_vm SET runner_id=NULL,updated_at=? WHE
 src/db/runners.ts | db .query<{ name: string }, [string]>( | not yet converted to Drizzle
 src/db/runners.ts | const row = db .query<Omit<RunnerAvailability, "revoked"> & { revoked: number }, [string]>( | not yet converted to Drizzle
 src/db/seed.ts | db.run( | not yet converted to Drizzle
-src/db/workspace-auth.ts | db.run("DELETE FROM workspace_oauth_request WHERE expires_at<=?", [input.expiresAt - 600_000]); | not yet converted to Drizzle
-src/db/workspace-auth.ts | db .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_oauth_request") | not yet converted to Drizzle
-src/db/workspace-auth.ts | db.run( | not yet converted to Drizzle
-src/db/workspace-auth.ts | return db .query<WorkspaceOAuthRequest, [string, string, number]>( | not yet converted to Drizzle
-src/db/workspace-auth.ts | return db .query<{ id: string; name: string; role: WorkspaceRole }, [string]>( | not yet converted to Drizzle
-src/db/workspace-auth.ts | return db .query< | not yet converted to Drizzle
-src/db/workspace-auth.ts | const admins = db .query<{ count: number }, [string]>( | not yet converted to Drizzle
-src/db/workspace-auth.ts | db.run( | not yet converted to Drizzle
-src/db/workspace-auth.ts | db.run("DELETE FROM workspace_repository WHERE workspace_id=?", [input.workspaceId]); | not yet converted to Drizzle
-src/db/workspace-auth.ts | db.run("INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES(?,?,?)", [ | not yet converted to Drizzle
-src/db/workspace-auth.ts | const mapped = db .query<{ repository: string }, string[]>( | not yet converted to Drizzle
-src/db/workspace-auth.ts | const connected = db .query<{ repositories: string }, string[]>( | not yet converted to Drizzle
-src/db/workspace-auth.ts | return db .query<{ repository: string; teamId: string }, [string]>( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | db.run( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | db.run( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | return db .query<{ id: string }, string[]>( | not yet converted to Drizzle
