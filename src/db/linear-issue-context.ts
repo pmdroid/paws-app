@@ -59,7 +59,3 @@ export function* getLinearIssueContextSteps(q: Q, sessionId: string) {
   );
   return rows.map((row) => row.context).join("\n\n");
 }
-
-export function getLinearIssueContext(db: Database, sessionId: string): string {
-  return settled(sqliteDb(db).run((q) => getLinearIssueContextSteps(q, sessionId)));
-}

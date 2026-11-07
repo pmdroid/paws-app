@@ -971,7 +971,6 @@ export {
   linearSessionsForIssueContextSteps,
   saveLinearIssueContext,
   saveLinearIssueContextSteps,
-  getLinearIssueContext,
   getLinearIssueContextSteps,
 } from "./linear-issue-context";
 export {
