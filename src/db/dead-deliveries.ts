@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { journal } from "./journal";
 import {
   DEFAULT_OUTBOX_MAX_ATTEMPTS,
@@ -7,6 +8,8 @@ import {
   OUTBOX_ITEM_SQL,
   type OutboxDelivery,
 } from "./outbox";
+import { orm } from "./orm";
+import { job, outbox } from "./schema";
 import { immediate } from "./tx";
 
 /** A dead outbox row or a dead job of one work item. */
@@ -30,74 +33,72 @@ export type DeadDelivery = {
 export type DeadDeliveryRef = { kind: "outbox" | "job"; id: number };
 
 /** A job is current while the item still has the version the job was captured at. */
-const JOB_CURRENT_SQL = `(job.item_version IS NULL OR job.item_version =
+const JOB_CURRENT_SQL = sql`(job.item_version IS NULL OR job.item_version =
   (SELECT version FROM work_item WHERE id = json_extract(job.payload, '$.itemId')))`;
+
+const OUTBOX_ITEM = sql.raw(OUTBOX_ITEM_SQL("outbox"));
 
 /** Dead outbox rows and dead jobs of one work item, oldest first. */
 export function listDeadDeliveries(db: Database, itemId: string): DeadDelivery[] {
-  const outbox = db
-    .query<
-      { id: number; name: string; error: string | null; attempts: number; created_at: number },
-      [string]
-    >(
-      `SELECT o.id, o.target || '.' || o.op AS name, o.error, o.attempts, o.created_at
-       FROM outbox o WHERE o.status = 'dead' AND ${OUTBOX_ITEM_SQL("o")} = ? ORDER BY o.id`,
-    )
-    .all(itemId)
+  const outboxRows = orm(db)
+    .select({
+      id: outbox.id,
+      name: sql<string>`${outbox.target} || '.' || ${outbox.op}`,
+      error: outbox.error,
+      attempts: outbox.attempts,
+      createdAt: outbox.createdAt,
+    })
+    .from(outbox)
+    .where(and(eq(outbox.status, "dead"), sql`${OUTBOX_ITEM} = ${itemId}`))
+    .orderBy(outbox.id)
+    .all()
     .map((row): DeadDelivery => ({
       kind: "outbox",
-      id: row.id,
-      name: row.name,
-      error: row.error,
-      attempts: row.attempts,
-      createdAt: row.created_at,
-      at: row.created_at,
+      ...row,
+      at: row.createdAt,
       retryable: true,
     }));
-  const jobs = db
-    .query<
-      {
-        id: number;
-        queue: string;
-        last_error: string | null;
-        attempts: number;
-        created_at: number;
-        finished_at: number | null;
-        current: number;
-      },
-      [string]
-    >(
-      `SELECT id, queue, last_error, attempts, created_at, finished_at, ${JOB_CURRENT_SQL} AS current
-       FROM job WHERE status = 'dead' AND json_extract(payload, '$.itemId') = ? ORDER BY id`,
-    )
-    .all(itemId)
+  const jobs = orm(db)
+    .select({
+      id: job.id,
+      queue: job.queue,
+      lastError: job.lastError,
+      attempts: job.attempts,
+      createdAt: job.createdAt,
+      finishedAt: job.finishedAt,
+      current: sql<number>`${JOB_CURRENT_SQL}`,
+    })
+    .from(job)
+    .where(and(eq(job.status, "dead"), sql`json_extract(${job.payload}, '$.itemId') = ${itemId}`))
+    .orderBy(job.id)
+    .all()
     .map((row): DeadDelivery => ({
       kind: "job",
       id: row.id,
       name: row.queue,
-      error: row.last_error,
+      error: row.lastError,
       attempts: row.attempts,
-      createdAt: row.created_at,
-      at: row.finished_at ?? row.created_at,
+      createdAt: row.createdAt,
+      at: row.finishedAt ?? row.createdAt,
       retryable: row.current === 1,
     }));
-  return [...outbox, ...jobs].sort((left, right) => left.at - right.at || left.id - right.id);
+  return [...outboxRows, ...jobs].sort((left, right) => left.at - right.at || left.id - right.id);
 }
 
 /** The work item a dead row or job belongs to, or null when it is not dead or has no item. */
 export function deadDeliveryItemId(db: Database, ref: DeadDeliveryRef): string | null {
   const row =
     ref.kind === "outbox"
-      ? db
-          .query<{ itemId: string | null }, [number]>(
-            `SELECT ${OUTBOX_ITEM_SQL("o")} AS itemId FROM outbox o WHERE o.id = ? AND o.status = 'dead'`,
-          )
-          .get(ref.id)
-      : db
-          .query<{ itemId: string | null }, [number]>(
-            `SELECT json_extract(payload, '$.itemId') AS itemId FROM job WHERE id = ? AND status = 'dead'`,
-          )
-          .get(ref.id);
+      ? orm(db)
+          .select({ itemId: sql<string | null>`${OUTBOX_ITEM}` })
+          .from(outbox)
+          .where(and(eq(outbox.id, ref.id), eq(outbox.status, "dead")))
+          .get()
+      : orm(db)
+          .select({ itemId: sql<string | null>`json_extract(${job.payload}, '$.itemId')` })
+          .from(job)
+          .where(and(eq(job.id, ref.id), eq(job.status, "dead")))
+          .get();
   return typeof row?.itemId === "string" ? row.itemId : null;
 }
 
@@ -122,22 +123,47 @@ export function retryDeadDelivery(
   now = Date.now(),
 ): boolean {
   return immediate(db, () => {
-    const result =
+    const changed =
       ref.kind === "outbox"
-        ? db.run(
-            `UPDATE outbox SET status = 'pending', max_attempts = attempts + ?, not_before = ?,
-               locked_by = NULL, locked_until = NULL
-             WHERE id = ? AND status = 'dead' AND ${OUTBOX_ITEM_SQL("outbox")} = ?`,
-            [DEFAULT_OUTBOX_MAX_ATTEMPTS, now, ref.id, itemId],
-          )
-        : db.run(
-            `UPDATE job SET status = 'pending', attempts = 0, run_at = ?, finished_at = NULL,
-               locked_by = NULL, locked_until = NULL
-             WHERE id = ? AND status = 'dead' AND json_extract(payload, '$.itemId') = ?
-               AND ${JOB_CURRENT_SQL}`,
-            [now, ref.id, itemId],
-          );
-    if (result.changes === 0) return false;
+        ? orm(db)
+            .update(outbox)
+            .set({
+              status: "pending",
+              maxAttempts: sql`${outbox.attempts} + ${DEFAULT_OUTBOX_MAX_ATTEMPTS}`,
+              notBefore: now,
+              lockedBy: null,
+              lockedUntil: null,
+            })
+            .where(
+              and(
+                eq(outbox.id, ref.id),
+                eq(outbox.status, "dead"),
+                sql`${OUTBOX_ITEM} = ${itemId}`,
+              ),
+            )
+            .returning({ id: outbox.id })
+            .all().length
+        : orm(db)
+            .update(job)
+            .set({
+              status: "pending",
+              attempts: 0,
+              runAt: now,
+              finishedAt: null,
+              lockedBy: null,
+              lockedUntil: null,
+            })
+            .where(
+              and(
+                eq(job.id, ref.id),
+                eq(job.status, "dead"),
+                sql`json_extract(${job.payload}, '$.itemId') = ${itemId}`,
+                JOB_CURRENT_SQL,
+              ),
+            )
+            .returning({ id: job.id })
+            .all().length;
+    if (changed === 0) return false;
     journal(`${ref.kind} ${ref.id} retried item=${itemId}`);
     return true;
   });
@@ -145,12 +171,19 @@ export function retryDeadDelivery(
 
 /** Drop the dead elicitation rows of a question that was asked again, so the page stops listing them. */
 export function dropDeadElicitations(db: Database, questionId: string, note: string): number {
-  return db.run(
-    `UPDATE outbox SET status = 'dropped', error = COALESCE(error || ' ', '') || ?
-     WHERE target = 'linear' AND op = 'elicitation' AND status = 'dead'
-       AND json_extract(payload, '$.questionId') = ?`,
-    [note, questionId],
-  ).changes;
+  return orm(db)
+    .update(outbox)
+    .set({ status: "dropped", error: sql`COALESCE(${outbox.error} || ' ', '') || ${note}` })
+    .where(
+      and(
+        eq(outbox.target, "linear"),
+        eq(outbox.op, "elicitation"),
+        eq(outbox.status, "dead"),
+        sql`json_extract(${outbox.payload}, '$.questionId') = ${questionId}`,
+      ),
+    )
+    .returning({ id: outbox.id })
+    .all().length;
 }
 
 /**
@@ -177,10 +210,11 @@ export const QUESTION_LINKS = [
 
 /** True when another record is tied to this question's id. */
 export function questionHasLinkedRecords(db: Database, questionId: string): boolean {
-  const sql = QUESTION_LINKS.map(
-    ({ table, column }) => `SELECT 1 FROM ${table} WHERE ${column} = ?1`,
-  ).join(" UNION ALL ");
-  return db.query<{ 1: number }, [string]>(`${sql} LIMIT 1`).get(questionId) !== null;
+  const links = QUESTION_LINKS.map(
+    ({ table, column }) =>
+      sql`SELECT 1 FROM ${sql.identifier(table)} WHERE ${sql.identifier(column)} = ${questionId}`,
+  );
+  return orm(db).all(sql`${sql.join(links, sql` UNION ALL `)} LIMIT 1`).length > 0;
 }
 
 /**
@@ -193,43 +227,45 @@ export function questionHasLinkedRecords(db: Database, questionId: string): bool
  */
 export function redeliverQuestion(db: Database, questionId: string, now: number): number | null {
   return immediate(db, () => {
-    const last = db
-      .query<
-        {
-          op: string;
-          ordering_key: string | null;
-          payload: string;
-          priority: number;
-          idempotency_key: string;
-          delivery_kind: OutboxDelivery;
-          delivery_generation: number;
-        },
-        [string]
-      >(
-        `SELECT op, ordering_key, payload, priority, idempotency_key, delivery_kind, delivery_generation
-         FROM outbox
-         WHERE target = 'linear' AND op = 'elicitation' AND json_extract(payload, '$.questionId') = ?
-         ORDER BY id DESC LIMIT 1`,
+    const last = orm(db)
+      .select({
+        op: outbox.op,
+        orderingKey: outbox.orderingKey,
+        payload: outbox.payload,
+        priority: outbox.priority,
+        idempotencyKey: outbox.idempotencyKey,
+        deliveryKind: outbox.deliveryKind,
+        deliveryGeneration: outbox.deliveryGeneration,
+      })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.op, "elicitation"),
+          sql`json_extract(${outbox.payload}, '$.questionId') = ${questionId}`,
+        ),
       )
-      .get(questionId);
-    if (last === null || last.ordering_key === null) return null;
-    const base = last.idempotency_key.replace(/(:redelivery|:reask)+$/, "");
+      .orderBy(desc(outbox.id))
+      .limit(1)
+      .get();
+    if (last === undefined || last.orderingKey === null) return null;
+    const base = last.idempotencyKey.replace(/(:redelivery|:reask)+$/, "");
     const id = enqueueOutboxOnce(db, {
       target: "linear",
       op: last.op,
-      orderingKey: last.ordering_key,
+      orderingKey: last.orderingKey,
       idempotencyKey: `${base}${ELICITATION_REASK_SUFFIX}`,
       payload: JSON.parse(last.payload) as unknown,
       priority: last.priority,
-      delivery: last.delivery_kind,
-      generation: last.delivery_generation,
+      delivery: last.deliveryKind as OutboxDelivery,
+      generation: last.deliveryGeneration,
       now,
     });
-    const queued = db
-      .query<{ status: string; error: string | null }, [number]>(
-        "SELECT status, error FROM outbox WHERE id = ?",
-      )
-      .get(id);
+    const queued = orm(db)
+      .select({ status: outbox.status, error: outbox.error })
+      .from(outbox)
+      .where(eq(outbox.id, id))
+      .get();
     if (queued?.status !== "pending") {
       journal(
         `question ${questionId} could not be delivered again: ${queued?.error ?? "not queued"}; retry it from the issue page`,
@@ -249,11 +285,11 @@ export function redeliverQuestion(db: Database, questionId: string, now: number)
 export function deadDeliveryIsFinalStop(db: Database, ref: DeadDeliveryRef): boolean {
   if (ref.kind !== "outbox") return false;
   return (
-    db
-      .query<{ id: number }, [number]>(
-        "SELECT id FROM outbox WHERE id = ? AND status = 'dead' AND delivery_kind = 'stop'",
-      )
-      .get(ref.id) !== null
+    orm(db)
+      .select({ id: outbox.id })
+      .from(outbox)
+      .where(and(eq(outbox.id, ref.id), eq(outbox.status, "dead"), eq(outbox.deliveryKind, "stop")))
+      .get() !== undefined
   );
 }
 
@@ -262,8 +298,9 @@ export function deadDeliveryIsFinalStop(db: Database, ref: DeadDeliveryRef): boo
  * the same lineage instead of starting a new allowance.
  */
 export function recordQuestionReask(db: Database, jobId: number, questionId: string): void {
-  db.run(`UPDATE job SET payload = json_set(payload, '$.reaskedAs', ?) WHERE id = ?`, [
-    questionId,
-    jobId,
-  ]);
+  orm(db)
+    .update(job)
+    .set({ payload: sql`json_set(${job.payload}, '$.reaskedAs', ${questionId})` })
+    .where(eq(job.id, jobId))
+    .run();
 }
