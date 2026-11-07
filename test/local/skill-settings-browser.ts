@@ -1,4 +1,4 @@
-// Screenshots Settings → Agents → Skills at desktop width and 390 px, after adding a skill
+// Screenshots Settings → Agent instructions → Skills at desktop width and 390 px, after adding a skill
 // through the form. Run `bun run build:dashboard` first. Prints the output directory.
 import { chromium } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
@@ -31,7 +31,7 @@ const server = Bun.serve({
     const asset = url.pathname.replace(/^\/(status\/)?assets\//, "");
     if (asset !== url.pathname && !asset.includes("/"))
       return new Response(Bun.file(`${root}/src/dashboard/dist/assets/${asset}`));
-    if (url.pathname === "/settings/agents")
+    if (url.pathname === "/settings/brief")
       return new Response(
         (await Bun.file(`${root}/src/dashboard/dist/index.html`).text()).replace(
           "</head>",
@@ -76,7 +76,7 @@ const server = Bun.serve({
 const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  await page.goto(`http://127.0.0.1:${server.port}/settings/agents`);
+  await page.goto(`http://127.0.0.1:${server.port}/settings/brief`);
   await page.getByRole("heading", { name: "Skills" }).waitFor();
   await page.getByText("review-paws").first().waitFor();
   await page.getByLabel("Add a skill").fill("impeccable@2.4.1");

@@ -43,7 +43,7 @@ describe("repository checkout section", () => {
     const page = renderSettingsPage("agents");
     expect(page.indexOf('id="checkout-settings"')).toBeGreaterThan(-1);
     expect(page.indexOf('id="checkout-settings"')).toBeLessThan(
-      page.indexOf('id="skill-settings"'),
+      page.indexOf('id="agent-settings"'),
     );
     expect(renderSettingsPage("merging")).not.toContain("checkout-settings");
   });
