@@ -5,7 +5,7 @@ import {
   rebaseReturnedForSteps,
   recordRebaseReturnSteps,
 } from "../src/db";
-import { forEachDialect, insertWorkItem, json, seed, type DialectDb } from "./dialects";
+import { forEachDialect, insertWorkItem, type DialectDb } from "./dialects";
 
 const open: DialectDb[] = [];
 afterEach(async () => {
@@ -18,17 +18,15 @@ forEachDialect((connect) => {
     open.push(handle);
     const { db } = handle;
     await insertWorkItem(db, "ENG-1");
-    await seed(db, (q) =>
-      q.orm.insert(q.t.job).values({
-        id: 3,
-        queue: "merge",
-        payload: json(db, {}),
-        runAt: 0,
-        createdAt: 0,
-        updatedAt: 0,
-        activationId: 30,
-      }),
-    );
+    const jobId = await db.run(function* (q) {
+      const [row] = yield* q.all(
+        q.orm
+          .insert(q.t.job)
+          .values({ queue: "merge", runAt: 0, createdAt: 0 })
+          .returning({ id: q.t.job.id }),
+      );
+      return row!.id;
+    });
 
     const record = (jobId: number, candidate: string, files?: string[] | null) =>
       db.run((q) =>
@@ -42,8 +40,8 @@ forEachDialect((connect) => {
           recordedAt: files === undefined ? undefined : 500,
         }),
       );
-    await record(3, "head-a", ["b.ts", "a.ts"]);
-    await record(3, "head-b", null);
+    await record(jobId, "head-a", ["b.ts", "a.ts"]);
+    await record(jobId, "head-b", null);
     await record(1_000, "head-c");
 
     // A job's return records the job's activation; a return without a job row uses the job id.
@@ -63,7 +61,7 @@ forEachDialect((connect) => {
     expect(await db.run((q) => countRebaseReturnsSteps(q, "ENG-1", 1_000))).toBe(1);
     expect(await db.run((q) => countRebaseReturnsSteps(q, "ENG-2", 0))).toBe(0);
     expect(await db.run((q) => listRebaseReturnsSteps(q, "ENG-1", 0))).toEqual([
-      { jobId: 3, reason: "merge", base: "main1", files: ["b.ts", "a.ts"], recordedAt: 500 },
+      { jobId, reason: "merge", base: "main1", files: ["b.ts", "a.ts"], recordedAt: 500 },
       { jobId: 1_000, reason: "merge", base: null, files: null, recordedAt: null },
     ]);
     expect(await db.run((q) => rebaseReturnedForSteps(q, "ENG-1", "head-a"))).toBe(true);
