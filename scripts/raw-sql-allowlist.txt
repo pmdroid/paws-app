@@ -365,21 +365,14 @@ src/db/workspace-auth.ts | db.run("INSERT INTO workspace_repository(workspace_id
 src/db/workspace-auth.ts | const mapped = db .query<{ repository: string }, string[]>( | not yet converted to Drizzle
 src/db/workspace-auth.ts | const connected = db .query<{ repositories: string }, string[]>( | not yet converted to Drizzle
 src/db/workspace-auth.ts | return db .query<{ repository: string; teamId: string }, [string]>( | not yet converted to Drizzle
-src/db/workspace-links.ts | return db .query<WorkspaceIdentityLink & { name: string; email: string }, [string]>( | not yet converted to Drizzle
-src/db/workspace-links.ts | return db .query<{ userId: string; email: string }, [string]>( | not yet converted to Drizzle
-src/db/workspace-links.ts | const changed = db.run( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | db.run( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | db.run( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | return db .query<{ id: string }, string[]>( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | const members = db .query<Omit<WorkspaceMemberSummary, "openItems"> & { linearUserId: string }, [string, string]>( | not yet converted to Drizzle
-src/db/workspace-scope.ts | return db .query<{ session_id: string }, [string, string, number, string]>( | not yet converted to Drizzle
-src/db/workspace-scope.ts | const query = db.query<{ allowed: number }, string[]>( | not yet converted to Drizzle
 src/db/workspace.ts | return db .query<WorkspaceRecord, [string]>( | not yet converted to Drizzle
 src/db/workspace.ts | return db .query<WorkspaceRecord, [string]>( | not yet converted to Drizzle
 src/db/workspace.ts | db.run( | not yet converted to Drizzle
 src/db/workspace.ts | return db .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id = ?") | not yet converted to Drizzle
-src/db/workspace.ts | const row = db .query<Omit<WorkspaceMember, "teamIds" | "active"> & { active: number }, [string, string]>( | not yet converted to Drizzle
-src/db/workspace.ts | const teams = db .query<{ team_id: string }, [string, string]>( | not yet converted to Drizzle
 src/db/workspace.ts | const user = db .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?") | not yet converted to Drizzle
 src/db/workspace.ts | db.run( | not yet converted to Drizzle
 src/db/workspace.ts | db.run("DELETE FROM workspace_user_team WHERE workspace_id=? AND user_id=?", [ | not yet converted to Drizzle
@@ -394,7 +387,6 @@ src/db/workspace.ts | db.run( | not yet converted to Drizzle
 src/db/workspace.ts | const session = db .query<WorkspaceSession, [string, number]>( | not yet converted to Drizzle
 src/db/workspace.ts | db.run("UPDATE workspace_session SET last_seen_at=?,expires_at=? WHERE token_hash=?", [ | not yet converted to Drizzle
 src/db/workspace.ts | db.run("DELETE FROM workspace_session WHERE token_hash=?", [tokenHash]); | not yet converted to Drizzle
-src/db/workspace.ts | db.run( | not yet converted to Drizzle
 src/db/workspace.ts | const rows = db .query< | not yet converted to Drizzle
 src/decisions/index.ts | return db .query<Scope, [string]>(`SELECT w.id AS workspaceId,s.session_id AS sessionId, | not yet converted to Drizzle
 src/decisions/index.ts | ? db .query<Row, [string, string]>(`${SELECT} | not yet converted to Drizzle

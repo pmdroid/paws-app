@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
 import { workspaceAccessAudit, workspaceUser } from "./schema";
 import { immediate } from "./tx";
@@ -74,26 +75,50 @@ export function putWorkspaceUser(
     .get(input.linearUserId)!.id;
 }
 
+export function* workspaceMemberSteps(q: Q, workspaceId: string, userId: string) {
+  const { workspaceMember: m, workspaceUser: u, workspaceUserTeam: team } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        workspaceId: m.workspaceId,
+        userId: m.userId,
+        linearUserId: u.linearUserId,
+        name: u.name,
+        email: u.email,
+        role: m.role,
+        source: m.source,
+        active: m.active,
+        revokedAt: m.revokedAt,
+        revokedBy: m.revokedBy,
+        checkedAt: m.checkedAt,
+      })
+      .from(m)
+      .innerJoin(u, eq(u.id, m.userId))
+      .where(and(eq(m.workspaceId, workspaceId), eq(m.userId, userId))),
+  );
+  if (row === undefined) return null;
+  const teams = yield* q.all(
+    q.orm
+      .select({ teamId: team.teamId })
+      .from(team)
+      .where(and(eq(team.workspaceId, workspaceId), eq(team.userId, userId)))
+      .orderBy(asc(team.teamId)),
+  );
+  return {
+    ...row,
+    role: row.role as WorkspaceRole,
+    source: row.source as WorkspaceMember["source"],
+    active: row.active === 1,
+    teamIds: teams.map((t) => t.teamId),
+  } satisfies WorkspaceMember;
+}
+
 export function workspaceMember(
   db: Database,
   workspaceId: string,
   userId: string,
 ): WorkspaceMember | null {
-  const row = db
-    .query<Omit<WorkspaceMember, "teamIds" | "active"> & { active: number }, [string, string]>(
-      `SELECT m.workspace_id AS workspaceId,m.user_id AS userId,u.linear_user_id AS linearUserId,
-      u.name,u.email,m.role,m.source,m.active,m.revoked_at AS revokedAt,m.revoked_by AS revokedBy,m.checked_at AS checkedAt
-      FROM workspace_member m JOIN workspace_user u ON u.id=m.user_id
-      WHERE m.workspace_id=? AND m.user_id=?`,
-    )
-    .get(workspaceId, userId);
-  if (row === null) return null;
-  const teams = db
-    .query<{ team_id: string }, [string, string]>(
-      "SELECT team_id FROM workspace_user_team WHERE workspace_id=? AND user_id=? ORDER BY team_id",
-    )
-    .all(workspaceId, userId);
-  return { ...row, active: row.active === 1, teamIds: teams.map((team) => team.team_id) };
+  return settled(sqliteDb(db).run((q) => workspaceMemberSteps(q, workspaceId, userId)));
 }
 
 export function workspaceLinearMember(db: Database, workspaceId: string, linearUserId: string) {
@@ -290,20 +315,28 @@ export function deleteWorkspaceSession(db: Database, tokenHash: string): void {
   db.run("DELETE FROM workspace_session WHERE token_hash=?", [tokenHash]);
 }
 
-export function auditWorkspaceAccess(
-  db: Database,
-  input: {
-    workspaceId: string | null;
-    userId: string | null;
-    action: string;
-    subject: string;
-    now: number;
-  },
-): void {
-  db.run(
-    "INSERT INTO workspace_access_audit(workspace_id,user_id,action,subject,created_at) VALUES(?,?,?,?,?)",
-    [input.workspaceId, input.userId, input.action, input.subject, input.now],
+type WorkspaceAuditInput = {
+  workspaceId: string | null;
+  userId: string | null;
+  action: string;
+  subject: string;
+  now: number;
+};
+
+export function* auditWorkspaceAccessSteps(q: Q, input: WorkspaceAuditInput) {
+  yield* q.exec(
+    q.orm.insert(q.t.workspaceAccessAudit).values({
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      action: input.action,
+      subject: input.subject,
+      createdAt: input.now,
+    }),
   );
+}
+
+export function auditWorkspaceAccess(db: Database, input: WorkspaceAuditInput): void {
+  settled(sqliteDb(db).run((q) => auditWorkspaceAccessSteps(q, input)));
 }
 
 export function listWorkspaceAudit(db: Database, workspaceId: string, before: number) {
@@ -336,6 +369,10 @@ export function workspaceMemberUsable<
   return (
     member != null && (member.active === true || member.active === 1) && member.revokedAt === null
   );
+}
+
+export function workspaceMemberUsableWhere(member: Q["t"]["workspaceMember"]) {
+  return and(eq(member.active, 1), isNull(member.revokedAt));
 }
 
 /** SQL counterpart for membership checks that do not load a member record. */
