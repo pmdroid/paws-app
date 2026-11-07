@@ -137,6 +137,15 @@ export async function probeRunnerCandidate(
     true,
     {},
   );
+  const beforeUnchanged = calls.length;
+  await fetchRunnerCandidate({ ...input, candidateSha: baseSha, branch: "never-pushed" });
+  assert.equal(calls.length, beforeUnchanged);
+  await retained();
+  observe(
+    "a turn that made no commit imports nothing and never fetches its unpushed branch",
+    true,
+    {},
+  );
   const count = calls.length;
   await assert.rejects(fetchRunnerCandidate({ ...input, candidateSha: "HEAD" }), /invalid/);
   await assert.rejects(fetchRunnerCandidate({ ...input, ref: "refs/heads/main" }), /invalid/);
