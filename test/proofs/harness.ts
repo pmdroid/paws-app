@@ -90,18 +90,28 @@ function scriptedAgent(
 
 export type GitHubCall = { method: string; path: string; outcome: string };
 
-function fixtureGitHub(input: { pulls: FakeGitHub; repository: string; ciPending?: boolean }): {
+function fixtureGitHub(input: {
+  pulls: FakeGitHub;
+  repository: string;
+  origin: string;
+  ciPending?: boolean;
+}): {
   client: GitHubClient;
   calls: GitHubCall[];
   closed: Set<number>;
+  merged: Map<number, string>;
+  opened: FakeGitHub["opened"];
 } {
   const { pulls, repository } = input;
   const calls: GitHubCall[] = [];
   const closed = new Set<number>();
+  const merged = new Map<number, string>();
   const comments = new Map<number, { body: string; html_url: string }[]>();
   const pullJson = (number: number) => ({
     number,
     state: closed.has(number) ? "closed" : "open",
+    merged: merged.has(number),
+    merge_commit_sha: merged.get(number) ?? null,
     head: { ref: pulls.opened[number - 1]!.head, repo: { full_name: repository } },
     base: { ref: "main", repo: { full_name: repository } },
   });
@@ -147,6 +157,18 @@ function fixtureGitHub(input: { pulls: FakeGitHub; repository: string; ciPending
       closed.add(number);
       return { status: 200, body: pullJson(number) };
     }
+    if (method === "PUT" && /\/pulls\/\d+\/merge$/.test(path)) {
+      const { sha } = request.body as { sha: string };
+      // Fast-forward only: main must be an ancestor of the head, or git refuses.
+      await git("-C", input.origin, "merge-base", "--is-ancestor", "main", sha);
+      await git("-C", input.origin, "update-ref", "refs/heads/main", sha);
+      merged.set(number, sha);
+      closed.add(number);
+      return {
+        status: 200,
+        body: { sha, merged: true, message: "Pull Request successfully merged" },
+      };
+    }
     if (method === "POST" && path.endsWith("/labels"))
       return { status: 201, body: { name: "paws" } };
     throw new Error(`Unexpected fake GitHub request: ${method} ${path}`);
@@ -165,7 +187,7 @@ function fixtureGitHub(input: { pulls: FakeGitHub; repository: string; ciPending
       }
     },
   };
-  return { client, calls, closed };
+  return { client, calls, closed, merged, opened: pulls.opened };
 }
 
 export const ACME = {
@@ -182,6 +204,10 @@ export type ProofContext = {
   github: ReturnType<typeof fixtureGitHub>;
   launches: LaunchInput[];
   itemState(): string | null;
+  itemBranch(): string | null;
+  transitions(): { from: string; to: string; event: string }[];
+  originMainFiles(): Promise<string[]>;
+  heldWork(): { activeRuns: number; reservations: number; runningJobs: number };
   delegate(): Promise<void>;
   stopInLinear(): Promise<void>;
   cancelInLinear(): Promise<void>;
@@ -235,6 +261,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   const github = fixtureGitHub({
     pulls: createFakeGitHub(),
     repository: ACME.repository,
+    origin: bare,
     ciPending: proof.ciPending,
   });
   const db = openDatabase(join(pawsRoot, "paws.db"));
@@ -264,6 +291,16 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   const actions: { at: string; action: string }[] = [];
   const assertions: Assertion[] = [];
   const items = () => listWorkItemsByStates(db, WORK_ITEM_STATES);
+  const transitions = () =>
+    items().flatMap((item) =>
+      listWorkItemEventRows(db, item.id).map((row) => ({
+        item: item.id,
+        from: row.fromState,
+        to: row.toState,
+        event: row.event,
+      })),
+    );
+  const count = (query: string) => (db.query(query).get() as { n: number }).n;
   const event = (action: "created" | "prompted", extra: Partial<AcceptedLinearEvent> = {}) =>
     orchestrator.onLinearEvent({
       dedupeKey: `proof-${action}-${actions.length}`,
@@ -288,6 +325,16 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     github,
     launches,
     itemState: () => items()[0]?.state ?? null,
+    itemBranch: () => items()[0]?.branchName ?? null,
+    transitions,
+    async originMainFiles() {
+      return (await git("-C", bare, "ls-tree", "-r", "--name-only", "main")).split("\n");
+    },
+    heldWork: () => ({
+      activeRuns: count("SELECT count(*) AS n FROM run WHERE status IN ('active', 'provisioning')"),
+      reservations: count("SELECT count(*) AS n FROM runner_reservation"),
+      runningJobs: count("SELECT count(*) AS n FROM job WHERE status = 'running'"),
+    }),
     async delegate() {
       act(`Delegate ${ACME.identifier} to Paws in Linear`);
       await event("created");
@@ -358,14 +405,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       sessionUpdates: linear.sessionUpdates,
     },
     github: github.calls,
-    transitions: items().flatMap((item) =>
-      listWorkItemEventRows(db, item.id).map((row) => ({
-        item: item.id,
-        from: row.fromState,
-        to: row.toState,
-        event: row.event,
-      })),
-    ),
+    transitions: transitions(),
     assertions,
   };
   db.close();
