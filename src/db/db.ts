@@ -13,13 +13,13 @@ export type SqliteDb = {
   transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
 };
 
-export type PostgresDb = {
+export type PgDb = {
   readonly dialect: "postgres";
   readonly orm: PgOrm;
   transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
 };
 
-export type Db = SqliteDb | PostgresDb;
+export type Db = SqliteDb | PgDb;
 
 const sqliteDbs = new WeakMap<Database, SqliteDb>();
 let savepoints = 0;
@@ -27,41 +27,68 @@ let savepoints = 0;
 export function sqliteDb(database: Database): SqliteDb {
   let db = sqliteDbs.get(database);
   if (db === undefined) {
-    const handle = orm(database);
-    const sync = <T>(fn: (orm: Orm) => T): Promise<T> => {
-      try {
-        return Promise.resolve(fn(handle));
-      } catch (error) {
-        return Promise.reject(error);
-      }
-    };
-    const self: SqliteDb = {
-      dialect: "sqlite",
-      orm: handle,
-      sync,
-      transaction: async (fn) => {
-        const savepoint = database.inTransaction ? `db_tx_${(savepoints += 1)}` : null;
-        const exec = (...statements: string[]) =>
-          statements.forEach((statement) => handle.run(sql.raw(statement)));
-        exec(savepoint ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
-        try {
-          const value = await fn(self);
-          exec(savepoint ? `RELEASE ${savepoint}` : "COMMIT");
-          return value;
-        } catch (error) {
-          if (savepoint) exec(`ROLLBACK TO ${savepoint}`, `RELEASE ${savepoint}`);
-          else exec("ROLLBACK");
-          throw error;
-        }
-      },
-    };
-    db = self;
+    db = openSqliteDb(database);
     sqliteDbs.set(database, db);
   }
   return db;
 }
 
-export function postgresDb(pg: PgOrm): PostgresDb {
+function openSqliteDb(database: Database): SqliteDb {
+  const handle = orm(database);
+  const exec = (...statements: string[]) =>
+    statements.forEach((statement) => handle.run(sql.raw(statement)));
+  const sync = <T>(fn: (orm: Orm) => T): Promise<T> => {
+    try {
+      return Promise.resolve(fn(handle));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
+  const savepoint = async <T>(fn: (tx: Db) => Promise<T>): Promise<T> => {
+    const name = `db_tx_${(savepoints += 1)}`;
+    exec(`SAVEPOINT ${name}`);
+    try {
+      const value = await fn(tx);
+      exec(`RELEASE ${name}`);
+      return value;
+    } catch (error) {
+      exec(`ROLLBACK TO ${name}`, `RELEASE ${name}`);
+      throw error;
+    }
+  };
+  const tx: SqliteDb = { dialect: "sqlite", orm: handle, sync, transaction: savepoint };
+  let tail: Promise<void> = Promise.resolve();
+  let active = false;
+  return {
+    dialect: "sqlite",
+    orm: handle,
+    sync,
+    transaction: async (fn) => {
+      if (database.inTransaction && !active) return savepoint(fn);
+      const previous = tail;
+      let release = () => {};
+      tail = new Promise((resolve) => (release = resolve));
+      await previous;
+      active = true;
+      try {
+        exec("BEGIN IMMEDIATE");
+        try {
+          const value = await fn(tx);
+          exec("COMMIT");
+          return value;
+        } catch (error) {
+          exec("ROLLBACK");
+          throw error;
+        }
+      } finally {
+        active = false;
+        release();
+      }
+    },
+  };
+}
+
+export function postgresDb(pg: PgOrm): PgDb {
   return {
     dialect: "postgres",
     orm: pg,

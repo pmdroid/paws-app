@@ -67,8 +67,8 @@ Triggers, `STRICT` and the `decision_memory_search` FTS table have no Postgres c
 `bun:sqlite` answers at once, Postgres drivers answer later, so Paws's database layer becomes async one module at a time. A converted module takes a `Db` from `src/db/db.ts` instead of a `bun:sqlite` `Database`:
 
 - `sqliteDb(database)` wraps today's database, one per connection. `db.sync((orm) => …)` runs synchronous Drizzle queries when it is called and returns an already-settled promise, so SQLite behaves exactly as before.
-- `postgresDb(pg)` wraps a Drizzle Postgres database (PGlite in tests, `openPostgres` later). Its queries are awaited.
-- `db.transaction(async (tx) => …)` is `BEGIN IMMEDIATE` on SQLite and a Postgres transaction otherwise; inside another transaction it is a savepoint. While a SQLite transaction awaits, other code on the connection runs inside it, so keep its body to database calls.
+- `postgresDb(pg)` wraps a Drizzle Postgres database: `postgresDb(openPostgres(url))`, or PGlite in tests. Its queries are awaited.
+- `db.transaction(async (tx) => …)` is `BEGIN IMMEDIATE` on SQLite and a Postgres transaction otherwise. Run the body's queries on `tx`; `tx.transaction()` is a savepoint. Independent SQLite transactions on one connection wait for each other, so calling `db.transaction()` instead of `tx.transaction()` inside a body waits forever. Called inside a synchronous `immediate()`, it is a savepoint of that transaction. While a SQLite transaction awaits, other code on the connection runs inside it, so keep its body to database calls.
 
 Each function narrows on `db.dialect` and writes the query once per dialect, against `schema` on SQLite and `pgSchema` on Postgres, keeping its name and parameters; its return type becomes a promise of what it returned. `src/db/queue-wait.ts` is the first module converted this way.
 

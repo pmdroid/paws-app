@@ -376,6 +376,25 @@ forEachDialect((open) => {
       await close();
     }
   });
+
+  test("independent transactions started together each commit their own rows", async () => {
+    const { db, close } = await open();
+    try {
+      const writes = ["a", "b"].map((id) =>
+        db.transaction(async (tx) => {
+          await insertWorkItem(tx, id);
+          await saveQueuePositions(tx, [id], { busy: 0, total: 1 }, 1);
+        }),
+      );
+      await Promise.all(writes);
+      expect((await listQueuePositions(db)).map((entry) => entry.itemId)).toEqual(["b"]);
+      await expect(saveQueuePositions(db, ["a", "b"], { busy: 0, total: 1 }, 2)).resolves.toBe(
+        undefined,
+      );
+    } finally {
+      await close();
+    }
+  });
 });
 
 test("on SQLite the functions settle before they return, and settled() refuses a pending promise", () => {
