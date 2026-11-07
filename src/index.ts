@@ -690,6 +690,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (linear?.memberships) members = cacheLinearMemberships(linear.memberships);
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
+      releaseSettings();
       db.close();
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
@@ -741,6 +742,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       });
     } catch (error) {
       abort.abort();
+      releaseSettings();
       db.close();
       throw error;
     }
