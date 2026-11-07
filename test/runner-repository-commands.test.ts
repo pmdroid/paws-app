@@ -32,8 +32,8 @@ const repository = {
   remoteUrl: "https://github.com/fixture/repository.git",
 };
 
-function fixture(path = ":memory:") {
-  const db = openDatabase(path);
+function fixture(file = ":memory:") {
+  const db = openDatabase(file);
   migrate(db);
   let now = Date.now();
   const userId = putWorkspaceUser(db, {
