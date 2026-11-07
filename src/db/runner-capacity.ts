@@ -1,7 +1,8 @@
 import type { RunnerCapacityWaitState } from "./items";
 import { CONVERSATION_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
 import type { Database } from "bun:sqlite";
-import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import type { Q } from "./db";
 import { orm } from "./orm";
 import { runnerCapacity, runnerHelper, runnerHostStatus } from "./schema";
 import { runnerLeaseCutoff } from "./runner-lease";
@@ -12,7 +13,22 @@ export const CI_WAITING = (run: string) =>
   `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND json_extract(ci.payload,'$.itemId')=${run}.item_id
     AND json_extract(ci.payload,'$.awakeWait.kind')='ci')`;
 
+export const ciWaitingSql = (q: Q, run: string): SQL =>
+  sql.raw(
+    q.dialect === "sqlite"
+      ? CI_WAITING(run)
+      : `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND (ci.payload->>'itemId')=${run}.item_id
+    AND (ci.payload->'awakeWait'->>'kind')='ci')`,
+  );
+
 export const WORK_HELPER = (helper: string) => `${helper}.purpose IS NOT 'conversation'`;
+
+export const workHelperSql = (q: Q, helper: string): SQL =>
+  sql.raw(
+    q.dialect === "sqlite"
+      ? WORK_HELPER(helper)
+      : `${helper}.purpose IS DISTINCT FROM 'conversation'`,
+  );
 
 export const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confirmed_at IS NULL
   AND NOT EXISTS(SELECT 1 FROM runner_result exited WHERE exited.run_id=w.run_id
