@@ -1,6 +1,6 @@
 import { journalCaught } from "../journal";
 import { journal } from "./journal";
-import { ownerGone } from "./instances";
+import { heartbeatInstance, ownerGone } from "./instances";
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, isNull, like, or, sql, type SQL } from "drizzle-orm";
 import {
@@ -25,7 +25,6 @@ import {
 } from "./items";
 import type { WorkItemRecord } from "./items";
 import {
-  markPawsAlive,
   runnerHoldsRunWork,
   runnerLeaseCutoff,
   shiftRunnerLeasesForDowntime,
@@ -57,7 +56,8 @@ export const RUN_TAKEOVER_MS = 30_000;
 /**
  * On process start, resume a live run once or ask whether to start it again. An item in the merge
  * queue keeps its place; one whose merge call may have been in flight asks GitHub before it moves.
- * Paws downtime, up to `offlineBudgetMs`, does not count against an open runner lease.
+ * Downtime of the instance that owned a run, up to `offlineBudgetMs`, does not count against its
+ * open runner lease while no other instance was alive.
  */
 export function recoverOnStartup(
   db: Database,
@@ -66,7 +66,7 @@ export function recoverOnStartup(
   instanceId?: string,
 ): StartupDecision[] {
   return immediate(db, () => {
-    shiftRunnerLeasesForDowntime(db, now, offlineBudgetMs);
+    shiftRunnerLeasesForDowntime(db, now, offlineBudgetMs, instanceId);
     return recoverItems(db, now, instanceId, true);
   });
 }
@@ -76,7 +76,10 @@ export function takeOverGoneRuns(
   instanceId: string,
   now = Date.now(),
 ): StartupDecision[] {
-  return immediate(db, () => recoverItems(db, now, instanceId, false));
+  return immediate(db, () => {
+    shiftRunnerLeasesForDowntime(db, now, undefined, instanceId);
+    return recoverItems(db, now, instanceId, false);
+  });
 }
 
 function recoverItems(
@@ -260,7 +263,7 @@ export function prepareShutdown(
     }
   }
   immediate(db, () => {
-    markPawsAlive(db, now);
+    if (instanceId !== undefined) heartbeatInstance(db, instanceId, now);
     const running = listWorkItemsByStates(db, ["running", "verifying"]).filter(owns);
     for (const item of running) {
       if (hasParkedCapacityWait(db, item) || runnerHoldsWork(db, item, now)) continue;

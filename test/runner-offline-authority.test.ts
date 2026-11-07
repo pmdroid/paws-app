@@ -7,17 +7,20 @@ import {
   beginImplementRun,
   bindLinearSessionTask,
   bindWorkItemRepository,
+  claimRun,
   closeExpiredRunnerLeases,
   consumeWorkspaceBootstrap,
   getWorkItem,
+  heartbeatInstance,
   insertQueuedItem,
-  markPawsAlive,
   openDatabase,
   prepareShutdown,
   putWorkspaceUser,
   recordLinearInstallation,
   recoverOnStartup,
+  registerInstance,
   runnerHasCapacity,
+  stopInstance,
   updateRunnerStatus,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
@@ -106,7 +109,10 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   });
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
   bindWorkItemRepository(db, item.id, repository);
-  markPawsAlive(db, pawsNow());
+  const start = () =>
+    registerInstance(db, { role: "all", host: "acme", version: null, now: pawsNow() });
+  let instance = start();
+  claimRun(db, run.id, instance.id);
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({
@@ -308,7 +314,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
 
   const replaced: number[] = [];
   const pawsStep = () => {
-    markPawsAlive(db, clock.at);
+    heartbeatInstance(db, instance.id, clock.at);
     if (closeExpiredRunnerLeases(db, clock.at).includes(run.id)) replaced.push(clock.at);
   };
   const executing = () => stops === 0 && !finished;
@@ -382,13 +388,15 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     },
     async pawsOutage(ms: number) {
       link = "paws-down";
-      prepareShutdown(db, clock.at);
+      prepareShutdown(db, clock.at, undefined, instance.id);
+      stopInstance(db, instance.id, clock.at);
       db.close();
       await this.advance(ms, false);
       db = openDatabase(path);
+      instance = start();
       paws = open();
       link = "up";
-      return recoverOnStartup(db, clock.at, RUNNER_OFFLINE_BUDGET_MS);
+      return recoverOnStartup(db, clock.at, RUNNER_OFFLINE_BUDGET_MS, instance.id);
     },
     nextGeneration: () => paws.work.assign(command(2)),
     async cleanup() {

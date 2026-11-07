@@ -11,7 +11,7 @@ import {
   recordRunnerSkills,
   runnerAgentTargets,
   teamRepositoryAllowedSql,
-  pawsAliveAt,
+  lastInstanceHeartbeat,
   runnerLeaseCutoff,
   getLinearSessionAccess,
   getLinearSession,
@@ -666,7 +666,7 @@ export function createRunnerWork(options: {
             "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
           )
           .get(runnerId)?.version;
-        const aliveAt = pawsAliveAt(db);
+        const aliveAt = lastInstanceHeartbeat(db);
         const offlineCredit =
           aliveAt !== null &&
           runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)

@@ -134,8 +134,7 @@ import {
   CONFIG_SETTINGS_KEY,
   setAsideLegacyDatabase,
   prepareShutdown,
-  markPawsAlive,
-  PAWS_ALIVE_INTERVAL_MS,
+  stopInstance,
   deleteInstance,
   heartbeatInstance,
   COMMAND_DELIVERY_MS,
@@ -1991,15 +1990,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     },
   });
 
-  // Startup reads the last mark to tell how long Paws was down (runner leases do not count it).
-  const aliveTimer = setInterval(() => {
-    try {
-      markPawsAlive(db, Date.now());
-    } catch (error) {
-      journalCaught(error, "index.startPaws.markPawsAlive", null);
-    }
-  }, PAWS_ALIVE_INTERVAL_MS);
-  aliveTimer.unref?.();
   const instanceTimer = setInterval(() => {
     try {
       heartbeatInstance(db, instance.id, Date.now());
@@ -2067,12 +2057,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             instance.id,
           ),
         close: () => {
-          clearInterval(aliveTimer);
           releaseSettings();
           clearInterval(instanceTimer);
           clearInterval(commandTimer);
           try {
-            deleteInstance(db, instance.id);
+            stopInstance(db, instance.id, Date.now());
           } finally {
             db.close();
           }

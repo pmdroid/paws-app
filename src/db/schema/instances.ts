@@ -12,6 +12,7 @@ export const instance = sqliteTable(
     heartbeatAt: integer("heartbeat_at").notNull(),
     version: text(),
     pid: integer(),
+    stoppedAt: integer("stopped_at"),
   },
   (table) => [
     index("instance_heartbeat").on(table.heartbeatAt),

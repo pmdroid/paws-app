@@ -3,23 +3,24 @@ import { and, eq, exists, gt, isNotNull, isNull, ne, notExists, or, sql } from "
 import {
   creditedLeaseUntil,
   OFFLINE_LEASE_RUNNER_VERSION,
-  PAWS_ALIVE_INTERVAL_MS,
   PAWS_ALIVE_LEASE_SKEW_MS,
   RUNNER_LEASE_GRACE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
   runnerReleaseAtLeast,
 } from "../runner-protocol";
+import { ownerGone } from "./instances";
 import { orm } from "./orm";
 import {
-  pawsAlive,
+  instance,
   runner,
   runnerCommand,
   runnerHostStatus,
   runnerResult,
   runnerWork,
+  runOwner,
 } from "./schema";
 
-export { PAWS_ALIVE_INTERVAL_MS, PAWS_ALIVE_LEASE_SKEW_MS };
+export { PAWS_ALIVE_LEASE_SKEW_MS };
 
 /**
  * The runner keeps working until `lease_until + RUNNER_LEASE_GRACE_MS`, so Paws treats a lease as
@@ -111,42 +112,43 @@ export function runnerWorkSettled(db: Database, runId: string, now: number): boo
   );
 }
 
-/** Record that Paws is alive at `now`. Startup reads it to tell how long Paws was down. */
-export function markPawsAlive(db: Database, now: number): void {
-  orm(db)
-    .insert(pawsAlive)
-    .values({ id: 1, at: now })
-    .onConflictDoUpdate({ target: pawsAlive.id, set: { at: now } })
-    .run();
-}
+type InstanceSpan = { id: string; startedAt: number; heartbeatAt: number };
 
-/** When Paws last recorded that it was alive, or null when it never has. */
-export function pawsAliveAt(db: Database): number | null {
-  return (
-    orm(db).select({ at: pawsAlive.at }).from(pawsAlive).where(eq(pawsAlive.id, 1)).get()?.at ??
-    null
-  );
+/**
+ * How long no instance served the runs `owner` held: from its last heartbeat until the first
+ * instance alive after it started, `now` at the latest. Null when another instance was alive then.
+ */
+function ownerDowntime(
+  spans: readonly InstanceSpan[],
+  owner: string,
+  now: number,
+): { aliveAt: number; until: number } | null {
+  const aliveAt = spans.find((span) => span.id === owner)?.heartbeatAt;
+  if (aliveAt === undefined) return null;
+  let until = now;
+  for (const span of spans)
+    if (span.id !== owner && span.heartbeatAt >= aliveAt)
+      until = Math.min(until, Math.max(aliveAt, span.startedAt));
+  return until > aliveAt ? { aliveAt, until } : null;
 }
 
 /**
- * On start, move the lease of open runner work forward by the time Paws was down, so downtime
- * does not count against it. The new deadline is `creditedLeaseUntil`, capped by `budgetMs` and
- * by each command's `expiresAt`. Work the runner gave up on stays given up: a row with a result,
- * an acknowledged cancel, or a lease already past the grace when Paws was last alive is not
+ * When `self` takes over the runs of gone instances, move the lease of their open runner work
+ * forward by the time no instance was alive, so that downtime does not count against it. The
+ * downtime runs from the owning instance's last heartbeat to the takeover, and is none when
+ * another instance was alive throughout. Work without an owner counts the newest other instance
+ * as its owner. The new deadline is `creditedLeaseUntil`, capped by `budgetMs` and by each
+ * command's `expiresAt`. Work the runner gave up on stays given up: a row with a result, an
+ * acknowledged cancel, or a lease already past the grace when its owner was last alive is not
  * extended. A runner older than `OFFLINE_LEASE_RUNNER_VERSION` still stops at its own grace, so
- * its lease is not moved. Returns how long Paws was down, capped by the budget. Run inside the
- * startup transaction; it records Paws alive at `now`.
+ * its lease is not moved. Run inside the transaction that takes the runs over.
  */
 export function shiftRunnerLeasesForDowntime(
   db: Database,
   now: number,
   budgetMs = RUNNER_OFFLINE_BUDGET_MS,
-): number {
-  const aliveAt = pawsAliveAt(db);
-  markPawsAlive(db, now);
-  if (aliveAt === null) return 0;
-  const shift = Math.min(Math.max(0, now - aliveAt), Math.max(0, budgetMs));
-  if (shift === 0) return 0;
+  self?: string,
+): void {
   const eligible = new Set(
     orm(db)
       .select({ id: runner.id, version: runnerHostStatus.runnerVersion })
@@ -157,32 +159,46 @@ export function shiftRunnerLeasesForDowntime(
       .filter((host) => runnerReleaseAtLeast(host.version, OFFLINE_LEASE_RUNNER_VERSION))
       .map((host) => host.id),
   );
-  if (eligible.size === 0) return 0;
+  if (eligible.size === 0) return;
   const rows = orm(db)
     .select({
       runId: runnerWork.runId,
       runnerId: runnerWork.runnerId,
       leaseUntil: runnerWork.leaseUntil,
       expiresAt: runnerCommand.expiresAt,
+      owner: runOwner.ownerInstance,
     })
     .from(runnerWork)
     .innerJoin(runnerCommand, eq(runnerCommand.id, runnerWork.commandId))
+    .leftJoin(runOwner, eq(runOwner.runId, runnerWork.runId))
     .where(and(isNull(runnerWork.endedAt), unsettledRunnerWork(db)))
+    .all()
+    .filter((row) => eligible.has(row.runnerId));
+  if (rows.length === 0) return;
+  const spans: InstanceSpan[] = orm(db)
+    .select({ id: instance.id, startedAt: instance.startedAt, heartbeatAt: instance.heartbeatAt })
+    .from(instance)
     .all();
+  const gone = self === undefined ? () => true : ownerGone(db, self, now);
+  const newest = spans
+    .filter((span) => span.id !== self)
+    .reduce<InstanceSpan | null>((a, b) => (a && a.heartbeatAt >= b.heartbeatAt ? a : b), null);
   for (const row of rows) {
-    if (!eligible.has(row.runnerId)) continue;
+    const owner = row.owner ?? newest?.id;
+    if (owner === undefined || !gone(owner)) continue;
+    const down = ownerDowntime(spans, owner, now);
+    if (down === null) continue;
     const leaseUntil = creditedLeaseUntil({
       leaseUntil: row.leaseUntil,
       expiresAt: row.expiresAt,
-      aliveAt,
-      now,
+      aliveAt: down.aliveAt,
+      now: down.until,
       budgetMs,
       skewMs: PAWS_ALIVE_LEASE_SKEW_MS,
     });
     if (leaseUntil !== row.leaseUntil)
       orm(db).update(runnerWork).set({ leaseUntil }).where(eq(runnerWork.runId, row.runId)).run();
   }
-  return shift;
 }
 
 /** Open work still belongs to its run while leased or while a delivered result awaits import. */
