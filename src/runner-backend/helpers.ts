@@ -6,7 +6,19 @@ import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from
 import type { RunnerHelpers } from "../runner-helpers";
 import type { PlacementAccount, PlacementCandidate, RunnerPlacement } from "../runner-placement";
 import { RunnerSlotsBusyError, systemClock, UserFacingError } from "../core";
-import { immediate, runnerHasCapacity, workspaceSessionIds } from "../db";
+import {
+  earliestRunnerCooldown,
+  enabledRunnerIds,
+  immediate,
+  linearSessionClientId,
+  recentRunners,
+  runnerHasCapacity,
+  runnerHelperBusy,
+  runnerHostVersion,
+  runnerOwner,
+  sessionActiveRuns,
+  workspaceSessionIds,
+} from "../db";
 import { FINDING_GROUPS_RUNNER_VERSION, type RunnerCommand } from "../runner-protocol";
 import { versionAtLeast } from "./session-restore";
 import { usageLimitWait } from "./usage-limit-wait";
@@ -33,21 +45,9 @@ export function createRemoteSessionAgentRunner(options: {
   const earliestCooldown = (runnerIds: readonly string[], agent: string) =>
     runnerIds.length === 0
       ? null
-      : options.db
-          .query<{ runnerId: string; until: number }, [string, number, string]>(
-            `SELECT runner_id AS runnerId,cooldown_until AS until FROM runner_agent_policy
-             WHERE agent=? AND cooldown_until>? AND runner_id IN (SELECT value FROM json_each(?))
-             ORDER BY cooldown_until,runner_id LIMIT 1`,
-          )
-          .get(agent, now(), JSON.stringify(runnerIds));
+      : earliestRunnerCooldown(options.db, { agent, now: now(), runnerIds });
   const sessionRun = (sessionId: string) => {
-    const rows = options.db
-      .query<{ itemId: string; runId: string }, [string]>(
-        `SELECT id AS itemId,current_run_id AS runId FROM work_item
-         WHERE session_key=? AND current_run_id IS NOT NULL AND state IN ('running','verifying','recovering')
-         LIMIT 2`,
-      )
-      .all(sessionId);
+    const rows = sessionActiveRuns(options.db, sessionId);
     return rows.length === 1 ? rows[0]! : null;
   };
   return {
@@ -96,11 +96,7 @@ export function createRemoteSessionAgentRunner(options: {
                   if (until !== undefined && until > now()) checks.push({ runnerId, until });
                 },
               })
-            : options.db
-                .query<{ id: string; workspaceId: string }, [number]>(
-                  "SELECT r.id,r.workspace_id AS workspaceId FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? ORDER BY r.last_seen_at DESC,r.id",
-                )
-                .all(now() - 60_000);
+            : recentRunners(options.db, now() - 60_000);
           for (const runner of runners) {
             if (
               excluded.includes(runner.id) ||
@@ -108,30 +104,23 @@ export function createRemoteSessionAgentRunner(options: {
             )
               continue;
             if (purpose === "finding_groups") {
-              const host = options.db
-                .query<{ version: string | null }, [string]>(
-                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+              if (
+                !versionAtLeast(
+                  runnerHostVersion(options.db, runner.id),
+                  FINDING_GROUPS_RUNNER_VERSION,
                 )
-                .get(runner.id);
-              if (!versionAtLeast(host?.version, FINDING_GROUPS_RUNNER_VERSION)) continue;
-              const owner = options.db
-                .query<{ workspaceId: string; userId: string }, [string]>(
-                  "SELECT workspace_id AS workspaceId, owner_user_id AS userId FROM runner WHERE id=?",
-                )
-                .get(runner.id);
-              const installation = options.db
-                .query<{ clientId: string | null }, [string]>(
-                  "SELECT oauth_client_id AS clientId FROM linear_session WHERE session_id=?",
-                )
-                .get(sessionId);
+              )
+                continue;
+              const owner = runnerOwner(options.db, runner.id);
+              const clientId = linearSessionClientId(options.db, sessionId);
               if (
                 !owner ||
-                !installation?.clientId ||
+                !clientId ||
                 !workspaceSessionIds(
                   options.db,
                   owner.workspaceId,
                   owner.userId,
-                  installation.clientId,
+                  clientId,
                 ).includes(sessionId)
               )
                 continue;
@@ -172,17 +161,10 @@ export function createRemoteSessionAgentRunner(options: {
             }
           }
           if (command) break;
-          const helperBusy = options.db
-            .query(
-              "SELECT 1 FROM runner_helper h JOIN runner r ON r.id=h.runner_id WHERE r.status='active' AND r.revoked_at IS NULL AND h.ended_at IS NULL AND h.expires_at>?",
-            )
-            .get(now());
-          const workFull = options.db
-            .query<{ id: string }, []>(
-              "SELECT id FROM runner WHERE status='active' AND revoked_at IS NULL",
-            )
-            .all()
-            .some((runner) => !runnerHasCapacity(options.db, runner.id, now()));
+          const helperBusy = runnerHelperBusy(options.db, now());
+          const workFull = enabledRunnerIds(options.db).some(
+            (runner) => !runnerHasCapacity(options.db, runner.id, now()),
+          );
           if (workFull && now() >= waitUntil) throw new RunnerSlotsBusyError();
           if ((!helperBusy && !workFull) || now() >= waitUntil) {
             const runnerCooldown = earliestCooldown(cooling, profile.agent);

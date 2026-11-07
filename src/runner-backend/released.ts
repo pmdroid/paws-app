@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { itemRunnerWorkReports } from "../db";
 import { RUNNER_LIVE_GRACE_MS } from "../runner-work";
 
 /**
@@ -8,24 +9,7 @@ import { RUNNER_LIVE_GRACE_MS } from "../runner-work";
  * keeps it. False when the item never ran on a runner, so only a person can vouch for it.
  */
 export function remoteCommandsGone(db: Database, itemId: string, since: number): boolean {
-  const rows = db
-    .query<
-      {
-        endedAt: number | null;
-        confirmedAt: number | null;
-        reportedAt: number | null;
-        acknowledgedAt: number | null;
-        expiresAt: number | null;
-      },
-      [string]
-    >(
-      `SELECT w.ended_at AS endedAt,w.confirmed_at AS confirmedAt,n.live_reported_at AS reportedAt,
-       c.acknowledged_at AS acknowledgedAt,c.expires_at AS expiresAt
-       FROM runner_work w JOIN run r ON r.id=w.run_id JOIN runner n ON n.id=w.runner_id
-       LEFT JOIN runner_command c ON c.id=w.command_id
-       WHERE r.item_id=?`,
-    )
-    .all(itemId);
+  const rows = itemRunnerWorkReports(db, itemId);
   return (
     rows.length > 0 &&
     rows.every(

@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
-import { getWorkItem, immediate } from "../db";
+import {
+  getWorkItem,
+  immediate,
+  itemOpenRunnerWork,
+  lastRunnerEventSequence,
+  runnerEventsAfter,
+  runnerHostVersion,
+  runnerResultPayload,
+  runnerWorkEnded,
+} from "../db";
 import {
   HANDOVER_RUNNER_VERSION,
   RUNNER_HANDOVER_LIMIT_MS,
@@ -9,7 +18,7 @@ import {
   type RunnerEvent,
   type RunnerHandoverFailure,
 } from "../runner-protocol";
-import { RUNNER_EVENT_COLUMNS, type RunnerWork, type StoredRunnerEvent } from "../runner-work";
+import type { RunnerWork } from "../runner-work";
 import { versionAtLeast } from "./session-restore";
 
 /** Past the runner's deadline: polling and delivery of its decision. */
@@ -58,22 +67,9 @@ export function createRemoteHandover(options: {
     signal?: AbortSignal,
   ): Promise<RunnerHandoverOutcome> {
     const request = immediate(db, () => {
-      const row = db
-        .query<
-          { runId: string; runnerId: string; workspaceId: string; generation: number },
-          [string]
-        >(
-          `SELECT w.run_id AS runId,w.runner_id AS runnerId,w.workspace_id AS workspaceId,
-           w.generation FROM runner_work w JOIN run r ON r.id=w.run_id
-           WHERE r.item_id=? AND w.ended_at IS NULL`,
-        )
-        .get(itemId);
+      const row = itemOpenRunnerWork(db, itemId);
       if (!row) return null;
-      const version = db
-        .query<{ version: string | null }, [string]>(
-          "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-        )
-        .get(row.runnerId)?.version;
+      const version = runnerHostVersion(db, row.runnerId);
       if (!versionAtLeast(version, HANDOVER_RUNNER_VERSION)) return "old_runner" as const;
       const at = now();
       work.enqueue({
@@ -87,11 +83,7 @@ export function createRemoteHandover(options: {
         // The runner finishes the handover by the command's expiry, or reports it could not.
         expiresAt: at + RUNNER_HANDOVER_LIMIT_MS,
       });
-      const after = db
-        .query<{ sequence: number }, [string, number]>(
-          "SELECT COALESCE(MAX(sequence),0) AS sequence FROM runner_event WHERE run_id=? AND generation=?",
-        )
-        .get(row.runId, row.generation)!.sequence;
+      const after = lastRunnerEventSequence(db, row.runId, row.generation);
       return { ...row, after, deadline: at + RUNNER_HANDOVER_LIMIT_MS + DELIVERY_GRACE_MS };
     });
     if (!request) return { status: "not_running" };
@@ -99,23 +91,12 @@ export function createRemoteHandover(options: {
     let deadline = request.deadline;
     while (now() < deadline) {
       signal?.throwIfAborted();
-      const stored = db
-        .query<{ payload: string }, [string, number]>(
-          "SELECT payload FROM runner_result WHERE run_id=? AND generation=?",
-        )
-        .get(request.runId, request.generation);
-      const result = stored ? RunnerResultSchema.parse(JSON.parse(stored.payload)) : null;
+      const stored = runnerResultPayload(db, request.runId, request.generation);
+      const result = stored === null ? null : RunnerResultSchema.parse(JSON.parse(stored));
       if (result?.handoverFailure) return { status: "failed", reason: result.handoverFailure };
       if (result && !result.handedOver) return { status: "finished" };
       // The attempt ends the work once it has imported the WIP commit, or once it failed to.
-      if (
-        result &&
-        db
-          .query(
-            "SELECT 1 FROM runner_work WHERE run_id=? AND generation=? AND ended_at IS NOT NULL",
-          )
-          .get(request.runId, request.generation)
-      ) {
+      if (result && runnerWorkEnded(db, request.runId, request.generation)) {
         const wipCommit = result.candidateSha ?? null;
         return wipCommit === null || getWorkItem(db, itemId)?.checkpoint?.wipCommit === wipCommit
           ? { status: "handed_over", wipCommit }
@@ -123,14 +104,12 @@ export function createRemoteHandover(options: {
       }
       const events = result
         ? []
-        : db
-            .query<StoredRunnerEvent, [string, number, number]>(
-              `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
-               WHERE run_id=? AND generation=? AND sequence>?
-               AND (type IN ('handover','handover_interrupted') OR (type IS NULL AND key_id IS NULL))
-               ORDER BY sequence`,
-            )
-            .all(request.runId, request.generation, request.after)
+        : runnerEventsAfter(db, {
+            runId: request.runId,
+            generation: request.generation,
+            after: request.after,
+            types: ["handover", "handover_interrupted"],
+          })
             .map((row) => work.openEvent(row))
             .filter((event) => event.type === "handover" || event.type === "handover_interrupted");
       const failure = events.find(

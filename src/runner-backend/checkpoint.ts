@@ -7,6 +7,12 @@ import {
   getLinearSessionGeneration,
   getWorkItem,
   immediate,
+  lastRunnerEventSequence,
+  openRunnerWorkCommand,
+  pullRequestReadyQueued,
+  runnerEventsAfter,
+  runnerHandoverSent,
+  runnerResultPayload,
   saveCheckpoint,
 } from "../db";
 import { OUTBOX_ACTIVITY } from "../core";
@@ -17,7 +23,7 @@ import {
   type RunnerEvent,
 } from "../runner-protocol";
 import { RUNNER_ONLINE_MS } from "../runner-placement";
-import { RUNNER_EVENT_COLUMNS, type RunnerWork, type StoredRunnerEvent } from "../runner-work";
+import type { RunnerWork } from "../runner-work";
 import { versionAtLeast } from "./session-restore";
 
 /** Past the runner's limit: polling and delivery of its checkpoint. */
@@ -59,12 +65,7 @@ export function recordRunnerCheckpoint(
     if (event.reason !== "stop" || !STOPPED.has(item.state)) return;
     const sessionId = item.sessionKey ?? item.id;
     // After the pull request response, only the final line goes to the session.
-    const afterPr =
-      db
-        .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=?
-        AND delivery_generation=? AND idempotency_key LIKE 'pull-request-ready:%' AND status!='dropped' LIMIT 1`)
-        .get(sessionId, getLinearSessionGeneration(db, sessionId)) !== null;
-    if (afterPr) return;
+    if (pullRequestReadyQueued(db, sessionId, getLinearSessionGeneration(db, sessionId))) return;
     enqueueOutboxOnce(db, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
@@ -97,26 +98,7 @@ export function createRemoteCheckpoint(options: {
   /** Sends the checkpoint command, or returns null when the run cannot answer one. */
   function ask(runId: string) {
     return immediate(db, () => {
-      const row = db
-        .query<
-          {
-            runnerId: string;
-            workspaceId: string;
-            generation: number;
-            envelope: string;
-            lastSeen: number | null;
-            version: string | null;
-          },
-          [string]
-        >(
-          `SELECT w.runner_id AS runnerId,w.workspace_id AS workspaceId,w.generation,c.envelope,
-           r.last_seen_at AS lastSeen,h.runner_version AS version
-           FROM runner_work w JOIN runner_command c ON c.id=w.command_id
-           JOIN runner r ON r.id=w.runner_id
-           LEFT JOIN runner_host_status h ON h.runner_id=w.runner_id
-           WHERE w.run_id=? AND w.ended_at IS NULL`,
-        )
-        .get(runId);
+      const row = openRunnerWorkCommand(db, runId);
       if (!row) return null;
       const command = JSON.parse(
         Buffer.from(
@@ -126,12 +108,7 @@ export function createRemoteCheckpoint(options: {
       ) as RunnerCommand;
       if (command.type !== "run" || command.checkpoint === false) return null;
       // A handover publishes its own WIP commit; a stop of the same run keeps that checkpoint.
-      if (
-        db
-          .query("SELECT 1 FROM runner_command WHERE run_id=? AND generation=? AND kind='handover'")
-          .get(runId, row.generation)
-      )
-        return null;
+      if (runnerHandoverSent(db, runId, row.generation)) return null;
       // A runner that is gone or too old never answers; the stop does not wait for it.
       if ((row.lastSeen ?? 0) <= now() - RUNNER_ONLINE_MS) return null;
       if (!versionAtLeast(row.version, CHECKPOINT_RUNNER_VERSION)) return null;
@@ -146,11 +123,7 @@ export function createRemoteCheckpoint(options: {
         issuedAt: at,
         expiresAt: at + RUNNER_CHECKPOINT_LIMIT_MS,
       });
-      const after = db
-        .query<{ sequence: number }, [string, number]>(
-          "SELECT COALESCE(MAX(sequence),0) AS sequence FROM runner_event WHERE run_id=? AND generation=?",
-        )
-        .get(runId, row.generation)!.sequence;
+      const after = lastRunnerEventSequence(db, runId, row.generation);
       return {
         command,
         after,
@@ -165,12 +138,12 @@ export function createRemoteCheckpoint(options: {
     const { command } = request;
     let cursor = request.after;
     while (now() < request.deadline) {
-      const rows = db
-        .query<StoredRunnerEvent, [string, number, number]>(
-          `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
-           WHERE run_id=? AND generation=? AND sequence>? AND (type='checkpoint' OR (type IS NULL AND key_id IS NULL)) ORDER BY sequence`,
-        )
-        .all(runId, command.generation, cursor);
+      const rows = runnerEventsAfter(db, {
+        runId,
+        generation: command.generation,
+        after: cursor,
+        types: ["checkpoint"],
+      });
       for (const row of rows) {
         cursor = row.sequence;
         const event = work.openEvent(row);
@@ -187,12 +160,7 @@ export function createRemoteCheckpoint(options: {
           return event.sha && event.dropped === undefined ? event.sha : null;
       }
       // The turn ended first: its own result carries the work.
-      if (
-        db
-          .query("SELECT 1 FROM runner_result WHERE run_id=? AND generation=?")
-          .get(runId, command.generation)
-      )
-        return null;
+      if (runnerResultPayload(db, runId, command.generation) !== null) return null;
       await delay(options.pollIntervalMs ?? 250);
     }
     return null;

@@ -1,10 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { listInFlightItems } from "./items";
 import { mergeLaneSql } from "./jobs";
 import { orm } from "./orm";
-import { linearSession } from "./schema";
+import { linearSession, workItem, workspace } from "./schema";
 import { advanceOutboxSession, enqueueOutboxOnce } from "./outbox";
 import { immediate } from "./tx";
 
@@ -472,4 +472,47 @@ export function releaseIdleSessionItem(db: Database, itemId: string, now: number
       ),
     )
     .run();
+}
+
+export function linearSessionClientId(db: Database, sessionId: string): string | null {
+  return (
+    orm(db)
+      .select({ clientId: linearSession.oauthClientId })
+      .from(linearSession)
+      .where(eq(linearSession.sessionId, sessionId))
+      .get()?.clientId ?? null
+  );
+}
+
+export function linearSessionInWorkspace(
+  db: Database,
+  sessionId: string,
+  workspaceId: string,
+): boolean {
+  return (
+    orm(db)
+      .select({ one: sql`1` })
+      .from(linearSession)
+      .innerJoin(workspace, eq(workspace.linearOrganizationId, linearSession.organizationId))
+      .where(and(eq(linearSession.sessionId, sessionId), eq(workspace.id, workspaceId)))
+      .get() !== undefined
+  );
+}
+
+export function sessionActiveRuns(
+  db: Database,
+  sessionId: string,
+): { itemId: string; runId: string }[] {
+  return orm(db)
+    .select({ itemId: workItem.id, runId: sql<string>`${workItem.currentRunId}` })
+    .from(workItem)
+    .where(
+      and(
+        eq(workItem.sessionKey, sessionId),
+        isNotNull(workItem.currentRunId),
+        inArray(workItem.state, ["running", "verifying", "recovering"]),
+      ),
+    )
+    .limit(2)
+    .all();
 }

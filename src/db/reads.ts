@@ -1,5 +1,8 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
+import { and, eq, isNull } from "drizzle-orm";
+import { orm } from "./orm";
+import { question } from "./schema";
 
 export type WorkItemBlockRecord = {
   delegationId: string;
@@ -158,4 +161,14 @@ function stringList(value: string): string[] {
     journalCaught(caughtError1, "reads.stringList.parse", null);
     return [];
   }
+}
+
+export function openQuestionKind(db: Database, id: string): string | null {
+  return (
+    orm(db)
+      .select({ kind: question.kind })
+      .from(question)
+      .where(and(eq(question.id, id), eq(question.status, "open"), isNull(question.cancelledAt)))
+      .get()?.kind ?? null
+  );
 }
