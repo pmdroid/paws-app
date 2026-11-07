@@ -1,10 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
-import { orm } from "./orm";
-import { workspaceAccessAudit, workspaceUser } from "./schema";
-import { immediate } from "./tx";
-import { endRevokedRunnerAuthority } from "./runner-lease";
+import { endRevokedRunnerAuthoritySteps } from "./runner-lease";
 
 export type WorkspaceRole = "admin" | "member";
 export type WorkspaceRecord = {
@@ -42,37 +39,59 @@ export type WorkspaceSession = {
   expiresAt: number;
 };
 
+function* findWorkspaceSteps(q: Q, column: "id" | "linearOrganizationId", value: string) {
+  const { workspace } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        id: workspace.id,
+        organizationId: workspace.linearOrganizationId,
+        name: workspace.name,
+      })
+      .from(workspace)
+      .where(eq(workspace[column], value)),
+  );
+  return row ?? null;
+}
+
+export function getWorkspaceSteps(q: Q, id: string) {
+  return findWorkspaceSteps(q, "id", id);
+}
+
 export function getWorkspace(db: Database, id: string): WorkspaceRecord | null {
-  return db
-    .query<WorkspaceRecord, [string]>(
-      "SELECT id, linear_organization_id AS organizationId, name FROM workspace WHERE id = ?",
-    )
-    .get(id);
+  return settled(sqliteDb(db).run((q) => getWorkspaceSteps(q, id)));
+}
+
+export function workspaceForOrganizationSteps(q: Q, organizationId: string) {
+  return findWorkspaceSteps(q, "linearOrganizationId", organizationId);
 }
 
 export function workspaceForOrganization(
   db: Database,
   organizationId: string,
 ): WorkspaceRecord | null {
-  return db
-    .query<WorkspaceRecord, [string]>(
-      "SELECT id, linear_organization_id AS organizationId, name FROM workspace WHERE linear_organization_id = ?",
-    )
-    .get(organizationId);
+  return settled(sqliteDb(db).run((q) => workspaceForOrganizationSteps(q, organizationId)));
 }
 
-export function putWorkspaceUser(
-  db: Database,
-  input: { id: string; linearUserId: string; name: string; email: string },
-): string {
-  db.run(
-    `INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES(?,?,?,?)
-    ON CONFLICT(linear_user_id) DO UPDATE SET name=excluded.name,email=excluded.email`,
-    [input.id, input.linearUserId, input.name, input.email],
+type WorkspaceUserInput = { id: string; linearUserId: string; name: string; email: string };
+
+export function* putWorkspaceUserSteps(q: Q, input: WorkspaceUserInput) {
+  const { workspaceUser } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .insert(workspaceUser)
+      .values(input)
+      .onConflictDoUpdate({
+        target: workspaceUser.linearUserId,
+        set: { name: input.name, email: input.email },
+      })
+      .returning({ id: workspaceUser.id }),
   );
-  return db
-    .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id = ?")
-    .get(input.linearUserId)!.id;
+  return rows[0]!.id;
+}
+
+export function putWorkspaceUser(db: Database, input: WorkspaceUserInput): string {
+  return settled(sqliteDb(db).run((q) => putWorkspaceUserSteps(q, input)));
 }
 
 export function* workspaceUserIdForLinearUserSteps(q: Q, linearUserId: string) {
@@ -133,91 +152,115 @@ export function workspaceMember(
   return settled(sqliteDb(db).run((q) => workspaceMemberSteps(q, workspaceId, userId)));
 }
 
-export function workspaceLinearMember(db: Database, workspaceId: string, linearUserId: string) {
-  const user = db
-    .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
-    .get(linearUserId);
-  return user === null ? null : workspaceMember(db, workspaceId, user.id);
+export function* workspaceLinearMemberSteps(q: Q, workspaceId: string, linearUserId: string) {
+  const userId = yield* workspaceUserIdForLinearUserSteps(q, linearUserId);
+  return userId === null ? null : yield* workspaceMemberSteps(q, workspaceId, userId);
 }
 
-export function syncWorkspaceMember(
-  db: Database,
-  input: {
-    workspaceId: string;
-    userId: string;
-    role: WorkspaceRole;
-    active: boolean;
-    teamIds: readonly string[];
-    now: number;
-  },
-): boolean {
-  return immediate(db, () => {
-    const previous = workspaceMember(db, input.workspaceId, input.userId);
-    if (
-      previous !== null &&
-      (previous.checkedAt > input.now ||
-        (previous.checkedAt === input.now && input.active && !previous.active))
-    )
-      return false;
-    db.run(
-      `INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at)
-      VALUES(?,?,?,'linear',?,?) ON CONFLICT(workspace_id,user_id) DO UPDATE SET
-      role=CASE WHEN workspace_member.source='manual' THEN COALESCE(workspace_member.manual_role,workspace_member.role) ELSE excluded.role END,
-      manual_role=CASE WHEN workspace_member.source='manual' THEN COALESCE(workspace_member.manual_role,workspace_member.role) ELSE workspace_member.manual_role END,
-      active=excluded.active,checked_at=excluded.checked_at`,
-      [input.workspaceId, input.userId, input.role, input.active ? 1 : 0, input.now],
-    );
-    if (!input.active) endRevokedRunnerAuthority(db, input.now);
-    db.run("DELETE FROM workspace_user_team WHERE workspace_id=? AND user_id=?", [
-      input.workspaceId,
-      input.userId,
-    ]);
-    if (input.active)
-      for (const teamId of new Set(input.teamIds))
-        db.run("INSERT INTO workspace_user_team(workspace_id,user_id,team_id) VALUES(?,?,?)", [
-          input.workspaceId,
-          input.userId,
-          teamId,
-        ]);
-    if (!input.active)
-      db.run("DELETE FROM workspace_session WHERE workspace_id=? AND user_id=?", [
-        input.workspaceId,
-        input.userId,
-      ]);
-    const current = workspaceMember(db, input.workspaceId, input.userId)!;
-    if (
-      previous === null ||
-      previous.active !== input.active ||
-      previous.role !== current.role ||
-      previous.teamIds.join() !== current.teamIds.join()
-    )
-      auditWorkspaceAccess(db, {
+export function workspaceLinearMember(db: Database, workspaceId: string, linearUserId: string) {
+  return settled(sqliteDb(db).run((q) => workspaceLinearMemberSteps(q, workspaceId, linearUserId)));
+}
+
+type WorkspaceMemberSync = {
+  workspaceId: string;
+  userId: string;
+  role: WorkspaceRole;
+  active: boolean;
+  teamIds: readonly string[];
+  now: number;
+};
+
+export function* syncWorkspaceMemberSteps(q: Q, input: WorkspaceMemberSync) {
+  const { workspaceMember: member, workspaceSession, workspaceUserTeam } = q.t;
+  const previous = yield* workspaceMemberSteps(q, input.workspaceId, input.userId);
+  if (
+    previous !== null &&
+    (previous.checkedAt > input.now ||
+      (previous.checkedAt === input.now && input.active && !previous.active))
+  )
+    return false;
+  const kept = sql`COALESCE(${member.manualRole},${member.role})`;
+  yield* q.exec(
+    q.orm
+      .insert(member)
+      .values({
         workspaceId: input.workspaceId,
         userId: input.userId,
-        action: input.active ? "membership.synced" : "membership.revoked",
-        subject: input.userId,
-        now: input.now,
-      });
-    return true;
-  });
+        role: input.role,
+        source: "linear",
+        active: input.active ? 1 : 0,
+        checkedAt: input.now,
+      })
+      .onConflictDoUpdate({
+        target: [member.workspaceId, member.userId],
+        set: {
+          role: sql`CASE WHEN ${member.source}='manual' THEN ${kept} ELSE excluded.role END`,
+          manualRole: sql`CASE WHEN ${member.source}='manual' THEN ${kept} ELSE ${member.manualRole} END`,
+          active: sql`excluded.active`,
+          checkedAt: sql`excluded.checked_at`,
+        },
+      }),
+  );
+  if (!input.active) yield* endRevokedRunnerAuthoritySteps(q, input.now);
+  const memberTeams = and(
+    eq(workspaceUserTeam.workspaceId, input.workspaceId),
+    eq(workspaceUserTeam.userId, input.userId),
+  );
+  yield* q.exec(q.orm.delete(workspaceUserTeam).where(memberTeams));
+  if (input.active)
+    for (const teamId of new Set(input.teamIds))
+      yield* q.exec(
+        q.orm
+          .insert(workspaceUserTeam)
+          .values({ workspaceId: input.workspaceId, userId: input.userId, teamId }),
+      );
+  if (!input.active)
+    yield* q.exec(
+      q.orm
+        .delete(workspaceSession)
+        .where(
+          and(
+            eq(workspaceSession.workspaceId, input.workspaceId),
+            eq(workspaceSession.userId, input.userId),
+          ),
+        ),
+    );
+  const current = (yield* workspaceMemberSteps(q, input.workspaceId, input.userId))!;
+  if (
+    previous === null ||
+    previous.active !== input.active ||
+    previous.role !== current.role ||
+    previous.teamIds.join() !== current.teamIds.join()
+  )
+    yield* auditWorkspaceAccessSteps(q, {
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      action: input.active ? "membership.synced" : "membership.revoked",
+      subject: input.userId,
+      now: input.now,
+    });
+  return true;
 }
 
-export function applyLinearUserChange(
-  db: Database,
-  input: {
-    organizationId: string;
-    userId: string;
-    active: boolean | null;
-    guest: boolean | null;
-    now: number;
-  },
-): boolean {
-  const workspace = workspaceForOrganization(db, input.organizationId);
-  const member = workspace && workspaceLinearMember(db, workspace.id, input.userId);
+export function syncWorkspaceMember(db: Database, input: WorkspaceMemberSync): boolean {
+  return settled(sqliteDb(db).transaction((q) => syncWorkspaceMemberSteps(q, input)));
+}
+
+type LinearUserChange = {
+  organizationId: string;
+  userId: string;
+  active: boolean | null;
+  guest: boolean | null;
+  now: number;
+};
+
+export function* applyLinearUserChangeSteps(q: Q, input: LinearUserChange) {
+  const workspace = yield* workspaceForOrganizationSteps(q, input.organizationId);
+  const member = workspace && (yield* workspaceLinearMemberSteps(q, workspace.id, input.userId));
   if (!member) return false;
   // A Linear guest has no access to Paws, the same as a deactivated account.
   if (input.active === false || input.guest === true)
-    return syncWorkspaceMember(db, {
+    return yield* syncWorkspaceMemberSteps(q, {
       workspaceId: member.workspaceId,
       userId: member.userId,
       active: false,
@@ -225,72 +268,128 @@ export function applyLinearUserChange(
       teamIds: member.teamIds,
       now: Math.max(input.now, member.checkedAt),
     });
-  db.run("UPDATE workspace_member SET checked_at=0 WHERE workspace_id=? AND user_id=?", [
-    member.workspaceId,
-    member.userId,
-  ]);
+  const { workspaceMember } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(workspaceMember)
+      .set({ checkedAt: 0 })
+      .where(
+        and(
+          eq(workspaceMember.workspaceId, member.workspaceId),
+          eq(workspaceMember.userId, member.userId),
+        ),
+      ),
+  );
   return true;
 }
 
-export function createWorkspaceBootstrap(
-  db: Database,
-  input: { tokenHash: string; organizationId: string; expiresAt: number },
-): void {
-  db.run("INSERT INTO workspace_bootstrap(token_hash,organization_id,expires_at) VALUES(?,?,?)", [
-    input.tokenHash,
-    input.organizationId,
-    input.expiresAt,
-  ]);
+export function applyLinearUserChange(db: Database, input: LinearUserChange): boolean {
+  return settled(sqliteDb(db).transaction((q) => applyLinearUserChangeSteps(q, input)));
+}
+
+type WorkspaceBootstrapInput = { tokenHash: string; organizationId: string; expiresAt: number };
+
+export function* createWorkspaceBootstrapSteps(q: Q, input: WorkspaceBootstrapInput) {
+  yield* q.exec(q.orm.insert(q.t.workspaceBootstrap).values(input));
+}
+
+export function createWorkspaceBootstrap(db: Database, input: WorkspaceBootstrapInput): void {
+  settled(sqliteDb(db).run((q) => createWorkspaceBootstrapSteps(q, input)));
+}
+
+type WorkspaceBootstrapClaim = WorkspaceRecord & { tokenHash: string; userId: string; now: number };
+
+export function* consumeWorkspaceBootstrapSteps(q: Q, input: WorkspaceBootstrapClaim) {
+  const { workspace, workspaceBootstrap: bootstrap, workspaceMember } = q.t;
+  const claimed = yield* q.all(
+    q.orm
+      .update(bootstrap)
+      .set({ consumedAt: input.now })
+      .where(
+        and(
+          eq(bootstrap.tokenHash, input.tokenHash),
+          eq(bootstrap.organizationId, input.organizationId),
+          gt(bootstrap.expiresAt, input.now),
+          isNull(bootstrap.consumedAt),
+        ),
+      )
+      .returning({ tokenHash: bootstrap.tokenHash }),
+  );
+  if (claimed.length !== 1) throw new Error("Workspace bootstrap is invalid or expired.");
+  if ((yield* workspaceForOrganizationSteps(q, input.organizationId)) !== null)
+    throw new Error("This workspace already has an admin.");
+  yield* q.exec(
+    q.orm.insert(workspace).values({
+      id: input.id,
+      linearOrganizationId: input.organizationId,
+      name: input.name,
+      createdAt: input.now,
+    }),
+  );
+  yield* q.exec(
+    q.orm.insert(workspaceMember).values({
+      workspaceId: input.id,
+      userId: input.userId,
+      role: "admin",
+      source: "manual",
+      active: 1,
+      checkedAt: input.now,
+    }),
+  );
+  yield* auditWorkspaceAccessSteps(q, {
+    workspaceId: input.id,
+    userId: input.userId,
+    action: "workspace.bootstrapped",
+    subject: input.id,
+    now: input.now,
+  });
+  return { id: input.id, organizationId: input.organizationId, name: input.name };
 }
 
 export function consumeWorkspaceBootstrap(
   db: Database,
-  input: WorkspaceRecord & { tokenHash: string; userId: string; now: number },
+  input: WorkspaceBootstrapClaim,
 ): WorkspaceRecord {
-  return immediate(db, () => {
-    const claimed = db.run(
-      `UPDATE workspace_bootstrap SET consumed_at=? WHERE token_hash=? AND organization_id=?
-      AND expires_at>? AND consumed_at IS NULL`,
-      [input.now, input.tokenHash, input.organizationId, input.now],
-    ).changes;
-    if (claimed !== 1) throw new Error("Workspace bootstrap is invalid or expired.");
-    if (workspaceForOrganization(db, input.organizationId) !== null)
-      throw new Error("This workspace already has an admin.");
-    db.run("INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES(?,?,?,?)", [
-      input.id,
-      input.organizationId,
-      input.name,
-      input.now,
-    ]);
-    db.run(
-      "INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES(?,?,'admin','manual',1,?)",
-      [input.id, input.userId, input.now],
-    );
-    auditWorkspaceAccess(db, {
-      workspaceId: input.id,
-      userId: input.userId,
-      action: "workspace.bootstrapped",
-      subject: input.id,
-      now: input.now,
-    });
-    return { id: input.id, organizationId: input.organizationId, name: input.name };
-  });
+  return settled(sqliteDb(db).transaction((q) => consumeWorkspaceBootstrapSteps(q, input)));
+}
+
+export function* saveWorkspaceSessionSteps(q: Q, session: WorkspaceSession) {
+  yield* q.exec(q.orm.insert(q.t.workspaceSession).values(session));
 }
 
 export function saveWorkspaceSession(db: Database, session: WorkspaceSession): void {
-  db.run(
-    `INSERT INTO workspace_session(token_hash,user_id,workspace_id,csrf_token,authenticated_at,last_seen_at,expires_at)
-    VALUES(?,?,?,?,?,?,?)`,
-    [
-      session.tokenHash,
-      session.userId,
-      session.workspaceId,
-      session.csrfToken,
-      session.authenticatedAt,
-      session.lastSeenAt,
-      session.expiresAt,
-    ],
+  settled(sqliteDb(db).run((q) => saveWorkspaceSessionSteps(q, session)));
+}
+
+export function* readWorkspaceSessionSteps(q: Q, tokenHash: string, now: number, lifetime: number) {
+  const { workspaceSession } = q.t;
+  const session = yield* q.one(
+    q.orm
+      .select({
+        tokenHash: workspaceSession.tokenHash,
+        userId: workspaceSession.userId,
+        workspaceId: workspaceSession.workspaceId,
+        csrfToken: workspaceSession.csrfToken,
+        authenticatedAt: workspaceSession.authenticatedAt,
+        lastSeenAt: workspaceSession.lastSeenAt,
+        expiresAt: workspaceSession.expiresAt,
+      })
+      .from(workspaceSession)
+      .where(and(eq(workspaceSession.tokenHash, tokenHash), gt(workspaceSession.expiresAt, now))),
   );
+  if (session === undefined) {
+    yield* deleteWorkspaceSessionSteps(q, tokenHash);
+    return null;
+  }
+  if (now < session.authenticatedAt) return null;
+  const expiresAt = now + lifetime;
+  yield* q.exec(
+    q.orm
+      .update(workspaceSession)
+      .set({ lastSeenAt: now, expiresAt })
+      .where(eq(workspaceSession.tokenHash, tokenHash)),
+  );
+  return { ...session, lastSeenAt: now, expiresAt };
 }
 
 export function readWorkspaceSession(
@@ -299,32 +398,18 @@ export function readWorkspaceSession(
   now: number,
   lifetime: number,
 ): WorkspaceSession | null {
-  return immediate(db, () => {
-    const session = db
-      .query<WorkspaceSession, [string, number]>(
-        `SELECT token_hash AS tokenHash,user_id AS userId,workspace_id AS workspaceId,
-        csrf_token AS csrfToken,authenticated_at AS authenticatedAt,last_seen_at AS lastSeenAt,
-        expires_at AS expiresAt FROM workspace_session
-        WHERE token_hash=? AND expires_at>?`,
-      )
-      .get(tokenHash, now);
-    if (session === null) {
-      deleteWorkspaceSession(db, tokenHash);
-      return null;
-    }
-    if (now < session.authenticatedAt) return null;
-    const expiresAt = now + lifetime;
-    db.run("UPDATE workspace_session SET last_seen_at=?,expires_at=? WHERE token_hash=?", [
-      now,
-      expiresAt,
-      tokenHash,
-    ]);
-    return { ...session, lastSeenAt: now, expiresAt };
-  });
+  return settled(
+    sqliteDb(db).transaction((q) => readWorkspaceSessionSteps(q, tokenHash, now, lifetime)),
+  );
+}
+
+export function* deleteWorkspaceSessionSteps(q: Q, tokenHash: string) {
+  const { workspaceSession } = q.t;
+  yield* q.exec(q.orm.delete(workspaceSession).where(eq(workspaceSession.tokenHash, tokenHash)));
 }
 
 export function deleteWorkspaceSession(db: Database, tokenHash: string): void {
-  db.run("DELETE FROM workspace_session WHERE token_hash=?", [tokenHash]);
+  settled(sqliteDb(db).run((q) => deleteWorkspaceSessionSteps(q, tokenHash)));
 }
 
 type WorkspaceAuditInput = {
@@ -351,27 +436,30 @@ export function auditWorkspaceAccess(db: Database, input: WorkspaceAuditInput): 
   settled(sqliteDb(db).run((q) => auditWorkspaceAccessSteps(q, input)));
 }
 
-export function listWorkspaceAudit(db: Database, workspaceId: string, before: number) {
-  const rows = db
-    .query<
-      {
-        id: number;
-        actorId: string | null;
-        actorName: string | null;
-        action: string;
-        subject: string;
-        createdAt: number;
-      },
-      [string, number]
-    >(
-      `SELECT a.id,a.user_id AS actorId,u.name AS actorName,a.action,a.subject,
-      a.created_at AS createdAt FROM workspace_access_audit a
-      LEFT JOIN workspace_user u ON u.id=a.user_id
-      WHERE a.workspace_id=? AND a.id<? ORDER BY a.id DESC LIMIT 51`,
-    )
-    .all(workspaceId, before);
+export function* listWorkspaceAuditSteps(q: Q, workspaceId: string, before: number) {
+  const { workspaceAccessAudit: audit, workspaceUser: user } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: audit.id,
+        actorId: audit.userId,
+        actorName: user.name,
+        action: audit.action,
+        subject: audit.subject,
+        createdAt: audit.createdAt,
+      })
+      .from(audit)
+      .leftJoin(user, eq(user.id, audit.userId))
+      .where(and(eq(audit.workspaceId, workspaceId), lt(audit.id, before)))
+      .orderBy(desc(audit.id))
+      .limit(51),
+  );
   const entries = rows.slice(0, 50);
   return { entries, nextBefore: rows.length > 50 ? entries.at(-1)!.id : null };
+}
+
+export function listWorkspaceAudit(db: Database, workspaceId: string, before: number) {
+  return settled(sqliteDb(db).run((q) => listWorkspaceAuditSteps(q, workspaceId, before)));
 }
 
 /** Linear membership and the administrator's access decision are independent. */
@@ -397,9 +485,10 @@ export const WORKSPACE_REVOKED_SIGN_IN =
 export const WORKSPACE_REVOKED_RESPONSE =
   "Access to Paws was revoked for the person who delegated this. An admin can delegate it again.";
 
-export function lastPausedBy(db: Database, itemId: string): string | null {
-  return (
-    orm(db)
+export function* lastPausedBySteps(q: Q, itemId: string) {
+  const { workspaceAccessAudit, workspaceUser } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({ name: workspaceUser.name })
       .from(workspaceAccessAudit)
       .innerJoin(workspaceUser, eq(workspaceUser.id, workspaceAccessAudit.userId))
@@ -410,7 +499,11 @@ export function lastPausedBy(db: Database, itemId: string): string | null {
         ),
       )
       .orderBy(desc(workspaceAccessAudit.id))
-      .limit(1)
-      .get()?.name ?? null
+      .limit(1),
   );
+  return row?.name ?? null;
+}
+
+export function lastPausedBy(db: Database, itemId: string): string | null {
+  return settled(sqliteDb(db).run((q) => lastPausedBySteps(q, itemId)));
 }
