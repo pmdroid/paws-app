@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, gt, isNull, max } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
 import { instance } from "./schema";
 import { ulid } from "./ulid";
@@ -95,11 +96,19 @@ export function liveInstances(db: Database, now: number): Instance[] {
     .all() as Instance[];
 }
 
-export function ownerGone(db: Database, self: string, now: number): (owner: string) => boolean {
-  const rows = orm(db)
-    .select({ ...columns, stoppedAt: instance.stoppedAt })
-    .from(instance)
-    .all() as (Instance & { stoppedAt: number | null })[];
+export function* ownerGoneSteps(q: Q, self: string, now: number) {
+  const instances = q.t.instance;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: instances.id,
+        host: instances.host,
+        heartbeatAt: instances.heartbeatAt,
+        pid: instances.pid,
+        stoppedAt: instances.stoppedAt,
+      })
+      .from(instances),
+  );
   const host = rows.find((row) => row.id === self)?.host;
   const live = new Set(
     rows
@@ -107,7 +116,11 @@ export function ownerGone(db: Database, self: string, now: number): (owner: stri
       .filter((row) => row.host !== host || row.pid === null || processRuns(row.pid))
       .map((row) => row.id),
   );
-  return (owner) => owner !== self && !live.has(owner);
+  return (owner: string) => owner !== self && !live.has(owner);
+}
+
+export function ownerGone(db: Database, self: string, now: number): (owner: string) => boolean {
+  return settled(sqliteDb(db).run((q) => ownerGoneSteps(q, self, now)));
 }
 
 function processRuns(pid: number): boolean {

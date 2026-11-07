@@ -260,6 +260,7 @@ export {
   INSTANCE_HEARTBEAT_MS,
   jobInstanceElsewhere,
   liveInstances,
+  ownerGoneSteps,
   registerInstance,
   roleRunsJobs,
   type Instance,
@@ -462,9 +463,14 @@ export {
   runnerLeaseCutoff,
   runnerLeaseLive,
   runnerWorkSettled,
+  runnerWorkSettledSteps,
   shiftRunnerLeasesForDowntime,
+  shiftRunnerLeasesForDowntimeSteps,
   runnerHoldsRunWork,
+  runnerHoldsRunWorkSteps,
   runnerWorkHasResult,
+  runnerWorkHasResultSteps,
+  endRevokedRunnerAuthoritySteps,
 } from "./runner-lease";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {
@@ -865,9 +871,13 @@ export type { RunnerSetupHold } from "./runner-setup-hold";
 export {
   RUNNER_RESERVATION_MS,
   releaseRunnerReservation,
+  releaseRunnerReservationSteps,
   reserveRunnerSlot,
+  reserveRunnerSlotSteps,
   runnerReservationHolder,
+  runnerReservationHolderSteps,
   unassignedRunnerReservations,
+  unassignedRunnerReservationsSteps,
 } from "./runner-reservations";
 export type { ItemHold, ItemHoldChange, ItemHoldReason } from "./item-hold";
 export { carriedAcceptFor, recordCarriedAccept } from "./merge-carried-accept";
@@ -910,7 +920,9 @@ export {
 } from "./linear-requests";
 export {
   listRunnerRuntimes,
+  listRunnerRuntimesSteps,
   recordRunnerRuntimes,
+  recordRunnerRuntimesSteps,
   type RunnerRuntimeStatus,
 } from "./runner-runtimes";
 export {
@@ -979,7 +991,9 @@ export type {
 export {
   recordRunnerRepositories,
   runnerAllowsRepository,
+  runnerRepositoryListsSteps,
   runnerRepositoryRefusal,
+  runnerRepositoryRefusalSteps,
   setRunnerAdminRepositories,
   type RunnerRepositoryLists,
   type RunnerRepositoryRefusal,
@@ -1325,23 +1339,40 @@ export {
 } from "./item-dependencies";
 export {
   itemOpenRunnerWorkRuns,
+  itemOpenRunnerWorkRunsSteps,
   itemOpenRunnerWork,
+  itemOpenRunnerWorkSteps,
   itemRunnerCancelWork,
+  itemRunnerCancelWorkSteps,
   pendingRunnerCancel,
+  pendingRunnerCancelSteps,
   itemRunnerWorkReports,
+  itemRunnerWorkReportsSteps,
   openRunnerWorkCommand,
+  openRunnerWorkCommandSteps,
   runnerHandoverSent,
+  runnerHandoverSentSteps,
   runnerWorkEnded,
+  runnerWorkEndedSteps,
   lastRunnerEventSequence,
+  lastRunnerEventSequenceSteps,
   runnerEventsAfter,
+  runnerEventsAfterSteps,
   runnerResultPayload,
+  runnerResultPayloadSteps,
   runnerWorkActive,
+  runnerWorkActiveSteps,
 } from "./runner-work";
 export {
   forgetRunnerFileObject,
+  forgetRunnerFileObjectSteps,
   prunableRunnerFileObjects,
+  prunableRunnerFileObjectsSteps,
   recordRunnerFileObject,
+  recordRunnerFileObjectSteps,
   runnerCommandRuns,
+  runnerCommandRunsSteps,
   runnerFileObjectNames,
+  runnerFileObjectNamesSteps,
   type RunnerFileObject,
 } from "./runner-file-objects";
