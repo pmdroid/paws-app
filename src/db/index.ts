@@ -236,7 +236,8 @@ export {
   type JobLoopLiveness,
 } from "./loop";
 export { startLoops } from "./loops";
-export { migrate } from "./migrate";
+export { legacyMigrate } from "./legacy-migrate";
+export { MIGRATIONS_FOLDER, migrate, setAsideLegacyDatabase } from "./migrate";
 export {
   bindWorkItemRepository,
   getWorkItemRepository,

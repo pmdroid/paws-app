@@ -10,10 +10,10 @@
  * deletes the copy.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, migrations, openDatabase } from "../src/db";
+import { MIGRATIONS_FOLDER, migrate, openDatabase } from "../src/db";
 
 export function migrateDryRun(source: string): { applied: string[] } {
   if (!existsSync(source)) throw new Error(`No database at ${source}`);
@@ -28,15 +28,16 @@ export function migrateDryRun(source: string): { applied: string[] } {
     }
     const db = openDatabase(copy);
     try {
-      const before = appliedIds(db);
+      if (isLegacy(db))
+        throw new Error(
+          "This database is from before drizzle-kit migrations; Paws sets it aside and starts on a fresh one",
+        );
+      const before = appliedCount(db);
       migrate(db);
-      const after = appliedIds(db);
       const problems = db.query("PRAGMA foreign_key_check").all();
       if (problems.length > 0)
         throw new Error(`Foreign key check failed: ${JSON.stringify(problems)}`);
-      return {
-        applied: migrations.map((m) => m.id).filter((id) => after.has(id) && !before.has(id)),
-      };
+      return { applied: migrationTags().slice(before, appliedCount(db)) };
     } finally {
       db.close();
     }
@@ -45,15 +46,19 @@ export function migrateDryRun(source: string): { applied: string[] } {
   }
 }
 
-function appliedIds(db: Database): Set<string> {
-  const table = db.query("SELECT 1 FROM sqlite_master WHERE name='schema_migration'").get();
-  if (!table) return new Set();
-  return new Set(
-    db
-      .query<{ id: string }, []>("SELECT id FROM schema_migration")
-      .all()
-      .map((row) => row.id),
-  );
+function isLegacy(db: Database): boolean {
+  return db.query("SELECT 1 FROM sqlite_master WHERE name = 'schema_migration'").get() !== null;
+}
+
+function appliedCount(db: Database): number {
+  const table = db.query("SELECT 1 FROM sqlite_master WHERE name = '__drizzle_migrations'").get();
+  if (!table) return 0;
+  return db.query<{ n: number }, []>("SELECT count(*) AS n FROM __drizzle_migrations").get()!.n;
+}
+
+function migrationTags(): string[] {
+  const journal = JSON.parse(readFileSync(join(MIGRATIONS_FOLDER, "meta/_journal.json"), "utf8"));
+  return (journal.entries as { tag: string }[]).map((entry) => entry.tag);
 }
 
 if (import.meta.main) {
