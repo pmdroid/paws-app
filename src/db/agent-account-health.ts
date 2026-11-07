@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, gt, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
 import { legacyAgentBindingId } from "./agent-accounts";
+import { orm } from "./orm";
+import { agentAccount, agentAccountBinding, agentAccountHealth as health, runner } from "./schema";
 import { immediate } from "./tx";
 
 export type AccountHealthKind = "quota" | "auth" | "provider" | "model";
@@ -53,9 +56,6 @@ export const ACCOUNT_RECHECK_MAX_MS = 4 * 60 * 60_000;
 export const ACCOUNT_RESET_SLACK_MS = 60_000;
 export const ACCOUNT_MODEL_RECHECK_MS = 6 * 60 * 60_000;
 
-const columns =
-  "kind,scope,scope_id AS scopeId,model,workspace_id AS workspaceId,agent,state,source,source_id AS sourceId,binding_id AS bindingId,runner_id AS runnerId,observed_at AS observedAt,resets_at AS resetsAt,next_check_at AS nextCheckAt,failures,updated_at AS updatedAt";
-
 export function accountRecheckDelay(scopeId: string, failures: number): number {
   const exponent = Math.min(Math.max(failures, 1) - 1, 16);
   const delay = Math.min(ACCOUNT_RECHECK_BASE_MS * 2 ** exponent, ACCOUNT_RECHECK_MAX_MS);
@@ -78,16 +78,24 @@ type Binding = {
 };
 
 function bindingFor(db: Database, bindingId: string): Binding | null {
-  return db
-    .query<Binding, [string]>(
-      `SELECT b.id,b.workspace_id AS workspaceId,b.account_id AS accountId,b.agent,b.runner_id AS runnerId,
-       b.quota_scope AS quotaScope,
-       (b.removed_at IS NULL AND a.removed_at IS NULL AND a.enabled=1 AND r.revoked_at IS NULL
-         AND r.status<>'revoked') AS live
-       FROM agent_account_binding b JOIN agent_account a ON a.id=b.account_id
-       JOIN runner r ON r.id=b.runner_id WHERE b.id=?`,
-    )
-    .get(bindingId);
+  const b = agentAccountBinding;
+  const found = orm(db)
+    .select({
+      id: b.id,
+      workspaceId: b.workspaceId,
+      accountId: b.accountId,
+      agent: b.agent,
+      runnerId: b.runnerId,
+      quotaScope: b.quotaScope,
+      live: sql<number>`(${b.removedAt} IS NULL AND ${agentAccount.removedAt} IS NULL
+        AND ${agentAccount.enabled}=1 AND ${runner.revokedAt} IS NULL AND ${runner.status}<>'revoked')`,
+    })
+    .from(b)
+    .innerJoin(agentAccount, eq(agentAccount.id, b.accountId))
+    .innerJoin(runner, eq(runner.id, b.runnerId))
+    .where(eq(b.id, bindingId))
+    .get();
+  return (found as Binding | undefined) ?? null;
 }
 
 function scopeOf(binding: Binding, kind: AccountHealthKind) {
@@ -100,11 +108,12 @@ function scopeOf(binding: Binding, kind: AccountHealthKind) {
 }
 
 function row(db: Database, kind: AccountHealthKind, scopeId: string, model: string) {
-  return db
-    .query<AccountHealth, [string, string, string]>(
-      `SELECT ${columns} FROM agent_account_health WHERE kind=? AND scope_id=? AND model=?`,
-    )
-    .get(kind, scopeId, model);
+  const found = orm(db)
+    .select()
+    .from(health)
+    .where(and(eq(health.kind, kind), eq(health.scopeId, scopeId), eq(health.model, model)))
+    .get();
+  return (found as AccountHealth | undefined) ?? null;
 }
 
 const KIND: Record<Exclude<AccountHealthState, "ok">, AccountHealthKind> = {
@@ -161,33 +170,31 @@ export function recordAccountObservation(
               : failure
                 ? observation.observedAt + accountRecheckDelay(scopeId, failures)
                 : observation.observedAt;
-      db.run(
-        `INSERT INTO agent_account_health(kind,scope,scope_id,model,workspace_id,agent,state,source,source_id,
-         binding_id,runner_id,observed_at,resets_at,next_check_at,failures,updated_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(kind,scope_id,model) DO UPDATE SET scope=excluded.scope,state=excluded.state,
-         source=excluded.source,source_id=excluded.source_id,binding_id=excluded.binding_id,
-         runner_id=excluded.runner_id,observed_at=excluded.observed_at,resets_at=excluded.resets_at,
-         next_check_at=excluded.next_check_at,failures=excluded.failures,updated_at=excluded.updated_at`,
-        [
+      const update = {
+        scope,
+        state,
+        source: observation.source,
+        sourceId: observation.sourceId,
+        bindingId: binding.id,
+        runnerId: binding.runnerId,
+        observedAt: observation.observedAt,
+        resetsAt,
+        nextCheckAt,
+        failures: Math.min(failures, 1000),
+        updatedAt: observation.now,
+      };
+      orm(db)
+        .insert(health)
+        .values({
           kind,
-          scope,
           scopeId,
           model,
-          binding.workspaceId,
-          binding.agent,
-          state,
-          observation.source,
-          observation.sourceId,
-          binding.id,
-          binding.runnerId,
-          observation.observedAt,
-          resetsAt,
-          nextCheckAt,
-          Math.min(failures, 1000),
-          observation.now,
-        ],
-      );
+          workspaceId: binding.workspaceId,
+          agent: binding.agent,
+          ...update,
+        })
+        .onConflictDoUpdate({ target: [health.kind, health.scopeId, health.model], set: update })
+        .run();
       outcomes[kind] = "applied";
     }
     return outcomes;
@@ -215,11 +222,14 @@ export function legacyBindingAccountHealth(
   model?: string | null,
 ): AccountHealth[] {
   const id = legacyAgentBindingId(runnerId, agent as RunnerCodingAgent);
-  if (db.query("SELECT 1 FROM agent_account_binding WHERE id=?").get(id))
+  const b = agentAccountBinding;
+  if (orm(db).select({ id: b.id }).from(b).where(eq(b.id, id)).get())
     return bindingAccountHealth(db, id, model);
-  const workspace = db
-    .query<{ id: string }, [string]>("SELECT workspace_id AS id FROM runner WHERE id=?")
-    .get(runnerId);
+  const workspace = orm(db)
+    .select({ id: runner.workspaceId })
+    .from(runner)
+    .where(eq(runner.id, runnerId))
+    .get();
   const provider = workspace ? row(db, "provider", `${workspace.id}:${agent}`, "") : null;
   return provider ? [provider] : [];
 }
@@ -230,20 +240,18 @@ export function accountAttemptsInFlight(
   since: number,
   scope: "account" | "binding",
 ): number {
-  return db
-    .query<{ count: number }, [string, number]>(
-      `SELECT COUNT(*) AS count FROM (
+  return orm(db).all<{ count: number }>(
+    sql`SELECT COUNT(*) AS count FROM (
          SELECT u.command_id FROM runner_execution_usage u
-         WHERE u.ended_at IS NULL AND u.started_at>=?2
+         WHERE u.ended_at IS NULL AND u.started_at>=${since}
          UNION ALL
          SELECT d.command_id FROM retro_dispatch d
-         WHERE d.released_at IS NULL AND d.created_at>=?2
+         WHERE d.released_at IS NULL AND d.created_at>=${since}
        ) a
        JOIN runner_command_account c ON c.command_id=a.command_id
-       JOIN agent_account_binding b ON b.id=?1
-       WHERE ${scope === "account" ? "c.account_id=b.account_id" : "c.binding_id=b.id"}`,
-    )
-    .get(bindingId, since)!.count;
+       JOIN agent_account_binding b ON b.id=${bindingId}
+       WHERE ${sql.raw(scope === "account" ? "c.account_id=b.account_id" : "c.binding_id=b.id")}`,
+  )[0]!.count;
 }
 
 export function resumeAccountHealthNow(
@@ -252,9 +260,17 @@ export function resumeAccountHealthNow(
   runnerId: string | null,
   now: number,
 ): void {
-  db.run(
-    `UPDATE agent_account_health SET next_check_at=?1,updated_at=?1 WHERE agent=?2 AND kind='quota'
-     AND state='exhausted' AND next_check_at>?1 AND (?3 IS NULL OR runner_id=?3)`,
-    [now, agent, runnerId],
-  );
+  orm(db)
+    .update(health)
+    .set({ nextCheckAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(health.agent, agent),
+        eq(health.kind, "quota"),
+        eq(health.state, "exhausted"),
+        gt(health.nextCheckAt, now),
+        runnerId === null ? undefined : eq(health.runnerId, runnerId),
+      ),
+    )
+    .run();
 }
