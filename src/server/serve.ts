@@ -163,6 +163,7 @@ export type ServerOptions = {
   /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
   jobLoop?: () => JobLoopLiveness | null;
   healthDisk?: HealthOptions["disk"];
+  instanceId?: string;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
@@ -212,6 +213,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     now: options.healthNow,
     ...(options.jobLoop === undefined ? {} : { jobLoop: options.jobLoop }),
     ...(options.healthDisk === undefined ? {} : { disk: options.healthDisk }),
+    ...(options.instanceId === undefined ? {} : { instanceId: options.instanceId }),
   });
   const statusEnv = options.statusEnv;
   const closeoutHome = options.closeoutHome;

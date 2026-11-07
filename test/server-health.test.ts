@@ -119,7 +119,15 @@ describe("server health", () => {
         const body = JSON.parse(text) as HealthReport;
         expect(response.status).toBe(status);
         expect(response.headers.get("cache-control")).toBe("no-store");
-        expect(Object.keys(body)).toEqual(["ok", "service", "checks", "failedChecks"]);
+        expect(Object.keys(body)).toEqual([
+          "ok",
+          "service",
+          "instance",
+          "instances",
+          "checks",
+          "failedChecks",
+        ]);
+        expect(body).toMatchObject({ instance: null, instances: [] });
         expect(body).toMatchObject({ ok: !failed, service: "paws" });
         expect(body.failedChecks).toEqual(failed ? [failed] : []);
         expect(Object.keys(body.checks)).toHaveLength(9);

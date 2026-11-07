@@ -10,8 +10,8 @@ import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { createAccountManagement } from "./account-management";
 import { dirname, join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { createOnboardingReadiness } from "./onboarding-readiness";
 import {
   createMemberVmHttp,
@@ -130,6 +130,10 @@ import {
   prepareShutdown,
   markPawsAlive,
   PAWS_ALIVE_INTERVAL_MS,
+  deleteInstance,
+  heartbeatInstance,
+  INSTANCE_HEARTBEAT_MS,
+  registerInstance,
   recoverOnStartup,
   listSkills,
   listRepositoryCatalog,
@@ -252,6 +256,7 @@ import {
   itemRepositoryRefusals,
   itemRepositoryRunner,
 } from "./runner-placement";
+import { releaseVersionFromPath } from "./runner-protocol";
 import { startServer } from "./server";
 import { activeRunnerReadiness } from "./settings";
 import {
@@ -436,6 +441,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db.close();
     throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
+  const instance = registerInstance(db, {
+    role: "all",
+    host: hostname(),
+    version: installedPawsVersion(),
+    now: Date.now(),
+  });
   const releaseSettings = useSettingsStore(paths.configFile, {
     read: () => readSetting(db, CONFIG_SETTINGS_KEY),
     update: (change) => updateSetting(db, CONFIG_SETTINGS_KEY, change),
@@ -704,6 +715,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
       releaseSettings();
+      deleteInstance(db, instance.id);
       db.close();
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
@@ -756,6 +768,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     } catch (error) {
       abort.abort();
       releaseSettings();
+      deleteInstance(db, instance.id);
       db.close();
       throw error;
     }
@@ -1147,6 +1160,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       webhooks: webhooks || env.githubWebhookSecret !== null,
       db,
       jobLoop: () => jobLoop?.liveness() ?? null,
+      instanceId: instance.id,
       healthDisk: { paths: { tmpdir: tmpdir(), pawsHome: paths.home } },
       statusEnv: envSource,
       closeoutHome: paths.home,
@@ -1245,6 +1259,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   } catch (error) {
     abort.abort();
     releaseSettings();
+    deleteInstance(db, instance.id);
     if (runnerConfig !== null)
       void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
     else if (workspace === undefined) db.close();
@@ -1320,6 +1335,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   }
   const loops = startLoops({
     db,
+    instanceId: instance.id,
     signal: abort.signal,
     prepare(created) {
       assignments?.register(created.jobs);
@@ -1900,6 +1916,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     }
   }, PAWS_ALIVE_INTERVAL_MS);
   aliveTimer.unref?.();
+  const instanceTimer = setInterval(() => {
+    try {
+      heartbeatInstance(db, instance.id, Date.now());
+    } catch (error) {
+      journalCaught(error, "index.startPaws.heartbeatInstance", null);
+    }
+  }, INSTANCE_HEARTBEAT_MS);
+  instanceTimer.unref?.();
 
   let stopping: Promise<void> | undefined;
   return {
@@ -1948,12 +1972,33 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         close: () => {
           clearInterval(aliveTimer);
           releaseSettings();
-          db.close();
+          clearInterval(instanceTimer);
+          try {
+            deleteInstance(db, instance.id);
+          } finally {
+            db.close();
+          }
         },
       });
       return stopping;
     },
   };
+}
+
+function installedPawsVersion(): string | null {
+  try {
+    const release = releaseVersionFromPath(realpathSync(import.meta.dir));
+    if (release !== null) return release;
+    const head = Bun.spawnSync(["git", "-C", import.meta.dir, "rev-parse", "--short=12", "HEAD"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const revision = head.exitCode === 0 ? head.stdout.toString().trim() : "";
+    return revision === "" ? null : `git:${revision}`;
+  } catch (error) {
+    journalCaught(error, "index.installedPawsVersion", null);
+    return null;
+  }
 }
 
 export function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteExecution"]> {

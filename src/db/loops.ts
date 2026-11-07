@@ -11,6 +11,7 @@ export const JOB_WORKERS = 64;
 /** Poll the job queue and the outbox until `signal` aborts. `prepare` registers handlers first. */
 export function startLoops(input: {
   db: Database;
+  instanceId: string;
   signal: AbortSignal;
   clock?: Clock;
   concurrency?: number;
@@ -22,11 +23,13 @@ export function startLoops(input: {
 } {
   const clock = input.clock ?? systemClock;
   const jobs = new JobLoop(input.db, clock, {
+    workerId: input.instanceId,
     concurrency: input.concurrency ?? JOB_WORKERS,
     leaseMs: JOB_LEASE_MS,
     pollMs: JOB_IDLE_CLAIM_MS,
   });
   const outbox = new OutboxDispatcher(input.db, clock, {
+    workerId: `outbox:${input.instanceId}`,
     progressIntervalMs: LINEAR_PROGRESS_INTERVAL_MS,
   });
   input.prepare?.({ jobs, outbox });
