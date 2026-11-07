@@ -117,9 +117,10 @@ test("a change outside the proof paths skips the check", async () => {
 }, 60_000);
 
 test("a covered change no scenario names passes and says so", async () => {
-  const { item, log } = await closeout(() =>
-    appendFileSync(join(repo, "src/scheduler/index.ts"), "\n// fixture\n"),
-  );
+  const { item, log } = await closeout(() => {
+    rmSync(join(repo, "test/proofs/happy-path.ts"));
+    appendFileSync(join(repo, "src/scheduler/index.ts"), "\n// fixture\n");
+  });
   expect(item?.state).toBe("passed");
   expect(log).toContain("No proof scenario covers these paths");
 }, 60_000);
