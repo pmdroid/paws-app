@@ -4,6 +4,9 @@ import { FakeClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
+  claimNextJob,
+  enqueueJob,
+  saveSchedulerAdmission,
   beginImplementRun,
   consumeWorkspaceBootstrap,
   enterMergeQueue,
@@ -177,12 +180,24 @@ function setup(options: { version?: string; conversations?: number } = {}) {
   return {
     db,
     clock,
+    orchestrator,
     helpers,
     item,
     say: async (itemId: string, id: string, body: string) => {
       expect(await orchestrator.onLinearEvent(comment(itemId, id, body))).toBe(true);
     },
     deliver: (itemId: string) => deliverLinearComments(db, itemId, caps()),
+    turn: (session: string, key: string, body: string) =>
+      recordLinearTurn(db, {
+        eventKey: key,
+        activityId: null,
+        sessionId: session,
+        actorId: PASCAL,
+        body,
+        payload: "{}",
+        createdAtMs: clock.now(),
+        now: clock.now(),
+      }),
     reply: async (session: string, body: string) => {
       recordLinearTurn(db, {
         eventKey: `turn:${session}:1`,
@@ -354,4 +369,59 @@ test("an older runner gets today's restart", async () => {
   expect(f.conversations()).toEqual([]);
   expect(f.resumes()).toHaveLength(1);
   expect((f.resumes()[0]!.payload as { reason: string }).reason).toBe("follow_up");
+});
+
+test("a queued item's start job waits while a conversation runs on its session", async () => {
+  const f = setup();
+  f.item("acme-1", "queued");
+  await f.say("acme-1", "c-1", "What is left to do?");
+  expect(await f.deliver("acme-1")).toBe("wait");
+  const [started] = f.conversations();
+  const jobId = enqueueJob(f.db, {
+    queue: JOB_KIND.start,
+    payload: { itemId: "acme-1" },
+    now: f.clock.now(),
+  });
+  f.db.run("UPDATE run SET status='ended' WHERE item_id='acme-1'");
+  saveSchedulerAdmission(f.db, {
+    itemId: "acme-1",
+    jobId,
+    repositoryKey: "acme/web",
+    sessionId: null,
+    now: f.clock.now(),
+  });
+  const job = claimNextJob(f.db, { now: f.clock.now(), queues: [JOB_KIND.start] })!;
+  const current = { isCurrent: () => true };
+  expect(await f.orchestrator["waitingForConversation"](job, current)).toBe(true);
+  expect(listJobs(f.db).find((entry) => entry.id === job.id)).toMatchObject({
+    status: "pending",
+    attempts: job.attempts - 1,
+  });
+  expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
+
+  f.answer(started!.id, { text: "Only the tests." });
+  expect(await f.deliver("acme-1")).toBe("done");
+  f.clock.advance(60_000);
+  const again = claimNextJob(f.db, { now: f.clock.now(), queues: [JOB_KIND.start] })!;
+  expect(await f.orchestrator["waitingForConversation"](again, current)).toBe(false);
+});
+
+test("session replies past the prompt budget wait for the next conversation", async () => {
+  const f = setup();
+  const acme = f.item("acme-1");
+  f.turn(acme.session, "turn-1", `First: ${"a".repeat(40_000)}`);
+  f.turn(acme.session, "turn-2", `Second: ${"b".repeat(40_000)}`);
+  expect(await f.deliver("acme-1")).toBe("wait");
+  const [first] = f.conversations();
+  expect(first!.command.prompt).toContain("First:");
+  expect(first!.command.prompt).not.toContain("Second:");
+  expect(listPendingLinearTurns(f.db, acme.session).map((turn) => turn.eventKey)).toEqual([
+    "turn-2",
+  ]);
+
+  f.answer(first!.id, { text: "Read the first one." });
+  expect(await f.deliver("acme-1")).toBe("wait");
+  const [second] = f.conversations();
+  expect(second!.command.prompt).toContain("Second:");
+  expect(listPendingLinearTurns(f.db, acme.session)).toEqual([]);
 });

@@ -1851,11 +1851,13 @@ export class Orchestrator {
       await this.flush();
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
+      if (await this.waitingForConversation(job, context)) return;
       if (this.waitingForRunnerSlot(job)) return;
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
+      if (await this.waitingForConversation(job, context)) return;
       if (this.waitingForRunnerSlot(job)) return;
       if (await this.mergeInsteadOfTurn(job, context)) return;
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
@@ -1868,7 +1870,8 @@ export class Orchestrator {
         !item ||
         !this.reverifyEligible(item) ||
         !context.isCurrent() ||
-        !this.reverifyJobCurrent(job, item)
+        !this.reverifyJobCurrent(job, item) ||
+        (await this.waitingForConversation(job, context))
       )
         return;
       await this.failOnLastAttempt(job, context, "reverify", async () => {
@@ -2763,6 +2766,17 @@ export class Orchestrator {
   private runnerWaitMs(wait: RunnerCapacityWaitState, recoveringResume = false): number {
     const baseMs = placementWaitMs(wait.attempt, this.options.placementPollMs);
     return recoveringResume ? baseMs - resumeRetrySpreadMs(baseMs, this.options.random) : baseMs;
+  }
+
+  private async waitingForConversation(
+    job: Job,
+    context: { isCurrent(): boolean },
+  ): Promise<boolean> {
+    const itemId = readString(job.payload, "itemId");
+    const talk = itemId === null ? null : await this.options.conversations?.();
+    if (!talk || talk.open(itemId!).length === 0 || !context.isCurrent()) return false;
+    waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+    return true;
   }
 
   private waitingForRunnerSlot(job: Job, beforePark?: () => Job): boolean {

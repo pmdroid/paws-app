@@ -425,10 +425,15 @@ function startConversation(
 ): void {
   const batch = fitLinearComments(comments);
   const section = linearCommentSection(batch, item.linearIdentifier);
-  const prompt = clip(
-    [...(section === null ? [] : [section]), ...turns.map((turn) => turn.body)].join("\n\n"),
-    CONVERSATION_PROMPT_CHARS,
-  );
+  const parts = section === null ? [] : [section];
+  const sent: string[] = [];
+  for (const turn of turns) {
+    const next = [...parts, turn.body].join("\n\n");
+    if (parts.length > 0 && next.length > CONVERSATION_PROMPT_CHARS) break;
+    parts.push(turn.body);
+    sent.push(turn.eventKey);
+  }
+  const prompt = clip(parts.join("\n\n"), CONVERSATION_PROMPT_CHARS);
   if (prompt.trim() === "") return;
   immediate(db, () => {
     if (!talk.start(item.id, item.sessionKey!, prompt)) return;
@@ -437,13 +442,7 @@ function startConversation(
       batch.map((comment) => comment.commentId),
       { via: "follow_up", itemVersion: item.version, now },
     );
-    if (turns.length > 0)
-      applyLinearTurns(
-        db,
-        item.sessionKey!,
-        turns.map((turn) => turn.eventKey),
-        item.id,
-      );
+    if (sent.length > 0) applyLinearTurns(db, item.sessionKey!, sent, item.id);
   });
 }
 
