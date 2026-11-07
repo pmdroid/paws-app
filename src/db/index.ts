@@ -260,8 +260,10 @@ export {
   leasedJobsForItem,
 } from "./jobs";
 export {
+  cancelUnhandledJobSteps,
   JobLoop,
   JOB_PROGRESS_STALE_MS,
+  removeUnknownRecurringJobsSteps,
   type JobContext,
   type JobHandler,
   type JobLoopLiveness,

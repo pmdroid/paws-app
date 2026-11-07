@@ -1,11 +1,10 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
-import { and, isNotNull, notInArray } from "drizzle-orm";
+import { and, eq, isNotNull, notInArray, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 import { jobInstanceElsewhere } from "./instances";
 import { journal } from "./journal";
-import { orm } from "./orm";
-import { job as jobTable } from "./schema";
 import { accrueAtJobBoundary } from "./items";
 import {
   claimNextJob,
@@ -52,6 +51,45 @@ const EXECUTION_QUEUES: readonly string[] = [JOB_KIND.start, JOB_KIND.resume, JO
 
 function isControlQueue(queue: string): boolean {
   return !EXECUTION_QUEUES.includes(queue) && !isMergeWork(queue);
+}
+
+export function* removeUnknownRecurringJobsSteps(q: Q, registered: readonly string[]) {
+  const { job } = q.t;
+  return yield* q.all(
+    q.orm
+      .delete(job)
+      .where(
+        and(
+          isNotNull(job.recurringEveryMs),
+          registered.length ? notInArray(job.queue, [...registered]) : undefined,
+        ),
+      )
+      .returning({ id: job.id, queue: job.queue }),
+  );
+}
+
+export function* cancelUnhandledJobSteps(q: Q, claimed: Job, reason: string, now: number) {
+  const { job } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .update(job)
+      .set({
+        status: "cancelled",
+        lastError: reason,
+        finishedAt: now,
+        lockedBy: null,
+        lockedUntil: null,
+      })
+      .where(
+        and(
+          eq(job.id, claimed.id),
+          eq(job.status, "running"),
+          eq(job.lockedBy, claimed.lockedBy ?? sql`NULL`),
+        ),
+      )
+      .returning({ id: job.id }),
+  );
+  return rows.length > 0;
 }
 
 export class JobLoop {
@@ -156,16 +194,7 @@ export class JobLoop {
     const registered = [...this.handlers.keys()];
     try {
       if (jobInstanceElsewhere(this.db, this.options.instanceId, this.clock.now())) return [];
-      return orm(this.db)
-        .delete(jobTable)
-        .where(
-          and(
-            isNotNull(jobTable.recurringEveryMs),
-            registered.length ? notInArray(jobTable.queue, registered) : undefined,
-          ),
-        )
-        .returning({ id: jobTable.id, queue: jobTable.queue })
-        .all();
+      return settled(sqliteDb(this.db).run((q) => removeUnknownRecurringJobsSteps(q, registered)));
     } catch (error) {
       // The same lock that used to reject tick also rejected run() before workers existed.
       journalCaught(error, "loop.run.removeUnknownRecurring", null);
@@ -230,13 +259,10 @@ export class JobLoop {
     const handler = this.handlers.get(job.queue);
     if (handler === undefined) {
       const reason = `No handler for ${job.queue}`;
-      const result = this.db.run(
-        `UPDATE job SET status = 'cancelled', last_error = ?, finished_at = ?,
-         locked_by = NULL, locked_until = NULL
-         WHERE id = ? AND status = 'running' AND locked_by = ?`,
-        [reason, now, job.id, job.lockedBy],
+      const cancelled = settled(
+        sqliteDb(this.db).run((q) => cancelUnhandledJobSteps(q, job, reason, now)),
       );
-      if (result.changes > 0) journal(`job ${job.id} ${job.queue} cancelled: ${reason}`);
+      if (cancelled) journal(`job ${job.id} ${job.queue} cancelled: ${reason}`);
       return { job, done: Promise.resolve() };
     }
     return { job, done: this.execute(job, handler) };
