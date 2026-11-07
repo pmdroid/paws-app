@@ -190,28 +190,6 @@ src/db/retro-activity.ts | findingGroups: db .query< | not yet converted to Driz
 src/db/retro-activity.ts | escapes: db .query< | not yet converted to Drizzle
 src/db/retro-activity.ts | rebaseReturns: db .query<RetroActivityRebaseReturn, [string, number]>( | not yet converted to Drizzle
 src/db/retro-activity.ts | ciRounds: db .query<Omit<RetroActivityCiRound, "failedChecks"> & { checks: string }, [string, number]>( | not yet converted to Drizzle
-src/db/retros.ts | db.run("UPDATE retro_repository SET end_cursor = ? WHERE retro_id = ? AND repository = ?", [ | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | db .query( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | return db .query<RetroAttempt, [string]>( | not yet converted to Drizzle
-src/db/retros.ts | const advanced = db.run( | not yet converted to Drizzle
-src/db/retros.ts | const moved = db.run( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | db.run("DELETE FROM retro_collection_lock WHERE retro_id = ?", [retro.id]); | not yet converted to Drizzle
-src/db/retros.ts | const changed = db.run( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | db.run("DELETE FROM retro_collection_lock WHERE retro_id = ?", [input.retroId]); | not yet converted to Drizzle
-src/db/retros.ts | return db .query<Omit<RetroItem, "evidenceIds"> & { evidenceIds: string }, [string]>( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | return db .query<RetroScheduleRuntime, [string]>( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
 src/db/review-escapes.ts | db.run( | not yet converted to Drizzle
 src/db/review-escapes.ts | return db .query<Row, [string]>( | not yet converted to Drizzle
 src/db/review-escapes.ts | db.run( | not yet converted to Drizzle
