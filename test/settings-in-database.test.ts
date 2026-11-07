@@ -72,14 +72,14 @@ test("a setting saved on instance A is read by instance B on its next use", asyn
   const b = instance(dbPath, "ACME-B");
   expect(loadConfigFile(b.configPath).timeLimits).toBeUndefined();
 
-  expect((await saveTimeLimits(a.configPath, 45)).status).toBe(200);
+  expect((await saveTimeLimits(a.configPath, 45))?.status).toBe(200);
 
   expect(loadConfigFile(b.configPath).timeLimits?.implementationMinutes).toBe(45);
   expect(readMergeSettings(loadConfigFile(b.configPath)).default.order).toBe("queue");
   expect(loadConfigFile(b.configPath).linearTeam).toBe("ACME-B");
   expect(readFileSync(a.configPath, "utf8")).toBe(BOOTSTRAP);
 
-  expect((await saveTimeLimits(b.configPath, 30)).status).toBe(200);
+  expect((await saveTimeLimits(b.configPath, 30))?.status).toBe(200);
   expect(loadConfigFile(a.configPath).timeLimits?.implementationMinutes).toBe(30);
 });
 
