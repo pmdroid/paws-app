@@ -276,6 +276,13 @@ export {
   roleRunsJobs,
   type Instance,
   type InstanceRole,
+  deleteInstanceSteps,
+  heartbeatInstanceSteps,
+  jobInstanceElsewhereSteps,
+  lastInstanceHeartbeatSteps,
+  liveInstancesSteps,
+  registerInstanceSteps,
+  stopInstanceSteps,
 } from "./instances";
 export { startLoops } from "./loops";
 export { legacyMigrate } from "./legacy-migrate";
@@ -541,6 +548,11 @@ export {
   type WorkItemBlockRecord,
   type WorkItemFact,
   openQuestionKind,
+  deliveredLinearIssueStateSteps,
+  listOpenQuestionsSteps,
+  listWorkItemBlocksSteps,
+  listWorkItemFactsSteps,
+  openQuestionKindSteps,
 } from "./reads";
 export {
   applyLinearIssueProject,
@@ -806,6 +818,11 @@ export {
   type VisualReviewCarriedFile,
   type VisualReviewMark,
   type VisualReviewRecord,
+  getVisualReviewMarkSteps,
+  listVisualReviewMarksSteps,
+  listVisualReviewsSteps,
+  openVisualReviewFilesSteps,
+  saveVisualReviewMarksSteps,
 } from "./visual-reviews";
 export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";
 export {
@@ -856,7 +873,12 @@ export {
   linearSessionsForUndelegatedIssueSteps,
 } from "./linear-delegation";
 
-export { assertLinearSessionCleanup, blockLinearSessionCleanup } from "./session-cleanup";
+export {
+  assertLinearSessionCleanup,
+  assertLinearSessionCleanupSteps,
+  blockLinearSessionCleanup,
+  blockLinearSessionCleanupSteps,
+} from "./session-cleanup";
 export { prepareLinearActivity } from "./linear-delivery";
 
 export {
@@ -1031,6 +1053,17 @@ export {
   saveSkill,
   setSkillAgents,
   skillRollouts,
+  getSkillSteps,
+  listRunnerSkillsSteps,
+  listSkillsSteps,
+  markSkillRemovedSteps,
+  recordRunAgentSetupSteps,
+  recordRunnerSkillsSteps,
+  runAgentSetupSteps,
+  runnerSkillStatesSteps,
+  saveSkillSteps,
+  setSkillAgentsSteps,
+  skillRolloutsSteps,
 } from "./skills";
 export type {
   RunAgentSetup,

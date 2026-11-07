@@ -1,6 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { INSTANCE_DEAD_MS, ownerGoneSteps } from "../src/db";
-import { forEachDialect, seed, type DialectDb } from "./dialects";
+import {
+  deleteInstanceSteps,
+  heartbeatInstanceSteps,
+  jobInstanceElsewhereSteps,
+  lastInstanceHeartbeatSteps,
+  liveInstancesSteps,
+  registerInstanceSteps,
+  stopInstanceSteps,
+} from "../src/db";
+import { forEachDialect, type DialectDb } from "./dialects";
 
 const open: DialectDb[] = [];
 afterEach(async () => {
@@ -8,38 +16,33 @@ afterEach(async () => {
 });
 
 forEachDialect((connect) => {
-  test("an owner is gone once it stopped, missed its heartbeat or its process on this host exited", async () => {
+  test("instances register, beat, stop and leave the live set", async () => {
     const handle = await connect();
     open.push(handle);
     const { db } = handle;
-    const now = 1_800_000_000_000;
-    const row = (
-      id: string,
-      host: string,
-      extra: { pid?: number; stoppedAt?: number; heartbeatAt?: number } = {},
-    ) => ({
-      id,
-      role: "all",
-      host,
-      startedAt: 0,
-      heartbeatAt: now,
-      ...extra,
-    });
-    await seed(db, (q) =>
-      q.orm
-        .insert(q.t.instance)
-        .values([
-          row("self", "here", { pid: process.pid }),
-          row("remote", "there", { pid: 2 ** 22 + 1 }),
-          row("stopped", "there", { stoppedAt: now }),
-          row("silent", "there", { heartbeatAt: now - INSTANCE_DEAD_MS }),
-          row("exited", "here", { pid: 2 ** 22 + 1 }),
-          row("unknown-pid", "here"),
-        ]),
+    expect(await db.run(lastInstanceHeartbeatSteps)).toBeNull();
+    const web = await db.run((q) =>
+      registerInstanceSteps(q, { role: "web", host: "a", version: "1", now: 1_000, pid: 7 }),
     );
-    const gone = await db.run((q) => ownerGoneSteps(q, "self", now));
-    expect(
-      ["self", "remote", "stopped", "silent", "exited", "unknown-pid", "never-seen"].filter(gone),
-    ).toEqual(["stopped", "silent", "exited", "never-seen"]);
+    const worker = await db.run((q) =>
+      registerInstanceSteps(q, { role: "worker", host: "b", version: null, now: 2_000 }),
+    );
+    expect(worker).toMatchObject({ role: "worker", startedAt: 2_000, pid: null });
+    expect(await db.run((q) => heartbeatInstanceSteps(q, web.id, 3_000))).toBe(true);
+    expect(await db.run((q) => heartbeatInstanceSteps(q, "missing", 3_000))).toBe(false);
+    expect(await db.run((q) => liveInstancesSteps(q, 3_000))).toEqual([
+      { ...web, heartbeatAt: 3_000 },
+      worker,
+    ]);
+    expect(await db.run((q) => jobInstanceElsewhereSteps(q, web.id, 3_000))).toBe(true);
+    expect(await db.run((q) => jobInstanceElsewhereSteps(q, worker.id, 3_000))).toBe(false);
+
+    await db.run((q) => stopInstanceSteps(q, worker.id, 4_000));
+    expect(await db.run(lastInstanceHeartbeatSteps)).toBe(4_000);
+    expect((await db.run((q) => liveInstancesSteps(q, 4_000))).map((row) => row.id)).toEqual([
+      web.id,
+    ]);
+    await db.run((q) => deleteInstanceSteps(q, web.id));
+    expect(await db.run((q) => liveInstancesSteps(q, 4_000))).toEqual([]);
   });
 });
