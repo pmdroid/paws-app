@@ -1,4 +1,6 @@
 import { journalCaught } from "../journal";
+import { journal } from "./journal";
+import { ownerGone } from "./instances";
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, isNull, like, or, sql, type SQL } from "drizzle-orm";
 import {
@@ -30,7 +32,7 @@ import {
 } from "./runner-lease";
 import { mergeCallInFlight } from "./remote-merges";
 import { ensureRestartQuestion } from "./restart-hold";
-import { getRun, markRun, releaseRunCapacity } from "./runs";
+import { claimRun, getRun, markRun, releaseRunCapacity, runOwner } from "./runs";
 import { pendingRestartHandoff } from "./restart";
 import { orm } from "./orm";
 import { job, runnerWork, runnerWorkGrant } from "./schema";
@@ -49,66 +51,120 @@ const STARTUP_STATES = [
 
 const STARTUP_RESUME_SPACING_MS = 5_000;
 
+/** The leased job that takes over a gone instance's runs while Paws runs, and how often it runs. */
+export const RUN_TAKEOVER_JOB = "run.takeover";
+export const RUN_TAKEOVER_MS = 30_000;
+
 /**
  * On process start, resume a live run once or ask whether to start it again. An item in the merge
  * queue keeps its place; one whose merge call may have been in flight asks GitHub before it moves.
- * Paws downtime, up to `offlineBudgetMs`, does not count against an open runner lease.
+ * Paws downtime, up to `offlineBudgetMs`, does not count against an open runner lease. Given
+ * `instanceId`, only items whose run has no owner or a gone owner recover, and this instance takes
+ * their runs over; a live instance's runs stay with it.
  */
 export function recoverOnStartup(
   db: Database,
   now = Date.now(),
   offlineBudgetMs?: number,
+  instanceId?: string,
 ): StartupDecision[] {
   return immediate(db, () => {
     shiftRunnerLeasesForDowntime(db, now, offlineBudgetMs);
-    const items = listWorkItemsByStates(db, STARTUP_STATES);
-    const decisions: StartupDecision[] = [];
-    let resumes = 0;
-    const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
-    for (const item of items) {
-      if (ensureRestartQuestion(db, item, now)) {
-        decisions.push({ type: "ask_restart" });
-        continue;
-      }
-      if (hasParkedCapacityWait(db, item)) continue;
-      if (hasPendingAnswerResume(db, item.id)) continue;
-      if (hasPendingTransientRetry(db, item)) continue;
-      const holds = runnerHoldsWork(db, item, now);
-      const decision = decideStartup({
-        itemState: item.state,
-        recoveryAttempts: item.recoveryAttempts,
-        checkpoint: item.checkpoint,
-        runnerHoldsWork: holds,
-        mergeCallInFlight: mergeCallInFlight(db, item.id),
-        runActive: runActive(db, item),
-        ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
-      });
-      // A re-verify the shutdown cut short attaches to the runner's Closeout work itself.
-      const followed =
-        decision.type === "resume"
-          ? decision.reattach === true && hasPendingResume(db, item.id, "process_restart")
-          : decision.type === "reverify" &&
-            holds &&
-            item.state === "verifying" &&
-            hasOpenReverify(db, item.id);
-      if (!followed)
-        applyDecision(db, item, decision, now, {
-          ...(decision.type === "resume" ? { runAt: nextResumeAt() } : {}),
-        });
-      decisions.push(decision);
-    }
-    for (const item of listWorkItemsByStates(db, ["awaiting_input"])) {
-      if (item.currentRunId !== null) releaseRunCapacity(db, item.currentRunId, now);
-    }
-    if (items.some((item) => item.state === "awaiting_input"))
-      enqueueJobOnce(db, {
-        queue: JOB_KIND.catchup,
-        jobKey: `startup-questions:${now}`,
-        payload: { reason: "open_questions" },
-        now,
-      });
-    return decisions;
+    return recoverItems(db, now, instanceId, true);
   });
+}
+
+/** Take over and recover, as on startup, the runs of instances that stopped without releasing them. */
+export function takeOverGoneRuns(
+  db: Database,
+  instanceId: string,
+  now = Date.now(),
+): StartupDecision[] {
+  return immediate(db, () => recoverItems(db, now, instanceId, false));
+}
+
+function recoverItems(
+  db: Database,
+  now: number,
+  instanceId: string | undefined,
+  unowned: boolean,
+): StartupDecision[] {
+  const takesOver = instanceId === undefined ? () => true : takeoverFilter(db, instanceId, now);
+  const items = listWorkItemsByStates(db, STARTUP_STATES).filter((item) =>
+    takesOver(item, unowned),
+  );
+  const decisions: StartupDecision[] = [];
+  let resumes = 0;
+  const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
+  for (const item of items) {
+    if (instanceId !== undefined && item.currentRunId !== null) {
+      const from = runOwner(db, item.currentRunId);
+      claimRun(db, item.currentRunId, instanceId);
+      if (from !== null)
+        journal(
+          `run ${item.currentRunId} taken over item=${item.id} from=${from} by=${instanceId}`,
+        );
+    }
+    if (ensureRestartQuestion(db, item, now)) {
+      decisions.push({ type: "ask_restart" });
+      continue;
+    }
+    if (hasParkedCapacityWait(db, item)) continue;
+    if (hasPendingAnswerResume(db, item.id)) continue;
+    if (hasPendingTransientRetry(db, item)) continue;
+    const holds = runnerHoldsWork(db, item, now);
+    const decision = decideStartup({
+      itemState: item.state,
+      recoveryAttempts: item.recoveryAttempts,
+      checkpoint: item.checkpoint,
+      runnerHoldsWork: holds,
+      mergeCallInFlight: mergeCallInFlight(db, item.id),
+      runActive: runActive(db, item),
+      ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
+    });
+    // A re-verify the shutdown cut short attaches to the runner's Closeout work itself.
+    const followed =
+      decision.type === "resume"
+        ? decision.reattach === true && hasPendingResume(db, item.id, "process_restart")
+        : decision.type === "reverify" &&
+          holds &&
+          item.state === "verifying" &&
+          hasOpenReverify(db, item.id);
+    if (!followed)
+      applyDecision(db, item, decision, now, {
+        ...(decision.type === "resume" ? { runAt: nextResumeAt() } : {}),
+      });
+    decisions.push(decision);
+  }
+  const taken = new Set(items.map((item) => item.id));
+  for (const item of listWorkItemsByStates(db, ["awaiting_input"])) {
+    if (taken.has(item.id) && item.currentRunId !== null)
+      releaseRunCapacity(db, item.currentRunId, now);
+  }
+  if (items.some((item) => item.state === "awaiting_input"))
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.catchup,
+      jobKey: `startup-questions:${now}`,
+      payload: { reason: "open_questions" },
+      now,
+    });
+  return decisions;
+}
+
+/**
+ * Whether instance `self` acts on an item: its run's owner is gone, or, with `unowned`, the item
+ * has no run or its run no owner.
+ */
+function takeoverFilter(
+  db: Database,
+  self: string,
+  now: number,
+): (item: WorkItemRecord, unowned: boolean) => boolean {
+  const gone = ownerGone(db, self, now);
+  return (item, unowned) => {
+    const owner = item.currentRunId === null ? null : runOwner(db, item.currentRunId);
+    return owner === null ? unowned : gone(owner);
+  };
 }
 
 /** A capacity wait already has its next attempt; restarting neither spends recovery nor adds a job. */
@@ -188,15 +244,22 @@ function hasPendingResume(db: Database, itemId: string, reason: string): boolean
  * holds keeps its state: an agent turn, or a verifying item's Closeout review or
  * check run. An item waiting in
  * the merge queue keeps its state and its place for the next start to pick up; one
- * whose run is still active is left for a re-verify.
+ * whose run is still active is left for a re-verify. Given `instanceId`, only items
+ * whose run this instance owns, or no instance owns, are touched.
  */
 export function prepareShutdown(
   db: Database,
   now = Date.now(),
   commitWip?: ShutdownWipCommit,
+  instanceId?: string,
 ): void {
+  const owns = (item: WorkItemRecord) => {
+    if (instanceId === undefined || item.currentRunId === null) return true;
+    const owner = runOwner(db, item.currentRunId);
+    return owner === null || owner === instanceId;
+  };
   if (commitWip !== undefined) {
-    for (const item of listInFlightItems(db)) {
+    for (const item of listInFlightItems(db).filter(owns)) {
       try {
         commitWip(item);
       } catch (caughtError1) {
@@ -207,13 +270,13 @@ export function prepareShutdown(
   }
   immediate(db, () => {
     markPawsAlive(db, now);
-    const running = listWorkItemsByStates(db, ["running", "verifying"]);
+    const running = listWorkItemsByStates(db, ["running", "verifying"]).filter(owns);
     for (const item of running) {
       if (hasParkedCapacityWait(db, item) || runnerHoldsWork(db, item, now)) continue;
       if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
       if (!keepsVerification(item)) applyWorkItemEvent(db, item.id, "lease_expired");
     }
-    for (const item of listWorkItemsByStates(db, ["merge_queue"])) {
+    for (const item of listWorkItemsByStates(db, ["merge_queue"]).filter(owns)) {
       if (!runActive(db, item)) continue;
       markRun(db, item.currentRunId!, "lost", now);
       applyWorkItemEvent(db, item.id, "lease_expired");

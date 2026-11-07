@@ -261,6 +261,7 @@ import {
   listAgentCloseout,
   recordAgentCloseout,
   immediate,
+  claimRun,
   insertRun,
   listInFlightItems,
   listCloseoutRecoveries,
@@ -639,6 +640,8 @@ export type { RepositoryBinding } from "../core";
 
 export type OrchestratorOptions = {
   db: Database;
+  /** The instance this process registered. Runs it starts or continues record it as their owner. */
+  instanceId?: string;
   jobs: JobLoop;
   outbox: OutboxDispatcher;
   pawsRoot: string;
@@ -3935,6 +3938,7 @@ export class Orchestrator {
           status: "active",
           freshSession: true,
           now: this.now(),
+          ownerInstance: this.options.instanceId ?? null,
         });
         ownedRunId = run.id;
         setCurrentRun(this.db, current.id, run.id);
@@ -6988,6 +6992,7 @@ export class Orchestrator {
       if (existing && (existing.status === "active" || existing.status === "ended")) {
         this.reconcileAgentSettings();
         markRun(this.db, existing.id, "active", this.now());
+        this.claimRun(existing.id);
         return existing;
       }
       // A runner-setup hold stopped this run before any work. The resume continues it, so the
@@ -6995,6 +7000,7 @@ export class Orchestrator {
       if (existing?.status === "lost" && takeRunnerSetupResume(this.db, item.id, existing.id)) {
         this.reconcileAgentSettings();
         markRun(this.db, existing.id, "active", this.now());
+        this.claimRun(existing.id);
         return existing;
       }
     }
@@ -7010,6 +7016,7 @@ export class Orchestrator {
       kind: "implement",
       agent: profiles.implementer.agent,
       freshSession: true,
+      ownerInstance: this.options.instanceId ?? null,
     });
     if (item.currentRunId) {
       // Only an unannounced Settings switch carries over, while it still changes the agent.
@@ -9698,6 +9705,10 @@ export class Orchestrator {
 
   private now(): number {
     return (this.options.clock ?? systemClock).now();
+  }
+
+  private claimRun(runId: string): void {
+    if (this.options.instanceId !== undefined) claimRun(this.db, runId, this.options.instanceId);
   }
 
   private async waitWithoutAwake(

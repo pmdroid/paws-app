@@ -135,6 +135,9 @@ import {
   INSTANCE_HEARTBEAT_MS,
   registerInstance,
   recoverOnStartup,
+  RUN_TAKEOVER_JOB,
+  RUN_TAKEOVER_MS,
+  takeOverGoneRuns,
   listSkills,
   listRepositoryCatalog,
   refreshRepositoryCatalog,
@@ -446,6 +449,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     host: hostname(),
     version: installedPawsVersion(),
     now: Date.now(),
+    pid: process.pid,
   });
   const releaseSettings = useSettingsStore(paths.configFile, {
     read: () => readSetting(db, CONFIG_SETTINGS_KEY),
@@ -467,7 +471,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
-  recoverOnStartup(db);
+  recoverOnStartup(db, Date.now(), undefined, instance.id);
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
@@ -1338,6 +1342,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     instanceId: instance.id,
     signal: abort.signal,
     prepare(created) {
+      // A crashed instance's runs move to a live one without waiting for a restart.
+      created.jobs.register(RUN_TAKEOVER_JOB, () => {
+        takeOverGoneRuns(db, instance.id, Date.now());
+      });
+      enqueueJobOnce(db, {
+        queue: RUN_TAKEOVER_JOB,
+        jobKey: RUN_TAKEOVER_JOB,
+        recurringEveryMs: RUN_TAKEOVER_MS,
+        now: Date.now(),
+      });
       assignments?.register(created.jobs);
       parents?.register(created.jobs);
       registerMemberVmJob(created.jobs, {
@@ -1372,6 +1386,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       });
       const attached = attachOrchestrator({
         db,
+        instanceId: instance.id,
         jobs: created.jobs,
         outbox: created.outbox,
         pawsRoot: paths.home,
@@ -1959,16 +1974,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           [{ name: "runner", stop: stopRunner }],
         ],
         flush: () =>
-          prepareShutdown(db, Date.now(), (item) => {
-            const policy = getItemRunCommitPolicy(db, item.id);
-            if (policy)
-              commitCheckpointSync(
-                worktreePath(paths.home, itemPathId(item)),
-                "wip: shutdown",
-                undefined,
-                policy,
-              );
-          }),
+          prepareShutdown(
+            db,
+            Date.now(),
+            (item) => {
+              const policy = getItemRunCommitPolicy(db, item.id);
+              if (policy)
+                commitCheckpointSync(
+                  worktreePath(paths.home, itemPathId(item)),
+                  "wip: shutdown",
+                  undefined,
+                  policy,
+                );
+            },
+            instance.id,
+          ),
         close: () => {
           clearInterval(aliveTimer);
           releaseSettings();

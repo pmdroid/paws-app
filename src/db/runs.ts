@@ -4,7 +4,14 @@ import { readCheckpoint } from "./checkpoint";
 import { randomUUID } from "node:crypto";
 import type { Checkpoint, RunKind, RunStatus, GitCommitPolicy } from "../core";
 import { orm } from "./orm";
-import { run as runTable, runReviewRounds, runnerWork, runnerWorkGrant, workItem } from "./schema";
+import {
+  run as runTable,
+  runOwner as runOwnerTable,
+  runReviewRounds,
+  runnerWork,
+  runnerWorkGrant,
+  workItem,
+} from "./schema";
 
 export type StoredRun = {
   id: string;
@@ -30,6 +37,7 @@ export function insertRun(
     status?: RunStatus;
     checkpoint?: Checkpoint | null;
     freshSession?: boolean;
+    ownerInstance?: string | null;
   },
 ): StoredRun {
   const id = randomUUID();
@@ -48,6 +56,7 @@ export function insertRun(
       updatedAt: input.now,
     })
     .run();
+  if (input.ownerInstance != null) claimRun(db, id, input.ownerInstance);
   const run = getRun(db, id);
   if (run === null) throw new Error("insertRun did not store a row");
   return run;
@@ -67,6 +76,26 @@ export function listRuns(db: Database, itemId?: string): StoredRun[] {
     .orderBy(asc(runTable.createdAt), asc(runTable.id))
     .all()
     .map(mapRun);
+}
+
+/** The instance that runs `runId`'s turns, or null for a run no instance has claimed. */
+export function runOwner(db: Database, runId: string): string | null {
+  return (
+    orm(db)
+      .select({ owner: runOwnerTable.ownerInstance })
+      .from(runOwnerTable)
+      .where(eq(runOwnerTable.runId, runId))
+      .get()?.owner ?? null
+  );
+}
+
+/** Record `ownerInstance` as the instance that runs `runId`'s turns from now on. */
+export function claimRun(db: Database, runId: string, ownerInstance: string): void {
+  orm(db)
+    .insert(runOwnerTable)
+    .values({ runId, ownerInstance })
+    .onConflictDoUpdate({ target: runOwnerTable.runId, set: { ownerInstance } })
+    .run();
 }
 
 export function markRun(db: Database, id: string, status: RunStatus, now: number): void {

@@ -400,6 +400,9 @@ export {
   prepareShutdown,
   recoverOnStartup,
   requeueOrphanedWork,
+  RUN_TAKEOVER_JOB,
+  RUN_TAKEOVER_MS,
+  takeOverGoneRuns,
 } from "./recovery";
 export {
   markPawsAlive,
@@ -415,10 +418,12 @@ export {
 } from "./runner-lease";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {
+  claimRun,
   getRun,
   insertRun,
   listRuns,
   markRun,
+  runOwner,
   recordReviewRounds,
   reviewRoundsOf,
   releaseRunCapacity,
