@@ -2,24 +2,74 @@ import type { Database } from "bun:sqlite";
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { orm, type Orm } from "./orm";
-import type * as pgSchema from "./schema-pg";
+import * as sqliteSchema from "./schema";
+import * as pgSchema from "./schema-pg";
 
 export type PgOrm = PgDatabase<PgQueryResultHKT, typeof pgSchema>;
 
-export type SqliteDb = {
+type Step =
+  | { readonly kind: "all" | "one" | "exec"; readonly query: unknown }
+  | { readonly kind: "transaction"; readonly body: Body<unknown> };
+
+export type Steps<T> = Generator<Step, T, unknown>;
+
+type Body<T> = (q: Q) => Steps<T>;
+
+export type Q = {
+  readonly dialect: "sqlite" | "postgres";
+  readonly orm: PgOrm;
+  readonly t: typeof pgSchema;
+  all<R>(query: PromiseLike<R[]>): Steps<R[]>;
+  one<R>(query: PromiseLike<R[]>): Steps<R | undefined>;
+  exec(query: PromiseLike<unknown>): Steps<void>;
+  transaction<T>(body: Body<T>): Steps<T>;
+};
+
+type Runs = {
+  run<T>(body: Body<T>): Promise<T>;
+  transaction<T>(body: Body<T>): Promise<T>;
+};
+
+export type SqliteDb = Runs & {
   readonly dialect: "sqlite";
   readonly orm: Orm;
   sync<T>(fn: (orm: Orm) => T): Promise<T>;
-  transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
 };
 
-export type PgDb = {
+export type PgDb = Runs & {
   readonly dialect: "postgres";
   readonly orm: PgOrm;
-  transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
 };
 
 export type Db = SqliteDb | PgDb;
+
+function queries(dialect: Q["dialect"], handle: unknown, t: unknown): Q {
+  return {
+    dialect,
+    orm: handle as PgOrm,
+    t: t as typeof pgSchema,
+    *all<R>(query: PromiseLike<R[]>) {
+      return (yield { kind: "all", query }) as R[];
+    },
+    *one<R>(query: PromiseLike<R[]>) {
+      return (yield { kind: "one", query }) as R | undefined;
+    },
+    *exec(query: PromiseLike<unknown>) {
+      yield { kind: "exec", query };
+    },
+    *transaction<T>(body: Body<T>) {
+      return (yield { kind: "transaction", body: body as Body<unknown> }) as T;
+    },
+  };
+}
+
+function settle<T>(fn: () => T): Promise<T> {
+  try {
+    return Promise.resolve(fn());
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
 
 const sqliteDbs = new WeakMap<Database, SqliteDb>();
 let savepoints = 0;
@@ -33,69 +83,96 @@ export function sqliteDb(database: Database): SqliteDb {
   return db;
 }
 
+type SqliteQuery = { all(): unknown[]; run(): unknown };
+
 function openSqliteDb(database: Database): SqliteDb {
   const handle = orm(database);
+  const q = queries("sqlite", handle, sqliteSchema);
   const exec = (...statements: string[]) =>
     statements.forEach((statement) => handle.run(sql.raw(statement)));
-  const sync = <T>(fn: (orm: Orm) => T): Promise<T> => {
+  const within = <T>(begin: string, commit: string, rollback: string[], body: Body<T>): T => {
+    exec(begin);
     try {
-      return Promise.resolve(fn(handle));
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  };
-  const savepoint = async <T>(fn: (tx: Db) => Promise<T>): Promise<T> => {
-    const name = `db_tx_${(savepoints += 1)}`;
-    exec(`SAVEPOINT ${name}`);
-    try {
-      const value = await fn(tx);
-      exec(`RELEASE ${name}`);
+      const value = drive(body(q));
+      exec(commit);
       return value;
     } catch (error) {
-      exec(`ROLLBACK TO ${name}`, `RELEASE ${name}`);
+      exec(...rollback);
       throw error;
     }
   };
-  const tx: SqliteDb = { dialect: "sqlite", orm: handle, sync, transaction: savepoint };
-  let tail: Promise<void> = Promise.resolve();
-  let active = false;
+  const savepoint = <T>(body: Body<T>): T => {
+    const name = `db_tx_${(savepoints += 1)}`;
+    return within(
+      `SAVEPOINT ${name}`,
+      `RELEASE ${name}`,
+      [`ROLLBACK TO ${name}`, `RELEASE ${name}`],
+      body,
+    );
+  };
+  const perform = (step: Step): unknown => {
+    if (step.kind === "transaction") return savepoint(step.body);
+    const query = step.query as SqliteQuery;
+    if (step.kind === "exec") return void query.run();
+    const rows = query.all();
+    return step.kind === "all" ? rows : rows[0];
+  };
+  function drive<T>(steps: Steps<T>): T {
+    let next = steps.next();
+    while (!next.done) {
+      let value: unknown;
+      try {
+        value = perform(next.value);
+      } catch (error) {
+        next = steps.throw(error);
+        continue;
+      }
+      next = steps.next(value);
+    }
+    return next.value;
+  }
   return {
     dialect: "sqlite",
     orm: handle,
-    sync,
-    transaction: async (fn) => {
-      if (database.inTransaction && !active)
-        throw new Error(
-          "db.transaction() can't run inside a synchronous immediate(); that transaction commits before the body awaits",
-        );
-      const previous = tail;
-      let release = () => {};
-      tail = new Promise((resolve) => (release = resolve));
-      await previous;
-      active = true;
-      try {
-        exec("BEGIN IMMEDIATE");
-        try {
-          const value = await fn(tx);
-          exec("COMMIT");
-          return value;
-        } catch (error) {
-          exec("ROLLBACK");
-          throw error;
-        }
-      } finally {
-        active = false;
-        release();
-      }
-    },
+    sync: (fn) => settle(() => fn(handle)),
+    run: (body) => settle(() => drive(body(q))),
+    transaction: (body) =>
+      settle(() =>
+        database.inTransaction
+          ? savepoint(body)
+          : within("BEGIN IMMEDIATE", "COMMIT", ["ROLLBACK"], body),
+      ),
   };
+}
+
+async function drivePg<T>(pg: PgOrm, body: Body<T>): Promise<T> {
+  const steps = body(queries("postgres", pg, pgSchema));
+  const perform = async (step: Step): Promise<unknown> => {
+    if (step.kind === "transaction") return pg.transaction((tx) => drivePg(tx, step.body));
+    const rows = await (step.query as PromiseLike<unknown>);
+    if (step.kind === "exec") return undefined;
+    return step.kind === "all" ? rows : (rows as unknown[])[0];
+  };
+  let next = steps.next();
+  while (!next.done) {
+    let value: unknown;
+    try {
+      value = await perform(next.value);
+    } catch (error) {
+      next = steps.throw(error);
+      continue;
+    }
+    next = steps.next(value);
+  }
+  return next.value;
 }
 
 export function postgresDb(pg: PgOrm): PgDb {
   return {
     dialect: "postgres",
     orm: pg,
-    transaction: (fn) => pg.transaction((tx) => fn(postgresDb(tx))),
+    run: (body) => drivePg(pg, body),
+    transaction: (body) => pg.transaction((tx) => drivePg(tx, body)),
   };
 }
 

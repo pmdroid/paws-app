@@ -1,5 +1,5 @@
 import { describe } from "bun:test";
-import { pgSchema, postgresDb, schema, sqliteDb, type Db } from "../src/db";
+import { postgresDb, sqliteDb, type Db, type Q } from "../src/db";
 import { tempDb } from "./helpers";
 import { pgliteDb } from "./pglite";
 
@@ -28,19 +28,22 @@ export function forEachDialect(suite: (open: () => Promise<DialectDb>) => void):
   for (const dialect of DIALECTS) describe(dialect.name, () => suite(dialect.open));
 }
 
-export async function insertWorkItem(db: Db, id: string, now = 0): Promise<void> {
-  const row = {
-    id,
-    delegationId: `delegation-${id}`,
-    linearIssueId: `issue-${id}`,
-    linearIdentifier: id,
-    title: id,
-    state: "queued",
-    branchName: `paws/${id}`,
-    position: 0,
-    createdAt: now,
-  };
-  if (db.dialect === "sqlite")
-    await db.sync((orm) => orm.insert(schema.workItem).values(row).run());
-  else await db.orm.insert(pgSchema.workItem).values(row);
+export function* insertWorkItemSteps(q: Q, id: string, now = 0) {
+  yield* q.exec(
+    q.orm.insert(q.t.workItem).values({
+      id,
+      delegationId: `delegation-${id}`,
+      linearIssueId: `issue-${id}`,
+      linearIdentifier: id,
+      title: id,
+      state: "queued",
+      branchName: `paws/${id}`,
+      position: 0,
+      createdAt: now,
+    }),
+  );
+}
+
+export function insertWorkItem(db: Db, id: string, now = 0): Promise<void> {
+  return db.run((q) => insertWorkItemSteps(q, id, now));
 }

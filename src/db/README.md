@@ -64,19 +64,43 @@ Triggers, `STRICT` and the `decision_memory_search` FTS table have no Postgres c
 
 ## The async `Db` interface
 
-`bun:sqlite` answers at once, Postgres drivers answer later, so Paws's database layer becomes async one module at a time. A converted module takes a `Db` from `src/db/db.ts` instead of a `bun:sqlite` `Database`:
+Paws moves to Postgres: embedded PGlite on a single host, a Postgres server through `[database] url` for a multi-process install. Until startup switches, SQLite stays the running database, so the database layer becomes async one module at a time and each query is written once, against the Postgres schema. A converted module takes a `Db` from `src/db/db.ts` instead of a `bun:sqlite` `Database`:
 
-- `sqliteDb(database)` wraps today's database, one per connection. `db.sync((orm) => …)` runs synchronous Drizzle queries when it is called and returns an already-settled promise, so SQLite behaves exactly as before.
-- `postgresDb(pg)` wraps a Drizzle Postgres database: `postgresDb(openPostgres(url))`, or PGlite in tests. Its queries are awaited.
-- `db.transaction(async (tx) => …)` is `BEGIN IMMEDIATE` on SQLite and a Postgres transaction otherwise. Run the body's queries on `tx`; `tx.transaction()` is a savepoint. Independent SQLite transactions on one connection wait for each other, so calling `db.transaction()` instead of `tx.transaction()` inside a body waits forever. Called inside a synchronous `immediate()`, it rejects before running its body, because `immediate()` would commit while the body awaits. While a SQLite transaction awaits, other code on the connection runs inside it, so keep its body to database calls.
+- `sqliteDb(database)` wraps today's database, one per connection.
+- `postgresDb(pg)` wraps a Drizzle Postgres database: `postgresDb(openPostgres(url))`, `postgresDb(await openPglite(dir))`, or in-memory PGlite in tests. `openPglite(dir)` opens a persistent PGlite directory and applies the Postgres migrations it has not applied yet.
 
-Each function narrows on `db.dialect` and writes the query once per dialect, against `schema` on SQLite and `pgSchema` on Postgres, keeping its name and parameters; its return type becomes a promise of what it returned. `src/db/queue-wait.ts` is the first module converted this way.
+A converted function is a generator that `db.run()` drives:
+
+```ts
+export function queueWaitSince(db: Db, itemId: string, version: number, now: number) {
+  return db.run(function* (q) {
+    const { queueWait } = q.t;
+    yield* q.exec(
+      q.orm.insert(queueWait).values({ itemId, version, since: now }).onConflictDoNothing(),
+    );
+    const row = yield* q.one(
+      q.orm.select({ since: queueWait.since }).from(queueWait).where(eq(queueWait.itemId, itemId)),
+    );
+    return row!.since;
+  });
+}
+```
+
+- `q.orm` is typed as the Postgres Drizzle database and `q.t` as `pgSchema`. On SQLite they are the SQLite Drizzle database and `schema`, which export the same table names, so the query builds on either.
+- `yield* q.all(query)` returns the rows, `yield* q.one(query)` the first row or `undefined`, and `yield* q.exec(query)` runs it and returns nothing.
+- `q.dialect` picks a different `sql` fragment where the SQL differs (JSON and date functions, `MIN`/`LEAST`). It is the only per-dialect code.
+- To count changed rows, add `.returning()` and take the length; don't read `changes` or `rowCount`.
+- On SQLite, `db.run()` runs each yielded query at once and returns an already-settled promise. On Postgres it awaits each one.
+- `db.transaction(function* (q) { … })` is `BEGIN IMMEDIATE … COMMIT` on SQLite, run synchronously so no other code runs inside it, and a Postgres transaction otherwise. When the body throws, all of its writes roll back. `yield* q.transaction(function* (q) { … })` inside a body is a savepoint, and so is `db.transaction()` called inside a synchronous `immediate()` on SQLite: it commits with the outer transaction.
+- A function whose generator another generator calls inside a transaction exports it as `<name>Steps(q, …)`, and the caller runs `yield* fooSteps(q, …)`. Add one only when such a caller exists.
+
+`src/db/queue-wait.ts` is the worked example. `src/db/linear-budget.ts` and `src/db/runner-reservations.ts` still write each query once per dialect through `db.orm` and `db.sync()`; their conversion issues move them to `db.run()` and remove `sync()`.
 
 ### Converting a module
 
-1. Change `database: Database` to `db: Db` and return `Promise<T>`. On SQLite, put the existing Drizzle queries inside `db.sync()`. Share a SQLite helper between functions as a plain function on `Orm`; chaining promises with `.then` or `await` on SQLite defers the result past the caller.
-2. Add the Postgres branch with the same queries on `pgSchema`, awaited. A function that writes several rows runs them in `db.orm.transaction()`.
-3. An async caller awaits the function. A caller that is still synchronous, such as `dispatch()` inside its `immediate()` transaction, unwraps it with `settled(f(sqliteDb(database), …))`. `settled()` throws if the promise has not settled, which happens only off SQLite. When that caller becomes async, replace `settled(…)` with `await`.
+1. Change `database: Database` to `db: Db`, return `Promise<T>`, and move the body into `db.run(function* (q) { … })`, or `db.transaction()` when it writes more than one statement. Build each query on `q.orm` and `q.t` and `yield*` it through `q.all`, `q.one` or `q.exec`.
+2. An async caller awaits the function. A caller that is still synchronous, such as `dispatch()` inside its `immediate()` transaction, unwraps it with `settled(f(sqliteDb(database), …))`. `settled()` throws if the promise has not settled, which happens only off SQLite. When that caller becomes async, replace `settled(…)` with `await`.
+3. Run the module's tests on both dialects.
 
 ### Tests on both dialects
 
@@ -96,7 +120,7 @@ forEachDialect((open) => {
 });
 ```
 
-Seed rows through Drizzle on both schemas (`insertWorkItem()` does the work item), not through a SQLite-only helper. Tests that drive a still-synchronous caller stay SQLite-only.
+Seed rows through `db.run()` (`insertWorkItem()` does the work item, and `insertWorkItemSteps()` inside a transaction), not through a SQLite-only helper. Tests that drive a still-synchronous caller stay SQLite-only.
 
 ## Drift test
 
