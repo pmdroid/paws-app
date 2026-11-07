@@ -18,10 +18,16 @@ const ALLOWED_PERMISSIONS = new Set([
   "checks",
   "issues",
   "metadata",
+  "actions",
   "workflows",
   "statuses",
 ]);
+// Actions read lets Paws read job logs; an installation without it falls back.
 const OPTIONAL_PERMISSIONS: Record<string, string>[] = [
+  { actions: "read", workflows: "write", statuses: "read" },
+  { actions: "read", workflows: "write" },
+  { actions: "read", statuses: "read" },
+  { actions: "read" },
   { workflows: "write", statuses: "read" },
   { workflows: "write" },
   { statuses: "read" },
@@ -152,6 +158,9 @@ export function assertScopedToken(
     }
     if (key === "statuses" && value !== "read") {
       throw new GitHubTokenError("statuses permission must be read");
+    }
+    if (key === "actions" && value !== "read") {
+      throw new GitHubTokenError("actions permission must be read");
     }
   }
   if (access === "read") {

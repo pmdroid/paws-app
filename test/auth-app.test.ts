@@ -125,7 +125,12 @@ function fixture(failure?: "client" | "installation" | "permissions") {
       if (url.pathname === "/app/installations/22/access_tokens") {
         expect(JSON.parse(String(init?.body))).toEqual({
           repositories: ["widgets"],
-          permissions: { ...INSTALLATION_PERMISSIONS, workflows: "write", statuses: "read" },
+          permissions: {
+            ...INSTALLATION_PERMISSIONS,
+            actions: "read",
+            workflows: "write",
+            statuses: "read",
+          },
         });
         return Response.json(
           {

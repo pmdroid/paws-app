@@ -19,13 +19,13 @@ function granted(permissions: Record<string, string>) {
   };
 }
 
-function installation(grantsWorkflows: boolean) {
+function installation(refused: string[] = []) {
   const requested: Record<string, string>[] = [];
   const client: GitHubClient = {
     async request(req) {
       const permissions = (req.body as { permissions: Record<string, string> }).permissions;
       requested.push(permissions);
-      if (permissions.workflows && !grantsWorkflows)
+      if (refused.some((key) => permissions[key]))
         return {
           status: 422,
           body: { message: "The permissions requested are not granted to this installation." },
@@ -48,28 +48,42 @@ function mint(client: GitHubClient, installationId: string, access?: "read" | "w
   });
 }
 
-test("a write token asks for workflows so Paws can push workflow files", async () => {
-  const { client, requested } = installation(true);
+test("a write token asks for Actions read and workflows so Paws can read logs and push workflow files", async () => {
+  const { client, requested } = installation();
   await mint(client, "101");
   expect(requested).toEqual([
-    { ...INSTALLATION_PERMISSIONS, workflows: "write", statuses: "read" },
+    { ...INSTALLATION_PERMISSIONS, actions: "read", workflows: "write", statuses: "read" },
   ]);
 });
 
 test("an installation without workflows gets a token without it, and is not asked again", async () => {
-  const { client, requested } = installation(false);
+  const { client, requested } = installation(["workflows"]);
   expect((await mint(client, "102")).token).toBe("ghs_scoped");
   await mint(client, "102");
   expect(requested).toEqual([
+    { ...INSTALLATION_PERMISSIONS, actions: "read", workflows: "write", statuses: "read" },
+    { ...INSTALLATION_PERMISSIONS, actions: "read", workflows: "write" },
+    { ...INSTALLATION_PERMISSIONS, actions: "read", statuses: "read" },
+    { ...INSTALLATION_PERMISSIONS, actions: "read", statuses: "read" },
+  ]);
+});
+
+test("an installation without Actions gets a token without it, and is not asked again", async () => {
+  const { client, requested } = installation(["actions"]);
+  expect((await mint(client, "104")).token).toBe("ghs_scoped");
+  await mint(client, "104");
+  expect(requested).toEqual([
+    { ...INSTALLATION_PERMISSIONS, actions: "read", workflows: "write", statuses: "read" },
+    { ...INSTALLATION_PERMISSIONS, actions: "read", workflows: "write" },
+    { ...INSTALLATION_PERMISSIONS, actions: "read", statuses: "read" },
+    { ...INSTALLATION_PERMISSIONS, actions: "read" },
     { ...INSTALLATION_PERMISSIONS, workflows: "write", statuses: "read" },
-    { ...INSTALLATION_PERMISSIONS, workflows: "write" },
-    { ...INSTALLATION_PERMISSIONS, statuses: "read" },
-    { ...INSTALLATION_PERMISSIONS, statuses: "read" },
+    { ...INSTALLATION_PERMISSIONS, workflows: "write", statuses: "read" },
   ]);
 });
 
 test("a read token never asks for workflows", async () => {
-  const { client, requested } = installation(true);
+  const { client, requested } = installation();
   await mint(client, "103", "read");
   expect(requested).toEqual([{ contents: "read", metadata: "read" }]);
 });
