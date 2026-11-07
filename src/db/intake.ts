@@ -116,9 +116,7 @@ type IntakeItem = Omit<IntakeItemRow, "state" | "version"> & {
 export function* insertIntakeItemSteps(q: Q, item: IntakeItem): Steps<void> {
   const brief =
     item.brief === undefined || q.dialect === "sqlite" ? item.brief : JSON.parse(item.brief);
-  yield* q.exec(
-    q.orm.insert(q.t.workItem).values({ ...item, brief, state: "queued", version: 0 }),
-  );
+  yield* q.exec(q.orm.insert(q.t.workItem).values({ ...item, brief, state: "queued", version: 0 }));
 }
 
 export function insertIntakeItem(db: Database, item: IntakeItem): void {
@@ -140,9 +138,7 @@ export function insertItemContinuation(
   previousItemId: string,
   branch: string,
 ): void {
-  settled(
-    sqliteDb(db).run((q) => insertItemContinuationSteps(q, itemId, previousItemId, branch)),
-  );
+  settled(sqliteDb(db).run((q) => insertItemContinuationSteps(q, itemId, previousItemId, branch)));
 }
 
 export function* stopSessionParentDelegationSteps(
@@ -334,7 +330,9 @@ export function* emptyFailedAttemptsSteps(
             q.orm
               .select({ one: sql`1` })
               .from(linearConversation)
-              .where(and(eq(linearConversation.itemId, item.id), eq(linearConversation.blocked, 1))),
+              .where(
+                and(eq(linearConversation.itemId, item.id), eq(linearConversation.blocked, 1)),
+              ),
           ),
           notExists(
             q.orm
@@ -391,10 +389,7 @@ export function readItemDelegation(db: Database, itemId: string): ItemDelegation
   return settled(sqliteDb(db).run((q) => readItemDelegationSteps(q, itemId)));
 }
 
-export function* delegationWorkspaceIdSteps(
-  q: Q,
-  delegationId: string,
-): Steps<string | undefined> {
+export function* delegationWorkspaceIdSteps(q: Q, delegationId: string): Steps<string | undefined> {
   const { linearSession, workItem, workspace } = q.t;
   const row = yield* q.one(
     q.orm
