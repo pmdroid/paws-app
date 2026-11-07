@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { defaultGitExec, gitEnv } from "./git";
-import { publicationExec } from "./publication";
-import type { GitExec } from "./types";
+import { setJournalSink } from "../journal";
+import { PUBLICATION_STAGING_FAILURE, publicationExec } from "./publication";
+import { GitCommandError, type GitExec } from "./types";
 
 const exec = promisify(execFile);
 const roots: string[] = [];
@@ -385,3 +386,55 @@ test("a detached rebased head is staged when its branches are objects the reposi
   expect(fetched.args.find((arg) => arg.endsWith("candidate.bundle"))).toBeDefined();
   expect(await remoteBranch(f, "paws/acme-1")).toBe(rebased);
 });
+
+for (const failures of [1, 2]) {
+  test(`a head the publication repository lacks ${failures === 1 ? "rebuilds it once and pushes" : "twice fails the push before any network call"}`, async () => {
+    const f = await fixture();
+    await f.commit("first");
+    await f.push("paws/acme-1");
+    const marker = path.join(f.persistent, "marker");
+    await writeFile(marker, "");
+    const head = await f.commit("second");
+    let refused = 0;
+    let network = 0;
+    const lacking: GitExec = async (args, options) => {
+      if (options.env.PAWS_GITHUB_TOKEN !== undefined) network++;
+      if (args.includes("update-ref") && args.includes(f.persistent) && refused < failures) {
+        refused++;
+        throw new GitCommandError(
+          args,
+          `fatal: update_ref failed for ref 'HEAD': cannot update ref 'HEAD': trying to write ref 'HEAD' with nonexistent object ${head}\n`,
+        );
+      }
+      return f.fake(args, options);
+    };
+    const lines: string[] = [];
+    const restore = setJournalSink((line) => lines.push(line));
+    const push = publicationExec(
+      lacking,
+      undefined,
+      f.store,
+    )([...PREFIX, "push", WIDGETS, "HEAD:refs/heads/paws/acme-1"], {
+      cwd: f.worktree,
+      env: gitEnv(token),
+    });
+    try {
+      if (failures === 1) {
+        await push;
+        expect(await remoteBranch(f, "paws/acme-1")).toBe(head);
+        expect(await Bun.file(marker).exists()).toBe(false);
+      } else {
+        await expect(push).rejects.toMatchObject({
+          stderr: expect.stringContaining(`${PUBLICATION_STAGING_FAILURE}: fatal: update_ref`),
+        });
+        expect(network).toBe(0);
+      }
+    } finally {
+      restore();
+    }
+    expect(refused).toBe(failures);
+    expect(lines.filter((line) => line.includes(head))).toEqual([
+      `publication: paws/acme-1 staged ${head}, an object the publication repository lacks; rebuilding it and staging once more`,
+    ]);
+  });
+}
