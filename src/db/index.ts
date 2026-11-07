@@ -214,7 +214,6 @@ export {
 export {
   claimNextJob,
   cancelOpenJobs,
-  claimJobSql,
   completeJob,
   enqueueJob,
   enqueueJobOnce,

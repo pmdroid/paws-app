@@ -213,7 +213,6 @@ src/db/items.ts | db .query("SELECT 1 FROM outbox WHERE idempotency_key LIKE ? A
 src/db/items.ts | return db.run( | not yet converted to Drizzle
 src/db/items.ts | db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]); | not yet converted to Drizzle
 src/db/items.ts | db .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=? | not yet converted to Drizzle
-src/db/jobs.ts | const row = db.query<Record<string, unknown>, Array<string | number>>(sql).get(...binds); | not yet converted to Drizzle
 src/db/legacy-migrate.ts | db.run(` | frozen legacy migration (src/db/README.md)
 src/db/legacy-migrate.ts | db .query<{ id: string }, []>("SELECT id FROM schema_migration") | frozen legacy migration (src/db/README.md)
 src/db/legacy-migrate.ts | db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys ?? 1; | frozen legacy migration (src/db/README.md)
