@@ -1,13 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, gt, lte } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
+import type { browserInstallationRequest } from "./schema-pg";
 
-type BrowserInstallation = {
-  stateHash: string;
-  browserHash: string;
-  identity: string;
-  expiresAt: number;
-};
+type BrowserInstallation = typeof browserInstallationRequest.$inferSelect;
 
 export function* saveBrowserInstallationSteps(q: Q, input: BrowserInstallation) {
   const { browserInstallationRequest: request } = q.t;
