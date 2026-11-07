@@ -3,6 +3,7 @@ import { and, eq, gt, ne } from "drizzle-orm";
 import { JOB_KIND, parseLinearCommand, type LinearCommand } from "../core";
 import { journalCaught } from "../journal";
 import { INSTANCE_DEAD_MS } from "./instances";
+import { getWorkItem } from "./items";
 import { claimNextJob, completeJob, enqueueJobOnce } from "./jobs";
 import { orm } from "./orm";
 import { instance, run, runOwner } from "./schema";
@@ -13,12 +14,18 @@ export function commandDeliveryQueue(instanceId: string): string {
 
 export const COMMAND_DELIVERY_MS = 1_000;
 
-export function forwardCommand(
-  db: Database,
-  command: LinearCommand,
-  self: string,
-  now = Date.now(),
-): string[] {
+const boundInstances = new WeakMap<Database, string>();
+
+export function bindInstance(db: Database, instanceId: string): void {
+  boundInstances.set(db, instanceId);
+}
+
+type DeliveredCommand = { command: LinearCommand; stoppedAtVersion: number };
+
+export function forwardCommand(db: Database, command: LinearCommand, now = Date.now()): string[] {
+  const self = boundInstances.get(db);
+  const stoppedAtVersion = getWorkItem(db, command.itemId)?.version;
+  if (self === undefined || stoppedAtVersion === undefined) return [];
   const owners = orm(db)
     .selectDistinct({ id: runOwner.ownerInstance })
     .from(run)
@@ -38,7 +45,7 @@ export function forwardCommand(
       queue: commandDeliveryQueue(owner),
       jobKey: `cmd-deliver:${owner}:${command.type}:${command.itemId}:${command.requestedAt}`,
       priority: 0,
-      payload: { command },
+      payload: { command, stoppedAtVersion },
       now,
       runAt: now,
     });
@@ -48,7 +55,7 @@ export function forwardCommand(
 export function drainInstanceCommands(
   db: Database,
   self: string,
-  deliver: (command: LinearCommand) => void,
+  deliver: (delivery: DeliveredCommand) => void,
   now = Date.now(),
 ): number {
   let delivered = 0;
@@ -59,10 +66,13 @@ export function drainInstanceCommands(
       queues: [commandDeliveryQueue(self)],
     });
     if (job === null) return delivered;
-    const command = parseLinearCommand((job.payload as { command?: unknown } | null)?.command);
-    if (!completeJob(db, job, now) || command === null) continue;
+    const payload = job.payload as { command?: unknown; stoppedAtVersion?: unknown } | null;
+    const command = parseLinearCommand(payload?.command);
+    const stoppedAtVersion = payload?.stoppedAtVersion;
+    if (!completeJob(db, job, now) || command === null || typeof stoppedAtVersion !== "number")
+      continue;
     try {
-      deliver(command);
+      deliver({ command, stoppedAtVersion });
     } catch (error) {
       journalCaught(error, "commandDelivery.drainInstanceCommands.deliver", command.itemId);
     }

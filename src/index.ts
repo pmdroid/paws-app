@@ -133,6 +133,7 @@ import {
   deleteInstance,
   heartbeatInstance,
   COMMAND_DELIVERY_MS,
+  bindInstance,
   INSTANCE_HEARTBEAT_MS,
   registerInstance,
   recoverOnStartup,
@@ -452,6 +453,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     now: Date.now(),
     pid: process.pid,
   });
+  bindInstance(db, instance.id);
   const releaseSettings = useSettingsStore(paths.configFile, {
     read: () => readSetting(db, CONFIG_SETTINGS_KEY),
     update: (change) => updateSetting(db, CONFIG_SETTINGS_KEY, change),

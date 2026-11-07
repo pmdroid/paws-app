@@ -263,7 +263,6 @@ import {
   immediate,
   claimRun,
   drainInstanceCommands,
-  forwardCommand,
   insertRun,
   listInFlightItems,
   listCloseoutRecoveries,
@@ -815,6 +814,7 @@ export class Orchestrator {
     string,
     {
       itemId: string;
+      version: number;
       sessionId: string | null;
       generation: number;
       controller: AbortController;
@@ -913,13 +913,6 @@ export class Orchestrator {
     this.bus.subscribe((command) => {
       this.githubAuth?.revoke(command.itemId);
       this.abortItem(command.itemId);
-      const self = this.options.instanceId;
-      if (self === undefined) return;
-      try {
-        forwardCommand(this.db, command, self, this.now());
-      } catch (error) {
-        journalCaught(error, "orchestrator.bus.forwardCommand", command.itemId);
-      }
     });
     this.register();
   }
@@ -6661,7 +6654,14 @@ export class Orchestrator {
     return drainInstanceCommands(
       this.db,
       self,
-      (command) => {
+      ({ command, stoppedAtVersion }) => {
+        const live = [...this.live.values()].filter((entry) => entry.itemId === command.itemId);
+        const stopped = live.filter((entry) => entry.version < stoppedAtVersion);
+        if (stopped.length === 0) return;
+        if (stopped.length < live.length) {
+          for (const entry of stopped) entry.controller.abort();
+          return;
+        }
         void this.interruptItem(command.itemId).catch((error) => {
           journalCaught(error, "orchestrator.deliverInstanceCommands", command.itemId);
         });
@@ -7431,6 +7431,7 @@ export class Orchestrator {
     const sessionId = item === null ? null : this.activitySession(item);
     const live = {
       itemId,
+      version: item?.version ?? 0,
       sessionId,
       generation: sessionId === null ? 0 : getLinearSessionGeneration(this.db, sessionId),
       controller,

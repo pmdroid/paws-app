@@ -13,9 +13,9 @@ export {
 } from "./commands";
 export {
   COMMAND_DELIVERY_MS,
+  bindInstance,
   commandDeliveryQueue,
   drainInstanceCommands,
-  forwardCommand,
 } from "./command-delivery";
 export {
   getItemBranchState,

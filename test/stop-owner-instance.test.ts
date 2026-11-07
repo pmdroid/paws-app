@@ -3,7 +3,10 @@ import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type { Clock } from "../src/core";
 import {
+  applyLinearCommand,
+  applyWorkItemEvent,
   beginImplementRun,
+  bindInstance,
   claimRun,
   commandDeliveryQueue,
   COMMAND_DELIVERY_MS,
@@ -24,7 +27,7 @@ type LiveTurn = { controller: AbortController; finish(): void };
 
 const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
 
-function paws(path: string, root: string, name: string) {
+function paws(path: string, root: string, name: string, poll = true) {
   const db = openDatabase(path);
   const self = registerInstance(db, {
     role: "all",
@@ -32,6 +35,7 @@ function paws(path: string, root: string, name: string) {
     version: null,
     now: Date.now(),
   });
+  bindInstance(db, self.id);
   const orchestrator = new Orchestrator({
     db,
     jobs: new JobLoop(db, clock),
@@ -44,15 +48,17 @@ function paws(path: string, root: string, name: string) {
       throw new Error("The test starts the turn itself");
     },
   });
-  const timer = setInterval(() => orchestrator.deliverInstanceCommands(), COMMAND_DELIVERY_MS);
+  const timer = poll
+    ? setInterval(() => orchestrator.deliverInstanceCommands(), COMMAND_DELIVERY_MS)
+    : undefined;
   return {
     db,
     id: self.id,
     orchestrator,
-    startTurn(itemId: string): LiveTurn {
+    startTurn(itemId: string, key = `operation:${itemId}`): LiveTurn {
       const turn = (
         orchestrator as unknown as { beginLive(itemId: string, key: string): LiveTurn }
-      ).beginLive(itemId, `operation:${itemId}`);
+      ).beginLive(itemId, key);
       turn.controller.signal.addEventListener("abort", () => turn.finish(), { once: true });
       return turn;
     },
@@ -63,13 +69,13 @@ function paws(path: string, root: string, name: string) {
   };
 }
 
-function twoInstances() {
+function twoInstances(poll = true) {
   const root = tempHome();
   const path = join(root, "paws.db");
   const setup = openDatabase(path);
   migrate(setup);
   setup.close();
-  return { a: paws(path, root, "a"), b: paws(path, root, "b") };
+  return { a: paws(path, root, "a", poll), b: paws(path, root, "b", poll) };
 }
 
 function runningItem(db: Database, id: string, owner: string): void {
@@ -78,10 +84,15 @@ function runningItem(db: Database, id: string, owner: string): void {
   claimRun(db, run.id, owner);
 }
 
-function stop(db: Database, orchestrator: Orchestrator, itemId: string) {
+function stop(
+  db: Database,
+  orchestrator: Orchestrator,
+  itemId: string,
+  source: "dashboard" | "linear" = "dashboard",
+) {
   return submitCommand(db, orchestrator.bus, {
     type: "stop",
-    source: "dashboard",
+    source,
     itemId,
     requestedAt: Date.now(),
   });
@@ -125,6 +136,48 @@ test("a stop for a run on the receiving instance aborts its turn at once and add
           job.queue === commandDeliveryQueue(a.id) || job.queue === commandDeliveryQueue(b.id),
       ),
     ).toEqual([]);
+  } finally {
+    a.close();
+    b.close();
+  }
+});
+
+test("the owner's delivery row commits with the stop itself, before any bus emits", () => {
+  const { a, b } = twoInstances(false);
+  try {
+    runningItem(a.db, "acme-3", a.id);
+    const command = {
+      type: "stop" as const,
+      source: "dashboard" as const,
+      itemId: "acme-3",
+      requestedAt: Date.now(),
+    };
+    expect(applyLinearCommand(b.db, command)).toEqual({ applied: true });
+    const delivery = listJobs(a.db).filter((job) => job.queue === commandDeliveryQueue(a.id));
+    expect(delivery.map((job) => job.status)).toEqual(["pending"]);
+    expect(delivery[0]?.payload).toEqual({
+      command,
+      stoppedAtVersion: getWorkItem(a.db, "acme-3")!.version,
+    });
+  } finally {
+    a.close();
+    b.close();
+  }
+});
+
+test("a delayed stop aborts the turn it stopped and leaves a turn started after a resume", () => {
+  const { a, b } = twoInstances(false);
+  try {
+    runningItem(a.db, "acme-4", a.id);
+    const stopped = a.startTurn("acme-4", "acme-4-old");
+    expect(stop(b.db, b.orchestrator, "acme-4", "linear")).toEqual({ applied: true });
+    expect(getWorkItem(b.db, "acme-4")?.state).toBe("paused");
+    applyWorkItemEvent(b.db, "acme-4", "resume");
+    const replacement = a.startTurn("acme-4", "acme-4-new");
+
+    expect(a.orchestrator.deliverInstanceCommands()).toBe(1);
+    expect(stopped.controller.signal.aborted).toBe(true);
+    expect(replacement.controller.signal.aborted).toBe(false);
   } finally {
     a.close();
     b.close();
