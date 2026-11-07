@@ -1,7 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { enqueueJob } from "./jobs";
+import { jsonText } from "./json-text";
 import { orm } from "./orm";
 import { job, question, runner, runnerRepositories } from "./schema";
 import { immediate } from "./tx";
@@ -81,32 +83,49 @@ export function setRunnerAdminRepositories(
   });
 }
 
-export function runnerRepositoryLists(db: Database, runnerId: string): RunnerRepositoryLists {
-  const row = orm(db)
-    .select({ host: runnerRepositories.repositories, admin: runnerRepositories.adminRepositories })
-    .from(runnerRepositories)
-    .where(eq(runnerRepositories.runnerId, runnerId))
-    .get();
+export function* runnerRepositoryListsSteps(q: Q, runnerId: string) {
+  const { runnerRepositories } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        host: jsonText(q, runnerRepositories.repositories),
+        admin: jsonText(q, runnerRepositories.adminRepositories),
+      })
+      .from(runnerRepositories)
+      .where(eq(runnerRepositories.runnerId, runnerId)),
+  );
   return {
     admin: row?.admin == null ? null : (JSON.parse(row.admin) as string[]),
     host: row?.host == null ? null : (JSON.parse(row.host) as string[]),
   };
 }
 
+export function runnerRepositoryLists(db: Database, runnerId: string): RunnerRepositoryLists {
+  return settled(sqliteDb(db).run((q) => runnerRepositoryListsSteps(q, runnerId)));
+}
+
 export type RunnerRepositoryRefusal = { list: "admin" | "host"; allowed: string[] };
+
+export function* runnerRepositoryRefusalSteps(
+  q: Q,
+  runnerId: string,
+  repository: string,
+): Steps<RunnerRepositoryRefusal | null> {
+  const wanted = repository.toLowerCase();
+  const allows = (list: string[] | null) =>
+    list === null || list.some((name) => name.toLowerCase() === wanted);
+  const { admin, host } = yield* runnerRepositoryListsSteps(q, runnerId);
+  if (!allows(admin)) return { list: "admin", allowed: admin! };
+  if (!allows(host)) return { list: "host", allowed: host! };
+  return null;
+}
 
 export function runnerRepositoryRefusal(
   db: Database,
   runnerId: string,
   repository: string,
 ): RunnerRepositoryRefusal | null {
-  const wanted = repository.toLowerCase();
-  const allows = (list: string[] | null) =>
-    list === null || list.some((name) => name.toLowerCase() === wanted);
-  const { admin, host } = runnerRepositoryLists(db, runnerId);
-  if (!allows(admin)) return { list: "admin", allowed: admin! };
-  if (!allows(host)) return { list: "host", allowed: host! };
-  return null;
+  return settled(sqliteDb(db).run((q) => runnerRepositoryRefusalSteps(q, runnerId, repository)));
 }
 
 export function runnerAllowsRepository(
