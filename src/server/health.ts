@@ -5,6 +5,7 @@ import {
   JOB_PROGRESS_STALE_MS,
   journal,
   LINEAR_WEBHOOK_SILENCE_MS,
+  liveInstances,
   type JobLoopLiveness,
 } from "../db";
 import { RUNNER_ONLINE_MS } from "../runner-placement";
@@ -30,7 +31,10 @@ export type HealthOptions = {
    */
   jobLoop?: () => JobLoopLiveness | null;
   disk?: { paths: Readonly<Record<string, string>>; statfs?: StatFs };
+  instanceId?: string;
 };
+
+type LiveInstance = { id: string; role: string; version: string | null; heartbeatAt: number };
 
 type StatFs = (path: string) => { bavail: number; blocks: number; bsize: number };
 
@@ -172,6 +176,19 @@ export function createHealthReport(options: HealthOptions) {
         checks.diskSpace = { status: "failed", reason: "read_failed" };
       }
     }
+    let instances: LiveInstance[] = [];
+    if (checks.database!.status === "ok") {
+      try {
+        instances = liveInstances(db!, now).map(({ id, role, version, heartbeatAt }) => ({
+          id,
+          role,
+          version,
+          heartbeatAt,
+        }));
+      } catch {
+        instances = [];
+      }
+    }
     const failedChecks = Object.keys(checks).filter((name) => checks[name]!.status === "failed");
     const state = failedChecks.join(",");
     if (state !== previous) {
@@ -179,7 +196,14 @@ export function createHealthReport(options: HealthOptions) {
         journal(state ? `health: failing checks: ${state}` : "health: healthy");
       previous = state;
     }
-    return { ok: failedChecks.length === 0, service: "paws", checks, failedChecks };
+    return {
+      ok: failedChecks.length === 0,
+      service: "paws",
+      instance: options.instanceId ?? null,
+      instances,
+      checks,
+      failedChecks,
+    };
   };
 }
 
