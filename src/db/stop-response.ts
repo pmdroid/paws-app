@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { and, desc, eq, like, sql } from "drizzle-orm";
 import type { WorkItemRecord } from "./items";
+import { orm } from "./orm";
 import { enqueueOutboxOnce } from "./outbox";
+import { itemBranchState, itemPullRequest, outbox } from "./schema";
 
 export type ItemBranchState = {
   itemId: string;
@@ -20,44 +23,38 @@ export type ItemPullRequest = {
 
 /** The branch as the last finished agent turn left it. A later turn replaces it. */
 export function recordItemBranchState(db: Database, state: ItemBranchState): void {
-  db.run(
-    `INSERT INTO item_branch_state (item_id, run_id, head, base, commits, recorded_at)
-     VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (item_id) DO UPDATE SET run_id = excluded.run_id,
-       head = excluded.head, base = excluded.base, commits = excluded.commits,
-       recorded_at = excluded.recorded_at`,
-    [state.itemId, state.runId, state.head, state.base, state.commits, state.recordedAt],
-  );
+  const { itemId, ...latest } = state;
+  orm(db)
+    .insert(itemBranchState)
+    .values(state)
+    .onConflictDoUpdate({ target: itemBranchState.itemId, set: latest })
+    .run();
 }
 
 export function getItemBranchState(db: Database, itemId: string): ItemBranchState | null {
   return (
-    db
-      .query<ItemBranchState, [string]>(
-        `SELECT item_id AS itemId, run_id AS runId, head, base, commits, recorded_at AS recordedAt
-         FROM item_branch_state WHERE item_id = ?`,
-      )
-      .get(itemId) ?? null
+    orm(db).select().from(itemBranchState).where(eq(itemBranchState.itemId, itemId)).get() ?? null
   );
 }
 
 /** The pull request Paws opened for the item. Republishing keeps the same number. */
 export function recordItemPullRequest(db: Database, pull: ItemPullRequest): void {
-  db.run(
-    `INSERT INTO item_pull_request (item_id, pull_number, pull_url, opened_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT (item_id) DO UPDATE SET pull_number = excluded.pull_number,
-       pull_url = COALESCE(excluded.pull_url, pull_url)`,
-    [pull.itemId, pull.pullNumber, pull.pullUrl, pull.openedAt],
-  );
+  orm(db)
+    .insert(itemPullRequest)
+    .values(pull)
+    .onConflictDoUpdate({
+      target: itemPullRequest.itemId,
+      set: {
+        pullNumber: pull.pullNumber,
+        pullUrl: sql`COALESCE(excluded.pull_url, ${itemPullRequest.pullUrl})`,
+      },
+    })
+    .run();
 }
 
 export function getItemPullRequest(db: Database, itemId: string): ItemPullRequest | null {
   return (
-    db
-      .query<ItemPullRequest, [string]>(
-        `SELECT item_id AS itemId, pull_number AS pullNumber, pull_url AS pullUrl, opened_at AS openedAt
-         FROM item_pull_request WHERE item_id = ?`,
-      )
-      .get(itemId) ?? null
+    orm(db).select().from(itemPullRequest).where(eq(itemPullRequest.itemId, itemId)).get() ?? null
   );
 }
 
@@ -108,15 +105,22 @@ export function enqueueEndedSessionFace(
     now: number;
   },
 ): void {
-  const previous = db
-    .query<{ plan: string }, [string, string]>(
-      `SELECT json_extract(payload, '$.plan') AS plan FROM outbox
-       WHERE target = 'linear' AND ordering_key = ? AND op LIKE 'linear.session.%'
-         AND json_type(payload, '$.plan') = 'array'
-         AND COALESCE(json_extract(payload, '$.identifier'), ?2) = ?2
-       ORDER BY id DESC LIMIT 1`,
+  const identifier = input.item.linearIdentifier;
+  const previous = orm(db)
+    .select({ plan: sql<string>`json_extract(${outbox.payload}, '$.plan')` })
+    .from(outbox)
+    .where(
+      and(
+        eq(outbox.target, "linear"),
+        eq(outbox.orderingKey, input.sessionId),
+        like(outbox.op, "linear.session.%"),
+        sql`json_type(${outbox.payload}, '$.plan') = 'array'`,
+        sql`COALESCE(json_extract(${outbox.payload}, '$.identifier'), ${identifier}) = ${identifier}`,
+      ),
     )
-    .get(input.sessionId, input.item.linearIdentifier);
+    .orderBy(desc(outbox.id))
+    .limit(1)
+    .get();
   const steps = previous
     ? (JSON.parse(previous.plan) as { content: string; status: string }[])
     : [];

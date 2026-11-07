@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { asc, eq, inArray } from "drizzle-orm";
 import { orm } from "./orm";
 import { taskBlock } from "./schema";
 import { immediate } from "./tx";
@@ -21,27 +22,32 @@ export function saveTaskBlocks(
       }
     }
     if (blockedLinearIssueIds.length > 0) {
-      db.run(
-        `DELETE FROM task_block WHERE blocked_linear_issue_id IN (${blockedLinearIssueIds.map(() => "?").join(",")})`,
-        [...blockedLinearIssueIds],
-      );
+      orm(db)
+        .delete(taskBlock)
+        .where(inArray(taskBlock.blockedLinearIssueId, [...blockedLinearIssueIds]))
+        .run();
     }
     for (const edge of edges) {
-      db.run(
-        `INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?) ON CONFLICT DO NOTHING`,
-        [edge.blockerLinearIssueId, edge.blockedLinearIssueId],
-      );
+      orm(db)
+        .insert(taskBlock)
+        .values({
+          blockerLinearIssueId: edge.blockerLinearIssueId,
+          blockedLinearIssueId: edge.blockedLinearIssueId,
+        })
+        .onConflictDoNothing()
+        .run();
     }
   });
 }
 
 export function listTaskBlockers(db: Database, blockedLinearIssueId: string): string[] {
-  return db
-    .query<{ blocker_linear_issue_id: string }, [string]>(
-      "SELECT blocker_linear_issue_id FROM task_block WHERE blocked_linear_issue_id = ? ORDER BY blocker_linear_issue_id",
-    )
-    .all(blockedLinearIssueId)
-    .map((row) => row.blocker_linear_issue_id);
+  return orm(db)
+    .select({ blocker: taskBlock.blockerLinearIssueId })
+    .from(taskBlock)
+    .where(eq(taskBlock.blockedLinearIssueId, blockedLinearIssueId))
+    .orderBy(asc(taskBlock.blockerLinearIssueId))
+    .all()
+    .map((row) => row.blocker);
 }
 
 export function listTaskBlocks(db: Database): { blocker: string; blocked: string }[] {
