@@ -31,7 +31,6 @@ export type DeadDelivery = {
 
 export type DeadDeliveryRef = { kind: "outbox" | "job"; id: number };
 
-/** A field of a JSON column as text: `json_extract` on SQLite, `->>` on Postgres. */
 function jsonField(q: Q, column: AnyColumn, key: string): SQL<string | null> {
   return q.dialect === "sqlite"
     ? sql`json_extract(${column}, ${`$.${key}`})`
@@ -310,7 +309,6 @@ export function* redeliverQuestionSteps(q: Q, questionId: string, now: number) {
     op: last.op,
     orderingKey: last.orderingKey,
     idempotencyKey: `${base}${ELICITATION_REASK_SUFFIX}`,
-    // SQLite stores the payload as JSON text, Postgres as jsonb.
     payload:
       q.dialect === "sqlite" ? (JSON.parse(last.payload as string) as unknown) : last.payload,
     priority: last.priority,
