@@ -1,6 +1,6 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
-import { and, eq, inArray, like, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, inArray, like, ne, sql } from "drizzle-orm";
 import {
   DEFAULT_BACKOFF_BASE_MS,
   DEFAULT_BACKOFF_CAP_MS,
@@ -8,10 +8,10 @@ import {
   JOB_KIND,
   retryBackoffMs,
 } from "../core";
+import { settled, sqliteDb, type Q } from "./db";
 import { enqueueJobOnce, errorText } from "./jobs";
 import { journal } from "./journal";
-import { orm } from "./orm";
-import { outbox as outboxTable } from "./schema";
+import type * as pgSchema from "./schema-pg";
 import { immediate } from "./tx";
 
 export const OUTBOX_TARGETS = ["linear", "slack", "github"] as const;
@@ -23,10 +23,38 @@ export type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
 export const DEFAULT_OUTBOX_MAX_ATTEMPTS = 5;
 export const LINEAR_PROGRESS_INTERVAL_MS = 30_000;
 
-const PROGRESS_SQL = (row: string) =>
+type Dialect = Q["dialect"];
+
+/** A field of a JSON payload as text: `json_extract` on SQLite, `->>` on Postgres. */
+function jsonText(dialect: Dialect, payload: string, key: string): string {
+  return dialect === "sqlite" ? `json_extract(${payload}, '$.${key}')` : `(${payload}->>'${key}')`;
+}
+
+/** A field of a JSON payload is `true` or `1`. */
+function jsonOne(dialect: Dialect, payload: string, key: string): string {
+  return dialect === "sqlite"
+    ? `COALESCE(json_extract(${payload}, '$.${key}'), 0) = 1`
+    : `COALESCE((${payload}->'${key}') IN ('true'::jsonb, '1'::jsonb), false)`;
+}
+
+const PROGRESS_SQL = (dialect: Dialect, row: string) =>
   `(${row}.target='linear' AND ${row}.delivery_kind='progress'
     AND ${row}.op = 'activity'
-    AND COALESCE(json_extract(${row}.payload,'$.kind'),'') IN ('thought','action'))`;
+    AND COALESCE(${jsonText(dialect, `${row}.payload`, "kind")},'') IN ('thought','action'))`;
+
+/** SQLite's LIKE ignores ASCII case; Postgres needs ILIKE for the same match. */
+function likeOf(q: Q) {
+  return q.dialect === "sqlite" ? like : ilike;
+}
+
+/** SQLite stores a payload as JSON text, Postgres as `jsonb`. */
+function payloadIn(q: Q, payload: unknown): unknown {
+  return q.dialect === "sqlite" ? JSON.stringify(payload) : payload;
+}
+
+function payloadOut(q: Q, stored: unknown): unknown {
+  return q.dialect === "sqlite" ? (JSON.parse(stored as string) as unknown) : stored;
+}
 
 export type OutboxDelivery = "ordered" | "progress" | "critical" | "terminal" | "stop" | "status";
 
@@ -65,27 +93,6 @@ export type OutboxRow = {
   error: string | null;
 };
 
-type OutboxSqlRow = {
-  delivery_kind: OutboxDelivery;
-  delivery_generation: number;
-  id: number;
-  target: OutboxTarget;
-  op: string;
-  ordering_key: string | null;
-  idempotency_key: string;
-  payload: string;
-  priority: number;
-  not_before: number;
-  attempts: number;
-  max_attempts: number;
-  status: OutboxStatus;
-  created_at: number;
-  sent_at: number | null;
-  locked_by: string | null;
-  locked_until: number | null;
-  error: string | null;
-};
-
 export type OutboxClaimOptions = {
   blockedKeys?: readonly string[];
   progressIntervalMs?: number;
@@ -100,7 +107,11 @@ export type OutboxClaimOptions = {
  * A duplicate idempotency key throws; wake notes use {@link enqueueOutboxOnce}.
  */
 export function enqueueOutbox(db: Database, row: NewOutbox): number {
-  const inserted = insertOutbox(db, row);
+  return settled(sqliteDb(db).transaction((q) => enqueueOutboxSteps(q, row)));
+}
+
+export function* enqueueOutboxSteps(q: Q, row: NewOutbox) {
+  const inserted = yield* insertOutboxSteps(q, row);
   if (inserted === null) {
     throw new Error("enqueueOutbox did not return an id");
   }
@@ -109,12 +120,20 @@ export function enqueueOutbox(db: Database, row: NewOutbox): number {
 
 /** Store the row once. A repeat of the same idempotency key returns the original id. */
 export function enqueueOutboxOnce(db: Database, row: NewOutbox): number {
-  const inserted = insertOutbox(db, row, true);
+  return settled(sqliteDb(db).transaction((q) => enqueueOutboxOnceSteps(q, row)));
+}
+
+export function* enqueueOutboxOnceSteps(q: Q, row: NewOutbox) {
+  const inserted = yield* insertOutboxSteps(q, row, true);
   if (inserted !== null) return inserted;
-  const existing = db
-    .query<{ id: number }, [string]>("SELECT id FROM outbox WHERE idempotency_key = ?")
-    .get(row.idempotencyKey);
-  if (existing === null) {
+  const { outbox } = q.t;
+  const existing = yield* q.one(
+    q.orm
+      .select({ id: outbox.id })
+      .from(outbox)
+      .where(eq(outbox.idempotencyKey, row.idempotencyKey)),
+  );
+  if (existing === undefined) {
     throw new Error("enqueueOutboxOnce did not store a row");
   }
   return existing.id;
@@ -125,30 +144,49 @@ export function enqueueOutboxOnce(db: Database, row: NewOutbox): number {
  * starts from it after a restart does not reuse a key from before the restart.
  */
 export function lastOutboxSequence(db: Database, prefix: string): number {
-  return db
-    .query<{ key: string }, [string, string]>(
-      "SELECT idempotency_key AS key FROM outbox WHERE idempotency_key > ? AND idempotency_key < ?",
-    )
-    .all(prefix, `${prefix}\u{10ffff}`)
-    .reduce((last, row) => {
-      const suffix = row.key.slice(prefix.length);
-      return /^\d+$/.test(suffix) ? Math.max(last, Number(suffix)) : last;
-    }, 0);
+  return settled(sqliteDb(db).run((q) => lastOutboxSequenceSteps(q, prefix)));
+}
+
+export function* lastOutboxSequenceSteps(q: Q, prefix: string) {
+  const { outbox } = q.t;
+  // Byte order on both: Postgres compares text by the database collation unless told otherwise.
+  const key = sql`${outbox.idempotencyKey}${sql.raw(q.dialect === "sqlite" ? "" : ' COLLATE "C"')}`;
+  const rows = yield* q.all(
+    q.orm
+      .select({ key: outbox.idempotencyKey })
+      .from(outbox)
+      .where(sql`${key} > ${prefix} AND ${key} < ${`${prefix}\u{10ffff}`}`),
+  );
+  return rows.reduce((last, row) => {
+    const suffix = row.key.slice(prefix.length);
+    return /^\d+$/.test(suffix) ? Math.max(last, Number(suffix)) : last;
+  }, 0);
 }
 
 export function getOutbox(db: Database, id: number): OutboxRow | null {
-  const row = db.query<OutboxSqlRow, [number]>("SELECT * FROM outbox WHERE id = ?").get(id);
-  return row === null ? null : mapOutbox(row);
+  return settled(sqliteDb(db).run((q) => getOutboxSteps(q, id)));
+}
+
+export function* getOutboxSteps(q: Q, id: number) {
+  const { outbox } = q.t;
+  const row = yield* q.one(q.orm.select().from(outbox).where(eq(outbox.id, id)));
+  return row === undefined ? null : mapOutbox(q, row);
 }
 
 export function listOutbox(db: Database, orderingKey?: string): OutboxRow[] {
-  if (orderingKey === undefined) {
-    return db.query<OutboxSqlRow, []>("SELECT * FROM outbox ORDER BY id").all().map(mapOutbox);
-  }
-  return db
-    .query<OutboxSqlRow, [string]>("SELECT * FROM outbox WHERE ordering_key = ? ORDER BY id")
-    .all(orderingKey)
-    .map(mapOutbox);
+  return settled(sqliteDb(db).run((q) => listOutboxSteps(q, orderingKey)));
+}
+
+export function* listOutboxSteps(q: Q, orderingKey?: string) {
+  const { outbox } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(outbox)
+      .where(orderingKey === undefined ? undefined : eq(outbox.orderingKey, orderingKey))
+      .orderBy(asc(outbox.id)),
+  );
+  return rows.map((row) => mapOutbox(q, row));
 }
 
 /**
@@ -157,13 +195,39 @@ export function listOutbox(db: Database, orderingKey?: string): OutboxRow[] {
  * Status stays `pending` while the lease is held; 001 has no inflight status.
  */
 export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {}): OutboxRow[] {
+  return settled(sqliteDb(db).run((q) => claimOutboxHeadsSteps(q, options)));
+}
+
+export function* claimOutboxHeadsSteps(q: Q, options: OutboxClaimOptions) {
   const now = options.now ?? Date.now();
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
   const workerId = options.workerId ?? "outbox";
   const limit = options.limit ?? 32;
-  const rows = db
-    .query<OutboxSqlRow, [string, number, string, number, number, number, number, number]>(
-      `WITH ranked AS (
+  const intervalMs = options.progressIntervalMs ?? 0;
+  const blockedKeys = options.blockedKeys ?? [];
+  const progress = (row: string) => sql.raw(PROGRESS_SQL(q.dialect, row));
+  const throttled =
+    intervalMs > 0
+      ? sql`AND NOT (${progress("o")} AND EXISTS (
+           SELECT 1 FROM outbox s WHERE s.target=o.target AND s.ordering_key=o.ordering_key
+             AND s.delivery_generation=o.delivery_generation AND ${progress("s")}
+             AND s.status='sent' AND s.sent_at>${now - intervalMs}
+         ) AND NOT EXISTS (
+           SELECT 1 FROM outbox n WHERE n.target=o.target AND n.ordering_key=o.ordering_key
+             AND n.delivery_generation=o.delivery_generation AND n.id>o.id
+             AND n.status='pending' AND n.priority<=5 AND NOT ${progress("n")}
+         ))`
+      : sql``;
+  const blocked =
+    blockedKeys.length > 0
+      ? sql`AND NOT (o.ordering_key IS NOT NULL AND o.target || ':' || o.ordering_key IN (${sql.join(
+          blockedKeys.map((key) => sql`${key}`),
+          sql`, `,
+        )}))`
+      : sql``;
+  // SQLite's CROSS JOIN keeps the planner's join order; Postgres has no CROSS JOIN … ON.
+  const join = sql.raw(q.dialect === "sqlite" ? "CROSS JOIN" : "JOIN");
+  const heads = sql`WITH ranked AS (
        SELECT o.id, ROW_NUMBER() OVER (
          PARTITION BY o.target, COALESCE('key:' || o.ordering_key, 'row:' || o.id)
          ORDER BY CASE WHEN o.target='linear' AND (
@@ -182,52 +246,43 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
              AND terminal.delivery_kind IN ('terminal', 'stop')
              AND terminal.status IN ('pending', 'sent') AND terminal.priority <= o.priority
          ))
-         AND NOT (?8 > 0 AND ${PROGRESS_SQL("o")} AND EXISTS (
-           SELECT 1 FROM outbox s WHERE s.target=o.target AND s.ordering_key=o.ordering_key
-             AND s.delivery_generation=o.delivery_generation AND ${PROGRESS_SQL("s")}
-             AND s.status='sent' AND s.sent_at>?4-?8
-         ) AND NOT EXISTS (
-           SELECT 1 FROM outbox n WHERE n.target=o.target AND n.ordering_key=o.ordering_key
-             AND n.delivery_generation=o.delivery_generation AND n.id>o.id
-             AND n.status='pending' AND n.priority<=5 AND NOT ${PROGRESS_SQL("n")}
-         ))
+         ${throttled}
      ), eligible AS (
        SELECT o.*
-       FROM ranked r CROSS JOIN outbox o ON r.id=o.id
-       WHERE r.position=1 AND o.status='pending' AND o.not_before<=?4
-         AND (o.locked_until IS NULL OR o.locked_until<=?5)
+       FROM ranked r ${join} outbox o ON r.id=o.id
+       WHERE r.position=1 AND o.status='pending' AND o.not_before<=${now}
+         AND (o.locked_until IS NULL OR o.locked_until<=${now})
          AND (o.target<>'linear' OR NOT EXISTS(
-           SELECT 1 FROM linear_outbox_backoff WHERE not_before>?4
+           SELECT 1 FROM linear_outbox_backoff WHERE not_before>${now}
          ))
-         AND NOT EXISTS (
-           SELECT 1 FROM json_each(?3) WHERE value=o.target || ':' || o.ordering_key
-         )
+         ${blocked}
          AND NOT EXISTS (
            SELECT 1 FROM outbox busy WHERE busy.target=o.target
-             AND busy.ordering_key=o.ordering_key AND busy.locked_until>?6
+             AND busy.ordering_key=o.ordering_key AND busy.locked_until>${now}
          )
      )
-     UPDATE outbox SET locked_by = ?1, locked_until = ?2, attempts = attempts + 1
-     WHERE id IN (
-       SELECT o.id FROM eligible o
-       ORDER BY o.priority, o.id LIMIT ?7
-     ) RETURNING *`,
-    )
-    .all(
-      workerId,
-      now + leaseMs,
-      JSON.stringify(options.blockedKeys ?? []),
-      now,
-      now,
-      now,
-      limit,
-      options.progressIntervalMs ?? 0,
-    );
-  return rows.map(mapOutbox);
+     SELECT o.id FROM eligible o ORDER BY o.priority, o.id LIMIT ${limit}`;
+  const { outbox } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .update(outbox)
+      .set({
+        lockedBy: workerId,
+        lockedUntil: now + leaseMs,
+        attempts: sql`${outbox.attempts} + 1`,
+      })
+      .where(sql`${outbox.id} IN (${heads})`)
+      .returning(),
+  );
+  return rows.map((row) => mapOutbox(q, row));
 }
 
 export function isOutboxCurrent(db: Database, row: OutboxRow): boolean {
-  const current = getOutbox(db, row.id);
+  return settled(sqliteDb(db).run((q) => isOutboxCurrentSteps(q, row)));
+}
+
+export function* isOutboxCurrentSteps(q: Q, row: OutboxRow) {
+  const current = yield* getOutboxSteps(q, row.id);
   if (
     !current ||
     current.status !== "pending" ||
@@ -236,7 +291,7 @@ export function isOutboxCurrent(db: Database, row: OutboxRow): boolean {
   )
     return false;
   if (current.orderingKey === null) return true;
-  const fence = getFence(db, current.target, current.orderingKey);
+  const fence = yield* getFenceSteps(q, current.target, current.orderingKey);
   return current.generation === fence.generation && (!fence.stopped || current.delivery === "stop");
 }
 
@@ -246,28 +301,48 @@ export function advanceOutboxSession(
   orderingKey: string,
   options: { stop?: boolean; now?: number } = {},
 ): number {
-  return immediate(db, () => {
-    const now = options.now ?? Date.now();
-    const generation = getFence(db, target, orderingKey).generation + 1;
-    db.run(
-      `INSERT INTO outbox_session_fence (target, ordering_key, generation, stopped, updated_at)
-      VALUES (?, ?, ?, ?, ?) ON CONFLICT (target, ordering_key) DO UPDATE SET
-      generation = excluded.generation, stopped = excluded.stopped, updated_at = excluded.updated_at`,
-      [target, orderingKey, generation, options.stop ? 1 : 0, now],
-    );
-    db.run(
-      `UPDATE outbox SET status = 'dropped', error = ?
-      WHERE target = ? AND ordering_key = ? AND status IN ('pending', 'dead')`,
-      [
-        options.stop
+  return settled(
+    sqliteDb(db).transaction((q) => advanceOutboxSessionSteps(q, target, orderingKey, options)),
+  );
+}
+
+export function* advanceOutboxSessionSteps(
+  q: Q,
+  target: OutboxTarget,
+  orderingKey: string,
+  options: { stop?: boolean; now?: number },
+) {
+  const { outbox, outboxSessionFence: fence } = q.t;
+  const now = options.now ?? Date.now();
+  const generation = (yield* getFenceSteps(q, target, orderingKey)).generation + 1;
+  const stopped = options.stop ? 1 : 0;
+  yield* q.exec(
+    q.orm
+      .insert(fence)
+      .values({ target, orderingKey, generation, stopped, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [fence.target, fence.orderingKey],
+        set: { generation, stopped, updatedAt: now },
+      }),
+  );
+  yield* q.exec(
+    q.orm
+      .update(outbox)
+      .set({
+        status: "dropped",
+        error: options.stop
           ? "Fenced by Stop; payload retained for reconciliation."
           : "Superseded by an accepted newer session generation.",
-        target,
-        orderingKey,
-      ],
-    );
-    return generation;
-  });
+      })
+      .where(
+        and(
+          eq(outbox.target, target),
+          eq(outbox.orderingKey, orderingKey),
+          inArray(outbox.status, ["pending", "dead"]),
+        ),
+      ),
+  );
+  return generation;
 }
 
 export function stopOutboxSession(
@@ -276,46 +351,90 @@ export function stopOutboxSession(
   orderingKey: string,
   now = Date.now(),
 ): number {
-  return immediate(db, () => {
-    const fence = getFence(db, target, orderingKey);
-    return fence.stopped
-      ? fence.generation
-      : advanceOutboxSession(db, target, orderingKey, { stop: true, now });
-  });
+  return settled(
+    sqliteDb(db).transaction((q) => stopOutboxSessionSteps(q, target, orderingKey, now)),
+  );
+}
+
+export function* stopOutboxSessionSteps(
+  q: Q,
+  target: OutboxTarget,
+  orderingKey: string,
+  now: number,
+) {
+  const fence = yield* getFenceSteps(q, target, orderingKey);
+  return fence.stopped
+    ? fence.generation
+    : yield* advanceOutboxSessionSteps(q, target, orderingKey, { stop: true, now });
+}
+
+/** `locked_by = ?` as the raw SQL wrote it: a null lease holder matches no row. */
+function heldBy(q: Q, lockedBy: string | null) {
+  return sql`${q.t.outbox.lockedBy} = ${lockedBy}`;
 }
 
 export function completeOutbox(db: Database, row: OutboxRow, now = Date.now()): boolean {
-  return immediate(db, () => {
-    const result = db
-      .query<{ status: OutboxStatus }, [number, number, string | null, number]>(
-        `UPDATE outbox SET status = CASE WHEN status = 'pending' THEN 'sent' ELSE status END,
-       sent_at = ?, locked_by = NULL, locked_until = NULL,
-       error = CASE WHEN status = 'dropped' THEN 'Superseded delivery completed; external effect may have occurred.' ELSE NULL END
-     WHERE id = ? AND status IN ('pending', 'dropped') AND locked_by = ? AND attempts = ? RETURNING status`,
+  return settled(sqliteDb(db).transaction((q) => completeOutboxSteps(q, row, now)));
+}
+
+export function* completeOutboxSteps(q: Q, row: OutboxRow, now: number) {
+  const { outbox } = q.t;
+  const result = yield* q.one(
+    q.orm
+      .update(outbox)
+      .set({
+        status: sql`CASE WHEN ${outbox.status} = 'pending' THEN 'sent' ELSE ${outbox.status} END`,
+        sentAt: now,
+        lockedBy: null,
+        lockedUntil: null,
+        error: sql`CASE WHEN ${outbox.status} = 'dropped' THEN 'Superseded delivery completed; external effect may have occurred.' ELSE NULL END`,
+      })
+      .where(
+        and(
+          eq(outbox.id, row.id),
+          inArray(outbox.status, ["pending", "dropped"]),
+          heldBy(q, row.lockedBy),
+          eq(outbox.attempts, row.attempts),
+        ),
       )
-      .get(now, row.id, row.lockedBy, row.attempts);
-    if (result?.status !== "sent") return false;
-    if (row.orderingKey !== null)
-      db.run(
-        `UPDATE outbox SET status = 'sent', sent_at = ?, error = ?
-      WHERE target = ? AND ordering_key = ? AND status = 'dropped' AND error = ?`,
-        [
-          now,
-          `Delivered with outbox ${row.id}.`,
-          row.target,
-          row.orderingKey,
-          `Sending with outbox ${row.id}.`,
-        ],
-      );
-    return true;
-  });
+      .returning({ status: outbox.status }),
+  );
+  if (result?.status !== "sent") return false;
+  if (row.orderingKey !== null)
+    yield* q.exec(
+      q.orm
+        .update(outbox)
+        .set({ status: "sent", sentAt: now, error: `Delivered with outbox ${row.id}.` })
+        .where(
+          and(
+            eq(outbox.target, row.target),
+            eq(outbox.orderingKey, row.orderingKey),
+            eq(outbox.status, "dropped"),
+            eq(outbox.error, `Sending with outbox ${row.id}.`),
+          ),
+        ),
+    );
+  return true;
 }
 
 export function releaseOutboxLease(db: Database, row: OutboxRow): void {
-  db.run(
-    `UPDATE outbox SET locked_by = NULL, locked_until = NULL
-    WHERE id = ? AND status = 'dropped' AND locked_by = ? AND attempts = ?`,
-    [row.id, row.lockedBy, row.attempts],
+  settled(sqliteDb(db).run((q) => releaseOutboxLeaseSteps(q, row)));
+}
+
+export function* releaseOutboxLeaseSteps(q: Q, row: OutboxRow) {
+  const { outbox } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(outbox)
+      .set({ lockedBy: null, lockedUntil: null })
+      .where(
+        and(
+          eq(outbox.id, row.id),
+          eq(outbox.status, "dropped"),
+          heldBy(q, row.lockedBy),
+          eq(outbox.attempts, row.attempts),
+        ),
+      ),
   );
 }
 
@@ -406,75 +525,152 @@ export function dispatchOutbox(db: Database, options: DispatchOptions = {}): Out
   return claimed;
 }
 
+/** Whether a claimed row may absorb its session's later rows: session updates, or thoughts. */
+function coalescing(row: OutboxRow, options: { thoughts?: boolean }): { session: boolean } | null {
+  if (row.target !== "linear" || row.orderingKey === null) return null;
+  const session = row.op.startsWith("linear.session.") && mergeableSession(row);
+  if (!session && !(options.thoughts && row.attempts === 1 && mergeableThought(row))) return null;
+  return { session };
+}
+
 export function coalesceOutbox(
   db: Database,
   row: OutboxRow,
   options: { now?: number; thoughts?: boolean } = {},
 ): OutboxRow {
-  if (row.target !== "linear" || row.orderingKey === null) return row;
+  if (coalescing(row, options) === null) return row;
+  return settled(sqliteDb(db).transaction((q) => coalesceOutboxSteps(q, row, options)));
+}
+
+export function* coalesceOutboxSteps(
+  q: Q,
+  row: OutboxRow,
+  options: { now?: number; thoughts?: boolean } = {},
+) {
+  const plan = coalescing(row, options);
+  if (plan === null || row.orderingKey === null) return row;
+  const { session } = plan;
   const now = options.now ?? Date.now();
-  const session = row.op.startsWith("linear.session.") && mergeableSession(row);
-  if (!session && !(options.thoughts && row.attempts === 1 && mergeableThought(row))) return row;
-  return immediate(db, () => {
-    const others = db
-      .query<OutboxSqlRow, [string, number, number, number]>(
-        `SELECT * FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
-          AND id <> ? AND status = 'pending' AND (locked_until IS NULL OR locked_until <= ?)
-        ORDER BY id`,
+  const orderingKey = row.orderingKey;
+  const { outbox } = q.t;
+  const others = (yield* q.all(
+    q.orm
+      .select()
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.orderingKey, orderingKey),
+          eq(outbox.deliveryGeneration, row.generation ?? 0),
+          ne(outbox.id, row.id),
+          eq(outbox.status, "pending"),
+          unlockedAt(q, now),
+        ),
       )
-      .all(row.orderingKey!, row.generation ?? 0, row.id, now)
-      .map(mapOutbox);
-    const merged = session
-      ? others.filter((other) => other.op.startsWith("linear.session.") && mergeableSession(other))
-      : followingThoughts(row, others);
-    if (merged.length === 0) return row;
-    const payload = session
-      ? mergeSessionPayloads([row, ...merged].sort((a, b) => a.id - b.id))
-      : {
-          ...(row.payload as object),
-          body: [row, ...merged]
-            .map((entry) => (entry.payload as { body: string }).body)
-            .join("\n\n"),
-        };
-    const updated = db.run(
-      `UPDATE outbox SET payload = ? WHERE id = ? AND status = 'pending' AND locked_by = ? AND attempts = ?`,
-      [JSON.stringify(payload), row.id, row.lockedBy, row.attempts],
-    );
-    if (updated.changes !== 1) return row;
-    const ids = JSON.stringify(merged.map((entry) => entry.id));
-    db.run(
-      `UPDATE outbox SET status = 'dropped', error = ? WHERE id IN (SELECT value FROM json_each(?))`,
-      [session ? `Sending with outbox ${row.id}.` : `Merged into outbox ${row.id}.`, ids],
-    );
-    return { ...row, payload };
-  });
+      .orderBy(asc(outbox.id)),
+  )).map((other) => mapOutbox(q, other));
+  const merged = session
+    ? others.filter((other) => other.op.startsWith("linear.session.") && mergeableSession(other))
+    : followingThoughts(row, others);
+  if (merged.length === 0) return row;
+  const payload = session
+    ? mergeSessionPayloads([row, ...merged].sort((a, b) => a.id - b.id))
+    : {
+        ...(row.payload as object),
+        body: [row, ...merged]
+          .map((entry) => (entry.payload as { body: string }).body)
+          .join("\n\n"),
+      };
+  const updated = yield* q.all(
+    q.orm
+      .update(outbox)
+      .set({ payload: payloadIn(q, payload) })
+      .where(
+        and(
+          eq(outbox.id, row.id),
+          eq(outbox.status, "pending"),
+          heldBy(q, row.lockedBy),
+          eq(outbox.attempts, row.attempts),
+        ),
+      )
+      .returning({ id: outbox.id }),
+  );
+  if (updated.length !== 1) return row;
+  yield* q.exec(
+    q.orm
+      .update(outbox)
+      .set({
+        status: "dropped",
+        error: session ? `Sending with outbox ${row.id}.` : `Merged into outbox ${row.id}.`,
+      })
+      .where(
+        inArray(
+          outbox.id,
+          merged.map((entry) => entry.id),
+        ),
+      ),
+  );
+  return { ...row, payload };
+}
+
+function unlockedAt(q: Q, now: number) {
+  const { outbox } = q.t;
+  return sql`(${outbox.lockedUntil} IS NULL OR ${outbox.lockedUntil} <= ${now})`;
 }
 
 export function attachSessionUpdates(db: Database, id: number, now = Date.now()): void {
-  immediate(db, () => {
-    const row = getOutbox(db, id);
-    if (row === null || row.status !== "pending" || row.orderingKey === null) return;
-    const sessions = db
-      .query<OutboxSqlRow, [string, number, number, number]>(
-        `SELECT * FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
-          AND op LIKE 'linear.session.%' AND status = 'pending' AND not_before <= ?
-          AND (locked_until IS NULL OR locked_until <= ?) ORDER BY id`,
+  settled(sqliteDb(db).transaction((q) => attachSessionUpdatesSteps(q, id, now)));
+}
+
+export function* attachSessionUpdatesSteps(q: Q, id: number, now: number) {
+  const { outbox } = q.t;
+  const row = yield* getOutboxSteps(q, id);
+  if (row === null || row.status !== "pending" || row.orderingKey === null) return;
+  const sessions = (yield* q.all(
+    q.orm
+      .select()
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.orderingKey, row.orderingKey),
+          eq(outbox.deliveryGeneration, row.generation ?? 0),
+          likeOf(q)(outbox.op, "linear.session.%"),
+          eq(outbox.status, "pending"),
+          sql`${outbox.notBefore} <= ${now}`,
+          unlockedAt(q, now),
+        ),
       )
-      .all(row.orderingKey, row.generation ?? 0, now, now)
-      .map(mapOutbox)
-      .filter(mergeableSession);
-    if (sessions.length === 0) return;
-    const updated = db.run(
-      `UPDATE outbox SET payload = json_set(payload, '$.session', json(?)) WHERE id = ?
-        AND status = 'pending' AND (locked_until IS NULL OR locked_until <= ?)`,
-      [JSON.stringify(mergeSessionPayloads(sessions)), id, now],
-    );
-    if (updated.changes !== 1) return;
-    db.run(
-      `UPDATE outbox SET status = 'dropped', error = ? WHERE id IN (SELECT value FROM json_each(?))`,
-      [`Sending with outbox ${id}.`, JSON.stringify(sessions.map((session) => session.id))],
-    );
-  });
+      .orderBy(asc(outbox.id)),
+  ))
+    .map((session) => mapOutbox(q, session))
+    .filter(mergeableSession);
+  if (sessions.length === 0) return;
+  const merged = JSON.stringify(mergeSessionPayloads(sessions));
+  const updated = yield* q.all(
+    q.orm
+      .update(outbox)
+      .set({
+        payload:
+          q.dialect === "sqlite"
+            ? sql`json_set(${outbox.payload}, '$.session', json(${merged}))`
+            : sql`jsonb_set(${outbox.payload}, '{session}', ${merged}::jsonb)`,
+      })
+      .where(and(eq(outbox.id, id), eq(outbox.status, "pending"), unlockedAt(q, now)))
+      .returning({ id: outbox.id }),
+  );
+  if (updated.length !== 1) return;
+  yield* q.exec(
+    q.orm
+      .update(outbox)
+      .set({ status: "dropped", error: `Sending with outbox ${id}.` })
+      .where(
+        inArray(
+          outbox.id,
+          sessions.map((session) => session.id),
+        ),
+      ),
+  );
 }
 
 const SESSION_FIELDS = new Set([
@@ -539,22 +735,27 @@ export const ELICITATION_REASK_SUFFIX = ":reask";
  * The work item an outbox row belongs to: the payload's item, the run that wrote it,
  * the question it asks, or the item whose session it is ordered on.
  */
-export const OUTBOX_ITEM_SQL = (row: string) => `COALESCE(
-  (SELECT i.id FROM work_item i WHERE i.id = json_extract(${row}.payload, '$.itemId')),
+export const OUTBOX_ITEM_SQL = (row: string, dialect: Dialect = "sqlite") => `COALESCE(
+  (SELECT i.id FROM work_item i WHERE i.id = ${jsonText(dialect, `${row}.payload`, "itemId")}),
   (SELECT r.item_id FROM run r WHERE r.id = ${row}.activity_run_id),
-  (SELECT q.item_id FROM question q WHERE q.id = json_extract(${row}.payload, '$.questionId')),
+  (SELECT q.item_id FROM question q WHERE q.id = ${jsonText(dialect, `${row}.payload`, "questionId")}),
   (SELECT i.id FROM work_item i WHERE ${row}.ordering_key IS NOT NULL
     AND i.session_key = ${row}.ordering_key ORDER BY i.created_at DESC, i.id DESC LIMIT 1)
 )`;
 
 export function outboxItemId(db: Database, id: number): string | null {
-  return (
-    db
-      .query<{ itemId: string | null }, [number]>(
-        `SELECT ${OUTBOX_ITEM_SQL("o")} AS itemId FROM outbox o WHERE o.id = ?`,
-      )
-      .get(id)?.itemId ?? null
+  return settled(sqliteDb(db).run((q) => outboxItemIdSteps(q, id)));
+}
+
+export function* outboxItemIdSteps(q: Q, id: number) {
+  const { outbox } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ itemId: sql<string | null>`${sql.raw(OUTBOX_ITEM_SQL("outbox", q.dialect))}` })
+      .from(outbox)
+      .where(eq(outbox.id, id)),
   );
+  return row?.itemId ?? null;
 }
 
 export function oneLine(text: string, max = 200): string {
@@ -645,114 +846,155 @@ function settleDeadOutbox(db: Database, row: OutboxRow, error: string, now: numb
 }
 
 function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | null {
-  return immediate(db, () => {
-    const now = row.now ?? Date.now();
-    const delivery = row.delivery ?? deliveryKind(row);
-    const fence = row.orderingKey
-      ? getFence(db, row.target, row.orderingKey)
-      : { generation: 0, stopped: false };
-    const generation = row.generation ?? fence.generation;
-    const terminal =
-      row.orderingKey &&
-      (delivery === "progress" ||
-        (delivery === "critical" &&
-          (row.op === "elicitation" ||
-            ["thought", "action"].includes((row.payload as { kind?: string })?.kind ?? "")))) &&
-      db
-        .query<{ id: number }, [string, string, number]>(
-          `SELECT id FROM outbox WHERE target = ? AND ordering_key = ? AND delivery_generation = ?
-       AND delivery_kind IN ('terminal', 'stop') AND status != 'dropped' LIMIT 1`,
+  return settled(sqliteDb(db).transaction((q) => insertOutboxSteps(q, row, ignore)));
+}
+
+function* insertOutboxSteps(q: Q, row: NewOutbox, ignore = false) {
+  const { outbox, workItem } = q.t;
+  const now = row.now ?? Date.now();
+  const delivery = row.delivery ?? deliveryKind(row);
+  const fence = row.orderingKey
+    ? yield* getFenceSteps(q, row.target, row.orderingKey)
+    : { generation: 0, stopped: false };
+  const generation = row.generation ?? fence.generation;
+  const terminal =
+    row.orderingKey &&
+    (delivery === "progress" ||
+      (delivery === "critical" &&
+        (row.op === "elicitation" ||
+          ["thought", "action"].includes((row.payload as { kind?: string })?.kind ?? "")))) &&
+    (yield* q.one(
+      q.orm
+        .select({ id: outbox.id })
+        .from(outbox)
+        .where(
+          and(
+            eq(outbox.target, row.target),
+            eq(outbox.orderingKey, row.orderingKey),
+            eq(outbox.deliveryGeneration, generation),
+            inArray(outbox.deliveryKind, ["terminal", "stop"]),
+            ne(outbox.status, "dropped"),
+          ),
         )
-        .get(row.target, row.orderingKey, generation);
-    const blocked =
-      generation !== fence.generation ||
-      (fence.stopped && delivery !== "stop") ||
-      Boolean(terminal);
-    const repeated =
-      blocked || db.query("SELECT 1 FROM outbox WHERE idempotency_key = ?").get(row.idempotencyKey)
-        ? null
-        : repeatedThought(db, row, generation);
-    if (repeated !== null) return repeated;
-    const progressActivity =
-      Boolean(row.orderingKey) &&
-      row.target === "linear" &&
-      delivery === "progress" &&
-      row.op === "activity";
-    const verb = ignore ? "INSERT OR IGNORE" : "INSERT";
-    const inserted = db
-      .query<{ id: number }, (string | number | null)[]>(
-        `${verb} INTO outbox (target, op, ordering_key, idempotency_key, payload, priority,
-        not_before, created_at, max_attempts, delivery_kind, delivery_generation, status, error, activity_run_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-         (SELECT current_run_id FROM work_item WHERE id=?)) RETURNING id`,
-      )
-      .get(
-        row.target,
-        row.op,
-        row.orderingKey ?? null,
-        row.idempotencyKey,
-        JSON.stringify(row.payload ?? {}),
-        row.priority ?? deliveryPriority(delivery),
-        row.notBefore ?? 0,
-        now,
-        row.maxAttempts ?? DEFAULT_OUTBOX_MAX_ATTEMPTS,
-        delivery,
-        generation,
-        blocked ? "dropped" : "pending",
-        blocked ? "Rejected by the persisted session fence." : null,
-        (row.payload as { itemId?: string } | undefined)?.itemId ?? null,
-      );
-    if (inserted && !blocked && row.orderingKey && !row.op.startsWith("linear.session."))
-      db.run(
-        `UPDATE outbox SET not_before = 0 WHERE target = ? AND ordering_key = ? AND id <> ?
-          AND status = 'pending' AND attempts = 0 AND delivery_kind = 'critical'
-          AND op = 'activity' AND not_before > ?`,
-        [row.target, row.orderingKey, inserted.id, now],
-      );
-    if (inserted && !blocked && row.target === "linear" && delivery === "progress") {
-      db.run(
-        `UPDATE outbox SET status='dropped',error='Superseded by a newer canonical run.'
-         WHERE target='linear' AND ordering_key=? AND status='pending' AND locked_by IS NULL
-           AND delivery_kind='progress' AND op = 'activity'
-           AND COALESCE(json_extract(payload,'$.ephemeral'),0)=1
-           AND activity_run_id IS NOT NULL AND activity_run_id<>(
-             SELECT activity_run_id FROM outbox WHERE id=?
-           )`,
-        [row.orderingKey ?? null, inserted.id],
-      );
-    }
-    if (inserted && !blocked && progressActivity) {
-      db.run(
-        `UPDATE outbox SET status = 'dropped', error = 'Superseded by newer progress.'
-        WHERE target = ? AND ordering_key = ? AND delivery_generation = ? AND id < ?
-          AND status = 'pending' AND attempts = 0 AND locked_by IS NULL
-          AND delivery_kind = 'progress' AND op = 'activity'
-          AND json_extract(payload, '$.ephemeral') = 1
-          AND json_extract(payload, '$.kind') IN ('thought', 'action')`,
-        [row.target, row.orderingKey!, generation, inserted.id],
-      );
-    }
-    if (
-      !inserted ||
-      blocked ||
-      !row.orderingKey ||
-      !["critical", "terminal", "stop"].includes(delivery)
-    )
-      return inserted?.id ?? null;
-    db.run(
-      `UPDATE outbox SET status = 'dropped', error = 'Superseded by a critical session update.'
-      WHERE target = ? AND ordering_key = ? AND id < ? AND status IN ('pending', 'dead')
-        AND ((delivery_kind = 'progress' AND (op <> 'activity'
-          OR COALESCE(json_extract(payload,'$.ephemeral'),0)=1
-          OR COALESCE(json_extract(payload,'$.kind'),'') NOT IN ('thought','action')))
-          OR (? = 'terminal' AND delivery_kind = 'critical'
-          AND ((op='elicitation' AND COALESCE((SELECT state FROM work_item
-                WHERE id = ${OUTBOX_ITEM_SQL("outbox")}), '') <> 'awaiting_input')
-            OR json_extract(payload,'$.kind') IN ('thought','action'))))`,
-      [row.target, row.orderingKey, inserted.id, delivery],
-    );
-    return inserted.id;
+        .limit(1),
+    ));
+  const blocked =
+    generation !== fence.generation || (fence.stopped && delivery !== "stop") || Boolean(terminal);
+  const repeated =
+    blocked ||
+    (yield* q.one(
+      q.orm
+        .select({ one: sql`1` })
+        .from(outbox)
+        .where(eq(outbox.idempotencyKey, row.idempotencyKey)),
+    ))
+      ? null
+      : yield* repeatedThoughtSteps(q, row, generation);
+  if (repeated !== null) return repeated;
+  const progressActivity =
+    Boolean(row.orderingKey) &&
+    row.target === "linear" &&
+    delivery === "progress" &&
+    row.op === "activity";
+  const itemId = (row.payload as { itemId?: string } | undefined)?.itemId ?? null;
+  const insert = q.orm.insert(outbox).values({
+    target: row.target,
+    op: row.op,
+    orderingKey: row.orderingKey ?? null,
+    idempotencyKey: row.idempotencyKey,
+    payload: payloadIn(q, row.payload ?? {}),
+    priority: row.priority ?? deliveryPriority(delivery),
+    notBefore: row.notBefore ?? 0,
+    createdAt: now,
+    maxAttempts: row.maxAttempts ?? DEFAULT_OUTBOX_MAX_ATTEMPTS,
+    deliveryKind: delivery,
+    deliveryGeneration: generation,
+    status: blocked ? "dropped" : "pending",
+    error: blocked ? "Rejected by the persisted session fence." : null,
+    activityRunId: sql`(SELECT ${workItem.currentRunId} FROM ${workItem} WHERE ${workItem.id} = ${itemId})`,
   });
+  const inserted = yield* q.one(
+    ignore
+      ? insert.onConflictDoNothing().returning({ id: outbox.id })
+      : insert.returning({ id: outbox.id }),
+  );
+  if (inserted && !blocked && row.orderingKey && !row.op.startsWith("linear.session."))
+    yield* q.exec(
+      q.orm
+        .update(outbox)
+        .set({ notBefore: 0 })
+        .where(
+          and(
+            eq(outbox.target, row.target),
+            eq(outbox.orderingKey, row.orderingKey),
+            ne(outbox.id, inserted.id),
+            eq(outbox.status, "pending"),
+            eq(outbox.attempts, 0),
+            eq(outbox.deliveryKind, "critical"),
+            eq(outbox.op, "activity"),
+            gt(outbox.notBefore, now),
+          ),
+        ),
+    );
+  const ephemeral = sql.raw(jsonOne(q.dialect, "payload", "ephemeral"));
+  const kind = sql.raw(jsonText(q.dialect, "payload", "kind"));
+  if (inserted && !blocked && row.target === "linear" && delivery === "progress") {
+    yield* q.exec(
+      q.orm
+        .update(outbox)
+        .set({ status: "dropped", error: "Superseded by a newer canonical run." })
+        .where(
+          sql`target='linear' AND ordering_key=${row.orderingKey ?? null} AND status='pending'
+            AND locked_by IS NULL AND delivery_kind='progress' AND op = 'activity'
+            AND ${ephemeral}
+            AND activity_run_id IS NOT NULL AND activity_run_id<>(
+              SELECT activity_run_id FROM outbox WHERE id=${inserted.id}
+            )`,
+        ),
+    );
+  }
+  if (inserted && !blocked && progressActivity) {
+    yield* q.exec(
+      q.orm
+        .update(outbox)
+        .set({ status: "dropped", error: "Superseded by newer progress." })
+        .where(
+          sql`target = ${row.target} AND ordering_key = ${row.orderingKey!}
+            AND delivery_generation = ${generation} AND id < ${inserted.id}
+            AND status = 'pending' AND attempts = 0 AND locked_by IS NULL
+            AND delivery_kind = 'progress' AND op = 'activity'
+            AND ${ephemeral} AND ${kind} IN ('thought', 'action')`,
+        ),
+    );
+  }
+  if (
+    !inserted ||
+    blocked ||
+    !row.orderingKey ||
+    !["critical", "terminal", "stop"].includes(delivery)
+  )
+    return inserted?.id ?? null;
+  const supersedesCritical =
+    delivery === "terminal"
+      ? sql`OR (delivery_kind = 'critical'
+          AND ((op='elicitation' AND COALESCE((SELECT state FROM work_item
+                WHERE id = ${sql.raw(OUTBOX_ITEM_SQL("outbox", q.dialect))}), '') <> 'awaiting_input')
+            OR ${kind} IN ('thought','action')))`
+      : sql``;
+  yield* q.exec(
+    q.orm
+      .update(outbox)
+      .set({ status: "dropped", error: "Superseded by a critical session update." })
+      .where(
+        sql`target = ${row.target} AND ordering_key = ${row.orderingKey} AND id < ${inserted.id}
+          AND status IN ('pending', 'dead')
+          AND ((delivery_kind = 'progress' AND (op <> 'activity'
+            OR ${ephemeral}
+            OR COALESCE(${kind},'') NOT IN ('thought','action')))
+            ${supersedesCritical})`,
+      ),
+  );
+  return inserted.id;
 }
 
 /**
@@ -761,7 +1003,7 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
  * an error or a question starts a new phase. An ephemeral line may repeat an ephemeral line:
  * Linear replaces the one it shows, and a pending one is superseded by the newer.
  */
-function repeatedThought(db: Database, row: NewOutbox, generation: number): number | null {
+function* repeatedThoughtSteps(q: Q, row: NewOutbox, generation: number) {
   const payload = row.payload as { kind?: unknown; body?: unknown; ephemeral?: unknown };
   if (
     row.target !== "linear" ||
@@ -771,22 +1013,35 @@ function repeatedThought(db: Database, row: NewOutbox, generation: number): numb
     typeof payload.body !== "string"
   )
     return null;
-  const last = db
-    .query<
-      { id: number; kind: string | null; body: string | null; ephemeral: number },
-      [string, number]
-    >(
-      `SELECT id, json_extract(payload, '$.kind') AS kind, json_extract(payload, '$.body') AS body,
-         COALESCE(json_extract(payload, '$.ephemeral'), 0) AS ephemeral
-       FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
-         AND status IN ('pending', 'sent')
-         AND (op = 'elicitation' OR (op = 'activity'
-           AND json_extract(payload, '$.kind') IN ('thought', 'response', 'error')))
-       ORDER BY id DESC LIMIT 1`,
-    )
-    .get(row.orderingKey, generation);
-  if (last?.kind !== "thought" || last.body?.trim() !== payload.body.trim()) return null;
-  if (payload.ephemeral === true && last.ephemeral === 1) return null;
+  const { outbox } = q.t;
+  const kind = sql.raw(jsonText(q.dialect, "payload", "kind"));
+  const last = yield* q.one(
+    q.orm
+      .select({ id: outbox.id, payload: outbox.payload })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.orderingKey, row.orderingKey),
+          eq(outbox.deliveryGeneration, generation),
+          inArray(outbox.status, ["pending", "sent"]),
+          sql`(${outbox.op} = 'elicitation' OR (${outbox.op} = 'activity'
+            AND ${kind} IN ('thought', 'response', 'error')))`,
+        ),
+      )
+      .orderBy(desc(outbox.id))
+      .limit(1),
+  );
+  if (last === undefined) return null;
+  const stored = payloadOut(q, last.payload) as {
+    kind?: unknown;
+    body?: unknown;
+    ephemeral?: unknown;
+  };
+  if (stored.kind !== "thought" || typeof stored.body !== "string") return null;
+  if (stored.body.trim() !== payload.body.trim()) return null;
+  if (payload.ephemeral === true && (stored.ephemeral === true || stored.ephemeral === 1))
+    return null;
   return last.id;
 }
 
@@ -813,59 +1068,62 @@ function deliveryPriority(kind: OutboxDelivery): number {
           : 5;
 }
 
-function getFence(
-  db: Database,
-  target: OutboxTarget,
-  orderingKey: string,
-): { generation: number; stopped: boolean } {
-  const row = db
-    .query<{ generation: number; stopped: number }, [string, string]>(
-      "SELECT generation, stopped FROM outbox_session_fence WHERE target = ? AND ordering_key = ?",
-    )
-    .get(target, orderingKey);
+function* getFenceSteps(q: Q, target: OutboxTarget, orderingKey: string) {
+  const { outboxSessionFence: fence } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ generation: fence.generation, stopped: fence.stopped })
+      .from(fence)
+      .where(and(eq(fence.target, target), eq(fence.orderingKey, orderingKey))),
+  );
   return { generation: row?.generation ?? 0, stopped: row?.stopped === 1 };
 }
 
-function mapOutbox(row: OutboxSqlRow): OutboxRow {
+function mapOutbox(q: Q, row: typeof pgSchema.outbox.$inferSelect): OutboxRow {
   return {
-    delivery: row.delivery_kind,
-    generation: row.delivery_generation,
+    delivery: row.deliveryKind as OutboxDelivery,
+    generation: row.deliveryGeneration,
     id: row.id,
-    target: row.target,
+    target: row.target as OutboxTarget,
     op: row.op,
-    orderingKey: row.ordering_key,
-    idempotencyKey: row.idempotency_key,
-    payload: JSON.parse(row.payload) as unknown,
+    orderingKey: row.orderingKey,
+    idempotencyKey: row.idempotencyKey,
+    payload: payloadOut(q, row.payload),
     priority: row.priority,
-    notBefore: row.not_before,
+    notBefore: row.notBefore,
     attempts: row.attempts,
-    maxAttempts: row.max_attempts,
-    status: row.status,
-    createdAt: row.created_at,
-    sentAt: row.sent_at,
-    lockedBy: row.locked_by,
-    lockedUntil: row.locked_until,
+    maxAttempts: row.maxAttempts,
+    status: row.status as OutboxStatus,
+    createdAt: row.createdAt,
+    sentAt: row.sentAt,
+    lockedBy: row.lockedBy,
+    lockedUntil: row.lockedUntil,
     error: row.error,
   };
 }
 
 export function linearSessionClosed(db: Database, sessionId: string, generation: number): boolean {
-  return (
-    orm(db)
+  return settled(sqliteDb(db).run((q) => linearSessionClosedSteps(q, sessionId, generation)));
+}
+
+export function* linearSessionClosedSteps(q: Q, sessionId: string, generation: number) {
+  const { outbox } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({ one: sql`1` })
-      .from(outboxTable)
+      .from(outbox)
       .where(
         and(
-          eq(outboxTable.target, "linear"),
-          eq(outboxTable.orderingKey, sessionId),
-          eq(outboxTable.deliveryGeneration, generation),
-          inArray(outboxTable.deliveryKind, ["terminal", "stop"]),
-          ne(outboxTable.status, "dropped"),
+          eq(outbox.target, "linear"),
+          eq(outbox.orderingKey, sessionId),
+          eq(outbox.deliveryGeneration, generation),
+          inArray(outbox.deliveryKind, ["terminal", "stop"]),
+          ne(outbox.status, "dropped"),
         ),
       )
-      .limit(1)
-      .get() !== undefined
+      .limit(1),
   );
+  return row !== undefined;
 }
 
 export function pullRequestReadyQueued(
@@ -873,20 +1131,25 @@ export function pullRequestReadyQueued(
   sessionId: string,
   generation: number,
 ): boolean {
-  return (
-    orm(db)
+  return settled(sqliteDb(db).run((q) => pullRequestReadyQueuedSteps(q, sessionId, generation)));
+}
+
+export function* pullRequestReadyQueuedSteps(q: Q, sessionId: string, generation: number) {
+  const { outbox } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({ one: sql`1` })
-      .from(outboxTable)
+      .from(outbox)
       .where(
         and(
-          eq(outboxTable.target, "linear"),
-          eq(outboxTable.orderingKey, sessionId),
-          eq(outboxTable.deliveryGeneration, generation),
-          like(outboxTable.idempotencyKey, "pull-request-ready:%"),
-          ne(outboxTable.status, "dropped"),
+          eq(outbox.target, "linear"),
+          eq(outbox.orderingKey, sessionId),
+          eq(outbox.deliveryGeneration, generation),
+          likeOf(q)(outbox.idempotencyKey, "pull-request-ready:%"),
+          ne(outbox.status, "dropped"),
         ),
       )
-      .limit(1)
-      .get() !== undefined
+      .limit(1),
   );
+  return row !== undefined;
 }

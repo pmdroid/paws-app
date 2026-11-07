@@ -273,39 +273,13 @@ src/db/migrations.ts | const item = db .query<{ id: string; identifier: string; 
 src/db/migrations/20261105T2237_runner_extra_usage.ts | db.run("CREATE TEMP TABLE extra_usage_import(agent TEXT NOT NULL)"); | frozen legacy migration (src/db/README.md)
 src/db/migrations/20261105T2237_runner_extra_usage.ts | db.run("INSERT INTO extra_usage_import VALUES(?)", [agent]); | frozen legacy migration (src/db/README.md)
 src/db/migrations/20261106T0855_retire_named_agent_accounts.ts | for (const account of db .query<{ id: string; workspaceId: string; agent: string; label: string }, []>( | frozen legacy migration (src/db/README.md)
-src/db/outbox.ts | const existing = db .query<{ id: number }, [string]>("SELECT id FROM outbox WHERE idempotency_key = ?") | not yet converted to Drizzle
-src/db/outbox.ts | return db .query<{ key: string }, [string, string]>( | not yet converted to Drizzle
-src/db/outbox.ts | const row = db.query<OutboxSqlRow, [number]>("SELECT * FROM outbox WHERE id = ?").get(id); | not yet converted to Drizzle
-src/db/outbox.ts | return db.query<OutboxSqlRow, []>("SELECT * FROM outbox ORDER BY id").all().map(mapOutbox); | not yet converted to Drizzle
-src/db/outbox.ts | return db .query<OutboxSqlRow, [string]>("SELECT * FROM outbox WHERE ordering_key = ? ORDER BY id") | not yet converted to Drizzle
-src/db/outbox.ts | const rows = db .query<OutboxSqlRow, [string, number, string, number, number, number, number, number]>( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | const result = db .query<{ status: OutboxStatus }, [number, number, string | null, number]>( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | const others = db .query<OutboxSqlRow, [string, number, number, number]>( | not yet converted to Drizzle
-src/db/outbox.ts | const updated = db.run( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | const sessions = db .query<OutboxSqlRow, [string, number, number, number]>( | not yet converted to Drizzle
-src/db/outbox.ts | const updated = db.run( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | db .query<{ itemId: string | null }, [number]>( | not yet converted to Drizzle
-src/db/outbox.ts | const item = db .query<{ state: string; runId: string | null }, [string]>( | not yet converted to Drizzle
-src/db/outbox.ts | db .query<{ open: number }, [string]>( | not yet converted to Drizzle
-src/db/outbox.ts | db .query<{ origin: string | null }, [string, string]>( | not yet converted to Drizzle
-src/db/outbox.ts | if (db.query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?").get(key)) | not yet converted to Drizzle
-src/db/outbox.ts | db.run(`UPDATE outbox SET status = 'dropped', error = ? WHERE id = ? AND status = 'dead'`, [ | not yet converted to Drizzle
-src/db/outbox.ts | db .query<{ id: number }, [string, string, number]>( | not yet converted to Drizzle
-src/db/outbox.ts | blocked || db.query("SELECT 1 FROM outbox WHERE idempotency_key = ?").get(row.idempotencyKey) | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | db.run( | not yet converted to Drizzle
-src/db/outbox.ts | const last = db .query< | not yet converted to Drizzle
-src/db/outbox.ts | const row = db .query<{ generation: number; stopped: number }, [string, string]>( | not yet converted to Drizzle
+src/db/outbox.ts | db.run( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | db.run( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | const item = db .query<{ state: string; runId: string | null }, [string]>( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | db .query<{ open: number }, [string]>( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | db .query<{ origin: string | null }, [string, string]>( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | if (db.query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?").get(key)) | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | db.run(`UPDATE outbox SET status = 'dropped', error = ? WHERE id = ? AND status = 'dead'`, [ | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
 src/db/plan-proposals.ts | db.run( | not yet converted to Drizzle
 src/db/plan-proposals.ts | const row = db .query<PlanProposalRow, [string]>("SELECT * FROM plan_proposal WHERE question_id = ?") | not yet converted to Drizzle
 src/db/plan-proposals.ts | db.run( | not yet converted to Drizzle
