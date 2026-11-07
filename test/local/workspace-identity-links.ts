@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pawsPaths } from "../../src/config";
-import { writeSecretFile } from "../../src/credentials";
+import { writeCredential } from "../../src/credentials";
 import {
   changeWorkspaceRole,
   consumeWorkspaceBootstrap,
@@ -64,8 +64,10 @@ export async function probeWorkspaceIdentityLinks(
     now,
   });
   const secrets = pawsPaths(root).secretsDir;
-  writeSecretFile(
-    join(secrets, "slack-oauth.json"),
+  writeCredential(
+    db,
+    secrets,
+    "slack",
     JSON.stringify({
       accessToken: "fixture-slack-identity-token",
       refreshToken: null,

@@ -7,12 +7,12 @@ import { readStoredToken, refreshLinearToken, writeStoredToken } from "../../src
 const [home, endpoint, crash] = process.argv.slice(2) as [string, string, string];
 const db = openDatabase(join(home, "paws.db"));
 migrate(db);
-const path = join(home, "secrets", "linear-oauth.json");
+const secretsDir = join(home, "secrets");
 await refreshCredential({
   db,
-  identity: path,
-  read: () => readStoredToken(path),
-  write: (token) => writeStoredToken(path, token),
+  identity: "linear",
+  read: () => readStoredToken(db, secretsDir),
+  write: (token) => writeStoredToken(db, secretsDir, token),
   leaseMs: 1_000,
   refresh: async (current, signal) =>
     refreshLinearToken({

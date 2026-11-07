@@ -19,17 +19,10 @@ import {
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import { createLinearReconnect } from "../src/onboarding";
-import {
-  createFakeTracker,
-  createInboxStore,
-  linearTokenPath,
-  openLinear,
-  parseAgentEvent,
-  writeStoredToken,
-} from "../src/linear";
+import { createFakeTracker, createInboxStore, openLinear, parseAgentEvent } from "../src/linear";
 import { deliverLinearOutbox, handleLinearAdministration } from "../src/loop";
 import { startServer } from "../src/server";
-import { tempHome } from "./helpers";
+import { tempHome, storeLinearToken } from "./helpers";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -71,7 +64,7 @@ async function fixture(token = true, children = false) {
     owned.abort(new Error("Cancelled"));
   });
   if (token)
-    writeStoredToken(linearTokenPath(join(home, "secrets")), {
+    storeLinearToken(home, {
       accessToken: "fake-old-access",
       refreshToken: "fake-old-refresh",
       expiresAtMs: Date.now() + 600_000,

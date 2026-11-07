@@ -8,8 +8,8 @@ import {
   restoreLinearInstallation,
   type LinearInstallationRevocation,
 } from "../db";
+import type { Database } from "bun:sqlite";
 import {
-  linearTokenPath,
   readStoredToken,
   writeStoredToken,
   type FetchLike,
@@ -32,14 +32,13 @@ export function createLinearReconnect(options?: {
 }): LinearReconnect {
   return (home) => {
     const paths = pawsPaths(home);
-    const path = linearTokenPath(paths.secretsDir);
-    const read = () => fingerprint(readStoredToken(path));
+    const read = (db: Database) => fingerprint(readStoredToken(db, paths.secretsDir));
     const db = openDatabase(paths.db);
     let snapshot;
     try {
       migrate(db);
       snapshot = options?.snapshot ?? {
-        previous: read(),
+        previous: read(db),
         grantStartedAtMs: (options?.now ?? Date.now)(),
         revocations: listLinearInstallationRevocations(db),
       };
@@ -90,7 +89,7 @@ export function createLinearReconnect(options?: {
         try {
           migrate(current);
           immediate(current, () => {
-            if (read() !== previous)
+            if (read(current) !== previous)
               throw new Error("The stored Linear authorization changed during reconnection.");
             if (
               !restoreLinearInstallation(current, {
@@ -103,7 +102,7 @@ export function createLinearReconnect(options?: {
               })
             )
               throw new Error("Linear access changed during reconnection. Reconnect again.");
-            writeStoredToken(path, input.token);
+            writeStoredToken(current, paths.secretsDir, input.token);
           });
           return true;
         } finally {

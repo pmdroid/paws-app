@@ -1,4 +1,5 @@
 import "../quiet-journal";
+import { storeLinearToken } from "../helpers";
 import { createHmac } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,12 +14,7 @@ import {
 } from "../../src/db";
 import { startPaws } from "../../src/index";
 import { intakeDelegatedIssue } from "../../src/intake";
-import {
-  createFakeTracker,
-  createInboxStore,
-  linearTokenPath,
-  writeStoredToken,
-} from "../../src/linear";
+import { createFakeTracker, createInboxStore } from "../../src/linear";
 
 setJournalSink((line) => {
   if (
@@ -69,7 +65,7 @@ requireLinearTaskDelegation(db, {
   humanActorId: "human",
 });
 db.close();
-writeStoredToken(linearTokenPath(join(home, "secrets")), {
+storeLinearToken(home, {
   accessToken: "fake-access",
   refreshToken: "fake-refresh",
   expiresAtMs: Date.now() + 600_000,

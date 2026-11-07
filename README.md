@@ -30,9 +30,9 @@ To start work, delegate an issue to the Paws app in Linear. Delegation is the ap
 
 | Path                          | What it is                                                                                                       |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `~/.paws/paws.db`             | SQLite queue (WAL, `synchronous=FULL`)                                                                           |
+| `~/.paws/paws.db`             | SQLite queue (WAL, `synchronous=FULL`), and the Linear and Slack OAuth tokens sealed with the envelope key       |
 | `~/.paws/config.toml`         | Linear credentials and team, GitHub auth and repo, caps, and `agents.implementer`                                |
-| `~/.paws/secrets/`            | OAuth token file when Keychain or libsecret is unavailable, plus any Linear token or GitHub App key. Mode `0700` |
+| `~/.paws/secrets/`            | OAuth token file when Keychain or libsecret is unavailable, the envelope key and any GitHub App key. Mode `0700` |
 | `~/.paws/repos/`              | One bare mirror per repository; a runner-backed item's head is its `refs/paws/candidates/<item>` ref there       |
 | `~/.paws/worktrees/`          | One git worktree per item that runs locally; runner-backed items get none                                        |
 | `~/.paws/runs/`               | Transcripts and Closeout reports                                                                                 |

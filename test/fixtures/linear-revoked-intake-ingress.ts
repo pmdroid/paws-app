@@ -1,7 +1,7 @@
 import "../quiet-journal";
+import { storeLinearToken } from "../helpers";
 import { createHmac } from "node:crypto";
-import { join } from "node:path";
-import { createInboxStore, linearTokenPath, writeStoredToken } from "../../src/linear";
+import { createInboxStore } from "../../src/linear";
 import { createLinearReconnect } from "../../src/onboarding";
 import { startPaws } from "../../src/index";
 
@@ -13,7 +13,7 @@ const previous = {
   actor: "app" as const,
   scope: "read,write",
 };
-writeStoredToken(linearTokenPath(join(home, "secrets")), previous);
+storeLinearToken(home, previous);
 const nativeFetch = fetch;
 const started = Promise.withResolvers<void>();
 const released = Promise.withResolvers<Response>();

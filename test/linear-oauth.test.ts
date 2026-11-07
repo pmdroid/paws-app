@@ -1,4 +1,3 @@
-import { chmodSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
@@ -12,7 +11,7 @@ import {
   writeStoredToken,
   type FetchLike,
 } from "../src/linear";
-import { tempHome } from "./helpers";
+import { tempDb, tempHome } from "./helpers";
 
 describe("linear oauth", () => {
   test("authorize url installs the app actor with agent scopes", () => {
@@ -30,9 +29,9 @@ describe("linear oauth", () => {
     expect(url.searchParams.get("state")).toBe("state-1");
   });
 
-  test("refresh rotates the stored token and keeps the file private", async () => {
-    const home = tempHome();
-    const tokenPath = join(home, "linear-oauth.json");
+  test("refresh rotates the stored token and keeps it sealed in the database", async () => {
+    const db = tempDb();
+    const secretsDir = join(tempHome(), "secrets");
     const calls: string[] = [];
     const fetchImpl: FetchLike = async (input, init) => {
       const url = String(input);
@@ -48,7 +47,8 @@ describe("linear oauth", () => {
       });
     };
     const auth = createLinearAuth({
-      tokenPath,
+      db,
+      secretsDir,
       clientId: "client-1",
       clientSecret: "secret-1",
       bootstrapAccessToken: "access-1",
@@ -57,24 +57,26 @@ describe("linear oauth", () => {
       now: () => 1_000,
     });
     expect(auth.hasToken()).toBe(true);
-    expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
+    const sealed = () =>
+      db.query<{ ciphertext: string }, []>("SELECT ciphertext FROM credential").get()!.ciphertext;
+    for (const secret of ["access-1", "refresh-1"]) expect(sealed()).not.toContain(secret);
     const access = await auth.ensureFresh();
     expect(access).toBe("access-2");
-    expect(readStoredToken(tokenPath)).toMatchObject({
+    expect(readStoredToken(db, secretsDir)).toMatchObject({
       accessToken: "access-2",
       refreshToken: "refresh-2",
       actor: "app",
       expiresAtMs: 1_000 + 3_600_000,
     });
-    chmodSync(tokenPath, 0o600);
+    for (const secret of ["access-2", "refresh-2"]) expect(sealed()).not.toContain(secret);
     const again = await auth.ensureFresh();
     expect(again).toBe("access-2");
     expect(calls).toHaveLength(1);
   });
 
   test("a 401 refreshes once and retries the GraphQL call", async () => {
-    const home = tempHome();
-    const tokenPath = join(home, "linear-oauth.json");
+    const db = tempDb();
+    const secretsDir = join(tempHome(), "secrets");
     const graphql: string[] = [];
     const fetchImpl: FetchLike = async (input, init) => {
       const url = String(input);
@@ -91,7 +93,8 @@ describe("linear oauth", () => {
       return Response.json({ data: { viewer: { id: "app-user" } } });
     };
     const auth = createLinearAuth({
-      tokenPath,
+      db,
+      secretsDir,
       clientId: "client-1",
       clientSecret: "secret-1",
       bootstrapAccessToken: "access-1",
@@ -99,9 +102,9 @@ describe("linear oauth", () => {
       fetch: fetchImpl,
       now: () => 5_000,
     });
-    const stored = readStoredToken(tokenPath);
+    const stored = readStoredToken(db, secretsDir);
     if (stored === null) throw new Error("missing token");
-    writeStoredToken(tokenPath, { ...stored, expiresAtMs: 5_000 + 60 * 60 * 1000 });
+    writeStoredToken(db, secretsDir, { ...stored, expiresAtMs: 5_000 + 60 * 60 * 1000 });
     const client = createLinearClient({ auth, fetch: fetchImpl });
     const data = (await client.query("query { viewer { id } }")) as { viewer: { id: string } };
     expect(data.viewer.id).toBe("app-user");

@@ -12,7 +12,6 @@ import {
 import { createLinearReconnect } from "../src/onboarding";
 import {
   createLinearAuth,
-  linearTokenPath,
   readStoredToken,
   writeStoredToken,
   type StoredLinearToken,
@@ -29,7 +28,7 @@ const verified = () =>
 
 function fixture(known = true) {
   const home = tempHome();
-  const path = linearTokenPath(join(home, "secrets"));
+  const secretsDir = join(home, "secrets");
   const db = openDatabase(join(home, "paws.db"));
   cleanup.push(() => db.close());
   migrate(db);
@@ -49,8 +48,8 @@ function fixture(known = true) {
     actor: "app",
   };
   const next = { ...previous, accessToken: "fake-new-access", refreshToken: "fake-new-refresh" };
-  writeStoredToken(path, previous);
-  return { home, path, db, previous, next };
+  writeStoredToken(db, secretsDir, previous);
+  return { home, secretsDir, db, previous, next };
 }
 
 test("verified host reconnection persists a new credential and restores the same installation across reopen", async () => {
@@ -64,7 +63,7 @@ test("verified host reconnection persists a new credential and restores the same
     },
   })(f.home);
   expect(await reconnect.complete({ clientId: "client", token: f.next })).toBe(true);
-  expect(readStoredToken(f.path)).toEqual(f.next);
+  expect(readStoredToken(f.db, f.secretsDir)).toEqual(f.next);
   const reopened = openDatabase(join(f.home, "paws.db"));
   try {
     expect(getLinearSessionAccess(reopened, "session")).toBe("allowed");
@@ -109,7 +108,7 @@ test("a claimed OAuth client without a verified app user cannot restore a revoke
   await expect(reconnect.complete({ clientId: "client", token: f.next })).rejects.toThrow(
     "verified installation",
   );
-  expect(readStoredToken(f.path)).toEqual(f.previous);
+  expect(readStoredToken(f.db, f.secretsDir)).toEqual(f.previous);
   expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: null })).toBe(true);
 });
 
@@ -135,7 +134,7 @@ test.each(["human", "other-app", "unauthorized", "errors", "missing"])(
       },
     })(f.home);
     await expect(reconnect.complete({ clientId: "client", token: f.next })).rejects.toThrow();
-    expect(readStoredToken(f.path)).toEqual(f.previous);
+    expect(readStoredToken(f.db, f.secretsDir)).toEqual(f.previous);
     expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
   },
 );
@@ -157,11 +156,11 @@ test.each(["revocation", "credential"])(
     await started.promise;
     const expected =
       kind === "credential" ? { ...f.previous, accessToken: "fake-operator-access" } : f.previous;
-    if (kind === "credential") writeStoredToken(f.path, expected);
+    if (kind === "credential") writeStoredToken(f.db, f.secretsDir, expected);
     else revokeLinearInstallation(f.db, { ...scope, eventKey: "during", createdAtMs: 25 });
     released.resolve(verified());
     await expect(pending).rejects.toThrow();
-    expect(readStoredToken(f.path)).toEqual(expected);
+    expect(readStoredToken(f.db, f.secretsDir)).toEqual(expected);
     expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
   },
 );
@@ -203,7 +202,7 @@ test("a failed restoration write leaves both the credential and fence unchanged"
   await expect(reconnect.complete({ clientId: "client", token: f.next })).rejects.toThrow(
     "restore failed",
   );
-  expect(readStoredToken(f.path)).toEqual(f.previous);
+  expect(readStoredToken(f.db, f.secretsDir)).toEqual(f.previous);
   expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
 });
 
@@ -217,7 +216,7 @@ test("a refresh started before revocation cannot overwrite the verified host rec
   const released = Promise.withResolvers<Response>();
   const auth = createLinearAuth({
     db: f.db,
-    tokenPath: f.path,
+    secretsDir: f.secretsDir,
     clientId: "client",
     clientSecret: "fake-secret",
     isAuthorized: () => !isLinearAppRevoked(f.db, scope),
@@ -246,6 +245,6 @@ test("a refresh started before revocation cannot overwrite the verified host rec
     }),
   );
   expect(await pending).toBe(latest.accessToken);
-  expect(readStoredToken(f.path)).toEqual(latest);
+  expect(readStoredToken(f.db, f.secretsDir)).toEqual(latest);
   expect(getLinearSessionAccess(f.db, "session")).toBe("allowed");
 });
