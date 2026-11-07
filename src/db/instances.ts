@@ -97,17 +97,17 @@ export function liveInstances(db: Database, now: number): Instance[] {
 }
 
 export function* ownerGoneSteps(q: Q, self: string, now: number) {
-  const { instance } = q.t;
+  const instances = q.t.instance;
   const rows = yield* q.all(
     q.orm
       .select({
-        id: instance.id,
-        host: instance.host,
-        heartbeatAt: instance.heartbeatAt,
-        pid: instance.pid,
-        stoppedAt: instance.stoppedAt,
+        id: instances.id,
+        host: instances.host,
+        heartbeatAt: instances.heartbeatAt,
+        pid: instances.pid,
+        stoppedAt: instances.stoppedAt,
       })
-      .from(instance),
+      .from(instances),
   );
   const host = rows.find((row) => row.id === self)?.host;
   const live = new Set(

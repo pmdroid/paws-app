@@ -84,15 +84,15 @@ export function setRunnerAdminRepositories(
 }
 
 export function* runnerRepositoryListsSteps(q: Q, runnerId: string) {
-  const { runnerRepositories } = q.t;
+  const lists = q.t.runnerRepositories;
   const row = yield* q.one(
     q.orm
       .select({
-        host: jsonText(q, runnerRepositories.repositories),
-        admin: jsonText(q, runnerRepositories.adminRepositories),
+        host: jsonText(q, lists.repositories),
+        admin: jsonText(q, lists.adminRepositories),
       })
-      .from(runnerRepositories)
-      .where(eq(runnerRepositories.runnerId, runnerId)),
+      .from(lists)
+      .where(eq(lists.runnerId, runnerId)),
   );
   return {
     admin: row?.admin == null ? null : (JSON.parse(row.admin) as string[]),
