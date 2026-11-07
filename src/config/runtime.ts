@@ -21,8 +21,13 @@ export const LINEAR_WORKSPACE_REQUIRED =
  * What the process runs with. `config.toml` and the secret files it names
  * are the source. Environment variables override a single field when set.
  */
+export type PawsRole = "all" | "web" | "worker";
+
+const PAWS_ROLES: readonly PawsRole[] = ["all", "web", "worker"];
+
 export type RuntimeConfig = {
   env: PawsEnv;
+  role: PawsRole;
   file: PawsConfigFile;
   /** True when `config.toml` was present. */
   configured: boolean;
@@ -89,6 +94,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
 
   return {
     env,
+    role: readRole(optional(source, "PAWS_ROLE")),
     file,
     configured,
     configError,
@@ -113,6 +119,14 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     webhooks: resolveWebhooks(file, source),
     databaseUrl,
   };
+}
+
+function readRole(value: string | null): PawsRole {
+  if (value === null) return "all";
+  const role = PAWS_ROLES.find((known) => known === value);
+  if (role === undefined)
+    throw new Error(`PAWS_ROLE must be one of ${PAWS_ROLES.join(", ")}, got ${value}`);
+  return role;
 }
 
 function resolveWebhooks(file: PawsConfigFile, source: EnvSource): boolean {

@@ -12,12 +12,26 @@ export type SkillUpdates = {
 
 type LatestCommit = (url: string, ref: string | undefined, signal: AbortSignal) => Promise<string>;
 
-export function createSkillUpdates(options: { latest?: LatestCommit } = {}): SkillUpdates {
+type SkillUpdateStore = {
+  read(): Record<string, string>;
+  write(commits: Record<string, string>): void;
+};
+
+export function createSkillUpdates(
+  options: { latest?: LatestCommit; store?: SkillUpdateStore } = {},
+): SkillUpdates {
   const latest: LatestCommit =
     options.latest ?? ((url, ref, signal) => gitRemoteCommit(url, ref, { signal }));
-  const commits = new Map<string, string>();
+  let memory: Record<string, string> = {};
+  const store = options.store ?? {
+    read: () => memory,
+    write: (commits) => {
+      memory = commits;
+    },
+  };
   return {
     async check(skills) {
+      const commits = new Map(Object.entries(store.read()));
       const sources = new Map(
         skills.flatMap((skill) => {
           const source = trackedSource(skill);
@@ -37,8 +51,10 @@ export function createSkillUpdates(options: { latest?: LatestCommit } = {}): Ski
           }
         }),
       );
+      store.write(Object.fromEntries(commits));
     },
     available(skills) {
+      const commits = new Map(Object.entries(store.read()));
       const updates: Record<string, string> = {};
       for (const skill of skills) {
         const source = trackedSource(skill);

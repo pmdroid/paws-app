@@ -98,6 +98,7 @@ export {
 export type { FetchLike, LinearAuth, LinearEnv, StoredLinearToken } from "./oauth";
 export {
   LOW_BUDGET_FRACTION,
+  POLL_DUE_CURSOR,
   POLL_INTERVAL_FAILING_MS,
   POLL_INTERVAL_LOW_BUDGET_MS,
   POLL_INTERVAL_WEBHOOK_MS,

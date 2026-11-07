@@ -252,8 +252,10 @@ export {
   heartbeatInstance,
   INSTANCE_DEAD_MS,
   INSTANCE_HEARTBEAT_MS,
+  jobInstanceElsewhere,
   liveInstances,
   registerInstance,
+  roleRunsJobs,
   type Instance,
   type InstanceRole,
 } from "./instances";

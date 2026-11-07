@@ -38,6 +38,7 @@ import { createLinearMembershipReads, type LinearMembershipReads } from "./membe
 
 export type LinearRunning = {
   catchUp: () => Promise<void>;
+  pollDue: () => Promise<void>;
   stop: () => Promise<void>;
 };
 
@@ -184,6 +185,9 @@ export function openLinear(options: {
           intake?.queue.wake();
           await intake?.queue.idle();
         },
+        async pollDue() {
+          await poller?.pollDue();
+        },
         async stop() {
           stopping.abort();
           const polling = poller?.stop();
@@ -225,6 +229,7 @@ function startPoller(options: {
     intake: options.intake,
     db: options.db,
     submitCommand: options.submitCommand,
+    timer: false,
   });
 }
 

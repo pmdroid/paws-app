@@ -31,6 +31,7 @@ export class OutboxDispatcher {
     readonly clock: Clock,
     readonly options: {
       workerId?: string;
+      claims?: boolean;
       pollMs?: number;
       batchSize?: number;
       backoffBaseMs?: number;
@@ -47,7 +48,7 @@ export class OutboxDispatcher {
   }
 
   tick(): OutboxRow[] {
-    if (this.handler === null) return [];
+    if (this.handler === null || this.options.claims === false) return [];
     for (const { row, controller } of this.active.values()) {
       if (!isOutboxCurrent(this.db, row))
         controller.abort(new Error("Delivery superseded by a session fence."));

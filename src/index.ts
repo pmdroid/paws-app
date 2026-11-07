@@ -98,7 +98,6 @@ import {
   workspaceMemberUsable,
   enqueueCommand,
   enqueueJobOnce,
-  getJob,
   getLinearSession,
   getWorkItem,
   workItemForSession,
@@ -142,7 +141,11 @@ import {
   COMMAND_DELIVERY_MS,
   bindInstance,
   INSTANCE_HEARTBEAT_MS,
+  jobInstanceElsewhere,
+  MEMBERSHIP_BACKSTOP_MS,
   registerInstance,
+  roleRunsJobs,
+  runPendingJobNow,
   recoverOnStartup,
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
@@ -204,6 +207,8 @@ import {
   sessionCreatedKey,
   type AcceptedLinearEvent,
   type IntakeDecision,
+  POLL_DUE_CURSOR,
+  POLL_INTERVAL_FAILING_MS,
   type LinearRunning,
 } from "./linear";
 import {
@@ -378,6 +383,7 @@ export type StartOptions = {
 };
 
 const LOOPBACK = "127.0.0.1";
+const SKILL_UPDATES_KEY = "skills.updates";
 
 /** Open ~/.paws, migrate, recover in-flight work, and listen on 127.0.0.1. */
 export function startPaws(source?: EnvSource, options?: StartOptions): PawsProcess {
@@ -455,7 +461,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
   const instance = registerInstance(db, {
-    role: "all",
+    role: runtime.role,
     host: hostname(),
     version: installedPawsVersion(),
     now: Date.now(),
@@ -507,31 +513,41 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     );
     return lists.flat();
   };
-  if (options?.refreshRepositories) {
-    void refreshRepositoryCatalog(db, listCatalog);
-    const catalogTimer = setInterval(() => void refreshRepositoryCatalog(db, listCatalog), 600_000);
-    catalogTimer.unref?.();
-    abort.signal.addEventListener("abort", () => clearInterval(catalogTimer));
-  }
+  const periodic: {
+    queue: string;
+    everyMs: number;
+    atStartup?: boolean;
+    startup?: () => void;
+    run: (signal: AbortSignal) => Promise<unknown>;
+  }[] = [];
+  if (options?.refreshRepositories)
+    periodic.push({
+      queue: "repository.catalog.refresh",
+      everyMs: 600_000,
+      atStartup: true,
+      run: () => refreshRepositoryCatalog(db, listCatalog),
+    });
   if (options?.refreshAgentCatalog) {
     const agentCatalog = createAgentCatalog({ db, registry: createNpmRegistry() });
-    const check = () =>
-      void agentCatalog.refreshIfDue(abort.signal).catch((caughtError1) => {
-        journalCaught(caughtError1, "index.startPaws.refreshIfDue", null);
-      });
-    check();
     // Hourly checks keep the daily read on schedule across sleep and restarts.
-    const agentCatalogTimer = setInterval(check, 60 * 60 * 1000);
-    agentCatalogTimer.unref?.();
-    abort.signal.addEventListener("abort", () => clearInterval(agentCatalogTimer));
+    periodic.push({
+      queue: "agent.catalog.refresh",
+      everyMs: 60 * 60 * 1000,
+      atStartup: true,
+      run: (signal) => agentCatalog.refreshIfDue(AbortSignal.any([signal, abort.signal])),
+    });
   }
-  const skillUpdates = createSkillUpdates();
-  const skillUpdateTimer = setInterval(
-    () => void skillUpdates.check(listSkills(db)),
-    SKILL_UPDATE_INTERVAL,
-  );
-  skillUpdateTimer.unref?.();
-  abort.signal.addEventListener("abort", () => clearInterval(skillUpdateTimer));
+  const skillUpdates = createSkillUpdates({
+    store: {
+      read: () => JSON.parse(readSetting(db, SKILL_UPDATES_KEY) ?? "{}") as Record<string, string>,
+      write: (commits) => updateSetting(db, SKILL_UPDATES_KEY, () => JSON.stringify(commits)),
+    },
+  });
+  periodic.push({
+    queue: "skills.updates.check",
+    everyMs: SKILL_UPDATE_INTERVAL,
+    run: () => skillUpdates.check(listSkills(db)),
+  });
   const webhooks = runtime.webhooks;
   const inbox = createInboxStore(db);
 
@@ -778,6 +794,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         verifyTeam: (id, signal) => linear.access!.team(id, { signal }),
         readTeams: (signal) => linear.access!.teams!({ signal }),
         retryable: isTransient,
+        refreshIntervalMs: null,
         onError: () => console.error("Paws workspace access refresh failed."),
       });
     } catch (error) {
@@ -787,6 +804,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       db.close();
       throw error;
     }
+    periodic.push({
+      queue: "workspace.memberships.refresh",
+      everyMs: MEMBERSHIP_BACKSTOP_MS,
+      run: async () => workspace?.refresh(),
+    });
   }
   const commitPolicyForItem = async (
     item: WorkItemRecord,
@@ -840,6 +862,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     journalCaught(error, "index.startPaws.uploadLocalCloseoutEvidence", null),
   );
   let runner: RunnerCoordinator | undefined;
+  if (runnerConfig !== null)
+    periodic.push(
+      {
+        queue: "runner.models.refresh",
+        everyMs: 15_000,
+        atStartup: true,
+        run: async () => (await runnerReady)?.models.refresh(),
+      },
+      {
+        queue: "runner.signin.refresh",
+        everyMs: 15_000,
+        atStartup: true,
+        run: async () => (await runnerReady)?.health.refresh(),
+      },
+    );
   let runnerStopping = false;
   let retroDispatcher: RetroDispatcher | undefined;
   const retroCatalog = (principal: { workspaceId: string; userId: string }) =>
@@ -854,8 +891,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       ? Promise.resolve(undefined)
       : openRunnerCoordinator({
           db,
-          discoverModels: true,
-          checkSignIn: true,
+          discoverModels: false,
+          checkSignIn: false,
           root: runnerConfig.root,
           hostname: runnerConfig.hostname,
           port: runnerConfig.port,
@@ -1174,7 +1211,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
       webhooks: webhooks || env.githubWebhookSecret !== null,
       db,
-      jobLoop: () => jobLoop?.liveness() ?? null,
+      jobLoop: roleRunsJobs(runtime.role) ? () => jobLoop?.liveness() ?? null : undefined,
       instanceId: instance.id,
       healthDisk: { paths: { tmpdir: tmpdir(), pawsHome: paths.home } },
       statusEnv: envSource,
@@ -1283,6 +1320,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   }
 
   let running: LinearRunning = linear ? linear.start() : down();
+  if (linear)
+    periodic.push({
+      queue: "linear.catch-up",
+      everyMs: POLL_INTERVAL_FAILING_MS,
+      atStartup: true,
+      startup: () => inbox.setCursor(POLL_DUE_CURSOR, 0),
+      run: () => running.pollDue(),
+    });
 
   const tracker = linear?.tracker ?? null;
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
@@ -1351,6 +1396,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const loops = startLoops({
     db,
     instanceId: instance.id,
+    role: runtime.role,
     signal: abort.signal,
     prepare(created) {
       // A crashed instance's runs move to a live one without waiting for a restart.
@@ -1817,19 +1863,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         created.jobs.register(FAILED_ISSUE_SWEEP_JOB, async (_job, context) => {
           await sweepFailed(context.signal);
         });
-        const sweep = getJob(
-          db,
-          enqueueJobOnce(db, {
-            queue: FAILED_ISSUE_SWEEP_JOB,
-            jobKey: FAILED_ISSUE_SWEEP_JOB,
-            recurringEveryMs: FAILED_ISSUE_SWEEP_MS,
-            now: Date.now(),
-          }),
-        );
-        if (sweep?.status === "pending" && sweep.runAt > Date.now())
-          void sweepFailed(abort.signal).catch((error) =>
-            journalCaught(error, "index.sweepFailedIssues", null),
-          );
+        const sweep = enqueueJobOnce(db, {
+          queue: FAILED_ISSUE_SWEEP_JOB,
+          jobKey: FAILED_ISSUE_SWEEP_JOB,
+          recurringEveryMs: FAILED_ISSUE_SWEEP_MS,
+          now: Date.now(),
+        });
+        if (roleRunsJobs(runtime.role) && !jobInstanceElsewhere(db, instance.id, Date.now()))
+          runPendingJobNow(db, sweep, Date.now());
       }
       created.jobs.register(POLICY_BLOCK_CHECK_JOB, () => attached.checkPolicyBlocks());
       enqueueJobOnce(db, {
@@ -1909,6 +1950,23 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: RETRO_DISPATCH_TIMING.tickMs,
         now: Date.now(),
       });
+      const alone = !jobInstanceElsewhere(db, instance.id, Date.now());
+      for (const work of periodic) {
+        created.jobs.register(work.queue, async (_job, context) => {
+          await work.run(context.signal);
+        });
+        const id = enqueueJobOnce(db, {
+          queue: work.queue,
+          jobKey: work.queue,
+          recurringEveryMs: work.everyMs,
+          runAt: work.atStartup ? undefined : Date.now() + work.everyMs,
+          now: Date.now(),
+        });
+        if (work.atStartup && alone && roleRunsJobs(runtime.role)) {
+          work.startup?.();
+          runPendingJobNow(db, id, Date.now());
+        }
+      }
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
       enqueueJobOnce(db, {
         queue: "github.auth.recover",
@@ -2123,6 +2181,7 @@ function ownerCap(configFile: string): number | null {
 function down(): LinearRunning {
   return {
     catchUp: async () => undefined,
+    pollDue: async () => undefined,
     stop: async () => undefined,
   };
 }

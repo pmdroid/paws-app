@@ -9,6 +9,10 @@ export const INSTANCE_DEAD_MS = 60_000;
 
 export type InstanceRole = "all" | "web" | "worker";
 
+export function roleRunsJobs(role: InstanceRole): boolean {
+  return role !== "web";
+}
+
 export type Instance = {
   id: string;
   role: InstanceRole;
@@ -89,4 +93,12 @@ function processRuns(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+export function jobInstanceElsewhere(
+  db: Database,
+  selfId: string | undefined,
+  now: number,
+): boolean {
+  return liveInstances(db, now).some((live) => live.id !== selfId && roleRunsJobs(live.role));
 }

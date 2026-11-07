@@ -41,6 +41,7 @@ export const LOW_BUDGET_FRACTION = 0.2;
 export const WAKE_GAP_MS = 30_000;
 
 export const CATCH_UP_CURSOR = "linear";
+export const POLL_DUE_CURSOR = "linear.poll.due";
 const INITIAL_LOOKBACK_MS = 60 * 60 * 1000;
 const OVERLAP_MS = 5_000;
 const MISSED_DELIVERY_GRACE_MS = 60_000;
@@ -108,6 +109,7 @@ export type CatchUpPoller = {
   stop(): Promise<void>;
   noteWake(): void;
   pollNow(): Promise<void>;
+  pollDue(): Promise<void>;
   budget(): LinearRateBudget | null;
   settled: Promise<void>;
 };
@@ -152,6 +154,7 @@ export function startCatchUpPoller(options: {
   submitCommand?: (command: LinearCommand) => void;
   db?: Database;
   sleeper?: Sleeper;
+  timer?: boolean;
   now?: () => number;
   mono?: () => number;
 }): CatchUpPoller {
@@ -353,54 +356,68 @@ export function startCatchUpPoller(options: {
     }
   }
 
-  const settled = (async () => {
-    while (!control.stopped) {
-      let delay = POLL_INTERVAL_FAILING_MS;
-      try {
-        await pollOnce();
-        delay = Math.max(
-          pollIntervalMs({
-            now: now(),
-            lastWebhookMs: lastVerifiedWebhookMs(options.store),
-            webhookFailures: webhookVerificationFailures(options.store),
-            missedDeliveryMs: options.store.getCursor(WEBHOOK_MISSED_CURSOR),
-            budget: latestBudget,
-          }),
-          budgetHoldMs(latestBudget, now()),
-        );
-      } catch (error) {
-        if (error instanceof LinearRateLimitError) {
-          latestBudget = error.budget;
-          delay = Math.max(POLL_INTERVAL_FAILING_MS, error.retryAfterMs);
-        }
-        journalCaught(
-          error,
-          "poller.startCatchUpPoller.pollOnce",
-          null,
-          error instanceof LinearRateLimitError
-            ? `rate limited; retrying in ${Math.ceil(delay / 1000)}s`
-            : undefined,
-        );
-        if (control.stopped) return;
+  async function tick(): Promise<number> {
+    let delay = POLL_INTERVAL_FAILING_MS;
+    try {
+      await pollOnce();
+      delay = Math.max(
+        pollIntervalMs({
+          now: now(),
+          lastWebhookMs: lastVerifiedWebhookMs(options.store),
+          webhookFailures: webhookVerificationFailures(options.store),
+          missedDeliveryMs: options.store.getCursor(WEBHOOK_MISSED_CURSOR),
+          budget: latestBudget,
+        }),
+        budgetHoldMs(latestBudget, now()),
+      );
+    } catch (error) {
+      if (error instanceof LinearRateLimitError) {
+        latestBudget = error.budget;
+        delay = Math.max(POLL_INTERVAL_FAILING_MS, error.retryAfterMs);
       }
-      if (control.stopped) return;
-      if (wakeRequested) {
-        wakeRequested = false;
-        continue;
-      }
-      const previousWallMs = now();
-      const previousMonoMs = mono();
-      await sleeper.wait(delay);
-      if (control.stopped) return;
-      const gap = sleepGapMs({
-        previousWallMs,
-        previousMonoMs,
-        wallMs: now(),
-        monoMs: mono(),
-      });
-      if (gap > WAKE_GAP_MS || wakeRequested) wakeRequested = false;
+      journalCaught(
+        error,
+        "poller.startCatchUpPoller.pollOnce",
+        null,
+        error instanceof LinearRateLimitError
+          ? `rate limited; retrying in ${Math.ceil(delay / 1000)}s`
+          : undefined,
+      );
     }
-  })();
+    return delay;
+  }
+
+  async function pollDue(): Promise<void> {
+    const due = options.store.getCursor(POLL_DUE_CURSOR);
+    if (control.stopped || (due !== null && now() < due)) return;
+    const delay = await tick();
+    if (!control.stopped) options.store.setCursor(POLL_DUE_CURSOR, now() + delay);
+  }
+
+  const settled =
+    options.timer === false
+      ? Promise.resolve()
+      : (async () => {
+          while (!control.stopped) {
+            const delay = await tick();
+            if (control.stopped) return;
+            if (wakeRequested) {
+              wakeRequested = false;
+              continue;
+            }
+            const previousWallMs = now();
+            const previousMonoMs = mono();
+            await sleeper.wait(delay);
+            if (control.stopped) return;
+            const gap = sleepGapMs({
+              previousWallMs,
+              previousMonoMs,
+              wallMs: now(),
+              monoMs: mono(),
+            });
+            if (gap > WAKE_GAP_MS || wakeRequested) wakeRequested = false;
+          }
+        })();
 
   return {
     async stop() {
@@ -413,6 +430,7 @@ export function startCatchUpPoller(options: {
       sleeper.wake();
     },
     pollNow: pollOnce,
+    pollDue,
     budget: () => latestBudget,
     settled,
   };

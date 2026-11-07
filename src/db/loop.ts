@@ -1,7 +1,11 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
+import { and, isNotNull, notInArray } from "drizzle-orm";
+import { jobInstanceElsewhere } from "./instances";
 import { journal } from "./journal";
+import { orm } from "./orm";
+import { job as jobTable } from "./schema";
 import { accrueAtJobBoundary } from "./items";
 import {
   claimNextJob,
@@ -68,6 +72,7 @@ export class JobLoop {
     readonly clock: Clock,
     readonly options: {
       workerId?: string;
+      instanceId?: string;
       leaseMs?: number;
       pollMs?: number;
       backoffBaseMs?: number;
@@ -125,21 +130,7 @@ export class JobLoop {
     if (!Number.isSafeInteger(concurrency) || concurrency < 1)
       throw new Error("Invalid job concurrency");
     // run() starts after prepare has registered the complete handler set.
-    const registeredQueues = [...this.handlers.keys()];
-    let removed: { id: number; queue: string }[] = [];
-    try {
-      removed = this.db
-        .query<{ id: number; queue: string }, string[]>(
-          `DELETE FROM job WHERE recurring_every_ms IS NOT NULL
-           ${registeredQueues.length ? `AND queue NOT IN (${registeredQueues.map(() => "?").join(",")})` : ""}
-           RETURNING id, queue`,
-        )
-        .all(...registeredQueues);
-    } catch (error) {
-      // The same lock that used to reject tick also rejected run() before workers existed.
-      journalCaught(error, "loop.run.removeUnknownRecurring", null);
-    }
-    for (const job of removed)
+    for (const job of this.removeUnknownRecurring())
       journal(
         `job ${job.id} ${job.queue} recurring definition removed: No handler for ${job.queue}`,
       );
@@ -158,6 +149,27 @@ export class JobLoop {
       await Promise.all(this.inflight);
     } finally {
       stopWake();
+    }
+  }
+
+  private removeUnknownRecurring(): { id: number; queue: string }[] {
+    const registered = [...this.handlers.keys()];
+    try {
+      if (jobInstanceElsewhere(this.db, this.options.instanceId, this.clock.now())) return [];
+      return orm(this.db)
+        .delete(jobTable)
+        .where(
+          and(
+            isNotNull(jobTable.recurringEveryMs),
+            registered.length ? notInArray(jobTable.queue, registered) : undefined,
+          ),
+        )
+        .returning({ id: jobTable.id, queue: jobTable.queue })
+        .all();
+    } catch (error) {
+      // The same lock that used to reject tick also rejected run() before workers existed.
+      journalCaught(error, "loop.run.removeUnknownRecurring", null);
+      return [];
     }
   }
 

@@ -32,7 +32,7 @@ export { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";
 export type { PawsPaths } from "./paths";
 export { LINEAR_WORKSPACE_REQUIRED, loadRuntime } from "./runtime";
 export { describeDatabaseUrl, POSTGRES_NOT_YET, redactDatabaseUrl } from "./database";
-export type { RuntimeConfig } from "./runtime";
+export type { PawsRole, RuntimeConfig } from "./runtime";
 export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
 export type { GitHubAppCredentials } from "./github-app";
 
