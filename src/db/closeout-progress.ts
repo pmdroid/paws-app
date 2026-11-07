@@ -419,25 +419,6 @@ export function* closeoutPolicyDigestsSteps(q: Q, itemId: string, head: string) 
   return row ?? null;
 }
 
-/** The policy digest of the latest Closeout run on `head`, or null when none was recorded. */
-export function closeoutPolicyDigest(db: Database, itemId: string, head: string): string | null {
-  return settled(sqliteDb(db).run((q) => closeoutPolicyDigestSteps(q, itemId, head)));
-}
-
-export function* closeoutPolicyDigestSteps(q: Q, itemId: string, head: string) {
-  const { closeoutProgress } = q.t;
-  const latest = latestOf(q, itemId, head);
-  const row = yield* q.one(
-    q.orm
-      .select({ policyDigest: closeoutProgress.policyDigest })
-      .from(closeoutProgress)
-      .where(latest.where)
-      .orderBy(...latest.order)
-      .limit(1),
-  );
-  return row?.policyDigest ?? null;
-}
-
 /** The review steps of an accepted Closeout run, with the marks Closeout gave their findings. */
 export type AcceptedCloseoutReviews = {
   taskId: string;

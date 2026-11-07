@@ -5,7 +5,6 @@ import {
   acceptedCloseoutRunsSteps,
   appendCloseoutOutputSteps,
   closeoutHeadsStartedSteps,
-  closeoutPolicyDigestSteps,
   closeoutPolicyDigestsSteps,
   ensureCloseoutProgressSteps,
   failedCloseoutReviewsSteps,
@@ -348,8 +347,9 @@ forEachDialect((open) => {
         policyDigest: "policy",
       });
       expect(await db.run((q) => latestCloseoutIdentitySteps(q, "other"))).toBeNull();
-      expect(await db.run((q) => closeoutPolicyDigestSteps(q, "item", "h2"))).toBe("policy");
-      expect(await db.run((q) => closeoutPolicyDigestSteps(q, "item", "h9"))).toBeNull();
+      expect(await db.run((q) => closeoutPolicyDigestsSteps(q, "item", "h2"))).toMatchObject({
+        digest: "policy",
+      });
       expect(await db.run((q) => closeoutPolicyDigestsSteps(q, "item", "h9"))).toBeNull();
       expect(await db.run((q) => closeoutHeadsStartedSteps(q, "item"))).toEqual(
         new Map([
