@@ -254,6 +254,7 @@ export {
   INSTANCE_HEARTBEAT_MS,
   liveInstances,
   registerInstance,
+  roleRunsJobs,
   type Instance,
   type InstanceRole,
 } from "./instances";

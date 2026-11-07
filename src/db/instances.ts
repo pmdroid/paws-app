@@ -9,6 +9,10 @@ export const INSTANCE_DEAD_MS = 60_000;
 
 export type InstanceRole = "all" | "web" | "worker";
 
+export function roleRunsJobs(role: InstanceRole): boolean {
+  return role !== "web";
+}
+
 export type Instance = {
   id: string;
   role: InstanceRole;
