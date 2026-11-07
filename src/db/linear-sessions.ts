@@ -18,7 +18,7 @@ import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { mergeLaneSql } from "./jobs";
 import { orm } from "./orm";
 import { advanceOutboxSession, enqueueOutboxOnce } from "./outbox";
-import { linearSession, linearStopReceipt, linearTurn } from "./schema";
+import * as schema from "./schema";
 import { immediate } from "./tx";
 
 export type StoredLinearSession = {
@@ -434,19 +434,19 @@ export function advanceLinearSessionGeneration(
     ensureLinearSession(db, { sessionId, now: options.now });
     const generation = advanceOutboxSession(db, "linear", sessionId, options);
     orm(db)
-      .update(linearSession)
+      .update(schema.linearSession)
       .set({ generation, stoppedAt: options.stop ? (options.now ?? Date.now()) : null })
-      .where(eq(linearSession.sessionId, sessionId))
+      .where(eq(schema.linearSession.sessionId, sessionId))
       .run();
     if (options.stop)
       orm(db)
-        .update(linearTurn)
+        .update(schema.linearTurn)
         .set({ state: "cancelled" })
         .where(
           and(
-            eq(linearTurn.sessionId, sessionId),
-            eq(linearTurn.state, "pending"),
-            lte(linearTurn.createdAtMs, options.now ?? Date.now()),
+            eq(schema.linearTurn.sessionId, sessionId),
+            eq(schema.linearTurn.state, "pending"),
+            lte(schema.linearTurn.createdAtMs, options.now ?? Date.now()),
           ),
         )
         .run();
@@ -526,12 +526,14 @@ export function announceLinearTurn(
   return immediate(db, () => {
     const turn = orm(db)
       .select({
-        announcedGeneration: linearTurn.announcedGeneration,
-        state: linearTurn.state,
-        createdAtMs: linearTurn.createdAtMs,
+        announcedGeneration: schema.linearTurn.announcedGeneration,
+        state: schema.linearTurn.state,
+        createdAtMs: schema.linearTurn.createdAtMs,
       })
-      .from(linearTurn)
-      .where(and(eq(linearTurn.eventKey, eventKey), eq(linearTurn.sessionId, sessionId)))
+      .from(schema.linearTurn)
+      .where(
+        and(eq(schema.linearTurn.eventKey, eventKey), eq(schema.linearTurn.sessionId, sessionId)),
+      )
       .get();
     if (!turn || turn.state !== "pending" || turn.announcedGeneration !== null) return false;
     const session = getLinearSession(db, sessionId);
@@ -541,17 +543,17 @@ export function announceLinearTurn(
       turn.createdAtMs <= session.stoppedAt
     ) {
       orm(db)
-        .update(linearTurn)
+        .update(schema.linearTurn)
         .set({ state: "cancelled" })
-        .where(eq(linearTurn.eventKey, eventKey))
+        .where(eq(schema.linearTurn.eventKey, eventKey))
         .run();
       return false;
     }
     const generation = advanceLinearSessionGeneration(db, sessionId, { now });
     orm(db)
-      .update(linearTurn)
+      .update(schema.linearTurn)
       .set({ announcedGeneration: generation })
-      .where(eq(linearTurn.eventKey, eventKey))
+      .where(eq(schema.linearTurn.eventKey, eventKey))
       .run();
     enqueueOutboxOnce(db, {
       target: "linear",
@@ -611,9 +613,12 @@ export function acceptLinearStop(
     if (
       orm(db)
         .select({ one: sql`1` })
-        .from(linearStopReceipt)
+        .from(schema.linearStopReceipt)
         .where(
-          and(eq(linearStopReceipt.sessionId, sessionId), eq(linearStopReceipt.eventKey, eventKey)),
+          and(
+            eq(schema.linearStopReceipt.sessionId, sessionId),
+            eq(schema.linearStopReceipt.eventKey, eventKey),
+          ),
         )
         .get()
     )
@@ -624,7 +629,7 @@ export function acceptLinearStop(
         ? advanceLinearSessionGeneration(db, sessionId, { stop: true, now })
         : session.generation;
     orm(db)
-      .insert(linearStopReceipt)
+      .insert(schema.linearStopReceipt)
       .values({ sessionId, eventKey, generation, createdAt: now })
       .run();
     return generation;
