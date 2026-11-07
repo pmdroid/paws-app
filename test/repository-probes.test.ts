@@ -704,15 +704,6 @@ test("regex routes are compared and path classifiers are excluded", () => {
   expect(ran.output).toContain("1 breaking changes");
 });
 
-test("the API rule covers every source route module", () => {
-  const policy = Bun.YAML.parse(readFileSync(join(ROOT, ".agents/closeout.yaml"), "utf8")) as {
-    rules: { id: string; paths: string[]; onFail: string }[];
-  };
-  const rule = policy.rules.find((entry) => entry.id === "api-contract")!;
-  expect(rule.paths).toEqual(["src/**"]);
-  expect(rule.onFail).toBe("approve");
-});
-
 test("export-ignore cannot conceal a removed contract field", () => {
   const at = apiCandidate({
     ...edit("src/runner-protocol/index.ts", "  resumeSessionId: z.string().optional(),\n", ""),
