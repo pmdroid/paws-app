@@ -130,15 +130,7 @@ export type RetroArtifactRead =
   | { ok: true; bytes: Uint8Array; artifact: RetroArtifactRecord }
   | { ok: false; reason: "unrecorded" | "missing_artifact" | "hash_mismatch" };
 
-export type RetroScheduleRuntime = {
-  workspaceId: string;
-  lastOccurrenceAt: number | null;
-  lastRetroId: string | null;
-  nextDueAt: number | null;
-  blockedReason: string | null;
-  blockedSince: number | null;
-  updatedAt: number;
-};
+export type RetroScheduleRuntime = typeof pgSchema.retroScheduleRuntime.$inferSelect;
 
 export const newRetroId = (now: number): string => ulid(now);
 
