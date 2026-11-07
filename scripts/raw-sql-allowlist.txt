@@ -216,10 +216,6 @@ src/db/pull-request-drafts.ts | db .query<{ updated_at: number }, [string]>( | n
 src/db/pull-request-drafts.ts | db .query<PullRequestDraft, [string]>( | not yet converted to Drizzle
 src/db/pull-request-drafts.ts | db.run( | not yet converted to Drizzle
 src/db/pull-request-drafts.ts | db .query<PullRequestText, [string]>( | not yet converted to Drizzle
-src/db/reads.ts | return db .query<BlockSql, [string | null, string | null]>( | not yet converted to Drizzle
-src/db/reads.ts | return db .query<FactSql, []>( | not yet converted to Drizzle
-src/db/reads.ts | return db .query<QuestionSql, []>( | not yet converted to Drizzle
-src/db/reads.ts | db .query<DeliveredLinearIssueState, [string, string]>( | not yet converted to Drizzle
 src/db/repository-catalog.ts | return db .query<CatalogEntry, []>( | not yet converted to Drizzle
 src/db/repository-catalog.ts | db.run("DELETE FROM repository_catalog"); | not yet converted to Drizzle
 src/db/repository-catalog.ts | db.run( | not yet converted to Drizzle

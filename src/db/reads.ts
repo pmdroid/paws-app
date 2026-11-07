@@ -1,8 +1,8 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { and, eq, isNull } from "drizzle-orm";
-import { orm } from "./orm";
-import { question } from "./schema";
+import { aliasedTable, and, asc, desc, eq, isNull, notExists, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
+import { jsonText } from "./json-text";
 
 export type WorkItemBlockRecord = {
   delegationId: string;
@@ -20,48 +20,54 @@ export type OpenQuestionRecord = {
   createdAt: number;
 };
 
-type BlockSql = {
-  delegation_id: string;
-  blocker_linear_issue_id: string;
-  blocked_linear_issue_id: string;
-};
-
-type QuestionSql = {
-  id: string;
-  item_id: string;
-  run_id: string | null;
-  session_id: string;
-  body: string;
-  options: string | null;
-  created_at: number;
-};
+export function* listWorkItemBlocksSteps(q: Q, delegationId?: string) {
+  const { taskBlock, workItem, workItemSpecification } = q.t;
+  const candidate = aliasedTable(workItem, "candidate");
+  // The newest live item of the blocked issue whose specification is still present.
+  const latest = q.orm
+    .select({ id: candidate.id })
+    .from(candidate)
+    .where(
+      and(
+        eq(candidate.linearIssueId, taskBlock.blockedLinearIssueId),
+        sql`${candidate.state} <> 'cancelled'`,
+        notExists(
+          q.orm
+            .select({ one: sql`1` })
+            .from(workItemSpecification)
+            .where(
+              and(
+                eq(workItemSpecification.itemId, candidate.id),
+                eq(workItemSpecification.present, 0),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(desc(candidate.createdAt), desc(candidate.id))
+    .limit(1);
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        delegationId: workItem.delegationId,
+        blockerLinearIssueId: taskBlock.blockerLinearIssueId,
+        blockedLinearIssueId: taskBlock.blockedLinearIssueId,
+      })
+      .from(taskBlock)
+      .innerJoin(workItem, eq(workItem.id, sql`(${latest})`))
+      .where(delegationId === undefined ? undefined : eq(workItem.delegationId, delegationId))
+      .orderBy(
+        asc(workItem.delegationId),
+        asc(taskBlock.blockedLinearIssueId),
+        asc(taskBlock.blockerLinearIssueId),
+      ),
+  );
+  return rows satisfies WorkItemBlockRecord[];
+}
 
 /** `blocks` edges. Pass `epicId` to read one epic. */
 export function listWorkItemBlocks(db: Database, delegationId?: string): WorkItemBlockRecord[] {
-  return db
-    .query<BlockSql, [string | null, string | null]>(
-      `SELECT i.delegation_id, b.blocker_linear_issue_id, b.blocked_linear_issue_id
-       FROM task_block b
-       JOIN work_item i ON i.id = (
-         SELECT candidate.id FROM work_item candidate
-         WHERE candidate.linear_issue_id = b.blocked_linear_issue_id
-           AND candidate.state <> 'cancelled'
-           AND NOT EXISTS (
-             SELECT 1 FROM work_item_specification spec
-             WHERE spec.item_id = candidate.id AND spec.present = 0
-           )
-         ORDER BY candidate.created_at DESC, candidate.id DESC
-         LIMIT 1
-       )
-       WHERE (? IS NULL OR i.delegation_id = ?)
-       ORDER BY i.delegation_id, b.blocked_linear_issue_id, b.blocker_linear_issue_id`,
-    )
-    .all(delegationId ?? null, delegationId ?? null)
-    .map((row) => ({
-      delegationId: row.delegation_id,
-      blockerLinearIssueId: row.blocker_linear_issue_id,
-      blockedLinearIssueId: row.blocked_linear_issue_id,
-    }));
+  return settled(sqliteDb(db).run((q) => listWorkItemBlocksSteps(q, delegationId)));
 }
 
 export type WorkItemFact = {
@@ -72,55 +78,61 @@ export type WorkItemFact = {
   createdAt: number;
 };
 
-type FactSql = {
-  item_id: string;
-  owner: string | null;
-  project_id: string | null;
-  project_name: string | null;
-  created_at: number;
-};
+export function* listWorkItemFactsSteps(q: Q) {
+  const { workItem, workspaceUser } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        itemId: workItem.id,
+        owner: workspaceUser.name,
+        projectId: workItem.linearProjectId,
+        projectName: workItem.linearProjectName,
+        createdAt: workItem.createdAt,
+      })
+      .from(workItem)
+      .leftJoin(workspaceUser, eq(workspaceUser.id, workItem.ownerUserId))
+      .orderBy(desc(workItem.createdAt), desc(workItem.id)),
+  );
+  return rows.map(
+    (row): WorkItemFact => ({
+      ...row,
+      projectName: typeof row.projectName === "string" ? row.projectName : null,
+    }),
+  );
+}
 
 export function listWorkItemFacts(db: Database): WorkItemFact[] {
-  return db
-    .query<FactSql, []>(
-      `SELECT i.id AS item_id,
-              u.name AS owner,
-              i.linear_project_id AS project_id,
-              i.linear_project_name AS project_name,
-              i.created_at AS created_at
-       FROM work_item i
-       LEFT JOIN workspace_user u ON u.id = i.owner_user_id
-       ORDER BY i.created_at DESC, i.id DESC`,
-    )
-    .all()
-    .map((row) => ({
-      itemId: row.item_id,
-      owner: row.owner,
-      projectId: row.project_id,
-      projectName: typeof row.project_name === "string" ? row.project_name : null,
-      createdAt: row.created_at,
-    }));
+  return settled(sqliteDb(db).run(listWorkItemFactsSteps));
+}
+
+export function* listOpenQuestionsSteps(q: Q) {
+  const { question } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: question.id,
+        itemId: question.itemId,
+        runId: question.runId,
+        sessionId: question.sessionId,
+        body: question.body,
+        options: jsonText(q, question.options),
+        createdAt: question.createdAt,
+      })
+      .from(question)
+      .where(and(eq(question.status, "open"), isNull(question.cancelledAt)))
+      .orderBy(asc(question.createdAt), asc(question.id)),
+  );
+  return rows.map(
+    (row): OpenQuestionRecord => ({
+      ...row,
+      options: row.options === null ? [] : stringList(row.options),
+    }),
+  );
 }
 
 /** Unanswered questions, oldest first. */
 export function listOpenQuestions(db: Database): OpenQuestionRecord[] {
-  return db
-    .query<QuestionSql, []>(
-      `SELECT id, item_id, run_id, session_id, body, options, created_at
-       FROM question
-       WHERE status = 'open' AND cancelled_at IS NULL
-       ORDER BY created_at, id`,
-    )
-    .all()
-    .map((row) => ({
-      id: row.id,
-      itemId: row.item_id,
-      runId: row.run_id,
-      sessionId: row.session_id,
-      body: row.body,
-      options: row.options === null ? [] : stringList(row.options),
-      createdAt: row.created_at,
-    }));
+  return settled(sqliteDb(db).run(listOpenQuestionsSteps));
 }
 
 export type DeliveredLinearIssueState = {
@@ -128,22 +140,41 @@ export type DeliveredLinearIssueState = {
   identifier: string | null;
 };
 
+/** The text at `path` of the payload: `json_extract` on SQLite, `#>>` on Postgres. */
+function payloadText(q: Q, path: string[]) {
+  const { payload } = q.t.inboxEvent;
+  return q.dialect === "postgres"
+    ? sql<string | null>`(${payload} #>> ${sql.raw(`'{${path.join(",")}}'`)})`
+    : sql<string | null>`json_extract(${payload}, ${sql.raw(`'$.${path.join(".")}'`)})`;
+}
+
+export function* deliveredLinearIssueStateSteps(q: Q, organizationId: string, issueId: string) {
+  const { inboxEvent } = q.t;
+  const at = (...path: string[]) => payloadText(q, path);
+  const row = yield* q.one(
+    q.orm
+      .select({ stateType: at("data", "state", "type"), identifier: at("data", "identifier") })
+      .from(inboxEvent)
+      .where(
+        and(
+          eq(at("type"), "Issue"),
+          eq(at("data", "id"), issueId),
+          eq(at("organizationId"), organizationId),
+        ),
+      )
+      .orderBy(desc(inboxEvent.updatedAtMs), desc(inboxEvent.receivedAt))
+      .limit(1),
+  );
+  return (row ?? null) satisfies DeliveredLinearIssueState | null;
+}
+
 export function deliveredLinearIssueState(
   db: Database,
   organizationId: string,
   issueId: string,
 ): DeliveredLinearIssueState | null {
-  return (
-    db
-      .query<DeliveredLinearIssueState, [string, string]>(
-        `SELECT json_extract(payload,'$.data.state.type') AS stateType,
-         json_extract(payload,'$.data.identifier') AS identifier
-         FROM inbox_event
-         WHERE json_extract(payload,'$.type')='Issue' AND json_extract(payload,'$.data.id')=?
-         AND json_extract(payload,'$.organizationId')=?
-         ORDER BY updated_at_ms DESC, received_at DESC LIMIT 1`,
-      )
-      .get(issueId, organizationId) ?? null
+  return settled(
+    sqliteDb(db).run((q) => deliveredLinearIssueStateSteps(q, organizationId, issueId)),
   );
 }
 
@@ -163,12 +194,17 @@ function stringList(value: string): string[] {
   }
 }
 
-export function openQuestionKind(db: Database, id: string): string | null {
-  return (
-    orm(db)
+export function* openQuestionKindSteps(q: Q, id: string) {
+  const { question } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({ kind: question.kind })
       .from(question)
-      .where(and(eq(question.id, id), eq(question.status, "open"), isNull(question.cancelledAt)))
-      .get()?.kind ?? null
+      .where(and(eq(question.id, id), eq(question.status, "open"), isNull(question.cancelledAt))),
   );
+  return row?.kind ?? null;
+}
+
+export function openQuestionKind(db: Database, id: string): string | null {
+  return settled(sqliteDb(db).run((q) => openQuestionKindSteps(q, id)));
 }
