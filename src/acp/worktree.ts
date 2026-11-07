@@ -4,6 +4,7 @@ import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { randomUUID } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { assertDescendsFromAny } from "../core";
 import { git } from "./git";
 import { branchName, candidateRef, mirrorPath, worktreePath } from "./paths";
 
@@ -281,36 +282,40 @@ export async function restoreCandidateRef(options: {
   itemId: string;
   pawsRoot: string;
   sha: string;
+  baseSha?: string;
   networkGit?: (args: string[]) => Promise<string>;
+  signal: AbortSignal;
 }): Promise<void> {
-  if (!/^[a-f0-9]{40}$/.test(options.sha))
-    throw new Error(`Recorded candidate head ${options.sha} is not a commit SHA.`);
+  const { sha, signal } = options;
+  if (!/^[a-f0-9]{40}$/.test(sha))
+    throw new Error(`Recorded candidate head ${sha} is not a commit SHA.`);
+  if (options.baseSha !== undefined && !/^[a-f0-9]{40}$/.test(options.baseSha))
+    throw new Error(`Candidate base ${options.baseSha} is not a commit SHA.`);
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
   const ref = candidateRef(options.itemId);
-  const missing = `Candidate head ${options.sha} of ${options.itemId} is missing on GitHub in ${options.owner}/${options.repo}.`;
-  if ((await revParse(gitDir, `${ref}^{commit}`)) === options.sha) return;
+  const run = (args: string[]) => git(["--git-dir", gitDir, ...args], { signal });
+  const resolve = (rev: string) =>
+    run(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]).then(
+      (out) => out.trim() || undefined,
+      () => undefined,
+    );
+  const missing = `Candidate head ${sha} of ${options.itemId} is missing on GitHub in ${options.owner}/${options.repo}.`;
   const network = () => {
-    const run = options.networkGit ?? (isAbsolute(options.remoteUrl) ? git : undefined);
-    if (!run)
-      throw new Error(
-        `Candidate head ${options.sha} of ${options.itemId} needs GitHub access to fetch.`,
-      );
-    return run;
+    const fetch = options.networkGit ?? (isAbsolute(options.remoteUrl) ? git : undefined);
+    if (!fetch)
+      throw new Error(`Candidate head ${sha} of ${options.itemId} needs GitHub access to fetch.`);
+    return fetch;
   };
-  if (!(await exists(gitDir))) await ensureBareMirror({ ...options, networkGit: network() });
+  signal.throwIfAborted();
+  if (await exists(gitDir)) {
+    if ((await resolve(ref)) === sha) return;
+  } else await ensureBareMirror({ ...options, networkGit: network() });
   await onMirror(gitDir, async () => {
-    const local = await revParse(gitDir, `${ref}^{commit}`);
-    if (local === options.sha) return;
-    const held = await revParse(gitDir, `${options.sha}^{commit}`);
+    const local = await resolve(ref);
+    if (local === sha) return;
+    const held = await resolve(sha);
     if (held && local) {
-      const ahead = await git([
-        "--git-dir",
-        gitDir,
-        "merge-base",
-        "--is-ancestor",
-        options.sha,
-        local,
-      ]).then(
+      const ahead = await run(["merge-base", "--is-ancestor", sha, local]).then(
         () => true,
         () => false,
       );
@@ -328,16 +333,28 @@ export async function restoreCandidateRef(options: {
           "--no-write-fetch-head",
           "--",
           options.remoteUrl,
-          `${options.sha}:${scratch}`,
+          `${sha}:${scratch}`,
         ]);
       } catch (error) {
+        signal.throwIfAborted();
         throw new Error(missing, { cause: error });
       } finally {
-        await git(["--git-dir", gitDir, "update-ref", "-d", scratch]).catch(() => undefined);
+        await git(["--git-dir", gitDir, "update-ref", "-d", scratch], {
+          signal: AbortSignal.timeout(5_000),
+        }).catch(() => undefined);
       }
-      if (!(await revParse(gitDir, `${options.sha}^{commit}`))) throw new Error(missing);
+      if (!(await resolve(sha))) throw new Error(missing);
     }
-    await git(["--git-dir", gitDir, "update-ref", ref, options.sha, local ?? ""]);
+    const main = await resolveStartRef(gitDir);
+    const bases = [options.baseSha, main].filter((base) => base !== undefined);
+    await assertDescendsFromAny(run, bases, sha).catch((error: unknown) => {
+      throw new Error(
+        `Candidate head ${sha} of ${options.itemId} does not descend from its base or main.`,
+        { cause: error },
+      );
+    });
+    signal.throwIfAborted();
+    await run(["update-ref", ref, sha, local ?? ""]);
   });
 }
 

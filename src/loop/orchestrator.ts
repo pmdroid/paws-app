@@ -9246,7 +9246,7 @@ export class Orchestrator {
   ): Promise<string> {
     await this.restoreCandidate(item, signal);
     const candidate = await ensureCandidateRef(placement);
-    if (getItemCandidate(this.db, item.id)?.sha !== candidate.head)
+    if (!getItemCandidate(this.db, item.id))
       recordItemCandidate(this.db, {
         itemId: item.id,
         sha: candidate.head,
@@ -9260,17 +9260,16 @@ export class Orchestrator {
     const repository = this.repositoryForItem(item);
     const recorded = getItemCandidate(this.db, item.id);
     if (!this.options.remoteExecution || !repository || !recorded) return;
-    const networkGit = this.repositoryGit(
-      item,
-      repository,
-      signal ?? AbortSignal.timeout(120_000),
-      "read",
-    );
+    const owned = signal ?? AbortSignal.timeout(120_000);
+    const networkGit = this.repositoryGit(item, repository, owned, "read");
+    const baseSha = item.checkpoint?.baseSha;
     await restoreCandidateRef({
       ...repository,
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
       sha: recorded.sha,
+      signal: owned,
+      ...(baseSha ? { baseSha } : {}),
       ...(networkGit ? { networkGit } : {}),
     });
   }

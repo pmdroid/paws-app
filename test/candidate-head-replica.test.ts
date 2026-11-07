@@ -249,6 +249,7 @@ test("a recorded candidate SHA that GitHub lacks is an error that names it", asy
       itemId: "01ACME",
       pawsRoot: path.join(root, "b"),
       sha: missing,
+      signal: AbortSignal.timeout(30_000),
     });
     await expect(restore).rejects.toThrow(
       `Candidate head ${missing} of 01ACME is missing on GitHub`,
@@ -268,6 +269,7 @@ test("a GitHub remote is never fetched without the repository's authenticated gi
       itemId: "01ACME",
       pawsRoot: path.join(root, "b"),
       sha,
+      signal: AbortSignal.timeout(30_000),
     });
     await expect(restore).rejects.toThrow(`Candidate head ${sha} of 01ACME needs GitHub access`);
   } finally {
@@ -275,12 +277,13 @@ test("a GitHub remote is never fetched without the repository's authenticated gi
   }
 });
 
-test("a local candidate ahead of the recorded SHA stays; one behind moves to it", async () => {
+test("a local candidate ahead of the recorded SHA stays, one behind moves to it, and an unrelated one is refused", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paws-candidate-cache-"));
   try {
     const bare = await originWithPolicy(root, path.join(root, "check-ran"));
     const pawsRoot = path.join(root, "a");
     const place = { ...repository, remoteUrl: bare, itemId: "01ACME", pawsRoot };
+    const signal = AbortSignal.timeout(30_000);
     const {
       mirrorPath: mirror,
       ref,
@@ -302,11 +305,28 @@ test("a local candidate ahead of the recorded SHA stays; one behind moves to it"
       "ahead",
     );
     await git("--git-dir", mirror, "update-ref", ref, ahead);
-    await restoreCandidateRef({ ...place, sha: main });
+    await restoreCandidateRef({ ...place, sha: main, signal });
     expect(await git("--git-dir", mirror, "rev-parse", ref)).toBe(ahead);
 
     await git("--git-dir", mirror, "update-ref", ref, main);
-    await restoreCandidateRef({ ...place, sha: ahead });
+    await restoreCandidateRef({ ...place, sha: ahead, signal });
+    expect(await git("--git-dir", mirror, "rev-parse", ref)).toBe(ahead);
+
+    const unrelated = await git(
+      "--git-dir",
+      mirror,
+      "-c",
+      "user.name=acme",
+      "-c",
+      "user.email=acme@example.com",
+      "commit-tree",
+      tree,
+      "-m",
+      "unrelated",
+    );
+    await expect(restoreCandidateRef({ ...place, sha: unrelated, signal })).rejects.toThrow(
+      `Candidate head ${unrelated} of 01ACME does not descend from its base or main`,
+    );
     expect(await git("--git-dir", mirror, "rev-parse", ref)).toBe(ahead);
   } finally {
     await rm(root, { recursive: true, force: true });
