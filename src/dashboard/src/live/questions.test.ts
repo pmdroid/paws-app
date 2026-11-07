@@ -54,14 +54,18 @@ function provider(db: Database, sessionIds?: readonly string[]) {
 function tablesRead(db: Database, read: () => unknown): Set<string> {
   const tables = new Set<string>();
   const query = db.query.bind(db);
-  db.query = ((sql: string) => {
-    for (const match of sql.matchAll(/\b(?:FROM|JOIN)\s+([a-z_]+)/gi)) tables.add(match[1]!);
-    return query(sql);
-  }) as typeof db.query;
+  const prepare = db.prepare.bind(db);
+  // Drizzle prepares its statements and quotes table names.
+  const record = (sql: string) => {
+    for (const match of sql.matchAll(/\b(?:FROM|JOIN)\s+"?([a-z_]+)/gi)) tables.add(match[1]!);
+  };
+  db.query = ((sql: string) => (record(sql), query(sql))) as typeof db.query;
+  db.prepare = ((sql: string) => (record(sql), prepare(sql))) as typeof db.prepare;
   try {
     read();
   } finally {
     db.query = query;
+    db.prepare = prepare;
   }
   return tables;
 }

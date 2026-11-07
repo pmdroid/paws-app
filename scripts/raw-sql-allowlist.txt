@@ -216,10 +216,6 @@ src/db/pull-request-drafts.ts | db .query<{ updated_at: number }, [string]>( | n
 src/db/pull-request-drafts.ts | db .query<PullRequestDraft, [string]>( | not yet converted to Drizzle
 src/db/pull-request-drafts.ts | db.run( | not yet converted to Drizzle
 src/db/pull-request-drafts.ts | db .query<PullRequestText, [string]>( | not yet converted to Drizzle
-src/db/reads.ts | return db .query<BlockSql, [string | null, string | null]>( | not yet converted to Drizzle
-src/db/reads.ts | return db .query<FactSql, []>( | not yet converted to Drizzle
-src/db/reads.ts | return db .query<QuestionSql, []>( | not yet converted to Drizzle
-src/db/reads.ts | db .query<DeliveredLinearIssueState, [string, string]>( | not yet converted to Drizzle
 src/db/repository-catalog.ts | return db .query<CatalogEntry, []>( | not yet converted to Drizzle
 src/db/repository-catalog.ts | db.run("DELETE FROM repository_catalog"); | not yet converted to Drizzle
 src/db/repository-catalog.ts | db.run( | not yet converted to Drizzle
@@ -356,24 +352,6 @@ src/db/runners.ts | db.run("UPDATE member_vm SET runner_id=NULL,updated_at=? WHE
 src/db/runners.ts | db .query<{ name: string }, [string]>( | not yet converted to Drizzle
 src/db/runners.ts | const row = db .query<Omit<RunnerAvailability, "revoked"> & { revoked: number }, [string]>( | not yet converted to Drizzle
 src/db/seed.ts | db.run( | not yet converted to Drizzle
-src/db/skills.ts | return db .query<Row, []>(`SELECT ${COLUMNS} FROM agent_skill ORDER BY removed_at IS NOT NULL, name`) | not yet converted to Drizzle
-src/db/skills.ts | const row = db.query<Row, [string]>(`SELECT ${COLUMNS} FROM agent_skill WHERE name=?`).get(name); | not yet converted to Drizzle
-src/db/skills.ts | db.run( | not yet converted to Drizzle
-src/db/skills.ts | db.run("UPDATE agent_skill SET agents=?,updated_at=? WHERE name=? AND removed_at IS NULL", [ | not yet converted to Drizzle
-src/db/skills.ts | db.run("UPDATE agent_skill SET removed_at=?,updated_at=? WHERE name=? AND removed_at IS NULL", [ | not yet converted to Drizzle
-src/db/skills.ts | db.run("DELETE FROM runner_skill WHERE runner_id=?", [runnerId]); | not yet converted to Drizzle
-src/db/skills.ts | db.run( | not yet converted to Drizzle
-src/db/skills.ts | db.run( | not yet converted to Drizzle
-src/db/skills.ts | return db .query<RunnerSkillStatus, [string]>( | not yet converted to Drizzle
-src/db/skills.ts | const runners = db .query<{ id: string; name: string }, []>( | not yet converted to Drizzle
-src/db/skills.ts | db.run( | not yet converted to Drizzle
-src/db/skills.ts | const row = db .query<{ runnerId: string; skills: string; hooks: string; recordedAt: number }, [string]>( | not yet converted to Drizzle
-src/db/visual-reviews.ts | return db .query< | not yet converted to Drizzle
-src/db/visual-reviews.ts | db .query<{ name: string }, [string]>( | not yet converted to Drizzle
-src/db/visual-reviews.ts | db.run( | not yet converted to Drizzle
-src/db/visual-reviews.ts | return db .query<VisualReviewMark, [string]>( | not yet converted to Drizzle
-src/db/visual-reviews.ts | return db .query<VisualReviewMark & { itemId: string }, [string]>( | not yet converted to Drizzle
-src/db/visual-reviews.ts | const row = db .query<{ itemId: string; evidenceIds: string; carried: string | null }, [string]>( | not yet converted to Drizzle
 src/db/workspace-auth.ts | db.run("DELETE FROM workspace_oauth_request WHERE expires_at<=?", [input.expiresAt - 600_000]); | not yet converted to Drizzle
 src/db/workspace-auth.ts | db .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_oauth_request") | not yet converted to Drizzle
 src/db/workspace-auth.ts | db.run( | not yet converted to Drizzle

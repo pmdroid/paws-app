@@ -1,5 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { HookEvent } from "../core";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { jsonText, jsonValue } from "./json-text";
 
 /** Agents that load skills from their home directory. Every one of them supports skills today. */
 export const SKILL_AGENTS = ["claude", "codex", "grok"] as const;
@@ -26,64 +29,98 @@ export type SkillPin = {
   removedAt: number | null;
 };
 
-type Row = {
-  name: string;
-  source: string;
-  version: string;
-  sha256: string;
-  size_bytes: number;
-  agents: string;
-  created_at: number;
-  updated_at: number;
-  removed_at: number | null;
-};
-
-const COLUMNS = "name,source,version,sha256,size_bytes,agents,created_at,updated_at,removed_at";
-
-function pin(row: Row): SkillPin {
-  return {
-    name: row.name,
+function* pinsSteps(q: Q, name?: string) {
+  const { agentSkill } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        name: agentSkill.name,
+        source: jsonText(q, agentSkill.source),
+        version: agentSkill.version,
+        sha256: agentSkill.sha256,
+        sizeBytes: agentSkill.sizeBytes,
+        agents: jsonText(q, agentSkill.agents),
+        createdAt: agentSkill.createdAt,
+        updatedAt: agentSkill.updatedAt,
+        removedAt: agentSkill.removedAt,
+      })
+      .from(agentSkill)
+      .where(name === undefined ? undefined : eq(agentSkill.name, name))
+      .orderBy(asc(sql`${agentSkill.removedAt} IS NOT NULL`), asc(agentSkill.name)),
+  );
+  return rows.map((row): SkillPin => ({
+    ...row,
     source: JSON.parse(row.source) as SkillSource,
-    version: row.version,
-    sha256: row.sha256,
-    sizeBytes: row.size_bytes,
     agents: JSON.parse(row.agents) as SkillAgent[],
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    removedAt: row.removed_at,
-  };
+  }));
+}
+
+export function* listSkillsSteps(q: Q): Steps<SkillPin[]> {
+  return yield* pinsSteps(q);
 }
 
 /** Every skill, removed ones included so runners can uninstall them. */
 export function listSkills(db: Database): SkillPin[] {
-  return db
-    .query<Row, []>(`SELECT ${COLUMNS} FROM agent_skill ORDER BY removed_at IS NOT NULL, name`)
-    .all()
-    .map(pin);
+  return settled(sqliteDb(db).run(listSkillsSteps));
+}
+
+export function* getSkillSteps(q: Q, name: string) {
+  const [pin] = yield* pinsSteps(q, name);
+  return pin ?? null;
 }
 
 export function getSkill(db: Database, name: string): SkillPin | null {
-  const row = db.query<Row, [string]>(`SELECT ${COLUMNS} FROM agent_skill WHERE name=?`).get(name);
-  return row ? pin(row) : null;
+  return settled(sqliteDb(db).run((q) => getSkillSteps(q, name)));
+}
+
+export function* saveSkillSteps(q: Q, skill: Omit<SkillPin, "createdAt" | "removedAt">) {
+  const { agentSkill } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(agentSkill)
+      .values({
+        name: skill.name,
+        source: jsonValue(q, skill.source),
+        version: skill.version,
+        sha256: skill.sha256,
+        sizeBytes: skill.sizeBytes,
+        agents: jsonValue(q, skill.agents),
+        createdAt: skill.updatedAt,
+        updatedAt: skill.updatedAt,
+        removedAt: null,
+      })
+      .onConflictDoUpdate({
+        target: agentSkill.name,
+        set: {
+          source: sql`excluded.source`,
+          version: sql`excluded.version`,
+          sha256: sql`excluded.sha256`,
+          sizeBytes: sql`excluded.size_bytes`,
+          agents: sql`excluded.agents`,
+          updatedAt: sql`excluded.updated_at`,
+          removedAt: null,
+        },
+      }),
+  );
 }
 
 /** Insert or replace the pin. A re-added skill keeps its first `createdAt` and loses its tombstone. */
 export function saveSkill(db: Database, skill: Omit<SkillPin, "createdAt" | "removedAt">): void {
-  db.run(
-    `INSERT INTO agent_skill(${COLUMNS}) VALUES(?,?,?,?,?,?,?,?,NULL)
-     ON CONFLICT(name) DO UPDATE SET source=excluded.source,version=excluded.version,
-       sha256=excluded.sha256,size_bytes=excluded.size_bytes,agents=excluded.agents,
-       updated_at=excluded.updated_at,removed_at=NULL`,
-    [
-      skill.name,
-      JSON.stringify(skill.source),
-      skill.version,
-      skill.sha256,
-      skill.sizeBytes,
-      JSON.stringify(skill.agents),
-      skill.updatedAt,
-      skill.updatedAt,
-    ],
+  settled(sqliteDb(db).run((q) => saveSkillSteps(q, skill)));
+}
+
+export function* setSkillAgentsSteps(
+  q: Q,
+  name: string,
+  agents: readonly SkillAgent[],
+  now: number,
+) {
+  const { agentSkill } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(agentSkill)
+      .set({ agents: jsonValue(q, agents), updatedAt: now })
+      .where(and(eq(agentSkill.name, name), isNull(agentSkill.removedAt))),
   );
 }
 
@@ -93,19 +130,21 @@ export function setSkillAgents(
   agents: readonly SkillAgent[],
   now: number,
 ): void {
-  db.run("UPDATE agent_skill SET agents=?,updated_at=? WHERE name=? AND removed_at IS NULL", [
-    JSON.stringify(agents),
-    now,
-    name,
-  ]);
+  settled(sqliteDb(db).run((q) => setSkillAgentsSteps(q, name, agents, now)));
+}
+
+export function* markSkillRemovedSteps(q: Q, name: string, now: number) {
+  const { agentSkill } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(agentSkill)
+      .set({ removedAt: now, updatedAt: now })
+      .where(and(eq(agentSkill.name, name), isNull(agentSkill.removedAt))),
+  );
 }
 
 export function markSkillRemoved(db: Database, name: string, now: number): void {
-  db.run("UPDATE agent_skill SET removed_at=?,updated_at=? WHERE name=? AND removed_at IS NULL", [
-    now,
-    now,
-    name,
-  ]);
+  settled(sqliteDb(db).run((q) => markSkillRemovedSteps(q, name, now)));
 }
 
 /** A skill as a runner last reported it in its heartbeat. */
@@ -119,43 +158,84 @@ export type RunnerSkillStatus = {
   reportedAt: number;
 };
 
+type ReportedSkill = Omit<RunnerSkillStatus, "reportedAt" | "error" | "waiting"> & {
+  error?: string;
+  waiting?: number;
+};
+
+export function* recordRunnerSkillsSteps(
+  q: Q,
+  runnerId: string,
+  skills: readonly ReportedSkill[],
+  reportedAt: number,
+) {
+  const { agentSkill, runner, runnerSkill } = q.t;
+  yield* q.exec(q.orm.delete(runnerSkill).where(eq(runnerSkill.runnerId, runnerId)));
+  for (const skill of skills)
+    yield* q.exec(
+      q.orm.insert(runnerSkill).values({
+        runnerId,
+        name: skill.name,
+        version: skill.version,
+        sha256: skill.sha256,
+        status: skill.status,
+        error: skill.status === "refused" ? (skill.error ?? null) : null,
+        waiting: skill.status === "pending" ? (skill.waiting ?? null) : null,
+        reportedAt,
+      }),
+    );
+  // A removed skill's tombstone goes once no live runner still has it.
+  yield* q.exec(
+    q.orm
+      .delete(agentSkill)
+      .where(
+        and(
+          isNotNull(agentSkill.removedAt),
+          notInArray(
+            agentSkill.name,
+            q.orm
+              .select({ name: runnerSkill.name })
+              .from(runnerSkill)
+              .innerJoin(runner, eq(runner.id, runnerSkill.runnerId))
+              .where(isNull(runner.revokedAt)),
+          ),
+        ),
+      ),
+  );
+}
+
 /** Replace what the runner reported last; skills it no longer lists are gone from it. */
 export function recordRunnerSkills(
   db: Database,
   runnerId: string,
-  skills: readonly (Omit<RunnerSkillStatus, "reportedAt" | "error" | "waiting"> & {
-    error?: string;
-    waiting?: number;
-  })[],
+  skills: readonly ReportedSkill[],
   reportedAt: number,
 ): void {
-  db.run("DELETE FROM runner_skill WHERE runner_id=?", [runnerId]);
-  for (const skill of skills)
-    db.run(
-      "INSERT INTO runner_skill(runner_id,name,version,sha256,status,error,waiting,reported_at) VALUES(?,?,?,?,?,?,?,?)",
-      [
-        runnerId,
-        skill.name,
-        skill.version,
-        skill.sha256,
-        skill.status,
-        skill.status === "refused" ? (skill.error ?? null) : null,
-        skill.status === "pending" ? (skill.waiting ?? null) : null,
-        reportedAt,
-      ],
-    );
-  db.run(
-    `DELETE FROM agent_skill WHERE removed_at IS NOT NULL AND name NOT IN (
-       SELECT s.name FROM runner_skill s JOIN runner r ON r.id=s.runner_id WHERE r.revoked_at IS NULL)`,
+  settled(sqliteDb(db).run((q) => recordRunnerSkillsSteps(q, runnerId, skills, reportedAt)));
+}
+
+export function* listRunnerSkillsSteps(q: Q, runnerId: string) {
+  const { runnerSkill } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        name: runnerSkill.name,
+        version: runnerSkill.version,
+        sha256: runnerSkill.sha256,
+        status: runnerSkill.status,
+        error: runnerSkill.error,
+        waiting: runnerSkill.waiting,
+        reportedAt: runnerSkill.reportedAt,
+      })
+      .from(runnerSkill)
+      .where(eq(runnerSkill.runnerId, runnerId))
+      .orderBy(asc(runnerSkill.name)),
   );
+  return rows as RunnerSkillStatus[];
 }
 
 export function listRunnerSkills(db: Database, runnerId: string): RunnerSkillStatus[] {
-  return db
-    .query<RunnerSkillStatus, [string]>(
-      "SELECT name,version,sha256,status,error,waiting,reported_at AS reportedAt FROM runner_skill WHERE runner_id=? ORDER BY name",
-    )
-    .all(runnerId);
+  return settled(sqliteDb(db).run((q) => listRunnerSkillsSteps(q, runnerId)));
 }
 
 export type RunnerSkillState = "up_to_date" | "installing" | "out_of_date" | "failed";
@@ -170,13 +250,16 @@ export type RunnerSkillView = {
   reportedAt: number | null;
 };
 
-export function runnerSkillStates(
-  db: Database,
+export function* runnerSkillStatesSteps(
+  q: Q,
   runnerId: string,
-  pins: readonly SkillPin[] = listSkills(db),
-): RunnerSkillView[] {
-  const reported = new Map(listRunnerSkills(db, runnerId).map((row) => [row.name, row]));
-  return pins
+  pins?: readonly SkillPin[],
+): Steps<RunnerSkillView[]> {
+  const pinned = pins ?? (yield* listSkillsSteps(q));
+  const reported = new Map(
+    (yield* listRunnerSkillsSteps(q, runnerId)).map((row) => [row.name, row]),
+  );
+  return pinned
     .filter((entry) => entry.removedAt === null)
     .map((entry) => {
       const row = reported.get(entry.name);
@@ -205,6 +288,14 @@ export function runnerSkillStates(
     });
 }
 
+export function runnerSkillStates(
+  db: Database,
+  runnerId: string,
+  pins?: readonly SkillPin[],
+): RunnerSkillView[] {
+  return settled(sqliteDb(db).run((q) => runnerSkillStatesSteps(q, runnerId, pins)));
+}
+
 export type SkillRollout = {
   name: string;
   total: number;
@@ -215,17 +306,18 @@ export type SkillRollout = {
   failed: string[];
 };
 
-export function skillRollouts(
-  db: Database,
-  pins: readonly SkillPin[] = listSkills(db),
-): SkillRollout[] {
-  const runners = db
-    .query<{ id: string; name: string }, []>(
-      "SELECT id,name FROM runner WHERE revoked_at IS NULL AND status<>'revoked' ORDER BY created_at,id",
-    )
-    .all();
+export function* skillRolloutsSteps(q: Q, pins?: readonly SkillPin[]): Steps<SkillRollout[]> {
+  const { runner } = q.t;
+  const pinned = pins ?? (yield* listSkillsSteps(q));
+  const runners = yield* q.all(
+    q.orm
+      .select({ id: runner.id, name: runner.name })
+      .from(runner)
+      .where(and(isNull(runner.revokedAt), ne(runner.status, "revoked")))
+      .orderBy(asc(runner.createdAt), asc(runner.id)),
+  );
   const rollouts = new Map<string, SkillRollout>(
-    pins
+    pinned
       .filter((entry) => entry.removedAt === null)
       .map((entry) => [
         entry.name,
@@ -240,17 +332,21 @@ export function skillRollouts(
         },
       ]),
   );
-  for (const runner of runners)
-    for (const skill of runnerSkillStates(db, runner.id, pins)) {
+  for (const live of runners)
+    for (const skill of yield* runnerSkillStatesSteps(q, live.id, pinned)) {
       const rollout = rollouts.get(skill.name)!;
       rollout.total += 1;
       if (skill.state === "up_to_date") rollout.upToDate += 1;
-      else if (skill.waiting) rollout.waiting.push({ runner: runner.name, tasks: skill.waiting });
-      else if (skill.state === "installing") rollout.installing.push(runner.name);
-      else if (skill.state === "out_of_date") rollout.outOfDate.push(runner.name);
-      else rollout.failed.push(runner.name);
+      else if (skill.waiting) rollout.waiting.push({ runner: live.name, tasks: skill.waiting });
+      else if (skill.state === "installing") rollout.installing.push(live.name);
+      else if (skill.state === "out_of_date") rollout.outOfDate.push(live.name);
+      else rollout.failed.push(live.name);
     }
   return [...rollouts.values()];
+}
+
+export function skillRollouts(db: Database, pins?: readonly SkillPin[]): SkillRollout[] {
+  return settled(sqliteDb(db).run((q) => skillRolloutsSteps(q, pins)));
 }
 
 export type RunHook = { name: string; event: HookEvent };
@@ -262,38 +358,70 @@ export type RunAgentSetup = {
   recordedAt: number;
 };
 
-export function recordRunAgentSetup(
-  db: Database,
-  input: { runId: string; runnerId: string; agent: string; hooks: RunHook[]; at: number },
-): void {
+type AgentSetupInput = {
+  runId: string;
+  runnerId: string;
+  agent: string;
+  hooks: RunHook[];
+  at: number;
+};
+
+export function* recordRunAgentSetupSteps(q: Q, input: AgentSetupInput) {
+  const setup = q.t.runAgentSetup;
   const pins = new Map(
-    listSkills(db)
+    (yield* listSkillsSteps(q))
       .filter(
         (entry) => entry.removedAt === null && entry.agents.includes(input.agent as SkillAgent),
       )
       .map((entry) => [entry.name, entry]),
   );
-  const skills = listRunnerSkills(db, input.runnerId)
+  const skills = (yield* listRunnerSkillsSteps(q, input.runnerId))
     .filter((row) => pins.has(row.name) && row.status !== "refused")
     .map((row) => ({
       name: row.name,
       version: row.version,
       status: row.status as "installed" | "pending",
     }));
-  db.run(
-    `INSERT INTO run_agent_setup(run_id,runner_id,skills,hooks,recorded_at) VALUES(?,?,?,?,?)
-     ON CONFLICT(run_id) DO UPDATE SET runner_id=excluded.runner_id,skills=excluded.skills,
-       hooks=excluded.hooks,recorded_at=excluded.recorded_at`,
-    [input.runId, input.runnerId, JSON.stringify(skills), JSON.stringify(input.hooks), input.at],
+  // `skills` and `hooks` are text columns on both dialects.
+  yield* q.exec(
+    q.orm
+      .insert(setup)
+      .values({
+        runId: input.runId,
+        runnerId: input.runnerId,
+        skills: JSON.stringify(skills),
+        hooks: JSON.stringify(input.hooks),
+        recordedAt: input.at,
+      })
+      .onConflictDoUpdate({
+        target: setup.runId,
+        set: {
+          runnerId: sql`excluded.runner_id`,
+          skills: sql`excluded.skills`,
+          hooks: sql`excluded.hooks`,
+          recordedAt: sql`excluded.recorded_at`,
+        },
+      }),
   );
 }
 
-export function runAgentSetup(db: Database, runId: string): RunAgentSetup | null {
-  const row = db
-    .query<{ runnerId: string; skills: string; hooks: string; recordedAt: number }, [string]>(
-      "SELECT runner_id AS runnerId,skills,hooks,recorded_at AS recordedAt FROM run_agent_setup WHERE run_id=?",
-    )
-    .get(runId);
+export function recordRunAgentSetup(db: Database, input: AgentSetupInput): void {
+  settled(sqliteDb(db).run((q) => recordRunAgentSetupSteps(q, input)));
+}
+
+export function* runAgentSetupSteps(q: Q, runId: string): Steps<RunAgentSetup | null> {
+  const setup = q.t.runAgentSetup;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        runnerId: setup.runnerId,
+        skills: setup.skills,
+        hooks: setup.hooks,
+        recordedAt: setup.recordedAt,
+      })
+      .from(setup)
+      .where(eq(setup.runId, runId)),
+  );
   return row
     ? {
         runnerId: row.runnerId,
@@ -302,4 +430,8 @@ export function runAgentSetup(db: Database, runId: string): RunAgentSetup | null
         recordedAt: row.recordedAt,
       }
     : null;
+}
+
+export function runAgentSetup(db: Database, runId: string): RunAgentSetup | null {
+  return settled(sqliteDb(db).run((q) => runAgentSetupSteps(q, runId)));
 }
