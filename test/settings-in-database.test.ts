@@ -143,3 +143,18 @@ test("a table-like line inside a multiline string is not read as a section", () 
   );
   expect(parseBriefTemplates(readConfigText(a.configPath)).template).toBe(template);
 });
+
+test("triple quotes in a comment or a one-line string do not hide later sections", () => {
+  for (const quote of ['"""', "'''"]) {
+    const a = instance(shared(), "ACME");
+    writeFileSync(
+      a.configPath,
+      `[linear]\nteam = "ACME" # see ${quote}\nnote = "${quote === '"""' ? "'''" : '\\"\\"\\"'}"\n\n[caps]\nmax_awake_ms = 5400000\n\n[merge]\norder = "queue"\n`,
+    );
+    updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
+    const text = readConfigText(a.configPath);
+    expect(text).not.toContain('order = "queue"');
+    expect(text).toContain("max_awake_ms = 5400000");
+    expect(text).toContain('order = "ci-green"');
+  }
+});

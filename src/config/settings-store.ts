@@ -97,13 +97,39 @@ function splitSections(text: string, keep: (settings: boolean) => boolean): stri
       const heading =
         open === null ? /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line) : null;
       if (heading?.[1]) settings = isSettingsSection(heading[1]);
-      for (const [quote] of line.matchAll(/"""|'''/g))
-        if (open === null) open = quote;
-        else if (quote === open) open = null;
+      open = openStringAfter(line, open);
       return keep(settings);
     })
     .join("\n")
     .trim();
+}
+
+function openStringAfter(line: string, start: string | null): string | null {
+  let open = start;
+  let index = 0;
+  while (index < line.length) {
+    if (open !== null) {
+      if (open === '"""' && line[index] === "\\") index += 2;
+      else if (line.startsWith(open, index)) {
+        index += 3;
+        open = null;
+      } else index += 1;
+      continue;
+    }
+    const char = line[index];
+    if (char === "#") return null;
+    const triple = line.slice(index, index + 3);
+    if (triple === '"""' || triple === "'''") {
+      open = triple;
+      index += 3;
+    } else if (char === '"' || char === "'") {
+      index += 1;
+      while (index < line.length && line[index] !== char)
+        index += char === '"' && line[index] === "\\" ? 2 : 1;
+      index += 1;
+    } else index += 1;
+  }
+  return open;
 }
 
 function settingsSections(text: string): string {
