@@ -958,12 +958,21 @@ export type {
 export {
   changeWorkspaceRole,
   consumeWorkspaceOAuthRequest,
+  consumeWorkspaceOAuthRequestSteps,
   listUserWorkspaces,
+  listUserWorkspacesSteps,
   listWorkspaceMembers,
+  listWorkspaceMembersSteps,
   listWorkspaceRepositories,
+  listWorkspaceRepositoriesSteps,
   listWorkspaceRepositoryNames,
+  listWorkspaceRepositoryNamesSteps,
   replaceWorkspaceRepositories,
+  replaceWorkspaceRepositoriesSteps,
+  requireWorkspaceAdminSteps,
   saveWorkspaceOAuthRequest,
+  saveWorkspaceOAuthRequestSteps,
+  setWorkspaceRoleSteps,
 } from "./workspace-auth";
 export type { WorkspaceOAuthRequest } from "./workspace-auth";
 export {
@@ -1255,6 +1264,9 @@ export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
 export {
   changeWorkspaceRevocation,
   listWorkspaceMemberSummaries,
+  listWorkspaceMemberSummariesSteps,
+  memberOpenItemsSteps,
+  recordWorkspaceRevocationSteps,
   type WorkspaceMemberSummary,
 } from "./workspace-revocation";
 export { listFindingGroups, lastFindingGroupRun, findingGroupSources } from "./finding-groups";
