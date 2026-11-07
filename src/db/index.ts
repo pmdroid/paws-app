@@ -226,6 +226,7 @@ export {
   type Job,
   type JobStatus,
   type NewJob,
+  leasedJobsForItem,
 } from "./jobs";
 export {
   JobLoop,
@@ -1136,3 +1137,36 @@ export {
   type RetroActivitySnapshot,
   type RetroActivityTransition,
 } from "./retro-activity";
+export {
+  delegationWorkspaceId,
+  emptyFailedAttempts,
+  insertItemContinuation,
+  insertIntakeItem,
+  issueHasUnfinishedItem,
+  listDelegationItems,
+  readActiveParentDelegation,
+  readDelegatedIntake,
+  readItemDelegation,
+  readPublicationIdentity,
+  readUnlandedAttempt,
+  stopSessionParentDelegation,
+  type IntakeItemRow,
+  type PublicationIdentity,
+} from "./intake";
+export {
+  delegationHasItemWithoutSnapshot,
+  delegationHasReconciliationWork,
+  dependencySnapshotGeneration,
+  itemSpecificationPresent,
+  latestIssueIdentifier,
+  listBlocksOf,
+  listDelegationExternalEvidence,
+  listManagedBlockerItems,
+  listPresentDelegationItems,
+  readDependencyScope,
+  readDependencySnapshot,
+  saveDependencySnapshot,
+  type DependencyIdentity,
+  type DependencyItem,
+  type DependencySnapshot,
+} from "./item-dependencies";

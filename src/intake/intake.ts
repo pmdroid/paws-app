@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { UserFacingError, type IssueBrief } from "../core";
+import { issueHasUnfinishedItem } from "../db";
 import type { TrackerAdapter } from "../linear";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
@@ -233,17 +234,7 @@ export class ActiveIssueError extends UserFacingError {
 }
 
 function activeElsewhere(db: Database, nodes: readonly OrderNode[]): OrderNode | undefined {
-  for (const node of nodes) {
-    const active = db
-      .query<{ id: string }, [string]>(
-        `SELECT id FROM work_item
-         WHERE linear_issue_id = ? AND state NOT IN ('completed', 'merged', 'cancelled')
-         LIMIT 1`,
-      )
-      .get(node.linearIssueId);
-    if (active) return node;
-  }
-  return undefined;
+  return nodes.find((node) => issueHasUnfinishedItem(db, node.linearIssueId));
 }
 
 /**
