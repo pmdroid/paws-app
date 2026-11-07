@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import { orm } from "./orm";
-import { reviewReply } from "./schema";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 /**
  * Where Paws answers one comment it handed to the agent. `thread`: an inline review thread, answered
@@ -36,103 +35,161 @@ export type NewReviewReply = Pick<
   "number" | "pullNumber" | "target" | "commentId" | "threadId" | "author" | "excerpt"
 >;
 
+type ReviewReplyHandoff = {
+  itemId: string;
+  restartKey: string;
+  replies: readonly NewReviewReply[];
+  now: number;
+};
+
 /**
  * Record the comments one restart hands to the agent, numbered as the handoff numbers them.
  * Targets an earlier round recorded and the agent has not reported on yet are superseded: the new
  * handoff carries their threads again. Call inside the restart's transaction.
  */
-export function recordReviewReplies(
-  db: Database,
-  input: { itemId: string; restartKey: string; replies: readonly NewReviewReply[]; now: number },
-): void {
-  orm(db)
-    .delete(reviewReply)
-    .where(
-      and(
-        eq(reviewReply.itemId, input.itemId),
-        isNull(reviewReply.outcome),
-        isNull(reviewReply.repliedAt),
+export function* recordReviewRepliesSteps(q: Q, input: ReviewReplyHandoff): Steps<void> {
+  const { reviewReply } = q.t;
+  yield* q.exec(
+    q.orm
+      .delete(reviewReply)
+      .where(
+        and(
+          eq(reviewReply.itemId, input.itemId),
+          isNull(reviewReply.outcome),
+          isNull(reviewReply.repliedAt),
+        ),
       ),
-    )
-    .run();
+  );
   for (const reply of input.replies)
-    orm(db)
-      .insert(reviewReply)
-      .values({
-        itemId: input.itemId,
-        restartKey: input.restartKey,
-        number: reply.number,
-        pullNumber: reply.pullNumber,
-        target: reply.target,
-        commentId: reply.commentId,
-        threadId: reply.threadId,
-        author: reply.author,
-        excerpt: reply.excerpt,
-        recordedAt: input.now,
-      })
-      .onConflictDoNothing({ target: [reviewReply.restartKey, reviewReply.number] })
-      .run();
+    yield* q.exec(
+      q.orm
+        .insert(reviewReply)
+        .values({
+          itemId: input.itemId,
+          restartKey: input.restartKey,
+          number: reply.number,
+          pullNumber: reply.pullNumber,
+          target: reply.target,
+          commentId: reply.commentId,
+          threadId: reply.threadId,
+          author: reply.author,
+          excerpt: reply.excerpt,
+          recordedAt: input.now,
+        })
+        .onConflictDoNothing({ target: [reviewReply.restartKey, reviewReply.number] }),
+    );
+}
+
+export function recordReviewReplies(db: Database, input: ReviewReplyHandoff): void {
+  settled(sqliteDb(db).run((q) => recordReviewRepliesSteps(q, input)));
 }
 
 /** This item's handed-off comments the agent has not reported on yet, by number. */
-export function unreportedReviewReplies(db: Database, itemId: string): ReviewReplyRecord[] {
-  return orm(db)
-    .select()
-    .from(reviewReply)
-    .where(and(eq(reviewReply.itemId, itemId), isNull(reviewReply.outcome)))
-    .orderBy(reviewReply.number)
-    .all() as ReviewReplyRecord[];
+export function* unreportedReviewRepliesSteps(q: Q, itemId: string): Steps<ReviewReplyRecord[]> {
+  const { reviewReply } = q.t;
+  return (yield* q.all(
+    q.orm
+      .select()
+      .from(reviewReply)
+      .where(and(eq(reviewReply.itemId, itemId), isNull(reviewReply.outcome)))
+      .orderBy(reviewReply.number),
+  )) as ReviewReplyRecord[];
 }
+
+export function unreportedReviewReplies(db: Database, itemId: string): ReviewReplyRecord[] {
+  return settled(sqliteDb(db).run((q) => unreportedReviewRepliesSteps(q, itemId)));
+}
+
+type ReviewReplyReports = ReadonlyMap<
+  number,
+  { outcome: Exclude<ReviewReplyOutcome, "unreported">; reply: string }
+>;
 
 /**
  * Store what the fix turn reported for each handed-off comment. A comment the report leaves out is
  * `unreported`. The number stored.
  */
-export function reportReviewReplies(
-  db: Database,
+export function* reportReviewRepliesSteps(
+  q: Q,
   itemId: string,
-  reports: ReadonlyMap<
-    number,
-    { outcome: Exclude<ReviewReplyOutcome, "unreported">; reply: string }
-  >,
+  reports: ReviewReplyReports,
   now: number,
-): number {
+): Steps<number> {
+  const { reviewReply } = q.t;
   let stored = 0;
-  for (const open of unreportedReviewReplies(db, itemId)) {
+  for (const open of yield* unreportedReviewRepliesSteps(q, itemId)) {
     const report = reports.get(open.number);
-    stored += orm(db)
-      .update(reviewReply)
-      .set({
-        outcome: report?.outcome ?? "unreported",
-        reply: report?.reply ?? null,
-        reportedAt: now,
-      })
-      .where(and(eq(reviewReply.id, open.id), isNull(reviewReply.outcome)))
-      .returning({ id: reviewReply.id })
-      .all().length;
+    stored += (yield* q.all(
+      q.orm
+        .update(reviewReply)
+        .set({
+          outcome: report?.outcome ?? "unreported",
+          reply: report?.reply ?? null,
+          reportedAt: now,
+        })
+        .where(and(eq(reviewReply.id, open.id), isNull(reviewReply.outcome)))
+        .returning({ id: reviewReply.id }),
+    )).length;
   }
   return stored;
 }
 
+export function reportReviewReplies(
+  db: Database,
+  itemId: string,
+  reports: ReviewReplyReports,
+  now: number,
+): number {
+  return settled(sqliteDb(db).run((q) => reportReviewRepliesSteps(q, itemId, reports, now)));
+}
+
 /** Reported replies on pull request `pullNumber` that Paws has not posted yet. */
+export function* unpostedReviewRepliesSteps(
+  q: Q,
+  itemId: string,
+  pullNumber: number,
+): Steps<ReviewReplyRecord[]> {
+  const { reviewReply } = q.t;
+  return (yield* q.all(
+    q.orm
+      .select()
+      .from(reviewReply)
+      .where(
+        and(
+          eq(reviewReply.itemId, itemId),
+          eq(reviewReply.pullNumber, pullNumber),
+          isNotNull(reviewReply.outcome),
+          isNull(reviewReply.repliedAt),
+        ),
+      )
+      .orderBy(reviewReply.recordedAt, reviewReply.number),
+  )) as ReviewReplyRecord[];
+}
+
 export function unpostedReviewReplies(
   db: Database,
   itemId: string,
   pullNumber: number,
 ): ReviewReplyRecord[] {
-  return orm(db)
-    .select()
-    .from(reviewReply)
-    .where(
-      and(
-        eq(reviewReply.itemId, itemId),
-        eq(reviewReply.pullNumber, pullNumber),
-        isNotNull(reviewReply.outcome),
-        isNull(reviewReply.repliedAt),
-      ),
-    )
-    .orderBy(reviewReply.recordedAt, reviewReply.number)
-    .all() as ReviewReplyRecord[];
+  return settled(sqliteDb(db).run((q) => unpostedReviewRepliesSteps(q, itemId, pullNumber)));
+}
+
+export function* markReviewReplyPostedSteps(
+  q: Q,
+  id: number,
+  now: number,
+  resolved: boolean,
+): Steps<void> {
+  const { reviewReply } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(reviewReply)
+      .set({
+        repliedAt: sql`COALESCE(${reviewReply.repliedAt}, ${now})`,
+        resolvedAt: resolved ? now : null,
+      })
+      .where(eq(reviewReply.id, id)),
+  );
 }
 
 export function markReviewReplyPosted(
@@ -141,12 +198,5 @@ export function markReviewReplyPosted(
   now: number,
   resolved: boolean,
 ): void {
-  orm(db)
-    .update(reviewReply)
-    .set({
-      repliedAt: sql`COALESCE(${reviewReply.repliedAt}, ${now})`,
-      resolvedAt: resolved ? now : null,
-    })
-    .where(eq(reviewReply.id, id))
-    .run();
+  settled(sqliteDb(db).run((q) => markReviewReplyPostedSteps(q, id, now, resolved)));
 }
