@@ -26,7 +26,7 @@ forEachDialect((connect) => {
       approvalId: "q0",
       approvedBy: "lin-ada",
       approvedAt: 5,
-      match: "identical",
+      match: "identical" as const,
     };
     const question = (id: string, status: string) => (q: Q) =>
       q.orm
