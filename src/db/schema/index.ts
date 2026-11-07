@@ -2,6 +2,7 @@ export * from "./accounts";
 export * from "./agents";
 export * from "./asks";
 export * from "./closeout";
+export * from "./credentials";
 export * from "./github";
 export * from "./improvements";
 export * from "./items";

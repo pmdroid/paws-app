@@ -1,3 +1,8 @@
+export {
+  readCredentialCiphertext,
+  writeCredentialCiphertext,
+  type CredentialKey,
+} from "./credentials";
 export { replaceLeasedJobPayload, refreshVerificationJobVersion } from "./job-payload";
 export {
   drainCommands,

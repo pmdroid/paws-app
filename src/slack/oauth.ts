@@ -1,7 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { pawsPaths } from "../config";
-import { readSecretFile, refreshCredential, writeSecretFile } from "../credentials";
+import {
+  readCredential,
+  readSecretFile,
+  refreshCredential,
+  writeCredential,
+  writeSecretFile,
+} from "../credentials";
 import { authorizeSlack } from "./authorize";
 
 export const SLACK_BOT_SCOPES = "chat:write,im:write,users:read,users:read.email,channels:read";
@@ -20,11 +26,16 @@ export function readSlackApp(home: string): SlackApp | null {
   return readJson<SlackApp>(home, "slack-app.json");
 }
 
-export function readSlackToken(home: string): SlackToken | null {
-  return readJson<SlackToken>(home, "slack-oauth.json");
+export function readSlackToken(db: Database, home: string): SlackToken | null {
+  return parseJson<SlackToken>(readCredential(db, pawsPaths(home).secretsDir, "slack"));
+}
+
+function writeSlackToken(db: Database, home: string, token: SlackToken): void {
+  writeCredential(db, pawsPaths(home).secretsDir, "slack", JSON.stringify(token));
 }
 
 export async function loginSlack(input: {
+  db: Database;
   home: string;
   env: Record<string, string | undefined>;
   port?: number;
@@ -57,28 +68,24 @@ export async function loginSlack(input: {
     ...(input.fetch ? { fetch: input.fetch } : {}),
   });
   writeSecretFile(join(pawsPaths(input.home).secretsDir, "slack-app.json"), JSON.stringify(app));
-  writeSecretFile(
-    join(pawsPaths(input.home).secretsDir, "slack-oauth.json"),
-    JSON.stringify(token),
-  );
+  writeSlackToken(input.db, input.home, token);
   return token;
 }
 
 export function createSlackAuth(input: { home: string; db: Database; fetch?: SlackFetch }) {
   return {
     async ensureFresh(): Promise<string> {
-      const current = readSlackToken(input.home);
+      const current = readSlackToken(input.db, input.home);
       if (current === null) throw new Error("Run paws login slack.");
       if (current.expiresAtMs === null || current.expiresAtMs > Date.now() + 60_000)
         return current.accessToken;
       const app = readSlackApp(input.home);
       if (app === null) throw new Error("Run paws login slack.");
-      const path = join(pawsPaths(input.home).secretsDir, "slack-oauth.json");
       const saved = await refreshCredential({
         db: input.db,
-        identity: path,
-        read: () => readSlackToken(input.home),
-        write: (token) => writeSecretFile(path, JSON.stringify(token)),
+        identity: "slack",
+        read: () => readSlackToken(input.db, input.home),
+        write: (token) => writeSlackToken(input.db, input.home, token),
         refresh: (token, signal) =>
           requestSlackToken(
             app,
@@ -147,7 +154,10 @@ export async function requestSlackToken(
 }
 
 function readJson<T>(home: string, name: string): T | null {
-  const text = readSecretFile(join(pawsPaths(home).secretsDir, name));
+  return parseJson<T>(readSecretFile(join(pawsPaths(home).secretsDir, name)));
+}
+
+function parseJson<T>(text: string | null): T | null {
   if (text === null) return null;
   try {
     const value: unknown = JSON.parse(text);

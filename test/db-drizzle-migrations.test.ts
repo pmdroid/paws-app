@@ -14,7 +14,9 @@ import { tempHome } from "./helpers";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const NOW = new Date("2026-11-07T03:04:05.678Z");
-const SHIPPED = readdirSync(MIGRATIONS_FOLDER).filter((name) => name.endsWith(".sql"));
+const SHIPPED = readdirSync(MIGRATIONS_FOLDER)
+  .filter((name) => name.endsWith(".sql"))
+  .sort();
 
 function legacyDatabase(home: string) {
   const path = join(home, "paws.db");
@@ -71,14 +73,14 @@ describe("drizzle-kit migrations", () => {
   });
 
   test("the schema has no change without a migration", () => {
-    expect(drizzleKit(tempHome())).toEqual(SHIPPED);
+    expect(drizzleKit(tempHome()).sort()).toEqual(SHIPPED);
   });
 
   test("a migration drizzle-kit generates after the shipped ones applies on a fresh database", () => {
     const home = tempHome();
     const out = join(home, "drizzle");
     const probe = `${String(SHIPPED.length).padStart(4, "0")}_probe.sql`;
-    expect(drizzleKit(home, "--custom", "--name=probe")).toEqual([...SHIPPED, probe]);
+    expect(drizzleKit(home, "--custom", "--name=probe").sort()).toEqual([...SHIPPED, probe]);
     writeFileSync(join(out, probe), "ALTER TABLE work_item ADD COLUMN probe TEXT;\n");
 
     const db = openDatabase(":memory:");

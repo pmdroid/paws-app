@@ -178,7 +178,7 @@ describe("config", () => {
       linearTeam: "ENG",
       linearTeamId: "team_eng",
       linearViewerId: "viewer_1",
-      linearSecret: "secrets/linear-oauth.json",
+      linearSecret: "secrets/acme-linear.json",
       linearClientFile: null,
       githubAuth: "app",
       repo: "pmdroid/paws-demo",
@@ -188,11 +188,11 @@ describe("config", () => {
     });
     mkdirSync(paths.secretsDir, { recursive: true });
     writeFileSync(
-      join(paths.secretsDir, "linear-oauth.json"),
+      join(paths.secretsDir, "acme-linear.json"),
       JSON.stringify({ accessToken: "lin_oauth_from_file" }),
       { mode: 0o600 },
     );
-    chmodSync(join(paths.secretsDir, "linear-oauth.json"), 0o600);
+    chmodSync(join(paths.secretsDir, "acme-linear.json"), 0o600);
 
     const parsed = loadConfigFile(paths.configFile);
     expect(parsed.linearTeam).toBe("ENG");
@@ -205,7 +205,8 @@ describe("config", () => {
       PAWS_CHECKOUT: "/elsewhere",
     });
     expect(runtime.configured).toBe(true);
-    expect(runtime.linearAccessToken).toBe("lin_oauth_from_file");
+    expect(runtime.linearAccessToken).toBeNull();
+    expect(runtime.linearTokenFile).toBe(join(paths.secretsDir, "acme-linear.json"));
     expect(runtime.repos).toEqual(["pmdroid/paws-demo"]);
     expect(runtime.githubAuth).toBe("app");
     expect(runtime.maxAwakeMs).toBe(1_000);

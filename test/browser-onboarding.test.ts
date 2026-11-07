@@ -102,7 +102,7 @@ test("a fresh HTTPS instance refuses sign-in until its organization is configure
   expect(paws.db.query("SELECT 1 FROM workspace").get()).toBeNull();
 });
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createBrowserOnboarding } from "../src/onboarding";
 import {
   migrate,
@@ -265,10 +265,8 @@ test("browser sign-in creates an owner only in the operator's configured organiz
     expect(scene.state.installed).toBe(1);
     const workspace = workspaceForOrganization(scene.db, "org")!;
     expect(listWorkspaceMembers(scene.db, workspace.id)[0]?.role).toBe("admin");
-    expect(readStoredToken(join(scene.home, "secrets/linear-oauth.json"))?.accessToken).toBe(
-      "fixture-app",
-    );
-    expect(readFileSync(join(scene.home, "secrets/linear-oauth.json"), "utf8")).not.toContain(
+    expect(readStoredToken(scene.db, join(scene.home, "secrets"))?.accessToken).toBe("fixture-app");
+    expect(JSON.stringify(scene.db.query("SELECT * FROM credential").all())).not.toContain(
       "fixture-app",
     );
     const again = await scene.request(
@@ -309,7 +307,7 @@ test("an unrelated Linear admin cannot claim a fresh instance", async () => {
     );
     expect(scene.db.query("SELECT 1 FROM browser_installation_request").get()).toBeNull();
     expect(scene.db.query("SELECT 1 FROM workspace").get()).toBeNull();
-    expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
+    expect(readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
     expect(install.response.headers.get("set-cookie")).toBeNull();
     expect(scene.state.installed).toBe(0);
   } finally {
@@ -328,7 +326,7 @@ test("installation rechecks the operator organization after a restart", async ()
       install.cookie,
     );
     expect(response.headers.get("location")).toBe("/dashboard/?onboarding=workspace-mismatch");
-    expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
+    expect(readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
     expect(scene.db.query("SELECT 1 FROM workspace").get()).toBeNull();
     expect(scene.state.exchanges).toBe(1);
     expect(scene.state.installed).toBe(0);
@@ -351,7 +349,7 @@ test("a concurrently bound foreign workspace prevents credential writes", async 
       install.cookie,
     );
     expect(response.headers.get("location")).toBe("/dashboard/?onboarding=workspace-mismatch");
-    expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
+    expect(readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
     expect(existsSync(join(scene.home, "secrets/linear-client.json"))).toBe(false);
     expect(workspaceForOrganization(scene.db, "org")).toBeNull();
     expect(scene.state.installed).toBe(0);
@@ -413,7 +411,7 @@ for (const failure of [
         failure === "cookie" ? "" : install.cookie,
       );
       expect(response.headers.get("location")).toContain("/dashboard/?onboarding=");
-      expect(existsSync(join(scene.home, "secrets/linear-oauth.json"))).toBe(false);
+      expect(readStoredToken(scene.db, join(scene.home, "secrets"))).toBeNull();
       expect(workspaceForOrganization(scene.db, "org")).toBeNull();
       expect(scene.state.installed).toBe(0);
     } finally {
@@ -469,7 +467,7 @@ for (const concurrentRevocation of [false, true]) {
       expect(getLinearSessionAccess(scene.db, "session")).toBe(
         concurrentRevocation ? "revoked" : "allowed",
       );
-      expect(readStoredToken(join(scene.home, "secrets/linear-oauth.json"))?.accessToken).toBe(
+      expect(readStoredToken(scene.db, join(scene.home, "secrets"))?.accessToken).toBe(
         concurrentRevocation ? "fixture-app" : "fixture-reconnected-app",
       );
       expect(workspaceForOrganization(scene.db, "org")?.id).toBe(workspace.id);

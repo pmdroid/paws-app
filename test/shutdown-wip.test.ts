@@ -16,8 +16,7 @@ import {
 } from "../src/db";
 import { JOB_KIND } from "../src/core";
 import { startPaws } from "../src/index";
-import { linearTokenPath, writeStoredToken } from "../src/linear";
-import { tempHome } from "./helpers";
+import { tempHome, storeLinearToken } from "./helpers";
 
 /** App mode commits WIP only under a run commit policy. */
 const APP_POLICY = {
@@ -77,7 +76,7 @@ describe("shutdown WIP", () => {
       "implementer",
       "hang",
     ].join(" ");
-    writeStoredToken(linearTokenPath(join(home, "secrets")), {
+    storeLinearToken(home, {
       accessToken: "synthetic-linear-token",
       refreshToken: "synthetic-refresh-token",
       expiresAtMs: Date.now() + 600_000,

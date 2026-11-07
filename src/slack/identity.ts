@@ -11,14 +11,14 @@ export function createSlackIdentityReads(options: {
   db: Database;
   fetch?: SlackFetch;
 }): SlackIdentityReads | null {
-  const installation = readSlackToken(options.home);
+  const installation = readSlackToken(options.db, options.home);
   if (installation === null) return null;
   const auth = createSlackAuth(options);
   return {
     teamId: installation.teamId,
     async lookup(email, signal) {
       const token = await auth.ensureFresh();
-      if (readSlackToken(options.home)?.teamId !== installation.teamId)
+      if (readSlackToken(options.db, options.home)?.teamId !== installation.teamId)
         throw new Error("Slack installation changed.");
       const url = new URL("https://slack.com/api/users.lookupByEmail");
       url.searchParams.set("email", email);

@@ -29,9 +29,11 @@ export type RuntimeConfig = {
   linearTeam: string | null;
   linearTeamId: string | null;
   linearViewerId: string | null;
-  /** OAuth access token for agent-session mode. Not logged. */
+  /** `LINEAR_ACCESS_TOKEN`, stored once when no token is in the database. Not logged. */
   linearAccessToken: string | null;
   linearRefreshToken: string | null;
+  /** Token file an older install wrote; startup imports it once. */
+  linearTokenFile: string;
   linearClientId: string | null;
   linearClientSecret: string | null;
   linearOrganizationId: string | null;
@@ -71,8 +73,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     }
   }
 
-  const secrets = readLinearSecrets(env.home, file);
-  const linearAccessToken = optional(source, "LINEAR_ACCESS_TOKEN") ?? secrets.accessToken;
+  const secrets = readLinearClient(env.home, file);
   const githubAuth: GitHubConfigAuth = "app";
 
   return {
@@ -86,8 +87,9 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
       optional(source, "LINEAR_APP_USER_ID") ??
       optional(source, "LINEAR_VIEWER_ID") ??
       file.linearViewerId,
-    linearAccessToken,
-    linearRefreshToken: optional(source, "LINEAR_REFRESH_TOKEN") ?? secrets.refreshToken,
+    linearAccessToken: optional(source, "LINEAR_ACCESS_TOKEN"),
+    linearRefreshToken: optional(source, "LINEAR_REFRESH_TOKEN"),
+    linearTokenFile: secretPath(env.home, file.linearSecret ?? "secrets/linear-oauth.json")!,
     linearClientId: optional(source, "LINEAR_CLIENT_ID") ?? secrets.clientId,
     linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
     linearOrganizationId: optional(source, "LINEAR_ORGANIZATION_ID"),
@@ -108,19 +110,12 @@ function resolveWebhooks(file: PawsConfigFile, source: EnvSource): boolean {
   return file.webhooks === true;
 }
 
-type LinearSecrets = {
-  accessToken: string | null;
-  refreshToken: string | null;
-  clientId: string | null;
-  clientSecret: string | null;
-};
-
-function readLinearSecrets(home: string, file: PawsConfigFile): LinearSecrets {
+function readLinearClient(
+  home: string,
+  file: PawsConfigFile,
+): { clientId: string | null; clientSecret: string | null } {
   const client = readJson(home, file.linearClientFile ?? "secrets/linear-client.json");
-  const oauth = readJson(home, file.linearSecret ?? "secrets/linear-oauth.json");
   return {
-    accessToken: jsonString(oauth, "accessToken"),
-    refreshToken: jsonString(oauth, "refreshToken"),
     clientId: jsonString(client, "clientId"),
     clientSecret: jsonString(client, "clientSecret"),
   };

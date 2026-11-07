@@ -20,7 +20,7 @@ import { validate } from "../closeout-spec";
 import { latestGitHubDelivery, linearWebhookWarning, type LinearWebhookWarning } from "../db";
 import { createFetchGitHubClient, mintInstallationToken, signAppJwt } from "../github";
 import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../install";
-import { createLinearClient } from "../linear";
+import { createLinearClient, readStoredToken } from "../linear";
 import { doctorAgentProfiles } from "./agents";
 
 /** Core REST calls left for the App installation. Below this, doctor reports no headroom. */
@@ -143,6 +143,20 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
   };
 }
 
+function storedLinearToken(runtime: ReturnType<typeof loadRuntime>): string | null {
+  const secretsDir = pawsPaths(runtime.env.home).secretsDir;
+  const stored = readPawsDb(runtime.env.home, (db) => readStoredToken(db, secretsDir));
+  if (stored) return stored.accessToken;
+  try {
+    const file: unknown = JSON.parse(readSecretFile(runtime.linearTokenFile, false) ?? "null");
+    const token = (file as { accessToken?: unknown } | null)?.accessToken;
+    return typeof token === "string" && token.length > 0 ? token : null;
+  } catch (error) {
+    journalCaught(error, "probe.storedLinearToken.parse", null);
+    return null;
+  }
+}
+
 function readPawsDb<T>(home: string, read: (db: Database) => T): T | null {
   const file = pawsPaths(home).db;
   if (!existsSync(file)) return null;
@@ -252,7 +266,7 @@ async function linearFact(runtime: ReturnType<typeof loadRuntime>): Promise<Prob
     teamFound: false,
     error: null,
   };
-  const credential = runtime.linearAccessToken;
+  const credential = runtime.linearAccessToken ?? storedLinearToken(runtime);
   if (credential === null) return empty;
   const token = async () => credential;
   try {

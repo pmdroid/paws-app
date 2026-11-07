@@ -89,7 +89,7 @@ export function openLinear(options: {
   const accessAllowed = options.isAuthorized ?? (() => true);
   const auth = createLinearAuth({
     db: options.db,
-    tokenPath: linearTokenPath(options.secretsDir),
+    secretsDir: options.secretsDir,
     clientId: settings.clientId,
     clientSecret: settings.clientSecret,
     bootstrapAccessToken: settings.accessToken,

@@ -22,12 +22,10 @@ import { intakeDelegatedIssue } from "../src/intake";
 import {
   createFakeTracker,
   createInboxStore,
-  linearTokenPath,
   openLinear,
   parseAgentEvent,
   parseLinearIssueClosed,
   startCatchUpPoller,
-  writeStoredToken,
   type AcceptedLinearEvent,
   type IntakeSighting,
 } from "../src/linear";
@@ -39,7 +37,7 @@ import {
 } from "../src/loop";
 import { startServer } from "../src/server";
 import { createLiveStatusProvider } from "../src/dashboard";
-import { tempHome } from "./helpers";
+import { tempHome, storeLinearToken } from "./helpers";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -102,7 +100,7 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
       .map((item) => item.title);
   expect(needsPerson()).toEqual(["Task"]);
 
-  writeStoredToken(linearTokenPath(join(f.home, "secrets")), {
+  storeLinearToken(f.home, {
     accessToken: "fake-access",
     refreshToken: "fake-refresh",
     expiresAtMs: Date.now() + 600_000,

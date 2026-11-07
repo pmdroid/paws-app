@@ -1,4 +1,5 @@
 import "../quiet-journal";
+import { storeLinearToken } from "../helpers";
 import { join } from "node:path";
 import {
   migrate,
@@ -7,7 +8,6 @@ import {
   revokeLinearInstallation,
 } from "../../src/db";
 import { startPaws } from "../../src/index";
-import { linearTokenPath, writeStoredToken } from "../../src/linear";
 
 const home = process.argv[2]!;
 const db = openDatabase(join(home, "paws.db"));
@@ -16,7 +16,7 @@ const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app"
 recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
 revokeLinearInstallation(db, { ...scope, eventKey: "revoked", createdAtMs: 2 });
 db.close();
-writeStoredToken(linearTokenPath(join(home, "secrets")), {
+storeLinearToken(home, {
   accessToken: "fake-access",
   refreshToken: "fake-refresh",
   expiresAtMs: 0,

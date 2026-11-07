@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { candidateRef, mirrorPath, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import { legacyMigrate, migrate, openDatabase } from "../src/db";
 import type { Database } from "bun:sqlite";
+import { writeStoredToken, type StoredLinearToken } from "../src/linear";
 
 export function tempHome(): string {
   return mkdtempSync(join(tmpdir(), "paws-"));
@@ -150,4 +151,16 @@ export function cloneRunner(
       git(["--git-dir", mirror, "fetch", "-q", tree, `+HEAD:${ref}`]);
     return result;
   };
+}
+
+export function storeLinearToken(home: string, token: StoredLinearToken): void {
+  const path = join(home, "paws.db");
+  mkdirSync(dirname(path), { recursive: true });
+  const db = existsSync(path) ? openDatabase(path) : migratedDatabase(path);
+  try {
+    migrate(db);
+    writeStoredToken(db, join(home, "secrets"), token);
+  } finally {
+    db.close();
+  }
 }

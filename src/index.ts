@@ -35,7 +35,7 @@ import {
   readStoredFindings,
   type ProbesCommand,
 } from "./probe-collector";
-import { readSecretFile } from "./credentials";
+import { importCredentialFile, readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
 import {
   ArtifactRejectedError,
@@ -160,6 +160,7 @@ import {
   linearCallerFor,
   linearItem,
   openLinear,
+  importLinearTokenFile,
   readStoredToken,
   parseLinearAdministration,
   parseLinearIssueClosed,
@@ -390,6 +391,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   setAsideLegacyDatabase(paths.db);
   const db = openDatabase(paths.db);
   migrate(db);
+  importLinearTokenFile(db, paths.secretsDir, runtime.linearTokenFile);
+  importCredentialFile(db, paths.secretsDir, "slack", join(paths.secretsDir, "slack-oauth.json"));
   clearUsagePauses(db);
   const linearRevoked = () =>
     isLinearAppRevoked(db, {
@@ -399,8 +402,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (
     publicDashboard &&
     (linearRevoked() ||
-      (runtime.linearAccessToken === null &&
-        readStoredToken(join(paths.secretsDir, "linear-oauth.json")) === null))
+      (runtime.linearAccessToken === null && readStoredToken(db, paths.secretsDir) === null))
   ) {
     const reconnect = linearRevoked();
     db.close();
@@ -2347,7 +2349,13 @@ if (import.meta.main) {
     try {
       if (argv.length !== 2) throw new Error("usage: paws login slack");
       const runtime = loadRuntime(process.env);
+      const paths = pawsPaths(runtime.env.home);
+      ensureLayout(paths);
+      setAsideLegacyDatabase(paths.db);
+      const db = openDatabase(paths.db);
+      migrate(db);
       await loginSlack({
+        db,
         home: runtime.env.home,
         env: process.env,
         onAuthorize(url) {
