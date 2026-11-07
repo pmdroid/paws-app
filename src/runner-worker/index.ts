@@ -1299,9 +1299,6 @@ export async function executeRunnerCommand(
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : (talk?.itemId ?? job.executionId),
       runId: job.executionId,
-      ...(talk
-        ? { timeoutMs: Math.max(1, command.expiresAt - Date.now() - CONVERSATION_RESULT_MARGIN_MS) }
-        : {}),
       prompt: resumed
         ? RESUME_PROMPT
         : (conversationPrompt ??
@@ -1858,11 +1855,19 @@ export async function executeRunnerCommand(
         ? watchCheckpoints(watch.signal, halt, turnDone)
         : undefined;
     const questionEndsTurn = runCommand?.questionEndsTurn === true;
+    const lifetime = new AbortController();
+    const lifetimeTimer = talk
+      ? setTimeout(
+          () => lifetime.abort(),
+          Math.max(0, command.expiresAt - Date.now() - CONVERSATION_RESULT_MARGIN_MS),
+        )
+      : undefined;
     const current: RunAgentOptions =
-      handover || checkpoints || questionEndsTurn
+      handover || checkpoints || questionEndsTurn || talk
         ? {
             ...agent,
             signal: AbortSignal.any([
+              ...(talk ? [lifetime.signal] : []),
               ...(handover ? [interrupt.signal] : []),
               ...(checkpoints ? [halt.signal] : []),
               ...(questionEndsTurn ? [questionEnd.signal] : []),
@@ -1910,6 +1915,9 @@ export async function executeRunnerCommand(
     waits.stop();
     // A turn halted for a stop leaves its work in the stop checkpoint, never in a candidate.
     if (halt.signal.aborted) run = { ...run, cancelled: true, interrupted: false };
+    clearTimeout(lifetimeTimer);
+    if (lifetime.signal.aborted && !options.signal?.aborted)
+      run = { ...run, stopReason: "timeout", timedOut: true, cancelled: false, interrupted: false };
     watch.abort();
     const interrupted = (await handover) === true;
     // A checkpoint in progress finishes before the turn's own commit and result.
