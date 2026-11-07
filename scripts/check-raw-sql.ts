@@ -5,6 +5,8 @@ const ALLOWED_FILES = new Set(["src/db/migrate.ts", "src/db/open.ts"]);
 const TEST_FILE = /(^|\/)(test|fixtures)\/|\.test\.tsx?$/;
 const RECEIVER = /^(?:db|database|\w*Db|\w*Database)$/;
 const OPENED = /\b(?:const|let)\s+(\w+)\s*=\s*(?:new Database|openDatabase)\(/g;
+const TYPED_DB = /\b(\w+)\s*:\s*Db\b/g;
+const TYPED_DATABASE = /\b(\w+)\s*:\s*Database\b/g;
 const CALL =
   /(?<![\w$.])((?:[\w$]+\.)*([\w$]+)\s*\.(?:query|run|prepare|exec))\s*(?:<[^()]*?>\s*)?\(\s*(sql`)?/g;
 const REGEX_BEFORE = /(?:[(,=:[!&|?{};+\-*%<>~^]|^|\breturn)$/;
@@ -79,11 +81,16 @@ export function rawCalls(path: string, source: string): RawCall[] {
   if (TEST_FILE.test(path) || ALLOWED_FILES.has(path)) return [];
   const code = maskCode(source);
   const opened = new Set([...code.matchAll(OPENED)].map((match) => match[1]!));
+  const databases = new Set([...code.matchAll(TYPED_DATABASE)].map((match) => match[1]!));
+  const dbs = new Set(
+    [...code.matchAll(TYPED_DB)].map((match) => match[1]!).filter((name) => !databases.has(name)),
+  );
   const lines = source.split("\n");
   const calls: RawCall[] = [];
   for (const match of code.matchAll(CALL)) {
     const [, call, name, drizzleSql] = match;
     if (!RECEIVER.test(name!) && !opened.has(name!)) continue;
+    if (dbs.has(name!) && !opened.has(name!)) continue;
     if (drizzleSql && path.startsWith("src/db/")) continue;
     const start = code.slice(0, match.index).split("\n").length;
     const method = start + call!.split("\n").length - 1;

@@ -37,6 +37,18 @@ test("a typed raw query fails the check", () => {
   expect(result.stderr).toContain("src/loop/typed.ts:2: raw bun:sqlite call");
 });
 
+test("db.run() on a Db is Drizzle, and on a Database in the same file it is still raw", () => {
+  expect(
+    rawCalls("src/db/converted.ts", "export const f = (db: Db) => db.run(function* (q) {});\n"),
+  ).toEqual([]);
+  expect(
+    rawCalls(
+      "src/db/mixed.ts",
+      'export const f = (db: Db) => db.run(steps);\nexport const g = (db: Database) => db.run("DELETE FROM x");\n',
+    ).map((call) => call.line),
+  ).toEqual([1, 2]);
+});
+
 test("calls inside comments, strings and templates are not database access", () => {
   const source = [
     '// db.query("SELECT 1");',
