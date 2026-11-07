@@ -35,12 +35,7 @@ import {
   readStoredFindings,
   type ProbesCommand,
 } from "./probe-collector";
-import {
-  envelopeSubkey,
-  importCredentialFile,
-  loadSecretKey,
-  readSecretFile,
-} from "./credentials";
+import { envelopeSubkey, importCredentialFile, loadSecretKey, readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
 import {
   ArtifactRejectedError,
