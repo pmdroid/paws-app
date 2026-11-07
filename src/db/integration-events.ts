@@ -1,13 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { asc, desc, lt } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
+import type { githubDelivery } from "./schema";
 
-export type IntegrationEvent = {
-  deliveryId: string;
-  event: string;
-  payload: string;
-  receivedAt: number;
-};
+export type IntegrationEvent = typeof githubDelivery.$inferSelect;
 
 const GITHUB_DELIVERY_KEEP_MS = 3 * 24 * 60 * 60 * 1000;
 
