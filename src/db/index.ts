@@ -1296,9 +1296,14 @@ export {
 } from "./runner-work";
 export {
   forgetRunnerFileObject,
+  forgetRunnerFileObjectSteps,
   prunableRunnerFileObjects,
+  prunableRunnerFileObjectsSteps,
   recordRunnerFileObject,
+  recordRunnerFileObjectSteps,
   runnerCommandRuns,
+  runnerCommandRunsSteps,
   runnerFileObjectNames,
+  runnerFileObjectNamesSteps,
   type RunnerFileObject,
 } from "./runner-file-objects";
