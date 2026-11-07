@@ -70,6 +70,14 @@ export {
   type LinearCommentRecord,
   type LinearCommentState,
   type LinearCommentVia,
+  getLinearCommentSteps,
+  recordLinearCommentSteps,
+  settleLinearCommentsSteps,
+  queueLinearCommentSteps,
+  markLinearCommentsDeliveredSteps,
+  receivedLinearCommentsSteps,
+  pendingLinearCommentsSteps,
+  linearCommentAuthorSteps,
 } from "./linear-comments";
 export {
   clearPullCiFailures,
@@ -640,6 +648,23 @@ export {
   linearSessionClientId,
   linearSessionInWorkspace,
   sessionActiveRuns,
+  getLinearSessionSteps,
+  ensureLinearSessionSteps,
+  bindLinearSessionTaskSteps,
+  activateLinearItemSteps,
+  workItemForSessionSteps,
+  delegatedLinearUserIdSteps,
+  recordLinearTurnSteps,
+  listPendingLinearTurnsSteps,
+  applyLinearTurnsSteps,
+  getLinearSessionGenerationSteps,
+  listLinearTurnsForItemSteps,
+  getLinearTurnGenerationSteps,
+  discardLinearTurnsSteps,
+  releaseIdleSessionItemSteps,
+  linearSessionClientIdSteps,
+  linearSessionInWorkspaceSteps,
+  sessionActiveRunsSteps,
 } from "./linear-sessions";
 
 export {
@@ -749,6 +774,10 @@ export {
   linearSessionsForUndelegatedIssue,
   requireLinearTaskDelegation,
   type LinearTaskDelegation,
+  getLinearTaskDelegationSteps,
+  requireLinearTaskDelegationSteps,
+  linearSessionsForDelegatedTeamsSteps,
+  linearSessionsForUndelegatedIssueSteps,
 } from "./linear-delegation";
 
 export { assertLinearSessionCleanup, blockLinearSessionCleanup } from "./session-cleanup";
