@@ -490,6 +490,30 @@ function runScript(scriptPath: string): Promise<{ status: number | null; stdout:
   });
 }
 
+test("a run still loading its policy keeps the session unsettled", async () => {
+  const root = temp();
+  const repo = join(root, "repo");
+  initRepo(repo);
+  writeTestPolicy(repo);
+  spawnSync("git", ["add", "."], { cwd: repo });
+  spawnSync("git", ["commit", "-m", "policy"], { cwd: repo });
+  writeFileSync(join(repo, "src.txt"), "change\n");
+  const session = createCloseoutSession(repo, {
+    policy: async () => {
+      await Bun.sleep(300);
+      return workspacePolicyFiles(repo);
+    },
+  });
+  let ran = false;
+  const run = session.run("test").then((answer) => {
+    ran = true;
+    return answer;
+  });
+  await session.settled();
+  expect(ran).toBe(true);
+  expect(await run).toBe("test passed.");
+});
+
 test("the turn-end report waits for a check the agent stopped waiting for", async () => {
   const root = temp();
   const repo = join(root, "repo");

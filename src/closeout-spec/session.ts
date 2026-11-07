@@ -344,18 +344,20 @@ export function createCloseoutSession(
         last = { report: boundedReport(report), head: checkedHead };
         return last.report;
       }),
-    run: async (id) => {
+    run: (id) => {
       const since = halt.finished;
-      const ready = await exclusive(async () => {
-        const prepared = await prepare();
-        listed = prepared;
-        if (prepared.kind === "blocked") return prepared.message;
-        if (prepared.kind === "empty") return `No closeout check ${id}. Call get_closeout.`;
-        if (options.rulesFirst) await judgeRules(prepared);
-        return ruleBreak(prepared) ?? prepared;
-      });
-      if (typeof ready === "string") return ready;
-      const run = runId(workspace, ready, memory, id, options, once, { halt, since });
+      const run = (async () => {
+        const ready = await exclusive(async () => {
+          const prepared = await prepare();
+          listed = prepared;
+          if (prepared.kind === "blocked") return prepared.message;
+          if (prepared.kind === "empty") return `No closeout check ${id}. Call get_closeout.`;
+          if (options.rulesFirst) await judgeRules(prepared);
+          return ruleBreak(prepared) ?? prepared;
+        });
+        if (typeof ready === "string") return ready;
+        return runId(workspace, ready, memory, id, options, once, { halt, since });
+      })();
       inFlight.add(run);
       return run.finally(() => inFlight.delete(run));
     },
