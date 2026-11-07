@@ -1,0 +1,1 @@
+ALTER TABLE "instance" ADD COLUMN "stopped_at" bigint;
