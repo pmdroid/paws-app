@@ -39,6 +39,7 @@ export async function fetchRunnerCandidate(input: {
   };
   await run(["check-ref-format", `refs/heads/${input.branch}`]);
   await unchanged();
+  if (input.candidateSha === input.baseSha) return;
   try {
     await input.networkGit([
       "-C",
