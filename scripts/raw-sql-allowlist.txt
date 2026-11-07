@@ -365,15 +365,10 @@ src/db/workspace-auth.ts | db.run("INSERT INTO workspace_repository(workspace_id
 src/db/workspace-auth.ts | const mapped = db .query<{ repository: string }, string[]>( | not yet converted to Drizzle
 src/db/workspace-auth.ts | const connected = db .query<{ repositories: string }, string[]>( | not yet converted to Drizzle
 src/db/workspace-auth.ts | return db .query<{ repository: string; teamId: string }, [string]>( | not yet converted to Drizzle
-src/db/workspace-links.ts | return db .query<WorkspaceIdentityLink & { name: string; email: string }, [string]>( | not yet converted to Drizzle
-src/db/workspace-links.ts | return db .query<{ userId: string; email: string }, [string]>( | not yet converted to Drizzle
-src/db/workspace-links.ts | const changed = db.run( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | db.run( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | db.run( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | return db .query<{ id: string }, string[]>( | not yet converted to Drizzle
 src/db/workspace-revocation.ts | const members = db .query<Omit<WorkspaceMemberSummary, "openItems"> & { linearUserId: string }, [string, string]>( | not yet converted to Drizzle
-src/db/workspace-scope.ts | return db .query<{ session_id: string }, [string, string, number, string]>( | not yet converted to Drizzle
-src/db/workspace-scope.ts | const query = db.query<{ allowed: number }, string[]>( | not yet converted to Drizzle
 src/db/workspace.ts | return db .query<WorkspaceRecord, [string]>( | not yet converted to Drizzle
 src/db/workspace.ts | return db .query<WorkspaceRecord, [string]>( | not yet converted to Drizzle
 src/db/workspace.ts | db.run( | not yet converted to Drizzle

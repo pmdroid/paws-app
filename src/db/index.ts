@@ -921,7 +921,12 @@ export {
   saveWorkspaceOAuthRequest,
 } from "./workspace-auth";
 export type { WorkspaceOAuthRequest } from "./workspace-auth";
-export { sessionRepositoriesAllowed, workspaceSessionIds } from "./workspace-scope";
+export {
+  sessionRepositoriesAllowed,
+  sessionRepositoriesAllowedSteps,
+  workspaceSessionCandidatesSteps,
+  workspaceSessionIds,
+} from "./workspace-scope";
 export { resolveDashboardAlias, resolveDashboardAliasSteps } from "./dashboard-aliases";
 
 export {
@@ -931,8 +936,11 @@ export {
 } from "./linear-issue-context";
 export {
   saveWorkspaceIdentityLink,
+  saveWorkspaceIdentityLinkSteps,
   workspaceIdentityCandidates,
+  workspaceIdentityCandidatesSteps,
   workspaceIdentityLinks,
+  workspaceIdentityLinksSteps,
 } from "./workspace-links";
 export type { WorkspaceIdentityLink } from "./workspace-links";
 
