@@ -1,5 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import type { TaskMode } from "../core";
+import { orm } from "./orm";
+import { taskRequest } from "./schema";
 import { immediate } from "./tx";
 
 export type StoredTaskClassification =
@@ -16,11 +19,11 @@ export function getTaskClassification(
   db: Database,
   taskKey: string,
 ): StoredTaskClassification | null {
-  const row = db
-    .query<{ classification: string }, [string]>(
-      "SELECT classification FROM task_request WHERE task_key = ?",
-    )
-    .get(taskKey);
+  const row = orm(db)
+    .select({ classification: taskRequest.classification })
+    .from(taskRequest)
+    .where(eq(taskRequest.taskKey, taskKey))
+    .get();
   return row ? (JSON.parse(row.classification) as StoredTaskClassification) : null;
 }
 
@@ -29,10 +32,11 @@ export function saveTaskClassification(
   taskKey: string,
   classification: StoredTaskClassification,
 ): void {
-  db.run("INSERT OR IGNORE INTO task_request (task_key, classification) VALUES (?, ?)", [
-    taskKey,
-    JSON.stringify(classification),
-  ]);
+  orm(db)
+    .insert(taskRequest)
+    .values({ taskKey, classification: JSON.stringify(classification) })
+    .onConflictDoNothing()
+    .run();
 }
 
 export function resolveTaskClassification(
@@ -46,9 +50,15 @@ export function resolveTaskClassification(
       context: input.context,
       sourceItemId: input.itemId,
     });
-    db.run("UPDATE task_request SET classification = ? WHERE task_key = ?", [
-      JSON.stringify({ mode: "code", redirect: { taskKey, itemId: input.itemId } }),
-      input.taskKey,
-    ]);
+    orm(db)
+      .update(taskRequest)
+      .set({
+        classification: JSON.stringify({
+          mode: "code",
+          redirect: { taskKey, itemId: input.itemId },
+        }),
+      })
+      .where(eq(taskRequest.taskKey, input.taskKey))
+      .run();
   });
 }

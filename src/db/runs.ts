@@ -1,7 +1,10 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, gt, isNull, notExists, notInArray, sql } from "drizzle-orm";
 import { readCheckpoint } from "./checkpoint";
 import { randomUUID } from "node:crypto";
 import type { Checkpoint, RunKind, RunStatus, GitCommitPolicy } from "../core";
+import { orm } from "./orm";
+import { run as runTable, runReviewRounds, runnerWork, runnerWorkGrant, workItem } from "./schema";
 
 export type StoredRun = {
   id: string;
@@ -15,17 +18,7 @@ export type StoredRun = {
   updatedAt: number;
 };
 
-type RunSql = {
-  id: string;
-  item_id: string;
-  kind: RunKind;
-  agent: string;
-  status: RunStatus;
-  checkpoint: string | null;
-  fresh_session: number;
-  created_at: number;
-  updated_at: number;
-};
+type RunSql = typeof runTable.$inferSelect;
 
 export function insertRun(
   db: Database,
@@ -41,63 +34,62 @@ export function insertRun(
 ): StoredRun {
   const id = randomUUID();
   const checkpoint = input.checkpoint ?? null;
-  db.run(
-    `INSERT INTO run (id, item_id, kind, agent, status, checkpoint, fresh_session, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
+  orm(db)
+    .insert(runTable)
+    .values({
       id,
-      input.itemId,
-      input.kind ?? "implement",
-      input.agent ?? "cursor",
-      input.status ?? "active",
-      checkpoint === null ? null : JSON.stringify(checkpoint),
-      input.freshSession === true ? 1 : 0,
-      input.now,
-      input.now,
-    ],
-  );
+      itemId: input.itemId,
+      kind: input.kind ?? "implement",
+      agent: input.agent ?? "cursor",
+      status: input.status ?? "active",
+      checkpoint: checkpoint === null ? null : JSON.stringify(checkpoint),
+      freshSession: input.freshSession === true ? 1 : 0,
+      createdAt: input.now,
+      updatedAt: input.now,
+    })
+    .run();
   const run = getRun(db, id);
   if (run === null) throw new Error("insertRun did not store a row");
   return run;
 }
 
 export function getRun(db: Database, id: string): StoredRun | null {
-  const row = db.query<RunSql, [string]>("SELECT * FROM run WHERE id = ?").get(id);
-  return row === null ? null : mapRun(row);
+  const row = orm(db).select().from(runTable).where(eq(runTable.id, id)).get();
+  return row === undefined ? null : mapRun(row);
 }
 
 /** Every run, oldest first. Pass `itemId` to keep one work item. */
 export function listRuns(db: Database, itemId?: string): StoredRun[] {
-  if (itemId !== undefined) {
-    return db
-      .query<RunSql, [string]>("SELECT * FROM run WHERE item_id = ? ORDER BY created_at, id")
-      .all(itemId)
-      .map(mapRun);
-  }
-  return db.query<RunSql, []>("SELECT * FROM run ORDER BY created_at, id").all().map(mapRun);
+  return orm(db)
+    .select()
+    .from(runTable)
+    .where(itemId === undefined ? undefined : eq(runTable.itemId, itemId))
+    .orderBy(asc(runTable.createdAt), asc(runTable.id))
+    .all()
+    .map(mapRun);
 }
 
 export function markRun(db: Database, id: string, status: RunStatus, now: number): void {
-  db.run("UPDATE run SET status = ?, updated_at = ? WHERE id = ?", [status, now, id]);
+  orm(db).update(runTable).set({ status, updatedAt: now }).where(eq(runTable.id, id)).run();
 }
 
 /** How many review rounds the item needed by the time this run verified it. */
 export function recordReviewRounds(db: Database, id: string, rounds: number): void {
-  db.run(
-    `INSERT INTO run_review_rounds (run_id, rounds) VALUES (?, ?)
-     ON CONFLICT (run_id) DO UPDATE SET rounds = excluded.rounds`,
-    [id, rounds],
-  );
+  orm(db)
+    .insert(runReviewRounds)
+    .values({ runId: id, rounds })
+    .onConflictDoUpdate({ target: runReviewRounds.runId, set: { rounds } })
+    .run();
 }
 
 /** The review rounds recorded on the run, or null when it never verified a review. */
 export function reviewRoundsOf(db: Database, id: string): number | null {
   return (
-    db
-      .query<{ rounds: number | null }, [string]>(
-        "SELECT rounds FROM run_review_rounds WHERE run_id = ?",
-      )
-      .get(id)?.rounds ?? null
+    orm(db)
+      .select({ rounds: runReviewRounds.rounds })
+      .from(runReviewRounds)
+      .where(eq(runReviewRounds.runId, id))
+      .get()?.rounds ?? null
   );
 }
 
@@ -105,32 +97,36 @@ export function releaseRunCapacity(db: Database, runId: string, now: number): vo
   const run = getRun(db, runId);
   if (run && (run.status === "active" || run.status === "provisioning"))
     markRun(db, runId, "ended", now);
-  db.run("UPDATE runner_work SET ended_at = ? WHERE run_id = ? AND ended_at IS NULL", [now, runId]);
-  db.run("DELETE FROM runner_work_grant WHERE run_id = ?", [runId]);
+  orm(db)
+    .update(runnerWork)
+    .set({ endedAt: now })
+    .where(and(eq(runnerWork.runId, runId), isNull(runnerWork.endedAt)))
+    .run();
+  orm(db).delete(runnerWorkGrant).where(eq(runnerWorkGrant.runId, runId)).run();
 }
 
 export function saveRunResult(db: Database, id: string, resultBody: string, now: number): void {
   const run = getRun(db, id);
   if (run === null) throw new Error(`run ${id} not found`);
   const checkpoint = { ...(run.checkpoint ?? { phase: "running" }), resultBody };
-  db.run("UPDATE run SET checkpoint = ?, updated_at = ? WHERE id = ?", [
-    JSON.stringify(checkpoint),
-    now,
-    id,
-  ]);
+  orm(db)
+    .update(runTable)
+    .set({ checkpoint: JSON.stringify(checkpoint), updatedAt: now })
+    .where(eq(runTable.id, id))
+    .run();
 }
 
 function mapRun(row: RunSql): StoredRun {
   return {
     id: row.id,
-    itemId: row.item_id,
-    kind: row.kind,
+    itemId: row.itemId,
+    kind: row.kind as RunKind,
     agent: row.agent,
-    status: row.status,
+    status: row.status as RunStatus,
     checkpoint: row.checkpoint === null ? null : readCheckpoint(row.checkpoint),
-    freshSession: row.fresh_session === 1,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    freshSession: row.freshSession === 1,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -142,10 +138,15 @@ export function saveRunCommitPolicy(db: Database, id: string, policy: GitCommitP
     JSON.stringify(run.checkpoint.commitPolicy) !== JSON.stringify(policy)
   )
     throw new Error("Run attribution snapshot cannot change");
-  db.run("UPDATE run SET checkpoint=? WHERE id=?", [
-    JSON.stringify({ ...(run.checkpoint ?? { phase: "running" }), commitPolicy: policy }),
-    id,
-  ]);
+  saveCheckpoint(db, id, { ...(run.checkpoint ?? { phase: "running" }), commitPolicy: policy });
+}
+
+function saveCheckpoint(db: Database, id: string, checkpoint: Checkpoint): void {
+  orm(db)
+    .update(runTable)
+    .set({ checkpoint: JSON.stringify(checkpoint) })
+    .where(eq(runTable.id, id))
+    .run();
 }
 
 /**
@@ -161,10 +162,7 @@ export function pinRunCheckout(
   if (!run) return resolve();
   if (run.checkpoint?.checkout) return run.checkpoint.checkout;
   const checkout = resolve();
-  db.run("UPDATE run SET checkpoint=? WHERE id=?", [
-    JSON.stringify({ ...(run.checkpoint ?? { phase: "running" }), checkout }),
-    id,
-  ]);
+  saveCheckpoint(db, id, { ...(run.checkpoint ?? { phase: "running" }), checkout });
   return checkout;
 }
 
@@ -176,14 +174,29 @@ export function getItemRunCommitPolicy(db: Database, itemId: string): GitCommitP
 
 /** Existing runs eligible for a Settings profile update. A live work lease owns its snapshot. */
 export function listWaitingProfileRuns(db: Database, now: number): StoredRun[] {
-  return db
-    .query<RunSql, [number]>(
-      `SELECT r.* FROM run r JOIN work_item i ON i.id=r.item_id
-     WHERE i.state NOT IN ('queued','completed','merged','cancelled') AND i.cancel_requested=0
-       AND NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.run_id=r.id
-         AND w.ended_at IS NULL AND w.lease_until>?)
-     ORDER BY r.created_at,r.id`,
+  return orm(db)
+    .select({ run: runTable })
+    .from(runTable)
+    .innerJoin(workItem, eq(workItem.id, runTable.itemId))
+    .where(
+      and(
+        notInArray(workItem.state, ["queued", "completed", "merged", "cancelled"]),
+        eq(workItem.cancelRequested, 0),
+        notExists(
+          orm(db)
+            .select({ one: sql`1` })
+            .from(runnerWork)
+            .where(
+              and(
+                eq(runnerWork.runId, runTable.id),
+                isNull(runnerWork.endedAt),
+                gt(runnerWork.leaseUntil, now),
+              ),
+            ),
+        ),
+      ),
     )
-    .all(now)
-    .map(mapRun);
+    .orderBy(asc(runTable.createdAt), asc(runTable.id))
+    .all()
+    .map((row) => mapRun(row.run));
 }
