@@ -15,7 +15,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { git } from "../src/acp";
 import type { FakeScript } from "../src/acp/testing/script";
 import type { RunnerJob } from "../src/runner-execution";
-import { executeRunnerCommand, HANDOVER_COMMIT_MESSAGE } from "../src/runner-worker";
+import {
+  executeRunnerCommand,
+  HANDOVER_COMMIT_MESSAGE,
+  QUESTION_COMMIT_MESSAGE,
+} from "../src/runner-worker";
 import { withoutJournalTime } from "../src/runner-protocol";
 
 const linux = process.platform === "linux" && process.getuid!() !== 0;
@@ -161,6 +165,7 @@ async function fixture(agent: "claude" | "codex" | "grok" = "claude") {
     root,
     home,
     output,
+    command,
     checkout,
     baseSha,
     execute,
@@ -379,6 +384,74 @@ test.skipIf(!linux)(
     expect(readFileSync(join(clone, "draft.txt"), "utf8")).toBe("draft\n");
     const metadata = JSON.parse(readFileSync(join(context.output, "session.json"), "utf8"));
     expect(metadata.commitSha).toBe(result.candidateSha);
+  },
+);
+
+/** Paws posts the question and acknowledges it at once; the Closeout policy request gets none. */
+const POSTED = "Question posted to the team. End your turn now.";
+const postQuestion = (events: () => string) => async (requestId: string, signal: AbortSignal) =>
+  events().includes(`{"type":"closeout_policy","requestId":"${requestId}","offset":0}`)
+    ? { answer: "{}" }
+    : events().includes(`"requestId":"${requestId}"`)
+      ? { answer: POSTED }
+      : await new Promise<never>((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        );
+
+test.skipIf(!linux)(
+  "a posted question ends the turn: the worktree is committed, the session saved, and nothing after it runs",
+  async () => {
+    const context = await fixture();
+    Object.assign(context.command, { questionEndsTurn: true });
+    const result = await context.execute(
+      [
+        context.sessionFile,
+        { type: "write_file", path: join(context.checkout, "draft.txt"), content: "draft\n" },
+        {
+          type: "ask_team",
+          question: "Which color should the button be?",
+          options: ["Red", "Blue"],
+        },
+        { type: "hang" },
+      ],
+      { answer: postQuestion(context.events) },
+    );
+    expect(result.run).toMatchObject({
+      stopReason: "end_turn",
+      cancelled: false,
+      interrupted: false,
+      agentExited: true,
+    });
+    const questions = context
+      .events()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { type: string; options?: unknown })
+      .filter((event) => event.type === "question");
+    expect(questions.map((event) => event.options)).toEqual([["Red", "Blue"]]);
+    const clone = await context.published(result.candidateSha!);
+    expect(readFileSync(join(clone, "draft.txt"), "utf8")).toBe("draft\n");
+    expect(await git(["-C", clone, "log", "-1", "--format=%s"])).toContain(QUESTION_COMMIT_MESSAGE);
+    const metadata = JSON.parse(readFileSync(join(context.output, "session.json"), "utf8"));
+    expect(metadata).toMatchObject({ sessionId: SESSION, commitSha: result.candidateSha });
+  },
+);
+
+test.skipIf(!linux)(
+  "without questionEndsTurn, as on an older control plane, the agent goes on after its question",
+  async () => {
+    const context = await fixture();
+    const result = await context.execute(
+      [
+        context.sessionFile,
+        { type: "ask_team", question: "Which color should the button be?" },
+        { type: "write_file", path: join(context.checkout, "after.txt"), content: "after\n" },
+        { type: "end" },
+      ],
+      { answer: postQuestion(context.events) },
+    );
+    expect(result.run).toMatchObject({ stopReason: "end_turn", cancelled: false });
+    expect(existsSync(join(context.checkout, "after.txt"))).toBe(true);
   },
 );
 

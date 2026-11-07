@@ -103,3 +103,4 @@ export const CLOSEOUT_FAIL_FAST_RUNNER_VERSION: RunnerVersion = [0, 1, 70];
 export const AGENT_GH_RUNNER_VERSION: RunnerVersion = [0, 1, 72];
 export const AGENT_USER_RUNNER_VERSION: RunnerVersion = [0, 1, 73];
 export const PULL_REQUEST_DRAFT_RUNNER_VERSION: RunnerVersion = [0, 1, 73];
+export const QUESTION_ENDS_TURN_RUNNER_VERSION: RunnerVersion = [0, 1, 74];

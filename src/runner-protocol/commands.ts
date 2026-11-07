@@ -258,6 +258,7 @@ export const RunnerCommandSchema = z
         .optional(),
       githubRead: z.literal(true).optional(),
       ciRerun: z.literal(true).optional(),
+      questionEndsTurn: z.literal(true).optional(),
       resumeSessionId: id.optional(),
       livePreview: RunnerLivePreviewSchema.optional(),
       /** The sealed session snapshot to unpack before the agent starts, when the run moved. */

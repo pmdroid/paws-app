@@ -10,7 +10,7 @@ import { connect } from "node:net";
 const TOOL = {
   name: "ask_team",
   description:
-    "Ask the engineering team a question and wait for their answer. Use this when a product or scope decision is needed.",
+    "Ask the engineering team a question. Posting it ends your turn, and their answer arrives as your next message, so state the question completely. Use this when a product or scope decision is needed.",
   inputSchema: {
     type: "object",
     properties: {
