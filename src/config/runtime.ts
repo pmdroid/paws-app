@@ -12,6 +12,7 @@ import {
 } from "./file";
 import { pawsPaths } from "./paths";
 import { loadGitHubAppCredentials } from "./github-app";
+import { checkDatabaseUrl } from "./database";
 
 export const LINEAR_WORKSPACE_REQUIRED =
   "Paws needs a Linear workspace. Set PAWS_PUBLIC_DASHBOARD=1 with PAWS_PUBLIC_URL and the Linear app OAuth client, restart Paws, then sign in to the dashboard as a Linear workspace admin (docs/workspace-access.md).";
@@ -44,6 +45,7 @@ export type RuntimeConfig = {
   publicUrl: string | null;
   maxAwakeMs: number;
   webhooks: boolean;
+  databaseUrl: string | null;
 };
 
 export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
@@ -73,6 +75,15 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     }
   }
 
+  let databaseUrl = file.databaseUrl ?? null;
+  const databaseEnv = optional(source, "PAWS_DATABASE_URL");
+  if (databaseEnv !== null) {
+    try {
+      databaseUrl = checkDatabaseUrl(databaseEnv, "PAWS_DATABASE_URL");
+    } catch (error) {
+      configError ??= (error as Error).message;
+    }
+  }
   const secrets = readLinearClient(env.home, file);
   const githubAuth: GitHubConfigAuth = "app";
 
@@ -100,6 +111,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     maxAwakeMs:
       positiveInt(optional(source, "PAWS_MAX_AWAKE_MS")) ?? file.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS,
     webhooks: resolveWebhooks(file, source),
+    databaseUrl,
   };
 }
 
