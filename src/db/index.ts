@@ -1400,7 +1400,17 @@ export {
 } from "./runner-agents";
 export { listWaitingProfileRuns } from "./runs";
 export { halt } from "./halt";
-export { latestHumanTurn, restart, fixRounds, restartLimit, type RestartHandoff } from "./restart";
+export {
+  latestHumanTurn,
+  latestHumanTurnSteps,
+  restart,
+  fixRounds,
+  fixRoundsSteps,
+  restartLimit,
+  restartLimitSteps,
+  pendingRestartHandoffSteps,
+  type RestartHandoff,
+} from "./restart";
 export {
   ensureRestartQuestionSteps,
   holdRestartSteps,

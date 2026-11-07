@@ -1,11 +1,28 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  gte,
+  ilike,
+  inArray,
+  like,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { JOB_KIND, type RestartReason } from "../core";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { halt } from "./halt";
 import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
 import { reenqueueJob } from "./jobs";
 import { mergeCallInFlight } from "./remote-merges";
+import { orm } from "./orm";
 import { markRun } from "./runs";
+import { workItem } from "./schema";
 import { immediate } from "./tx";
 
 export type RestartHandoff = {
@@ -33,7 +50,11 @@ export function restart(
     if (!halt(db, item, handoff.now)) return null;
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
     if (item.state === "failed")
-      db.run("UPDATE work_item SET cancel_requested=0,recovery_attempts=0 WHERE id=?", [item.id]);
+      orm(db)
+        .update(workItem)
+        .set({ cancelRequested: 0, recoveryAttempts: 0 })
+        .where(eq(workItem.id, item.id))
+        .run();
     const record = {
       kind: "restart" as const,
       reason: handoff.reason,
@@ -82,43 +103,147 @@ export function restart(
 
 const FIX_REASONS: readonly string[] = ["findings", "ci", "review"];
 
+type Payload =
+  | "itemId"
+  | "reason"
+  | "handoff"
+  | "fixRound"
+  | "fixRounds"
+  | "fixRoundsAfter"
+  | "limit";
+
+/** A payload field as text: `json_extract` on SQLite, `->>` on Postgres. */
+function text(q: Q, key: Payload): SQL {
+  const { payload } = q.t.job;
+  return q.dialect === "sqlite"
+    ? sql`json_extract(${payload}, ${sql.raw(`'$.${key}'`)})`
+    : sql`(${payload}->>${sql.raw(`'${key}'`)})`;
+}
+
+/** A numeric payload field, null when it holds anything else, as `json_extract` returns it. */
+function number(q: Q, key: Payload): SQL {
+  const { payload } = q.t.job;
+  const field = sql.raw(`'${key}'`);
+  return q.dialect === "sqlite"
+    ? text(q, key)
+    : sql`(CASE WHEN jsonb_typeof(${payload}->${field}) = 'number'
+        THEN (${payload}->>${field})::float8 END)`;
+}
+
+/** A payload field is `true` or `1`. */
+function one(q: Q, key: Payload): SQL {
+  const { payload } = q.t.job;
+  return q.dialect === "sqlite"
+    ? sql`${text(q, key)} = 1`
+    : sql`COALESCE((${payload}->${sql.raw(`'${key}'`)}) IN ('true'::jsonb, '1'::jsonb), false)`;
+}
+
+export function* latestHumanTurnSteps(q: Q, itemId: string): Steps<number> {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: sql<number>`COALESCE(MAX(${job.activationId}), 0)`.mapWith(Number) })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.resume),
+          sql`${text(q, "itemId")} = ${itemId}`,
+          or(
+            (q.dialect === "sqlite" ? like : ilike)(job.jobKey, "linear-turn:%"),
+            sql`${text(q, "reason")} = 'answer'`,
+          ),
+        ),
+      ),
+  );
+  return row!.id;
+}
+
 /** Latest human retry window, ordered by activation rather than reusable row id. */
 export function latestHumanTurn(db: Database, itemId: string): number {
-  return db
-    .query<{ id: number }, [string, string]>(`
-    SELECT COALESCE(MAX(activation_id), 0) AS id FROM job
-    WHERE queue=? AND json_extract(payload,'$.itemId')=?
-      AND (job_key LIKE 'linear-turn:%' OR json_extract(payload,'$.reason')='answer')
-  `)
-    .get(JOB_KIND.resume, itemId)!.id;
+  return settled(sqliteDb(db).run((q) => latestHumanTurnSteps(q, itemId)));
+}
+
+export function* fixRoundsSteps(q: Q, itemId: string): Steps<number> {
+  const { job } = q.t;
+  const after = yield* latestHumanTurnSteps(q, itemId);
+  const row = yield* q.one(
+    q.orm
+      .select({
+        count: sql<number>`COALESCE(SUM(COALESCE(${number(q, "fixRounds")}, 1)), 0)`.mapWith(
+          Number,
+        ),
+      })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.resume),
+          sql`${text(q, "itemId")} = ${itemId}`,
+          or(sql`${text(q, "reason")} IN ('findings', 'ci', 'review')`, one(q, "fixRound")),
+          or(
+            sql`${number(q, "fixRoundsAfter")} = ${after}`,
+            and(sql`${text(q, "fixRoundsAfter")} IS NULL`, gt(job.activationId, after)),
+          ),
+        ),
+      ),
+  );
+  return row!.count;
 }
 
 /** Fix restarts since the latest human turn, including repeated uses of one job row. */
 export function fixRounds(db: Database, itemId: string): number {
-  const after = latestHumanTurn(db, itemId);
-  return db
-    .query<{ count: number }, [string, string, number, number]>(`
-    SELECT COALESCE(SUM(COALESCE(json_extract(payload,'$.fixRounds'),1)),0) AS count
-    FROM job WHERE queue=? AND json_extract(payload,'$.itemId')=?
-      AND (json_extract(payload,'$.reason') IN ('findings','ci','review')
-        OR json_extract(payload,'$.fixRound')=1)
-      AND (json_extract(payload,'$.fixRoundsAfter')=? OR
-        (json_extract(payload,'$.fixRoundsAfter') IS NULL AND activation_id>?))
-  `)
-    .get(JOB_KIND.resume, itemId, after, after)!.count;
+  return settled(sqliteDb(db).run((q) => fixRoundsSteps(q, itemId)));
+}
+
+export function* restartLimitSteps(q: Q, itemId: string): Steps<number | null> {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ limit: sql<unknown>`${number(q, "limit")}` })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.resume),
+          sql`${text(q, "itemId")} = ${itemId}`,
+          sql`${text(q, "reason")} IS NOT NULL`,
+        ),
+      )
+      .orderBy(desc(job.activationId))
+      .limit(1),
+  );
+  return typeof row?.limit === "number" ? row.limit : null;
 }
 
 /** The limit the latest restart of `itemId` recorded for its fix-attempt lines, if any. */
 export function restartLimit(db: Database, itemId: string): number | null {
-  const row = db
-    .query<{ limit: number | null }, [string, string]>(`
-    SELECT json_extract(payload, '$.limit') AS "limit" FROM job
-    WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-      AND json_extract(payload, '$.reason') IS NOT NULL
-    ORDER BY activation_id DESC LIMIT 1
-  `)
-    .get(JOB_KIND.resume, itemId);
-  return typeof row?.limit === "number" ? row.limit : null;
+  return settled(sqliteDb(db).run((q) => restartLimitSteps(q, itemId)));
+}
+
+export function* pendingRestartHandoffSteps(
+  q: Q,
+  itemId: string,
+): Steps<{ handoff?: string; limit?: number }> {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        status: job.status,
+        handoff: sql<string | null>`${text(q, "handoff")}`,
+        limit: sql<unknown>`${number(q, "limit")}`,
+        runAt: job.runAt,
+      })
+      .from(job)
+      .where(
+        and(
+          inArray(job.queue, [JOB_KIND.start, JOB_KIND.resume]),
+          sql`${text(q, "itemId")} = ${itemId}`,
+        ),
+      )
+      .orderBy(desc(job.activationId))
+      .limit(1),
+  );
+  if (!row || !row.handoff?.trim()) return {};
+  if (row.status === "done" && !(yield* turnInterruptedSinceSteps(q, itemId, row.runAt))) return {};
+  return { handoff: row.handoff, ...(typeof row.limit === "number" ? { limit: row.limit } : {}) };
 }
 
 /**
@@ -129,37 +254,39 @@ export function pendingRestartHandoff(
   db: Database,
   itemId: string,
 ): { handoff?: string; limit?: number } {
-  const row = db
-    .query<
-      { status: string; handoff: string | null; limit: number | null; runAt: number },
-      [string, string, string]
-    >(`
-    SELECT status, json_extract(payload, '$.handoff') AS handoff,
-      json_extract(payload, '$.limit') AS "limit", run_at AS runAt FROM job
-    WHERE queue IN (?, ?) AND json_extract(payload, '$.itemId') = ?
-    ORDER BY activation_id DESC LIMIT 1
-  `)
-    .get(JOB_KIND.start, JOB_KIND.resume, itemId);
-  if (!row || !row.handoff?.trim()) return {};
-  if (row.status === "done" && !turnInterruptedSince(db, itemId, row.runAt)) return {};
-  return { handoff: row.handoff, ...(typeof row.limit === "number" ? { limit: row.limit } : {}) };
+  return settled(sqliteDb(db).run((q) => pendingRestartHandoffSteps(q, itemId)));
 }
 
 const UNSETTLED_EXITS = ["lease_expired", "deferred"];
 
-function turnInterruptedSince(db: Database, itemId: string, since: number): boolean {
-  const started = db
-    .query<{ id: number | null }, [string, number]>(
-      "SELECT max(id) AS id FROM work_item_event WHERE item_id = ? AND to_state = 'running' AND at >= ?",
-    )
-    .get(itemId, since)?.id;
+function* turnInterruptedSinceSteps(q: Q, itemId: string, since: number): Steps<boolean> {
+  const { workItemEvent } = q.t;
+  const started = (yield* q.one(
+    q.orm
+      .select({ id: sql<number | null>`max(${workItemEvent.id})`.mapWith(Number) })
+      .from(workItemEvent)
+      .where(
+        and(
+          eq(workItemEvent.itemId, itemId),
+          eq(workItemEvent.toState, "running"),
+          gte(workItemEvent.at, since),
+        ),
+      ),
+  ))?.id;
   if (started == null) return false;
-  return (
-    db
-      .query(
-        `SELECT 1 FROM work_item_event WHERE item_id = ? AND from_state = 'running' AND id > ?
-         AND event NOT IN (${UNSETTLED_EXITS.map(() => "?").join(",")}) LIMIT 1`,
+  const settledExit = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(workItemEvent)
+      .where(
+        and(
+          eq(workItemEvent.itemId, itemId),
+          eq(workItemEvent.fromState, "running"),
+          gt(workItemEvent.id, started),
+          notInArray(workItemEvent.event, UNSETTLED_EXITS),
+        ),
       )
-      .get(itemId, started, ...UNSETTLED_EXITS) === null
+      .limit(1),
   );
+  return settledExit === undefined;
 }

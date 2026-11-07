@@ -117,13 +117,6 @@ src/db/repository-catalog.ts | return db .query<CatalogEntry, []>( | not yet con
 src/db/repository-catalog.ts | db.run("DELETE FROM repository_catalog"); | not yet converted to Drizzle
 src/db/repository-catalog.ts | db.run( | not yet converted to Drizzle
 src/db/repository-catalog.ts | return db .query<{ repository: string }, [string]>( | not yet converted to Drizzle
-src/db/restart.ts | db.run("UPDATE work_item SET cancel_requested=0,recovery_attempts=0 WHERE id=?", [item.id]); | not yet converted to Drizzle
-src/db/restart.ts | return db .query<{ id: number }, [string, string]>(` | not yet converted to Drizzle
-src/db/restart.ts | return db .query<{ count: number }, [string, string, number, number]>(` | not yet converted to Drizzle
-src/db/restart.ts | const row = db .query<{ limit: number | null }, [string, string]>(` | not yet converted to Drizzle
-src/db/restart.ts | const row = db .query< | not yet converted to Drizzle
-src/db/restart.ts | const started = db .query<{ id: number | null }, [string, number]>( | not yet converted to Drizzle
-src/db/restart.ts | db .query( | not yet converted to Drizzle
 src/db/retro-activity.ts | const rows = db .query<ItemRow, [string, string, number]>( | not yet converted to Drizzle
 src/db/retro-activity.ts | const findingRows = db .query< | not yet converted to Drizzle
 src/db/retro-activity.ts | runs: db .query<RetroActivityRun, [string, number]>( | not yet converted to Drizzle
