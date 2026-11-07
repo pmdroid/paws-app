@@ -71,7 +71,10 @@ export function* listCiRoundsSteps(q: Q, itemId?: string) {
       .select()
       .from(ciRound)
       .where(itemId === undefined ? undefined : eq(ciRound.itemId, itemId))
-      .orderBy(asc(ciRound.recordedAt), asc(ciRound.itemId), asc(ciRound.head)),
+      .orderBy(
+        asc(ciRound.recordedAt),
+        ...(q.dialect === "sqlite" ? [sql`rowid`] : [asc(ciRound.itemId), asc(ciRound.head)]),
+      ),
   );
   return rows.map((row): CiRound => ({
     itemId: row.itemId,
