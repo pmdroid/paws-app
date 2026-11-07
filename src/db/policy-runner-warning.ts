@@ -1,5 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, gt, isNotNull, isNull, ne } from "drizzle-orm";
 import { policyKeysAbove, runnerVersionAtLeast, type PolicyKeyNeed } from "../runner-protocol";
+import { changes, orm } from "./orm";
+import { policyRunnerWarning, runner, runnerHostStatus } from "./schema";
 
 /**
  * A repository's Closeout policy uses keys the lowest online runner is too old to know. That
@@ -16,20 +19,9 @@ export type PolicyRunnerWarning = {
   checkedAt: number;
 };
 
-type Row = {
-  repository: string;
-  policy_digest: string;
-  runner_version: string;
-  keys: string;
-  checked_at: number;
-};
-
-const map = (row: Row): PolicyRunnerWarning => ({
-  repository: row.repository,
-  policyDigest: row.policy_digest,
-  runnerVersion: row.runner_version,
+const map = (row: typeof policyRunnerWarning.$inferSelect): PolicyRunnerWarning => ({
+  ...row,
   keys: JSON.parse(row.keys) as PolicyRunnerWarning["keys"],
-  checkedAt: row.checked_at,
 });
 
 /**
@@ -38,35 +30,44 @@ const map = (row: Row): PolicyRunnerWarning => ({
  */
 export function savePolicyRunnerWarning(db: Database, warning: PolicyRunnerWarning): boolean {
   const keys = JSON.stringify(warning.keys);
-  const before = db
-    .query<Row, [string]>("SELECT * FROM policy_runner_warning WHERE repository = ?")
-    .get(warning.repository);
-  db.run(
-    `INSERT INTO policy_runner_warning (repository, policy_digest, runner_version, keys, checked_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(repository) DO UPDATE SET
-       policy_digest = excluded.policy_digest,
-       runner_version = excluded.runner_version,
-       keys = excluded.keys,
-       checked_at = excluded.checked_at`,
-    [warning.repository, warning.policyDigest, warning.runnerVersion, keys, warning.checkedAt],
-  );
+  const before = orm(db)
+    .select()
+    .from(policyRunnerWarning)
+    .where(eq(policyRunnerWarning.repository, warning.repository))
+    .get();
+  const values = {
+    policyDigest: warning.policyDigest,
+    runnerVersion: warning.runnerVersion,
+    keys,
+    checkedAt: warning.checkedAt,
+  };
+  orm(db)
+    .insert(policyRunnerWarning)
+    .values({ repository: warning.repository, ...values })
+    .onConflictDoUpdate({ target: policyRunnerWarning.repository, set: values })
+    .run();
   return (
-    before === null ||
-    before.policy_digest !== warning.policyDigest ||
-    before.runner_version !== warning.runnerVersion ||
+    before === undefined ||
+    before.policyDigest !== warning.policyDigest ||
+    before.runnerVersion !== warning.runnerVersion ||
     before.keys !== keys
   );
 }
 
 /** Every runner can apply the repository's policy. True when a warning was recorded before. */
 export function clearPolicyRunnerWarning(db: Database, repository: string): boolean {
-  return db.run("DELETE FROM policy_runner_warning WHERE repository = ?", [repository]).changes > 0;
+  return (
+    changes(
+      orm(db).delete(policyRunnerWarning).where(eq(policyRunnerWarning.repository, repository)),
+    ) > 0
+  );
 }
 
 export function listPolicyRunnerWarnings(db: Database): PolicyRunnerWarning[] {
-  return db
-    .query<Row, []>("SELECT * FROM policy_runner_warning ORDER BY repository")
+  return orm(db)
+    .select()
+    .from(policyRunnerWarning)
+    .orderBy(policyRunnerWarning.repository)
     .all()
     .map(map);
 }
@@ -105,13 +106,18 @@ function lowestVersion(versions: readonly string[]): string | null {
  * that has not reported its release is left out.
  */
 function onlineRunnerVersions(db: Database, onlineSince: number): string[] {
-  return db
-    .query<{ version: string }, [number]>(
-      `SELECT h.runner_version AS version FROM runner r
-       JOIN runner_host_status h ON h.runner_id = r.id
-       WHERE r.status <> 'revoked' AND r.revoked_at IS NULL AND r.last_seen_at > ?
-         AND h.runner_version IS NOT NULL`,
+  return orm(db)
+    .select({ version: runnerHostStatus.runnerVersion })
+    .from(runner)
+    .innerJoin(runnerHostStatus, eq(runnerHostStatus.runnerId, runner.id))
+    .where(
+      and(
+        ne(runner.status, "revoked"),
+        isNull(runner.revokedAt),
+        gt(runner.lastSeenAt, onlineSince),
+        isNotNull(runnerHostStatus.runnerVersion),
+      ),
     )
-    .all(onlineSince)
-    .map((row) => row.version);
+    .all()
+    .map((row) => row.version!);
 }

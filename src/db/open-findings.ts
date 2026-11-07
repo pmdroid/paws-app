@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
+import { orm } from "./orm";
+import { openFindings } from "./schema";
 
 /**
  * Records what was still open at the item's last published head: the line the final Linear
@@ -9,29 +12,31 @@ export function saveOpenFindings(
   db: Database,
   input: { itemId: string; head: string; line: string; now: number },
 ): void {
-  db.run(
-    `INSERT INTO open_findings (item_id, head_sha, line, recorded_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT (item_id) DO UPDATE SET
-       head_sha = excluded.head_sha, line = excluded.line, recorded_at = excluded.recorded_at`,
-    [input.itemId, input.head, input.line, input.now],
-  );
+  const values = { headSha: input.head, line: input.line, recordedAt: input.now };
+  orm(db)
+    .insert(openFindings)
+    .values({ itemId: input.itemId, ...values })
+    .onConflictDoUpdate({ target: openFindings.itemId, set: values })
+    .run();
 }
 
 export function getPublishedHead(db: Database, itemId: string): string | null {
   return (
-    db
-      .query<{ head: string }, [string]>(
-        "SELECT head_sha AS head FROM open_findings WHERE item_id = ?",
-      )
-      .get(itemId)?.head ?? null
+    orm(db)
+      .select({ head: openFindings.headSha })
+      .from(openFindings)
+      .where(eq(openFindings.itemId, itemId))
+      .get()?.head ?? null
   );
 }
 
 /** The open-findings line of the item's last published head, or null when nothing was open. */
 export function getOpenFindingsLine(db: Database, itemId: string): string | null {
-  const row = db
-    .query<{ line: string }, [string]>("SELECT line FROM open_findings WHERE item_id = ?")
-    .get(itemId);
+  const row = orm(db)
+    .select({ line: openFindings.line })
+    .from(openFindings)
+    .where(eq(openFindings.itemId, itemId))
+    .get();
   return row?.line ? row.line : null;
 }
 
