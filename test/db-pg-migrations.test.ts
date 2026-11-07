@@ -26,7 +26,9 @@ function drizzleKit(home: string) {
     { cwd: home, stdout: "pipe", stderr: "pipe" },
   );
   expect(run.exitCode).toBe(0);
-  return readdirSync(join(home, "drizzle-pg")).filter((name) => name.endsWith(".sql"));
+  return readdirSync(join(home, "drizzle-pg"))
+    .filter((name) => name.endsWith(".sql"))
+    .toSorted();
 }
 
 describe("Postgres drizzle-kit migrations", () => {
