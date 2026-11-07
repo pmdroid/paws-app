@@ -143,6 +143,7 @@ export function implementPrompt(input: {
     "Work only in this repository.",
     "History older than the last 200 commits has no file contents in this checkout, so git show or git blame on old versions can fail. Read the current files instead.",
     ...(input.hiddenPaths?.length ? [hiddenPathsPrompt(input.hiddenPaths)] : []),
+    "When this repository has `test/proofs/` and you change how an item moves through Paws (Linear, GitHub, merge, questions), add or update a proof scenario in `test/proofs/` that shows the new behaviour, and run `bun run verify:proof <name>`.",
     "For a command expected to take more than a few minutes, start it once and wait on it with your own tools, for example run it in the background and wait for it to finish, rather than polling it in a loop.",
     "When you need a product decision, call ask_team with select options when there is a closed set of choices.",
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
