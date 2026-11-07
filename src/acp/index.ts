@@ -155,6 +155,7 @@ export {
   removeCandidateRef,
   removeWorktree,
   resolveStartRef,
+  restoreCandidateRef,
   worktreeMergedInto,
   type CandidateHead,
   type Mirror,

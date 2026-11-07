@@ -22,6 +22,7 @@ import {
   type ConfirmedRemoteMerge,
   type TaskMergeSettings,
   type WorkItemRecord,
+  recordItemCandidate,
 } from "../db";
 import {
   adoptRunnerRebase,
@@ -280,7 +281,17 @@ export async function advanceMerge(
         approval: riskApproval,
       });
     },
-    rebase: (facts) => rebaseOnRunner(item, caps, lane, facts, published.signal),
+    rebase: async (facts) => {
+      const rebased = await rebaseOnRunner(item, caps, lane, facts, published.signal);
+      if (rebased.rebased && lane.ref)
+        recordItemCandidate(db, {
+          itemId: item.id,
+          sha: rebased.head,
+          branch: rebased.branch,
+          recordedAt: caps.now(),
+        });
+      return rebased;
+    },
     squash: async (head, facts) => {
       mergedPolicyError = caps.mergeResultPolicy?.(item, published.worktree, {
         base: facts.base,

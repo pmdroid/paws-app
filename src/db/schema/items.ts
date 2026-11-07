@@ -443,6 +443,16 @@ export const itemBranchState = sqliteTable(
   () => [check("item_branch_state_check_1", sql`commits >= 0`)],
 );
 
+export const itemCandidate = sqliteTable("item_candidate", {
+  itemId: text("item_id")
+    .primaryKey()
+    .notNull()
+    .references(() => workItem.id),
+  sha: text().notNull(),
+  branch: text().notNull(),
+  recordedAt: integer("recorded_at").notNull(),
+});
+
 export const itemPullRequest = sqliteTable(
   "item_pull_request",
   {

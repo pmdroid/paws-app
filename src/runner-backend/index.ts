@@ -40,6 +40,7 @@ import {
   runnerLeaseCutoff,
   clearRunnerSessionMove,
   noteRunnerSessionMove,
+  recordItemCandidate,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -1245,6 +1246,13 @@ export function createRemoteAgentRunner(options: {
                 !taskScope && input.role === "implementer" && input.networkGit
                   ? await remoteStart(scoped, input.networkGit)
                   : undefined;
+              if (!taskScope && scoped.repository && scoped.item.branchName)
+                recordItemCandidate(db, {
+                  itemId,
+                  sha: await candidateHead(scoped.repository),
+                  branch: scoped.item.branchName,
+                  recordedAt: now(),
+                });
               phase("start_commit");
               // A runner command does not carry the caller's session, so a resume replays.
               const replayed = input.resume?.replayPrompt ?? input.prompt;
@@ -2382,6 +2390,13 @@ export function createRemoteAgentRunner(options: {
               mainSha ? [baseSha!, mainSha] : [baseSha!],
               complete.candidateSha,
             );
+            work.current(assigned.runId, assigned.generation);
+            recordItemCandidate(db, {
+              itemId,
+              sha: complete.candidateSha,
+              branch: scoped.item.branchName,
+              recordedAt: now(),
+            });
             if (complete.stopReason !== "end_turn" || complete.errorMessage)
               saveCheckpoint(db, itemId, {
                 ...getWorkItem(db, itemId)?.checkpoint,

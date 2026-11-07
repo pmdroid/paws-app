@@ -2,7 +2,14 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { candidateRef, mirrorPath, type RunAgentOptions, type RunAgentResult } from "../src/acp";
-import { legacyMigrate, migrate, openDatabase } from "../src/db";
+import {
+  getRun,
+  getWorkItem,
+  legacyMigrate,
+  migrate,
+  openDatabase,
+  recordItemCandidate,
+} from "../src/db";
 import type { Database } from "bun:sqlite";
 import { writeStoredToken, type StoredLinearToken } from "../src/linear";
 
@@ -114,6 +121,7 @@ export function runnerCheckout(pawsRoot: string, itemId: string): string {
 export function cloneRunner(
   repository: { owner: string; repo: string },
   agent: (options: RunAgentOptions) => Promise<RunAgentResult>,
+  db?: Database,
 ) {
   const git = (args: string[]) => {
     const child = Bun.spawnSync(["/usr/bin/git", ...args]);
@@ -147,8 +155,17 @@ export function cloneRunner(
     ]);
     git(["-C", tree, "checkout", "-q", "--detach", "-f", "refs/paws/start"]);
     const result = await agent({ ...options, worktreePath: tree });
-    if (options.role === "implementer")
+    if (options.role === "implementer") {
       git(["--git-dir", mirror, "fetch", "-q", tree, `+HEAD:${ref}`]);
+      const item = db && getWorkItem(db, getRun(db, options.runId)?.itemId ?? "");
+      if (item)
+        recordItemCandidate(db, {
+          itemId: item.id,
+          sha: git(["--git-dir", mirror, "rev-parse", ref]),
+          branch: item.branchName,
+          recordedAt: Date.now(),
+        });
+    }
     return result;
   };
 }
