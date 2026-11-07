@@ -1,5 +1,19 @@
 import type { Database } from "bun:sqlite";
 import {
+  aliasedTable,
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  isNotNull,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
+import {
   AGENT_ACCOUNTS_RUNNER_VERSION,
   LEGACY_ACCOUNT_PREFIX,
   RUNNER_ACCOUNT_PROTOCOL,
@@ -11,9 +25,10 @@ import {
   type RunnerCommand,
   type RunnerRetroCommand,
 } from "../runner-protocol";
+import { settled, sqliteDb, type Q } from "./db";
+import { jsonText, jsonValue } from "./json-text";
 import { TEARDOWN_UNRESOLVED } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
-import { immediate } from "./tx";
 import { ulid } from "./ulid";
 
 export type AgentAccount = {
@@ -72,12 +87,6 @@ export class AgentAccountError extends Error {
   }
 }
 
-const accountColumns =
-  "id,workspace_id AS workspaceId,agent,label,legacy,enabled,created_at AS createdAt,updated_at AS updatedAt,removed_at AS removedAt";
-const bindingColumns =
-  "id,workspace_id AS workspaceId,account_id AS accountId,agent,runner_id AS runnerId,legacy,quota_scope AS quotaScope,created_at AS createdAt,removed_at AS removedAt";
-const commandColumns =
-  "command_id AS commandId,workspace_id AS workspaceId,runner_id AS runnerId,agent,account_id AS accountId,binding_id AS bindingId,named,recorded_at AS recordedAt";
 const AGENT_NAMES: Record<RunnerCodingAgent, string> = {
   claude: "Claude",
   codex: "Codex",
@@ -85,15 +94,33 @@ const AGENT_NAMES: Record<RunnerCodingAgent, string> = {
   opencode: "OpenCode",
 };
 
-type Flags<T, K extends keyof T> = Omit<T, K> & { [P in K]: number };
-const account = (row: Flags<AgentAccount, "legacy" | "enabled">): AgentAccount => ({
+const accountColumns = (q: Q) => {
+  const a = q.t.agentAccount;
+  return {
+    id: a.id,
+    workspaceId: a.workspaceId,
+    agent: a.agent,
+    label: a.label,
+    legacy: a.legacy,
+    enabled: a.enabled,
+    createdAt: a.createdAt,
+    updatedAt: a.updatedAt,
+    removedAt: a.removedAt,
+  };
+};
+const account = (
+  row: Omit<Q["t"]["agentAccount"]["$inferSelect"], "concurrency">,
+): AgentAccount => ({
   ...row,
+  agent: row.agent as RunnerCodingAgent,
   legacy: row.legacy === 1,
   enabled: row.enabled === 1,
 });
-const binding = (row: Flags<AgentAccountBinding, "legacy">): AgentAccountBinding => ({
+const binding = (row: Q["t"]["agentAccountBinding"]["$inferSelect"]): AgentAccountBinding => ({
   ...row,
+  agent: row.agent as RunnerCodingAgent,
   legacy: row.legacy === 1,
+  quotaScope: row.quotaScope as AgentAccountBinding["quotaScope"],
 });
 
 export function legacyAgentAccountId(workspaceId: string, agent: RunnerCodingAgent): string {
@@ -104,44 +131,48 @@ export function legacyAgentBindingId(runnerId: string, agent: RunnerCodingAgent)
   return `${LEGACY_ACCOUNT_PREFIX}${agent}_${runnerId}`;
 }
 
-function accountRow(db: Database, id: string): AgentAccount | null {
-  const row = db
-    .query<Flags<AgentAccount, "legacy" | "enabled">, [string]>(
-      `SELECT ${accountColumns} FROM agent_account WHERE id=?`,
-    )
-    .get(id);
+function* accountRowSteps(q: Q, id: string) {
+  const { agentAccount } = q.t;
+  const row = yield* q.one(
+    q.orm.select(accountColumns(q)).from(agentAccount).where(eq(agentAccount.id, id)),
+  );
   return row ? account(row) : null;
 }
 
-function bindingRow(db: Database, id: string): AgentAccountBinding | null {
-  const row = db
-    .query<Flags<AgentAccountBinding, "legacy">, [string]>(
-      `SELECT ${bindingColumns} FROM agent_account_binding WHERE id=?`,
-    )
-    .get(id);
+function* bindingRowSteps(q: Q, id: string) {
+  const { agentAccountBinding } = q.t;
+  const row = yield* q.one(
+    q.orm.select().from(agentAccountBinding).where(eq(agentAccountBinding.id, id)),
+  );
   return row ? binding(row) : null;
 }
 
-function runnerWorkspace(db: Database, runnerId: string) {
-  const row = db
-    .query<{ workspaceId: string; revokedAt: number | null }, [string]>(
-      "SELECT workspace_id AS workspaceId,revoked_at AS revokedAt FROM runner WHERE id=?",
-    )
-    .get(runnerId);
+function* runnerWorkspaceSteps(q: Q, runnerId: string) {
+  const { runner } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ workspaceId: runner.workspaceId, revokedAt: runner.revokedAt })
+      .from(runner)
+      .where(eq(runner.id, runnerId)),
+  );
   if (!row) throw new AgentAccountError("not_found", "Runner is unavailable");
   return row;
 }
 
-export function getAgentAccount(db: Database, workspaceId: string, id: string): AgentAccount {
-  const row = accountRow(db, id);
+export function* getAgentAccountSteps(q: Q, workspaceId: string, id: string) {
+  const row = yield* accountRowSteps(q, id);
   if (!row) throw new AgentAccountError("not_found", "Agent account is unavailable");
   if (row.workspaceId !== workspaceId)
     throw new AgentAccountError("foreign_workspace", "Agent account belongs to another workspace");
   return row;
 }
 
-export function getAgentBinding(db: Database, workspaceId: string, id: string) {
-  const row = bindingRow(db, id);
+export function getAgentAccount(db: Database, workspaceId: string, id: string): AgentAccount {
+  return settled(sqliteDb(db).run((q) => getAgentAccountSteps(q, workspaceId, id)));
+}
+
+export function* getAgentBindingSteps(q: Q, workspaceId: string, id: string) {
+  const row = yield* bindingRowSteps(q, id);
   if (!row) throw new AgentAccountError("not_found", "Agent account binding is unavailable");
   if (row.workspaceId !== workspaceId)
     throw new AgentAccountError(
@@ -151,13 +182,42 @@ export function getAgentBinding(db: Database, workspaceId: string, id: string) {
   return row;
 }
 
+export function getAgentBinding(db: Database, workspaceId: string, id: string) {
+  return settled(sqliteDb(db).run((q) => getAgentBindingSteps(q, workspaceId, id)));
+}
+
+export function* listAgentAccountsSteps(q: Q, workspaceId: string) {
+  const { agentAccount: a } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select(accountColumns(q))
+      .from(a)
+      .where(eq(a.workspaceId, workspaceId))
+      .orderBy(asc(a.agent), desc(a.legacy), asc(a.createdAt), asc(a.id)),
+  );
+  return rows.map(account);
+}
+
 export function listAgentAccounts(db: Database, workspaceId: string): AgentAccount[] {
-  return db
-    .query<Flags<AgentAccount, "legacy" | "enabled">, [string]>(
-      `SELECT ${accountColumns} FROM agent_account WHERE workspace_id=? ORDER BY agent,legacy DESC,created_at,rowid`,
-    )
-    .all(workspaceId)
-    .map(account);
+  return settled(sqliteDb(db).run((q) => listAgentAccountsSteps(q, workspaceId)));
+}
+
+export function* listAgentBindingsSteps(q: Q, workspaceId: string, accountId?: string) {
+  const { agentAccountBinding: b } = q.t;
+  if (accountId !== undefined) yield* getAgentAccountSteps(q, workspaceId, accountId);
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(b)
+      .where(
+        and(
+          eq(b.workspaceId, workspaceId),
+          accountId === undefined ? undefined : eq(b.accountId, accountId),
+        ),
+      )
+      .orderBy(asc(b.accountId), asc(b.createdAt), asc(b.id)),
+  );
+  return rows.map(binding);
 }
 
 export function listAgentBindings(
@@ -165,13 +225,50 @@ export function listAgentBindings(
   workspaceId: string,
   accountId?: string,
 ): AgentAccountBinding[] {
-  if (accountId !== undefined) getAgentAccount(db, workspaceId, accountId);
-  return db
-    .query<Flags<AgentAccountBinding, "legacy">, [string, string | null]>(
-      `SELECT ${bindingColumns} FROM agent_account_binding WHERE workspace_id=?1 AND (?2 IS NULL OR account_id=?2) ORDER BY account_id,created_at,rowid`,
-    )
-    .all(workspaceId, accountId ?? null)
-    .map(binding);
+  return settled(sqliteDb(db).run((q) => listAgentBindingsSteps(q, workspaceId, accountId)));
+}
+
+export function* ensureLegacyAgentBindingSteps(
+  q: Q,
+  runnerId: string,
+  agent: RunnerCodingAgent,
+  at: number,
+) {
+  const { agentAccount, agentAccountBinding } = q.t;
+  const { workspaceId } = yield* runnerWorkspaceSteps(q, runnerId);
+  const accountId = legacyAgentAccountId(workspaceId, agent);
+  const id = legacyAgentBindingId(runnerId, agent);
+  yield* q.exec(
+    q.orm
+      .insert(agentAccount)
+      .values({
+        id: accountId,
+        workspaceId,
+        agent,
+        label: `${AGENT_NAMES[agent]} default sign-in`,
+        legacy: 1,
+        enabled: 1,
+        createdAt: at,
+        updatedAt: at,
+      })
+      .onConflictDoNothing(),
+  );
+  yield* q.exec(
+    q.orm
+      .insert(agentAccountBinding)
+      .values({
+        id,
+        workspaceId,
+        accountId,
+        agent,
+        runnerId,
+        legacy: 1,
+        quotaScope: "unknown",
+        createdAt: at,
+      })
+      .onConflictDoNothing(),
+  );
+  return (yield* bindingRowSteps(q, id))!;
 }
 
 export function ensureLegacyAgentBinding(
@@ -180,20 +277,9 @@ export function ensureLegacyAgentBinding(
   agent: RunnerCodingAgent,
   at: number,
 ): AgentAccountBinding {
-  const { workspaceId } = runnerWorkspace(db, runnerId);
-  const accountId = legacyAgentAccountId(workspaceId, agent);
-  const id = legacyAgentBindingId(runnerId, agent);
-  return immediate(db, () => {
-    db.run(
-      "INSERT OR IGNORE INTO agent_account(id,workspace_id,agent,label,legacy,enabled,created_at,updated_at) VALUES(?,?,?,?,1,1,?,?)",
-      [accountId, workspaceId, agent, `${AGENT_NAMES[agent]} default sign-in`, at, at],
-    );
-    db.run(
-      "INSERT OR IGNORE INTO agent_account_binding(id,workspace_id,account_id,agent,runner_id,legacy,quota_scope,created_at) VALUES(?,?,?,?,?,1,'unknown',?)",
-      [id, workspaceId, accountId, agent, runnerId, at],
-    );
-    return bindingRow(db, id)!;
-  });
+  return settled(
+    sqliteDb(db).transaction((q) => ensureLegacyAgentBindingSteps(q, runnerId, agent, at)),
+  );
 }
 
 function parseLabel(value: string): string {
@@ -207,161 +293,270 @@ function parseLabel(value: string): string {
   return label;
 }
 
-function labelTaken(
-  db: Database,
+function* labelTakenSteps(
+  q: Q,
   workspaceId: string,
   agent: RunnerCodingAgent,
   label: string,
   except: string | null,
 ) {
-  return (
-    db
-      .query(
-        "SELECT 1 FROM agent_account WHERE workspace_id=? AND agent=? AND lower(label)=lower(?) AND removed_at IS NULL AND id IS NOT ?",
-      )
-      .get(workspaceId, agent, label, except) !== null
+  const { agentAccount: a } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(a)
+      .where(
+        and(
+          eq(a.workspaceId, workspaceId),
+          eq(a.agent, agent),
+          sql`lower(${a.label})=lower(${label})`,
+          isNull(a.removedAt),
+          except === null ? undefined : ne(a.id, except),
+        ),
+      ),
   );
+  return row !== undefined;
+}
+
+export function* createAgentAccountSteps(
+  q: Q,
+  input: { workspaceId: string; agent: RunnerCodingAgent; label: string; now: number },
+) {
+  const { agentAccount, workspace } = q.t;
+  const label = parseLabel(input.label);
+  if (!AGENT_NAMES[input.agent]) throw new AgentAccountError("invalid", "Unknown agent");
+  const found = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(workspace)
+      .where(eq(workspace.id, input.workspaceId)),
+  );
+  if (!found) throw new AgentAccountError("not_found", "Workspace is unavailable");
+  if (yield* labelTakenSteps(q, input.workspaceId, input.agent, label, null))
+    throw new AgentAccountError("duplicate", "Another account for this agent has that label");
+  const id = ulid(input.now);
+  yield* q.exec(
+    q.orm.insert(agentAccount).values({
+      id,
+      workspaceId: input.workspaceId,
+      agent: input.agent,
+      label,
+      legacy: 0,
+      enabled: 1,
+      createdAt: input.now,
+      updatedAt: input.now,
+    }),
+  );
+  return (yield* accountRowSteps(q, id))!;
 }
 
 export function createAgentAccount(
   db: Database,
   input: { workspaceId: string; agent: RunnerCodingAgent; label: string; now: number },
 ): AgentAccount {
-  const label = parseLabel(input.label);
-  if (!AGENT_NAMES[input.agent]) throw new AgentAccountError("invalid", "Unknown agent");
-  return immediate(db, () => {
-    if (!db.query("SELECT 1 FROM workspace WHERE id=?").get(input.workspaceId))
-      throw new AgentAccountError("not_found", "Workspace is unavailable");
-    if (labelTaken(db, input.workspaceId, input.agent, label, null))
-      throw new AgentAccountError("duplicate", "Another account for this agent has that label");
-    const id = ulid(input.now);
-    db.run(
-      "INSERT INTO agent_account(id,workspace_id,agent,label,legacy,enabled,created_at,updated_at) VALUES(?,?,?,?,0,1,?,?)",
-      [id, input.workspaceId, input.agent, label, input.now, input.now],
-    );
-    return accountRow(db, id)!;
-  });
+  return settled(sqliteDb(db).transaction((q) => createAgentAccountSteps(q, input)));
 }
 
-function liveAccount(db: Database, workspaceId: string, id: string) {
-  const row = getAgentAccount(db, workspaceId, id);
+function* liveAccountSteps(q: Q, workspaceId: string, id: string) {
+  const row = yield* getAgentAccountSteps(q, workspaceId, id);
   if (row.removedAt !== null) throw new AgentAccountError("removed", "Agent account was removed");
   return row;
+}
+
+export function* renameAgentAccountSteps(
+  q: Q,
+  input: { workspaceId: string; accountId: string; label: string; now: number },
+) {
+  const { agentAccount } = q.t;
+  const label = parseLabel(input.label);
+  const row = yield* liveAccountSteps(q, input.workspaceId, input.accountId);
+  if (yield* labelTakenSteps(q, row.workspaceId, row.agent, label, row.id))
+    throw new AgentAccountError("duplicate", "Another account for this agent has that label");
+  yield* q.exec(
+    q.orm
+      .update(agentAccount)
+      .set({ label, updatedAt: input.now })
+      .where(eq(agentAccount.id, row.id)),
+  );
+  return (yield* accountRowSteps(q, row.id))!;
 }
 
 export function renameAgentAccount(
   db: Database,
   input: { workspaceId: string; accountId: string; label: string; now: number },
 ): AgentAccount {
-  const label = parseLabel(input.label);
-  return immediate(db, () => {
-    const row = liveAccount(db, input.workspaceId, input.accountId);
-    if (labelTaken(db, row.workspaceId, row.agent, label, row.id))
-      throw new AgentAccountError("duplicate", "Another account for this agent has that label");
-    db.run("UPDATE agent_account SET label=?,updated_at=? WHERE id=?", [label, input.now, row.id]);
-    return accountRow(db, row.id)!;
-  });
+  return settled(sqliteDb(db).transaction((q) => renameAgentAccountSteps(q, input)));
+}
+
+export function* setAgentAccountEnabledSteps(
+  q: Q,
+  input: { workspaceId: string; accountId: string; enabled: boolean; now: number },
+) {
+  const { agentAccount } = q.t;
+  const row = yield* liveAccountSteps(q, input.workspaceId, input.accountId);
+  yield* q.exec(
+    q.orm
+      .update(agentAccount)
+      .set({ enabled: input.enabled ? 1 : 0, updatedAt: input.now })
+      .where(eq(agentAccount.id, row.id)),
+  );
+  return (yield* accountRowSteps(q, row.id))!;
 }
 
 export function setAgentAccountEnabled(
   db: Database,
   input: { workspaceId: string; accountId: string; enabled: boolean; now: number },
 ): AgentAccount {
-  return immediate(db, () => {
-    const row = liveAccount(db, input.workspaceId, input.accountId);
-    db.run("UPDATE agent_account SET enabled=?,updated_at=? WHERE id=?", [
-      input.enabled ? 1 : 0,
-      input.now,
-      row.id,
-    ]);
-    return accountRow(db, row.id)!;
-  });
+  return settled(sqliteDb(db).transaction((q) => setAgentAccountEnabledSteps(q, input)));
+}
+
+export function* setAgentAccountConcurrencySteps(
+  q: Q,
+  input: { workspaceId: string; accountId: string; concurrency: number | null; now: number },
+) {
+  const { agentAccount } = q.t;
+  if (
+    input.concurrency !== null &&
+    (!Number.isSafeInteger(input.concurrency) || input.concurrency < 1 || input.concurrency > 64)
+  )
+    throw new AgentAccountError("invalid", "Agent account concurrency must be 1 to 64");
+  const row = yield* liveAccountSteps(q, input.workspaceId, input.accountId);
+  yield* q.exec(
+    q.orm
+      .update(agentAccount)
+      .set({ concurrency: input.concurrency, updatedAt: input.now })
+      .where(eq(agentAccount.id, row.id)),
+  );
+  return input.concurrency;
 }
 
 export function setAgentAccountConcurrency(
   db: Database,
   input: { workspaceId: string; accountId: string; concurrency: number | null; now: number },
 ): number | null {
-  if (
-    input.concurrency !== null &&
-    (!Number.isSafeInteger(input.concurrency) || input.concurrency < 1 || input.concurrency > 64)
-  )
-    throw new AgentAccountError("invalid", "Agent account concurrency must be 1 to 64");
-  return immediate(db, () => {
-    const row = liveAccount(db, input.workspaceId, input.accountId);
-    db.run("UPDATE agent_account SET concurrency=?,updated_at=? WHERE id=?", [
-      input.concurrency,
-      input.now,
-      row.id,
-    ]);
-    return input.concurrency;
-  });
+  return settled(sqliteDb(db).transaction((q) => setAgentAccountConcurrencySteps(q, input)));
+}
+
+export function* removeAgentAccountSteps(
+  q: Q,
+  input: { workspaceId: string; accountId: string; now: number },
+) {
+  const { agentAccount, agentAccountBinding } = q.t;
+  const row = yield* liveAccountSteps(q, input.workspaceId, input.accountId);
+  if (row.legacy)
+    throw new AgentAccountError("legacy", "The default sign-in account cannot be removed");
+  yield* q.exec(
+    q.orm
+      .update(agentAccount)
+      .set({ enabled: 0, removedAt: input.now, updatedAt: input.now })
+      .where(eq(agentAccount.id, row.id)),
+  );
+  yield* q.exec(
+    q.orm
+      .update(agentAccountBinding)
+      .set({ removedAt: input.now })
+      .where(and(eq(agentAccountBinding.accountId, row.id), isNull(agentAccountBinding.removedAt))),
+  );
+  return (yield* accountRowSteps(q, row.id))!;
 }
 
 export function removeAgentAccount(
   db: Database,
   input: { workspaceId: string; accountId: string; now: number },
 ): AgentAccount {
-  return immediate(db, () => {
-    const row = liveAccount(db, input.workspaceId, input.accountId);
-    if (row.legacy)
-      throw new AgentAccountError("legacy", "The default sign-in account cannot be removed");
-    db.run("UPDATE agent_account SET enabled=0,removed_at=?,updated_at=? WHERE id=?", [
-      input.now,
-      input.now,
-      row.id,
-    ]);
-    db.run(
-      "UPDATE agent_account_binding SET removed_at=? WHERE account_id=? AND removed_at IS NULL",
-      [input.now, row.id],
-    );
-    return accountRow(db, row.id)!;
-  });
+  return settled(sqliteDb(db).transaction((q) => removeAgentAccountSteps(q, input)));
+}
+
+export function* bindAgentAccountSteps(
+  q: Q,
+  input: { workspaceId: string; accountId: string; runnerId: string; now: number },
+) {
+  const { agentAccountBinding: b } = q.t;
+  const row = yield* liveAccountSteps(q, input.workspaceId, input.accountId);
+  if (row.legacy)
+    throw new AgentAccountError("legacy", "The default sign-in account binds automatically");
+  const runner = yield* runnerWorkspaceSteps(q, input.runnerId);
+  if (runner.workspaceId !== input.workspaceId)
+    throw new AgentAccountError("foreign_workspace", "Runner belongs to another workspace");
+  if (runner.revokedAt !== null) throw new AgentAccountError("removed", "Runner was revoked");
+  const bound = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(b)
+      .where(and(eq(b.runnerId, input.runnerId), eq(b.accountId, row.id), isNull(b.removedAt))),
+  );
+  if (bound)
+    throw new AgentAccountError("duplicate", "This runner already has a binding for the account");
+  const id = ulid(input.now);
+  yield* q.exec(
+    q.orm.insert(b).values({
+      id,
+      workspaceId: row.workspaceId,
+      accountId: row.id,
+      agent: row.agent,
+      runnerId: input.runnerId,
+      legacy: 0,
+      quotaScope: "account",
+      createdAt: input.now,
+    }),
+  );
+  return (yield* bindingRowSteps(q, id))!;
 }
 
 export function bindAgentAccount(
   db: Database,
   input: { workspaceId: string; accountId: string; runnerId: string; now: number },
 ): AgentAccountBinding {
-  return immediate(db, () => {
-    const row = liveAccount(db, input.workspaceId, input.accountId);
-    if (row.legacy)
-      throw new AgentAccountError("legacy", "The default sign-in account binds automatically");
-    const runner = runnerWorkspace(db, input.runnerId);
-    if (runner.workspaceId !== input.workspaceId)
-      throw new AgentAccountError("foreign_workspace", "Runner belongs to another workspace");
-    if (runner.revokedAt !== null) throw new AgentAccountError("removed", "Runner was revoked");
-    if (
-      db
-        .query(
-          "SELECT 1 FROM agent_account_binding WHERE runner_id=? AND account_id=? AND removed_at IS NULL",
-        )
-        .get(input.runnerId, row.id)
-    )
-      throw new AgentAccountError("duplicate", "This runner already has a binding for the account");
-    const id = ulid(input.now);
-    db.run(
-      "INSERT INTO agent_account_binding(id,workspace_id,account_id,agent,runner_id,legacy,quota_scope,created_at) VALUES(?,?,?,?,?,0,'account',?)",
-      [id, row.workspaceId, row.id, row.agent, input.runnerId, input.now],
-    );
-    return bindingRow(db, id)!;
-  });
+  return settled(sqliteDb(db).transaction((q) => bindAgentAccountSteps(q, input)));
+}
+
+export function* removeAgentBindingSteps(
+  q: Q,
+  input: { workspaceId: string; bindingId: string; now: number },
+) {
+  const { agentAccountBinding: b } = q.t;
+  const row = yield* getAgentBindingSteps(q, input.workspaceId, input.bindingId);
+  if (row.legacy)
+    throw new AgentAccountError("legacy", "The default sign-in binding cannot be removed");
+  yield* q.exec(
+    q.orm
+      .update(b)
+      .set({ removedAt: sql`COALESCE(${b.removedAt},${input.now})` })
+      .where(eq(b.id, row.id)),
+  );
+  return (yield* bindingRowSteps(q, row.id))!;
 }
 
 export function removeAgentBinding(
   db: Database,
   input: { workspaceId: string; bindingId: string; now: number },
 ): AgentAccountBinding {
-  return immediate(db, () => {
-    const row = getAgentBinding(db, input.workspaceId, input.bindingId);
-    if (row.legacy)
-      throw new AgentAccountError("legacy", "The default sign-in binding cannot be removed");
-    db.run("UPDATE agent_account_binding SET removed_at=COALESCE(removed_at,?) WHERE id=?", [
-      input.now,
-      row.id,
-    ]);
-    return bindingRow(db, row.id)!;
-  });
+  return settled(sqliteDb(db).transaction((q) => removeAgentBindingSteps(q, input)));
+}
+
+export function* recordRunnerAccountCapabilitySteps(
+  q: Q,
+  runnerId: string,
+  capability: RunnerAccountCapability | undefined,
+  at: number,
+) {
+  const { runnerAccountCapability: c } = q.t;
+  if (!capability) {
+    yield* q.exec(q.orm.delete(c).where(eq(c.runnerId, runnerId)));
+    return;
+  }
+  const parsed = RunnerAccountCapabilitySchema.parse(capability);
+  const set = {
+    protocol: parsed.protocol,
+    bindings: jsonValue(q, parsed.bindings),
+    reportedAt: at,
+  };
+  yield* q.exec(
+    q.orm
+      .insert(c)
+      .values({ runnerId, ...set })
+      .onConflictDoUpdate({ target: c.runnerId, set }),
+  );
 }
 
 export function recordRunnerAccountCapability(
@@ -370,37 +565,28 @@ export function recordRunnerAccountCapability(
   capability: RunnerAccountCapability | undefined,
   at: number,
 ): void {
-  if (!capability) {
-    db.run("DELETE FROM runner_account_capability WHERE runner_id=?", [runnerId]);
-    return;
-  }
-  const parsed = RunnerAccountCapabilitySchema.parse(capability);
-  db.run(
-    `INSERT INTO runner_account_capability(runner_id,protocol,bindings,reported_at) VALUES(?,?,?,?)
-    ON CONFLICT(runner_id) DO UPDATE SET protocol=excluded.protocol,bindings=excluded.bindings,reported_at=excluded.reported_at`,
-    [runnerId, parsed.protocol, JSON.stringify(parsed.bindings), at],
-  );
+  settled(sqliteDb(db).run((q) => recordRunnerAccountCapabilitySteps(q, runnerId, capability, at)));
 }
 
-export function runnerAccountUnsupported(
-  db: Database,
+export function* runnerAccountUnsupportedSteps(
+  q: Q,
   runnerId: string,
   bindingId: string,
   agent: RunnerCodingAgent,
   options: { signIn?: boolean } = {},
-): string | null {
-  const version = db
-    .query<{ version: string | null }, [string]>(
-      "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-    )
-    .get(runnerId)?.version;
-  if (!runnerReleaseAtLeast(version, AGENT_ACCOUNTS_RUNNER_VERSION))
+) {
+  const { runnerAccountCapability: c, runnerHostStatus: h } = q.t;
+  const status = yield* q.one(
+    q.orm.select({ version: h.runnerVersion }).from(h).where(eq(h.runnerId, runnerId)),
+  );
+  if (!runnerReleaseAtLeast(status?.version, AGENT_ACCOUNTS_RUNNER_VERSION))
     return `Named agent accounts need runner ${AGENT_ACCOUNTS_RUNNER_VERSION.join(".")} or later`;
-  const row = db
-    .query<{ protocol: number; bindings: string }, [string]>(
-      "SELECT protocol,bindings FROM runner_account_capability WHERE runner_id=?",
-    )
-    .get(runnerId);
+  const row = yield* q.one(
+    q.orm
+      .select({ protocol: c.protocol, bindings: jsonText(q, c.bindings) })
+      .from(c)
+      .where(eq(c.runnerId, runnerId)),
+  );
   if (!row || row.protocol < RUNNER_ACCOUNT_PROTOCOL)
     return "The runner has not reported agent account support";
   const agentUnsupported = runnerAccountAgentUnsupported(agent);
@@ -420,10 +606,73 @@ export function runnerAccountUnsupported(
   return null;
 }
 
+export function runnerAccountUnsupported(
+  db: Database,
+  runnerId: string,
+  bindingId: string,
+  agent: RunnerCodingAgent,
+  options: { signIn?: boolean } = {},
+): string | null {
+  return settled(
+    sqliteDb(db).run((q) => runnerAccountUnsupportedSteps(q, runnerId, bindingId, agent, options)),
+  );
+}
+
 function commandAgent(command: RunnerCommand | RunnerRetroCommand): RunnerCodingAgent | null {
   if ("profile" in command) return command.profile.agent;
   if ("agent" in command) return command.agent;
   return null;
+}
+
+export function* recordCommandAccountSteps(
+  q: Q,
+  command: RunnerCommand | RunnerRetroCommand,
+  at: number,
+) {
+  const agent = commandAgent(command);
+  if (!agent) return null;
+  const named = "account" in command ? command.account : undefined;
+  let row: AgentAccountBinding;
+  if (!named) {
+    const { workspaceId } = yield* runnerWorkspaceSteps(q, command.runnerId);
+    if (workspaceId !== command.workspaceId)
+      throw new AgentAccountError("foreign_workspace", "Runner belongs to another workspace");
+    row = yield* ensureLegacyAgentBindingSteps(q, command.runnerId, agent, at);
+  } else {
+    row = yield* getAgentBindingSteps(q, command.workspaceId, named.bindingId);
+    if (
+      row.legacy ||
+      row.accountId !== named.accountId ||
+      row.runnerId !== command.runnerId ||
+      row.agent !== agent
+    )
+      throw new AgentAccountError(
+        "binding_mismatch",
+        "Agent account binding does not match the command",
+      );
+    const unsupported = yield* runnerAccountUnsupportedSteps(q, command.runnerId, row.id, agent, {
+      signIn: command.type === "login",
+    });
+    if (unsupported) throw new AgentAccountError("runner_unsupported", unsupported);
+  }
+  const owner = (yield* accountRowSteps(q, row.accountId))!;
+  if (row.removedAt !== null || owner.removedAt !== null)
+    throw new AgentAccountError("removed", "Agent account was removed");
+  if (!owner.enabled && command.type !== "login" && command.type !== "login_check")
+    throw new AgentAccountError("disabled", "Agent account is disabled");
+  yield* q.exec(
+    q.orm.insert(q.t.runnerCommandAccount).values({
+      commandId: command.id,
+      workspaceId: row.workspaceId,
+      runnerId: command.runnerId,
+      agent,
+      accountId: row.accountId,
+      bindingId: row.id,
+      named: named ? 1 : 0,
+      recordedAt: at,
+    }),
+  );
+  return (yield* commandAccountSteps(q, command.id))!;
 }
 
 export function recordCommandAccount(
@@ -431,62 +680,17 @@ export function recordCommandAccount(
   command: RunnerCommand | RunnerRetroCommand,
   at: number,
 ): CommandAccount | null {
-  const agent = commandAgent(command);
-  if (!agent) return null;
-  const named = "account" in command ? command.account : undefined;
-  return immediate(db, () => {
-    let row: AgentAccountBinding;
-    if (!named) {
-      const { workspaceId } = runnerWorkspace(db, command.runnerId);
-      if (workspaceId !== command.workspaceId)
-        throw new AgentAccountError("foreign_workspace", "Runner belongs to another workspace");
-      row = ensureLegacyAgentBinding(db, command.runnerId, agent, at);
-    } else {
-      row = getAgentBinding(db, command.workspaceId, named.bindingId);
-      if (
-        row.legacy ||
-        row.accountId !== named.accountId ||
-        row.runnerId !== command.runnerId ||
-        row.agent !== agent
-      )
-        throw new AgentAccountError(
-          "binding_mismatch",
-          "Agent account binding does not match the command",
-        );
-      const unsupported = runnerAccountUnsupported(db, command.runnerId, row.id, agent, {
-        signIn: command.type === "login",
-      });
-      if (unsupported) throw new AgentAccountError("runner_unsupported", unsupported);
-    }
-    const owner = accountRow(db, row.accountId)!;
-    if (row.removedAt !== null || owner.removedAt !== null)
-      throw new AgentAccountError("removed", "Agent account was removed");
-    if (!owner.enabled && command.type !== "login" && command.type !== "login_check")
-      throw new AgentAccountError("disabled", "Agent account is disabled");
-    db.run(
-      "INSERT INTO runner_command_account(command_id,workspace_id,runner_id,agent,account_id,binding_id,named,recorded_at) VALUES(?,?,?,?,?,?,?,?)",
-      [
-        command.id,
-        row.workspaceId,
-        command.runnerId,
-        agent,
-        row.accountId,
-        row.id,
-        named ? 1 : 0,
-        at,
-      ],
-    );
-    return commandAccount(db, command.id)!;
-  });
+  return settled(sqliteDb(db).transaction((q) => recordCommandAccountSteps(q, command, at)));
+}
+
+export function* commandAccountSteps(q: Q, commandId: string) {
+  const { runnerCommandAccount: c } = q.t;
+  const row = yield* q.one(q.orm.select().from(c).where(eq(c.commandId, commandId)));
+  return row ? { ...row, agent: row.agent as RunnerCodingAgent, named: row.named === 1 } : null;
 }
 
 export function commandAccount(db: Database, commandId: string): CommandAccount | null {
-  const row = db
-    .query<Flags<CommandAccount, "named">, [string]>(
-      `SELECT ${commandColumns} FROM runner_command_account WHERE command_id=?`,
-    )
-    .get(commandId);
-  return row ? { ...row, named: row.named === 1 } : null;
+  return settled(sqliteDb(db).run((q) => commandAccountSteps(q, commandId)));
 }
 
 export type AccountAdmission = {
@@ -495,16 +699,12 @@ export type AccountAdmission = {
   skipped: { accountId: string; reason: AgentAccountErrorCode }[];
 };
 
-export function admitAgentAccounts(
-  db: Database,
-  workspaceId: string,
-  agent: RunnerCodingAgent,
-): AccountAdmission {
+export function* admitAgentAccountsSteps(q: Q, workspaceId: string, agent: RunnerCodingAgent) {
   const ids = [legacyAgentAccountId(workspaceId, agent)];
   const eligible: string[] = [];
   const skipped: AccountAdmission["skipped"] = [];
   for (const id of ids) {
-    const row = accountRow(db, id);
+    const row = yield* accountRowSteps(q, id);
     const reason: AgentAccountErrorCode | null = !row
       ? id === legacyAgentAccountId(workspaceId, agent)
         ? null
@@ -524,28 +724,105 @@ export function admitAgentAccounts(
   return { agent, eligible, skipped };
 }
 
+export function admitAgentAccounts(
+  db: Database,
+  workspaceId: string,
+  agent: RunnerCodingAgent,
+): AccountAdmission {
+  return settled(sqliteDb(db).run((q) => admitAgentAccountsSteps(q, workspaceId, agent)));
+}
+
+export function* liveAccountBindingSteps(q: Q, runnerId: string, accountId: string) {
+  const { agentAccountBinding: b } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(b)
+      .where(and(eq(b.runnerId, runnerId), eq(b.accountId, accountId), isNull(b.removedAt)))
+      .orderBy(asc(b.createdAt), asc(b.id))
+      .limit(1),
+  );
+  return row ? binding(row) : null;
+}
+
 export function liveAccountBinding(
   db: Database,
   runnerId: string,
   accountId: string,
 ): AgentAccountBinding | null {
-  const row = db
-    .query<Flags<AgentAccountBinding, "legacy">, [string, string]>(
-      `SELECT ${bindingColumns} FROM agent_account_binding
-       WHERE runner_id=? AND account_id=? AND removed_at IS NULL ORDER BY created_at,rowid LIMIT 1`,
-    )
-    .get(runnerId, accountId);
-  return row ? binding(row) : null;
+  return settled(sqliteDb(db).run((q) => liveAccountBindingSteps(q, runnerId, accountId)));
+}
+
+export function* agentAccountConcurrencySteps(q: Q, accountId: string) {
+  const { agentAccount } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ concurrency: agentAccount.concurrency })
+      .from(agentAccount)
+      .where(eq(agentAccount.id, accountId)),
+  );
+  return row?.concurrency ?? null;
 }
 
 export function agentAccountConcurrency(db: Database, accountId: string): number | null {
-  return (
-    db
-      .query<{ concurrency: number | null }, [string]>(
-        "SELECT concurrency FROM agent_account WHERE id=?",
-      )
-      .get(accountId)?.concurrency ?? null
+  return settled(sqliteDb(db).run((q) => agentAccountConcurrencySteps(q, accountId)));
+}
+
+export function* accountSlotsInUseSteps(
+  q: Q,
+  accountId: string,
+  at: number,
+  exceptCommandId: string | null = null,
+) {
+  const { retroDispatch: d, runnerCommandAccount: a, runnerExecutionUsage: u } = q.t;
+  const { runnerHelper: h, runnerCommand: c } = q.t;
+  const w = aliasedTable(q.t.runnerWork, "w");
+  const retros = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(d)
+      .innerJoin(a, eq(a.commandId, d.commandId))
+      .where(
+        and(
+          eq(a.accountId, accountId),
+          exceptCommandId === null ? undefined : ne(d.commandId, exceptCommandId),
+          isNull(d.releasedAt),
+        ),
+      ),
   );
+  const usage = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(u)
+      .innerJoin(a, eq(a.commandId, u.commandId))
+      .leftJoin(h, eq(h.id, u.commandId))
+      .leftJoin(c, eq(c.id, u.commandId))
+      .leftJoin(w, and(eq(w.runId, c.runId), eq(w.commandId, u.commandId)))
+      .where(
+        and(
+          eq(a.accountId, accountId),
+          exceptCommandId === null ? undefined : ne(u.commandId, exceptCommandId),
+          or(
+            and(isNotNull(h.id), gt(h.expiresAt, at), or(isNull(h.endedAt), isNull(h.result))),
+            and(
+              isNotNull(w.runId),
+              or(
+                and(isNull(w.endedAt), gt(w.leaseUntil, runnerLeaseCutoff(at))),
+                sql.raw(TEARDOWN_UNRESOLVED),
+              ),
+            ),
+            and(
+              isNull(h.id),
+              isNotNull(c.id),
+              isNull(c.runId),
+              isNull(u.endedAt),
+              gt(c.expiresAt, at),
+            ),
+          ),
+        ),
+      ),
+  );
+  return retros!.count + usage!.count;
 }
 
 export function accountSlotsInUse(
@@ -554,23 +831,7 @@ export function accountSlotsInUse(
   at: number,
   exceptCommandId: string | null = null,
 ): number {
-  return db
-    .query<{ count: number }, [string, number, string | null, number]>(
-      `SELECT (SELECT COUNT(*) FROM retro_dispatch d
-         JOIN runner_command_account r ON r.command_id=d.command_id
-         WHERE r.account_id=?1 AND d.command_id IS NOT ?3 AND d.released_at IS NULL) +
-       (SELECT COUNT(*) FROM runner_execution_usage u
-       JOIN runner_command_account a ON a.command_id=u.command_id
-       LEFT JOIN runner_helper h ON h.id=u.command_id
-       LEFT JOIN runner_command c ON c.id=u.command_id
-       LEFT JOIN runner_work w ON w.run_id=c.run_id AND w.command_id=u.command_id
-       WHERE a.account_id=?1 AND u.command_id IS NOT ?3 AND (
-         (h.id IS NOT NULL AND h.expires_at>?2
-           AND (h.ended_at IS NULL OR h.result IS NULL))
-         OR (w.run_id IS NOT NULL AND ((w.ended_at IS NULL AND w.lease_until>?4)
-           OR ${TEARDOWN_UNRESOLVED}))
-         OR (h.id IS NULL AND c.id IS NOT NULL AND c.run_id IS NULL
-           AND u.ended_at IS NULL AND c.expires_at>?2))) AS count`,
-    )
-    .get(accountId, at, exceptCommandId, runnerLeaseCutoff(at))!.count;
+  return settled(
+    sqliteDb(db).run((q) => accountSlotsInUseSteps(q, accountId, at, exceptCommandId)),
+  );
 }

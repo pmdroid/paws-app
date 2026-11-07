@@ -20,33 +20,6 @@ src/db/acp-conversations.ts | db.run( | not yet converted to Drizzle
 src/db/acp-conversations.ts | db.run( | not yet converted to Drizzle
 src/db/acp-conversations.ts | db.run( | not yet converted to Drizzle
 src/db/acp-conversations.ts | return db .query<{ itemId: string; blockedAt: number }, []>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | const row = db .query<Flags<AgentAccount, "legacy" | "enabled">, [string]>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | const row = db .query<Flags<AgentAccountBinding, "legacy">, [string]>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | const row = db .query<{ workspaceId: string; revokedAt: number | null }, [string]>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | return db .query<Flags<AgentAccount, "legacy" | "enabled">, [string]>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | return db .query<Flags<AgentAccountBinding, "legacy">, [string, string | null]>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run( | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run( | not yet converted to Drizzle
-src/db/agent-accounts.ts | db .query( | not yet converted to Drizzle
-src/db/agent-accounts.ts | if (!db.query("SELECT 1 FROM workspace WHERE id=?").get(input.workspaceId)) | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run( | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run("UPDATE agent_account SET label=?,updated_at=? WHERE id=?", [label, input.now, row.id]); | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run("UPDATE agent_account SET enabled=?,updated_at=? WHERE id=?", [ | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run("UPDATE agent_account SET concurrency=?,updated_at=? WHERE id=?", [ | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run("UPDATE agent_account SET enabled=0,removed_at=?,updated_at=? WHERE id=?", [ | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run( | not yet converted to Drizzle
-src/db/agent-accounts.ts | db .query( | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run( | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run("UPDATE agent_account_binding SET removed_at=COALESCE(removed_at,?) WHERE id=?", [ | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run("DELETE FROM runner_account_capability WHERE runner_id=?", [runnerId]); | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run( | not yet converted to Drizzle
-src/db/agent-accounts.ts | const version = db .query<{ version: string | null }, [string]>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | const row = db .query<{ protocol: number; bindings: string }, [string]>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | db.run( | not yet converted to Drizzle
-src/db/agent-accounts.ts | const row = db .query<Flags<CommandAccount, "named">, [string]>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | const row = db .query<Flags<AgentAccountBinding, "legacy">, [string, string]>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | db .query<{ concurrency: number | null }, [string]>( | not yet converted to Drizzle
-src/db/agent-accounts.ts | return db .query<{ count: number }, [string, number, string | null, number]>( | not yet converted to Drizzle
 src/db/ci-reruns.ts | db .query<{ one: number }, [string, string]>( | not yet converted to Drizzle
 src/db/ci-reruns.ts | db.run( | not yet converted to Drizzle
 src/db/ci-reruns.ts | return db .query<CiRerunRow, [string]>("SELECT * FROM ci_rerun WHERE item_id = ? ORDER BY at, head_sha") | not yet converted to Drizzle
