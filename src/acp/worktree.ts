@@ -313,15 +313,7 @@ export async function restoreCandidateRef(options: {
   await onMirror(gitDir, async () => {
     const local = await resolve(ref);
     if (local === sha) return;
-    const held = await resolve(sha);
-    if (held && local) {
-      const ahead = await run(["merge-base", "--is-ancestor", sha, local]).then(
-        () => true,
-        () => false,
-      );
-      if (ahead) return;
-    }
-    if (!held) {
+    if (!(await resolve(sha))) {
       const fetch = network();
       const scratch = `refs/paws/imports/${randomUUID()}`;
       try {

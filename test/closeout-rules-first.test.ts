@@ -84,6 +84,7 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
         closeoutReport: await session.report({ probes: true }),
       };
     },
+    db,
   );
   const launch: AgentLaunch = (input) => {
     const scriptPath = path.join(root, `script-${crypto.randomUUID()}.json`);

@@ -747,6 +747,7 @@ export async function probeRunnerOrchestration(
                 ),
               };
             },
+            db,
           );
         },
       },
@@ -966,6 +967,7 @@ export async function probeRunnerOrchestration(
             held,
           ]);
           await git(["--git-dir", mirror, "update-ref", "-d", candidate]);
+          db.run("DELETE FROM item_candidate WHERE item_id = ?", [item.id]);
         }
         const reverifyId = merging
           ? listJobs(db).find((job) => job.queue === JOB_KIND.merge && job.status === "pending")!.id

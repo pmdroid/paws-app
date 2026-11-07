@@ -277,7 +277,7 @@ test("a GitHub remote is never fetched without the repository's authenticated gi
   }
 });
 
-test("a local candidate ahead of the recorded SHA stays, one behind moves to it, and an unrelated one is refused", async () => {
+test("a rolled-back candidate restores the recorded SHA over the cached descendant, and an unrelated one is refused", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paws-candidate-cache-"));
   try {
     const bare = await originWithPolicy(root, path.join(root, "check-ran"));
@@ -306,7 +306,7 @@ test("a local candidate ahead of the recorded SHA stays, one behind moves to it,
     );
     await git("--git-dir", mirror, "update-ref", ref, ahead);
     await restoreCandidateRef({ ...place, sha: main, signal });
-    expect(await git("--git-dir", mirror, "rev-parse", ref)).toBe(ahead);
+    expect(await git("--git-dir", mirror, "rev-parse", ref)).toBe(main);
 
     await git("--git-dir", mirror, "update-ref", ref, main);
     await restoreCandidateRef({ ...place, sha: ahead, signal });
