@@ -14,7 +14,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { jsonText } from "./json-text";
+import { jsonText, jsonValue } from "./json-text";
 
 export type ImprovementIssueSyncStatus = "available" | "missing" | "unauthorized" | "unavailable";
 
@@ -394,8 +394,6 @@ type ActionInput = {
   now: number;
 };
 
-const jsonIn = (q: Q, value: unknown) => (q.dialect === "sqlite" ? JSON.stringify(value) : value);
-
 export function* recordImprovementActionSteps(q: Q, input: ActionInput): Steps<number | null> {
   const { improvement, improvementAction } = q.t;
   const version = input.expectedVersion + 1;
@@ -417,8 +415,8 @@ export function* recordImprovementActionSteps(q: Q, input: ActionInput): Steps<n
       improvementId: input.improvementId,
       action: input.action,
       version,
-      prior: jsonIn(q, input.prior),
-      detail: jsonIn(q, input.detail),
+      prior: jsonValue(q, input.prior),
+      detail: jsonValue(q, input.detail),
       actor: input.actor,
       at: input.now,
     }),

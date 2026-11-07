@@ -4,7 +4,7 @@ import { validateSubIssueDrafts, type FiledSubIssue, type SubIssueDraft } from "
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { applyWorkItemEvent, cancelAdvancingJobs, getWorkItem } from "./items";
 import { markRun } from "./runs";
-import { jsonText } from "./json-text";
+import { jsonText, jsonValue } from "./json-text";
 import { getTaskMode } from "./tasks";
 import { immediate } from "./tx";
 
@@ -29,8 +29,6 @@ type PlanProposalInput = {
   now: number;
 };
 
-const jsonIn = (q: Q, value: unknown) => (q.dialect === "sqlite" ? JSON.stringify(value) : value);
-
 export function* savePlanProposalSteps(q: Q, input: PlanProposalInput): Steps<PlanProposal> {
   const drafts = validateSubIssueDrafts(input.drafts);
   yield* q.exec(
@@ -39,7 +37,7 @@ export function* savePlanProposalSteps(q: Q, input: PlanProposalInput): Steps<Pl
       itemId: input.itemId,
       parentIssueId: input.parentIssueId,
       repository: input.repository,
-      drafts: jsonIn(q, drafts),
+      drafts: jsonValue(q, drafts),
       createdAt: input.now,
     }),
   );
@@ -90,7 +88,7 @@ export function* recordPlanFiledSteps(
   yield* q.exec(
     q.orm
       .update(planProposal)
-      .set({ filed: jsonIn(q, filed), filedAt: now })
+      .set({ filed: jsonValue(q, filed), filedAt: now })
       .where(and(eq(planProposal.questionId, questionId), isNull(planProposal.filed))),
   );
   const proposal = yield* getPlanProposalSteps(q, questionId);
