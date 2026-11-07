@@ -1022,6 +1022,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             fetchCandidate: fetchRunnerCandidate,
             checkpointBot: repositoryAccess?.checkpointBot,
             placement,
+            instanceId: instance.id,
           }),
           sessions: createRemoteSessionAgentRunner({
             db,
