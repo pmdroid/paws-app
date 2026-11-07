@@ -4,7 +4,7 @@ import { settled, sqliteDb, type Q } from "./db";
 import { endRevokedRunnerAuthoritySteps } from "./runner-lease";
 
 export type WorkspaceRole = "admin" | "member";
-export type WorkspaceRecord = {
+type WorkspaceRecord = {
   id: string;
   organizationId: string;
   name: string;
