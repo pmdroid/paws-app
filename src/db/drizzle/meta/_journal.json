@@ -15,6 +15,13 @@
       "when": 1794031989130,
       "tag": "0001_inbox_event_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794035492698,
+      "tag": "0002_credential",
+      "breakpoints": true
     }
   ]
 }
