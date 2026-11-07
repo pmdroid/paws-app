@@ -991,7 +991,9 @@ export type {
 export {
   recordRunnerRepositories,
   runnerAllowsRepository,
+  runnerRepositoryListsSteps,
   runnerRepositoryRefusal,
+  runnerRepositoryRefusalSteps,
   setRunnerAdminRepositories,
   type RunnerRepositoryLists,
   type RunnerRepositoryRefusal,
