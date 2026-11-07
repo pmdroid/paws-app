@@ -26,10 +26,16 @@ export {
   drainInstanceCommands,
 } from "./command-delivery";
 export {
+  enqueueEndedSessionFaceSteps,
   getItemBranchState,
+  getItemBranchStateSteps,
   getItemPullRequest,
+  getItemPullRequestSteps,
   recordItemBranchState,
+  recordItemBranchStateSteps,
   recordItemPullRequest,
+  recordItemPullRequestSteps,
+  stoppedResponseSteps,
   type ItemBranchState,
   type ItemPullRequest,
 } from "./stop-response";
