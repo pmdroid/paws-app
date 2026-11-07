@@ -45,6 +45,7 @@ import {
   planOptions,
 } from "./plan-proposal";
 import { RETRY_CLOSEOUT, retriesCloseout } from "./closeout-recovery";
+import { retriesMerge } from "../merge";
 import { worktreeBranch } from "./sources";
 import { answerRunnerRepository } from "./runner-repository";
 import { recordVisualReviewOutcome, visualReviewHandoff } from "./visual-review";
@@ -175,6 +176,15 @@ export function questionEffects(
       handoffNote({ question: recovery.summary, answer: question.answer ?? "" }),
       `closeout-guidance:${question.id}`,
     );
+  };
+  const mergeHelp = (question: StoredQuestion) => {
+    if (!retriesMerge(question)) {
+      resume(question);
+      return;
+    }
+    consumeTurn(question);
+    if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
+    mergeAcceptedWork(db, question.itemId, { now: input.now });
   };
   /**
    * Merge sends the accepted head to the merge queue without another turn. Continue, or a typed
@@ -333,7 +343,7 @@ export function questionEffects(
     agent: resume,
     clarification: resume,
     repository: resume,
-    "ci-help": resume,
+    "ci-help": mergeHelp,
     "closeout-help": closeoutHelp,
     // The workspace push outage question asks a person to look at GitHub; the item goes on.
     "push-outage": consumeTurn,

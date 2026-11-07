@@ -675,6 +675,7 @@ export {
   rebaseReturnedForSteps,
   recordRebaseReturnSteps,
 } from "./rebase-returns";
+export { MERGE_DENIED_REASON, countMergeDenials, countMergeDenialsSteps } from "./merge-denials";
 export {
   HOT_FILE_WINDOW_MS,
   hotFiles,
