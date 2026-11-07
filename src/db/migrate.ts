@@ -6,6 +6,7 @@ import { journal } from "../journal";
 import { orm } from "./orm";
 
 export const MIGRATIONS_FOLDER = fileURLToPath(new URL("./drizzle", import.meta.url));
+export const PG_MIGRATIONS_FOLDER = fileURLToPath(new URL("./drizzle-pg", import.meta.url));
 
 export function migrate(db: Database, options: { migrationsFolder?: string } = {}): void {
   drizzleMigrate(orm(db), { migrationsFolder: options.migrationsFolder ?? MIGRATIONS_FOLDER });
