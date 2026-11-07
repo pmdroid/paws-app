@@ -78,11 +78,45 @@ export function readSessionCloseout(
 }
 
 export class CloseoutResultMissingError extends Error {
-  constructor(readonly checkId: string | undefined) {
+  constructor(
+    readonly checkId: string | undefined,
+    readonly reason?: string,
+  ) {
     super(
-      `Closeout checks could not run on this commit: no result for ${checkId ?? "a command check"}.`,
+      `Closeout checks could not run on this commit: no result for ${checkId ?? "a command check"}${reason ? ` (${reason})` : ""}.`,
     );
     this.name = "CloseoutResultMissingError";
+  }
+}
+
+export function missingResultReason(
+  report: string | undefined,
+  request: LoggedCommandRequest,
+): string {
+  if (report === undefined) return "the checks run returned no report";
+  try {
+    const parsed = JSON.parse(report) as {
+      required?: {
+        id?: string;
+        status?: string;
+        running?: boolean;
+        result?: SessionCommandResult;
+      }[];
+      blocked?: unknown;
+    };
+    const entry = parsed.required?.find((candidate) => candidate.id === request.itemId);
+    if (!entry)
+      return typeof parsed.blocked === "string"
+        ? `the policy was unavailable: ${parsed.blocked}`
+        : "the checks run did not list it";
+    if (entry.running) return "the checks run's turn ended before it reported";
+    if (entry.status === "stale") return "its result is for an earlier version of the change";
+    if (!entry.result) return "it never started";
+    if (entry.result.head !== request.expectedHead) return "its result is for another commit";
+    return "its result is for another command or timeout";
+  } catch (caughtError) {
+    journalCaught(caughtError, "session-report.missingResultReason.parse", request.itemId);
+    return "the checks run's report is unreadable";
   }
 }
 
@@ -175,7 +209,8 @@ export function loggedSessionCloseout(
   request: LoggedCommandRequest,
 ): CommandRunResult {
   const result = sessionCloseoutResult(report, request);
-  if (!result) throw new CloseoutResultMissingError(request.itemId);
+  if (!result)
+    throw new CloseoutResultMissingError(request.itemId, missingResultReason(report, request));
   const { stdout, stderr } = result;
   const bytes = Buffer.from(`STDOUT\n${stdout}\nSTDERR\n${stderr}`, "utf8");
   mkdirSync(dirname(request.logFile), { recursive: true, mode: 0o700 });
