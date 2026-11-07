@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import type { TaskMode } from "../core";
+import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
 import { workItemTask } from "./schema";
 import { immediate } from "./tx";
@@ -11,20 +12,44 @@ import { artifactPublicationReady, listArtifacts } from "./artifacts";
 import { getLinearSessionGeneration } from "./linear-sessions";
 import { enqueueIssueStatus } from "./linear-delegation";
 
-function taskColumn<K extends "mode" | "generation" | "repositoryContext">(
-  db: Database,
+type TaskRow = typeof workItemTask.$inferSelect;
+
+function* taskColumnSteps<K extends "mode" | "generation" | "repositoryContext">(
+  q: Q,
   itemId: string,
   column: K,
-): (typeof workItemTask.$inferSelect)[K] | undefined {
-  return orm(db)
-    .select({ value: workItemTask[column] })
-    .from(workItemTask)
-    .where(eq(workItemTask.itemId, itemId))
-    .get()?.value as (typeof workItemTask.$inferSelect)[K] | undefined;
+) {
+  const { workItemTask: task } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ value: task[column] }).from(task).where(eq(task.itemId, itemId)),
+  );
+  return row?.value as TaskRow[K] | undefined;
+}
+
+export function* getTaskModeSteps(q: Q, itemId: string) {
+  return ((yield* taskColumnSteps(q, itemId, "mode")) as TaskMode | undefined) ?? null;
 }
 
 export function getTaskMode(db: Database, itemId: string): TaskMode | null {
-  return (taskColumn(db, itemId, "mode") as TaskMode | undefined) ?? null;
+  return settled(sqliteDb(db).run((q) => getTaskModeSteps(q, itemId)));
+}
+
+export function* saveTaskModeSteps(
+  q: Q,
+  itemId: string,
+  mode: TaskMode,
+  generation = 0,
+  repository = false,
+) {
+  yield* q.exec(
+    q.orm
+      .insert(q.t.workItemTask)
+      .values({ itemId, mode, generation, repositoryContext: repository ? 1 : 0 })
+      .onConflictDoNothing(),
+  );
+  const saved = yield* getTaskModeSteps(q, itemId);
+  if (saved !== mode) throw new Error("Task mode already selected");
+  return saved;
 }
 
 export function saveTaskMode(
@@ -34,24 +59,25 @@ export function saveTaskMode(
   generation = 0,
   repository = false,
 ): TaskMode {
-  return immediate(db, () => {
-    orm(db)
-      .insert(workItemTask)
-      .values({ itemId, mode, generation, repositoryContext: repository ? 1 : 0 })
-      .onConflictDoNothing()
-      .run();
-    const saved = getTaskMode(db, itemId);
-    if (saved !== mode) throw new Error("Task mode already selected");
-    return saved;
-  });
+  return settled(
+    sqliteDb(db).transaction((q) => saveTaskModeSteps(q, itemId, mode, generation, repository)),
+  );
+}
+
+export function* taskRequiresRepositorySteps(q: Q, itemId: string) {
+  return (yield* taskColumnSteps(q, itemId, "repositoryContext")) === 1;
 }
 
 export function taskRequiresRepository(db: Database, itemId: string): boolean {
-  return taskColumn(db, itemId, "repositoryContext") === 1;
+  return settled(sqliteDb(db).run((q) => taskRequiresRepositorySteps(q, itemId)));
+}
+
+export function* getTaskModeGenerationSteps(q: Q, itemId: string) {
+  return (yield* taskColumnSteps(q, itemId, "generation")) ?? 0;
 }
 
 export function getTaskModeGeneration(db: Database, itemId: string): number {
-  return taskColumn(db, itemId, "generation") ?? 0;
+  return settled(sqliteDb(db).run((q) => getTaskModeGenerationSteps(q, itemId)));
 }
 
 export function selectTaskModeForTurn(

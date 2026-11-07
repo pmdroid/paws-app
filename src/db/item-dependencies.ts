@@ -1,13 +1,13 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, ne, notInArray, sql } from "drizzle-orm";
 import {
   delegationHasOpenWork,
   parentIssueIdSql,
   type TaskMode,
   type WorkItemState,
 } from "../core";
+import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
-import { itemDependencySnapshot, taskBlock, workItem } from "./schema";
 import type { TaskBlock } from "./task-blocks";
 
 export type DependencyItem = {
@@ -54,13 +54,28 @@ const itemColumns =
   i.linear_identifier AS identifier,i.title,i.state,i.cancel_requested AS cancelRequested,
   t.mode,i.brief`);
 
-export function itemSpecificationPresent(db: Database, itemId: string): number | null {
-  return (
-    orm(db).all<{ present: number }>(
-      sql`SELECT COALESCE(p.present,1) AS present FROM work_item i
-       LEFT JOIN work_item_specification p ON p.item_id=i.id WHERE i.id=${itemId}`,
-    )[0]?.present ?? null
+function jsonText(q: Q, value: unknown): string {
+  return q.dialect === "sqlite" ? (value as string) : JSON.stringify(value);
+}
+
+function jsonValue(q: Q, text: string): string {
+  return q.dialect === "sqlite" ? text : (JSON.parse(text) as string);
+}
+
+export function* itemSpecificationPresentSteps(q: Q, itemId: string) {
+  const { workItem, workItemSpecification } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ present: sql<number>`COALESCE(${workItemSpecification.present},1)` })
+      .from(workItem)
+      .leftJoin(workItemSpecification, eq(workItemSpecification.itemId, workItem.id))
+      .where(eq(workItem.id, itemId)),
   );
+  return row?.present ?? null;
+}
+
+export function itemSpecificationPresent(db: Database, itemId: string): number | null {
+  return settled(sqliteDb(db).run((q) => itemSpecificationPresentSteps(q, itemId)));
 }
 
 export function readDependencyScope(
@@ -98,18 +113,48 @@ export function readDependencyScope(
   );
 }
 
-export function listPresentDelegationItems(db: Database, delegationId: string): DependencyItem[] {
-  return orm(db).all<DependencyItem>(
-    sql`SELECT ${itemColumns} FROM work_item i
-       LEFT JOIN work_item_task t ON t.item_id=i.id
-       LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.delegation_id=${delegationId} AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
+export function* listPresentDelegationItemsSteps(q: Q, delegationId: string) {
+  const { workItem, workItemSpecification, workItemTask } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: workItem.id,
+        delegationId: workItem.delegationId,
+        linearIssueId: workItem.linearIssueId,
+        identifier: workItem.linearIdentifier,
+        title: workItem.title,
+        state: workItem.state,
+        cancelRequested: workItem.cancelRequested,
+        mode: workItemTask.mode,
+        brief: workItem.brief,
+      })
+      .from(workItem)
+      .leftJoin(workItemTask, eq(workItemTask.itemId, workItem.id))
+      .leftJoin(workItemSpecification, eq(workItemSpecification.itemId, workItem.id))
+      .where(
+        and(
+          eq(workItem.delegationId, delegationId),
+          sql`COALESCE(${workItemSpecification.present},1)=1`,
+        ),
+      )
+      .orderBy(asc(workItem.position), asc(workItem.id)),
   );
+  return rows.map((row): DependencyItem => ({
+    ...row,
+    state: row.state as WorkItemState,
+    mode: row.mode as TaskMode | null,
+    brief: row.brief === null ? null : jsonText(q, row.brief),
+  }));
 }
 
-export function readDependencySnapshot(db: Database, itemId: string): DependencySnapshot | null {
-  return (
-    orm(db)
+export function listPresentDelegationItems(db: Database, delegationId: string): DependencyItem[] {
+  return settled(sqliteDb(db).run((q) => listPresentDelegationItemsSteps(q, delegationId)));
+}
+
+export function* readDependencySnapshotSteps(q: Q, itemId: string) {
+  const { itemDependencySnapshot } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({
         generation: itemDependencySnapshot.generation,
         scope: itemDependencySnapshot.scope,
@@ -118,94 +163,223 @@ export function readDependencySnapshot(db: Database, itemId: string): Dependency
         workspaceId: itemDependencySnapshot.workspaceId,
       })
       .from(itemDependencySnapshot)
-      .where(eq(itemDependencySnapshot.itemId, itemId))
-      .get() ?? null
+      .where(eq(itemDependencySnapshot.itemId, itemId)),
   );
+  if (!row) return null;
+  return {
+    generation: row.generation,
+    scope: jsonText(q, row.scope),
+    linearStates: jsonText(q, row.linearStates),
+    linearIdentifiers: jsonText(q, row.linearIdentifiers),
+    workspaceId: row.workspaceId,
+  } satisfies DependencySnapshot;
+}
+
+export function readDependencySnapshot(db: Database, itemId: string): DependencySnapshot | null {
+  return settled(sqliteDb(db).run((q) => readDependencySnapshotSteps(q, itemId)));
+}
+
+export function* dependencySnapshotGenerationSteps(q: Q, itemId: string) {
+  const { itemDependencySnapshot } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ generation: itemDependencySnapshot.generation })
+      .from(itemDependencySnapshot)
+      .where(eq(itemDependencySnapshot.itemId, itemId)),
+  );
+  return row?.generation;
 }
 
 export function dependencySnapshotGeneration(db: Database, itemId: string): number | undefined {
-  return orm(db)
-    .select({ generation: itemDependencySnapshot.generation })
-    .from(itemDependencySnapshot)
-    .where(eq(itemDependencySnapshot.itemId, itemId))
-    .get()?.generation;
+  return settled(sqliteDb(db).run((q) => dependencySnapshotGenerationSteps(q, itemId)));
+}
+
+export function* delegationHasItemWithoutSnapshotSteps(q: Q, delegationId: string) {
+  const { workItem } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: workItem.id })
+      .from(workItem)
+      .where(
+        and(
+          eq(workItem.delegationId, delegationId),
+          notInArray(workItem.state, ["completed", "merged", "cancelled"]),
+          sql`NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=${workItem.id} AND p.present=0)`,
+          sql`NOT EXISTS(SELECT 1 FROM item_dependency_snapshot s WHERE s.item_id=${workItem.id})`,
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
 }
 
 export function delegationHasItemWithoutSnapshot(db: Database, delegationId: string): boolean {
-  return (
-    orm(db).all(
-      sql`SELECT 1 FROM work_item i WHERE i.delegation_id=${delegationId} AND i.state NOT IN ('completed','merged','cancelled')
-         AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
-         AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot s WHERE s.item_id=i.id)`,
-    ).length > 0
+  return settled(sqliteDb(db).run((q) => delegationHasItemWithoutSnapshotSteps(q, delegationId)));
+}
+
+export function* delegationHasReconciliationWorkSteps(q: Q, delegationId: string) {
+  const { workItem } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: workItem.id })
+      .from(workItem)
+      .where(
+        and(
+          eq(workItem.delegationId, delegationId),
+          sql`(EXISTS(SELECT 1 FROM item_reconciliation_request r WHERE r.item_id=${workItem.id})
+            OR EXISTS(SELECT 1 FROM item_reconciliation_effect e WHERE e.item_id=${workItem.id}))`,
+        ),
+      )
+      .limit(1),
   );
+  return row !== undefined;
 }
 
 export function delegationHasReconciliationWork(db: Database, delegationId: string): boolean {
-  return (
-    orm(db).all(
-      sql`SELECT 1 FROM item_reconciliation_request r JOIN work_item i ON i.id=r.item_id WHERE i.delegation_id=${delegationId}
-         UNION ALL SELECT 1 FROM item_reconciliation_effect e JOIN work_item i ON i.id=e.item_id WHERE i.delegation_id=${delegationId} LIMIT 1`,
-    ).length > 0
+  return settled(sqliteDb(db).run((q) => delegationHasReconciliationWorkSteps(q, delegationId)));
+}
+
+export function* listBlocksOfSteps(q: Q, blockedLinearIssueIds: string[]) {
+  if (blockedLinearIssueIds.length === 0) return [];
+  const { taskBlock } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        blockerLinearIssueId: taskBlock.blockerLinearIssueId,
+        blockedLinearIssueId: taskBlock.blockedLinearIssueId,
+      })
+      .from(taskBlock)
+      .where(inArray(taskBlock.blockedLinearIssueId, blockedLinearIssueIds)),
   );
 }
 
 export function listBlocksOf(db: Database, blockedLinearIssueIds: string[]): TaskBlock[] {
-  if (blockedLinearIssueIds.length === 0) return [];
-  return orm(db)
-    .select({
-      blockerLinearIssueId: taskBlock.blockerLinearIssueId,
-      blockedLinearIssueId: taskBlock.blockedLinearIssueId,
-    })
-    .from(taskBlock)
-    .where(inArray(taskBlock.blockedLinearIssueId, blockedLinearIssueIds))
-    .all();
+  return settled(sqliteDb(db).run((q) => listBlocksOfSteps(q, blockedLinearIssueIds)));
+}
+
+export function* latestIssueIdentifierSteps(q: Q, linearIssueId: string) {
+  const { workItem } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ identifier: workItem.linearIdentifier })
+      .from(workItem)
+      .where(and(eq(workItem.linearIssueId, linearIssueId), isNotNull(workItem.linearIdentifier)))
+      .orderBy(desc(workItem.createdAt), desc(workItem.id))
+      .limit(1),
+  );
+  return row?.identifier ?? undefined;
 }
 
 export function latestIssueIdentifier(db: Database, linearIssueId: string): string | undefined {
-  return orm(db)
-    .select({ identifier: workItem.linearIdentifier })
-    .from(workItem)
-    .where(and(eq(workItem.linearIssueId, linearIssueId), isNotNull(workItem.linearIdentifier)))
-    .orderBy(desc(workItem.createdAt), desc(workItem.id))
-    .limit(1)
-    .get()?.identifier;
+  return settled(sqliteDb(db).run((q) => latestIssueIdentifierSteps(q, linearIssueId)));
 }
 
-export function saveDependencySnapshot(
-  db: Database,
-  snapshot: {
-    itemId: string;
-    workspaceId: string;
-    generation: number;
-    scope: string;
-    linearStates: string;
-    linearIdentifiers: string;
-  },
-): void {
-  orm(db).run(
-    sql`INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states,linear_identifiers,external_evidence)
-         VALUES(${snapshot.itemId},${snapshot.workspaceId},${snapshot.generation},${snapshot.scope},${snapshot.linearStates},${snapshot.linearIdentifiers},'{}') ON CONFLICT(item_id) DO UPDATE SET
-         generation=excluded.generation,scope=excluded.scope,linear_states=excluded.linear_states,
-         linear_identifiers=excluded.linear_identifiers,external_evidence=excluded.external_evidence
-         WHERE item_dependency_snapshot.workspace_id=excluded.workspace_id`,
+type NewDependencySnapshot = {
+  itemId: string;
+  workspaceId: string;
+  generation: number;
+  scope: string;
+  linearStates: string;
+  linearIdentifiers: string;
+};
+
+export function* saveDependencySnapshotSteps(q: Q, snapshot: NewDependencySnapshot) {
+  const { itemDependencySnapshot } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(itemDependencySnapshot)
+      .values({
+        itemId: snapshot.itemId,
+        workspaceId: snapshot.workspaceId,
+        generation: snapshot.generation,
+        scope: jsonValue(q, snapshot.scope),
+        linearStates: jsonValue(q, snapshot.linearStates),
+        linearIdentifiers: jsonValue(q, snapshot.linearIdentifiers),
+        externalEvidence: jsonValue(q, "{}"),
+      })
+      .onConflictDoUpdate({
+        target: itemDependencySnapshot.itemId,
+        set: {
+          generation: sql`excluded.generation`,
+          scope: sql`excluded.scope`,
+          linearStates: sql`excluded.linear_states`,
+          linearIdentifiers: sql`excluded.linear_identifiers`,
+          externalEvidence: sql`excluded.external_evidence`,
+        },
+        setWhere: sql`${itemDependencySnapshot.workspaceId}=excluded.workspace_id`,
+      }),
   );
+}
+
+export function saveDependencySnapshot(db: Database, snapshot: NewDependencySnapshot): void {
+  settled(sqliteDb(db).run((q) => saveDependencySnapshotSteps(q, snapshot)));
+}
+
+export function* listManagedBlockerItemsSteps(
+  q: Q,
+  input: { workspaceId: string; issueId: string; itemId: string },
+) {
+  const { linearSession, remoteMergeFact, workItem, workItemTask, workspace } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        state: workItem.state,
+        mode: workItemTask.mode,
+        cancelRequested: workItem.cancelRequested,
+        mergeSha: remoteMergeFact.mergeSha,
+      })
+      .from(workItem)
+      .innerJoin(linearSession, eq(linearSession.sessionId, workItem.sessionKey))
+      .innerJoin(workspace, eq(workspace.linearOrganizationId, linearSession.organizationId))
+      .leftJoin(workItemTask, eq(workItemTask.itemId, workItem.id))
+      .leftJoin(remoteMergeFact, eq(remoteMergeFact.itemId, workItem.id))
+      .where(
+        and(
+          eq(workspace.id, input.workspaceId),
+          eq(workItem.linearIssueId, input.issueId),
+          ne(
+            workItem.delegationId,
+            sql`(SELECT delegation_id FROM work_item WHERE id=${input.itemId})`,
+          ),
+          sql`NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=${workItem.id} AND p.present=0)`,
+        ),
+      )
+      .orderBy(asc(workItem.createdAt), asc(workItem.id)),
+  );
+  return rows.map((row): ManagedBlockerItem => ({
+    ...row,
+    state: row.state as WorkItemState,
+    mode: row.mode as TaskMode | null,
+  }));
 }
 
 export function listManagedBlockerItems(
   db: Database,
   input: { workspaceId: string; issueId: string; itemId: string },
 ): ManagedBlockerItem[] {
-  return orm(db).all<ManagedBlockerItem>(
-    sql`SELECT i.state,t.mode,i.cancel_requested AS cancelRequested,f.merge_sha AS mergeSha
-     FROM work_item i
-     JOIN linear_session s ON s.session_id=i.session_key
-     JOIN workspace w ON w.linear_organization_id=s.organization_id
-     LEFT JOIN work_item_task t ON t.item_id=i.id LEFT JOIN remote_merge_fact f ON f.item_id=i.id
-     WHERE w.id=${input.workspaceId} AND i.linear_issue_id=${input.issueId} AND i.delegation_id<>(SELECT delegation_id FROM work_item WHERE id=${input.itemId})
-     AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
-     ORDER BY i.created_at, i.id`,
+  return settled(sqliteDb(db).run((q) => listManagedBlockerItemsSteps(q, input)));
+}
+
+export function* listDelegationExternalEvidenceSteps(
+  q: Q,
+  workspaceId: string,
+  delegationId: string,
+) {
+  const { itemDependencySnapshot, workItem } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ evidence: itemDependencySnapshot.externalEvidence })
+      .from(itemDependencySnapshot)
+      .innerJoin(workItem, eq(workItem.id, itemDependencySnapshot.itemId))
+      .where(
+        and(
+          eq(itemDependencySnapshot.workspaceId, workspaceId),
+          eq(workItem.delegationId, delegationId),
+        ),
+      )
+      .orderBy(asc(itemDependencySnapshot.generation), asc(workItem.position), asc(workItem.id)),
   );
+  return rows.map((row) => jsonText(q, row.evidence));
 }
 
 export function listDelegationExternalEvidence(
@@ -213,17 +387,7 @@ export function listDelegationExternalEvidence(
   workspaceId: string,
   delegationId: string,
 ): string[] {
-  return orm(db)
-    .select({ evidence: itemDependencySnapshot.externalEvidence })
-    .from(itemDependencySnapshot)
-    .innerJoin(workItem, eq(workItem.id, itemDependencySnapshot.itemId))
-    .where(
-      and(
-        eq(itemDependencySnapshot.workspaceId, workspaceId),
-        eq(workItem.delegationId, delegationId),
-      ),
-    )
-    .orderBy(asc(itemDependencySnapshot.generation), asc(workItem.position), asc(workItem.id))
-    .all()
-    .map((row) => row.evidence);
+  return settled(
+    sqliteDb(db).run((q) => listDelegationExternalEvidenceSteps(q, workspaceId, delegationId)),
+  );
 }

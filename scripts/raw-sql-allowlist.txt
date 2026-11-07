@@ -193,7 +193,6 @@ src/db/link-asks.ts | return db .query<LinkAskRow, [string]>( | not yet converte
 src/db/link-asks.ts | return db .query<LinkAskRow, [string]>( | not yet converted to Drizzle
 src/db/link-asks.ts | db.run( | not yet converted to Drizzle
 src/db/link-asks.ts | db.run( | not yet converted to Drizzle
-src/db/loop.ts | const result = this.db.run( | not yet converted to Drizzle
 src/db/merge-settings.ts | const row = db .query< | not yet converted to Drizzle
 src/db/migrations.ts | const item = db .query<{ id: string }, []>( | not yet converted to Drizzle
 src/db/migrations.ts | const item = db .query<{ id: string; identifier: string }, []>( | not yet converted to Drizzle

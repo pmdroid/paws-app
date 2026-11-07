@@ -153,9 +153,13 @@ export {
   completeAnswerTask,
   completeArtifactTask,
   getTaskMode,
+  getTaskModeSteps,
   getTaskModeGeneration,
+  getTaskModeGenerationSteps,
   saveTaskMode,
+  saveTaskModeSteps,
   taskRequiresRepository,
+  taskRequiresRepositorySteps,
   selectTaskModeForTurn,
 } from "./tasks";
 export {
@@ -256,8 +260,10 @@ export {
   leasedJobsForItem,
 } from "./jobs";
 export {
+  cancelUnhandledJobSteps,
   JobLoop,
   JOB_PROGRESS_STALE_MS,
+  removeUnknownRecurringJobsSteps,
   type JobContext,
   type JobHandler,
   type JobLoopLiveness,
@@ -756,11 +762,22 @@ export {
 
 export {
   getTaskClassification,
+  getTaskClassificationSteps,
   saveTaskClassification,
+  saveTaskClassificationSteps,
   resolveTaskClassification,
+  resolveTaskClassificationSteps,
   type StoredTaskClassification,
 } from "./task-requests";
-export { listTaskBlockers, listTaskBlocks, saveTaskBlocks, type TaskBlock } from "./task-blocks";
+export {
+  listTaskBlockers,
+  listTaskBlockersSteps,
+  listTaskBlocks,
+  listTaskBlocksSteps,
+  saveTaskBlocks,
+  saveTaskBlocksSteps,
+  type TaskBlock,
+} from "./task-blocks";
 export {
   dropSchedulerAdmission,
   listSchedulerAdmissions,
@@ -1518,17 +1535,28 @@ export {
 } from "./intake";
 export {
   delegationHasItemWithoutSnapshot,
+  delegationHasItemWithoutSnapshotSteps,
   delegationHasReconciliationWork,
+  delegationHasReconciliationWorkSteps,
   dependencySnapshotGeneration,
+  dependencySnapshotGenerationSteps,
   itemSpecificationPresent,
+  itemSpecificationPresentSteps,
   latestIssueIdentifier,
+  latestIssueIdentifierSteps,
   listBlocksOf,
+  listBlocksOfSteps,
   listDelegationExternalEvidence,
+  listDelegationExternalEvidenceSteps,
   listManagedBlockerItems,
+  listManagedBlockerItemsSteps,
   listPresentDelegationItems,
+  listPresentDelegationItemsSteps,
   readDependencyScope,
   readDependencySnapshot,
+  readDependencySnapshotSteps,
   saveDependencySnapshot,
+  saveDependencySnapshotSteps,
   type DependencyIdentity,
   type DependencyItem,
   type DependencySnapshot,
