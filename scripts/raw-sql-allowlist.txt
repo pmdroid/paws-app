@@ -331,10 +331,6 @@ src/db/runners.ts | db.run("UPDATE member_vm SET runner_id=NULL,updated_at=? WHE
 src/db/runners.ts | db .query<{ name: string }, [string]>( | not yet converted to Drizzle
 src/db/runners.ts | const row = db .query<Omit<RunnerAvailability, "revoked"> & { revoked: number }, [string]>( | not yet converted to Drizzle
 src/db/seed.ts | db.run( | not yet converted to Drizzle
-src/db/workspace-revocation.ts | db.run( | not yet converted to Drizzle
-src/db/workspace-revocation.ts | db.run( | not yet converted to Drizzle
-src/db/workspace-revocation.ts | return db .query<{ id: string }, string[]>( | not yet converted to Drizzle
-src/db/workspace-revocation.ts | const members = db .query<Omit<WorkspaceMemberSummary, "openItems"> & { linearUserId: string }, [string, string]>( | not yet converted to Drizzle
 src/db/workspace.ts | return db .query<WorkspaceRecord, [string]>( | not yet converted to Drizzle
 src/db/workspace.ts | return db .query<WorkspaceRecord, [string]>( | not yet converted to Drizzle
 src/db/workspace.ts | db.run( | not yet converted to Drizzle
