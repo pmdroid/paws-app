@@ -1,4 +1,5 @@
 export * from "./linear";
+export * from "./instances";
 export * from "./improvements";
 export * from "./github";
 export * from "./agents";
@@ -7,6 +8,8 @@ export * from "./items";
 export * from "./closeout";
 export * from "./runners";
 export * from "./jobs";
+export * from "./settings";
+export * from "./credentials";
 export * from "./outbox";
 export * from "./asks";
 export * from "./accounts";

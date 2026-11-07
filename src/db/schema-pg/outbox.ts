@@ -77,6 +77,8 @@ export const inboxEvent = pgTable(
     attempts: bigint({ mode: "number" }).default(0).notNull(),
     nextAttemptAt: bigint("next_attempt_at", { mode: "number" }),
     lastError: text("last_error"),
+    lockedBy: text("locked_by"),
+    lockedUntil: bigint("locked_until", { mode: "number" }),
   },
   (table) => [
     uniqueIndex("inbox_event_delivery")

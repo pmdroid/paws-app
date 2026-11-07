@@ -296,6 +296,17 @@ CREATE TABLE "closeout_bypass_check" (
 	CONSTRAINT "closeout_bypass_check_question_id_check_id_pk" PRIMARY KEY("question_id","check_id")
 );
 --> statement-breakpoint
+CREATE TABLE "closeout_evidence_object" (
+	"task" text NOT NULL,
+	"path" text NOT NULL,
+	"prefix" text NOT NULL,
+	"size_bytes" bigint NOT NULL,
+	"sha256" text NOT NULL,
+	"modified_at" bigint NOT NULL,
+	"stored_at" bigint NOT NULL,
+	CONSTRAINT "closeout_evidence_object_task_path_pk" PRIMARY KEY("task","path")
+);
+--> statement-breakpoint
 CREATE TABLE "closeout_policy_block" (
 	"question_id" text PRIMARY KEY NOT NULL,
 	"item_id" text NOT NULL,
@@ -398,6 +409,15 @@ CREATE TABLE "closeout_step" (
 	CONSTRAINT "closeout_step_check_7" CHECK (review_fail_on IS NULL OR review_fail_on IN ('P0', 'P1', 'P2', 'P3'))
 );
 --> statement-breakpoint
+CREATE TABLE "credential" (
+	"kind" text NOT NULL,
+	"workspace" text NOT NULL,
+	"ciphertext" text NOT NULL,
+	"updated_at" bigint NOT NULL,
+	CONSTRAINT "credential_kind_workspace_pk" PRIMARY KEY("kind","workspace"),
+	CONSTRAINT "credential_kind" CHECK (kind IN ('linear', 'slack'))
+);
+--> statement-breakpoint
 CREATE TABLE "decision_memory" (
 	"id" text PRIMARY KEY NOT NULL,
 	"workspace_id" text NOT NULL,
@@ -448,6 +468,13 @@ CREATE TABLE "evidence" (
 	CONSTRAINT "evidence_check_2" CHECK (media_type IN ('video/webm','video/mp4','image/png','image/jpeg','image/webp')),
 	CONSTRAINT "evidence_check_3" CHECK (size_bytes>0),
 	CONSTRAINT "evidence_check_4" CHECK (length(sha256)=64)
+);
+--> statement-breakpoint
+CREATE TABLE "evidence_object" (
+	"id" text PRIMARY KEY NOT NULL,
+	"prefix" text NOT NULL,
+	"size_bytes" bigint NOT NULL,
+	"stored_at" bigint NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "finding_group" (
@@ -751,9 +778,21 @@ CREATE TABLE "inbox_event" (
 	"attempts" bigint DEFAULT 0 NOT NULL,
 	"next_attempt_at" bigint,
 	"last_error" text,
+	"locked_by" text,
+	"locked_until" bigint,
 	CONSTRAINT "inbox_event_check_1" CHECK (source IN ('webhook', 'poll')),
 	CONSTRAINT "inbox_event_check_2" CHECK (action IN ('created', 'prompted', 'other')),
 	CONSTRAINT "inbox_event_check_4" CHECK (handled IN (0, 1))
+);
+--> statement-breakpoint
+CREATE TABLE "instance" (
+	"id" text PRIMARY KEY NOT NULL,
+	"role" text NOT NULL,
+	"host" text NOT NULL,
+	"started_at" bigint NOT NULL,
+	"heartbeat_at" bigint NOT NULL,
+	"version" text,
+	CONSTRAINT "instance_role" CHECK (role IN ('all', 'web', 'worker'))
 );
 --> statement-breakpoint
 CREATE TABLE "item_blocker_check" (
@@ -769,6 +808,13 @@ CREATE TABLE "item_branch_state" (
 	"commits" bigint NOT NULL,
 	"recorded_at" bigint NOT NULL,
 	CONSTRAINT "item_branch_state_check_1" CHECK (commits >= 0)
+);
+--> statement-breakpoint
+CREATE TABLE "item_candidate" (
+	"item_id" text PRIMARY KEY NOT NULL,
+	"sha" text NOT NULL,
+	"branch" text NOT NULL,
+	"recorded_at" bigint NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "item_continuation" (
@@ -2025,6 +2071,18 @@ CREATE TABLE "runner_execution_usage" (
 	CONSTRAINT "runner_execution_usage_check_8" CHECK (account_fallback IS NULL OR length(account_fallback) BETWEEN 1 AND 500)
 );
 --> statement-breakpoint
+CREATE TABLE "runner_file_object" (
+	"key" text PRIMARY KEY NOT NULL,
+	"run_id" text NOT NULL,
+	"command_id" text NOT NULL,
+	"kind" text NOT NULL,
+	"name" text NOT NULL,
+	"digest" text NOT NULL,
+	"sha256" text NOT NULL,
+	"created_at" bigint NOT NULL,
+	CONSTRAINT "runner_file_object_check_1" CHECK (kind IN ('input','artifact'))
+);
+--> statement-breakpoint
 CREATE TABLE "runner_follow_up" (
 	"run_id" text NOT NULL,
 	"generation" bigint NOT NULL,
@@ -2279,6 +2337,12 @@ CREATE TABLE "scheduler_admission" (
 	"created_at" bigint NOT NULL,
 	CONSTRAINT "scheduler_admission_job_id_unique" UNIQUE("job_id"),
 	CONSTRAINT "scheduler_admission_check_2" CHECK (hot IN (0,1))
+);
+--> statement-breakpoint
+CREATE TABLE "setting" (
+	"key" text PRIMARY KEY NOT NULL,
+	"value" text NOT NULL,
+	"updated_at" bigint NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "suggested_finding" (
@@ -2704,6 +2768,7 @@ ALTER TABLE "improvement_work" ADD CONSTRAINT "improvement_work_improvement_id_i
 ALTER TABLE "improvement_work" ADD CONSTRAINT "improvement_work_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "item_blocker_check" ADD CONSTRAINT "item_blocker_check_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "item_branch_state" ADD CONSTRAINT "item_branch_state_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "item_candidate" ADD CONSTRAINT "item_candidate_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "item_continuation" ADD CONSTRAINT "item_continuation_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "item_continuation" ADD CONSTRAINT "item_continuation_previous_item_id_work_item_id_fk" FOREIGN KEY ("previous_item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "item_dependency_snapshot" ADD CONSTRAINT "item_dependency_snapshot_item_id_work_item_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."work_item"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -2898,6 +2963,7 @@ CREATE UNIQUE INDEX "inbox_event_delivery" ON "inbox_event" USING btree ("delive
 CREATE INDEX "inbox_event_issue" ON "inbox_event" USING btree ((payload->'data'->>'id'),"updated_at_ms") WHERE (payload->>'type')='Issue';--> statement-breakpoint
 CREATE INDEX "inbox_event_session" ON "inbox_event" USING btree ("session_id","received_at");--> statement-breakpoint
 CREATE INDEX "inbox_event_unhandled" ON "inbox_event" USING btree ("handled","received_at");--> statement-breakpoint
+CREATE INDEX "instance_heartbeat" ON "instance" USING btree ("heartbeat_at");--> statement-breakpoint
 CREATE INDEX "item_continuation_previous" ON "item_continuation" USING btree ("previous_item_id");--> statement-breakpoint
 CREATE INDEX "job_due" ON "job" USING btree ("status","run_at","priority");--> statement-breakpoint
 CREATE INDEX "linear_activity_session" ON "linear_activity_snapshot" USING btree ("session_id","created_at","id");--> statement-breakpoint
@@ -2944,6 +3010,8 @@ CREATE INDEX "runner_enrollment_expiry" ON "runner_enrollment" USING btree ("exp
 CREATE INDEX "runner_event_type" ON "runner_event" USING btree ("run_id","generation","type");--> statement-breakpoint
 CREATE INDEX "runner_usage_item" ON "runner_execution_usage" USING btree ("item_id","ended_at");--> statement-breakpoint
 CREATE INDEX "runner_usage_runner_ended" ON "runner_execution_usage" USING btree ("runner_id","ended_at");--> statement-breakpoint
+CREATE INDEX "runner_file_object_run" ON "runner_file_object" USING btree ("run_id");--> statement-breakpoint
+CREATE INDEX "runner_file_object_command" ON "runner_file_object" USING btree ("command_id","kind");--> statement-breakpoint
 CREATE INDEX "runner_helper_pending" ON "runner_helper" USING btree ("runner_id","acknowledged_at","expires_at");--> statement-breakpoint
 CREATE INDEX "runner_login_account" ON "runner_login" USING btree ("runner_id","user_id","agent","updated_at");--> statement-breakpoint
 CREATE INDEX "runner_login_binding" ON "runner_login" USING btree ("binding_id") WHERE binding_id IS NOT NULL;--> statement-breakpoint

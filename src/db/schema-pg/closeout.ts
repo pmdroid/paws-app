@@ -215,6 +215,32 @@ export const visualReviewMark = pgTable(
   (table) => [index("visual_review_mark_question").on(table.questionId)],
 );
 
+export const evidenceObject = pgTable("evidence_object", {
+  id: text().primaryKey(),
+  prefix: text().notNull(),
+  sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+  storedAt: bigint("stored_at", { mode: "number" }).notNull(),
+});
+
+export const closeoutEvidenceObject = pgTable(
+  "closeout_evidence_object",
+  {
+    task: text().notNull(),
+    path: text().notNull(),
+    prefix: text().notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    sha256: text().notNull(),
+    modifiedAt: bigint("modified_at", { mode: "number" }).notNull(),
+    storedAt: bigint("stored_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.task, table.path],
+      name: "closeout_evidence_object_task_path_pk",
+    }),
+  ],
+);
+
 export const candidateRisk = pgTable(
   "candidate_risk",
   {

@@ -409,6 +409,15 @@ export const itemBranchState = pgTable(
   () => [check("item_branch_state_check_1", sql`commits >= 0`)],
 );
 
+export const itemCandidate = pgTable("item_candidate", {
+  itemId: text("item_id")
+    .primaryKey()
+    .references(() => workItem.id),
+  sha: text().notNull(),
+  branch: text().notNull(),
+  recordedAt: bigint("recorded_at", { mode: "number" }).notNull(),
+});
+
 export const itemPullRequest = pgTable(
   "item_pull_request",
   {
