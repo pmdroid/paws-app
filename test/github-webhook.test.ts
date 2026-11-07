@@ -91,7 +91,7 @@ test("the running GitHub endpoint persists verified deliveries and deduplicates 
     paws = startPaws(env);
     expect((await send()).status).toBe(200);
     expect(listGitHubDeliveries(paws.db)).toMatchObject([
-      { deliveryId: "delivery-1", event: "ping", payload: "" },
+      { deliveryId: "delivery-1", event: "ping", payload },
     ]);
     expect(readFileSync(join(home, "paws.db")).toString()).not.toContain(secret);
   } finally {
