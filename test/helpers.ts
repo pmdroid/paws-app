@@ -1,8 +1,9 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { candidateRef, mirrorPath, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import {
+  MIGRATIONS_FOLDER,
   getRun,
   getWorkItem,
   legacyMigrate,
@@ -34,16 +35,27 @@ export function tempDb(): Database {
   return db;
 }
 
-export function legacyTempDb(): Database {
-  const db = openDatabase(":memory:");
+function legacyThenDrizzle(db: Database): Database {
   legacyMigrate(db);
+  const journal = JSON.parse(
+    readFileSync(join(MIGRATIONS_FOLDER, "meta/_journal.json"), "utf8"),
+  ) as {
+    entries: { tag: string }[];
+  };
+  for (const { tag } of journal.entries.slice(1))
+    for (const statement of readFileSync(join(MIGRATIONS_FOLDER, `${tag}.sql`), "utf8").split(
+      "--> statement-breakpoint",
+    ))
+      db.run(statement);
   return db;
 }
 
+export function legacyTempDb(): Database {
+  return legacyThenDrizzle(openDatabase(":memory:"));
+}
+
 export function legacyMigratedDatabase(path: string): Database {
-  const db = openDatabase(path);
-  legacyMigrate(db);
-  return db;
+  return legacyThenDrizzle(openDatabase(path));
 }
 
 // Migrating a new file database commits once per migration, about 0.6 s of

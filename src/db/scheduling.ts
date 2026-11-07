@@ -141,7 +141,8 @@ export function schedulerItems(db: Database, now: number): SchedulerItem[] {
       AND ((w.ended_at IS NULL AND w.lease_until>${runnerLeaseCutoff(now)}) OR p.status IN ('active','provisioning'))) AS placed,
     EXISTS(SELECT 1 FROM job start WHERE json_extract(start.payload,'$.itemId')=i.id
       AND start.status='running' AND (start.locked_until IS NULL OR start.locked_until>${now})
-      AND start.queue IN (${sql.raw(`'${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}'`)})) AS placing,
+      AND start.queue IN (${sql.raw(`'${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}'`)}))
+      AND NOT EXISTS(SELECT 1 FROM runner_reservation v WHERE v.run_id=i.current_run_id AND v.expires_at>${now}) AS placing,
     EXISTS(SELECT 1 FROM runner_setup_hold h WHERE h.item_id=i.id) AS setupHeld,
     w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo,
     COALESCE('user:'||i.owner_user_id,'') AS turn,
@@ -171,7 +172,9 @@ export function runnerTaskSlots(
   return orm(db).all<{ id: string; capacity: number; used: number }>(
     sql`SELECT r.id,COALESCE((SELECT MIN(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1) AS capacity,
        (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND ((w.ended_at IS NULL AND w.lease_until>${runnerLeaseCutoff(now)}) OR EXISTS(SELECT 1 FROM run held WHERE held.id=w.run_id AND held.status IN ('active','provisioning') AND NOT ${sql.raw(CI_WAITING("held"))}))) +
-       (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>${now}) AS used
+       (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>${now}) +
+       (SELECT count(*) FROM runner_reservation v WHERE v.runner_id=r.id AND v.expires_at>${now}
+         AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=v.run_id AND w.runner_id=v.runner_id)) AS used
        FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>${seenAfter}`,
   );
 }

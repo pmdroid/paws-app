@@ -828,6 +828,13 @@ export {
   takeRunnerSetupResume,
 } from "./runner-setup-hold";
 export type { RunnerSetupHold } from "./runner-setup-hold";
+export {
+  RUNNER_RESERVATION_MS,
+  releaseRunnerReservation,
+  reserveRunnerSlot,
+  runnerReservationHolder,
+  unassignedRunnerReservations,
+} from "./runner-reservations";
 export type { ItemHold, ItemHoldChange, ItemHoldReason } from "./item-hold";
 export { carriedAcceptFor, recordCarriedAccept } from "./merge-carried-accept";
 export { getTaskMergeSettings, keepTaskMergeSettings } from "./merge-settings";

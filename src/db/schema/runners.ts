@@ -307,6 +307,22 @@ export const runnerCapacity = sqliteTable(
   ],
 );
 
+export const runnerReservation = sqliteTable(
+  "runner_reservation",
+  {
+    runId: text("run_id")
+      .primaryKey()
+      .notNull()
+      .references(() => run.id),
+    runnerId: text("runner_id")
+      .notNull()
+      .references(() => runner.id),
+    instanceId: text("instance_id").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => [index("runner_reservation_runner").on(table.runnerId, table.expiresAt)],
+);
+
 export const runnerHostStatus = sqliteTable(
   "runner_host_status",
   {

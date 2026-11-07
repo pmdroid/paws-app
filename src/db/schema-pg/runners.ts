@@ -301,6 +301,21 @@ export const runnerCapacity = pgTable(
   ],
 );
 
+export const runnerReservation = pgTable(
+  "runner_reservation",
+  {
+    runId: text("run_id")
+      .primaryKey()
+      .references(() => run.id),
+    runnerId: text("runner_id")
+      .notNull()
+      .references(() => runner.id),
+    instanceId: text("instance_id").notNull(),
+    expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
+  },
+  (table) => [index("runner_reservation_runner").on(table.runnerId, table.expiresAt)],
+);
+
 export const runnerHostStatus = pgTable(
   "runner_host_status",
   {
