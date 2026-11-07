@@ -30,30 +30,6 @@ src/db/ci-rounds.ts | const row = db .query<{ n: number | null }, [string, numbe
 src/db/closeout-bypass.ts | db.run( | not yet converted to Drizzle
 src/db/closeout-bypass.ts | return db .query<Row, [string]>( | not yet converted to Drizzle
 src/db/closeout-bypass.ts | const updated = db.run( | not yet converted to Drizzle
-src/db/closeout-progress.ts | db.run( | not yet converted to Drizzle
-src/db/closeout-progress.ts | const existing = db .query< | not yet converted to Drizzle
-src/db/closeout-progress.ts | db.run( | not yet converted to Drizzle
-src/db/closeout-progress.ts | db.run( | not yet converted to Drizzle
-src/db/closeout-progress.ts | const row = db .query<{ stdout: string; stderr: string }, [string, string]>( | not yet converted to Drizzle
-src/db/closeout-progress.ts | db.run( | not yet converted to Drizzle
-src/db/closeout-progress.ts | db.run("UPDATE closeout_progress SET updated_at = ? WHERE id = ?", [now, progressId]); | not yet converted to Drizzle
-src/db/closeout-progress.ts | db.run( | not yet converted to Drizzle
-src/db/closeout-progress.ts | db.run( | not yet converted to Drizzle
-src/db/closeout-progress.ts | return db .query<{ head: string; policyDigest: string }, [string]>( | not yet converted to Drizzle
-src/db/closeout-progress.ts | return db .query<{ digest: string; recheck: string | null; decision: string | null }, [string, string]>( | not yet converted to Drizzle
-src/db/closeout-progress.ts | db .query<{ policyDigest: string }, [string, string]>( | not yet converted to Drizzle
-src/db/closeout-progress.ts | const run = db .query< | not yet converted to Drizzle
-src/db/closeout-progress.ts | return db .query<{ id: string; itemId: string; taskId: string; head: string; at: number }, []>( | not yet converted to Drizzle
-src/db/closeout-progress.ts | return db .query< | not yet converted to Drizzle
-src/db/closeout-progress.ts | const rows = db .query<{ head: string; startedAt: number }, [string]>( | not yet converted to Drizzle
-src/db/closeout-progress.ts | const run = db .query<ProgressSql, [string, string]>( | not yet converted to Drizzle
-src/db/closeout-progress.ts | const steps = db .query<StepSql, [string]>( | not yet converted to Drizzle
-src/db/closeout-progress.ts | const runs = db .query<ProgressSql, []>("SELECT * FROM closeout_progress ORDER BY updated_at, id") | not yet converted to Drizzle
-src/db/closeout-progress.ts | const steps = db .query<StepSql, []>("SELECT * FROM closeout_step ORDER BY ordinal, step_id") | not yet converted to Drizzle
-src/db/closeout-progress.ts | const runs = db .query<Omit<CloseoutProgressState, "steps">, []>( | not yet converted to Drizzle
-src/db/closeout-progress.ts | for (const step of db .query<{ progressId: string; state: CloseoutStepRecord["state"] }, []>( | not yet converted to Drizzle
-src/db/closeout-progress.ts | db.run( | not yet converted to Drizzle
-src/db/closeout-progress.ts | db.run( | not yet converted to Drizzle
 src/db/closeout-rounds.ts | db.run( | not yet converted to Drizzle
 src/db/closeout-rounds.ts | ? db.query<RoundRow, []>(`SELECT * FROM closeout_round ORDER BY started_at, rowid`).all() | not yet converted to Drizzle
 src/db/closeout-rounds.ts | : db .query<RoundRow, [string]>( | not yet converted to Drizzle
