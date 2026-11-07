@@ -910,6 +910,7 @@ export { itemActivityFacts, type ItemActivityFacts } from "./item-activity";
 export { itemWaitSince, keepItemWaits } from "./item-wait";
 export {
   enqueueRunnerSetupCheck,
+  enqueueRunnerSetupCheckSteps,
   getRunnerSetupHold,
   holdForRunnerSetup,
   listRunnerSetupHolds,

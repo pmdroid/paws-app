@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
+import { JOB_KIND } from "../src/core";
 import {
+  enqueueRunnerSetupCheckSteps,
   getRunnerSetupHoldSteps,
   holdForRunnerSetupSteps,
   listRunnerSetupHoldsSteps,
@@ -99,6 +102,30 @@ forEachDialect((open) => {
       );
       expect(await db.run((q) => releaseRunnerSetupHoldSteps(q, "item", 5))).toBe(true);
       expect(await db.run((q) => takeRunnerSetupResumeSteps(q, "item", "run"))).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+
+  test("one setup check is pending per owner", async () => {
+    const { db, close } = await open();
+    try {
+      expect(await db.run((q) => enqueueRunnerSetupCheckSteps(q, "u", 1))).toBe(true);
+      expect(await db.run((q) => enqueueRunnerSetupCheckSteps(q, "u", 2))).toBe(false);
+      expect(await db.run((q) => enqueueRunnerSetupCheckSteps(q, "v", 3))).toBe(true);
+      const jobs = await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ runAt: q.t.job.runAt, maxAttempts: q.t.job.maxAttempts })
+            .from(q.t.job)
+            .where(eq(q.t.job.queue, JOB_KIND.runnerSetupCheck))
+            .orderBy(q.t.job.runAt),
+        ),
+      );
+      expect(jobs).toEqual([
+        { runAt: 1, maxAttempts: 3 },
+        { runAt: 3, maxAttempts: 3 },
+      ]);
     } finally {
       await close();
     }

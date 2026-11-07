@@ -1,9 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { enqueueJob } from "./jobs";
-import { orm } from "./orm";
-import { job } from "./schema";
+import { emitJobReady, enqueueJobSteps } from "./jobs";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 /**
@@ -168,28 +166,44 @@ export function takeRunnerSetupResume(db: Database, itemId: string, runId: strin
   return settled(sqliteDb(db).run((q) => takeRunnerSetupResumeSteps(q, itemId, runId)));
 }
 
-/**
- * Queue one `runner_setup.check` job for `ownerUserId` unless one is already pending, the same
- * rule the triggers of migration 144 follow.
- */
-export function enqueueRunnerSetupCheck(db: Database, ownerUserId: string, now: number): void {
-  const pending = orm(db)
-    .select({ one: sql`1` })
-    .from(job)
-    .where(
-      and(
-        eq(job.queue, JOB_KIND.runnerSetupCheck),
-        eq(job.status, "pending"),
-        sql`json_extract(${job.payload},'$.ownerUserId') = ${ownerUserId}`,
-      ),
-    )
-    .limit(1)
-    .get();
-  if (pending) return;
-  enqueueJob(db, {
+export function* enqueueRunnerSetupCheckSteps(
+  q: Q,
+  ownerUserId: string,
+  now: number,
+): Steps<boolean> {
+  const { job } = q.t;
+  const owner =
+    q.dialect === "sqlite"
+      ? sql`json_extract(${job.payload},'$.ownerUserId')`
+      : sql`(${job.payload}->>'ownerUserId')`;
+  const pending = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.runnerSetupCheck),
+          eq(job.status, "pending"),
+          sql`${owner} = ${ownerUserId}`,
+        ),
+      )
+      .limit(1),
+  );
+  if (pending) return false;
+  yield* enqueueJobSteps(q, {
     queue: JOB_KIND.runnerSetupCheck,
     payload: { ownerUserId },
     maxAttempts: 3,
     now,
   });
+  return true;
+}
+
+/**
+ * Queue one `runner_setup.check` job for `ownerUserId` unless one is already pending, the same
+ * rule the triggers of migration 144 follow.
+ */
+export function enqueueRunnerSetupCheck(db: Database, ownerUserId: string, now: number): void {
+  if (settled(sqliteDb(db).run((q) => enqueueRunnerSetupCheckSteps(q, ownerUserId, now))))
+    emitJobReady(db);
 }
