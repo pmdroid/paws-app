@@ -4,9 +4,9 @@ import {
   and,
   desc,
   eq,
-  getTableColumns,
   gt,
   inArray,
+  isNotNull,
   isNull,
   lte,
   ne,
@@ -25,10 +25,8 @@ import {
   retryAfterMs,
   retryBackoffMs,
 } from "../core";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { journal } from "./journal";
-import { orm } from "./orm";
-import { jobActivation, job as jobTable, workItem } from "./schema";
-import { immediate } from "./tx";
 
 export const JOB_STATUSES = ["pending", "running", "done", "dead", "cancelled"] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
@@ -66,7 +64,7 @@ export type Job = {
   fireCount: number;
 };
 
-type JobRow = typeof jobTable.$inferSelect;
+type JobRow = Q["t"]["job"]["$inferSelect"];
 
 export type ClaimOptions = {
   workerId?: string;
@@ -78,42 +76,65 @@ export type ClaimOptions = {
 
 const EXCLUSIVE_QUEUES = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify] as const;
 
-const jobItemId = drizzleSql`json_extract(payload,'$.itemId')`;
-const jobPayload = drizzleSql`job.payload`;
-
-function itemVersionOf(payload: SQL): SQL<number | null> {
-  return drizzleSql`(SELECT version FROM work_item WHERE id=json_extract(${payload},'$.itemId'))`;
+/** The text at `key` of a JSON value: `json_extract` on SQLite, `->>` on Postgres. */
+function jsonTextSql(dialect: Q["dialect"], json: string, key: string): string {
+  return dialect === "sqlite" ? `json_extract(${json}, '$.${key}')` : `(${json}->>'${key}')`;
 }
 
-function claimable(now: number): SQL | undefined {
+export function jsonItemId(q: Q, json: SQL): SQL<string | null> {
+  return q.dialect === "sqlite"
+    ? drizzleSql`json_extract(${json},'$.itemId')`
+    : drizzleSql`(${json}->>'itemId')`;
+}
+
+function jobItemId(q: Q): SQL<string | null> {
+  return jsonItemId(q, drizzleSql`${q.t.job.payload}`);
+}
+
+/** The JSON text bound as a parameter, cast to jsonb on Postgres. */
+function jsonParam(q: Q, text: string): SQL {
+  return q.dialect === "sqlite" ? drizzleSql`${text}` : drizzleSql`${text}::jsonb`;
+}
+
+/** A payload as the column stores it: JSON text on SQLite, jsonb on Postgres. */
+function payloadValue(q: Q, payload: unknown): string {
+  return (q.dialect === "sqlite" ? JSON.stringify(payload) : payload) as string;
+}
+
+export function itemVersionOf(q: Q, payload: SQL): SQL<number | null> {
+  return drizzleSql`(SELECT version FROM work_item WHERE id=${jsonItemId(q, payload)})`;
+}
+
+function claimable(q: Q, now: number): SQL | undefined {
+  const { job } = q.t;
   return or(
-    eq(jobTable.status, "pending"),
-    and(
-      eq(jobTable.status, "running"),
-      or(isNull(jobTable.lockedUntil), lte(jobTable.lockedUntil, now)),
-    ),
+    eq(job.status, "pending"),
+    and(eq(job.status, "running"), or(isNull(job.lockedUntil), lte(job.lockedUntil, now))),
   );
 }
 
-function updateLeased(
-  db: Database,
-  job: Job,
+function* updateLeasedSteps(
+  q: Q,
+  lease: Job,
   set: Partial<{ [K in keyof JobRow]: JobRow[K] | SQL }>,
   extra?: SQL,
-): number {
-  return orm(db)
-    .update(jobTable)
-    .set(set)
-    .where(
-      and(
-        eq(jobTable.id, job.id),
-        eq(jobTable.status, "running"),
-        eq(jobTable.lockedBy, job.lockedBy ?? drizzleSql`NULL`),
-        extra,
-      ),
-    )
-    .returning({ id: jobTable.id })
-    .all().length;
+) {
+  const { job } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .update(job)
+      .set(set)
+      .where(
+        and(
+          eq(job.id, lease.id),
+          eq(job.status, "running"),
+          eq(job.lockedBy, lease.lockedBy ?? drizzleSql`NULL`),
+          extra,
+        ),
+      )
+      .returning({ id: job.id }),
+  );
+  return rows.length;
 }
 
 const jobReadyListeners = new Set<(db: Database) => void>();
@@ -136,6 +157,11 @@ function emitJobReady(db: Database): void {
   }
 }
 
+/** The synchronous wrapper callers use until they become async. */
+function run<T>(db: Database, steps: (q: Q) => Steps<T>): T {
+  return settled(sqliteDb(db).run(steps));
+}
+
 function sqlLiteral(value: string): string {
   if (!/^[A-Za-z0-9._%:-]+$/.test(value)) throw new Error(`unsafe SQL literal: ${value}`);
   return `'${value}'`;
@@ -145,77 +171,67 @@ export function mergeLaneSql(alias: string): string {
   return `(${alias}.queue = ${sqlLiteral(MERGE_WORK.queue)} OR ${alias}.queue LIKE ${sqlLiteral(`${MERGE_WORK.queuePrefix}%`)})`;
 }
 
-const EXECUTION_SQL = `(candidate.queue IN (${EXCLUSIVE_QUEUES.map(sqlLiteral).join(", ")}))`;
-const ITEM_ID = "COALESCE(json_extract(candidate.payload, '$.itemId'), '')";
-const NEEDS_RESERVATION = `((candidate.queue = ${sqlLiteral(JOB_KIND.start)}
-  AND (json_extract(candidate.payload, '$.capacityWait') IS NULL OR EXISTS
-    (SELECT 1 FROM work_item mine WHERE mine.id=${ITEM_ID} AND mine.state='queued'))) OR
-  (candidate.queue = ${sqlLiteral(JOB_KIND.resume)} AND EXISTS
-    (SELECT 1 FROM work_item mine WHERE mine.id=${ITEM_ID} AND mine.state='queued')))`;
-const RESERVATION = `EXISTS (SELECT 1 FROM scheduler_admission a JOIN work_item mine ON mine.id=a.item_id
-  WHERE a.item_id=${ITEM_ID} AND a.job_id=candidate.id AND mine.state='queued' AND mine.cancel_requested=0
-  AND NOT EXISTS(SELECT 1 FROM run live WHERE live.item_id=mine.id AND live.status IN ('active','provisioning')))`;
-const SAME_ITEM = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
-    AND (held.locked_until IS NULL OR held.locked_until > ?) AND (${EXECUTION_SQL.replaceAll("candidate.", "held.")} OR ${mergeLaneSql("held")})
-    AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${ITEM_ID})`;
-const CLAIMABLE =
-  "(candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ?)))";
-const HELD_SAME_MERGE_LANE = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
-    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")}
-    AND EXISTS (SELECT 1 FROM merge_queue_entry place JOIN work_item placed ON placed.id = place.item_id
-      WHERE place.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
-        AND placed.state = 'merge_queue' AND placed.cancel_requested = 0
-        AND place.lane = COALESCE((SELECT own.lane FROM merge_queue_entry own WHERE own.item_id = ${ITEM_ID}), ''))
-    AND NOT (EXISTS (SELECT 1 FROM work_item_repository mine
-    JOIN work_item_repository other ON other.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
-    WHERE mine.item_id = ${ITEM_ID}
-      AND (lower(mine.owner) != lower(other.owner) OR lower(mine.repo) != lower(other.repo)))))`;
-
-function queueFilterSql(queueCount: number): string {
-  return queueCount > 0
-    ? ` AND candidate.queue IN (${Array.from({ length: queueCount }, () => "?").join(", ")})`
-    : "";
-}
-
-/** Shared by the claim and by the health check. Placeholders: run_at, then one `now` per lease cutoff. */
-function claimWhereSql(queueCount: number): string {
-  return (
-    "candidate.run_at <= ?" +
-    queueFilterSql(queueCount) +
-    ` AND ${CLAIMABLE} ` +
-    `AND NOT (${NEEDS_RESERVATION} AND NOT (${RESERVATION})) ` +
-    `AND NOT (${mergeLaneSql("candidate")} AND ${HELD_SAME_MERGE_LANE}) ` +
-    `AND NOT (${EXECUTION_SQL} AND ${SAME_ITEM}) `
-  );
+function executionSql(alias: string): string {
+  return `(${alias}.queue IN (${EXCLUSIVE_QUEUES.map(sqlLiteral).join(", ")}))`;
 }
 
 /**
- * One `UPDATE … RETURNING`. Lower priority numbers run first, then earlier run_at.
- * A running row whose lease has expired is reclaimable. No semicolon: one statement.
+ * Shared by the claim and by the health check, over `job AS candidate`.
  *
  * Queued starts and restarts need the scheduler's reservation. A start parked for a runner
  * slot already began, so it is claimed again without a new reservation (PAS-898). Jobs for
  * the same item and merge jobs in the same merge lane cannot hold overlapping leases. Other
  * items run independently.
  */
-export function claimJobSql(queueCount: number): string {
-  return (
-    "UPDATE job SET status = 'running', locked_by = ?, locked_until = ?, attempts = attempts + 1 " +
-    "WHERE id = (" +
-    "SELECT candidate.id FROM job AS candidate WHERE " +
-    claimWhereSql(queueCount) +
-    "ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1) RETURNING *"
-  );
+function claimWhere(q: Q, now: number, queues?: readonly string[]): SQL {
+  const raw = drizzleSql.raw;
+  const itemId = `COALESCE(${jsonTextSql(q.dialect, "candidate.payload", "itemId")}, '')`;
+  const heldItemId = `COALESCE(${jsonTextSql(q.dialect, "held.payload", "itemId")},'')`;
+  const needsReservation = `((candidate.queue = ${sqlLiteral(JOB_KIND.start)}
+  AND (${jsonTextSql(q.dialect, "candidate.payload", "capacityWait")} IS NULL OR EXISTS
+    (SELECT 1 FROM work_item mine WHERE mine.id=${itemId} AND mine.state='queued'))) OR
+  (candidate.queue = ${sqlLiteral(JOB_KIND.resume)} AND EXISTS
+    (SELECT 1 FROM work_item mine WHERE mine.id=${itemId} AND mine.state='queued')))`;
+  const reservation = `EXISTS (SELECT 1 FROM scheduler_admission a JOIN work_item mine ON mine.id=a.item_id
+  WHERE a.item_id=${itemId} AND a.job_id=candidate.id AND mine.state='queued' AND mine.cancel_requested=0
+  AND NOT EXISTS(SELECT 1 FROM run live WHERE live.item_id=mine.id AND live.status IN ('active','provisioning')))`;
+  const sameLane = `EXISTS (SELECT 1 FROM merge_queue_entry place JOIN work_item placed ON placed.id = place.item_id
+      WHERE place.item_id = ${heldItemId}
+        AND placed.state = 'merge_queue' AND placed.cancel_requested = 0
+        AND place.lane = COALESCE((SELECT own.lane FROM merge_queue_entry own WHERE own.item_id = ${itemId}), ''))
+    AND NOT (EXISTS (SELECT 1 FROM work_item_repository mine
+    JOIN work_item_repository other ON other.item_id = ${heldItemId}
+    WHERE mine.item_id = ${itemId}
+      AND (lower(mine.owner) != lower(other.owner) OR lower(mine.repo) != lower(other.repo))))`;
+  const queueFilter =
+    queues === undefined
+      ? drizzleSql``
+      : drizzleSql` AND candidate.queue IN (${drizzleSql.join(
+          queues.map((queue) => drizzleSql`${queue}`),
+          drizzleSql`, `,
+        )})`;
+  return drizzleSql`candidate.run_at <= ${now}${queueFilter}
+    AND (candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ${now})))
+    AND NOT (${raw(needsReservation)} AND NOT (${raw(reservation)}))
+    AND NOT (${raw(mergeLaneSql("candidate"))} AND EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+      AND (held.locked_until IS NULL OR held.locked_until > ${now}) AND ${raw(mergeLaneSql("held"))}
+      AND ${raw(sameLane)}))
+    AND NOT (${raw(executionSql("candidate"))} AND EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+      AND (held.locked_until IS NULL OR held.locked_until > ${now}) AND (${raw(executionSql("held"))} OR ${raw(mergeLaneSql("held"))})
+      AND ${raw(heldItemId)} = ${raw(itemId)}))`;
 }
 
-function bindSql(text: string, params: readonly (string | number)[]): SQL {
-  const parts = text.split("?");
-  if (parts.length !== params.length + 1) throw new Error("placeholder count does not match");
-  return drizzleSql.join(
-    parts.map((part, index) =>
-      index === 0 ? drizzleSql.raw(part) : drizzleSql`${params[index - 1]}${drizzleSql.raw(part)}`,
-    ),
+export function* actionableDueSteps(q: Q, now: number) {
+  const row = yield* q.one(
+    q.orm
+      .select({
+        count: drizzleSql<number>`count(*)`.mapWith(Number),
+        oldest: drizzleSql<number | null>`min(candidate.run_at)`.mapWith(Number),
+      })
+      .from(drizzleSql`job AS candidate`)
+      .where(claimWhere(q, now)),
   );
+  return { count: row?.count ?? 0, oldestRunAt: row?.oldest ?? null };
 }
 
 /** Due work the loop could claim right now. A start without a reservation is not included. */
@@ -223,49 +239,63 @@ export function actionableDue(
   db: Database,
   now: number,
 ): { count: number; oldestRunAt: number | null } {
-  const [row] = orm(db).all<{ count: number; oldest: number | null }>(
-    bindSql(
-      `SELECT count(*) AS count, min(candidate.run_at) AS oldest
-       FROM job AS candidate WHERE ${claimWhereSql(0)}`,
-      [now, now, now, now],
-    ),
-  );
-  return { count: row?.count ?? 0, oldestRunAt: row?.oldest ?? null };
+  return run(db, (q) => actionableDueSteps(q, now));
 }
 
-/** Insert in the same transaction as the state change that needs the work. */
-export function enqueueJob(db: Database, job: NewJob): number {
-  const now = job.now ?? Date.now();
-  const payload = JSON.stringify(job.payload ?? {});
-  const [row] = orm(db).all<{ id: number }>(
-    drizzleSql`INSERT INTO job (
-       queue, job_key, payload, priority, run_at, max_attempts, created_at, recurring_every_ms, item_version
-     ) VALUES (${job.queue}, ${job.jobKey ?? null}, ${payload}, ${job.priority ?? 5}, ${job.runAt ?? now},
-       ${job.maxAttempts ?? 10}, ${now}, ${job.recurringEveryMs ?? null}, ${itemVersionOf(drizzleSql`${payload}`)})
-     RETURNING id`,
+export function* enqueueJobSteps(q: Q, input: NewJob) {
+  const { job } = q.t;
+  const now = input.now ?? Date.now();
+  const payload = input.payload ?? {};
+  const row = yield* q.one(
+    q.orm
+      .insert(job)
+      .values({
+        queue: input.queue,
+        jobKey: input.jobKey ?? null,
+        payload: payloadValue(q, payload),
+        priority: input.priority ?? 5,
+        runAt: input.runAt ?? now,
+        maxAttempts: input.maxAttempts ?? 10,
+        createdAt: now,
+        recurringEveryMs: input.recurringEveryMs ?? null,
+        itemVersion: itemVersionOf(q, jsonParam(q, JSON.stringify(payload))),
+      })
+      .returning({ id: job.id }),
   );
   if (row === undefined) {
     throw new Error("enqueueJob did not return an id");
   }
-  emitJobReady(db);
   return row.id;
+}
+
+/** Insert in the same transaction as the state change that needs the work. */
+export function enqueueJob(db: Database, job: NewJob): number {
+  const id = run(db, (q) => enqueueJobSteps(q, job));
+  emitJobReady(db);
+  return id;
 }
 
 /**
  * Return the open row for this key when one exists. A finished key cannot be
  * inserted again (`job_key` is unique for the life of the table), so the
- * existing id is returned and the caller keeps the original row.
+ * existing id is returned and the caller keeps the original row. `inserted` says
+ * whether this call added the row.
  */
-export function enqueueJobOnce(db: Database, job: NewJob): number {
+export function* enqueueJobOnceSteps(q: Q, job: NewJob) {
   if (job.jobKey !== undefined) {
-    const existing = findByKey(db, job.jobKey);
-    if (existing) return existing.id;
+    const existing = yield* findByKeySteps(q, job.jobKey);
+    if (existing) return { id: existing.id, inserted: false };
   }
   try {
-    return enqueueJob(db, job);
+    // Under a key, a savepoint, so a duplicate leaves a Postgres transaction usable.
+    const id =
+      job.jobKey === undefined
+        ? yield* enqueueJobSteps(q, job)
+        : yield* q.transaction((tx) => enqueueJobSteps(tx, job));
+    return { id, inserted: true };
   } catch (error) {
     if (job.jobKey !== undefined && isUnique(error)) {
-      const existing = findByKey(db, job.jobKey);
+      const existing = yield* findByKeySteps(q, job.jobKey);
       if (existing) {
         journalCaught(
           error,
@@ -273,68 +303,117 @@ export function enqueueJobOnce(db: Database, job: NewJob): number {
           journalItemId(job.payload),
           "idempotent job already enqueued",
         );
-        return existing.id;
+        return { id: existing.id, inserted: false };
       }
     }
     throw error;
   }
 }
 
+export function enqueueJobOnce(db: Database, job: NewJob): number {
+  const { id, inserted } = run(db, (q) => enqueueJobOnceSteps(q, job));
+  if (inserted) emitJobReady(db);
+  return id;
+}
+
 /**
  * Explicitly arm a recurring logical operation. Active rows retain their payload and lease;
  * terminal rows receive fresh work and version fencing. Ordinary lifetime dedupe stays separate.
+ * `armed` says whether this call made a row pending.
  */
-export function reenqueueJob(
-  db: Database,
-  job: NewJob & { jobKey: string },
+export function* reenqueueJobSteps(
+  q: Q,
+  input: NewJob & { jobKey: string },
   payloadFor?: (previous: Job | null) => unknown,
-): { id: number; pending: boolean } {
-  return immediate(db, () => {
-    const previous = findByKey(db, job.jobKey);
-    if (previous && previous.queue !== job.queue)
-      throw new Error("Recurring job key belongs to a different queue");
-    if (previous && (previous.status === "pending" || previous.status === "running"))
-      return { id: previous.id, pending: previous.status === "pending" };
-    const payload = payloadFor ? payloadFor(previous) : job.payload;
-    if (!previous) return { id: enqueueJob(db, { ...job, payload }), pending: true };
-    const activation = orm(db)
-      .insert(jobActivation)
-      .values({ jobId: previous.id })
-      .returning({ id: jobActivation.id })
-      .get()!;
-    const now = job.now ?? Date.now();
-    const next = JSON.stringify(payload ?? {});
-    orm(db)
-      .update(jobTable)
+) {
+  const { job, jobActivation } = q.t;
+  const previous = yield* findByKeySteps(q, input.jobKey);
+  if (previous && previous.queue !== input.queue)
+    throw new Error("Recurring job key belongs to a different queue");
+  if (previous && (previous.status === "pending" || previous.status === "running"))
+    return { id: previous.id, pending: previous.status === "pending", armed: false };
+  const payload = payloadFor ? payloadFor(previous) : input.payload;
+  if (!previous)
+    return {
+      id: yield* enqueueJobSteps(q, { ...input, payload }),
+      pending: true,
+      armed: true,
+    };
+  const activation = (yield* q.one(
+    q.orm.insert(jobActivation).values({ jobId: previous.id }).returning({ id: jobActivation.id }),
+  ))!;
+  const now = input.now ?? Date.now();
+  const next = payload ?? {};
+  yield* q.exec(
+    q.orm
+      .update(job)
       .set({
         status: "pending",
-        payload: next,
+        payload: payloadValue(q, next),
         attempts: 0,
-        runAt: job.runAt ?? now,
-        itemVersion: itemVersionOf(drizzleSql`${next}`),
+        runAt: input.runAt ?? now,
+        itemVersion: itemVersionOf(q, jsonParam(q, JSON.stringify(next))),
         activationId: activation.id,
-        priority: job.priority ?? 5,
-        maxAttempts: job.maxAttempts ?? 10,
-        recurringEveryMs: job.recurringEveryMs ?? null,
+        priority: input.priority ?? 5,
+        maxAttempts: input.maxAttempts ?? 10,
+        recurringEveryMs: input.recurringEveryMs ?? null,
         lockedBy: null,
         lockedUntil: null,
         lastError: null,
         finishedAt: null,
       })
-      .where(eq(jobTable.id, previous.id))
-      .run();
-    emitJobReady(db);
-    return { id: previous.id, pending: true };
-  });
+      .where(eq(job.id, previous.id)),
+  );
+  return { id: previous.id, pending: true, armed: true };
+}
+
+export function reenqueueJob(
+  db: Database,
+  job: NewJob & { jobKey: string },
+  payloadFor?: (previous: Job | null) => unknown,
+): { id: number; pending: boolean } {
+  const { id, pending, armed } = settled(
+    sqliteDb(db).transaction((q) => reenqueueJobSteps(q, job, payloadFor)),
+  );
+  if (armed) emitJobReady(db);
+  return { id, pending };
+}
+
+export function* getJobSteps(q: Q, id: number) {
+  const row = yield* q.one(q.orm.select().from(q.t.job).where(eq(q.t.job.id, id)));
+  return row === undefined ? null : mapJob(q, row);
 }
 
 export function getJob(db: Database, id: number): Job | null {
-  const row = orm(db).select().from(jobTable).where(eq(jobTable.id, id)).get();
-  return row === undefined ? null : mapJob(row);
+  return run(db, (q) => getJobSteps(q, id));
+}
+
+export function* listJobsSteps(q: Q) {
+  const rows = yield* q.all(q.orm.select().from(q.t.job).orderBy(q.t.job.id));
+  return rows.map((row) => mapJob(q, row));
 }
 
 export function listJobs(db: Database): Job[] {
-  return orm(db).select().from(jobTable).orderBy(jobTable.id).all().map(mapJob);
+  return run(db, listJobsSteps);
+}
+
+export function* nextClaimableRunAtSteps(
+  q: Q,
+  options: { now?: number; queues?: readonly string[] } = {},
+) {
+  const { job } = q.t;
+  const queues = options.queues;
+  if (queues !== undefined && queues.length === 0) return null;
+  const now = options.now ?? Date.now();
+  const row = yield* q.one(
+    q.orm
+      .select({ runAt: drizzleSql<number | null>`MIN(${job.runAt})`.mapWith(Number) })
+      .from(job)
+      .where(
+        and(claimable(q, now), queues === undefined ? undefined : inArray(job.queue, [...queues])),
+      ),
+  );
+  return row?.runAt ?? null;
 }
 
 /**
@@ -345,39 +424,50 @@ export function nextClaimableRunAt(
   db: Database,
   options: { now?: number; queues?: readonly string[] } = {},
 ): number | null {
-  const queues = options.queues;
-  if (queues !== undefined && queues.length === 0) return null;
-  const now = options.now ?? Date.now();
-  const row = orm(db)
-    .select({ runAt: drizzleSql<number | null>`MIN(${jobTable.runAt})` })
-    .from(jobTable)
-    .where(
-      and(claimable(now), queues === undefined ? undefined : inArray(jobTable.queue, [...queues])),
-    )
-    .get();
-  return row?.runAt ?? null;
+  return run(db, (q) => nextClaimableRunAtSteps(q, options));
 }
 
-export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | null {
-  const queues = options.queues;
-  if (queues !== undefined && queues.length === 0) return null;
+/**
+ * One `UPDATE … RETURNING`. Lower priority numbers run first, then earlier run_at.
+ * A running row whose lease has expired is reclaimable.
+ */
+function claimJobQuery(q: Q, options: ClaimOptions) {
+  const { job } = q.t;
   const now = options.now ?? Date.now();
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
   const workerId = `${options.workerId ?? "paws"}:${randomUUID()}`;
-  const sql = claimJobSql(queues?.length ?? 0);
-  const binds: (string | number)[] = [workerId, now + leaseMs, now];
-  if (queues !== undefined) binds.push(...queues);
-  // Reclaim threshold, then the cutoff for a lease that still blocks a second item.
-  binds.push(now, now, now);
-  const row = db.query<Record<string, unknown>, Array<string | number>>(sql).get(...binds);
-  return row === null ? null : mapJob(fromColumnNames(row));
+  return q.orm
+    .update(job)
+    .set({
+      status: "running",
+      lockedBy: workerId,
+      lockedUntil: now + leaseMs,
+      attempts: drizzleSql`${job.attempts} + 1`,
+    })
+    .where(
+      eq(
+        job.id,
+        drizzleSql`(SELECT candidate.id FROM job AS candidate WHERE ${claimWhere(q, now, options.queues)}
+          ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1)`,
+      ),
+    )
+    .returning();
 }
 
-/** Succeeds only for the worker that holds the lease. A recurring row arms its next fire. */
-export function completeJob(db: Database, job: Job, now = Date.now()): boolean {
+export function* claimNextJobSteps(q: Q, options: ClaimOptions = {}) {
+  if (options.queues !== undefined && options.queues.length === 0) return null;
+  const row = yield* q.one(claimJobQuery(q, options));
+  return row === undefined ? null : mapJob(q, row);
+}
+
+export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | null {
+  return run(db, (q) => claimNextJobSteps(q, options));
+}
+
+export function* completeJobSteps(q: Q, job: Job, now = Date.now()) {
   if (job.recurringEveryMs !== null) {
     return (
-      updateLeased(db, job, {
+      (yield* updateLeasedSteps(q, job, {
         status: "pending",
         runAt: now + job.recurringEveryMs,
         attempts: 0,
@@ -385,11 +475,11 @@ export function completeJob(db: Database, job: Job, now = Date.now()): boolean {
         lockedUntil: null,
         finishedAt: null,
         lastError: null,
-        fireCount: drizzleSql`${jobTable.fireCount} + 1`,
-      }) > 0
+        fireCount: drizzleSql`${q.t.job.fireCount} + 1`,
+      })) > 0
     );
   }
-  const changed = updateLeased(db, job, {
+  const changed = yield* updateLeasedSteps(q, job, {
     status: "done",
     finishedAt: now,
     lockedBy: null,
@@ -400,16 +490,21 @@ export function completeJob(db: Database, job: Job, now = Date.now()): boolean {
   return true;
 }
 
-export function failJob(
-  db: Database,
+/** Succeeds only for the worker that holds the lease. A recurring row arms its next fire. */
+export function completeJob(db: Database, job: Job, now = Date.now()): boolean {
+  return run(db, (q) => completeJobSteps(q, job, now));
+}
+
+export function* failJobSteps(
+  q: Q,
   job: Job,
   error: unknown,
   options: { now?: number; baseMs?: number; capMs?: number } = {},
-): Job | null {
+) {
   const now = options.now ?? Date.now();
   const message = errorText(error);
   if (job.recurringEveryMs !== null && job.attempts >= job.maxAttempts) {
-    const changed = updateLeased(db, job, {
+    const changed = yield* updateLeasedSteps(q, job, {
       status: "pending",
       runAt: now + job.recurringEveryMs,
       attempts: 0,
@@ -418,7 +513,7 @@ export function failJob(
       finishedAt: null,
       lastError: message,
     });
-    return changed > 0 ? getJob(db, job.id) : null;
+    return changed > 0 ? yield* getJobSteps(q, job.id) : null;
   }
   if (job.attempts < job.maxAttempts) {
     const delay = Math.max(
@@ -429,17 +524,17 @@ export function failJob(
       ),
       retryAfterMs(error) ?? 0,
     );
-    const changed = updateLeased(db, job, {
+    const changed = yield* updateLeasedSteps(q, job, {
       status: "pending",
       runAt: now + delay,
       lockedBy: null,
       lockedUntil: null,
       lastError: message,
-      itemVersion: itemVersionOf(jobPayload),
+      itemVersion: itemVersionOf(q, drizzleSql`${q.t.job.payload}`),
     });
-    return changed > 0 ? getJob(db, job.id) : null;
+    return changed > 0 ? yield* getJobSteps(q, job.id) : null;
   }
-  const changed = updateLeased(db, job, {
+  const changed = yield* updateLeasedSteps(q, job, {
     status: "dead",
     finishedAt: now,
     lockedBy: null,
@@ -448,16 +543,47 @@ export function failJob(
   });
   if (changed === 0) return null;
   journalOutcome({ ...job, status: "dead", lastError: message });
-  return getJob(db, job.id);
+  return yield* getJobSteps(q, job.id);
 }
 
-export function isJobCurrent(db: Database, job: Job): boolean {
-  const current = getJob(db, job.id);
+export function failJob(
+  db: Database,
+  job: Job,
+  error: unknown,
+  options: { now?: number; baseMs?: number; capMs?: number } = {},
+): Job | null {
+  return run(db, (q) => failJobSteps(q, job, error, options));
+}
+
+export function* isJobCurrentSteps(q: Q, job: Job) {
+  const current = yield* getJobSteps(q, job.id);
   return (
     current?.status === "running" &&
     current.lockedBy === job.lockedBy &&
     current.activationId === job.activationId
   );
+}
+
+export function isJobCurrent(db: Database, job: Job): boolean {
+  return run(db, (q) => isJobCurrentSteps(q, job));
+}
+
+export function* hasLiveJobSteps(q: Q, itemId: string, now: number, exceptJobId?: number) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: drizzleSql`1` })
+      .from(job)
+      .where(
+        and(
+          eq(job.status, "running"),
+          gt(job.lockedUntil, now),
+          eq(jobItemId(q), itemId),
+          ne(job.id, exceptJobId ?? -1),
+        ),
+      ),
+  );
+  return row !== undefined;
 }
 
 /** Whether a claimed job with an unexpired lease, other than `exceptJobId`, is working on the item. */
@@ -467,24 +593,43 @@ export function hasLiveJob(
   now: number,
   exceptJobId?: number,
 ): boolean {
-  return (
-    orm(db)
-      .select({ one: drizzleSql`1` })
-      .from(jobTable)
-      .where(
-        and(
-          eq(jobTable.status, "running"),
-          gt(jobTable.lockedUntil, now),
-          eq(jobItemId, itemId),
-          ne(jobTable.id, exceptJobId ?? -1),
-        ),
-      )
-      .get() !== undefined
-  );
+  return run(db, (q) => hasLiveJobSteps(q, itemId, now, exceptJobId));
+}
+
+export function* extendJobLeaseSteps(q: Q, job: Job, now: number, leaseMs: number) {
+  return (yield* updateLeasedSteps(q, job, { lockedUntil: now + leaseMs })) > 0;
 }
 
 export function extendJobLease(db: Database, job: Job, now: number, leaseMs: number): boolean {
-  return updateLeased(db, job, { lockedUntil: now + leaseMs }) > 0;
+  return run(db, (q) => extendJobLeaseSteps(q, job, now, leaseMs));
+}
+
+export function* parkLeasedJobSteps(
+  q: Q,
+  job: Job,
+  input: { runAt: number; payload: unknown; attempts: number; now: number },
+) {
+  const { runAt } = q.t.job;
+  const earlier =
+    q.dialect === "sqlite"
+      ? drizzleSql`MIN(${runAt}, ${input.runAt})`
+      : drizzleSql`LEAST(${runAt}, ${input.runAt})`;
+  return (
+    (yield* updateLeasedSteps(
+      q,
+      job,
+      {
+        status: "pending",
+        runAt: drizzleSql`CASE WHEN ${runAt} > ${job.runAt} THEN ${earlier} ELSE ${input.runAt} END`,
+        attempts: Math.max(0, input.attempts),
+        lockedBy: null,
+        lockedUntil: null,
+        payload: input.payload === undefined ? undefined : payloadValue(q, input.payload),
+        itemVersion: itemVersionOf(q, drizzleSql`${q.t.job.payload}`),
+      },
+      gt(q.t.job.lockedUntil, input.now),
+    )) > 0
+  );
 }
 
 export function parkLeasedJob(
@@ -492,39 +637,74 @@ export function parkLeasedJob(
   job: Job,
   input: { runAt: number; payload: unknown; attempts: number; now: number },
 ): boolean {
-  return (
-    updateLeased(
-      db,
-      job,
-      {
-        status: "pending",
-        runAt: drizzleSql`CASE WHEN ${jobTable.runAt} > ${job.runAt} THEN MIN(${jobTable.runAt}, ${input.runAt}) ELSE ${input.runAt} END`,
-        attempts: Math.max(0, input.attempts),
-        lockedBy: null,
-        lockedUntil: null,
-        payload: JSON.stringify(input.payload),
-        itemVersion: itemVersionOf(jobPayload),
-      },
-      gt(jobTable.lockedUntil, input.now),
-    ) > 0
-  );
+  return run(db, (q) => parkLeasedJobSteps(q, job, input));
 }
 
-export function retryLeasedJob(db: Database, job: Job, runAt: number, error: string): boolean {
+export function* retryLeasedJobSteps(q: Q, job: Job, runAt: number, error: string) {
   return (
-    updateLeased(db, job, {
+    (yield* updateLeasedSteps(q, job, {
       status: "pending",
       runAt,
       lockedBy: null,
       lockedUntil: null,
       lastError: error,
-      itemVersion: itemVersionOf(jobPayload),
-    }) > 0
+      itemVersion: itemVersionOf(q, drizzleSql`${q.t.job.payload}`),
+    })) > 0
   );
 }
 
+export function retryLeasedJob(db: Database, job: Job, runAt: number, error: string): boolean {
+  return run(db, (q) => retryLeasedJobSteps(q, job, runAt, error));
+}
+
+export function* noteJobErrorSteps(q: Q, id: number, message: string) {
+  yield* q.exec(q.orm.update(q.t.job).set({ lastError: message }).where(eq(q.t.job.id, id)));
+}
+
 export function noteJobError(db: Database, id: number, message: string): void {
-  orm(db).update(jobTable).set({ lastError: message }).where(eq(jobTable.id, id)).run();
+  run(db, (q) => noteJobErrorSteps(q, id, message));
+}
+
+type CancelOpenJobsInput = {
+  reason: string;
+  now?: number;
+  exceptId?: number;
+  itemId?: string;
+  mergeLane?: boolean;
+};
+
+export function* cancelOpenJobsSteps(q: Q, input: CancelOpenJobsInput) {
+  const { job } = q.t;
+  const now = input.now ?? Date.now();
+  const itemId = input.itemId ?? null;
+  const merge = input.mergeLane === true ? 1 : 0;
+  const exceptId = input.exceptId ?? null;
+  if (itemId === null && merge === 0) return 0;
+  const rows = yield* q.all(
+    q.orm
+      .update(job)
+      .set({
+        status: "cancelled",
+        lastError: input.reason,
+        lockedBy: null,
+        lockedUntil: null,
+        finishedAt: now,
+      })
+      .where(
+        and(
+          inArray(job.status, ["pending", "running"]),
+          ne(job.queue, "core.command"),
+          exceptId === null ? undefined : ne(job.id, exceptId),
+          or(
+            itemId === null ? undefined : eq(jobItemId(q), itemId),
+            merge === 1 ? drizzleSql.raw(mergeLaneSql("job")) : undefined,
+          ),
+        ),
+      )
+      .returning(),
+  );
+  for (const row of rows) journalOutcome(mapJob(q, row));
+  return rows.length;
 }
 
 /**
@@ -533,45 +713,8 @@ export function noteJobError(db: Database, id: number, message: string): void {
  * Cancelling a job does not resolve a remote merge outcome or clear its durable marker.
  * `core.command` rows are left for the drain that is applying the command.
  */
-export function cancelOpenJobs(
-  db: Database,
-  input: {
-    reason: string;
-    now?: number;
-    exceptId?: number;
-    itemId?: string;
-    mergeLane?: boolean;
-  },
-): number {
-  const now = input.now ?? Date.now();
-  const itemId = input.itemId ?? null;
-  const merge = input.mergeLane === true ? 1 : 0;
-  const exceptId = input.exceptId ?? null;
-  if (itemId === null && merge === 0) return 0;
-  const rows = orm(db)
-    .update(jobTable)
-    .set({
-      status: "cancelled",
-      lastError: input.reason,
-      lockedBy: null,
-      lockedUntil: null,
-      finishedAt: now,
-    })
-    .where(
-      and(
-        inArray(jobTable.status, ["pending", "running"]),
-        ne(jobTable.queue, "core.command"),
-        exceptId === null ? undefined : ne(jobTable.id, exceptId),
-        or(
-          itemId === null ? undefined : eq(jobItemId, itemId),
-          merge === 1 ? drizzleSql.raw(mergeLaneSql("job")) : undefined,
-        ),
-      ),
-    )
-    .returning()
-    .all();
-  for (const row of rows) journalOutcome(mapJob(row));
-  return rows.length;
+export function cancelOpenJobs(db: Database, input: CancelOpenJobsInput): number {
+  return run(db, (q) => cancelOpenJobsSteps(q, input));
 }
 
 /** Item jobs journal every outcome. Any job that goes dead journals, so none dies unseen. */
@@ -590,24 +733,18 @@ function journalOutcome(job: Job): void {
   );
 }
 
-function findByKey(db: Database, jobKey: string): Job | null {
-  const row = orm(db).select().from(jobTable).where(eq(jobTable.jobKey, jobKey)).get();
-  return row ? mapJob(row) : null;
+function* findByKeySteps(q: Q, jobKey: string) {
+  const row = yield* q.one(q.orm.select().from(q.t.job).where(eq(q.t.job.jobKey, jobKey)));
+  return row ? mapJob(q, row) : null;
 }
 
-function fromColumnNames(row: Record<string, unknown>): JobRow {
-  return Object.fromEntries(
-    Object.entries(getTableColumns(jobTable)).map(([key, column]) => [key, row[column.name]]),
-  ) as JobRow;
-}
-
-function mapJob(row: JobRow): Job {
+function mapJob(q: Q, row: JobRow): Job {
   return {
     id: row.id,
     activationId: row.activationId,
     queue: row.queue,
     jobKey: row.jobKey,
-    payload: JSON.parse(row.payload) as unknown,
+    payload: q.dialect === "sqlite" ? (JSON.parse(row.payload as string) as unknown) : row.payload,
     priority: row.priority,
     runAt: row.runAt,
     status: row.status as JobStatus,
@@ -623,25 +760,63 @@ function mapJob(row: JobRow): Job {
   };
 }
 
+/** SQLite names the constraint; Postgres reports SQLSTATE 23505. */
 function isUnique(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const code = "code" in error ? String(error.code) : "";
-  return code.includes("CONSTRAINT") || error.message.includes("UNIQUE");
+  const errno = "errno" in error ? String(error.errno) : "";
+  return (
+    code.includes("CONSTRAINT") ||
+    code === "23505" ||
+    errno === "23505" ||
+    error.message.includes("UNIQUE") ||
+    error.message.includes("duplicate key")
+  );
 }
 
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export function* jobVersionCurrentSteps(q: Q, job: Pick<Job, "id" | "activationId">) {
+  const { job: jobTable, workItem } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ expected: jobTable.itemVersion, current: workItem.version })
+      .from(jobTable)
+      .leftJoin(workItem, eq(workItem.id, jobItemId(q)))
+      .where(and(eq(jobTable.id, job.id), eq(jobTable.activationId, job.activationId))),
+  );
+  return row !== undefined && (row.expected === null || row.expected === row.current);
+}
+
 /** The item's version when this job was created, checked before starting side effects. */
 export function jobVersionCurrent(db: Database, job: Pick<Job, "id" | "activationId">): boolean {
-  const row = orm(db)
-    .select({ expected: jobTable.itemVersion, current: workItem.version })
-    .from(jobTable)
-    .leftJoin(workItem, eq(workItem.id, drizzleSql`json_extract(${jobTable.payload},'$.itemId')`))
-    .where(and(eq(jobTable.id, job.id), eq(jobTable.activationId, job.activationId)))
-    .get();
-  return row !== undefined && (row.expected === null || row.expected === row.current);
+  return run(db, (q) => jobVersionCurrentSteps(q, job));
+}
+
+export function* latestItemJobIdSteps(
+  q: Q,
+  itemId: string,
+  queues: readonly string[],
+  statuses: readonly string[],
+) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: job.id })
+      .from(job)
+      .where(
+        and(
+          inArray(job.status, [...statuses]),
+          inArray(job.queue, [...queues]),
+          eq(jobItemId(q), itemId),
+        ),
+      )
+      .orderBy(desc(job.id))
+      .limit(1),
+  );
+  return row?.id ?? null;
 }
 
 export function latestItemJobId(
@@ -650,31 +825,32 @@ export function latestItemJobId(
   queues: readonly string[],
   statuses: readonly string[],
 ): number | null {
-  return (
-    orm(db)
-      .select({ id: jobTable.id })
-      .from(jobTable)
-      .where(
-        and(
-          inArray(jobTable.status, statuses),
-          inArray(jobTable.queue, queues),
-          eq(jobItemId, itemId),
-        ),
-      )
-      .orderBy(desc(jobTable.id))
-      .limit(1)
-      .get()?.id ?? null
+  return run(db, (q) => latestItemJobIdSteps(q, itemId, queues, statuses));
+}
+
+export function* itemJobRunningSteps(q: Q, queue: string, itemId: string) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: drizzleSql`1` })
+      .from(job)
+      .where(and(eq(job.queue, queue), eq(job.status, "running"), eq(jobItemId(q), itemId)))
+      .limit(1),
   );
+  return row !== undefined;
 }
 
 export function itemJobRunning(db: Database, queue: string, itemId: string): boolean {
-  return (
-    orm(db)
-      .select({ one: drizzleSql`1` })
-      .from(jobTable)
-      .where(and(eq(jobTable.queue, queue), eq(jobTable.status, "running"), eq(jobItemId, itemId)))
-      .limit(1)
-      .get() !== undefined
+  return run(db, (q) => itemJobRunningSteps(q, queue, itemId));
+}
+
+export function* cancelPendingItemJobsSteps(q: Q, queue: string, itemId: string, now: number) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({ status: "cancelled", finishedAt: now })
+      .where(and(eq(job.queue, queue), eq(job.status, "pending"), eq(jobItemId(q), itemId))),
   );
 }
 
@@ -684,35 +860,59 @@ export function cancelPendingItemJobs(
   itemId: string,
   now: number,
 ): void {
-  orm(db)
-    .update(jobTable)
-    .set({ status: "cancelled", finishedAt: now })
-    .where(and(eq(jobTable.queue, queue), eq(jobTable.status, "pending"), eq(jobItemId, itemId)))
-    .run();
+  run(db, (q) => cancelPendingItemJobsSteps(q, queue, itemId, now));
+}
+
+export function* cancelAdmittedJobSteps(q: Q, id: number, now: number) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({ status: "cancelled", finishedAt: now, lockedBy: null, lockedUntil: null })
+      .where(
+        and(
+          eq(job.id, id),
+          or(eq(job.status, "pending"), and(eq(job.status, "running"), lte(job.lockedUntil, now))),
+        ),
+      ),
+  );
 }
 
 export function cancelAdmittedJob(db: Database, id: number, now: number): void {
-  orm(db)
-    .update(jobTable)
-    .set({ status: "cancelled", finishedAt: now, lockedBy: null, lockedUntil: null })
-    .where(
-      and(
-        eq(jobTable.id, id),
-        or(
-          eq(jobTable.status, "pending"),
-          and(eq(jobTable.status, "running"), lte(jobTable.lockedUntil, now)),
-        ),
-      ),
-    )
-    .run();
+  run(db, (q) => cancelAdmittedJobSteps(q, id, now));
+}
+
+export function* runPendingJobNowSteps(q: Q, id: number, now: number) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({ runAt: now })
+      .where(and(eq(job.id, id), eq(job.status, "pending"), gt(job.runAt, now))),
+  );
 }
 
 export function runPendingJobNow(db: Database, id: number, now: number): void {
-  orm(db)
-    .update(jobTable)
-    .set({ runAt: now })
-    .where(and(eq(jobTable.id, id), eq(jobTable.status, "pending"), gt(jobTable.runAt, now)))
-    .run();
+  run(db, (q) => runPendingJobNowSteps(q, id, now));
+}
+
+export function* leasedJobsForItemSteps(q: Q, queue: string, itemId: string, now: number) {
+  const { job } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: job.id, attempts: job.attempts, worker: job.lockedBy })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, queue),
+          eq(job.status, "running"),
+          eq(jobItemId(q), itemId),
+          isNotNull(job.lockedBy),
+          gt(job.lockedUntil, now),
+        ),
+      ),
+  );
+  return rows as { id: number; attempts: number; worker: string }[];
 }
 
 export function leasedJobsForItem(
@@ -721,8 +921,5 @@ export function leasedJobsForItem(
   itemId: string,
   now: number,
 ): { id: number; attempts: number; worker: string }[] {
-  return orm(db).all<{ id: number; attempts: number; worker: string }>(
-    drizzleSql`SELECT id,attempts,locked_by AS worker FROM job WHERE queue=${queue} AND status='running'
-         AND json_extract(payload,'$.itemId')=${itemId} AND locked_by IS NOT NULL AND locked_until>${now}`,
-  );
+  return run(db, (q) => leasedJobsForItemSteps(q, queue, itemId, now));
 }

@@ -221,12 +221,13 @@ test.each(["linear", "push"] as const)(
           : "20261031T1931_risk_auto_context",
     });
     insertQueuedItem(db, { id: "legacy", now: 1 });
-    const id = enqueueJob(db, {
-      queue: JOB_KIND.resume,
-      jobKey: "linear-turn:legacy:1",
-      payload: { itemId: "legacy" },
-      now: 1,
-    });
+    // A row as the pre-activation schema stored it; enqueueJob() names every current column.
+    const { id } = db
+      .query<{ id: number }, [string]>(
+        `INSERT INTO job (queue, job_key, payload, run_at, created_at)
+         VALUES (?, 'linear-turn:legacy:1', '{"itemId":"legacy"}', 1, 1) RETURNING id`,
+      )
+      .get(JOB_KIND.resume)!;
     db.run(
       "INSERT INTO closeout_retry_window(job_id,item_id,retry_baseline) VALUES (?, 'legacy', '[\"old\"]')",
       [id],
