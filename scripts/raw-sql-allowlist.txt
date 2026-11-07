@@ -47,9 +47,6 @@ src/db/agent-accounts.ts | const row = db .query<Flags<CommandAccount, "named">,
 src/db/agent-accounts.ts | const row = db .query<Flags<AgentAccountBinding, "legacy">, [string, string]>( | not yet converted to Drizzle
 src/db/agent-accounts.ts | db .query<{ concurrency: number | null }, [string]>( | not yet converted to Drizzle
 src/db/agent-accounts.ts | return db .query<{ count: number }, [string, number, string | null, number]>( | not yet converted to Drizzle
-src/db/agent-closeout.ts | db .query<{ last: number | null }, [string]>( | not yet converted to Drizzle
-src/db/agent-closeout.ts | db.run( | not yet converted to Drizzle
-src/db/agent-closeout.ts | return db .query<EventSql, string[]>( | not yet converted to Drizzle
 src/db/ci-reruns.ts | db .query<{ one: number }, [string, string]>( | not yet converted to Drizzle
 src/db/ci-reruns.ts | db.run( | not yet converted to Drizzle
 src/db/ci-reruns.ts | return db .query<CiRerunRow, [string]>("SELECT * FROM ci_rerun WHERE item_id = ? ORDER BY at, head_sha") | not yet converted to Drizzle

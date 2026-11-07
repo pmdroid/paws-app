@@ -1,7 +1,9 @@
-import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
+import { asc, eq, inArray, max } from "drizzle-orm";
+import { journalCaught } from "../journal";
 import { CLOSEOUT_OUTPUT_CAP_BYTES } from "./closeout-progress";
-import { immediate } from "./tx";
+import { settled, sqliteDb, type Q } from "./db";
+import type * as pgSchema from "./schema-pg";
 
 export type AgentCloseoutCheck = {
   id: string;
@@ -56,31 +58,56 @@ export type AgentCloseoutEvent = {
   progress: AgentCloseoutProgress;
 };
 
-type EventSql = {
-  run_id: string;
-  item_id: string;
-  sequence: number;
-  at: number;
-  type: AgentCloseoutProgress["type"];
-  head: string;
-  max_attempts: number | null;
-  check_id: string | null;
-  kind: string | null;
-  command: string | null;
-  attempt: number | null;
-  state: "passed" | "failed" | "exhausted" | "cancelled" | null;
-  exit_code: number | null;
-  timed_out: number;
-  duration_ms: number | null;
-  stdout: string;
-  stderr: string;
-  truncated: number;
-  checks: string | null;
-  blocked: string | null;
-  base: string | null;
-  policy_digest: string | null;
-  clean: number | null;
-};
+type EventRow = typeof pgSchema.agentCloseoutEvent.$inferSelect;
+
+export function* recordAgentCloseoutSteps(
+  q: Q,
+  runId: string,
+  itemId: string,
+  progress: AgentCloseoutProgress,
+  now: number,
+) {
+  const { agentCloseoutEvent: event } = q.t;
+  const stdout = progress.type === "finished" ? keepTail(progress.stdout) : null;
+  const stderr = progress.type === "finished" ? keepTail(progress.stderr) : null;
+  const last = yield* q.one(
+    q.orm
+      .select({ last: max(event.sequence) })
+      .from(event)
+      .where(eq(event.runId, runId)),
+  );
+  yield* q.exec(
+    q.orm.insert(event).values({
+      runId,
+      sequence: (last?.last ?? 0) + 1,
+      itemId,
+      at: now,
+      type: progress.type,
+      head: progress.head,
+      maxAttempts: progress.maxAttempts,
+      checkId: progress.type === "report" ? null : progress.id,
+      kind: progress.type === "report" ? null : progress.kind,
+      command: progress.type === "report" ? null : progress.command,
+      attempt: progress.type === "report" ? null : progress.attempt,
+      state: progress.type === "finished" ? progress.state : null,
+      exitCode: progress.type === "finished" ? progress.exitCode : null,
+      timedOut: progress.type === "finished" && progress.timedOut ? 1 : 0,
+      durationMs: progress.type === "finished" ? progress.durationMs : null,
+      stdout: stdout?.text ?? "",
+      stderr: stderr?.text ?? "",
+      truncated:
+        progress.type === "finished" && (progress.truncated || stdout!.cut || stderr!.cut) ? 1 : 0,
+      checks: progress.type === "report" ? JSON.stringify(progress.checks) : null,
+      blocked: progress.type === "report" ? progress.blocked : null,
+      base: progress.type === "finished" ? (progress.base ?? null) : null,
+      policyDigest: progress.type === "finished" ? (progress.policyDigest ?? null) : null,
+      clean:
+        progress.type === "finished" && progress.clean !== undefined
+          ? Number(progress.clean)
+          : null,
+    }),
+  );
+}
 
 export function recordAgentCloseout(
   db: Database,
@@ -89,72 +116,37 @@ export function recordAgentCloseout(
   progress: AgentCloseoutProgress,
   now: number,
 ): void {
-  const stdout = progress.type === "finished" ? keepTail(progress.stdout) : null;
-  const stderr = progress.type === "finished" ? keepTail(progress.stderr) : null;
-  immediate(db, () => {
-    const sequence =
-      db
-        .query<{ last: number | null }, [string]>(
-          "SELECT MAX(sequence) AS last FROM agent_closeout_event WHERE run_id = ?",
-        )
-        .get(runId)!.last ?? 0;
-    db.run(
-      `INSERT INTO agent_closeout_event (
-         run_id, sequence, item_id, at, type, head, max_attempts, check_id, kind, command, attempt,
-         state, exit_code, timed_out, duration_ms, stdout, stderr, truncated, checks, blocked,
-         base, policy_digest, clean
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        runId,
-        sequence + 1,
-        itemId,
-        now,
-        progress.type,
-        progress.head,
-        progress.maxAttempts,
-        progress.type === "report" ? null : progress.id,
-        progress.type === "report" ? null : progress.kind,
-        progress.type === "report" ? null : progress.command,
-        progress.type === "report" ? null : progress.attempt,
-        progress.type === "finished" ? progress.state : null,
-        progress.type === "finished" ? progress.exitCode : null,
-        progress.type === "finished" && progress.timedOut ? 1 : 0,
-        progress.type === "finished" ? progress.durationMs : null,
-        stdout?.text ?? "",
-        stderr?.text ?? "",
-        progress.type === "finished" && (progress.truncated || stdout!.cut || stderr!.cut) ? 1 : 0,
-        progress.type === "report" ? JSON.stringify(progress.checks) : null,
-        progress.type === "report" ? progress.blocked : null,
-        progress.type === "finished" ? (progress.base ?? null) : null,
-        progress.type === "finished" ? (progress.policyDigest ?? null) : null,
-        progress.type === "finished" && progress.clean !== undefined
-          ? Number(progress.clean)
-          : null,
-      ],
-    );
-  });
+  settled(
+    sqliteDb(db).transaction((q) => recordAgentCloseoutSteps(q, runId, itemId, progress, now)),
+  );
+}
+
+export function* listAgentCloseoutSteps(q: Q, runIds: readonly string[]) {
+  if (runIds.length === 0) return [];
+  const { agentCloseoutEvent: event } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(event)
+      .where(inArray(event.runId, [...runIds]))
+      .orderBy(asc(event.runId), asc(event.sequence)),
+  );
+  return rows.map(toEvent);
 }
 
 export function listAgentCloseout(db: Database, runIds: readonly string[]): AgentCloseoutEvent[] {
-  if (runIds.length === 0) return [];
-  return db
-    .query<EventSql, string[]>(
-      `SELECT * FROM agent_closeout_event WHERE run_id IN (${runIds.map(() => "?").join(", ")})
-       ORDER BY run_id, sequence`,
-    )
-    .all(...runIds)
-    .map(toEvent);
+  return settled(sqliteDb(db).run((q) => listAgentCloseoutSteps(q, runIds)));
 }
 
-function toEvent(row: EventSql): AgentCloseoutEvent {
-  const base = { runId: row.run_id, itemId: row.item_id, sequence: row.sequence, at: row.at };
+function toEvent(row: EventRow): AgentCloseoutEvent {
+  const base = { runId: row.runId, itemId: row.itemId, sequence: row.sequence, at: row.at };
   if (row.type === "report") {
     return {
       ...base,
       progress: {
         type: "report",
         head: row.head,
-        maxAttempts: row.max_attempts,
+        maxAttempts: row.maxAttempts,
         checks: parseChecks(row.checks),
         blocked: row.blocked,
       },
@@ -162,11 +154,11 @@ function toEvent(row: EventSql): AgentCloseoutEvent {
   }
   const attempt = {
     head: row.head,
-    id: row.check_id ?? "",
+    id: row.checkId ?? "",
     kind: row.kind ?? "command",
     command: row.command ?? "",
     attempt: row.attempt ?? 1,
-    maxAttempts: row.max_attempts,
+    maxAttempts: row.maxAttempts,
   };
   if (row.type === "started") return { ...base, progress: { type: "started", ...attempt } };
   return {
@@ -174,15 +166,18 @@ function toEvent(row: EventSql): AgentCloseoutEvent {
     progress: {
       type: "finished",
       ...attempt,
-      state: row.state ?? "failed",
-      exitCode: row.exit_code,
-      timedOut: row.timed_out === 1,
-      durationMs: row.duration_ms ?? 0,
+      state: (row.state ?? "failed") as Extract<
+        AgentCloseoutProgress,
+        { type: "finished" }
+      >["state"],
+      exitCode: row.exitCode,
+      timedOut: row.timedOut === 1,
+      durationMs: row.durationMs ?? 0,
       stdout: row.stdout,
       stderr: row.stderr,
       truncated: row.truncated === 1,
       ...(row.base !== null ? { base: row.base } : {}),
-      ...(row.policy_digest !== null ? { policyDigest: row.policy_digest } : {}),
+      ...(row.policyDigest !== null ? { policyDigest: row.policyDigest } : {}),
       ...(row.clean !== null ? { clean: row.clean === 1 } : {}),
     },
   };
