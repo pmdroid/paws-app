@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { insertQueuedItem, migrate, migrations, openDatabase } from "../src/db";
+import { insertQueuedItem, legacyMigrate, migrations, openDatabase } from "../src/db";
 import { delegationSnapshotsComplete, readExternalBlockerEvidence } from "../src/intake";
 import { tempDb } from "./helpers";
 
@@ -57,7 +57,7 @@ test("migration 062 starts items without a snapshot so startup resyncs them", ()
         "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,?,1)",
         [id, "epic", id, id, id, state, `paws/${id}`, position],
       );
-    migrate(db);
+    legacyMigrate(db);
     expect(db.query("SELECT item_id FROM item_dependency_snapshot").all()).toEqual([]);
     expect(
       db

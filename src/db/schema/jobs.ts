@@ -3,11 +3,6 @@ import { sql } from "drizzle-orm";
 import { workItem } from "./items";
 import { linearSession } from "./linear";
 
-export const schemaMigration = sqliteTable("schema_migration", {
-  id: text().primaryKey().notNull(),
-  appliedAt: integer("applied_at").notNull(),
-});
-
 export const job = sqliteTable(
   "job",
   {

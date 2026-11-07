@@ -7,7 +7,7 @@ import {
   enqueueOutbox,
   insertQueuedItem,
   listOutbox,
-  migrate,
+  legacyMigrate,
   OutboxDispatcher,
   openDatabase,
 } from "../src/db";
@@ -27,7 +27,7 @@ function setup() {
   const home = tempHome();
   homes.push(home);
   const db = openDatabase(join(home, "paws.db"));
-  migrate(db);
+  legacyMigrate(db);
   insertQueuedItem(db, { id: "item", sessionKey: "session" });
   return { db };
 }
@@ -72,7 +72,7 @@ test("a dead evidence row is repaired on start and the rows behind it deliver in
     expect(tracker.progress.map((update) => update.body)).toEqual(["before"]);
 
     f.db.run("DELETE FROM schema_migration WHERE id = '076_evidence_activity_uuid'");
-    migrate(f.db);
+    legacyMigrate(f.db);
 
     const repaired = listOutbox(f.db, "session").find((row) => row.id === evidence)!;
     expect(repaired).toMatchObject({ status: "pending", attempts: 0, error: null });
@@ -109,7 +109,7 @@ test("a pending evidence row with a ULID id is repaired before it is sent", asyn
     });
 
     f.db.run("DELETE FROM schema_migration WHERE id = '076_evidence_activity_uuid'");
-    migrate(f.db);
+    legacyMigrate(f.db);
 
     const repaired = listOutbox(f.db, "session").find((row) => row.id === queued)!;
     expect(repaired.status).toBe("pending");

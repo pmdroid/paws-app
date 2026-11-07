@@ -2,14 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { Column, getTableName, is, SQL } from "drizzle-orm";
 import { getTableConfig, SQLiteSyncDialect, SQLiteTable } from "drizzle-orm/sqlite-core";
-import {
-  closingParen,
-  createTableParts,
-  migrate,
-  rawSchema,
-  schema,
-  splitTopLevel,
-} from "../src/db";
+import { closingParen, createTableParts, rawSchema, schema, splitTopLevel } from "../src/db";
 import { tempDb } from "./helpers";
 
 type Shape = Map<string, string>;
@@ -34,7 +27,7 @@ function fromDatabase(db: Database): Shape {
   const shape: Shape = new Map();
   const all = <T>(sql: string, ...params: string[]) => db.query<T, string[]>(sql).all(...params);
   const tables = all<{ name: string; strict: number; wr: number; sql: string }>(
-    "SELECT t.name, t.strict, t.wr, m.sql FROM pragma_table_list t JOIN sqlite_master m ON m.name = t.name WHERE t.schema = 'main' AND t.type = 'table' AND t.name NOT LIKE 'sqlite_%'",
+    "SELECT t.name, t.strict, t.wr, m.sql FROM pragma_table_list t JOIN sqlite_master m ON m.name = t.name WHERE t.schema = 'main' AND t.type = 'table' AND t.name NOT LIKE 'sqlite_%' AND t.name != '__drizzle_migrations'",
   );
   for (const table of tables) {
     const { name } = table;
@@ -205,20 +198,13 @@ function drift(db: Database): string[] {
 }
 
 describe("Drizzle schema", () => {
-  test("matches the database today's migrations build", () => {
+  test("matches the database 0000_baseline builds", () => {
     expect(drift(tempDb())).toEqual([]);
   });
 
-  test("names a column a migration adds that the schema lacks", () => {
+  test("names a column the database has that the schema lacks", () => {
     const db = tempDb();
-    migrate(db, {
-      migrations: [
-        {
-          id: "20990101T0000_drift_probe",
-          sql: "ALTER TABLE work_item ADD COLUMN drift_probe TEXT",
-        },
-      ],
-    });
+    db.run("ALTER TABLE work_item ADD COLUMN drift_probe TEXT");
     expect(drift(db)).toEqual(["work_item.drift_probe: in the database, missing from the schema"]);
   });
 });

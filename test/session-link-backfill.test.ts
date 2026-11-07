@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { migrate, migrations, openDatabase } from "../src/db";
+import { legacyMigrate, migrations, openDatabase } from "../src/db";
 
 function applyMigrationsUntil(db: Database, lastId: string): void {
   db.run(
@@ -101,7 +101,7 @@ test("migration 060 backfills session_key and owner_user_id from the epic sessio
       session_key: null,
       owner_user_id: null,
     });
-    migrate(db);
+    legacyMigrate(db);
     expect(
       db.query("SELECT 1 FROM schema_migration WHERE id = '060_session_link_on_item'").get(),
     ).toBeTruthy();

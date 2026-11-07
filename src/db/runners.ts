@@ -1,5 +1,8 @@
 import { workspaceMemberUsableSql, auditWorkspaceAccess } from "./workspace";
 import type { Database } from "bun:sqlite";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { runner as runnerTable, runnerHelper, runnerHostStatus } from "./schema";
 import { endRevokedRunnerAuthority, runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import {
@@ -595,4 +598,109 @@ export function runRunnerAvailability(db: Database, runId: string): RunnerAvaila
     )
     .get(runId);
   return row ? { ...row, revoked: row.revoked === 1 } : null;
+}
+
+export function storedRunnerName(db: Database, id: string): string | null {
+  return (
+    orm(db).select({ name: runnerTable.name }).from(runnerTable).where(eq(runnerTable.id, id)).get()
+      ?.name ?? null
+  );
+}
+
+export function runnerHostVersion(db: Database, runnerId: string): string | null {
+  return (
+    orm(db)
+      .select({ version: runnerHostStatus.runnerVersion })
+      .from(runnerHostStatus)
+      .where(eq(runnerHostStatus.runnerId, runnerId))
+      .get()?.version ?? null
+  );
+}
+
+export function runnerTargetForRestore(
+  db: Database,
+  runnerId: string,
+): { ownerUserId: string; version: string | null } | null {
+  return (
+    orm(db)
+      .select({ ownerUserId: runnerTable.ownerUserId, version: runnerHostStatus.runnerVersion })
+      .from(runnerTable)
+      .leftJoin(runnerHostStatus, eq(runnerHostStatus.runnerId, runnerTable.id))
+      .where(eq(runnerTable.id, runnerId))
+      .get() ?? null
+  );
+}
+
+export function runnerStanding(
+  db: Database,
+  runnerId: string,
+): { status: string; revokedAt: number | null; lastSeenAt: number | null } | null {
+  return (
+    orm(db)
+      .select({
+        status: runnerTable.status,
+        revokedAt: runnerTable.revokedAt,
+        lastSeenAt: runnerTable.lastSeenAt,
+      })
+      .from(runnerTable)
+      .where(eq(runnerTable.id, runnerId))
+      .get() ?? null
+  );
+}
+
+export function runnerOwner(
+  db: Database,
+  runnerId: string,
+): { workspaceId: string; userId: string } | null {
+  return (
+    orm(db)
+      .select({ workspaceId: runnerTable.workspaceId, userId: runnerTable.ownerUserId })
+      .from(runnerTable)
+      .where(eq(runnerTable.id, runnerId))
+      .get() ?? null
+  );
+}
+
+export function recentRunners(
+  db: Database,
+  seenAfter: number,
+): { id: string; workspaceId: string }[] {
+  return orm(db)
+    .select({ id: runnerTable.id, workspaceId: runnerTable.workspaceId })
+    .from(runnerTable)
+    .where(
+      and(
+        eq(runnerTable.status, "active"),
+        isNull(runnerTable.revokedAt),
+        gt(runnerTable.lastSeenAt, seenAfter),
+      ),
+    )
+    .orderBy(desc(runnerTable.lastSeenAt), runnerTable.id)
+    .all();
+}
+
+export function enabledRunnerIds(db: Database): { id: string }[] {
+  return orm(db)
+    .select({ id: runnerTable.id })
+    .from(runnerTable)
+    .where(and(eq(runnerTable.status, "active"), isNull(runnerTable.revokedAt)))
+    .all();
+}
+
+export function runnerHelperBusy(db: Database, now: number): boolean {
+  return (
+    orm(db)
+      .select({ one: sql`1` })
+      .from(runnerHelper)
+      .innerJoin(runnerTable, eq(runnerTable.id, runnerHelper.runnerId))
+      .where(
+        and(
+          eq(runnerTable.status, "active"),
+          isNull(runnerTable.revokedAt),
+          isNull(runnerHelper.endedAt),
+          gt(runnerHelper.expiresAt, now),
+        ),
+      )
+      .get() !== undefined
+  );
 }

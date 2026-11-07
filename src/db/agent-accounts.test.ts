@@ -9,7 +9,7 @@ import {
   createAgentAccount,
   listAgentAccounts,
   listAgentBindings,
-  migrate,
+  legacyMigrate,
   openDatabase,
   recordCommandAccount,
   recordRunnerAccountCapability,
@@ -42,7 +42,7 @@ function seed(db: Database, workspace: string, runners: string[]) {
 
 function fresh() {
   const db = openDatabase(":memory:");
-  migrate(db);
+  legacyMigrate(db);
   seed(db, "W1", ["R1", "R2"]);
   seed(db, "W2", ["R3"]);
   return db;
@@ -90,7 +90,7 @@ const probe = (
 
 test("the migration moves runner+agent rows to legacy bindings and is repeat-safe", () => {
   const db = openDatabase(":memory:");
-  migrate(db, { until: "20261102T0055_runner_admin_repositories" });
+  legacyMigrate(db, { until: "20261102T0055_runner_admin_repositories" });
   seed(db, "W1", ["R1", "R2"]);
   for (const [runner, agent] of [
     ["R1", "claude"],
@@ -101,7 +101,7 @@ test("the migration moves runner+agent rows to legacy bindings and is repeat-saf
       runner!,
       agent!,
     ]);
-  migrate(db);
+  legacyMigrate(db);
   const snapshot = () => ({
     accounts: db
       .query("SELECT id,workspace_id,agent,legacy,enabled FROM agent_account ORDER BY id")
@@ -146,7 +146,7 @@ test("the migration moves runner+agent rows to legacy bindings and is repeat-saf
     ],
   });
   db.run(migration.sql);
-  migrate(db);
+  legacyMigrate(db);
   expect(snapshot()).toEqual(before);
   db.close();
 });

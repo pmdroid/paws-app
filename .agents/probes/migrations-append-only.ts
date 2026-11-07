@@ -1,22 +1,9 @@
-/**
- * Closeout rule `migrations-append-only`.
- *
- * `src/db/migrations.ts` is frozen at `155_pull_comment`, and a migration file
- * under `src/db/migrations/` never changes once it is on main. A new file is
- * named for a UTC time to the minute and what it does, and exports `migration`
- * with that id: `20261026T0512_pull_comment_author.ts`.
- *
- * Runs as `bun migrations-append-only.ts --base <sha> --head <sha> --repo <checkout>`
- * and reads only committed trees. Exits 0 when the rule holds and 1 otherwise.
- */
-
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 
-const FROZEN = "src/db/migrations.ts";
-const DIRECTORY = "src/db/migrations/";
-const FILE_NAME = /^((\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})_[a-z0-9]+(?:_[a-z0-9]+)*)\.ts$/;
-const EXAMPLE = "20261026T0512_pull_comment_author.ts";
+const DRIZZLE = "src/db/drizzle/";
+const JOURNAL = `${DRIZZLE}meta/_journal.json`;
+const LEGACY = ["src/db/migrations.ts", "src/db/migrations/"];
 
 const { base, head, repo } = parseArgs({
   options: {
@@ -31,18 +18,17 @@ if (!base || !head || !repo) {
   process.exit(2);
 }
 
-function git(...args: string[]): string {
+function git(...args: string[]): { ok: boolean; out: string; err: string } {
   const ran = spawnSync("git", ["-C", repo!, ...args], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
-  if (ran.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${ran.stderr.trim()}`);
-  return ran.stdout;
+  return { ok: ran.status === 0, out: ran.stdout, err: ran.stderr };
 }
 
 /** `[status, path]` pairs. Renames are a deletion and an addition. */
 function changes(): [string, string][] {
-  const fields = git(
+  const ran = git(
     "diff",
     "--name-status",
     "--no-renames",
@@ -50,72 +36,67 @@ function changes(): [string, string][] {
     base!,
     head!,
     "--",
-    FROZEN,
-    DIRECTORY,
-  ).split("\0");
+    DRIZZLE,
+    ...LEGACY,
+  );
+  if (!ran.ok) throw new Error(`git diff failed: ${ran.err.trim()}`);
+  const fields = ran.out.split("\0");
   const pairs: [string, string][] = [];
   for (let index = 0; index + 1 < fields.length; index += 2)
     pairs.push([fields[index]!, fields[index + 1]!]);
   return pairs;
 }
 
-const STATUS: Record<string, string> = {
-  M: "was edited",
-  D: "was deleted or renamed",
-  T: "changed type",
-};
+type Entry = { idx: number; when: number; tag: string };
 
-function isUtcMinute(year: string, month: string, day: string, hour: string, minute: string) {
-  const at = new Date(Date.UTC(+year, +month - 1, +day, +hour, +minute));
-  return (
-    at.getUTCFullYear() === +year &&
-    at.getUTCMonth() === +month - 1 &&
-    at.getUTCDate() === +day &&
-    at.getUTCHours() === +hour &&
-    at.getUTCMinutes() === +minute
-  );
-}
-
-/** Problems with a migration file added on the branch. */
-function checkNewFile(path: string): string[] {
-  const name = path.slice(DIRECTORY.length);
-  const match = FILE_NAME.exec(name);
-  if (!match)
-    return [
-      `${path} is not named <yyyymmdd>T<hhmm>_<name>.ts with a UTC time and a lowercase snake_case name, for example ${EXAMPLE}.`,
-    ];
-  const [, id, year, month, day, hour, minute] = match as unknown as string[];
-  if (!isUtcMinute(year!, month!, day!, hour!, minute!))
-    return [
-      `${path} is named for ${year}-${month}-${day} ${hour}:${minute}, which is not a UTC time.`,
-    ];
-  const source = git("cat-file", "blob", `${head}:${path}`);
-  const exported = /export\s+const\s+migration\b[\s\S]*?\bid\s*:\s*(["'`])([^"'`]+)\1/.exec(source);
-  if (!exported) return [`${path} does not export \`migration\` with a literal id "${id}".`];
-  if (exported[2] !== id) return [`${path} exports id "${exported[2]}"; its id must be "${id}".`];
-  return [];
+function journal(sha: string): Entry[] {
+  const ran = git("cat-file", "blob", `${sha}:${JOURNAL}`);
+  if (!ran.ok) return [];
+  return (JSON.parse(ran.out) as { entries: Entry[] }).entries;
 }
 
 const problems: string[] = [];
-let added = 0;
+const added = new Set<string>();
 for (const [status, path] of changes()) {
-  if (path === FROZEN) {
+  if (!path.startsWith(DRIZZLE)) {
+    if (status !== "D")
+      problems.push(
+        `${path} is a legacy migration path. The legacy migrations are frozen: generate a drizzle-kit migration under ${DRIZZLE} instead.`,
+      );
+    continue;
+  }
+  if (status === "A") added.add(path);
+  else if (path !== JOURNAL)
     problems.push(
-      `${FROZEN} changed. The list is frozen at 155_pull_comment: add a migration file under ${DIRECTORY} instead.`,
+      `${path} is a shipped drizzle-kit migration and ${status === "M" ? "was edited" : status === "D" ? "was deleted or renamed" : `changed (${status})`}. Shipped migrations never change: generate a new one.`,
     );
-    continue;
-  }
-  const name = path.slice(DIRECTORY.length);
-  // The loader reads only `.ts` files directly in the directory; the README is not a migration.
-  if (!path.startsWith(DIRECTORY) || name.includes("/") || !name.endsWith(".ts")) continue;
-  if (status === "A") {
-    added += 1;
-    problems.push(...checkNewFile(path));
-    continue;
-  }
-  problems.push(
-    `${path} is a shipped migration and ${STATUS[status] ?? `changed (${status})`}. Shipped migration files never change: add a new file under ${DIRECTORY}.`,
-  );
+}
+
+const before = journal(base);
+const after = journal(head);
+before.forEach((entry, index) => {
+  if (JSON.stringify(after[index]) !== JSON.stringify(entry))
+    problems.push(
+      `${JOURNAL} changed the shipped entry ${entry.tag}. The journal only gains entries at its end.`,
+    );
+});
+const fresh = after.slice(before.length);
+fresh.forEach((entry, offset) => {
+  const index = before.length + offset;
+  const previous = after[index - 1];
+  if (entry.idx !== index)
+    problems.push(`${JOURNAL} entry ${entry.tag} has idx ${entry.idx}; it must be ${index}.`);
+  if (previous !== undefined && !(entry.when > previous.when))
+    problems.push(
+      `${JOURNAL} entry ${entry.tag} is not later than ${previous.tag}, so drizzle-kit would skip it on a database that has ${previous.tag}. Generate it again on top of main.`,
+    );
+  if (!added.has(`${DRIZZLE}${entry.tag}.sql`))
+    problems.push(`${JOURNAL} entry ${entry.tag} has no new ${DRIZZLE}${entry.tag}.sql.`);
+});
+for (const path of added) {
+  const tag = /^src\/db\/drizzle\/([^/]+)\.sql$/.exec(path)?.[1];
+  if (tag !== undefined && !fresh.some((entry) => entry.tag === tag))
+    problems.push(`${path} has no new entry in ${JOURNAL}, so drizzle-kit never applies it.`);
 }
 
 if (problems.length > 0) {
@@ -123,7 +104,7 @@ if (problems.length > 0) {
   process.exit(1);
 }
 console.log(
-  added === 0
+  fresh.length === 0
     ? "No migration changed."
-    : `${added} new migration file${added === 1 ? "" : "s"}, each named for a UTC time and exporting its id.`,
+    : `${fresh.length} new drizzle-kit migration${fresh.length === 1 ? "" : "s"}, appended to the journal.`,
 );

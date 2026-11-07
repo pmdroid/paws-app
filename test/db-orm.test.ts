@@ -14,14 +14,14 @@ describe("orm", () => {
     const db = tempDb();
     const probe = () =>
       orm(db)
-        .select({ id: schema.schemaMigration.id })
-        .from(schema.schemaMigration)
-        .where(eq(schema.schemaMigration.id, "orm_probe"))
+        .select({ name: schema.syncCursor.name })
+        .from(schema.syncCursor)
+        .where(eq(schema.syncCursor.name, "orm_probe"))
         .all();
     expect(() =>
       immediate(db, () => {
-        db.run("INSERT INTO schema_migration (id, applied_at) VALUES ('orm_probe', 1)");
-        expect(probe()).toEqual([{ id: "orm_probe" }]);
+        db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('orm_probe', 1)");
+        expect(probe()).toEqual([{ name: "orm_probe" }]);
         throw new Error("roll back");
       }),
     ).toThrow("roll back");

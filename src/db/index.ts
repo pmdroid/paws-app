@@ -226,6 +226,7 @@ export {
   type Job,
   type JobStatus,
   type NewJob,
+  leasedJobsForItem,
 } from "./jobs";
 export {
   JobLoop,
@@ -235,7 +236,14 @@ export {
   type JobLoopLiveness,
 } from "./loop";
 export { startLoops } from "./loops";
-export { migrate } from "./migrate";
+export { legacyMigrate } from "./legacy-migrate";
+export {
+  appliedMigrations,
+  MIGRATIONS_FOLDER,
+  migrate,
+  migrationTags,
+  setAsideLegacyDatabase,
+} from "./migrate";
 export {
   bindWorkItemRepository,
   getWorkItemRepository,
@@ -355,6 +363,7 @@ export {
   type OutboxRow,
   type OutboxStatus,
   type OutboxTarget,
+  pullRequestReadyQueued,
 } from "./outbox";
 export {
   deadDeliveryIsFinalStop,
@@ -412,6 +421,7 @@ export {
   type OpenQuestionRecord,
   type WorkItemBlockRecord,
   type WorkItemFact,
+  openQuestionKind,
 } from "./reads";
 export {
   applyLinearIssueProject,
@@ -427,6 +437,10 @@ export {
   runnerSessionMove,
   type RunnerSessionMove,
   type RunnerSessionMoveStatus,
+  latestSealedSnapshot,
+  lastRunCommandAccount,
+  currentRunnerAgentVersion,
+  type SealedSessionSnapshot,
 } from "./runner-session-moves";
 export {
   createRunnerEnrollment,
@@ -453,6 +467,14 @@ export {
   type RunnerAgentLimit,
   type RunnerEnrollment,
   type StoredRunnerCertificate,
+  storedRunnerName,
+  runnerHostVersion,
+  runnerTargetForRestore,
+  runnerStanding,
+  runnerOwner,
+  recentRunners,
+  enabledRunnerIds,
+  runnerHelperBusy,
 } from "./runners";
 export {
   appendCloseoutOutput,
@@ -558,6 +580,9 @@ export {
   advanceLinearSessionGeneration,
   type StoredLinearSession,
   type StoredLinearTurn,
+  linearSessionClientId,
+  linearSessionInWorkspace,
+  sessionActiveRuns,
 } from "./linear-sessions";
 
 export {
@@ -783,6 +808,8 @@ export {
   resumeUsagePauseNow,
   startUsagePause,
   usagePause,
+  earliestRunnerCooldown,
+  runnerAgentLoginReady,
 } from "./usage-pause";
 export type { UsagePause } from "./usage-pause";
 export {
@@ -1136,3 +1163,50 @@ export {
   type RetroActivitySnapshot,
   type RetroActivityTransition,
 } from "./retro-activity";
+export {
+  delegationWorkspaceId,
+  emptyFailedAttempts,
+  insertItemContinuation,
+  insertIntakeItem,
+  issueHasUnfinishedItem,
+  listDelegationItems,
+  readActiveParentDelegation,
+  readDelegatedIntake,
+  readItemDelegation,
+  readPublicationIdentity,
+  readUnlandedAttempt,
+  stopSessionParentDelegation,
+  type IntakeItemRow,
+  type PublicationIdentity,
+} from "./intake";
+export {
+  delegationHasItemWithoutSnapshot,
+  delegationHasReconciliationWork,
+  dependencySnapshotGeneration,
+  itemSpecificationPresent,
+  latestIssueIdentifier,
+  listBlocksOf,
+  listDelegationExternalEvidence,
+  listManagedBlockerItems,
+  listPresentDelegationItems,
+  readDependencyScope,
+  readDependencySnapshot,
+  saveDependencySnapshot,
+  type DependencyIdentity,
+  type DependencyItem,
+  type DependencySnapshot,
+} from "./item-dependencies";
+export {
+  itemOpenRunnerWorkRuns,
+  itemOpenRunnerWork,
+  itemRunnerCancelWork,
+  pendingRunnerCancel,
+  itemRunnerWorkReports,
+  openRunnerWorkCommand,
+  runnerHandoverSent,
+  runnerWorkEnded,
+  lastRunnerEventSequence,
+  runnerEventsAfter,
+  runnerResultPayload,
+  runnerWorkActive,
+} from "./runner-work";

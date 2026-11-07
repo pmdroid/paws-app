@@ -2,6 +2,13 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-07: drizzle-kit owns migrations, and the upgrade resets the database
+
+### Changed
+
+- **The upgrade resets the database.** At the first start, a `paws.db` built by the earlier migrations is renamed to `paws.db.pre-drizzle-<UTC time>` beside it, with its `-wal` and `-shm` files, never deleted, and Paws starts on a new database. One journal line names the renamed file. Nothing is copied over: sign in to the dashboard as a Linear workspace admin to make the workspace again, connect the GitHub App again in **Integrations**, and pair each runner again after moving its identity aside. Delegate in-progress issues again. Secrets, `config.toml` and the environment file stay. See [Database reset](docs/database-reset.md).
+- drizzle-kit migrations in `src/db/drizzle/` create and change the schema, starting from `0000_baseline`, the exact SQL of the schema the earlier migrations built. A new migration is generated from the Drizzle schema with `drizzle-kit generate`; see [src/db/README.md](src/db/README.md).
+
 ## 2026-11-05: Runner-backed runs get the repository's runtimes again
 
 ### Fixed

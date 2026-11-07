@@ -1,6 +1,6 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, like, ne, sql } from "drizzle-orm";
 import {
   DEFAULT_BACKOFF_BASE_MS,
   DEFAULT_BACKOFF_CAP_MS,
@@ -860,6 +860,29 @@ export function linearSessionClosed(db: Database, sessionId: string, generation:
           eq(outboxTable.orderingKey, sessionId),
           eq(outboxTable.deliveryGeneration, generation),
           inArray(outboxTable.deliveryKind, ["terminal", "stop"]),
+          ne(outboxTable.status, "dropped"),
+        ),
+      )
+      .limit(1)
+      .get() !== undefined
+  );
+}
+
+export function pullRequestReadyQueued(
+  db: Database,
+  sessionId: string,
+  generation: number,
+): boolean {
+  return (
+    orm(db)
+      .select({ one: sql`1` })
+      .from(outboxTable)
+      .where(
+        and(
+          eq(outboxTable.target, "linear"),
+          eq(outboxTable.orderingKey, sessionId),
+          eq(outboxTable.deliveryGeneration, generation),
+          like(outboxTable.idempotencyKey, "pull-request-ready:%"),
           ne(outboxTable.status, "dropped"),
         ),
       )

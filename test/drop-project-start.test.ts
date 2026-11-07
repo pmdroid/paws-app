@@ -1,10 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { migrate, migrations, openDatabase } from "../src/db";
-import { migrateDryRun } from "../scripts/migrate-dry-run";
+import { legacyMigrate, openDatabase } from "../src/db";
 
 const dropped = [
   "project_approval",
@@ -39,7 +35,7 @@ function beforeDrop(
   path = ":memory:",
 ): Database {
   const db = openDatabase(path);
-  migrate(db, { until: "129_parent_delegation" });
+  legacyMigrate(db, { until: "129_parent_delegation" });
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
   );
@@ -95,7 +91,7 @@ test("a database whose only project items are finished or failed drops the proje
         "SELECT id,delegation_id,state,owner_user_id,linear_project_name FROM work_item ORDER BY id",
       )
       .all();
-    migrate(db);
+    legacyMigrate(db);
     expect(applied(db)).toBe(true);
     for (const name of dropped) expect(tables(db), name).not.toContain(name);
     expect(columns(db, "work_item")).not.toContain("project_approval_id");
@@ -126,7 +122,7 @@ test("an active project item stops the migration with its id until it is cancell
     ["active", "awaiting_input"],
   ]);
   try {
-    expect(() => migrate(db)).toThrow(/Work item active \(ACTIVE, awaiting_input\)/);
+    expect(() => legacyMigrate(db)).toThrow(/Work item active \(ACTIVE, awaiting_input\)/);
     expect(applied(db)).toBe(false);
     for (const name of dropped) expect(tables(db), name).toContain(name);
     expect(columns(db, "work_item")).toContain("project_approval_id");
@@ -135,34 +131,10 @@ test("an active project item stops the migration with its id until it is cancell
     );
 
     db.run("UPDATE work_item SET state='cancelled' WHERE id='active'");
-    migrate(db);
+    legacyMigrate(db);
     expect(applied(db)).toBe(true);
     expect(tables(db)).not.toContain("project_approval");
   } finally {
     db.close();
-  }
-});
-
-test("a dry run migrates a copy and leaves the original database as it was", () => {
-  const dir = mkdtempSync(join(tmpdir(), "paws-dry-run-"));
-  const path = join(dir, "paws.db");
-  try {
-    beforeDrop([["done", "merged"]], path).close();
-    // 130 and every migration added after it.
-    const pending = migrations.map((migration) => migration.id);
-    expect(migrateDryRun(path).applied).toEqual(
-      pending.slice(pending.indexOf("130_drop_project_start")),
-    );
-    const db = openDatabase(path);
-    try {
-      expect(applied(db)).toBe(false);
-      expect(tables(db)).toContain("project_approval");
-      db.run("UPDATE work_item SET state='running' WHERE id='done'");
-    } finally {
-      db.close();
-    }
-    expect(() => migrateDryRun(path)).toThrow(/Work item done/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
   }
 });

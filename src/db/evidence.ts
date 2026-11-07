@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
+import { orm } from "./orm";
+import { evidence } from "./schema";
 
 export type EvidenceMediaType =
   | "video/webm"
@@ -23,38 +26,23 @@ export type StoredEvidence = {
   assetUrl?: string | null;
 };
 
-const COLUMNS = `id, item_id AS itemId, run_id AS runId, check_id AS checkId, attempt,
-  media_type AS mediaType, size_bytes AS sizeBytes, sha256, display_name AS displayName,
-  head_commit AS headCommit, created_at AS createdAt, asset_url AS assetUrl`;
-
-export function saveEvidence(db: Database, evidence: StoredEvidence): void {
-  db.query(`INSERT INTO evidence
-    (id, item_id, run_id, check_id, attempt, media_type, size_bytes, sha256, display_name, head_commit, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    evidence.id,
-    evidence.itemId,
-    evidence.runId,
-    evidence.checkId,
-    evidence.attempt,
-    evidence.mediaType,
-    evidence.sizeBytes,
-    evidence.sha256,
-    evidence.displayName,
-    evidence.headCommit,
-    evidence.createdAt,
-  );
+export function saveEvidence(db: Database, row: StoredEvidence): void {
+  const { assetUrl: _, ...values } = row;
+  orm(db).insert(evidence).values(values).run();
 }
 
 export function getEvidence(db: Database, id: string): StoredEvidence | null {
-  return db.query<StoredEvidence, [string]>(`SELECT ${COLUMNS} FROM evidence WHERE id = ?`).get(id);
+  return (orm(db).select().from(evidence).where(eq(evidence.id, id)).get() ??
+    null) as StoredEvidence | null;
 }
 
 export function listEvidence(db: Database, itemId: string): StoredEvidence[] {
-  return db
-    .query<StoredEvidence, [string]>(
-      `SELECT ${COLUMNS} FROM evidence WHERE item_id = ? ORDER BY created_at, id`,
-    )
-    .all(itemId);
+  return orm(db)
+    .select()
+    .from(evidence)
+    .where(eq(evidence.itemId, itemId))
+    .orderBy(evidence.createdAt, evidence.id)
+    .all() as StoredEvidence[];
 }
 
 export function latestEvidence(rows: readonly StoredEvidence[]): StoredEvidence[] {
@@ -65,5 +53,5 @@ export function latestEvidence(rows: readonly StoredEvidence[]): StoredEvidence[
 }
 
 export function setEvidenceAssetUrl(db: Database, id: string, assetUrl: string): void {
-  db.query("UPDATE evidence SET asset_url = ? WHERE id = ?").run(assetUrl, id);
+  orm(db).update(evidence).set({ assetUrl }).where(eq(evidence.id, id)).run();
 }

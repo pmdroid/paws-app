@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { listImprovementProposals, listImprovements, type ImprovementSource } from "./improvements";
+import { appliedMigrations } from "./migrate";
 import { teamRepositoryAllowedSql } from "./repository-catalog";
 
 export type RetroActivityItem = {
@@ -248,14 +249,9 @@ export function readRetroActivity(
         )
         .all(ids, before);
       const findingIds = new Set(findingRows.map((row) => row.findingId));
-      const migration = db
-        .query<{ latest: string | null; applied: number }, []>(
-          "SELECT max(id) AS latest, count(*) AS applied FROM schema_migration",
-        )
-        .get();
       return {
         workspaceId: input.workspaceId,
-        schema: migration ?? { latest: null, applied: 0 },
+        schema: appliedMigrations(db),
         items,
         unauthorizedItems: rows.length - allowed.length,
         runs: db

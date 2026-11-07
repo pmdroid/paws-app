@@ -2,7 +2,7 @@ import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { setJournalSink } from "../src/journal";
-import { listItemHolds, migrate, migrations, openDatabase, saveItemHolds } from "../src/db";
+import { listItemHolds, legacyMigrate, migrations, openDatabase, saveItemHolds } from "../src/db";
 import { recordItemDependencies } from "../src/intake";
 import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
 import { createLiveStatusProvider } from "../src/dashboard";
@@ -235,7 +235,7 @@ test("migration 124 keeps the stored holds and accepts the workspace reason", ()
     item(db, "PAS-8");
     item(db, "PAS-9");
     db.run("INSERT INTO item_hold VALUES('PAS-8','blocked','[\"PAS-7\"]')");
-    migrate(db);
+    legacyMigrate(db);
     saveItemHolds(db, [
       { itemId: "PAS-8", reason: "blocked", blockers: ["PAS-7"] },
       { itemId: "PAS-9", reason: "workspace", blockers: [] },

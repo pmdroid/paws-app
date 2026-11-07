@@ -9,13 +9,13 @@ import {
   listJobs,
   listRebaseReturns,
   mergeLaneSql,
-  migrate,
+  legacyMigrate,
   migrations,
   openDatabase,
   recordCiRound,
   recordRebaseReturn,
 } from "../src/db";
-import { tempDb } from "./helpers";
+import { legacyTempDb } from "./helpers";
 
 const samples = [
   "github.merge",
@@ -48,7 +48,7 @@ test("the merge-work SQL classifies every job as isMergeWork does", () => {
 });
 
 test("cancelling the merge lane cancels a merge job", () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     enqueueJob(db, { queue: JOB_KIND.merge, payload: {}, now: 1 });
     expect(cancelOpenJobs(db, { reason: "stop", mergeLane: true, now: 2 })).toBe(1);
@@ -74,7 +74,7 @@ function userTurn(db: Database, itemId: string, now: number): number {
 }
 
 test("rebase returns are counted from rebase_return rows after the latest user turn", () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     insertItem(db, "item");
     const before = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 1 });
@@ -97,7 +97,7 @@ test("rebase returns are counted from rebase_return rows after the latest user t
 });
 
 test("a rebase return keeps the main commit, files and time it conflicted on", () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     insertItem(db, "item");
     const first = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item" }, now: 1 });
@@ -123,7 +123,7 @@ test("a rebase return keeps the main commit, files and time it conflicted on", (
 });
 
 test("CI fixes are counted from the CI rounds recorded after the latest user turn", () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     insertItem(db, "item");
     const round = (head: string, fix: number | null, recordedAt: number) =>
@@ -193,7 +193,7 @@ test("the rebase_return migration backfills rebase-conflict returns so budgets s
       payload: { itemId: "gone", reason: "rebase-conflict" },
       now: 4,
     });
-    migrate(db);
+    legacyMigrate(db);
     expect(
       db
         .query<{ job_id: number; item_id: string; candidate: string | null; reason: string }, []>(

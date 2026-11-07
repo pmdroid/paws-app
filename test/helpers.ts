@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { candidateRef, mirrorPath, type RunAgentOptions, type RunAgentResult } from "../src/acp";
-import { migrate, openDatabase } from "../src/db";
+import { legacyMigrate, migrate, openDatabase } from "../src/db";
 import type { Database } from "bun:sqlite";
 
 export function tempHome(): string {
@@ -23,6 +23,18 @@ try {
 export function tempDb(): Database {
   const db = openDatabase(":memory:");
   migrate(db);
+  return db;
+}
+
+export function legacyTempDb(): Database {
+  const db = openDatabase(":memory:");
+  legacyMigrate(db);
+  return db;
+}
+
+export function legacyMigratedDatabase(path: string): Database {
+  const db = openDatabase(path);
+  legacyMigrate(db);
   return db;
 }
 

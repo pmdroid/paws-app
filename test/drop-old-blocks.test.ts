@@ -8,7 +8,7 @@ import {
   insertRun,
   listOutbox,
   listWorkItemBlocks,
-  migrate,
+  legacyMigrate,
   migrations,
   openDatabase,
   recordLinearInstallation,
@@ -18,11 +18,11 @@ import {
 import { createItemReconciler, intakeDelegatedIssue, readyItems } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
-import { tempDb, tempHome } from "./helpers";
+import { legacyTempDb, tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 
 test("migration 059 drops the old block tables and task_block holds each dependent", async () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   const clock = new FakeClock(1_000);
   const orchestrator = new Orchestrator({
     db,
@@ -185,7 +185,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
 test("migration 059 is append-only and runs after the task_block copy", () => {
   const db = openDatabase(":memory:");
   try {
-    migrate(db);
+    legacyMigrate(db);
     const ids = db
       .query<{ id: string }, []>("SELECT id FROM schema_migration ORDER BY rowid")
       .all()

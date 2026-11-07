@@ -1,30 +1,11 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, delegationHasOpenWork } from "../core";
+import { JOB_KIND } from "../core";
+import { dependencySnapshotGeneration, leasedJobsForItem, readPublicationIdentity } from "../db";
 import type { createItemReconciler } from "./reconciliation";
 
 export type PublicationPhase = "publish" | "merge";
 export type PublicationCandidate = { sha: string; baseSha: string };
-
-type Identity = {
-  delegationId: string;
-  workspaceId: string;
-  checkpoint: string | null;
-  runId: string;
-  agent: string;
-  runKind: string;
-  runStatus: string;
-  specificationHash: string;
-  specificationRevision: number;
-  sessionId: string;
-  sessionGeneration: number;
-  organizationId: string;
-  teamId: string;
-  clientId: string;
-  appUserId: string;
-  creatorId: string | null;
-  actorId: string | null;
-};
 
 export function createPublicationReadiness(input: {
   db: Database;
@@ -39,32 +20,9 @@ export function createPublicationReadiness(input: {
   function current(itemId: string, candidate?: PublicationCandidate) {
     return db
       .transaction(() => {
-        const identity = db
-          .query<Identity, [string]>(
-            `SELECT i.delegation_id AS delegationId,w.id AS workspaceId,i.checkpoint,
-         r.id AS runId,r.agent,r.kind AS runKind,r.status AS runStatus,
-         p.hash AS specificationHash,p.revision AS specificationRevision,
-         s.session_id AS sessionId,s.generation AS sessionGeneration,
-         s.organization_id AS organizationId,s.team_id AS teamId,s.oauth_client_id AS clientId,
-         s.app_user_id AS appUserId,s.creator_id AS creatorId,
-         COALESCE((SELECT u.linear_user_id FROM workspace_user u WHERE u.id=i.owner_user_id), i.delegated_by, s.creator_id) AS actorId
-         FROM work_item i JOIN work_item_specification p ON p.item_id=i.id AND p.present=1
-         JOIN run r ON r.id=i.current_run_id AND r.item_id=i.id
-         JOIN linear_session s ON s.session_id=i.session_key
-         JOIN workspace w ON w.linear_organization_id=s.organization_id
-         WHERE i.id=? AND i.state IN ('verifying','merge_queue') AND i.cancel_requested=0
-         AND ${delegationHasOpenWork("i.delegation_id")}
-         AND s.stopped_at IS NULL AND s.team_id IS NOT NULL
-         AND s.app_user_id IS NOT NULL AND s.oauth_client_id IS NOT NULL`,
-          )
-          .get(itemId);
+        const identity = readPublicationIdentity(db, itemId);
         if (!identity) return null;
-        const jobs = db
-          .query<{ id: number; attempts: number; worker: string }, [string, string, number]>(
-            `SELECT id,attempts,locked_by AS worker FROM job WHERE queue=? AND status='running'
-         AND json_extract(payload,'$.itemId')=? AND locked_by IS NOT NULL AND locked_until>?`,
-          )
-          .all(JOB_KIND.merge, itemId, now());
+        const jobs = leasedJobsForItem(db, JOB_KIND.merge, itemId, now());
         if (jobs.length !== 1) return null;
         const checkpoint = identity.checkpoint === null ? null : JSON.parse(identity.checkpoint);
         const actual = candidate ?? { sha: checkpoint?.wipCommit, baseSha: checkpoint?.baseSha };
@@ -75,12 +33,7 @@ export function createPublicationReadiness(input: {
           !actual.baseSha
         )
           return null;
-        const generation =
-          db
-            .query<{ generation: number }, [string]>(
-              "SELECT generation FROM item_dependency_snapshot WHERE item_id=?",
-            )
-            .get(itemId)?.generation ?? 0;
+        const generation = dependencySnapshotGeneration(db, itemId) ?? 0;
         return {
           identity,
           binding: JSON.stringify([itemId, identity, jobs[0], actual]),

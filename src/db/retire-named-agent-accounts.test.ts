@@ -6,7 +6,7 @@ import {
   admitAgentAccounts,
   createAgentAccount,
   ensureLegacyAgentBinding,
-  migrate,
+  legacyMigrate,
   openDatabase,
   removeAgentAccount,
 } from "./index";
@@ -16,7 +16,7 @@ const NOW = 1_800_000_000_000;
 test("the migration disables each named account, journals it once and leaves the default sign-in", () => {
   const ids = loadMigrationFiles().map((entry) => entry.id);
   const db = openDatabase(":memory:");
-  migrate(db, { until: ids[ids.indexOf(migration.id) - 1]! });
+  legacyMigrate(db, { until: ids[ids.indexOf(migration.id) - 1]! });
   db.run("INSERT INTO workspace VALUES('acme','org-acme','Acme',?)", [NOW]);
   db.run(
     "INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES('ada','linear-ada','Ada','ada@acme.test')",
@@ -46,8 +46,8 @@ test("the migration disables each named account, journals it once and leaves the
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {
-    migrate(db);
-    migrate(db);
+    legacyMigrate(db);
+    legacyMigrate(db);
   } finally {
     restore();
   }

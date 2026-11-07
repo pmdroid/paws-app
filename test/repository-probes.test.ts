@@ -64,83 +64,95 @@ function probe(name: string, at: { repo: string; base: string; head: string }, e
   return { exitCode: ran.status, output: `${ran.stdout}${ran.stderr}` };
 }
 
-const SHIPPED = "src/db/migrations/20261026T2044_runner_command_handover.ts";
-const migration = (id: string, sql = "SELECT 1;") =>
-  `import type { Migration } from "../migration";\n\nexport const migration: Migration = {\n  id: "${id}",\n  sql: \`${sql}\`,\n};\n`;
+const LEGACY = "src/db/migrations/20261026T2044_runner_command_handover.ts";
+const JOURNAL = "src/db/drizzle/meta/_journal.json";
+const entry = (idx: number, when: number, tag: string) => ({
+  idx,
+  version: "6",
+  when,
+  tag,
+  breakpoints: true,
+});
+const journal = (...entries: ReturnType<typeof entry>[]) =>
+  `${JSON.stringify({ version: "7", dialect: "sqlite", entries }, null, 2)}\n`;
+const BASELINE = entry(0, 1000, "0000_baseline");
+const PROBE = entry(1, 2000, "0001_probe");
 const DB = {
   "src/db/migrations.ts": "export const frozenMigrations = [];\n",
-  "src/db/migrations/README.md": "# Migrations\n",
-  [SHIPPED]: migration("20261026T2044_runner_command_handover"),
+  [LEGACY]: "export const migration = {};\n",
+  "src/db/drizzle/0000_baseline.sql": "CREATE TABLE a (id TEXT) STRICT;\n",
+  "src/db/drizzle/meta/0000_snapshot.json": "{}\n",
+  [JOURNAL]: journal(BASELINE),
   "src/db/items.ts": "export const items = 1;\n",
 };
+const appended = {
+  "src/db/drizzle/0001_probe.sql": "ALTER TABLE a ADD COLUMN b TEXT;\n",
+  "src/db/drizzle/meta/0001_snapshot.json": "{}\n",
+  [JOURNAL]: journal(BASELINE, PROBE),
+};
 
-test("editing a shipped migration file fails migrations-append-only and names the file", () => {
+test("a new drizzle-kit migration appended to the journal passes", () => {
   const ran = probe(
     "migrations-append-only",
-    candidate(DB, { [SHIPPED]: migration("20261026T2044_runner_command_handover", "SELECT 2;") }),
+    candidate(DB, { ...appended, "src/db/items.ts": "export const items = 2;\n" }),
   );
-  expect(ran.exitCode).toBe(1);
-  expect(ran.output).toContain(SHIPPED);
+  expect(ran.output).toContain("1 new drizzle-kit migration");
+  expect(ran.exitCode).toBe(0);
 });
 
-test("renaming or deleting a shipped migration file fails", () => {
-  const renamed = "src/db/migrations/20261026T2045_runner_command_handover.ts";
+test("deleting the legacy migrations passes", () => {
   const ran = probe(
     "migrations-append-only",
-    candidate(DB, {
-      [SHIPPED]: null,
-      [renamed]: migration("20261026T2045_runner_command_handover"),
-    }),
+    candidate(DB, { "src/db/migrations.ts": null, [LEGACY]: null }),
   );
-  expect(ran.exitCode).toBe(1);
-  expect(ran.output).toContain(`${SHIPPED} is a shipped migration and was deleted or renamed`);
-});
-
-test("changing the frozen migration list fails", () => {
-  const ran = probe(
-    "migrations-append-only",
-    candidate(DB, { "src/db/migrations.ts": "export const frozenMigrations = [1];\n" }),
-  );
-  expect(ran.exitCode).toBe(1);
-  expect(ran.output).toContain("src/db/migrations.ts changed");
-});
-
-test("a new, correctly named migration file passes", () => {
-  const ran = probe(
-    "migrations-append-only",
-    candidate(DB, {
-      "src/db/migrations/20261027T1150_pull_comment_author.ts": migration(
-        "20261027T1150_pull_comment_author",
-      ),
-      "src/db/items.ts": "export const items = 2;\n",
-      "src/db/migrations/README.md": "# Migrations\n\nMore prose.\n",
-    }),
-  );
-  expect(ran.output).toContain("1 new migration file");
   expect(ran.exitCode).toBe(0);
 });
 
 test.each([
-  ["src/db/migrations/2026-10-27_pull_comment.ts", "is not named"],
-  ["src/db/migrations/20261027T1150_PullComment.ts", "is not named"],
-  ["src/db/migrations/20261027T1150.ts", "is not named"],
-  ["src/db/migrations/20261332T1150_pull_comment.ts", "which is not a UTC time"],
-  ["src/db/migrations/20261027T2460_pull_comment.ts", "which is not a UTC time"],
-])("a new migration file %s fails", (path, message) => {
-  const ran = probe("migrations-append-only", candidate(DB, { [path]: migration("x") }));
+  [
+    "editing the baseline",
+    { "src/db/drizzle/0000_baseline.sql": "CREATE TABLE a (id TEXT);\n" },
+    "src/db/drizzle/0000_baseline.sql is a shipped drizzle-kit migration and was edited",
+  ],
+  [
+    "deleting a shipped snapshot",
+    { "src/db/drizzle/meta/0000_snapshot.json": null },
+    "src/db/drizzle/meta/0000_snapshot.json is a shipped drizzle-kit migration and was deleted",
+  ],
+  [
+    "changing a shipped journal entry",
+    { [JOURNAL]: journal({ ...BASELINE, when: 999 }) },
+    "changed the shipped entry 0000_baseline",
+  ],
+  [
+    "a migration older than the last one",
+    { ...appended, [JOURNAL]: journal(BASELINE, { ...PROBE, when: 500 }) },
+    "0001_probe is not later than 0000_baseline",
+  ],
+  [
+    "a journal entry without its SQL file",
+    { [JOURNAL]: journal(BASELINE, PROBE) },
+    "entry 0001_probe has no new src/db/drizzle/0001_probe.sql",
+  ],
+  [
+    "a SQL file without a journal entry",
+    { "src/db/drizzle/0001_probe.sql": "SELECT 1;\n" },
+    "src/db/drizzle/0001_probe.sql has no new entry",
+  ],
+  [
+    "a new legacy migration file",
+    { "src/db/migrations/20261107T0300_pull_comment.ts": "export const migration = {};\n" },
+    "src/db/migrations/20261107T0300_pull_comment.ts is a legacy migration path",
+  ],
+  [
+    "editing the frozen legacy list",
+    { "src/db/migrations.ts": "export const frozenMigrations = [1];\n" },
+    "src/db/migrations.ts is a legacy migration path",
+  ],
+])("%s fails migrations-append-only", (_name, change, message) => {
+  const ran = probe("migrations-append-only", candidate(DB, change));
   expect(ran.exitCode).toBe(1);
-  expect(ran.output).toContain(path);
   expect(ran.output).toContain(message);
-});
-
-test("a new migration file whose exported id differs from its name fails", () => {
-  const path = "src/db/migrations/20261027T1150_pull_comment_author.ts";
-  const ran = probe(
-    "migrations-append-only",
-    candidate(DB, { [path]: migration("20261027T1151_pull_comment_author") }),
-  );
-  expect(ran.exitCode).toBe(1);
-  expect(ran.output).toContain(`must be "20261027T1150_pull_comment_author"`);
 });
 
 const MERGE = {

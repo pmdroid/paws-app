@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, count, eq, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { linearArtifact, linearArtifactAttempt } from "./schema";
 
 export type StoredArtifact = {
   id: string;
@@ -13,71 +16,88 @@ export type StoredArtifact = {
   assetUrl: string | null;
 };
 
-const COLUMNS = `id, item_id AS itemId, run_id AS runId, path, display_name AS displayName,
-  mime_type AS mimeType, size_bytes AS sizeBytes, sha256, state, asset_url AS assetUrl`;
+const columns = {
+  id: linearArtifact.id,
+  itemId: linearArtifact.itemId,
+  runId: linearArtifact.runId,
+  path: linearArtifact.path,
+  displayName: linearArtifact.displayName,
+  mimeType: linearArtifact.mimeType,
+  sizeBytes: linearArtifact.sizeBytes,
+  sha256: linearArtifact.sha256,
+  state: sql<StoredArtifact["state"]>`${linearArtifact.state}`,
+  assetUrl: linearArtifact.assetUrl,
+};
 
 export function saveArtifact(
   db: Database,
   artifact: StoredArtifact & { identityHash?: string },
   now: number,
 ): StoredArtifact {
-  db.query(`INSERT OR IGNORE INTO linear_artifact
-    (id, item_id, run_id, path, display_name, mime_type, size_bytes, sha256, state, created_at, identity_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`).run(
-    artifact.id,
-    artifact.itemId,
-    artifact.runId,
-    artifact.path,
-    artifact.displayName,
-    artifact.mimeType,
-    artifact.sizeBytes,
-    artifact.sha256,
-    now,
-    artifact.identityHash ?? null,
-  );
-  const stored = db
-    .query<StoredArtifact, [string, string, string, string, string]>(
-      `SELECT ${COLUMNS} FROM linear_artifact
-     WHERE item_id = ? AND path = ? AND display_name = ? AND mime_type = ? AND sha256 = ?`,
+  const identityHash = artifact.identityHash ?? null;
+  orm(db)
+    .insert(linearArtifact)
+    .values({ ...artifact, state: "pending", assetUrl: null, createdAt: now, identityHash })
+    .onConflictDoNothing()
+    .run();
+  const stored = orm(db)
+    .select(columns)
+    .from(linearArtifact)
+    .where(
+      and(
+        eq(linearArtifact.itemId, artifact.itemId),
+        eq(linearArtifact.path, artifact.path),
+        eq(linearArtifact.displayName, artifact.displayName),
+        eq(linearArtifact.mimeType, artifact.mimeType),
+        eq(linearArtifact.sha256, artifact.sha256),
+      ),
     )
-    .get(artifact.itemId, artifact.path, artifact.displayName, artifact.mimeType, artifact.sha256)!;
-  db.query(`UPDATE linear_artifact SET request_version = (
-    SELECT COALESCE(max(request_version), 0) + 1 FROM linear_artifact WHERE item_id = ?
-  ), identity_hash = coalesce(?, identity_hash) WHERE id = ?`).run(
-    artifact.itemId,
-    artifact.identityHash ?? null,
-    stored.id,
-  );
+    .get()!;
+  orm(db)
+    .update(linearArtifact)
+    .set({
+      requestVersion: sql`(
+        SELECT COALESCE(max(request_version), 0) + 1 FROM linear_artifact WHERE item_id = ${artifact.itemId}
+      )`,
+      identityHash: sql`coalesce(${identityHash}, identity_hash)`,
+    })
+    .where(eq(linearArtifact.id, stored.id))
+    .run();
   return stored;
 }
 
 export function markArtifact(db: Database, id: string, assetUrl: string | null): void {
-  db.query("UPDATE linear_artifact SET state = ?, asset_url = ? WHERE id = ?").run(
-    assetUrl === null ? "failed" : "uploaded",
-    assetUrl,
-    id,
-  );
+  orm(db)
+    .update(linearArtifact)
+    .set({ state: assetUrl === null ? "failed" : "uploaded", assetUrl })
+    .where(eq(linearArtifact.id, id))
+    .run();
 }
 
 export function listArtifacts(db: Database, itemId: string): StoredArtifact[] {
-  return db
-    .query<StoredArtifact, [string]>(`SELECT ${COLUMNS} FROM linear_artifact WHERE item_id = ?`)
-    .all(itemId);
+  return orm(db)
+    .select(columns)
+    .from(linearArtifact)
+    .where(eq(linearArtifact.itemId, itemId))
+    .all();
 }
 
 export function getArtifact(db: Database, id: string): StoredArtifact | null {
-  return db
-    .query<StoredArtifact, [string]>(`SELECT ${COLUMNS} FROM linear_artifact WHERE id = ?`)
-    .get(id);
+  return (
+    orm(db).select(columns).from(linearArtifact).where(eq(linearArtifact.id, id)).get() ?? null
+  );
 }
 
 export function beginArtifactAttempt(db: Database, itemId: string, identityHash: string): number {
-  return db
-    .query<{ version: number }, [string, string]>(`INSERT INTO linear_artifact_attempt
-    (item_id, identity_hash, version, completed_version) VALUES (?, ?, 1, 0)
-    ON CONFLICT(item_id, identity_hash) DO UPDATE SET version = version + 1
-    RETURNING version`)
-    .get(itemId, identityHash)!.version;
+  return orm(db)
+    .insert(linearArtifactAttempt)
+    .values({ itemId, identityHash, version: 1, completedVersion: 0 })
+    .onConflictDoUpdate({
+      target: [linearArtifactAttempt.itemId, linearArtifactAttempt.identityHash],
+      set: { version: sql`${linearArtifactAttempt.version} + 1` },
+    })
+    .returning({ version: linearArtifactAttempt.version })
+    .get().version;
 }
 
 export function completeArtifactAttempt(
@@ -86,29 +106,36 @@ export function completeArtifactAttempt(
   identityHash: string,
   version: number,
 ): void {
-  db.query(`UPDATE linear_artifact_attempt SET completed_version = max(completed_version, ?)
-    WHERE item_id = ? AND identity_hash = ?`).run(version, itemId, identityHash);
+  orm(db)
+    .update(linearArtifactAttempt)
+    .set({ completedVersion: sql`max(${linearArtifactAttempt.completedVersion}, ${version})` })
+    .where(attempt(itemId, identityHash))
+    .run();
 }
 
 export function artifactPublicationReady(db: Database, itemId: string): boolean {
-  return (
-    db
-      .query<{ pending: number }, [string]>(`SELECT count(*) AS pending FROM linear_artifact_attempt
-      WHERE item_id = ? AND completed_version < version`)
-      .get(itemId)!.pending === 0 &&
-    db
-      .query<{ pending: number }, [string]>(
-        `SELECT count(*) AS pending FROM linear_artifact AS artifact
-     WHERE item_id = ? AND state != 'uploaded' AND NOT EXISTS (
+  const attempts = orm(db)
+    .select({ pending: count() })
+    .from(linearArtifactAttempt)
+    .where(
+      and(
+        eq(linearArtifactAttempt.itemId, itemId),
+        sql`${linearArtifactAttempt.completedVersion} < ${linearArtifactAttempt.version}`,
+      ),
+    )
+    .get()!;
+  if (attempts.pending !== 0) return false;
+  // A correlated NOT EXISTS over the same table under two aliases.
+  const [uploads] = orm(db).all<{ pending: number }>(sql`SELECT count(*) AS pending
+     FROM linear_artifact AS artifact
+     WHERE item_id = ${itemId} AND state != 'uploaded' AND NOT EXISTS (
        SELECT 1 FROM linear_artifact AS newer
        WHERE newer.item_id = artifact.item_id
          AND ((artifact.identity_hash IS NULL AND newer.path = artifact.path)
            OR newer.identity_hash = artifact.identity_hash)
          AND newer.request_version > artifact.request_version
-     )`,
-      )
-      .get(itemId)!.pending === 0
-  );
+     )`);
+  return uploads!.pending === 0;
 }
 
 export function requestArtifactAttachment(
@@ -116,8 +143,11 @@ export function requestArtifactAttachment(
   itemId: string,
   identityHash: string,
 ): void {
-  db.query(`UPDATE linear_artifact_attempt SET attachment_requested = 1
-    WHERE item_id = ? AND identity_hash = ?`).run(itemId, identityHash);
+  orm(db)
+    .update(linearArtifactAttempt)
+    .set({ attachmentRequested: 1 })
+    .where(attempt(itemId, identityHash))
+    .run();
 }
 
 export function artifactAttachmentRequested(
@@ -126,9 +156,17 @@ export function artifactAttachmentRequested(
   identityHash: string,
 ): boolean {
   return (
-    db
-      .query<{ requested: number }, [string, string]>(`SELECT attachment_requested AS requested
-    FROM linear_artifact_attempt WHERE item_id = ? AND identity_hash = ?`)
-      .get(itemId, identityHash)?.requested === 1
+    orm(db)
+      .select({ requested: linearArtifactAttempt.attachmentRequested })
+      .from(linearArtifactAttempt)
+      .where(attempt(itemId, identityHash))
+      .get()?.requested === 1
+  );
+}
+
+function attempt(itemId: string, identityHash: string) {
+  return and(
+    eq(linearArtifactAttempt.itemId, itemId),
+    eq(linearArtifactAttempt.identityHash, identityHash),
   );
 }
