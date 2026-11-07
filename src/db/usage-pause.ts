@@ -1,11 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { systemClock } from "../core";
-import { resumeAccountHealthNow } from "./agent-account-health";
-import { settled, sqliteDb, type Q } from "./db";
+import { resumeAccountHealthNowSteps } from "./agent-account-health";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { accrueAwake } from "./items";
 import { orm } from "./orm";
-import { runnerAgentPolicy, usagePause as usagePauseTable } from "./schema";
+import { usagePause as usagePauseTable } from "./schema";
 import { immediate } from "./tx";
 
 /** A run waiting for its agent's usage limit to reset. */
@@ -47,7 +47,7 @@ export function startUsagePause(db: Database, pause: UsagePause, mono = systemCl
   });
 }
 
-export function* usagePauseSteps(q: Q, runId: string) {
+export function* usagePauseSteps(q: Q, runId: string): Steps<UsagePause | null> {
   const pauses = q.t.usagePause;
   const row = yield* q.one(
     q.orm
@@ -83,45 +83,50 @@ export function endUsagePause(
   });
 }
 
+export function* resumeUsagePauseNowSteps(q: Q, runId: string, now: number): Steps<boolean> {
+  const { usagePause: pauses, runnerAgentPolicy } = q.t;
+  const pause = yield* usagePauseSteps(q, runId);
+  if (!pause) return false;
+  yield* q.exec(q.orm.update(pauses).set({ resumeAt: now }).where(eq(pauses.runId, runId)));
+  yield* q.exec(
+    q.orm
+      .update(runnerAgentPolicy)
+      .set({ cooldownUntil: 0 })
+      .where(
+        and(
+          eq(runnerAgentPolicy.agent, pause.agent),
+          gt(runnerAgentPolicy.cooldownUntil, 0),
+          pause.runnerId === null ? undefined : eq(runnerAgentPolicy.runnerId, pause.runnerId),
+        ),
+      ),
+  );
+  yield* resumeAccountHealthNowSteps(q, pause.agent, pause.runnerId, now);
+  return true;
+}
+
 /** Resume now: end the wait and lift the agent's cooldown so placement can try it again. */
 export function resumeUsagePauseNow(db: Database, runId: string, now: number): boolean {
-  return db
-    .transaction(() => {
-      const pause = usagePause(db, runId);
-      if (!pause) return false;
-      orm(db)
-        .update(usagePauseTable)
-        .set({ resumeAt: now })
-        .where(eq(usagePauseTable.runId, runId))
-        .run();
-      orm(db)
-        .update(runnerAgentPolicy)
-        .set({ cooldownUntil: 0 })
-        .where(
-          and(
-            eq(runnerAgentPolicy.agent, pause.agent),
-            gt(runnerAgentPolicy.cooldownUntil, 0),
-            pause.runnerId === null ? undefined : eq(runnerAgentPolicy.runnerId, pause.runnerId),
-          ),
-        )
-        .run();
-      resumeAccountHealthNow(db, pause.agent, pause.runnerId, now);
-      return true;
-    })
-    .immediate();
+  return settled(sqliteDb(db).transaction((q) => resumeUsagePauseNowSteps(q, runId, now)));
+}
+
+export function* clearUsagePausesSteps(q: Q): Steps<void> {
+  yield* q.exec(q.orm.delete(q.t.usagePause));
 }
 
 /** A pause lives in the process that waits for it; a restart starts from no waits. */
 export function clearUsagePauses(db: Database): void {
-  orm(db).delete(usagePauseTable).run();
+  settled(sqliteDb(db).run((q) => clearUsagePausesSteps(q)));
 }
 
-export function earliestRunnerCooldown(
-  db: Database,
-  input: { agent: string; now: number; runnerIds: readonly string[] },
-): { runnerId: string; until: number } | null {
-  return (
-    orm(db)
+type CooldownQuery = { agent: string; now: number; runnerIds: readonly string[] };
+
+export function* earliestRunnerCooldownSteps(
+  q: Q,
+  input: CooldownQuery,
+): Steps<{ runnerId: string; until: number } | null> {
+  const { runnerAgentPolicy } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({ runnerId: runnerAgentPolicy.runnerId, until: runnerAgentPolicy.cooldownUntil })
       .from(runnerAgentPolicy)
       .where(
@@ -132,14 +137,22 @@ export function earliestRunnerCooldown(
         ),
       )
       .orderBy(asc(runnerAgentPolicy.cooldownUntil), asc(runnerAgentPolicy.runnerId))
-      .limit(1)
-      .get() ?? null
+      .limit(1),
   );
+  return row ?? null;
 }
 
-export function runnerAgentLoginReady(db: Database, runnerId: string, agent: string): boolean {
-  return (
-    orm(db)
+export function earliestRunnerCooldown(
+  db: Database,
+  input: CooldownQuery,
+): { runnerId: string; until: number } | null {
+  return settled(sqliteDb(db).run((q) => earliestRunnerCooldownSteps(q, input)));
+}
+
+export function* runnerAgentLoginReadySteps(q: Q, runnerId: string, agent: string): Steps<boolean> {
+  const { runnerAgentPolicy } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({ one: sql`1` })
       .from(runnerAgentPolicy)
       .where(
@@ -150,6 +163,11 @@ export function runnerAgentLoginReady(db: Database, runnerId: string, agent: str
           eq(runnerAgentPolicy.authExpired, 0),
         ),
       )
-      .get() !== undefined
+      .limit(1),
   );
+  return row !== undefined;
+}
+
+export function runnerAgentLoginReady(db: Database, runnerId: string, agent: string): boolean {
+  return settled(sqliteDb(db).run((q) => runnerAgentLoginReadySteps(q, runnerId, agent)));
 }
