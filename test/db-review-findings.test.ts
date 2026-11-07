@@ -142,9 +142,7 @@ forEachDialect((open) => {
   test("a member dismisses, reopens and files a finding", () =>
     withDb(async (db) => {
       await record(db, "A", "h1", 10, [finding("src/a.ts:1")]);
-      const [{ id, key }] = (await db.run((q) => listReviewFindingsSteps(q))) as [
-        { id: number; key: string },
-      ];
+      const { id, key } = (await db.run((q) => listReviewFindingsSteps(q)))[0]!;
       const reopen = { id, status: "open", by: "u", now: 11 } as const;
       expect(await db.run((q) => setReviewFindingStatusSteps(q, reopen))).toBeNull();
       expect(
