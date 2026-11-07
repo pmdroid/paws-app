@@ -3,11 +3,11 @@ import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { systemClock } from "../src/core";
-import { createInboxStore, createFakeTracker, openLinear } from "../src/linear";
+import { createInboxStore, createFakeTracker, openLinear, writeStoredToken } from "../src/linear";
 import { getLinearSession, isLinearAppRevoked, JobLoop, OutboxDispatcher } from "../src/db";
 import { attachOrchestrator, handleLinearAdministration, LinearTaskAccess } from "../src/loop";
 import { startServer } from "../src/server";
-import { tempDb, tempHome, storeLinearToken } from "./helpers";
+import { tempDb, tempHome } from "./helpers";
 
 test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
   "signed %s fences the owned zero-item ACP classifier",
@@ -51,7 +51,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     });
     const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
     const secret = "fake-webhook-secret";
-    storeLinearToken(root, {
+    writeStoredToken(db, join(root, "secrets"), {
       accessToken: "fake-access",
       refreshToken: "fake-refresh",
       expiresAtMs: Date.now() + 600_000,

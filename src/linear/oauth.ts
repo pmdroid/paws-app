@@ -285,12 +285,12 @@ function readToken(db: Database, secretsDir: string): StoredLinearToken | null {
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new Error("Linear token file is unreadable");
+    throw new Error("Stored Linear token is unreadable");
   }
-  if (!isRecord(parsed)) throw new Error("Linear token file is unreadable");
+  if (!isRecord(parsed)) throw new Error("Stored Linear token is unreadable");
   const accessToken = parsed["accessToken"];
   if (typeof accessToken !== "string" || accessToken.length === 0) {
-    throw new Error("Linear token file is unreadable");
+    throw new Error("Stored Linear token is unreadable");
   }
   const refreshToken = parsed["refreshToken"];
   const expiresAtMs = parsed["expiresAtMs"];
