@@ -122,6 +122,7 @@ import {
   listReviewEscapes,
   clearUsagePauses,
   countLinearRequest,
+  linearBudgetStore,
   migrate,
   openDatabase,
   checkPostgres,
@@ -601,6 +602,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db,
     signal: abort.signal,
     countItemRequest: (itemId, caller) => countLinearRequest(db, itemId, caller),
+    budget: linearBudgetStore(db, runtime.linearClientId ?? "linear"),
     secretsDir: paths.secretsDir,
     isAuthorized: () =>
       !isLinearAppRevoked(db, {

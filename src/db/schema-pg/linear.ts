@@ -280,6 +280,24 @@ export const linearOutboxBackoff = pgTable(
   () => [check("linear_outbox_backoff_check_1", sql`id=1`)],
 );
 
+export const linearRequestBudget = pgTable("linear_request_budget", {
+  workspace: text().primaryKey(),
+  windowStart: bigint("window_start", { mode: "number" }).notNull(),
+  spent: bigint({ mode: "number" }).notNull(),
+  holdUntil: bigint("hold_until", { mode: "number" }),
+  requestLimit: bigint("request_limit", { mode: "number" }),
+});
+
+export const linearRequestReservation = pgTable(
+  "linear_request_reservation",
+  {
+    id: text().primaryKey(),
+    workspace: text().notNull(),
+    expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
+  },
+  (table) => [index("linear_request_reservation_workspace").on(table.workspace, table.expiresAt)],
+);
+
 export const linearActivityListing = pgTable("linear_activity_listing", {
   sessionId: text("session_id").primaryKey(),
   generation: bigint({ mode: "number" }).notNull(),

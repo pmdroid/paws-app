@@ -366,6 +366,7 @@ export {
   type MigrationReport,
   type PostgresConnection,
 } from "./db-check";
+export { linearBudgetStore, type LinearBudgetRow } from "./linear-budget";
 export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
 export { orm, type Orm } from "./orm";
 export { postgresDb, settled, sqliteDb, type Db, type PgDb, type PgOrm, type SqliteDb } from "./db";

@@ -54,11 +54,17 @@ export function createLinearClient(options: {
           ...(signal === undefined ? {} : { signal }),
         });
       };
-      let token = await abortable(options.auth.ensureFresh(), signal);
-      let response = await run(token);
-      if (response.status === 401) {
-        token = await abortable(options.auth.forceRefresh(), signal);
+      let response: Response;
+      try {
+        let token = await abortable(options.auth.ensureFresh(), signal);
         response = await run(token);
+        if (response.status === 401) {
+          token = await abortable(options.auth.forceRefresh(), signal);
+          response = await run(token);
+        }
+      } catch (error) {
+        ledger.settle();
+        throw error;
       }
       const budget = budgetFromHeaders(response.headers);
       ledger.observe(caller, budget, item, itemId, query);

@@ -9,6 +9,8 @@ export const BACKGROUND_BUDGET_FRACTION = 0.2;
 export const NORMAL_BUDGET_FRACTION = 0.05;
 export const LINEAR_TOP_ITEMS = 20;
 const UNKNOWN_RESET_WAIT_MS = 60_000;
+const RESERVATION_MS = 5 * 60_000;
+const IN_FLIGHT_WAIT_MS = 1_000;
 
 export type LinearPriority = "critical" | "normal" | "background";
 
@@ -96,8 +98,33 @@ export type LinearLedger = {
     operation?: string,
   ): void;
   limited(caller: string, error: LinearRateLimitError): LinearRateLimitError;
+  settle(): void;
   usage(): LinearUsage;
   now(): number;
+};
+
+export type LinearSharedBudget = {
+  read(): {
+    windowStartMs: number;
+    spent: number;
+    holdUntilMs: number | null;
+    requestLimit: number | null;
+  } | null;
+  spend(
+    now: number,
+    windowMs: number,
+    limit: number | null,
+    share: number,
+    ttlMs: number,
+  ): string | null;
+  release(id: string, now: number, windowMs: number, counted: boolean): void;
+  sync(
+    now: number,
+    windowMs: number,
+    limit: number,
+    window: { startMs: number; spent: number } | null,
+  ): void;
+  hold(now: number, untilMs: number): void;
 };
 
 type LedgerEntry = { at: number; caller: string; item: string | null } & LinearCallerUsage;
@@ -167,6 +194,7 @@ export function createLinearLedger(
     random?: () => number;
     log?: (line: string) => void;
     countItem?: (itemId: string, caller: string) => void;
+    shared?: LinearSharedBudget;
   } = {},
 ): LinearLedger {
   const now = options.now ?? Date.now;
@@ -202,9 +230,40 @@ export function createLinearLedger(
     holdUntilMs = null;
     return 0;
   };
+  const reservations: string[] = [];
+  const refresh = () => {
+    const row = options.shared?.read() ?? null;
+    if (row !== null && row.holdUntilMs !== null)
+      holdUntilMs = Math.max(holdUntilMs ?? 0, row.holdUntilMs);
+    return row;
+  };
+  const spendMs = (priority: LinearPriority) => {
+    const shared = options.shared;
+    if (shared === undefined) return 0;
+    const limit = budget?.requestsLimit ?? null;
+    const share = sharedShare(priority);
+    const id = shared.spend(now(), LINEAR_USAGE_WINDOW_MS, limit, share, RESERVATION_MS);
+    if (id !== null) {
+      reservations.push(id);
+      return 0;
+    }
+    const row = refresh();
+    const held = holdMs();
+    if (held > 0 || row === null) return Math.max(1, held);
+    const known = limit ?? row.requestLimit;
+    const windowLeft = row.windowStartMs + LINEAR_USAGE_WINDOW_MS - now();
+    if (known !== null && row.spent >= Math.floor(known * share) && windowLeft > 0)
+      return windowLeft;
+    return IN_FLIGHT_WAIT_MS;
+  };
+  const release = (counted: boolean) => {
+    const id = reservations.shift();
+    if (id !== undefined) options.shared?.release(id, now(), LINEAR_USAGE_WINDOW_MS, counted);
+  };
   const jitter = (delayMs: number) =>
     Math.round(random() * Math.min(5_000, Math.max(250, delayMs / 10)));
   const usage = (): LinearUsage => {
+    refresh();
     prune();
     const totals: Record<string, LinearCallerUsage> = {};
     const items = new Map<string, number>();
@@ -241,12 +300,14 @@ export function createLinearLedger(
   };
   return {
     admit(caller, priority = "normal", operation) {
+      if (operation === undefined) refresh();
       const endpoint = operation === undefined ? undefined : operations.get(operation);
-      const left = Math.max(
+      let left = Math.max(
         holdMs(),
         reserveMs(budget, priority, now()),
         endpointHoldMs(endpoint === undefined ? undefined : endpoints.get(endpoint), now()),
       );
+      if (left === 0 && operation !== undefined) left = spendMs(priority);
       if (left === 0) return null;
       record(caller, { held: 1 });
       return new LinearRateLimitError(left + jitter(left), budget ?? emptyBudget());
@@ -260,14 +321,27 @@ export function createLinearLedger(
         if (operation !== undefined) operations.set(operation, endpoint.name);
       }
       if (Object.values(limits).some((value) => value !== null)) budget = limits;
+      const { requestsLimit: limit, requestsRemaining: remaining, requestsResetMs: reset } = limits;
+      const window =
+        limit === null || limit <= 0 || remaining === null || reset === null
+          ? null
+          : { startMs: reset - LINEAR_USAGE_WINDOW_MS, spent: Math.max(0, limit - remaining) };
+      if (limit !== null && limit > 0)
+        options.shared?.sync(now(), LINEAR_USAGE_WINDOW_MS, limit, window);
+      release(window !== null && window.startMs + LINEAR_USAGE_WINDOW_MS > now());
     },
     limited(caller, error) {
-      if (error.endpoint === null)
+      if (error.endpoint === null) {
         holdUntilMs = Math.max(holdUntilMs ?? 0, now() + error.retryAfterMs);
+        options.shared?.hold(now(), holdUntilMs);
+      }
       record(caller, { rateLimited: 1 });
       log(rateLimitLine(caller, error, usage()));
       const left = error.endpoint === null ? holdUntilMs! - now() : error.retryAfterMs;
       return new LinearRateLimitError(left + jitter(left), error.budget, error.endpoint);
+    },
+    settle() {
+      release(false);
     },
     usage,
     now,
@@ -299,6 +373,11 @@ function reserveMs(budget: LinearRateBudget | null, priority: LinearPriority, no
     wait = Math.max(wait, reset === null ? UNKNOWN_RESET_WAIT_MS : reset - now);
   }
   return wait;
+}
+
+function sharedShare(priority: LinearPriority): number {
+  if (priority === "critical") return 1;
+  return 1 - (priority === "background" ? BACKGROUND_BUDGET_FRACTION : NORMAL_BUDGET_FRACTION);
 }
 
 function endpointHoldMs(limit: LinearEndpointLimit | undefined, now: number): number {
