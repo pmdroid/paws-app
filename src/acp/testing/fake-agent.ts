@@ -178,9 +178,6 @@ async function handle(message: {
 
   if (message.method === "session/new" || message.method === "session/load") {
     if (typeof message.params?.cwd === "string") state.sessionCwd = message.params.cwd;
-  }
-
-  if (message.method === "session/new") {
     const servers = Array.isArray(message.params?.mcpServers) ? message.params.mcpServers : [];
     state.mcpServers = servers.map((server) => {
       const recordServer = server as {
@@ -196,6 +193,9 @@ async function handle(message: {
         env: recordServer.env,
       };
     });
+  }
+
+  if (message.method === "session/new") {
     const sessionMeta = message.params?.["_meta"];
     if (sessionMeta) state.sessionMeta = sessionMeta;
     if (process.env.CODEX_HOME) state.codexHome = process.env.CODEX_HOME;

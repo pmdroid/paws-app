@@ -22,6 +22,9 @@ function helper(now: number, purpose: Helper["purpose"], sessionId: string): Hel
     purpose,
     profile: { agent: "claude", model: null },
     prompt: "What does the acme checkout do?",
+    ...(purpose === "conversation"
+      ? { conversation: { itemId: "item-acme", runId: "run-acme", resumeSessionId: sessionId } }
+      : {}),
   };
 }
 

@@ -89,6 +89,7 @@ export const RunnerHelperResultSchema = RunnerResultSchema.omit({
       (text) =>
         Buffer.byteLength(JSON.stringify(text)) <= RUNNER_RESULT_BODY_LIMIT - resultMetadataBudget,
     ),
+  replies: z.array(z.string().min(1).max(4000)).min(1).max(5).optional(),
 });
 
 export type RunnerHelperResult = z.infer<typeof RunnerHelperResultSchema>;
