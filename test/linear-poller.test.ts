@@ -409,6 +409,7 @@ describe("linear intake poll", () => {
     });
     expect(linear.usage().lastCatchUpMs).toBeNull();
     const running = linear.start();
+    await running.pollDue();
     await waitFor(() => createInboxStore(db).getCursor("linear") !== null);
     expect(queries.some((body) => body.includes("IntakePoll"))).toBe(true);
     expect(linear.usage().lastCatchUpMs).toBe(createInboxStore(db).getCursor("linear"));
