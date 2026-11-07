@@ -153,6 +153,17 @@ export function saveCloseoutEvidenceObject(db: Database, row: CloseoutEvidenceOb
     .run();
 }
 
+export function insertCloseoutEvidenceObject(db: Database, row: CloseoutEvidenceObject): boolean {
+  return (
+    orm(db)
+      .insert(closeoutEvidenceObject)
+      .values(row)
+      .onConflictDoNothing()
+      .returning({ task: closeoutEvidenceObject.task })
+      .all().length > 0
+  );
+}
+
 export function closeoutTasksOfItem(
   db: Database,
   ref: string,

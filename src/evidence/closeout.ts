@@ -5,10 +5,13 @@ import { basename, dirname, join } from "node:path";
 import {
   closeoutTasksOfItem,
   getCloseoutEvidenceObject,
+  insertCloseoutEvidenceObject,
   listCloseoutEvidenceObjects,
   saveCloseoutEvidenceObject,
+  type CloseoutEvidenceObject,
 } from "../db";
 import { journalCaught } from "../journal";
+import type { RunFileObjects } from "../run-files";
 import {
   readChunks,
   removeEvidenceChunks,
@@ -85,16 +88,21 @@ export async function publishCloseoutEvidence(
       }
     }
     const sizeBytes = await writeEvidenceChunks(objects, prefix, hashed());
-    const sha256 = hash.digest("hex");
-    saveCloseoutEvidenceObject(db, {
+    const row = {
       task,
       path,
       prefix,
       sizeBytes,
-      sha256,
+      sha256: hash.digest("hex"),
       modifiedAt,
       storedAt: now(),
-    });
+    };
+    if (options.keepStored) {
+      if (!insertCloseoutEvidenceObject(db, row)) {
+        await removeEvidenceChunks(objects, prefix, sizeBytes);
+        continue;
+      }
+    } else saveCloseoutEvidenceObject(db, row);
     if (previous) await removeEvidenceChunks(objects, previous.prefix, previous.sizeBytes);
     published++;
   }
@@ -116,30 +124,48 @@ export async function hydrateCloseoutEvidence(
     if (!safeTask(row.task) || !safePath(row.path)) continue;
     const target = join(storage.root, row.task, ...row.path.split("/"));
     const local = await lstat(target).catch(() => null);
-    if (local !== null && Math.floor(local.mtimeMs) >= row.modifiedAt) continue;
-    const temporary = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
+    if (local?.isFile() && local.size === row.sizeBytes) {
+      if (Math.floor(local.mtimeMs) === row.modifiedAt) continue;
+      if ((await sha256Of(Bun.file(target).stream()).catch(() => null)) === row.sha256) continue;
+    }
     try {
-      const parts: Uint8Array[] = [];
-      const hash = createHash("sha256");
-      for await (const bytes of readChunks(objects, row, 0, row.sizeBytes - 1)) {
-        hash.update(bytes);
-        parts.push(bytes);
-      }
-      if (hash.digest("hex") !== row.sha256)
-        throw new Error("Closeout evidence object failed its integrity check");
-      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-      await writeFile(temporary, Buffer.concat(parts), { flag: "wx", mode: 0o600 });
-      await utimes(temporary, row.modifiedAt / 1000, row.modifiedAt / 1000);
-      await rename(temporary, target);
+      await restoreCloseoutFile(objects, row, target).catch(async (error: unknown) => {
+        const current = getCloseoutEvidenceObject(db, row.task, row.path);
+        if (current === null || current.prefix === row.prefix) throw error;
+        await restoreCloseoutFile(objects, current, target);
+      });
       restored++;
     } catch (error) {
-      await rm(temporary, { force: true });
       journalCaught(error, "evidence.hydrateCloseoutEvidence", null);
       unrestored ??= { error };
     }
   }
   if (options.strict && unrestored !== null) throw unrestored.error;
   return restored;
+}
+
+async function restoreCloseoutFile(
+  objects: RunFileObjects,
+  row: CloseoutEvidenceObject,
+  target: string,
+): Promise<void> {
+  const temporary = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
+  try {
+    const parts: Uint8Array[] = [];
+    const hash = createHash("sha256");
+    for await (const bytes of readChunks(objects, row, 0, row.sizeBytes - 1)) {
+      hash.update(bytes);
+      parts.push(bytes);
+    }
+    if (hash.digest("hex") !== row.sha256)
+      throw new Error("Closeout evidence object failed its integrity check");
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    await writeFile(temporary, Buffer.concat(parts), { flag: "wx", mode: 0o600 });
+    await utimes(temporary, row.modifiedAt / 1000, row.modifiedAt / 1000);
+    await rename(temporary, target);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
 export function hydrateItemCloseoutEvidence(

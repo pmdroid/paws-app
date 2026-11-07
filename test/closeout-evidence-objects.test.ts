@@ -234,10 +234,11 @@ test("restored records keep their modification times, and a newer stored copy re
   expect(readFileSync(join(storageB.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
     "acme partial\nacme done\n",
   );
-  await Bun.sleep(5);
-  writeFileSync(log, "acme newer local\n");
   expect(await hydrateCloseoutEvidence(db, storageA, [ITEM])).toBe(0);
-  expect(readFileSync(log, "utf8")).toBe("acme newer local\n");
+  await Bun.sleep(5);
+  writeFileSync(log, "acme unpublished\n");
+  expect(await hydrateCloseoutEvidence(db, storageA, [ITEM])).toBe(1);
+  expect(readFileSync(log, "utf8")).toBe("acme partial\nacme done\n");
 });
 
 test("every visible item with the issue's identifier has its Closeout records restored", async () => {
@@ -315,6 +316,67 @@ test("the startup upload keeps a path already in the store instead of replacing 
   await hydrateCloseoutEvidence(db, storageB, [ITEM]);
   expect(readFileSync(join(storageB.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
     "acme test output\n",
+  );
+  expect(await hydrateCloseoutEvidence(db, storageA, [ITEM], { strict: true })).toBe(1);
+  expect(readFileSync(join(storageA.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
+    "acme test output\n",
+  );
+});
+
+test("a startup upload that loses to a concurrent publish keeps the published copy", async () => {
+  const { db, s3, objects, homeB, storageA, storageB } = setup();
+  const publisher = { root: closeoutRun(db, homeB), objects };
+  writeFileSync(join(publisher.root, ITEM, ...LOG.split("/")), "acme published meanwhile\n");
+  let raced = false;
+  const racing = () => {
+    const sealed = objects();
+    return {
+      ...sealed,
+      async write(key: string, bytes: Uint8Array) {
+        if (!raced) {
+          raced = true;
+          await publishCloseoutEvidence(db, publisher, ITEM);
+        }
+        await sealed.write(key, bytes);
+      },
+    };
+  };
+  await uploadLocalCloseoutEvidence(db, { root: storageA.root, objects: racing });
+  const storageC = { ...storageB, root: join(tempHome(), "closeout", "evidence") };
+  await hydrateCloseoutEvidence(db, storageC, [ITEM], { strict: true });
+  expect(readFileSync(join(storageC.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
+    "acme published meanwhile\n",
+  );
+  const prefixes = new Set([...s3.objects.keys()].map((key) => key.replace(/\/\d+$/, "")));
+  expect(prefixes.size).toBe(2);
+});
+
+test("a restore that started before a file was replaced reads the replacement", async () => {
+  const { db, objects, storageA, storageB } = setup();
+  await publishCloseoutEvidence(db, storageA, ITEM);
+  await Bun.sleep(5);
+  writeFileSync(join(storageA.root, ITEM, ...LOG.split("/")), "acme replaced\n");
+  let replaced = false;
+  const racing = () => {
+    const sealed = objects();
+    return {
+      ...sealed,
+      async read(key: string) {
+        if (!replaced) {
+          replaced = true;
+          await publishCloseoutEvidence(db, storageA, ITEM);
+        }
+        return sealed.read(key);
+      },
+    };
+  };
+  expect(
+    await hydrateCloseoutEvidence(db, { root: storageB.root, objects: racing }, [ITEM], {
+      strict: true,
+    }),
+  ).toBe(2);
+  expect(readFileSync(join(storageB.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
+    "acme replaced\n",
   );
 });
 

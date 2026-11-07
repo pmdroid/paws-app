@@ -628,6 +628,7 @@ export {
 export {
   closeoutTasksOfItem,
   getCloseoutEvidenceObject,
+  insertCloseoutEvidenceObject,
   listCloseoutEvidenceObjects,
   saveCloseoutEvidenceObject,
   type CloseoutEvidenceObject,
