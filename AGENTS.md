@@ -12,10 +12,10 @@ The loop lives in `src/loop` and is wired from `src/index.ts`. A real run is `do
 bun install
 bun run paws doctor  # prerequisites for a real Linear / GitHub / Closeout run
 bun run paws          # 127.0.0.1:8787, data in ~/.paws
-bun run check         # lint, fmt:check, typecheck, test, build:dashboard, links, knip
+bun run check         # lint, fmt:check, typecheck, test, build:dashboard, links, raw-sql, knip
 ```
 
-Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`), `links` (documentation links, orphaned docs and source paths), `knip` (unused files, dependencies and duplicate exports). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`); Closeout's `test` check runs only the tests the change affects (`scripts/affected-tests.ts`); CI always runs the full suite.
+Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`), `links` (documentation links, orphaned docs and source paths), `raw-sql` (raw `bun:sqlite` calls outside `scripts/raw-sql-allowlist.txt`), `knip` (unused files, dependencies and duplicate exports). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`); Closeout's `test` check runs only the tests the change affects (`scripts/affected-tests.ts`); CI always runs the full suite.
 
 Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported from each module.
 
@@ -112,6 +112,8 @@ Import another module only through its `index.ts`. `test/boundaries.test.ts` fai
 `src/core` does not open SQLite and does not talk to Linear. `transition()` is pure. The single writer that commits a transition, outbox rows, and jobs in one `BEGIN IMMEDIATE` transaction comes later; call `transition()` and do not add a second state machine.
 
 SQLite, when opened, uses WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`, and `temp_store=MEMORY`. Migrations are drizzle-kit migrations in `src/db/drizzle/`, append-only and generated from the schema in `src/db/schema/`: change the schema, then run `bun x drizzle-kit generate --name <what_it_does>`. Use a custom migration (`bun x drizzle-kit generate --custom --name <what_it_does>`) with hand-written SQL only for what drizzle-kit can't express: `STRICT`, triggers, data backfills. Shipped migrations, their snapshots and journal entries are never edited (see `src/db/README.md`). The legacy migrations (`src/db/migrations.ts`, `src/db/migrations/`) are frozen.
+
+Database access goes through Drizzle in `src/db`; new raw SQL is refused by `bun run check`. `bun run raw-sql` fails on `.query(`, `.run(`, `.prepare(` or `.exec(` on a `bun:sqlite` `Database` outside tests, `src/db/migrate.ts`, `src/db/open.ts` and Drizzle's `sql` template in `src/db`. Calls not yet converted are listed in `scripts/raw-sql-allowlist.txt` as `path | trimmed line | reason`; remove an entry when its call moves to Drizzle.
 
 External adapters are async. Database helpers are sync because `bun:sqlite` is sync. Keep transactions short.
 
