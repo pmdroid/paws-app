@@ -147,7 +147,8 @@ export function onJobReady(listener: (db: Database) => void): () => void {
   };
 }
 
-function emitJobReady(db: Database): void {
+/** Wake the job loop after a wrapper ran a …Steps that inserted a job row. */
+export function emitJobReady(db: Database): void {
   for (const listener of jobReadyListeners) {
     try {
       listener(db);
