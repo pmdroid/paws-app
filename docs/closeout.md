@@ -337,7 +337,7 @@ full suite (556 files): package.json changed
 
 In this repository, the `proof` check runs `bun run verify:proof --changed origin/main` when the change touches `src/loop/**`, `src/db/commands.ts`, `src/merge/**`, `src/linear/**`, `src/github/**`, `src/runner-backend/**` or `src/scheduler/**`. A change outside those paths skips it. The runner picks the scenarios in `test/proofs/` whose `covers` globs match a file changed since the merge base and runs each in a throwaway home with fake Linear, fake GitHub and the scripted ACP agent. The timeout is 15 minutes, and CI does not run it.
 
-- **A scenario covers the change:** each scenario's `proof-<name>.md` bundle (actions, Linear and GitHub calls, transitions and assertions) goes into the check's log, which Closeout stores as the check's evidence. No person approves it.
+- **A scenario covers the change:** each scenario's `proof-<name>.md` bundle (actions, Linear and GitHub calls, transitions and assertions) goes into the check's log, which Closeout stores as the check's evidence. No person approves it. A bundle over 64 KB keeps its actions, transitions and assertions and replaces each Linear and GitHub call list with how many entries were cut. A scenario that exits 0 without writing its bundle fails with `FAIL <name>: no proof bundle`.
 - **No scenario covers the change:** the check passes and its log says `No proof scenario covers these paths`.
 - **A scenario fails:** the check fails. The failed assertions and what they observed come last in the log, so they reach the agent in its fix feedback.
 
