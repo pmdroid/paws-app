@@ -28,11 +28,11 @@ forEachDialect((connect) => {
       return row!.id;
     });
 
-    const record = (jobId: number, candidate: string, files?: string[] | null) =>
+    const record = (returnedBy: number, candidate: string, files?: string[] | null) =>
       db.run((q) =>
         recordRebaseReturnSteps(q, {
           itemId: "ENG-1",
-          jobId,
+          jobId: returnedBy,
           candidate,
           reason: "merge",
           base: files === undefined ? undefined : "main1",
