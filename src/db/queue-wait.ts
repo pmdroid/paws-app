@@ -1,8 +1,5 @@
 import { and, asc, eq } from "drizzle-orm";
-import type { Db } from "./db";
-import type { Orm } from "./orm";
-import { queuePosition, queueWait } from "./schema";
-import * as pg from "./schema-pg";
+import type { Db, Q } from "./db";
 
 export function queueWaitSince(
   db: Db,
@@ -10,36 +7,26 @@ export function queueWaitSince(
   version: number,
   now: number,
 ): Promise<number> {
-  if (db.dialect === "sqlite")
-    return db.sync((handle) => {
-      handle.insert(queueWait).values({ itemId, version, since: now }).onConflictDoNothing().run();
-      return handle
+  return db.run(function* (q) {
+    const { queueWait } = q.t;
+    yield* q.exec(
+      q.orm.insert(queueWait).values({ itemId, version, since: now }).onConflictDoNothing(),
+    );
+    const row = yield* q.one(
+      q.orm
         .select({ since: queueWait.since })
         .from(queueWait)
-        .where(and(eq(queueWait.itemId, itemId), eq(queueWait.version, version)))
-        .get()!.since;
-    });
-  const handle = db.orm;
-  return (async () => {
-    await handle.insert(pg.queueWait).values({ itemId, version, since: now }).onConflictDoNothing();
-    const [row] = await handle
-      .select({ since: pg.queueWait.since })
-      .from(pg.queueWait)
-      .where(and(eq(pg.queueWait.itemId, itemId), eq(pg.queueWait.version, version)));
+        .where(and(eq(queueWait.itemId, itemId), eq(queueWait.version, version))),
+    );
     return row!.since;
-  })();
+  });
 }
 
 /** Forget when an item began waiting for a slot, so its start timeout counts from the next wait. */
 export function clearQueueWait(db: Db, itemId: string): Promise<void> {
-  if (db.dialect === "sqlite")
-    return db.sync((handle) => {
-      handle.delete(queueWait).where(eq(queueWait.itemId, itemId)).run();
-    });
-  return db.orm
-    .delete(pg.queueWait)
-    .where(eq(pg.queueWait.itemId, itemId))
-    .then(() => undefined);
+  return db.run(function* (q) {
+    yield* q.exec(q.orm.delete(q.t.queueWait).where(eq(q.t.queueWait.itemId, itemId)));
+  });
 }
 
 /** A queued item's place among the items waiting for a runner slot. */
@@ -71,48 +58,35 @@ export function saveQueuePositions(
           ownerCap: ownerCaps.get(itemId) ?? null,
           updatedAt: now,
         }));
-  if (db.dialect === "sqlite")
-    return db.sync((handle) => {
-      handle.delete(queuePosition).run();
-      for (const row of rows) handle.insert(queuePosition).values(row).run();
-    });
-  return db.orm.transaction(async (tx) => {
-    await tx.delete(pg.queuePosition);
-    if (rows.length > 0) await tx.insert(pg.queuePosition).values(rows);
+  return db.transaction(function* (q) {
+    yield* q.exec(q.orm.delete(q.t.queuePosition));
+    if (rows.length > 0) yield* q.exec(q.orm.insert(q.t.queuePosition).values(rows));
   });
 }
 
-function listSqlite(handle: Orm): QueuePosition[] {
-  return handle
-    .select({
-      itemId: queuePosition.itemId,
-      position: queuePosition.position,
-      busySlots: queuePosition.busySlots,
-      totalSlots: queuePosition.totalSlots,
-      ownerCap: queuePosition.ownerCap,
-    })
-    .from(queuePosition)
-    .orderBy(asc(queuePosition.position))
-    .all();
+function* listSteps(q: Q) {
+  const { queuePosition } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        itemId: queuePosition.itemId,
+        position: queuePosition.position,
+        busySlots: queuePosition.busySlots,
+        totalSlots: queuePosition.totalSlots,
+        ownerCap: queuePosition.ownerCap,
+      })
+      .from(queuePosition)
+      .orderBy(asc(queuePosition.position)),
+  );
 }
 
 export function listQueuePositions(db: Db): Promise<QueuePosition[]> {
-  if (db.dialect === "sqlite") return db.sync(listSqlite);
-  return db.orm
-    .select({
-      itemId: pg.queuePosition.itemId,
-      position: pg.queuePosition.position,
-      busySlots: pg.queuePosition.busySlots,
-      totalSlots: pg.queuePosition.totalSlots,
-      ownerCap: pg.queuePosition.ownerCap,
-    })
-    .from(pg.queuePosition)
-    .orderBy(asc(pg.queuePosition.position));
+  return db.run(listSteps);
 }
 
 export function getQueuePosition(db: Db, itemId: string): Promise<QueuePosition | null> {
-  const find = (entries: QueuePosition[]) =>
-    entries.find((entry) => entry.itemId === itemId) ?? null;
-  if (db.dialect === "sqlite") return db.sync((handle) => find(listSqlite(handle)));
-  return listQueuePositions(db).then(find);
+  return db.run(function* (q) {
+    const entries = yield* listSteps(q);
+    return entries.find((entry) => entry.itemId === itemId) ?? null;
+  });
 }

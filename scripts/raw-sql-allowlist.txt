@@ -171,7 +171,6 @@ src/db/improvements.ts | ? db.run( | not yet converted to Drizzle
 src/db/improvements.ts | : db.run( | not yet converted to Drizzle
 src/db/improvements.ts | return db .query< | not yet converted to Drizzle
 src/db/intake-queue.ts | return db .query<IntakeQueueEntry, []>( | not yet converted to Drizzle
-src/db/integration-events.ts | const result = db.run( | not yet converted to Drizzle
 src/db/item-activity.ts | : db .query<{ name: string; live: number }, [number, string]>( | not yet converted to Drizzle
 src/db/item-activity.ts | const jobs = db .query<JobRow, [string, string, string, string]>( | not yet converted to Drizzle
 src/db/item-activity.ts | db .query<{ since: number }, [string]>("SELECT since FROM item_wait WHERE item_id=?") | not yet converted to Drizzle

@@ -359,7 +359,13 @@ export {
 } from "./migration-files";
 export type { Migration } from "./migration";
 export { openDatabase } from "./open";
-export { connectPostgres, openPostgres, type PostgresDb } from "./postgres";
+export {
+  connectPostgres,
+  openPglite,
+  openPostgres,
+  type PgliteDb,
+  type PostgresDb,
+} from "./postgres";
 export {
   checkPostgres,
   checkSqlite,
@@ -369,7 +375,17 @@ export {
 export { linearBudgetStore, type LinearBudgetRow } from "./linear-budget";
 export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
 export { orm, type Orm } from "./orm";
-export { postgresDb, settled, sqliteDb, type Db, type PgDb, type PgOrm, type SqliteDb } from "./db";
+export {
+  postgresDb,
+  settled,
+  sqliteDb,
+  type Db,
+  type PgDb,
+  type PgOrm,
+  type Q,
+  type SqliteDb,
+  type Steps,
+} from "./db";
 export * as schema from "./schema";
 export * as pgSchema from "./schema-pg";
 export { rawSchema } from "./schema/raw";

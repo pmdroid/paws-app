@@ -8,6 +8,7 @@
         "@agentclientprotocol/claude-agent-acp": "0.88.0",
         "@agentclientprotocol/codex-acp": "2.1.1",
         "@agentclientprotocol/sdk": "1.8.0",
+        "@electric-sql/pglite": "0.5.15",
         "@opencode/cli": "2.2.1",
         "@xai-official/grok": "1.0.50",
         "ajv": "8.20.0",
@@ -17,7 +18,6 @@
       },
       "devDependencies": {
         "@base-ui/react": "^1.9.0",
-        "@electric-sql/pglite": "0.5.15",
         "@libsql/client": "0.18.0",
         "@playwright/test": "^1.64.0",
         "@tailwindcss/cli": "^4.3.3",
