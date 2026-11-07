@@ -256,6 +256,7 @@ export { legacyMigrate } from "./legacy-migrate";
 export {
   appliedMigrations,
   MIGRATIONS_FOLDER,
+  PG_MIGRATIONS_FOLDER,
   migrate,
   migrationTags,
   setAsideLegacyDatabase,
@@ -351,6 +352,7 @@ export { openDatabase } from "./open";
 export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
 export { orm, type Orm } from "./orm";
 export * as schema from "./schema";
+export * as pgSchema from "./schema-pg";
 export { rawSchema } from "./schema/raw";
 export { journal, setJournalSink } from "./journal";
 export {
