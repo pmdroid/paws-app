@@ -8,8 +8,8 @@ import {
   unique,
 } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
+import { question } from "./asks";
 import { workItem } from "./items";
-import { question } from "./questions";
 
 export const githubDelivery = sqliteTable(
   "github_delivery",

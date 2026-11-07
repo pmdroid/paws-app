@@ -9,7 +9,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
-import { question } from "./questions";
+import { question } from "./asks";
 import { workspace, workspaceUser } from "./workspace";
 
 export const run = sqliteTable(

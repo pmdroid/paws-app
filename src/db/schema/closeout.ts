@@ -8,9 +8,9 @@ import {
   unique,
 } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
+import { question } from "./asks";
 import { run, workItem } from "./items";
 import { job } from "./jobs";
-import { question } from "./questions";
 import { workspace } from "./workspace";
 
 export const closeoutProgress = sqliteTable(

@@ -35,7 +35,7 @@ const AREAS: [area: string, match: RegExp][] = [
     "github",
     /^(github_|pull_|merge_|rebase_return|remote_merge_fact|repository_catalog|push_outage|checkpoint_ref_cleanup)/,
   ],
-  ["questions", /^(question|decision_|link_ask|plan_proposal)/],
+  ["asks", /^(question|decision_|link_ask|plan_proposal)/],
   ["items", /./],
 ];
 
