@@ -52,6 +52,19 @@ export async function rerunFailedCi(input: CiRerunInput): Promise<CiRerunResult>
   }
 }
 
+function permissionRefusal(what: string, status: number, body: unknown): string {
+  const said =
+    typeof body === "object" &&
+    body !== null &&
+    "message" in body &&
+    typeof body.message === "string"
+      ? `: ${body.message.trim().replace(/\.+$/, "")}`
+      : "";
+  const detail = `GitHub refused ${what} with status ${status}${said}`;
+  journalCaught(new Error(detail), "ci-rerun.permission", null);
+  return `${CI_RERUN_PERMISSION_MISSING}. ${detail}. If the App already has Actions write, accept its updated permissions on the installation.`;
+}
+
 async function rerunOnce(input: CiRerunInput): Promise<CiRerunResult> {
   const token = await acquireOperationToken(input, "merge");
   const request = (method: "GET" | "POST", path: string, as = token) =>
@@ -98,17 +111,22 @@ async function rerunOnce(input: CiRerunInput): Promise<CiRerunResult> {
     return {
       answer: `No GitHub Actions job failed on ${head.slice(0, 7)}, so there is nothing to re-run.`,
     };
+  let refused: string | null = null;
   const rerunToken = await acquireOperationToken(input, "ci_rerun").catch((error: unknown) => {
-    if (error instanceof GitHubTokenError && (error.status === 403 || error.status === 422))
+    if (error instanceof GitHubTokenError && (error.status === 403 || error.status === 422)) {
+      refused = permissionRefusal("the Actions token", error.status, error.body);
       return null;
+    }
     throw error;
   });
-  if (rerunToken === null) return { answer: CI_RERUN_PERMISSION_MISSING };
+  if (rerunToken === null) return { answer: refused ?? CI_RERUN_PERMISSION_MISSING };
   const accepted: number[] = [];
   for (const runId of runIds) {
     const response = await request("POST", `/actions/runs/${runId}/rerun-failed-jobs`, rerunToken);
     if (response.status === 403 && accepted.length === 0)
-      return { answer: CI_RERUN_PERMISSION_MISSING };
+      return {
+        answer: permissionRefusal(`the re-run of workflow run ${runId}`, 403, response.body),
+      };
     if (response.status === 201) accepted.push(runId);
     else if (accepted.length === 0)
       throw new Error(`GitHub refused to re-run workflow run ${runId}: status ${response.status}`);
