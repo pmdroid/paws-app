@@ -1,8 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfigFile, readMergeSettings, useSettingsStore } from "../src/config";
+import {
+  loadConfigFile,
+  loadRuntime,
+  parseBriefTemplates,
+  readConfigText,
+  readMergeSettings,
+  resolveAgentProfiles,
+  useSettingsStore,
+} from "../src/config";
 import { CONFIG_SETTINGS_KEY, migrate, openDatabase, readSetting, updateSetting } from "../src/db";
+import { useSavedSettings } from "../src/index";
 import { handleTimeLimitSettingsRequest } from "../src/settings";
 import { tempHome } from "./helpers";
 
@@ -92,4 +101,45 @@ test("once the table holds settings, config.toml supplies only what Settings doe
   expect(config.queueMaxRunningPerOwner).toBeUndefined();
   expect(config.maxAwakeMs).toBe(5_400_000);
   expect(config.linearTeam).toBe("ACME");
+});
+
+test("a command without a running Paws, such as paws doctor, reads the saved settings", () => {
+  const home = tempHome();
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  cleanups.push(useSavedSettings());
+  writeFileSync(join(home, "config.toml"), BOOTSTRAP);
+  const db = openDatabase(join(home, "paws.db"));
+  migrate(db);
+  updateSetting(db, CONFIG_SETTINGS_KEY, () =>
+    [
+      '[agents]\nimplementer = "codex"',
+      '[agents.defaults.implementer]\nagent = "codex"',
+      '[agents.defaults.reviewer]\nagent = "claude"',
+    ].join("\n\n"),
+  );
+  db.close();
+  const runtime = loadRuntime({ PAWS_HOME: home });
+  expect(runtime.configError).toBe(null);
+  expect(resolveAgentProfiles(runtime.file)).toMatchObject({
+    implementer: { agent: "codex" },
+    reviewer: { agent: "claude" },
+  });
+  expect(runtime.linearTeam).toBe("ACME");
+});
+
+test("a table-like line inside a multiline string is not read as a section", () => {
+  const a = instance(shared(), "ACME");
+  const template = "Summarise the issue.\n[example]\nKeep it short.\n";
+  writeFileSync(a.configPath, `${BOOTSTRAP}\n[brief]\ntemplate = """\n${template}"""\n`);
+  updateSetting(a.db, CONFIG_SETTINGS_KEY, () => "[queue]\nmax_running_per_owner = 2\n");
+  const text = readConfigText(a.configPath);
+  expect(text).not.toContain("[example]");
+  expect(parseBriefTemplates(text).template).toBe(null);
+
+  updateSetting(
+    a.db,
+    CONFIG_SETTINGS_KEY,
+    () => `[brief]\ntemplate = """\n${template}"""\n\n[queue]\nmax_running_per_owner = 2\n`,
+  );
+  expect(parseBriefTemplates(readConfigText(a.configPath)).template).toBe(template);
 });

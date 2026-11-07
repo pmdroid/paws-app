@@ -16,6 +16,14 @@ export type SettingsStore = {
 };
 
 const stores = new Map<string, SettingsStore>();
+let fallback: ((configPath: string) => string | null) | null = null;
+
+export function useSavedSettingsReader(read: (configPath: string) => string | null): () => void {
+  fallback = read;
+  return () => {
+    if (fallback === read) fallback = null;
+  };
+}
 
 export function useSettingsStore(configPath: string, store: SettingsStore): () => void {
   stores.set(configPath, store);
@@ -26,7 +34,7 @@ export function useSettingsStore(configPath: string, store: SettingsStore): () =
 
 export function readConfigText(configPath: string): string {
   const file = readFileText(configPath);
-  const stored = stores.get(configPath)?.read() ?? null;
+  const stored = storedSettings(configPath);
   return stored === null ? file : withSettings(file, stored);
 }
 
@@ -55,6 +63,12 @@ function replaceConfigText(path: string, next: string): void {
   }
 }
 
+function storedSettings(configPath: string): string | null {
+  const store = stores.get(configPath);
+  if (store !== undefined) return store.read();
+  return fallback?.(configPath) ?? null;
+}
+
 function readFileText(configPath: string): string {
   return existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
 }
@@ -76,11 +90,16 @@ function isSettingsSection(section: string): boolean {
 
 function splitSections(text: string, keep: (settings: boolean) => boolean): string {
   let settings = false;
+  let open: string | null = null;
   return text
     .split(/\r?\n/)
     .filter((line) => {
-      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
+      const heading =
+        open === null ? /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line) : null;
       if (heading?.[1]) settings = isSettingsSection(heading[1]);
+      for (const [quote] of line.matchAll(/"""|'''/g))
+        if (open === null) open = quote;
+        else if (quote === open) open = null;
       return keep(settings);
     })
     .join("\n")

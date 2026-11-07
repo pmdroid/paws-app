@@ -9,7 +9,7 @@ import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { createAccountManagement } from "./account-management";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createOnboardingReadiness } from "./onboarding-readiness";
@@ -65,6 +65,7 @@ import {
   pawsPaths,
   readMergeSettings,
   readQueueSettings,
+  useSavedSettingsReader,
   useSettingsStore,
   type EnvSource,
   type PawsEnv,
@@ -111,6 +112,7 @@ import {
   countLinearRequest,
   migrate,
   openDatabase,
+  readSavedSettings,
   readSetting,
   updateSetting,
   CONFIG_SETTINGS_KEY,
@@ -2324,7 +2326,19 @@ async function probesMain(argv: string[]): Promise<number> {
   }
 }
 
+export function useSavedSettings(): () => void {
+  return useSavedSettingsReader((configPath) => {
+    try {
+      return readSavedSettings(join(dirname(configPath), "paws.db"));
+    } catch (error) {
+      journalCaught(error, "index.useSavedSettings", null);
+      return null;
+    }
+  });
+}
+
 if (import.meta.main) {
+  useSavedSettings();
   const argv = process.argv.slice(2);
   const command = argv[0];
   if (command === "probes") process.exit(await probesMain(argv.slice(1)));

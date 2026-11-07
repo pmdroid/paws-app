@@ -1,4 +1,5 @@
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { orm } from "./orm";
 import { setting } from "./schema";
@@ -27,4 +28,14 @@ export function updateSetting(
       .onConflictDoUpdate({ target: setting.key, set: { value, updatedAt: now } })
       .run();
   });
+}
+
+export function readSavedSettings(path: string): string | null {
+  if (!existsSync(path)) return null;
+  const db = new Database(path, { readonly: true });
+  try {
+    return readSetting(db, CONFIG_SETTINGS_KEY);
+  } finally {
+    db.close();
+  }
 }
