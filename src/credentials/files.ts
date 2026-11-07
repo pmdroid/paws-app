@@ -75,6 +75,10 @@ export function openSecret(secretsDir: string, name: string, text: string): stri
   return decodeSecretEnvelope(name, text, envelopeKey(secretsDir));
 }
 
+export function loadEnvelopeKey(dir: string): Buffer {
+  return envelopeKey(dir);
+}
+
 function envelopeKey(dir: string): Buffer {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);

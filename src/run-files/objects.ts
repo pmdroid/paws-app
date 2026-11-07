@@ -141,7 +141,20 @@ export function createS3RunFileObjects(
   kind: RunFileKind,
   options: { client: S3Client; bucket: string },
 ): RunFileObjects {
-  const { noun, Noun } = label(kind);
+  return s3Objects(label(kind), options);
+}
+
+export function createS3RunnerFileObjects(options: {
+  client: S3Client;
+  bucket: string;
+}): RunFileObjects {
+  return s3Objects({ noun: "runner file", Noun: "Runner file" }, options);
+}
+
+function s3Objects(
+  { noun, Noun }: { noun: string; Noun: string },
+  options: { client: S3Client; bucket: string },
+): RunFileObjects {
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(options.bucket))
     throw new Error(`Invalid ${noun} bucket`);
   return {

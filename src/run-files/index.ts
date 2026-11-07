@@ -8,6 +8,8 @@ export { loadRunFileKey, runFileKeyId } from "./key";
 export {
   createLocalRunFileObjects,
   createS3RunFileObjects,
+  createS3RunnerFileObjects,
+  missingRunFileObject,
   withLocalRunFileFallback,
   createFakeRunFileObjects,
   type RunFileObjects,
@@ -21,3 +23,10 @@ export {
   type RunFileState,
 } from "./store";
 export { createRunFileHttp, type RunFileAccess } from "./http";
+export {
+  createSealedRunnerFiles,
+  RUNNER_FILE_RETENTION_MS,
+  SealedRunnerFileConflictError,
+  type SealedRunnerFile,
+  type SealedRunnerFiles,
+} from "./sealed";
