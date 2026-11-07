@@ -11,7 +11,11 @@ import {
   uploadLocalEvidence,
   type EvidenceObjects,
 } from "../src/evidence";
-import { createFakeRunFileObjects, RUN_FILE_CHUNK_BYTES } from "../src/run-files";
+import {
+  createFakeRunFileObjects,
+  RUN_FILE_CHUNK_BYTES,
+  withSealedRunFileObjects,
+} from "../src/run-files";
 
 const HEAD = "b".repeat(40);
 const WEBM = new Uint8Array([
@@ -173,5 +177,24 @@ describe("evidence in the run file object store", () => {
     expect(new Uint8Array(await (await a.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
     const prefix = getEvidenceObject(db, saved.id)!.prefix;
     expect([...s3.objects.keys()].every((key) => key.startsWith(`${prefix}/`))).toBe(true);
+  });
+
+  test("sealed chunks hold no plaintext, and a changed or swapped chunk is not served", async () => {
+    const { db, s3, save } = setup();
+    const sealed = withSealedRunFileObjects(s3, Buffer.alloc(32, 7));
+    const a = instance(db, () => sealed);
+    const saved = await save(a.store, VIDEO);
+    const [first, second] = [...s3.objects.keys()];
+    const plain = Buffer.from(VIDEO.subarray(0, 64));
+    for (const bytes of s3.objects.values()) expect(Buffer.from(bytes).includes(plain)).toBe(false);
+    expect(new Uint8Array(await (await a.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
+
+    const original = s3.objects.get(first!)!;
+    s3.objects.set(first!, s3.objects.get(second!)!);
+    expect((await a.get(saved.id)).status).toBe(404);
+    const flipped = new Uint8Array(original);
+    flipped[40]! ^= 1;
+    s3.objects.set(first!, flipped);
+    expect((await a.get(saved.id)).status).toBe(404);
   });
 });

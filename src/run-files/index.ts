@@ -4,13 +4,14 @@ export {
   RUN_FILE_KINDS,
   type RunFileKind,
 } from "./kinds";
-export { loadRunFileKey, runFileKeyId } from "./key";
+export { loadEvidenceKey, loadRunFileKey, runFileKeyId } from "./key";
 export {
   createLocalRunFileObjects,
   createS3RunFileObjects,
   createS3RunnerFileObjects,
   missingRunFileObject,
   withLocalRunFileFallback,
+  withSealedRunFileObjects,
   createFakeRunFileObjects,
   type RunFileObjects,
 } from "./objects";

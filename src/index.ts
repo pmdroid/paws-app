@@ -53,7 +53,7 @@ import {
   uploadLocalEvidence,
   type EvidenceObjects,
 } from "./evidence";
-import { createS3RunFileObjects } from "./run-files";
+import { createS3RunFileObjects, loadEvidenceKey, withSealedRunFileObjects } from "./run-files";
 import {
   closeoutPolicyRoot,
   DEFAULT_COMMENT_WAIT,
@@ -793,7 +793,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     options?.evidenceObjects ??
     (() => {
       const s3 = options?.runnerTranscriptObjects ? null : loadRunnerTranscriptS3(runtime.env.home);
-      return s3 ? createS3RunFileObjects("evidence", s3) : null;
+      if (!s3) return null;
+      const key = loadEvidenceKey(join(paths.secretsDir, "evidence.key"));
+      return withSealedRunFileObjects(createS3RunFileObjects("evidence", s3), key);
     });
   void uploadLocalEvidence(db, { root: paths.evidenceDir, objects: evidenceObjects }).catch(
     (error: unknown) => journalCaught(error, "index.startPaws.uploadLocalEvidence", null),

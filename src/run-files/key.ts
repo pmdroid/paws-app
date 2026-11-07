@@ -10,6 +10,11 @@ export function loadRunFileKey(kind: RunFileKind, path: string): Buffer {
   return loadSecretKey(path, RUN_FILE_KINDS[kind].title);
 }
 
+/** `~/.paws/secrets/evidence.key`: seals evidence chunks in the object store. */
+export function loadEvidenceKey(path: string): Buffer {
+  return loadSecretKey(path, "Evidence");
+}
+
 /** Recorded with each chunk, so a chunk sealed under another key is refused before decrypting. */
 export function runFileKeyId(kind: RunFileKind, key: Buffer) {
   return createHash("sha256").update(RUN_FILE_KINDS[kind].keyContext).update(key).digest("hex");

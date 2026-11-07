@@ -13,6 +13,7 @@ import {
   writeSync,
 } from "node:fs";
 import { isAbsolute } from "node:path";
+import { openRunFileChunk, sealRunFileChunk } from "./key";
 import { RUN_FILE_KINDS, RUN_FILE_OBJECT_MAX_BYTES, type RunFileKind } from "./kinds";
 
 /** Encrypted run file chunks, one object per chunk. Callers only ever hand it ciphertext. */
@@ -203,6 +204,20 @@ export function withLocalRunFileFallback(
       await local.delete(key);
       await remote.delete(key);
     },
+  };
+}
+
+/**
+ * Seals each object under `key`, bound to its object name, so the store only ever holds
+ * ciphertext and a changed, swapped or truncated object fails to open.
+ */
+export function withSealedRunFileObjects(objects: RunFileObjects, key: Buffer): RunFileObjects {
+  if (key.length !== 32) throw new Error("Run file key is invalid.");
+  const binding = (name: string) => ({ runId: name, generation: 0, offset: 0, sha256: "" });
+  return {
+    write: (name, bytes) => objects.write(name, sealRunFileChunk(key, binding(name), bytes)),
+    read: async (name) => openRunFileChunk(key, binding(name), await objects.read(name)),
+    delete: (name) => objects.delete(name),
   };
 }
 
