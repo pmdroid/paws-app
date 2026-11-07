@@ -343,25 +343,6 @@ src/db/retros.ts | return db .query<Omit<RetroItem, "evidenceIds"> & { evidenceI
 src/db/retros.ts | db.run( | not yet converted to Drizzle
 src/db/retros.ts | return db .query<RetroScheduleRuntime, [string]>( | not yet converted to Drizzle
 src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/review-escapes.ts | db.run( | not yet converted to Drizzle
-src/db/review-escapes.ts | return db .query<Row, [string]>( | not yet converted to Drizzle
-src/db/review-escapes.ts | db.run( | not yet converted to Drizzle
-src/db/review-escapes.ts | return db .query<Row, [number]>("SELECT * FROM review_escape WHERE recorded_at >= ? ORDER BY id") | not yet converted to Drizzle
-src/db/review-findings.ts | gone += db.run( | not yet converted to Drizzle
-src/db/review-findings.ts | const existing = db .query<Pick<Row, "id" | "first_seen_at" | "last_seen_at" | "status">, [string]>( | not yet converted to Drizzle
-src/db/review-findings.ts | db.run( | not yet converted to Drizzle
-src/db/review-findings.ts | db.run( | not yet converted to Drizzle
-src/db/review-findings.ts | db.run( | not yet converted to Drizzle
-src/db/review-findings.ts | db.run("UPDATE review_finding SET item_count = item_count + 1 WHERE id = ?", [existing.id]); | not yet converted to Drizzle
-src/db/review-findings.ts | const inserted = db.run( | not yet converted to Drizzle
-src/db/review-findings.ts | db.run( | not yet converted to Drizzle
-src/db/review-findings.ts | return db .query<Row, string[]>( | not yet converted to Drizzle
-src/db/review-findings.ts | const row = db.query<Row, [number]>("SELECT * FROM review_finding WHERE id = ?").get(id); | not yet converted to Drizzle
-src/db/review-findings.ts | const row = db.query<Row, [string]>("SELECT * FROM review_finding WHERE dedupe_key = ?").get(key); | not yet converted to Drizzle
-src/db/review-findings.ts | const rows = db .query<ReviewFindingItem, [string]>( | not yet converted to Drizzle
-src/db/review-findings.ts | const changed = db.run( | not yet converted to Drizzle
-src/db/review-findings.ts | const changed = db.run( | not yet converted to Drizzle
-src/db/review-findings.ts | return db .query<Row, [string]>( | not yet converted to Drizzle
 src/db/runner-agents.ts | db.run("DELETE FROM runner_agent WHERE runner_id=?", [runnerId]); | not yet converted to Drizzle
 src/db/runner-agents.ts | const insert = db.prepare( | not yet converted to Drizzle
 src/db/runner-agents.ts | db.run( | not yet converted to Drizzle
