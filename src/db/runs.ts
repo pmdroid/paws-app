@@ -132,22 +132,6 @@ export function recordReviewRounds(db: Database, id: string, rounds: number): vo
   settled(sqliteDb(db).run((q) => recordReviewRoundsSteps(q, id, rounds)));
 }
 
-export function* reviewRoundsOfSteps(q: Q, id: string): Steps<number | null> {
-  const { runReviewRounds } = q.t;
-  const row = yield* q.one(
-    q.orm
-      .select({ rounds: runReviewRounds.rounds })
-      .from(runReviewRounds)
-      .where(eq(runReviewRounds.runId, id)),
-  );
-  return row?.rounds ?? null;
-}
-
-/** The review rounds recorded on the run, or null when it never verified a review. */
-export function reviewRoundsOf(db: Database, id: string): number | null {
-  return settled(sqliteDb(db).run((q) => reviewRoundsOfSteps(q, id)));
-}
-
 export function* releaseRunCapacitySteps(q: Q, runId: string, now: number): Steps<void> {
   const { runnerWork, runnerWorkGrant } = q.t;
   const stored = yield* getRunSteps(q, runId);

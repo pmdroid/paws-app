@@ -12,7 +12,6 @@ import {
   pinRunCheckoutSteps,
   recordReviewRoundsSteps,
   releaseRunCapacitySteps,
-  reviewRoundsOfSteps,
   runOwnerSteps,
   saveRunCommitPolicySteps,
   saveRunResultSteps,
@@ -79,10 +78,13 @@ forEachDialect((open) => {
       await expect(db.run((q) => saveRunResultSteps(q, "missing", "done", 6))).rejects.toThrow(
         "run missing not found",
       );
-      expect(await db.run((q) => reviewRoundsOfSteps(q, run.id))).toBeNull();
       await db.run((q) => recordReviewRoundsSteps(q, run.id, 2));
       await db.run((q) => recordReviewRoundsSteps(q, run.id, 3));
-      expect(await db.run((q) => reviewRoundsOfSteps(q, run.id))).toBe(3);
+      expect(
+        await db.run((q) =>
+          q.all(q.orm.select({ rounds: q.t.runReviewRounds.rounds }).from(q.t.runReviewRounds)),
+        ),
+      ).toEqual([{ rounds: 3 }]);
     } finally {
       await close();
     }
