@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { JOB_KIND } from "../core";
-import { getWorkItem, listJobs, mergeCallInFlight } from "../db";
-import { questionEffects } from "../loop";
-import { answer, findOpenQuestion } from "../questions";
-import { mergeHarness, type MergeHarness } from "./advance-harness";
-import { RETRY_MERGE } from "./merge-denied";
+import { JOB_KIND } from "../src/core";
+import { getWorkItem, listJobs, mergeCallInFlight } from "../src/db";
+import { questionEffects } from "../src/loop";
+import { answer, findOpenQuestion } from "../src/questions";
+import { mergeHarness, type MergeHarness } from "../src/merge/advance-harness";
+import { RETRY_MERGE } from "../src/merge";
 
 const REFUSED = "At least 1 approving review is required by reviewers with write access.";
 
