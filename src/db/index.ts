@@ -700,8 +700,11 @@ export {
 } from "./hot-files";
 export {
   recordGitHubDelivery,
+  recordGitHubDeliverySteps,
   latestGitHubDelivery,
+  latestGitHubDeliverySteps,
   listGitHubDeliveries,
+  listGitHubDeliveriesSteps,
   type IntegrationEvent,
 } from "./integration-events";
 export {
@@ -1129,14 +1132,20 @@ export type {
   SkillSource,
 } from "./skills";
 export { deleteHook, listHooks, saveHook } from "./hooks";
-export { listIntakeQueue, type IntakeQueueEntry } from "./intake-queue";
+export { listIntakeQueue, listIntakeQueueSteps, type IntakeQueueEntry } from "./intake-queue";
 export {
   claimInboxEvent,
+  claimInboxEventSteps,
   claimNextInboxEvent,
+  claimNextInboxEventSteps,
   clearSyncCursor,
+  clearSyncCursorSteps,
   incrementSyncCounter,
+  incrementSyncCounterSteps,
   releaseInboxClaim,
+  releaseInboxClaimSteps,
   renewInboxClaim,
+  renewInboxClaimSteps,
   type ClaimedInboxRow,
 } from "./inbox-claim";
 export {

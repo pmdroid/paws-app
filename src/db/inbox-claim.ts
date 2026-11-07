@@ -1,15 +1,17 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, lt, lte, ne, notExists, or, sql, type SQL } from "drizzle-orm";
-import { alias, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
-import { orm } from "./orm";
-import { inboxEvent, syncCursor } from "./schema";
+import { alias, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { settled, sqliteDb, type Q } from "./db";
+import type { inboxEvent } from "./schema";
 
 export type ClaimedInboxRow = typeof inboxEvent.$inferSelect;
 
 type InboxColumns = Record<
   "handled" | "action" | "signal" | "lockedUntil" | "sessionId" | "issueId",
-  AnySQLiteColumn
+  AnyPgColumn
 >;
+
+type Claim = { owner: string; now: number; leaseMs: number };
 
 function queued(table: InboxColumns): SQL {
   return and(
@@ -23,14 +25,23 @@ function free(table: InboxColumns, now: number): SQL {
   return or(isNull(table.lockedUntil), lte(table.lockedUntil, now))!;
 }
 
-export function claimNextInboxEvent(
-  db: Database,
-  claim: { owner: string; now: number; leaseMs: number },
+function claimed(
+  q: Q,
+  row: Q["t"]["inboxEvent"]["$inferSelect"] | undefined,
 ): ClaimedInboxRow | null {
+  if (row === undefined) return null;
+  return {
+    ...row,
+    payload: q.dialect === "sqlite" ? (row.payload as string) : JSON.stringify(row.payload),
+  };
+}
+
+export function* claimNextInboxEventSteps(q: Q, claim: Claim) {
+  const { inboxEvent } = q.t;
   const candidate = alias(inboxEvent, "candidate");
   const earlier = alias(inboxEvent, "earlier");
   const lane = (table: InboxColumns) => sql`COALESCE(${table.sessionId}, ${table.issueId})`;
-  const head = orm(db)
+  const head = q.orm
     .select({ dedupeKey: candidate.dedupeKey })
     .from(candidate)
     .where(
@@ -39,7 +50,7 @@ export function claimNextInboxEvent(
         free(candidate, claim.now),
         or(isNull(candidate.nextAttemptAt), lte(candidate.nextAttemptAt, claim.now)),
         notExists(
-          orm(db)
+          q.orm
             .select({ one: sql`1` })
             .from(earlier)
             .where(
@@ -60,25 +71,26 @@ export function claimNextInboxEvent(
     )
     .orderBy(candidate.receivedAt, candidate.dedupeKey)
     .limit(1);
-  return (
-    orm(db)
+  const row = yield* q.one(
+    q.orm
       .update(inboxEvent)
       .set({ lockedBy: claim.owner, lockedUntil: claim.now + claim.leaseMs })
       .where(
         and(inArray(inboxEvent.dedupeKey, head), queued(inboxEvent), free(inboxEvent, claim.now)),
       )
-      .returning()
-      .get() ?? null
+      .returning(),
   );
+  return claimed(q, row);
 }
 
-export function claimInboxEvent(
-  db: Database,
-  dedupeKey: string,
-  claim: { owner: string; now: number; leaseMs: number },
-): ClaimedInboxRow | null {
-  return (
-    orm(db)
+export function claimNextInboxEvent(db: Database, claim: Claim): ClaimedInboxRow | null {
+  return settled(sqliteDb(db).run((q) => claimNextInboxEventSteps(q, claim)));
+}
+
+export function* claimInboxEventSteps(q: Q, dedupeKey: string, claim: Claim) {
+  const { inboxEvent } = q.t;
+  const row = yield* q.one(
+    q.orm
       .update(inboxEvent)
       .set({ lockedBy: claim.owner, lockedUntil: claim.now + claim.leaseMs })
       .where(
@@ -88,46 +100,72 @@ export function claimInboxEvent(
           free(inboxEvent, claim.now),
         ),
       )
-      .returning()
-      .get() ?? null
+      .returning(),
   );
+  return claimed(q, row);
 }
 
-export function renewInboxClaim(
+export function claimInboxEvent(
   db: Database,
   dedupeKey: string,
-  claim: { owner: string; now: number; leaseMs: number },
-): boolean {
-  return (
-    orm(db)
+  claim: Claim,
+): ClaimedInboxRow | null {
+  return settled(sqliteDb(db).run((q) => claimInboxEventSteps(q, dedupeKey, claim)));
+}
+
+export function* renewInboxClaimSteps(q: Q, dedupeKey: string, claim: Claim) {
+  const { inboxEvent } = q.t;
+  const rows = yield* q.all(
+    q.orm
       .update(inboxEvent)
       .set({ lockedUntil: claim.now + claim.leaseMs })
       .where(and(eq(inboxEvent.dedupeKey, dedupeKey), eq(inboxEvent.lockedBy, claim.owner)))
-      .returning({ dedupeKey: inboxEvent.dedupeKey })
-      .get() !== undefined
+      .returning({ dedupeKey: inboxEvent.dedupeKey }),
+  );
+  return rows.length > 0;
+}
+
+export function renewInboxClaim(db: Database, dedupeKey: string, claim: Claim): boolean {
+  return settled(sqliteDb(db).run((q) => renewInboxClaimSteps(q, dedupeKey, claim)));
+}
+
+export function* releaseInboxClaimSteps(q: Q, dedupeKey: string, owner: string) {
+  const { inboxEvent } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(inboxEvent)
+      .set({ lockedBy: null, lockedUntil: null })
+      .where(and(eq(inboxEvent.dedupeKey, dedupeKey), eq(inboxEvent.lockedBy, owner))),
   );
 }
 
 export function releaseInboxClaim(db: Database, dedupeKey: string, owner: string): void {
-  orm(db)
-    .update(inboxEvent)
-    .set({ lockedBy: null, lockedUntil: null })
-    .where(and(eq(inboxEvent.dedupeKey, dedupeKey), eq(inboxEvent.lockedBy, owner)))
-    .run();
+  settled(sqliteDb(db).run((q) => releaseInboxClaimSteps(q, dedupeKey, owner)));
+}
+
+export function* incrementSyncCounterSteps(q: Q, name: string) {
+  const { syncCursor } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .insert(syncCursor)
+      .values({ name, cursorMs: 1 })
+      .onConflictDoUpdate({
+        target: syncCursor.name,
+        set: { cursorMs: sql`${syncCursor.cursorMs} + 1` },
+      })
+      .returning({ count: syncCursor.cursorMs }),
+  );
+  return row!.count;
 }
 
 export function incrementSyncCounter(db: Database, name: string): number {
-  return orm(db)
-    .insert(syncCursor)
-    .values({ name, cursorMs: 1 })
-    .onConflictDoUpdate({
-      target: syncCursor.name,
-      set: { cursorMs: sql`${syncCursor.cursorMs} + 1` },
-    })
-    .returning({ count: syncCursor.cursorMs })
-    .get()!.count;
+  return settled(sqliteDb(db).run((q) => incrementSyncCounterSteps(q, name)));
+}
+
+export function* clearSyncCursorSteps(q: Q, name: string) {
+  yield* q.exec(q.orm.delete(q.t.syncCursor).where(eq(q.t.syncCursor.name, name)));
 }
 
 export function clearSyncCursor(db: Database, name: string): void {
-  orm(db).delete(syncCursor).where(eq(syncCursor.name, name)).run();
+  settled(sqliteDb(db).run((q) => clearSyncCursorSteps(q, name)));
 }
