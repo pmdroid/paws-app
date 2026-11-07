@@ -1,5 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
+import { orm } from "./orm";
+import { job, mergeCall, remoteMergeFact } from "./schema";
 import { immediate } from "./tx";
 
 export type ConfirmedRemoteMerge = {
@@ -14,14 +17,19 @@ export type ConfirmedRemoteMerge = {
 
 export function getConfirmedRemoteMerge(db: Database, itemId: string): ConfirmedRemoteMerge | null {
   return (
-    db
-      .query<ConfirmedRemoteMerge, [string]>(
-        `SELECT item_id AS itemId, repository_owner AS repositoryOwner,
-                repository_name AS repositoryName, pull_number AS pullNumber,
-                pull_url AS pullUrl, merge_sha AS mergeSha, confirmed_at AS confirmedAt
-         FROM remote_merge_fact WHERE item_id = ?`,
-      )
-      .get(itemId) ?? null
+    orm(db)
+      .select({
+        itemId: remoteMergeFact.itemId,
+        repositoryOwner: remoteMergeFact.repositoryOwner,
+        repositoryName: remoteMergeFact.repositoryName,
+        pullNumber: remoteMergeFact.pullNumber,
+        pullUrl: remoteMergeFact.pullUrl,
+        mergeSha: remoteMergeFact.mergeSha,
+        confirmedAt: remoteMergeFact.confirmedAt,
+      })
+      .from(remoteMergeFact)
+      .where(eq(remoteMergeFact.itemId, itemId))
+      .get() ?? null
   );
 }
 
@@ -30,20 +38,19 @@ export function recordConfirmedRemoteMerge(
   input: ConfirmedRemoteMerge,
 ): ConfirmedRemoteMerge {
   return immediate(db, () => {
-    db.run(
-      `INSERT INTO remote_merge_fact
-         (item_id, repository_owner, repository_name, pull_number, pull_url, merge_sha, confirmed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (item_id) DO NOTHING`,
-      [
-        input.itemId,
-        input.repositoryOwner,
-        input.repositoryName,
-        input.pullNumber,
-        input.pullUrl,
-        input.mergeSha,
-        input.confirmedAt,
-      ],
-    );
+    orm(db)
+      .insert(remoteMergeFact)
+      .values({
+        itemId: input.itemId,
+        repositoryOwner: input.repositoryOwner,
+        repositoryName: input.repositoryName,
+        pullNumber: input.pullNumber,
+        pullUrl: input.pullUrl,
+        mergeSha: input.mergeSha,
+        confirmedAt: input.confirmedAt,
+      })
+      .onConflictDoNothing({ target: remoteMergeFact.itemId })
+      .run();
     const saved = getConfirmedRemoteMerge(db, input.itemId);
     if (
       saved === null ||
@@ -63,29 +70,46 @@ export function recordConfirmedRemoteMerge(
  * GitHub before the item merges or re-verifies.
  */
 export function beginMergeCall(db: Database, itemId: string, head: string, now: number): void {
-  db.run(
-    `INSERT INTO merge_call(item_id, head_sha, started_at) VALUES (?, ?, ?)
-     ON CONFLICT (item_id) DO UPDATE SET head_sha = excluded.head_sha, started_at = excluded.started_at`,
-    [itemId, head, now],
-  );
+  orm(db)
+    .insert(mergeCall)
+    .values({ itemId, headSha: head, startedAt: now })
+    .onConflictDoUpdate({
+      target: mergeCall.itemId,
+      set: { headSha: sql`excluded.head_sha`, startedAt: sql`excluded.started_at` },
+    })
+    .run();
 }
 
 /** The merge call returned, or its outcome was read from GitHub after a restart. */
 export function endMergeCall(db: Database, itemId: string): void {
-  db.run("DELETE FROM merge_call WHERE item_id = ?", [itemId]);
+  orm(db).delete(mergeCall).where(eq(mergeCall.itemId, itemId)).run();
 }
 
 export function mergeCallInFlight(db: Database, itemId: string): boolean {
-  return db.query("SELECT 1 FROM merge_call WHERE item_id = ?").get(itemId) !== null;
+  return (
+    orm(db)
+      .select({ one: sql`1` })
+      .from(mergeCall)
+      .where(eq(mergeCall.itemId, itemId))
+      .get() !== undefined
+  );
 }
 
 /** A durable stop waiting for the lane to settle its call also guards an unsent squash. */
 export function mergeStopRequested(db: Database, itemId: string): boolean {
   return (
-    db
-      .query(`SELECT 1 FROM job WHERE queue = ?
-    AND status IN ('pending','running') AND json_extract(payload, '$.itemId') = ?
-    AND json_extract(payload, '$.type') IN ('stop','cancel') LIMIT 1`)
-      .get(JOB_KIND.command, itemId) !== null
+    orm(db)
+      .select({ one: sql`1` })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.command),
+          inArray(job.status, ["pending", "running"]),
+          sql`json_extract(${job.payload}, '$.itemId') = ${itemId}`,
+          sql`json_extract(${job.payload}, '$.type') IN ('stop','cancel')`,
+        ),
+      )
+      .limit(1)
+      .get() !== undefined
   );
 }
