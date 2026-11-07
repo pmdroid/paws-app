@@ -109,14 +109,7 @@ export function* listSchedulerAdmissionsSteps(q: Q) {
   );
 }
 
-export function listSchedulerAdmissions(db: Database): {
-  itemId: string;
-  jobId: number;
-  repositoryKey: string;
-  sessionId: string | null;
-  status: string;
-  lockedUntil: number | null;
-}[] {
+export function listSchedulerAdmissions(db: Database) {
   return settled(sqliteDb(db).run(listSchedulerAdmissionsSteps));
 }
 
@@ -190,7 +183,8 @@ export function* schedulerItemsSteps(q: Q, now: number) {
           AND held.status='running' AND (held.locked_until IS NULL OR held.locked_until>${now})
           AND (held.queue IN ('item.start','run.resume','run.reverify','github.merge')
             OR held.queue LIKE 'github.merge.%'))`),
-        placed: num(sql`EXISTS(SELECT 1 FROM run p JOIN runner_work w ON w.run_id=p.id WHERE p.item_id=i.id
+        placed:
+          num(sql`EXISTS(SELECT 1 FROM run p JOIN runner_work w ON w.run_id=p.id WHERE p.item_id=i.id
           AND ((w.ended_at IS NULL AND w.lease_until>${runnerLeaseCutoff(now)}) OR p.status IN ('active','provisioning')))`),
         placing: num(sql`EXISTS(SELECT 1 FROM job start WHERE ${startItem}=i.id
           AND start.status='running' AND (start.locked_until IS NULL OR start.locked_until>${now})
@@ -203,11 +197,13 @@ export function* schedulerItemsSteps(q: Q, now: number) {
         owner: r.owner,
         repo: r.repo,
         turn: sql<string>`COALESCE('user:'||i.owner_user_id,'')`,
-        mergePosition: num(sql`CASE WHEN e.item_id IS NULL THEN NULL ELSE (SELECT count(*) FROM merge_queue_entry o
+        mergePosition:
+          num(sql`CASE WHEN e.item_id IS NULL THEN NULL ELSE (SELECT count(*) FROM merge_queue_entry o
           JOIN work_item ow ON ow.id=o.item_id WHERE o.repository=e.repository
           AND ow.state IN ('merge_queue','verifying') AND ow.cancel_requested=0
           AND (o.ready_at<e.ready_at OR (o.ready_at=e.ready_at AND o.item_id<=e.item_id))) END`),
-        mergeAt: num(sql`COALESCE(e.ready_at,CASE WHEN i.state='queued' THEN (SELECT ev.at FROM work_item_event ev
+        mergeAt:
+          num(sql`COALESCE(e.ready_at,CASE WHEN i.state='queued' THEN (SELECT ev.at FROM work_item_event ev
           WHERE ev.id=(SELECT MAX(last.id) FROM work_item_event last WHERE last.item_id=i.id)
           AND ev.kind='restart' AND (ev.from_state='merge_queue' OR (ev.from_state='verifying'
             AND (SELECT p.from_state FROM work_item_event p WHERE p.item_id=i.id AND p.id<ev.id
@@ -252,11 +248,7 @@ export function* runnerTaskSlotsSteps(q: Q, now: number, seenAfter: number) {
   );
 }
 
-export function runnerTaskSlots(
-  db: Database,
-  now: number,
-  seenAfter: number,
-): { id: string; capacity: number; used: number }[] {
+export function runnerTaskSlots(db: Database, now: number, seenAfter: number) {
   return settled(sqliteDb(db).run((q) => runnerTaskSlotsSteps(q, now, seenAfter)));
 }
 
@@ -293,24 +285,11 @@ export function* pendingRunnerWaitsSteps(q: Q, seenAfter: number) {
         ),
       )
       .where(
-        and(
-          inArray(i.state, ["recovering", "verifying", "merge_queue"]),
-          eq(i.cancelRequested, 0),
-        ),
+        and(inArray(i.state, ["recovering", "verifying", "merge_queue"]), eq(i.cancelRequested, 0)),
       ),
   );
 }
 
-export function pendingRunnerWaits(
-  db: Database,
-  seenAfter: number,
-): {
-  itemId: string;
-  jobId: number;
-  runnerId: string | null;
-  online: number;
-  merging: number;
-  payload: string;
-}[] {
+export function pendingRunnerWaits(db: Database, seenAfter: number) {
   return settled(sqliteDb(db).run((q) => pendingRunnerWaitsSteps(q, seenAfter)));
 }
