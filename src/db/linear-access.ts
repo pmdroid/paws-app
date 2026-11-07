@@ -1,5 +1,15 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
 import { ensureLinearSession } from "./linear-sessions";
+import { changes, orm } from "./orm";
+import {
+  linearAccessEvent,
+  linearAppRevocation,
+  linearInstallationPermission,
+  linearSession,
+  linearTeamAccess,
+  outbox,
+} from "./schema";
 import { immediate } from "./tx";
 
 export type LinearInstallationScope = {
@@ -15,9 +25,11 @@ export function hasLinearNotification(
   input: LinearInstallationScope & { notificationId: string; createdAtMs: number },
 ): boolean {
   return (
-    db
-      .query("SELECT 1 FROM linear_access_event WHERE event_key = ?")
-      .get(notificationKey(input)) !== null
+    orm(db)
+      .select({ one: sql`1` })
+      .from(linearAccessEvent)
+      .where(eq(linearAccessEvent.eventKey, notificationKey(input)))
+      .get() !== undefined
   );
 }
 
@@ -43,10 +55,17 @@ function notificationKey(
 }
 
 export function dropLinearSessionDeliveries(db: Database, sessionId: string): void {
-  db.run(
-    "UPDATE outbox SET status = 'dropped', error = 'Linear installation access was revoked.' WHERE target = 'linear' AND ordering_key = ? AND status IN ('pending','dead')",
-    [sessionId],
-  );
+  orm(db)
+    .update(outbox)
+    .set({ status: "dropped", error: "Linear installation access was revoked." })
+    .where(
+      and(
+        eq(outbox.target, "linear"),
+        eq(outbox.orderingKey, sessionId),
+        inArray(outbox.status, ["pending", "dead"]),
+      ),
+    )
+    .run();
 }
 
 export function recordLinearInstallation(
@@ -62,32 +81,34 @@ export function recordLinearInstallation(
   if (input.teamId !== null) validate(input.teamId);
   immediate(db, () => {
     ensureLinearSession(db, input);
-    const current = db
-      .query<
-        {
-          oauth_client_id: string | null;
-          team_id: string | null;
-          installation_observed_at: number | null;
-        },
-        [string]
-      >(
-        "SELECT oauth_client_id, team_id, installation_observed_at FROM linear_session WHERE session_id = ?",
-      )
-      .get(input.sessionId)!;
-    if (current.oauth_client_id !== null && current.oauth_client_id !== input.oauthClientId)
+    const current = orm(db)
+      .select({
+        oauthClientId: linearSession.oauthClientId,
+        teamId: linearSession.teamId,
+        installationObservedAt: linearSession.installationObservedAt,
+      })
+      .from(linearSession)
+      .where(eq(linearSession.sessionId, input.sessionId))
+      .get()!;
+    if (current.oauthClientId !== null && current.oauthClientId !== input.oauthClientId)
       throw new Error("Linear session OAuth client ownership changed");
-    if (current.installation_observed_at !== null) {
-      if (current.installation_observed_at > input.observedAtMs) return;
-      if (current.installation_observed_at === input.observedAtMs) {
+    if (current.installationObservedAt !== null) {
+      if (current.installationObservedAt > input.observedAtMs) return;
+      if (current.installationObservedAt === input.observedAtMs) {
         if (input.teamId === null) return;
-        if (current.team_id !== null && current.team_id !== input.teamId)
+        if (current.teamId !== null && current.teamId !== input.teamId)
           throw new Error("Linear session team observations conflict");
       }
     }
-    db.run(
-      "UPDATE linear_session SET oauth_client_id = ?, team_id = ?, installation_observed_at = ? WHERE session_id = ?",
-      [input.oauthClientId, input.teamId, input.observedAtMs, input.sessionId],
-    );
+    orm(db)
+      .update(linearSession)
+      .set({
+        oauthClientId: input.oauthClientId,
+        teamId: input.teamId,
+        installationObservedAt: input.observedAtMs,
+      })
+      .where(eq(linearSession.sessionId, input.sessionId))
+      .run();
   });
 }
 
@@ -99,21 +120,34 @@ export function revokeLinearInstallation(
   validateTime(input.createdAtMs);
   return immediate(db, () => {
     if (!recordEvent(db, input.eventKey, input.createdAtMs)) return [];
-    const changed = db.run(
-      `INSERT INTO linear_app_revocation (organization_id, oauth_client_id, revoked_at)
-      VALUES (?, ?, ?) ON CONFLICT (organization_id, oauth_client_id) DO UPDATE SET
-      revoked_at = MAX(linear_app_revocation.revoked_at, excluded.revoked_at),
-      generation = linear_app_revocation.generation + 1, restored_after = NULL,
-      restored_credential_fingerprint = NULL
-      WHERE linear_app_revocation.restored_after IS NULL
-        OR excluded.revoked_at >= linear_app_revocation.restored_after`,
-      [input.organizationId, input.oauthClientId, input.createdAtMs],
-    ).changes;
+    const changed = changes(
+      orm(db)
+        .insert(linearAppRevocation)
+        .values({
+          organizationId: input.organizationId,
+          oauthClientId: input.oauthClientId,
+          revokedAt: input.createdAtMs,
+        })
+        .onConflictDoUpdate({
+          target: [linearAppRevocation.organizationId, linearAppRevocation.oauthClientId],
+          set: {
+            revokedAt: sql`MAX(${linearAppRevocation.revokedAt}, excluded.revoked_at)`,
+            generation: sql`${linearAppRevocation.generation} + 1`,
+            restoredAfter: null,
+            restoredCredentialFingerprint: null,
+          },
+          setWhere: sql`${linearAppRevocation.restoredAfter} IS NULL
+          OR excluded.revoked_at >= ${linearAppRevocation.restoredAfter}`,
+        }),
+    );
     if (changed === 0) return [];
-    return sessions(db, "organization_id = ? AND oauth_client_id = ?", [
-      input.organizationId,
-      input.oauthClientId,
-    ]);
+    return sessions(
+      db,
+      and(
+        eq(linearSession.organizationId, input.organizationId),
+        eq(linearSession.oauthClientId, input.oauthClientId),
+      ),
+    );
   });
 }
 
@@ -135,54 +169,65 @@ export function changeLinearTeamAccess(
   return immediate(db, () => {
     if (!recordEvent(db, input.eventKey, input.createdAtMs)) return [];
     const previous = getLinearInstallationPermissions(db, input);
-    const updated = db.run(
-      `INSERT INTO linear_installation_permission (organization_id, oauth_client_id, app_user_id, all_public_teams, observed_at)
-      VALUES (?, ?, ?, ?, ?) ON CONFLICT (organization_id, oauth_client_id, app_user_id)
-      DO UPDATE SET all_public_teams = excluded.all_public_teams, observed_at = excluded.observed_at
-      WHERE linear_installation_permission.observed_at < excluded.observed_at
-        OR (linear_installation_permission.observed_at = excluded.observed_at AND excluded.all_public_teams = 0)`,
-      [
-        input.organizationId,
-        input.oauthClientId,
-        input.appUserId,
-        input.canAccessAllPublicTeams ? 1 : 0,
-        input.createdAtMs,
-      ],
-    ).changes;
+    const permission = linearInstallationPermission;
+    const updated = changes(
+      orm(db)
+        .insert(permission)
+        .values({
+          organizationId: input.organizationId,
+          oauthClientId: input.oauthClientId,
+          appUserId: input.appUserId,
+          allPublicTeams: input.canAccessAllPublicTeams ? 1 : 0,
+          observedAt: input.createdAtMs,
+        })
+        .onConflictDoUpdate({
+          target: [permission.organizationId, permission.oauthClientId, permission.appUserId],
+          set: {
+            allPublicTeams: sql`excluded.all_public_teams`,
+            observedAt: sql`excluded.observed_at`,
+          },
+          setWhere: sql`${permission.observedAt} < excluded.observed_at
+          OR (${permission.observedAt} = excluded.observed_at AND excluded.all_public_teams = 0)`,
+        }),
+    );
+    const installation = and(
+      eq(linearSession.organizationId, input.organizationId),
+      eq(linearSession.oauthClientId, input.oauthClientId),
+      eq(linearSession.appUserId, input.appUserId),
+    );
     const affected = new Set<string>();
     if (updated && !input.canAccessAllPublicTeams && previous?.canAccessAllPublicTeams !== false)
-      for (const session of sessions(
-        db,
-        "organization_id = ? AND oauth_client_id = ? AND app_user_id = ?",
-        [input.organizationId, input.oauthClientId, input.appUserId],
-      ))
-        affected.add(session);
+      for (const session of sessions(db, installation)) affected.add(session);
     for (const [teams, allowed] of [
       [input.addedTeamIds, 1],
       [input.removedTeamIds, 0],
     ] as const) {
       for (const teamId of new Set(teams)) {
-        const changed = db.run(
-          `INSERT INTO linear_team_access (organization_id, oauth_client_id, app_user_id, team_id, allowed, observed_at)
-          VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (organization_id, oauth_client_id, app_user_id, team_id)
-          DO UPDATE SET allowed = excluded.allowed, observed_at = excluded.observed_at
-          WHERE linear_team_access.observed_at < excluded.observed_at
-            OR (linear_team_access.observed_at = excluded.observed_at AND excluded.allowed = 0)`,
-          [
-            input.organizationId,
-            input.oauthClientId,
-            input.appUserId,
-            teamId,
-            allowed,
-            input.createdAtMs,
-          ],
-        ).changes;
+        const changed = changes(
+          orm(db)
+            .insert(linearTeamAccess)
+            .values({
+              organizationId: input.organizationId,
+              oauthClientId: input.oauthClientId,
+              appUserId: input.appUserId,
+              teamId,
+              allowed,
+              observedAt: input.createdAtMs,
+            })
+            .onConflictDoUpdate({
+              target: [
+                linearTeamAccess.organizationId,
+                linearTeamAccess.oauthClientId,
+                linearTeamAccess.appUserId,
+                linearTeamAccess.teamId,
+              ],
+              set: { allowed: sql`excluded.allowed`, observedAt: sql`excluded.observed_at` },
+              setWhere: sql`${linearTeamAccess.observedAt} < excluded.observed_at
+              OR (${linearTeamAccess.observedAt} = excluded.observed_at AND excluded.allowed = 0)`,
+            }),
+        );
         if (allowed === 0 && changed)
-          for (const session of sessions(
-            db,
-            "organization_id = ? AND oauth_client_id = ? AND app_user_id = ? AND team_id = ?",
-            [input.organizationId, input.oauthClientId, input.appUserId, teamId],
-          ))
+          for (const session of sessions(db, and(installation, eq(linearSession.teamId, teamId))))
             affected.add(session);
       }
     }
@@ -196,8 +241,11 @@ export function listLinearInstallationSessions(
 ): string[] {
   return sessions(
     db,
-    "organization_id = ? AND oauth_client_id = ? AND (? IS NULL OR app_user_id = ?)",
-    [scope.organizationId, scope.oauthClientId, scope.appUserId ?? null, scope.appUserId ?? null],
+    and(
+      eq(linearSession.organizationId, scope.organizationId),
+      eq(linearSession.oauthClientId, scope.oauthClientId),
+      scope.appUserId === undefined ? undefined : eq(linearSession.appUserId, scope.appUserId),
+    ),
   );
 }
 
@@ -205,13 +253,20 @@ export function getLinearInstallationPermissions(
   db: Database,
   scope: LinearInstallationScope,
 ): { canAccessAllPublicTeams: boolean; observedAtMs: number } | null {
-  const row = db
-    .query<{ all_public_teams: number; observed_at: number }, [string, string, string]>(
-      "SELECT all_public_teams, observed_at FROM linear_installation_permission WHERE organization_id = ? AND oauth_client_id = ? AND app_user_id = ?",
+  const permission = linearInstallationPermission;
+  const row = orm(db)
+    .select({ allPublicTeams: permission.allPublicTeams, observedAt: permission.observedAt })
+    .from(permission)
+    .where(
+      and(
+        eq(permission.organizationId, scope.organizationId),
+        eq(permission.oauthClientId, scope.oauthClientId),
+        eq(permission.appUserId, scope.appUserId),
+      ),
     )
-    .get(scope.organizationId, scope.oauthClientId, scope.appUserId);
+    .get();
   return row
-    ? { canAccessAllPublicTeams: row.all_public_teams === 1, observedAtMs: row.observed_at }
+    ? { canAccessAllPublicTeams: row.allPublicTeams === 1, observedAtMs: row.observedAt }
     : null;
 }
 
@@ -219,47 +274,32 @@ export function getLinearSessionInstallation(
   db: Database,
   sessionId: string,
 ): (LinearInstallationScope & { teamId: string | null; observedAtMs: number }) | null {
-  const row = db
-    .query<
-      {
-        organization_id: string | null;
-        oauth_client_id: string | null;
-        app_user_id: string | null;
-        team_id: string | null;
-        installation_observed_at: number | null;
-      },
-      [string]
-    >(
-      "SELECT organization_id, oauth_client_id, app_user_id, team_id, installation_observed_at FROM linear_session WHERE session_id = ?",
-    )
-    .get(sessionId);
-  if (
-    !row?.organization_id ||
-    !row.oauth_client_id ||
-    !row.app_user_id ||
-    row.installation_observed_at === null
-  )
+  const row = orm(db)
+    .select({
+      organizationId: linearSession.organizationId,
+      oauthClientId: linearSession.oauthClientId,
+      appUserId: linearSession.appUserId,
+      teamId: linearSession.teamId,
+      observedAtMs: linearSession.installationObservedAt,
+    })
+    .from(linearSession)
+    .where(eq(linearSession.sessionId, sessionId))
+    .get();
+  if (!row?.organizationId || !row.oauthClientId || !row.appUserId || row.observedAtMs === null)
     return null;
   return {
-    organizationId: row.organization_id,
-    oauthClientId: row.oauth_client_id,
-    appUserId: row.app_user_id,
-    teamId: row.team_id,
-    observedAtMs: row.installation_observed_at,
+    organizationId: row.organizationId,
+    oauthClientId: row.oauthClientId,
+    appUserId: row.appUserId,
+    teamId: row.teamId,
+    observedAtMs: row.observedAtMs,
   };
 }
 
 export function getLinearSessionAccess(db: Database, sessionId: string): LinearSessionAccess {
   const installation = getLinearSessionInstallation(db, sessionId);
   if (installation === null) return "unknown";
-  if (
-    db
-      .query(
-        "SELECT 1 FROM linear_app_revocation WHERE organization_id = ? AND oauth_client_id = ? AND restored_after IS NULL",
-      )
-      .get(installation.organizationId, installation.oauthClientId)
-  )
-    return "revoked";
+  if (unrestored(db, installation.organizationId, installation.oauthClientId)) return "revoked";
   if (installation.teamId === null) return "unknown";
   return getLinearTeamAccess(db, { ...installation, teamId: installation.teamId }) === "removed"
     ? "team_removed"
@@ -270,44 +310,77 @@ export function getLinearTeamAccess(
   db: Database,
   input: LinearInstallationScope & { teamId: string },
 ): "allowed" | "removed" | "unknown" {
-  const team = db
-    .query<{ allowed: number }, [string, string, string, string]>(
-      "SELECT allowed FROM linear_team_access WHERE organization_id = ? AND oauth_client_id = ? AND app_user_id = ? AND team_id = ?",
+  const team = orm(db)
+    .select({ allowed: linearTeamAccess.allowed })
+    .from(linearTeamAccess)
+    .where(
+      and(
+        eq(linearTeamAccess.organizationId, input.organizationId),
+        eq(linearTeamAccess.oauthClientId, input.oauthClientId),
+        eq(linearTeamAccess.appUserId, input.appUserId),
+        eq(linearTeamAccess.teamId, input.teamId),
+      ),
     )
-    .get(input.organizationId, input.oauthClientId, input.appUserId, input.teamId);
-  return team === null ? "unknown" : team.allowed === 0 ? "removed" : "allowed";
+    .get();
+  return team === undefined ? "unknown" : team.allowed === 0 ? "removed" : "allowed";
 }
 
 export function isLinearAppRevoked(
   db: Database,
   input: { oauthClientId: string | null; appUserId: string | null },
 ): boolean {
+  const client =
+    input.oauthClientId === null ? undefined : eq(linearSession.oauthClientId, input.oauthClientId);
   const scopes =
     input.appUserId === null
       ? []
-      : db
-          .query<
-            { organization_id: string; oauth_client_id: string },
-            [string, string | null, string | null]
-          >(`SELECT DISTINCT organization_id, oauth_client_id FROM linear_session
-    WHERE app_user_id = ? AND organization_id IS NOT NULL AND oauth_client_id IS NOT NULL
-    AND (? IS NULL OR oauth_client_id = ?)`)
-          .all(input.appUserId, input.oauthClientId, input.oauthClientId);
-  if (scopes.length > 0)
-    return scopes.some(
-      (scope) =>
-        db
-          .query(
-            "SELECT 1 FROM linear_app_revocation WHERE organization_id = ? AND oauth_client_id = ? AND restored_after IS NULL",
+      : orm(db)
+          .selectDistinct({
+            organizationId: sql<string>`${linearSession.organizationId}`,
+            oauthClientId: sql<string>`${linearSession.oauthClientId}`,
+          })
+          .from(linearSession)
+          .where(
+            and(
+              eq(linearSession.appUserId, input.appUserId),
+              isNotNull(linearSession.organizationId),
+              isNotNull(linearSession.oauthClientId),
+              client,
+            ),
           )
-          .get(scope.organization_id, scope.oauth_client_id) !== null,
-    );
+          .all();
+  if (scopes.length > 0)
+    return scopes.some((scope) => unrestored(db, scope.organizationId, scope.oauthClientId));
   return (
-    db
-      .query(
-        "SELECT 1 FROM linear_app_revocation WHERE (? IS NULL OR oauth_client_id = ?) AND restored_after IS NULL LIMIT 1",
+    orm(db)
+      .select({ one: sql`1` })
+      .from(linearAppRevocation)
+      .where(
+        and(
+          input.oauthClientId === null
+            ? undefined
+            : eq(linearAppRevocation.oauthClientId, input.oauthClientId),
+          isNull(linearAppRevocation.restoredAfter),
+        ),
       )
-      .get(input.oauthClientId, input.oauthClientId) !== null
+      .limit(1)
+      .get() !== undefined
+  );
+}
+
+function unrestored(db: Database, organizationId: string, oauthClientId: string): boolean {
+  return (
+    orm(db)
+      .select({ one: sql`1` })
+      .from(linearAppRevocation)
+      .where(
+        and(
+          eq(linearAppRevocation.organizationId, organizationId),
+          eq(linearAppRevocation.oauthClientId, oauthClientId),
+          isNull(linearAppRevocation.restoredAfter),
+        ),
+      )
+      .get() !== undefined
   );
 }
 
@@ -320,25 +393,30 @@ export type LinearInstallationRevocation = {
 };
 
 export function listLinearInstallationRevocations(db: Database): LinearInstallationRevocation[] {
-  return db
-    .query<
-      { organization_id: string; oauth_client_id: string; generation: number; revoked_at: number },
-      []
-    >(
-      "SELECT * FROM linear_app_revocation WHERE restored_after IS NULL ORDER BY organization_id, oauth_client_id",
-    )
+  return orm(db)
+    .select()
+    .from(linearAppRevocation)
+    .where(isNull(linearAppRevocation.restoredAfter))
+    .orderBy(asc(linearAppRevocation.organizationId), asc(linearAppRevocation.oauthClientId))
     .all()
     .map((row) => ({
-      organizationId: row.organization_id,
-      oauthClientId: row.oauth_client_id,
+      organizationId: row.organizationId,
+      oauthClientId: row.oauthClientId,
       generation: row.generation,
-      revokedAtMs: row.revoked_at,
-      appUserIds: db
-        .query<{ app_user_id: string }, [string, string]>(
-          "SELECT DISTINCT app_user_id FROM linear_session WHERE organization_id = ? AND oauth_client_id = ? AND app_user_id IS NOT NULL ORDER BY app_user_id",
+      revokedAtMs: row.revokedAt,
+      appUserIds: orm(db)
+        .selectDistinct({ appUserId: sql<string>`${linearSession.appUserId}` })
+        .from(linearSession)
+        .where(
+          and(
+            eq(linearSession.organizationId, row.organizationId),
+            eq(linearSession.oauthClientId, row.oauthClientId),
+            isNotNull(linearSession.appUserId),
+          ),
         )
-        .all(row.organization_id, row.oauth_client_id)
-        .map((user) => user.app_user_id),
+        .orderBy(asc(linearSession.appUserId))
+        .all()
+        .map((user) => user.appUserId),
     }));
 }
 
@@ -356,24 +434,31 @@ export function restoreLinearInstallation(
     throw new Error("Linear revocation generation is invalid");
   return immediate(db, () => {
     const restored =
-      db.run(
-        `UPDATE linear_app_revocation SET restored_after = ?, restored_credential_fingerprint = ?
-      WHERE organization_id = ? AND oauth_client_id = ? AND generation = ?
-        AND restored_after IS NULL AND revoked_at < ?`,
-        [
-          input.grantStartedAtMs,
-          input.credentialFingerprint,
-          input.organizationId,
-          input.oauthClientId,
-          input.generation,
-          input.grantStartedAtMs,
-        ],
-      ).changes === 1;
+      changes(
+        orm(db)
+          .update(linearAppRevocation)
+          .set({
+            restoredAfter: input.grantStartedAtMs,
+            restoredCredentialFingerprint: input.credentialFingerprint,
+          })
+          .where(
+            and(
+              eq(linearAppRevocation.organizationId, input.organizationId),
+              eq(linearAppRevocation.oauthClientId, input.oauthClientId),
+              eq(linearAppRevocation.generation, input.generation),
+              isNull(linearAppRevocation.restoredAfter),
+              lt(linearAppRevocation.revokedAt, input.grantStartedAtMs),
+            ),
+          ),
+      ) === 1;
     if (restored)
-      for (const sessionId of sessions(db, "organization_id = ? AND oauth_client_id = ?", [
-        input.organizationId,
-        input.oauthClientId,
-      ]))
+      for (const sessionId of sessions(
+        db,
+        and(
+          eq(linearSession.organizationId, input.organizationId),
+          eq(linearSession.oauthClientId, input.oauthClientId),
+        ),
+      ))
         dropLinearSessionDeliveries(db, sessionId);
     return restored;
   });
@@ -381,20 +466,23 @@ export function restoreLinearInstallation(
 
 function recordEvent(db: Database, eventKey: string, createdAtMs: number): boolean {
   return (
-    db.run(
-      "INSERT INTO linear_access_event (event_key, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
-      [eventKey, createdAtMs],
-    ).changes === 1
+    changes(
+      orm(db)
+        .insert(linearAccessEvent)
+        .values({ eventKey, createdAt: createdAtMs })
+        .onConflictDoNothing(),
+    ) === 1
   );
 }
 
-function sessions(db: Database, predicate: string, values: (string | null)[]): string[] {
-  return db
-    .query<{ session_id: string }, (string | null)[]>(
-      `SELECT session_id FROM linear_session WHERE ${predicate} ORDER BY session_id`,
-    )
-    .all(...values)
-    .map((row) => row.session_id);
+function sessions(db: Database, predicate: SQL | undefined): string[] {
+  return orm(db)
+    .select({ sessionId: linearSession.sessionId })
+    .from(linearSession)
+    .where(predicate)
+    .orderBy(asc(linearSession.sessionId))
+    .all()
+    .map((row) => row.sessionId);
 }
 
 function validate(...values: string[]): void {
