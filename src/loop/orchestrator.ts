@@ -118,6 +118,7 @@ import {
   snapshotRetryBaseline,
   storedReviewFindings,
   loggedSessionCloseout,
+  missingResultReason,
   readSessionCloseout,
   sessionCloseoutPath,
   sessionCloseoutResult,
@@ -4071,10 +4072,12 @@ export class Orchestrator {
     let rulesFirst = !recovery.bypasses.some((bypass) => bypass.head === head);
     let stoppedOnRule: string | undefined;
     const runnerChecks = new Map<string, Promise<void>>();
-    const runnerResults = (commit: string, stepId: string | undefined) => {
+    const rerunHeads = new Set<string>();
+    const runnerResults = (commit: string, stepId: string | undefined, again = false) => {
       let checks = runnerChecks.get(commit);
       if (!checks) {
         checks = this.runRunnerCloseout(item, deps, {
+          again,
           worktree,
           base,
           head: commit,
@@ -4103,6 +4106,18 @@ export class Orchestrator {
             if (broken && !sessionCloseoutResult(savedReport(commit, request.argv), request)) {
               stoppedOnRule = broken;
               throw new Error(`Rule ${broken} broke before the checks ran.`);
+            }
+            if (
+              !rerunHeads.has(commit) &&
+              !sessionCloseoutResult(savedReport(commit, request.argv), request)
+            ) {
+              rerunHeads.add(commit);
+              report(
+                `Closeout has no result for ${request.itemId ?? "a check"} on ${commit.slice(0, 7)}: ${missingResultReason(savedReport(commit, request.argv), request)}. Running the checks once more.`,
+              );
+              runnerChecks.delete(commit);
+              await runnerResults(commit, request.itemId, true);
+              assertCurrent();
             }
             const result = loggedSessionCloseout(savedReport(commit, request.argv), request);
             assertCurrent();
@@ -4247,6 +4262,7 @@ export class Orchestrator {
       /** Checks Closeout took from CI, which the runner leaves alone. */
       fromCi?: readonly string[];
       rulesFirst: boolean;
+      again?: boolean;
     },
   ): Promise<void> {
     const { worktree, head, assertCurrent } = input;
@@ -4272,15 +4288,16 @@ export class Orchestrator {
           `Running the Closeout checks for ${item.linearIdentifier} on its runner at ${short}.`,
         );
       const draft = this.savedDraft(item.id);
+      const checksRunId = `checks-${itemPathId(item)}-${short}-${input.again ? "again-" : ""}${attempt}`;
       try {
         const options: RunAgentOptions = {
           repository: deps.repository,
           role: "implementer",
           profile: deps.profiles?.implementer,
           itemId: itemPathId(item),
-          runId: `checks-${itemPathId(item)}-${short}-${attempt}`,
+          runId: checksRunId,
           prompt: closeoutChecksPrompt(head, input.fromCi),
-          worktreePath: this.runnerWorkspace(`checks-${itemPathId(item)}-${short}-${attempt}`),
+          worktreePath: this.runnerWorkspace(checksRunId),
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
 import {
   CloseoutResultMissingError,
+  missingResultReason,
   loggedSessionCloseout,
   readSessionCloseout,
   sessionCloseoutAccepted,
@@ -99,7 +100,11 @@ test("remote command results without a match for the head, command, timeout or c
     { id: "lint" },
     { status: "stale" },
   ]) {
-    const { id = "test", status = "passed", ...result } = patch as Record<string, unknown>;
+    const {
+      id = "test",
+      status = "passed",
+      ...result
+    } = patch as Record<string, unknown> & { head?: string; id?: string; status?: string };
     const report = JSON.stringify({
       required: [
         {
@@ -131,7 +136,37 @@ test("remote command results without a match for the head, command, timeout or c
     };
     expect(sessionCloseoutResult(report, request)).toBeUndefined();
     expect(() => loggedSessionCloseout(report, request)).toThrow(
-      "Closeout checks could not run on this commit: no result for test.",
+      `Closeout checks could not run on this commit: no result for test (${missingResultReason(report, request)}).`,
+    );
+    expect(missingResultReason(report, request)).toBe(
+      patch.head
+        ? "its result is for another commit"
+        : patch.id
+          ? "the checks run did not list it"
+          : patch.status
+            ? "its result is for an earlier version of the change"
+            : "its result is for another command or timeout",
     );
   }
+});
+
+test("a missing result names why it is missing", () => {
+  const request = {
+    cwd: "/",
+    argv: ["bun", "test"],
+    itemId: "test",
+    expectedHead: "a".repeat(40),
+    timeoutSeconds: 30,
+    artifactPath: "log",
+    logFile: "/dev/null",
+  };
+  const reason = (report: unknown) => missingResultReason(JSON.stringify(report), request);
+  expect(reason({ required: [{ id: "test", status: "missing", running: true }] })).toBe(
+    "the checks run's turn ended before it reported",
+  );
+  expect(reason({ required: [{ id: "test", status: "missing" }] })).toBe("it never started");
+  expect(reason({ required: [], blocked: "origin/main is unavailable" })).toBe(
+    "the policy was unavailable: origin/main is unavailable",
+  );
+  expect(missingResultReason(undefined, request)).toBe("the checks run returned no report");
 });

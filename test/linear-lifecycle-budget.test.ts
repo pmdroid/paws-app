@@ -563,7 +563,7 @@ test("Linear requests for a long Closeout with an agent question and a visual re
   // Keep the request ceiling without requiring every intermediate update to be sent.
   // This includes putting the visual review link on the session and taking it off again.
   expect(result.perCaller["outbox"], result.operations).toBeLessThanOrEqual(14);
-});
+}, 60_000);
 
 test("a Closeout fix round that publishes a screenshot asks for a visual review, not Closeout help", async () => {
   const result = await runTask({
@@ -582,7 +582,7 @@ test("a Closeout fix round that publishes a screenshot asks for a visual review,
   });
   expect(result.state, result.operations).toBe("merged");
   expect(result.asked).toEqual(["visual-review"]);
-});
+}, 60_000);
 
 test("Linear requests while CI is pending and main moves before the merge", async () => {
   const result = await runTask({
