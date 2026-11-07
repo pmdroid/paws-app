@@ -153,9 +153,13 @@ export {
   completeAnswerTask,
   completeArtifactTask,
   getTaskMode,
+  getTaskModeSteps,
   getTaskModeGeneration,
+  getTaskModeGenerationSteps,
   saveTaskMode,
+  saveTaskModeSteps,
   taskRequiresRepository,
+  taskRequiresRepositorySteps,
   selectTaskModeForTurn,
 } from "./tasks";
 export {
