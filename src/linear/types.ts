@@ -110,6 +110,8 @@ export type IssueAttachment = {
   id: string;
   issueId: string;
   title: string;
+  /** Linear shows it under the title. The same URL on the same issue updates the attachment. */
+  subtitle?: string;
   url: string;
   evidence?: boolean;
 };

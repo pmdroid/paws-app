@@ -82,6 +82,7 @@ function fixture(
     auth?: GitHubIntegration;
     interpretation?: { output: string; hang?: boolean; removeAccess?: string };
     confidence?: number;
+    remote?: boolean;
   } = {},
 ) {
   const db = tempDb();
@@ -120,6 +121,18 @@ function fixture(
       pawsRoot,
       clock,
       githubInstallation: options.auth,
+      ...(options.remote
+        ? {
+            remoteExecution: {
+              agentForSession: () => {
+                throw new Error("The confident suggestion needs no agent");
+              },
+              agentForItem: () => {
+                throw new Error("Not started in this test");
+              },
+            },
+          }
+        : {}),
       repositories: [...repositories, repositories[0]!],
       repositoryAccess: async (repository) => {
         checked.push(repository.repo);
@@ -540,6 +553,24 @@ test("a confident Linear suggestion binds the repository without a question", as
     const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
     expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
     expect(f.tracker.progress.map((update) => update.body)).toContain("Working in acme/two.");
+  } finally {
+    f.db.close();
+  }
+});
+
+test("on a runner the repository binds without a second start line", async () => {
+  const f = fixture({ confidence: 0.95, remote: true });
+  try {
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
+    // The runner says "Starting on <runner> in acme/two …" when the turn starts.
+    expect(f.tracker.progress.map((update) => update.body)).not.toContain("Working in acme/two.");
+    expect(
+      f.db.query("SELECT 1 FROM outbox WHERE idempotency_key = ?").get(`${itemId}:repository`),
+    ).toBeNull();
   } finally {
     f.db.close();
   }
