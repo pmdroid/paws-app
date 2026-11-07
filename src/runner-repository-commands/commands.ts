@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { getWorkItem, getWorkItemRepository, immediate, workspaceMemberUsableSql } from "../db";
+import {
+  getWorkItem,
+  getWorkItemRepository,
+  immediate,
+  repositoryCommandSettlement,
+  workspaceMemberUsableSql,
+} from "../db";
 import { journalCaught } from "../journal";
 import {
   REPOSITORY_COMMAND_RUNNER_VERSION,
@@ -19,6 +25,7 @@ export type RepositoryCommandInput = Omit<RunnerRepositoryCommand, "id" | "type"
 
 export const REPOSITORY_COMMAND_GRANT_MS = 60_000;
 const SETTLED_RETENTION_MS = 5 * 60_000;
+const POLL_INTERVAL_MS = 250;
 
 export class RepositoryCommandDeniedError extends Error {
   override readonly name = "RepositoryCommandDeniedError";
@@ -41,9 +48,16 @@ type Waiter = {
   promise: Promise<RepositoryCommandOutcome>;
   resolve(outcome: RepositoryCommandOutcome): void;
 };
-const waiters = new Map<string, Waiter>();
+const instanceWaiters = new WeakMap<Database, Map<string, Waiter>>();
 
-function waiter(id: string): Waiter {
+function waitersOf(db: Database) {
+  let waiters = instanceWaiters.get(db);
+  if (!waiters) instanceWaiters.set(db, (waiters = new Map()));
+  return waiters;
+}
+
+function waiter(db: Database, id: string): Waiter {
+  const waiters = waitersOf(db);
   const existing = waiters.get(id);
   if (existing) return existing;
   let resolve!: (outcome: RepositoryCommandOutcome) => void;
@@ -53,11 +67,11 @@ function waiter(id: string): Waiter {
   return created;
 }
 
-function settle(id: string, outcome: RepositoryCommandOutcome) {
-  const settled = waiter(id);
+function settle(db: Database, id: string, outcome: RepositoryCommandOutcome) {
+  const settled = waiter(db, id);
   settled.resolve(outcome);
   setTimeout(() => {
-    if (waiters.get(id) === settled) waiters.delete(id);
+    if (waitersOf(db).get(id) === settled) waitersOf(db).delete(id);
   }, SETTLED_RETENTION_MS).unref();
 }
 
@@ -73,7 +87,7 @@ function expire(db: Database, at: number) {
       "UPDATE runner_repository_command SET state='expired',grant_hash=NULL WHERE state IN ('pending','delivered') AND expires_at<=? RETURNING id",
     )
     .all(at);
-  for (const { id } of expired) settle(id, { outcome: "expired" });
+  for (const { id } of expired) settle(db, id, { outcome: "expired" });
 }
 
 function activeRunner(db: Database, runnerId: string, workspace: string) {
@@ -131,7 +145,7 @@ export function enqueueRepositoryCommand(db: Database, input: RepositoryCommandI
         at,
       ],
     );
-    waiter(command.id);
+    waiter(db, command.id);
     setTimeout(
       () => {
         try {
@@ -140,10 +154,10 @@ export function enqueueRepositoryCommand(db: Database, input: RepositoryCommandI
               "UPDATE runner_repository_command SET state=CASE WHEN state IN ('pending','delivered') THEN 'expired' ELSE state END,grant_hash=NULL WHERE id=? RETURNING state",
             )
             .get(command.id);
-          if (row?.state !== "done") settle(command.id, { outcome: "expired" });
+          if (row?.state !== "done") settle(db, command.id, { outcome: "expired" });
         } catch (error) {
           journalCaught(error, "runner-repository-commands.enqueue.expire", null);
-          settle(command.id, { outcome: "expired" });
+          settle(db, command.id, { outcome: "expired" });
         }
       },
       Math.max(0, command.expiresAt - at),
@@ -152,21 +166,45 @@ export function enqueueRepositoryCommand(db: Database, input: RepositoryCommandI
   });
 }
 
-export function waitForRepositoryCommand(
+export async function waitForRepositoryCommand(
+  db: Database,
   id: string,
   signal?: AbortSignal,
 ): Promise<RepositoryCommandOutcome> {
-  const pending = waiters.get(id);
-  if (!pending) return Promise.reject(new Error("Repository command is unknown."));
-  if (!signal) return pending.promise;
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-    void pending.promise.then((outcome) => {
+  signal?.throwIfAborted();
+  const local = waitersOf(db).get(id);
+  const done = new AbortController();
+  const stop = signal ? AbortSignal.any([signal, done.signal]) : done.signal;
+  try {
+    return await Promise.race(local ? [local.promise, poll(db, id, stop)] : [poll(db, id, stop)]);
+  } finally {
+    done.abort();
+  }
+}
+
+async function poll(db: Database, id: string, signal: AbortSignal) {
+  for (;;) {
+    const row = repositoryCommandSettlement(db, id, Date.now());
+    if (!row) throw new Error("Repository command is unknown.");
+    if (row.state === "done")
+      return RunnerRepositoryCommandResultSchema.parse(JSON.parse(row.result));
+    if (row.state === "expired") return { outcome: "expired" } as const;
+    await pause(POLL_INTERVAL_MS, signal);
+  }
+}
+
+function pause(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
       signal.removeEventListener("abort", abort);
-      resolve(outcome);
-    });
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", abort, { once: true });
   });
 }
 
@@ -270,7 +308,7 @@ export function recordRepositoryCommandResult(
     );
     return true;
   });
-  if (recorded) settle(input.commandId, result);
+  if (recorded) settle(db, input.commandId, result);
   return { duplicate: !recorded };
 }
 
@@ -301,7 +339,7 @@ function cancelRepositoryCommand(db: Database, id: string) {
       "UPDATE runner_repository_command SET state='expired',grant_hash=NULL WHERE id=? AND state IN ('pending','delivered') RETURNING id",
     )
     .get(id);
-  if (cancelled) settle(id, { outcome: "expired" });
+  if (cancelled) settle(db, id, { outcome: "expired" });
 }
 
 const REPOSITORY_REBASE_TIMEOUT_MS = 10 * 60_000;
@@ -317,7 +355,7 @@ export async function rebaseOnRunner(
       ...input,
       expiresAt: input.now + REPOSITORY_REBASE_TIMEOUT_MS,
     });
-    const outcome = await waitForRepositoryCommand(id, signal).catch((error: unknown) => {
+    const outcome = await waitForRepositoryCommand(db, id, signal).catch((error: unknown) => {
       cancelRepositoryCommand(db, id);
       throw error;
     });

@@ -995,6 +995,7 @@ export {
 
 export { wakeMergesBehind } from "./merge-queue";
 export { mergeStopRequested } from "./remote-merges";
+export { repositoryCommandSettlement } from "./repository-commands";
 
 export { pendingRestartHandoff } from "./restart";
 export {
