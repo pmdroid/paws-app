@@ -14,7 +14,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import {
   RUNNER_INPUT_CHUNK_BYTES,
@@ -274,6 +274,59 @@ export function createRunnerInputStore(options: {
           closeSync(fd);
         }
       });
+    },
+    async migrateLocal(commands: readonly { id: string; runId: string }[]) {
+      const remote = options.remote;
+      if (!remote) return 0;
+      const present = new Set(readdirSync(options.root));
+      let moved = 0;
+      for (const command of commands) {
+        const folder = hash(command.id);
+        if (!present.has(folder)) continue;
+        try {
+          const staged = storage(() => {
+            const fd = directory(command.id);
+            try {
+              const root = `/proc/self/fd/${fd}`;
+              const names = readdirSync(root);
+              const files: { name: string; digest: string; bytes: Buffer }[] = [];
+              if (names.includes("manifest.json"))
+                for (const file of RunnerInputFilesSchema.parse(
+                  JSON.parse(privateFile(`${root}/manifest.json`, 262144).toString("utf8")),
+                ))
+                  files.push({
+                    name: String(file.id),
+                    digest: file.sha256,
+                    bytes: privateFile(`${root}/${file.id}.bytes`, RUNNER_INPUT_MAX_BYTES),
+                  });
+              if (names.includes("prompt.json"))
+                files.push({
+                  name: "prompt",
+                  digest: RunnerPromptContextSchema.parse(
+                    JSON.parse(privateFile(`${root}/prompt.json`, 262144).toString("utf8")),
+                  ).sha256,
+                  bytes: privateFile(`${root}/prompt.bytes`, RUNNER_PROMPT_CONTEXT_MAX_BYTES),
+                });
+              if (files.some((file) => hash(file.bytes) !== file.digest))
+                throw new Error("Runner input changed");
+              return files;
+            } finally {
+              closeSync(fd);
+            }
+          });
+          for (const file of staged)
+            await put(
+              remote,
+              { runId: command.runId, commandId: command.id, name: file.name, digest: file.digest },
+              file.bytes,
+            );
+          rmSync(join(options.root, folder), { recursive: true, force: true });
+          moved++;
+        } catch (error) {
+          journalCaught(error, "runner-inputs.migrateLocal", null);
+        }
+      }
+      return moved;
     },
     async readContext(
       access: { runnerId: string; runId: string; token: string },

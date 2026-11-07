@@ -36,6 +36,7 @@ import {
   type RunnerTranscriptObjects,
 } from "../runner-transcripts";
 import { createSealedRunnerFiles, type RunFileObjects } from "../run-files";
+import { runnerCommandRuns } from "../db";
 import {
   createAgentSessions,
   createAgentSessionsHttp,
@@ -162,6 +163,15 @@ export async function openRunnerCoordinator(options: {
     work,
     remote: runnerFiles && { files: runnerFiles, db: options.db },
   });
+  if (runnerFiles) {
+    try {
+      const commands = runnerCommandRuns(options.db);
+      await inputs.migrateLocal(commands);
+      await artifacts.migrateLocal(commands);
+    } catch (error) {
+      journalCaught(error, "runner-coordinator.openRunnerCoordinator.migrateLocal", null);
+    }
+  }
   const repository = options.repositoryAccess
     ? createRunnerRepositoryAccess({ ...options.repositoryAccess, work, now: options.now })
     : undefined;

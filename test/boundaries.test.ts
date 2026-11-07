@@ -327,6 +327,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-coordinator": [
     "journal",
+    "db",
     "runner-repository-commands",
     "runner-models",
     "runner-login",

@@ -28,8 +28,7 @@ function fixture() {
     current: () => ({ command }),
   } as unknown as RunnerWork;
   const objects = createFakeRunFileObjects();
-  const instance = () => {
-    const root = mkdtempSync(join(tmpdir(), "paws-acme-instance-"));
+  const instance = (root = mkdtempSync(join(tmpdir(), "paws-acme-instance-"))) => {
     const files = createSealedRunnerFiles({ db, objects, key: KEY, now: () => clock });
     return {
       root,
@@ -224,5 +223,86 @@ describe("runner inputs and artifacts in the shared store", () => {
       offset: 0,
     });
     expect(Buffer.from(chunk.data, "base64").toString()).toBe("acme");
+  });
+
+  test("files staged on local disk before S3 was configured are uploaded once at startup", async () => {
+    const { command, access, work, objects, instance } = fixture();
+    const root = mkdtempSync(join(tmpdir(), "paws-acme-before-"));
+    const local = createRunnerInputStore({ root: join(root, "inputs"), work });
+    const localArtifacts = createRunnerArtifactStore({ root: join(root, "artifacts"), work });
+    command.inputFiles = await local.stage(command.id, [
+      { path: "acme.txt", mimeType: "text/plain", bytes: attachment },
+    ]);
+    command.promptContext = await local.stagePrompt(command.id, "Acme context");
+    const bytes = Buffer.from("acme evidence");
+    const artifact: RunnerArtifact = {
+      id: randomUUID(),
+      path: "evidence/acme.txt",
+      displayName: "Acme",
+      mimeType: "text/plain",
+      sizeBytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      attachToIssue: false,
+    };
+    await localArtifacts.upload({
+      ...access,
+      chunk: { generation: 1, artifact, index: 0, data: bytes.toString("base64") },
+    });
+    const a = instance(root);
+    const commands = [{ id: command.id, runId: access.runId }];
+    expect(await a.inputs.migrateLocal(commands)).toBe(1);
+    expect(await a.artifacts.migrateLocal(commands)).toBe(1);
+    expect(readdirSync(join(root, "inputs"))).toEqual([]);
+    expect(readdirSync(join(root, "artifacts"))).toEqual([]);
+    expect(await a.inputs.migrateLocal(commands)).toBe(0);
+
+    const b = instance();
+    const first = await b.inputs.read(access, {
+      commandId: command.id,
+      generation: 1,
+      fileId: 0,
+      offset: 0,
+    });
+    expect(Buffer.from(first.data, "base64")).toEqual(
+      attachment.subarray(0, RUNNER_ARTIFACT_CHUNK_BYTES),
+    );
+    const context = await b.inputs.readContext(access, {
+      commandId: command.id,
+      generation: 1,
+      offset: 0,
+    });
+    expect(Buffer.from(context.data, "base64").toString()).toBe("Acme context");
+    const snapshot = await b.artifacts.snapshot(access.runId, 1, artifact);
+    expect(Buffer.from(await snapshot.bytes.arrayBuffer())).toEqual(bytes);
+    for (const stored of objects.objects.values())
+      expect(Buffer.from(stored).includes(Buffer.from("Acme quarterly"))).toBe(false);
+  });
+
+  test("an artifact chunk retried with other bytes of the same length is refused", async () => {
+    const { access, objects, instance } = fixture();
+    const a = instance();
+    const b = instance();
+    const bytes = Buffer.from("acme-one");
+    const artifact: RunnerArtifact = {
+      id: randomUUID(),
+      path: "evidence/acme.txt",
+      displayName: "Acme",
+      mimeType: "text/plain",
+      sizeBytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      attachToIssue: false,
+    };
+    const upload = (data: Buffer) => ({
+      ...access,
+      chunk: { generation: 1, artifact, index: 0, data: data.toString("base64") },
+    });
+    await a.artifacts.upload(upload(bytes));
+    const stored = objects.objects.get([...objects.objects.keys()][0]!)!;
+    await b.artifacts.upload(upload(bytes));
+    await expect(b.artifacts.upload(upload(Buffer.from("acme-two")))).rejects.toThrow("immutable");
+    expect(objects.writes).toHaveLength(2);
+    const snapshot = await a.artifacts.snapshot(access.runId, 1, artifact);
+    expect(Buffer.from(await snapshot.bytes.arrayBuffer())).toEqual(bytes);
+    expect(stored.length).toBe(bytes.length + 28);
   });
 });

@@ -187,6 +187,44 @@ export function createRunnerArtifactStore(options: {
     }
   }
   const api = {
+    async migrateLocal(commands: readonly { id: string; runId: string }[]) {
+      const remote = options.remote;
+      if (!remote) return 0;
+      const present = new Set(readdirSync(options.root));
+      let moved = 0;
+      for (const command of commands) {
+        const folder = hash(command.id);
+        if (!present.has(folder)) continue;
+        try {
+          for (const name of readdirSync(join(options.root, folder))) {
+            if (!name.endsWith(".json")) continue;
+            const artifact = RunnerArtifactSchema.parse(
+              JSON.parse(privateRead(join(options.root, folder, name), 8192).toString("utf8")),
+            );
+            const chunks = localChunks(command.id, artifact);
+            if (hash(Buffer.concat(chunks)) !== artifact.sha256)
+              throw new Error("Runner artifact content changed");
+            for (const [index, bytes] of chunks.entries())
+              await remote.files.write(
+                objectKey(command.runId, command.id, artifact.id, index),
+                {
+                  runId: command.runId,
+                  commandId: command.id,
+                  kind: "artifact",
+                  name: artifact.id,
+                  digest: digest(artifact),
+                },
+                bytes,
+              );
+          }
+          rmSync(join(options.root, folder), { recursive: true, force: true });
+          moved++;
+        } catch (error) {
+          journalCaught(error, "runner-artifacts.migrateLocal", null);
+        }
+      }
+      return moved;
+    },
     async upload(input: {
       runnerId: string;
       runId: string;
