@@ -144,7 +144,9 @@ export function githubClient(
   bare: string,
   github: ReturnType<typeof createFakeGitHub>,
   seen: string[] = [],
+  repository = { owner: "pmdroid", repo: "paws-demo" },
 ): GitHubClient {
+  const fullName = `${repository.owner}/${repository.repo}`;
   let n = 0;
   const mergeShas = new Map<number, string>();
   return {
@@ -160,7 +162,7 @@ export function githubClient(
         n += 1;
         await github.mintInstallationToken({
           installationId: "2",
-          repository: "pmdroid/paws-demo",
+          repository: fullName,
         });
         return {
           status: 201,
@@ -168,7 +170,7 @@ export function githubClient(
             token: `ghs_e2e_${n}`,
             expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
             repository_selection: "selected",
-            repositories: [{ name: "paws-demo", full_name: "pmdroid/paws-demo" }],
+            repositories: [{ name: repository.repo, full_name: fullName }],
             permissions: { ...INSTALLATION_PERMISSIONS, metadata: "read" },
           },
         };
@@ -180,7 +182,7 @@ export function githubClient(
       if (req.method === "POST" && req.path.endsWith("/pulls")) {
         const body = req.body as { title: string; head: string; base: string; body: string };
         const opened = await github.open({
-          repository: "pmdroid/paws-demo",
+          repository: fullName,
           title: body.title,
           head: body.head,
           base: body.base,
@@ -201,7 +203,7 @@ export function githubClient(
           body: {
             merged: sha !== undefined,
             merge_commit_sha: sha ?? null,
-            html_url: `https://github.com/pmdroid/paws-demo/pull/${number}`,
+            html_url: `https://github.com/${fullName}/pull/${number}`,
             base: { ref: pull.base, repo: { full_name: pull.repository } },
           },
         };
@@ -210,7 +212,7 @@ export function githubClient(
         const body = req.body as { sha?: string; commit_message?: string };
         const number = Number(req.path.split("/").at(-2));
         await github.merge({
-          repository: "pmdroid/paws-demo",
+          repository: fullName,
           number,
           expectedHeadSha: body.sha ?? "",
         });
